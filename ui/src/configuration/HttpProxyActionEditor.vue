@@ -189,7 +189,12 @@
         @update:model-value="action.policy.retry.response_statuses = $event"
       )
 
-    HttpCachePolicyEditor(:policy="action.policy" :store-names="cacheStoreNames")
+    HttpCachePolicyEditor(
+      :model-value="action.policy.cache"
+      field-path="http_services[].routes[].action.policy.cache"
+      :store-names="cacheStoreNames"
+      @update:model-value="action.policy.cache = $event"
+    )
 </template>
 
 <script setup lang="ts">

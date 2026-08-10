@@ -35,7 +35,11 @@ describe('cache and forward proxy editors', () => {
     const policy = contractConfigSnapshot().config.http_services[0]!.routes[0]!.action
     if (policy.type !== 'proxy') throw new Error('fixture route must be a proxy')
     const wrapper = mount(HttpCachePolicyEditor, {
-      props: { policy: policy.policy, storeNames: ['memory-responses', 'responses'] },
+      props: {
+        modelValue: policy.policy.cache,
+        fieldPath: 'http_services[].routes[].action.policy.cache',
+        storeNames: ['memory-responses', 'responses'],
+      },
     })
 
     expect(policy.policy.cache).toEqual(expect.objectContaining({
@@ -48,14 +52,22 @@ describe('cache and forward proxy editors', () => {
     }))
     expect((wrapper.get('[data-field="http_services[].routes[].action.policy.cache.purge_authorization.token_file_path"] input').element as HTMLInputElement).value)
       .toBe('/run/oxiroute/cache-purge.token')
+    await wrapper.get('[data-field="http_services[].routes[].action.policy.cache.store"] select').setValue('memory-responses')
+    expect(policy.policy.cache?.store).toBe('memory-responses')
     await wrapper.get('[data-field="http_services[].routes[].action.policy.cache"] input').setValue(false)
+    policy.policy.cache = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as null
+    await wrapper.setProps({ modelValue: policy.policy.cache })
     await wrapper.get('[data-field="http_services[].routes[].action.policy.cache"] input').setValue(true)
+    policy.policy.cache = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as ReturnType<typeof defaultHttpCachePolicy>
     expect(policy.policy.cache).toEqual(defaultHttpCachePolicy('memory-responses'))
   })
 
   it('edits every forward proxy group while retaining finite defaults', async () => {
     const service = defaultForwardProxyService()
-    const wrapper = mount(ForwardProxyServiceEditor, { props: { service } })
+    const headerPolicy = structuredClone(service.header_policy)
+    const wrapper = mount(ForwardProxyServiceEditor, {
+      props: { service, cacheStoreNames: ['memory-responses', 'responses'] },
+    })
 
     await wrapper.get('[data-field="forward_proxy_services[].name"] input').setValue('egress')
     await wrapper.get('[data-field="forward_proxy_services[].connect.enabled"] input').setValue(true)
@@ -78,6 +90,18 @@ describe('cache and forward proxy editors', () => {
     expect(service.auth).toEqual(expect.objectContaining({ credential_ttl_ms: 250 }))
     await ttl.setValue('')
     expect(service.auth).toEqual(expect.objectContaining({ credential_ttl_ms: null }))
+
+    const cacheToggle = wrapper.get('[data-field="forward_proxy_services[].cache"] input')
+    await cacheToggle.setValue(true)
+    await wrapper.get('[data-field="forward_proxy_services[].cache.store"] select').setValue('responses')
+    expect(service.cache?.store).toBe('responses')
+    expect(service.header_policy).toEqual(headerPolicy)
+    await cacheToggle.setValue(false)
+    expect(service.cache).toBeNull()
+    expect(service.header_policy).toEqual(headerPolicy)
+    await cacheToggle.setValue(true)
+    expect(service.cache).toEqual(defaultHttpCachePolicy('memory-responses'))
+    expect(service.header_policy).toEqual(headerPolicy)
   })
 
   it('normalizes an HTTP/3 forward listener to UDP and an exact H3 TLS profile', async () => {

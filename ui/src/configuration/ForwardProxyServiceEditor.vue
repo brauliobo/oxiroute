@@ -191,168 +191,12 @@ fieldset.object-block(data-field="forward_proxy_services[].header_policy")
         option(value="delete") Delete
         option(value="preserve") Preserve
 
-fieldset.object-block(data-field="forward_proxy_services[].header_policy.cache")
-  legend Forward response cache
-  label.enable-row
-    input(type="checkbox" :checked="service.cache != null" @change="toggleCache")
-    span Enable bounded response caching for this forward service
-  template(v-if="service.cache")
-    .field-grid
-      label.field(data-field="forward_proxy_services[].header_policy.cache.store")
-        span Cache store
-        input(type="text" v-model="service.cache.store" placeholder="memory-responses")
-      label.field(data-field="forward_proxy_services[].header_policy.cache.default_ttl_ms")
-        span Default TTL (ms)
-        input(type="number" min="0" max="31536000000" step="1" v-model.number="service.cache.default_ttl_ms")
-      label.field(data-field="forward_proxy_services[].header_policy.cache.grace_ms")
-        span Grace period (ms)
-        input(type="number" min="0" :max="Math.min(31536000000, service.cache.keep_ms)" step="1" v-model.number="service.cache.grace_ms")
-      label.field(data-field="forward_proxy_services[].header_policy.cache.keep_ms")
-        span Keep period (ms)
-        input(type="number" :min="service.cache.grace_ms" max="31536000000" step="1" v-model.number="service.cache.keep_ms")
-      label.field(data-field="forward_proxy_services[].header_policy.cache.set_cookie_policy")
-        span Set-Cookie policy
-        select(v-model="service.cache.set_cookie_policy")
-          option(value="bypass") Bypass cache
-          option(value="ignore") Ignore Set-Cookie
-      label.field(data-field="forward_proxy_services[].header_policy.cache.authorization_policy")
-        span Authorization policy
-        select(v-model="service.cache.authorization_policy")
-          option(value="bypass") Bypass cache
-          option(value="cache") Allow caching
-      label.field(data-field="forward_proxy_services[].header_policy.cache.vary_policy")
-        span Vary policy
-        select(v-model="service.cache.vary_policy")
-          option(value="respect") Respect Vary
-          option(value="ignore") Ignore Vary
-    .field-grid
-      label.enable-row.compact-enable(data-field="forward_proxy_services[].header_policy.cache.use_origin_cache_control")
-        input(type="checkbox" v-model="service.cache.use_origin_cache_control")
-        span Use origin Cache-Control
-      label.enable-row.compact-enable(data-field="forward_proxy_services[].header_policy.cache.revalidate")
-        input(type="checkbox" v-model="service.cache.revalidate")
-        span Revalidate stale entries
-      label.enable-row.compact-enable(data-field="forward_proxy_services[].header_policy.cache.collapsed_forwarding")
-        input(type="checkbox" v-model="service.cache.collapsed_forwarding")
-        span Collapse concurrent fills
-    fieldset.retry-triggers(data-field="forward_proxy_services[].header_policy.cache.methods")
-      legend Cacheable methods
-      label.enable-row(v-for="method in ['GET', 'HEAD']" :key="method")
-        input(type="checkbox" :checked="service.cache.methods.includes(method)" :disabled="service.cache.methods.length === 1 && service.cache.methods.includes(method)" @change="toggleCacheValue(service.cache.methods, method, $event)")
-        span {{ method }}
-    fieldset.route-list(data-field="forward_proxy_services[].header_policy.cache.key_components")
-      .route-heading
-        legend Cache key components
-        button.add-row(type="button" :disabled="service.cache.key_components.length >= 32" @click="service.cache.key_components.push({ type: 'scheme' })") + Add component
-      article.route-card(v-for="(component, index) in service.cache.key_components" :key="index")
-        header.route-card-heading
-          strong Key component {{ index + 1 }}
-          button.danger-link(type="button" :disabled="service.cache.key_components.length === 1" @click="service.cache.key_components.splice(index, 1)") Remove
-        .field-grid
-          label.field(data-field="forward_proxy_services[].header_policy.cache.key_components[].type")
-            span Component type
-            select(:value="component.type" @change="changeCacheKeyComponent(index, $event)")
-              option(value="scheme") Scheme
-              option(value="normalized_host") Normalized host
-              option(value="path_and_query") Path and query
-              option(value="header") Request header
-              option(value="cookie") Request cookie
-          label.field(v-if="component.type === 'header' || component.type === 'cookie'" data-field="forward_proxy_services[].header_policy.cache.key_components[].name")
-            span {{ component.type === 'header' ? 'Header' : 'Cookie' }} name
-            input(type="text" v-model="component.name")
-    fieldset.route-list(data-field="forward_proxy_services[].header_policy.cache.status_ttls")
-      .route-heading
-        legend Status TTL overrides
-        button.add-row(type="button" :disabled="service.cache.status_ttls.length >= 64" @click="service.cache.status_ttls.push({ status: 200, ttl_ms: 60000 })") + Add status TTL
-      article.route-card(v-for="(entry, index) in service.cache.status_ttls" :key="index")
-        header.route-card-heading
-          strong Status TTL {{ index + 1 }}
-          button.danger-link(type="button" @click="service.cache.status_ttls.splice(index, 1)") Remove
-        .field-grid
-          label.field(data-field="forward_proxy_services[].header_policy.cache.status_ttls[].status")
-            span HTTP status
-            input(type="number" min="100" max="599" step="1" v-model.number="entry.status")
-          label.field(data-field="forward_proxy_services[].header_policy.cache.status_ttls[].ttl_ms")
-            span TTL (ms)
-            input(type="number" min="0" max="31536000000" step="1" v-model.number="entry.ttl_ms")
-    fieldset.retry-triggers(data-field="forward_proxy_services[].header_policy.cache.stale_on")
-      legend Serve stale on
-      label.enable-row(v-for="trigger in CACHE_STALE_TRIGGERS" :key="trigger")
-        input(type="checkbox" :checked="service.cache.stale_on.includes(trigger)" @change="toggleCacheValue(service.cache.stale_on, trigger, $event)")
-        span {{ trigger.replaceAll('_', ' ') }}
-    fieldset.route-list(data-field="forward_proxy_services[].header_policy.cache.bypass_request")
-      .route-heading
-        legend Bypass request predicates
-        button.add-row(type="button" :disabled="service.cache.bypass_request.length >= 32" @click="addCachePredicate(service.cache.bypass_request)") + Add predicate
-      article.route-card(v-for="(predicate, index) in service.cache.bypass_request" :key="index")
-        .field-grid
-          label.field(data-field="forward_proxy_services[].header_policy.cache.bypass_request[].type")
-            span Predicate type
-            select(v-model="predicate.type")
-              option(value="header_present") Header present
-              option(value="cookie_present") Cookie present
-          label.field(data-field="forward_proxy_services[].header_policy.cache.bypass_request[].name")
-            span Predicate name
-            input(type="text" v-model="predicate.name")
-          button.danger-button(type="button" @click="service.cache.bypass_request.splice(index, 1)") Remove predicate
-    fieldset.route-list(data-field="forward_proxy_services[].header_policy.cache.no_store_request")
-      .route-heading
-        legend No-store request predicates
-        button.add-row(type="button" :disabled="service.cache.no_store_request.length >= 32" @click="addCachePredicate(service.cache.no_store_request)") + Add predicate
-      article.route-card(v-for="(predicate, index) in service.cache.no_store_request" :key="index")
-        .field-grid
-          label.field(data-field="forward_proxy_services[].header_policy.cache.no_store_request[].type")
-            span Predicate type
-            select(v-model="predicate.type")
-              option(value="header_present") Header present
-              option(value="cookie_present") Cookie present
-          label.field(data-field="forward_proxy_services[].header_policy.cache.no_store_request[].name")
-            span Predicate name
-            input(type="text" v-model="predicate.name")
-          button.danger-button(type="button" @click="service.cache.no_store_request.splice(index, 1)") Remove predicate
-    fieldset.route-list(data-field="forward_proxy_services[].header_policy.cache.no_store_response")
-      .route-heading
-        legend No-store response predicates
-        button.add-row(type="button" :disabled="service.cache.no_store_response.length >= 32" @click="addCachePredicate(service.cache.no_store_response)") + Add predicate
-      article.route-card(v-for="(predicate, index) in service.cache.no_store_response" :key="index")
-        .field-grid
-          label.field(data-field="forward_proxy_services[].header_policy.cache.no_store_response[].type")
-            span Predicate type
-            select(v-model="predicate.type")
-              option(value="header_present") Header present
-              option(value="cookie_present") Cookie present
-          label.field(data-field="forward_proxy_services[].header_policy.cache.no_store_response[].name")
-            span Predicate name
-            input(type="text" v-model="predicate.name")
-          button.danger-button(type="button" @click="service.cache.no_store_response.splice(index, 1)") Remove predicate
-    fieldset.object-block(data-field="forward_proxy_services[].header_policy.cache.surrogate_tags")
-      legend Surrogate tags
-      label.enable-row
-        input(type="checkbox" :checked="service.cache.surrogate_tags !== null" @change="toggleCacheSurrogateTags")
-        span Read bounded surrogate tags from an origin response header
-      .field-grid(v-if="service.cache.surrogate_tags")
-        label.field(data-field="forward_proxy_services[].header_policy.cache.surrogate_tags.response_header")
-          span Response header
-          input(type="text" v-model="service.cache.surrogate_tags.response_header")
-        label.field(data-field="forward_proxy_services[].header_policy.cache.surrogate_tags.max_tags")
-          span Maximum tags
-          input(type="number" min="1" max="256" step="1" v-model.number="service.cache.surrogate_tags.max_tags")
-        label.field(data-field="forward_proxy_services[].header_policy.cache.surrogate_tags.max_tag_bytes")
-          span Maximum tag bytes
-          input(type="number" min="1" max="1024" step="1" v-model.number="service.cache.surrogate_tags.max_tag_bytes")
-    fieldset.object-block(data-field="forward_proxy_services[].header_policy.cache.purge_authorization")
-      legend Purge authorization
-      label.enable-row
-        input(type="checkbox" :checked="service.cache.purge_authorization !== null" @change="toggleCachePurgeAuthorization")
-        span Require a bearer token loaded from a server file
-      .field-grid(v-if="service.cache.purge_authorization")
-        label.field(data-field="forward_proxy_services[].header_policy.cache.purge_authorization.type")
-          span Authorization type
-          select(v-model="service.cache.purge_authorization.type" disabled)
-            option(value="bearer_token_file") Bearer token file
-        label.field(data-field="forward_proxy_services[].header_policy.cache.purge_authorization.token_file_path")
-          span Token file path
-          input(type="text" v-model="service.cache.purge_authorization.token_file_path" autocomplete="off")
+HttpCachePolicyEditor(
+  :model-value="service.cache"
+  field-path="forward_proxy_services[].cache"
+  :store-names="cacheStoreNames"
+  @update:model-value="service.cache = $event"
+)
 
 fieldset.object-block(data-field="forward_proxy_services[].destination_policy")
   legend Destination policy
@@ -452,21 +296,18 @@ fieldset.object-block(data-field="forward_proxy_services[].resolver")
 <script setup lang="ts">
 import StringListField from '../StringListField.vue'
 import type {
-  CacheKeyComponentConfig,
-  CachePredicateConfig,
   ForwardAccessConditionConfig,
   ForwardHttpVersion,
   ForwardProxyServiceConfig,
 } from '../config'
 import {
-  CACHE_STALE_TRIGGERS,
   FORWARD_HTTP_VERSIONS,
   FORWARD_WEEKDAYS,
-  defaultHttpCachePolicy,
 } from './canonicalDefaults'
+import HttpCachePolicyEditor from './HttpCachePolicyEditor.vue'
 import NumberListField from './NumberListField.vue'
 
-const props = defineProps<{ service: ForwardProxyServiceConfig }>()
+const props = defineProps<{ service: ForwardProxyServiceConfig; cacheStoreNames: string[] }>()
 const emit = defineEmits<{ remove: []; changed: [] }>()
 
 function toggleVersion(version: ForwardHttpVersion, event: Event): void {
@@ -507,47 +348,6 @@ function updateCredentialTtl(event: Event): void {
   if (props.service.auth?.type !== 'basic_htpasswd_file') return
   const value = (event.target as HTMLInputElement).value
   props.service.auth.credential_ttl_ms = value === '' ? null : Number(value)
-}
-
-function toggleCache(event: Event): void {
-  props.service.cache = (event.target as HTMLInputElement).checked
-    ? defaultHttpCachePolicy()
-    : null
-}
-
-function toggleCacheValue(values: string[], value: string, event: Event): void {
-  if ((event.target as HTMLInputElement).checked) {
-    if (!values.includes(value)) values.push(value)
-  } else {
-    const index = values.indexOf(value)
-    if (index >= 0) values.splice(index, 1)
-  }
-}
-
-function changeCacheKeyComponent(index: number, event: Event): void {
-  if (!props.service.cache) return
-  const type = (event.target as HTMLSelectElement).value as CacheKeyComponentConfig['type']
-  props.service.cache.key_components[index] = type === 'header' || type === 'cookie'
-    ? { type, name: '' }
-    : { type }
-}
-
-function addCachePredicate(predicates: CachePredicateConfig[]): void {
-  if (predicates.length < 32) predicates.push({ type: 'header_present', name: '' })
-}
-
-function toggleCacheSurrogateTags(event: Event): void {
-  if (!props.service.cache) return
-  props.service.cache.surrogate_tags = (event.target as HTMLInputElement).checked
-    ? { response_header: 'surrogate-key', max_tags: 64, max_tag_bytes: 256 }
-    : null
-}
-
-function toggleCachePurgeAuthorization(event: Event): void {
-  if (!props.service.cache) return
-  props.service.cache.purge_authorization = (event.target as HTMLInputElement).checked
-    ? { type: 'bearer_token_file', token_file_path: '' }
-    : null
 }
 
 function toggleAccessPolicy(event: Event): void {
