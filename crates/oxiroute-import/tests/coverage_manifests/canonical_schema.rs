@@ -579,8 +579,19 @@ fn collect_canonical_fields(
 }
 
 fn config_source_schema() -> syn::File {
-    let source = read_source("crates/oxiroute-config/src/model.rs");
-    syn::parse_file(&source).expect("parse authoritative configuration schema")
+    let mut schema = syn::parse_file("").expect("parse empty configuration schema");
+    for path in [
+        "crates/oxiroute-config/src/model/core.rs",
+        "crates/oxiroute-config/src/model/http.rs",
+        "crates/oxiroute-config/src/model/rtmp.rs",
+        "crates/oxiroute-config/src/model/forward.rs",
+        "crates/oxiroute-config/src/model/errors.rs",
+    ] {
+        let source = read_source(path);
+        let parsed = syn::parse_file(&source).expect("parse authoritative configuration schema");
+        schema.items.extend(parsed.items);
+    }
+    schema
 }
 
 fn serialized_field_name(ident: &syn::Ident, attributes: &[Attribute]) -> String {
