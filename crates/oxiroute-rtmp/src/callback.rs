@@ -1,6 +1,6 @@
 use std::{
     fmt,
-    io::{self, Read, Write},
+    io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
     sync::Arc,
     time::Duration,
@@ -368,30 +368,7 @@ enum CallbackStream {
     Tls(SslStream<TcpStream>),
 }
 
-impl Read for CallbackStream {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.read(buffer),
-            Self::Tls(stream) => stream.read(buffer),
-        }
-    }
-}
-
-impl Write for CallbackStream {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.write(buffer),
-            Self::Tls(stream) => stream.write(buffer),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Self::Plain(stream) => stream.flush(),
-            Self::Tls(stream) => stream.flush(),
-        }
-    }
-}
+delegate_read_write!(CallbackStream { Plain, Tls });
 
 fn request(
     endpoint: &RtmpCallbackEndpoint,
