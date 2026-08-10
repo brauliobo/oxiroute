@@ -15,6 +15,7 @@ use openssl::{rand::rand_bytes, symm};
 
 use crate::{
     MediaEvent, MediaEventKind, PublisherIncarnation, StreamKey,
+    clock::unix_time_ms,
     dash_segmenter::{DashOutputConfig, DashSegmenter},
     media_parser::{parse_aac_configuration, parse_avc_configuration},
     media_storage::{MediaStore, MediaStoreError},
@@ -923,16 +924,8 @@ fn fragment_filename(naming: HlsFragmentNaming, sequence: u64, timestamp_ms: u32
     match naming {
         HlsFragmentNaming::Sequential => format!("seg-{sequence}.ts"),
         HlsFragmentNaming::Timestamp => format!("seg-{timestamp_ms}.ts"),
-        HlsFragmentNaming::System => format!("seg-{}-{sequence}.ts", system_time_ms()),
+        HlsFragmentNaming::System => format!("seg-{}-{sequence}.ts", unix_time_ms()),
     }
-}
-
-fn system_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0)
 }
 
 fn render_master_playlist(config: &HlsOutputConfig, variants: &[HlsVariant]) -> String {

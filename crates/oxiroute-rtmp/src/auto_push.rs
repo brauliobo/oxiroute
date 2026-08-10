@@ -73,7 +73,8 @@ mod unix {
     use super::{RtmpAutoPushConfig, RtmpAutoPushError, RtmpAutoPushStatus};
     use crate::{
         LiveHub, MediaEvent, MediaEventKind, PublisherIncarnation, PublisherRegistration,
-        RtmpRegistry, SessionId, StreamKey, VideoCodec, media_snapshot::MediaSnapshotAccumulator,
+        RtmpRegistry, SessionId, StreamKey, VideoCodec, clock::unix_time_ms,
+        media_snapshot::MediaSnapshotAccumulator,
     };
 
     const PROTOCOL_MAGIC: [u8; 4] = *b"ORAP";
@@ -1577,14 +1578,6 @@ mod unix {
             .1
             .wait_timeout(guard, timeout)
             .expect("RTMP auto-push wake mutex poisoned");
-    }
-
-    fn unix_time_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| {
-                duration.as_millis().try_into().unwrap_or(u64::MAX)
-            })
     }
 }
 

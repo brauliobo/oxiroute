@@ -25,6 +25,7 @@ use crate::{
     LiveHub, MediaEvent, MediaEventKind, RtmpClientOptions, RtmpOutboundPolicy, RtmpRegistry,
     RtmpTransport, SessionId, StreamKey, VideoCodec,
     client::{self, RtmpStream},
+    clock::unix_time_ms,
     media_snapshot::MediaSnapshotAccumulator,
 };
 
@@ -1091,14 +1092,6 @@ fn pull_media_event(event: ClientSessionEvent) -> Option<MediaEvent> {
         | ClientSessionEvent::AcknowledgementReceived { .. }
         | ClientSessionEvent::PingResponseReceived { .. } => None,
     }
-}
-
-fn unix_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            duration.as_millis().try_into().unwrap_or(u64::MAX)
-        })
 }
 
 impl RelayShared {
