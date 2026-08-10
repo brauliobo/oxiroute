@@ -10,7 +10,7 @@ use crate::{
 };
 
 use super::{
-    RtmpSession,
+    AdmissionTransaction, RtmpSession,
     identity::{self, StreamIdentity, VodIdentity},
     runtime::{SessionOperation, SessionRole, drop_role, release_role},
     status::{self, PLAY_NOT_FOUND_CODE, PLAY_REJECTION_CODE, Rejection, RtmpSessionError},
@@ -167,11 +167,14 @@ pub(super) fn handle_request(
                 return session.reject_request(request_id, rejection);
             }
         };
-        let accepted = session.protocol_mut().accept_request(request_id)?;
-        session
-            .roles
-            .insert(protocol_stream_id, SessionRole::VodPlayback(role));
-        return Ok(accepted);
+        return AdmissionTransaction::new(
+            session,
+            request_id,
+            protocol_stream_id,
+            at_unix_ms,
+            SessionRole::VodPlayback(role),
+        )
+        .commit();
     }
     let identity =
         match StreamIdentity::parse(session.runtime.service_id(), application, protocol_name) {
@@ -238,7 +241,7 @@ pub(super) fn handle_request(
     }
 
     let idle_streams = application_policy.idle_streams();
-    let mut role = match session.runtime.acquire_playback_role(
+    let role = match session.runtime.acquire_playback_role(
         identity.into_key(),
         session.session_id,
         protocol_stream_id,
@@ -251,17 +254,14 @@ pub(super) fn handle_request(
             return session.reject_request(request_id, rejection);
         }
     };
-    let accepted = match session.protocol_mut().accept_request(request_id) {
-        Ok(results) => results,
-        Err(error) => {
-            role.release(at_unix_ms)?;
-            return Err(error.into());
-        }
-    };
-    session
-        .roles
-        .insert(protocol_stream_id, SessionRole::Playback(role));
-    Ok(accepted)
+    AdmissionTransaction::new(
+        session,
+        request_id,
+        protocol_stream_id,
+        at_unix_ms,
+        SessionRole::Playback(role),
+    )
+    .commit()
 }
 
 pub(super) fn drain(
