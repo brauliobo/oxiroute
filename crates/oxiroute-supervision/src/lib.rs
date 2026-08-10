@@ -11,6 +11,7 @@ mod metrics;
 mod protocol;
 mod replacement;
 mod snapshot;
+mod validated;
 mod wire;
 
 pub use bounded::{BoundError, BoundedString, BoundedVec};
