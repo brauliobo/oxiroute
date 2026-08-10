@@ -153,6 +153,7 @@ import { computed } from 'vue'
 
 import {
   formatBytes,
+  formatClockTime as formatTime,
   formatCount,
   formatTelemetryAge,
   formatTelemetryDuration,
@@ -218,14 +219,6 @@ function formatLimit(value: number | null): string {
 
 function formatPercent(value: number | null): string {
   return value === null ? 'Unavailable' : `${value.toFixed(1).replace(/\.0$/, '')}%`
-}
-
-function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(timestamp)
 }
 
 function humanize(value: string): string {

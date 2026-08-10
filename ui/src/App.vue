@@ -365,7 +365,13 @@ import AuditWorkspace from './AuditWorkspace.vue'
 import CertificatesWorkspace from './CertificatesWorkspace.vue'
 import EventsWorkspace from './EventsWorkspace.vue'
 import HaproxyStatsDashboard from './HaproxyStatsDashboard.vue'
-import { formatBytes, formatCount, formatTelemetryDuration } from './formatters'
+import {
+  formatBytes,
+  formatClockTime as formatTime,
+  formatCount,
+  formatTelemetryDuration,
+  presentApiError,
+} from './formatters'
 import RtmpRecorderPanel from './RtmpRecorderPanel.vue'
 import RtmpClientPanel from './RtmpClientPanel.vue'
 import { recorderControlAction } from './recording'
@@ -617,7 +623,7 @@ async function refreshMonitoring(controller: AbortController): Promise<void> {
     monitoringError.value = null
   } catch (error) {
     if (activeController === controller) {
-      monitoringError.value = errorMessage(error, 'Unable to load monitoring telemetry')
+      monitoringError.value = presentApiError(error, 'Unable to load monitoring telemetry')
     }
   }
 }
@@ -629,7 +635,7 @@ async function refreshCatalog(controller: AbortController): Promise<void> {
     catalog.value = result
     catalogError.value = null
   } catch (error) {
-    if (activeController === controller) catalogError.value = errorMessage(error, 'Unable to load RTMP state')
+    if (activeController === controller) catalogError.value = presentApiError(error, 'Unable to load RTMP state')
   }
 }
 
@@ -640,7 +646,7 @@ async function refreshRtmpStats(controller: AbortController): Promise<void> {
     rtmpStats.value = result
     rtmpStatsError.value = null
   } catch (error) {
-    if (activeController === controller) rtmpStatsError.value = errorMessage(error, 'Unable to load RTMP client state')
+    if (activeController === controller) rtmpStatsError.value = presentApiError(error, 'Unable to load RTMP client state')
   }
 }
 
@@ -651,12 +657,8 @@ async function refreshTopology(controller: AbortController): Promise<void> {
     topology.value = result
     topologyError.value = null
   } catch (error) {
-    if (activeController === controller) topologyError.value = errorMessage(error, 'Unable to load active topology')
+    if (activeController === controller) topologyError.value = presentApiError(error, 'Unable to load active topology')
   }
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback
 }
 
 async function controlRecorder(
@@ -737,7 +739,7 @@ async function refreshAfterClientCommand(): Promise<void> {
 }
 
 function rtmpControlError(error: unknown): string {
-  if (!(error instanceof ApiError)) return errorMessage(error, 'RTMP client control failed')
+  if (!(error instanceof ApiError)) return presentApiError(error, 'RTMP client control failed')
   switch (error.code) {
     case 'session_not_found':
       return 'The RTMP client ended before the control request was applied.'
@@ -768,7 +770,7 @@ function staleRecorderMessage(stream: StreamSnapshot): string {
 }
 
 function recorderControlError(error: unknown): string {
-  if (!(error instanceof ApiError)) return errorMessage(error, 'Recorder command failed')
+  if (!(error instanceof ApiError)) return presentApiError(error, 'Recorder command failed')
   switch (error.code) {
     case 'rtmp_recording_unavailable':
       return 'Manual recording is unavailable in the active runtime.'
@@ -828,14 +830,6 @@ function formatSampleAge(sampledAt: number): string {
 function loadBarWidth(value: number): string {
   if (value <= 0) return '0%'
   return `${Math.max(4, (value / maximumHostLoad.value) * 100)}%`
-}
-
-function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(timestamp)
 }
 
 function formatAge(startedAt: number): string {
