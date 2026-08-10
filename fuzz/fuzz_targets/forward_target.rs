@@ -7,7 +7,7 @@ use oxiroute_forward_proxy::{
     parse_absolute_form, parse_connect_authority, parse_connect_udp_path,
 };
 
-const MAX_INPUT_BYTES: usize = 16 * 1024;
+const MAX_INPUT_BYTES: usize = 16_384;
 
 fuzz_target!(|data: &[u8]| {
     let Some(data) = support::bounded_input(data, MAX_INPUT_BYTES) else {

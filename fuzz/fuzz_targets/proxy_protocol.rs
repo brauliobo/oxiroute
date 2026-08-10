@@ -10,7 +10,7 @@ use oxiroute_server::{ProxyProtocolTransport, accept_stream, encode_header, pars
 use tokio::{io::AsyncReadExt, sync::watch};
 use tokio_test::io::Builder;
 
-const MAX_INPUT_BYTES: usize = 128 * 1024;
+const MAX_INPUT_BYTES: usize = 131_072;
 const MAX_FRAGMENTS: usize = 128;
 
 fuzz_target!(|data: &[u8]| {

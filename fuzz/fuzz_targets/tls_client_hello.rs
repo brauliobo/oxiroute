@@ -8,7 +8,7 @@ use libfuzzer_sys::fuzz_target;
 use rustls::pki_types::ServerName;
 use rustls::server::{ClientHello, ResolvesServerCert};
 
-const MAX_INPUT_BYTES: usize = 64 * 1024;
+const MAX_INPUT_BYTES: usize = 65_536;
 const MAX_READ_ITERATIONS: usize = 64;
 
 #[derive(Debug)]

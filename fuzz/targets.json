@@ -1,0 +1,17 @@
+{
+  "schema": "oxiroute.fuzz-targets.v1",
+  "targets": [
+    { "name": "config_source", "max_input_bytes": 131072 },
+    { "name": "native_source", "max_input_bytes": 131072 },
+    { "name": "forward_target", "max_input_bytes": 16384 },
+    { "name": "overread_io", "max_input_bytes": 16384 },
+    { "name": "rtmp_handshake", "max_input_bytes": 131072 },
+    { "name": "rtmp_chunk", "max_input_bytes": 262144 },
+    { "name": "rtmp_amf", "max_input_bytes": 32768 },
+    { "name": "rtmp_media_config", "max_input_bytes": 65536 },
+    { "name": "proxy_protocol", "max_input_bytes": 131072 },
+    { "name": "udp_datagram", "max_input_bytes": 131059 },
+    { "name": "tls_client_hello", "max_input_bytes": 65536 },
+    { "name": "http1", "max_input_bytes": 131072 }
+  ]
+}

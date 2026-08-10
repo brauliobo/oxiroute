@@ -5,7 +5,7 @@ mod support;
 use libfuzzer_sys::fuzz_target;
 use oxiroute_import::{SourceFile, SourceId, apache, haproxy, nginx, varnish};
 
-const MAX_INPUT_BYTES: usize = 128 * 1024;
+const MAX_INPUT_BYTES: usize = 131_072;
 
 fuzz_target!(|data: &[u8]| {
     let Some(data) = support::bounded_input(data, MAX_INPUT_BYTES) else {

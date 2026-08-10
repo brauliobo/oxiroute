@@ -8,7 +8,7 @@ use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
 use rml_rtmp::{messages::MessagePayload, rml_amf0, time::RtmpTimestamp};
 
-const MAX_INPUT_BYTES: usize = 32 * 1024;
+const MAX_INPUT_BYTES: usize = 32_768;
 
 fuzz_target!(|data: &[u8]| {
     let Some(mut data) =
