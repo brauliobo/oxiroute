@@ -17,6 +17,13 @@ set, input bounds, corpus directories, regular seed files, decoded `hex:` sizes,
 deterministic `seed:` markers before running the fuzz workspace format and locked compile checks.
 The separate optional `fuzz-smoke` workflow exits successfully when `cargo-fuzz` or nightly Rust is
 unavailable, but fails closed if detected cargo-fuzz/nightly tooling cannot list or execute targets.
+For bounded campaign evidence, run `bash fuzz/campaign.sh` explicitly. It defaults to 300 seconds and
+1,000,000 executions per target, passes each target's `max_len` contract and a two-second input
+timeout, and records tool versions, target durations, and crash-artifact counts in an external
+campaign directory. Set `FUZZ_CAMPAIGN_DIR` to an absolute path outside the repository when a stable
+evidence location is needed. The script stages corpus copies, build output, logs, and artifacts there;
+it never uses the checked-in corpus directory as a write location. Exit status 2 means required tools
+are unavailable, while detected but broken tooling or a crashing/failed target returns status 1.
 
 ## Targets
 
@@ -56,6 +63,8 @@ cargo fmt --manifest-path fuzz/Cargo.toml --check
 cargo check --manifest-path fuzz/Cargo.toml --locked --jobs 4
 cargo fuzz list
 bash fuzz/smoke.sh
+# Optional bounded campaign; all output defaults to a new directory under /tmp.
+bash fuzz/campaign.sh
 ```
 
 Run one target for a bounded local smoke:

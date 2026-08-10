@@ -35,7 +35,7 @@ fn rejects_tampered_complex_handshake_peer_packet() {
 }
 
 #[test]
-fn complex_handshake_does_not_accept_an_exact_p1_echo_as_peer_packet() {
+fn accepts_simple_p2_echo_after_a_complex_client_packet() {
     let mut client = Handshake::new(PeerType::Client);
     let mut server = Handshake::new(PeerType::Server);
     let client_hello = client.generate_outbound_p0_and_p1().expect("client hello");
@@ -48,13 +48,20 @@ fn complex_handshake_does_not_accept_an_exact_p1_echo_as_peer_packet() {
     };
 
     let exact_server_p1 = &server_response[1..=1_536];
-    let error = server
-        .process_bytes(exact_server_p1)
-        .expect_err("complex handshake P1 echo");
-    assert!(matches!(
-        error,
-        rml_rtmp::handshake::HandshakeError::InvalidP2Packet
-    ));
+    let mut simple_p2 = exact_server_p1.to_vec();
+    simple_p2.extend_from_slice(&[0xa5, 0x5a]);
+    match server.process_bytes(&simple_p2).expect("simple P2 echo") {
+        HandshakeProcessResult::Completed {
+            response_bytes,
+            remaining_bytes,
+        } => {
+            assert!(response_bytes.is_empty());
+            assert_eq!(remaining_bytes, [0xa5, 0x5a]);
+        }
+        HandshakeProcessResult::InProgress { .. } => {
+            panic!("server did not complete the mixed handshake")
+        }
+    }
 }
 
 #[test]

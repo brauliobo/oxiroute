@@ -24,11 +24,16 @@ desktop/mobile browser coverage. GitNexus reports zero import cycles. The Rust 1
 lint, and locked workspace tests plus the UI unit, type-check, build, and browser gates pass
 locally; the browser matrix has one existing desktop-only skip.
 
-These checks do not close the remaining gates: CA-staging issuance and renewal, active
-production-traffic reload/drain and supervised replacement, FFmpeg/OBS process interoperability,
-or long-running fuzz and crash-corpus evidence. The dependency audit passes locally through
-maintained vendored Pingora dependency paths; application and Pingora Rustls PEM parsing use
-`rustls-pki-types`.
+These checks do not close the remaining gates: CA-staging issuance and renewal, or active
+production-traffic reload/drain and supervised replacement. The dependency audit passes locally
+through maintained vendored Pingora dependency paths; application and Pingora Rustls PEM parsing
+use `rustls-pki-types`.
+
+A bounded loopback run separately confirms OBS 32.2.1 publishing, OxiRoute recording, and FFmpeg
+n8.1.2 playback of the recorded live stream. After the mixed RTMP handshake fix, a two-second
+FFmpeg n8.1.2 publisher run also passed against a local OxiRoute listener. A bounded 60-second
+per-target libFuzzer campaign reached its configured limit without recorded crashes across all
+11 checked-in targets; its generated logs and artifacts remain outside the repository.
 
 This file is updated in the same commit that changes a capability. Build support alone is
 not protocol support. Coverage manifests may use the narrower gate word `integrated` for a
@@ -92,7 +97,7 @@ procedure are documented in `vendor/pingora-core/README.oxiroute.md`.
 | --- | --- |
 | All 117 nginx-rtmp directive keys/value grammars | partial: tokenizer, registry, and contextual value validation cover all keys; the registry report distinguishes enforced, disable-only, parsed-only, source-no-op, source-bug, deprecated, and platform-limited forms; deterministic includes, inheritance, occurrence accounting, provenance, and finalization exist only for a strict listener/application/recording subset |
 | RTMP simple/complex handshake | stable on the live listener through the pinned `rml_rtmp` state machine; the standalone simple-response primitive remains covered independently |
-| Chunk formats 0-3 and extended timestamps | partial: `rml_rtmp` transport is active with a 1 MiB inbound chunk limit, a bounded service-configured assembled-message limit with `max_message` lowering from RTMP/server scope, configured acknowledgement window, and configured outbound chunk size announced on wire; bounded rejection/configuration tests, malformed-AMF command hardening, and byte-fragmented interleaving of two chunk streams pass, while exhaustive fragmentation/interoperability tests remain |
+| Chunk formats 0-3 and extended timestamps | partial: `rml_rtmp` transport is active with a 1 MiB inbound chunk limit, a bounded service-configured assembled-message limit with `max_message` lowering from RTMP/server scope, configured acknowledgement window, and configured outbound chunk size announced on wire; bounded rejection/configuration tests, malformed-AMF command hardening, byte-fragmented interleaving of two chunk streams, a malformed extended-timestamp regression, and FFmpeg loopback publishing pass, while exhaustive fragmentation/interoperability tests remain |
 | AMF0 connect/createStream/publish/play | partial: configured live publish/play, bounded VOD play, stop, delete, and bounded multi-message-stream publisher/subscriber roles are active; broader native command parity remains |
 | Active stream snapshot catalog | stable for live publisher/subscriber identity per message-stream role, codec/timestamp/byte observations, duplicate rejection, and disconnect cleanup |
 | Active stream management API | stable for snapshot/detail JSON backed by live publisher sessions, with bearer protection on recognized API routes |

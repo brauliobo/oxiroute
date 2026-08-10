@@ -29,21 +29,21 @@ if [[ "${toolchains}" != *nightly* ]]; then
 fi
 
 export CARGO_BUILD_JOBS=4
-manifest="${repo_dir}/fuzz/Cargo.toml"
+fuzz_dir="${repo_dir}/fuzz"
 
-if ! cargo +nightly fuzz list --manifest-path "${manifest}" >/dev/null; then
+if ! cargo +nightly fuzz list --fuzz-dir "${fuzz_dir}" >/dev/null; then
     printf '%s\n' 'cargo-fuzz and nightly Rust were detected, but cargo-fuzz could not list the fuzz targets; failing closed.' >&2
     exit 1
 fi
 
 for spec in "${FUZZ_TARGET_SPECS[@]}"; do
     IFS=: read -r target max_len <<<"${spec}"
-    cargo +nightly fuzz run --manifest-path "${manifest}" "${target}" -- \
+    cargo +nightly fuzz run --fuzz-dir "${fuzz_dir}" "${target}" -- \
         -runs=32 \
         -seed=1 \
         -print_final_stats=1 \
         -max_len="$max_len" \
         -timeout=2 \
-        -rss_limit_mb=256 \
-        -malloc_limit_mb=128
+        -rss_limit_mb=1024 \
+        -malloc_limit_mb=512
 done

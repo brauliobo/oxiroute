@@ -25,6 +25,10 @@ pub enum ChunkDeserializationError {
     #[error("Requested chunk size {chunk_size} is outside the configured 1..={maximum} byte range")]
     ChunkSizeLimitExceeded { chunk_size: usize, maximum: usize },
 
+    /// An extended timestamp must be at least the marker value encoded in the three-byte field.
+    #[error("Received invalid extended timestamp {timestamp}; expected at least 16777215")]
+    InvalidExtendedTimestamp { timestamp: u32 },
+
     /// A wire header declared a zero-length message or one above the receiver's configured
     /// assembled-message bound.
     #[error("Declared message length {message_length} is outside the configured 1..={maximum} byte range")]
