@@ -11,6 +11,7 @@ use oxiroute_config::{
     HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRoute, HttpRouteAction,
     HttpRoutePolicy, HttpService, HttpUpstreamHost, Listener, ListenerBind, Protocol,
     UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    canonical_dns_name,
 };
 
 use crate::{
@@ -785,7 +786,7 @@ impl<'a> Lowerer<'a> {
                     UpstreamEndpoint::Socket {
                         address: SocketAddr::new(address, port),
                     }
-                } else if is_dns_name(&host) {
+                } else if canonical_dns_name(&host).is_ok() {
                     UpstreamEndpoint::Dns { host, port }
                 } else {
                     self.block_backend(
@@ -1865,27 +1866,6 @@ fn canonical_unix_path(value: &str) -> Option<PathBuf> {
         output.push_str(segment);
     }
     (!output.is_empty() && output.len() <= 107).then(|| output.into())
-}
-
-fn is_dns_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 253
-        && !value.ends_with('.')
-        && value.split('.').all(|label| {
-            !label.is_empty()
-                && label.len() <= 63
-                && label
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-                && label
-                    .as_bytes()
-                    .first()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-                && label
-                    .as_bytes()
-                    .last()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-        })
 }
 
 fn same_timing(left: RouteTiming, right: RouteTiming) -> bool {

@@ -4,6 +4,8 @@ use std::{
     path::PathBuf,
 };
 
+use oxiroute_config::canonical_ip;
+
 use crate::canonical::{dns_name, ip_address, unix_socket_path};
 use crate::{
     Diagnostic, DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INCLUDE_CYCLE,
@@ -1617,13 +1619,6 @@ fn listen_endpoint_ip(address: &[u8]) -> Option<IpAddr> {
         .and_then(|address| address.strip_suffix(b"]"))
         .unwrap_or(address);
     std::str::from_utf8(address).ok()?.parse().ok()
-}
-
-fn canonical_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V6(ipv6) => ipv6.to_ipv4_mapped().map_or(IpAddr::V6(ipv6), IpAddr::V4),
-        IpAddr::V4(_) => ip,
-    }
 }
 
 fn include_failure(edge: &super::IncludeEdge) -> Option<DiagnosticCode> {

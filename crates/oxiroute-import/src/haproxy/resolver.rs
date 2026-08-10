@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{File, Metadata},
     io::{BufReader, Read},
-    net::IpAddr,
     path::PathBuf,
     time::{Duration, SystemTime},
 };
@@ -14,7 +13,7 @@ use openssl::{
     pkey::{Id, PKey},
     x509::X509,
 };
-use oxiroute_config::{PassiveObserve, PassiveOnError};
+use oxiroute_config::{PassiveObserve, PassiveOnError, canonical_certificate_dns_name};
 use rustls_pki_types::pem::{self, SectionKind as PemSectionKind};
 use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 use zeroize::Zeroizing;
@@ -3520,7 +3519,7 @@ fn collect_certificate_metadata(
             let GeneralName::DNSName(name) = name else {
                 continue;
             };
-            let canonical = canonical_certificate_dns_name(name).ok_or_else(|| {
+            let canonical = canonical_certificate_dns_name(name).map_err(|_| {
                 format!(
                     "HAProxy crt PEM `{}` contains an unsupported DNS subject alternative name",
                     path.display()
@@ -3726,41 +3725,6 @@ impl PemFingerprint {
             changed_nanoseconds: metadata.ctime_nsec(),
         }
     }
-}
-
-fn canonical_certificate_dns_name(name: &str) -> Option<String> {
-    let name = name.to_ascii_lowercase();
-    if !name.is_ascii() || name.is_empty() || name.len() > 253 || name.ends_with('.') {
-        return None;
-    }
-    let exact_name = if let Some(exact_name) = name.strip_prefix("*.") {
-        exact_name
-    } else {
-        if name.contains('*') {
-            return None;
-        }
-        name.as_str()
-    };
-    (!exact_name.is_empty()
-        && exact_name.parse::<IpAddr>().is_err()
-        && exact_name.split('.').all(is_valid_dns_label))
-    .then_some(name)
-}
-
-fn is_valid_dns_label(label: &str) -> bool {
-    !label.is_empty()
-        && label.len() <= 63
-        && label
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        && label
-            .as_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_alphanumeric)
-        && label
-            .as_bytes()
-            .last()
-            .is_some_and(u8::is_ascii_alphanumeric)
 }
 
 fn parse_host_port(value: &[u8]) -> Option<(Vec<u8>, u16)> {

@@ -238,7 +238,7 @@ method validators have drifted grammar and normalization behavior.
 
 **Plan:**
 
-- [ ] Expose narrow, neutral lexical primitives from `oxiroute-config` and wrap their errors with
+- [x] Expose narrow, neutral lexical primitives from `oxiroute-config` and wrap their errors with
   product-specific diagnostics.
 - [ ] Add one HTTP-token parser/normalizer; keep list bounds, deduplication, sorting, and GET/HEAD
   restrictions at their current owners.

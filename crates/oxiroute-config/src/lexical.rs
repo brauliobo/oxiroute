@@ -15,19 +15,178 @@ use crate::{
     },
 };
 
+/// A categorical failure from product-neutral lexical validation.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum LexicalError {
+    #[error("value is not valid UTF-8")]
+    InvalidUtf8,
+    #[error("value is empty")]
+    Empty,
+    #[error("value exceeds its byte limit")]
+    TooLong,
+    #[error("path is not absolute")]
+    RelativePath,
+    #[error("value contains NUL")]
+    Nul,
+    #[error("path contains repeated separators")]
+    RepeatedSeparator,
+    #[error("path has a trailing separator")]
+    TrailingSeparator,
+    #[error("path contains a dot segment")]
+    DotSegment,
+    #[error("DNS name is not ASCII")]
+    NonAsciiDnsName,
+    #[error("DNS name contains a wildcard")]
+    Wildcard,
+    #[error("DNS name is an IP address")]
+    IpAddress,
+    #[error("DNS name contains an invalid label")]
+    InvalidDnsLabel,
+}
+
+/// Returns the canonical identity for an IP address.
+#[must_use]
+pub fn canonical_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(ipv6) => ipv6.to_ipv4_mapped().map_or(IpAddr::V6(ipv6), IpAddr::V4),
+        IpAddr::V4(_) => ip,
+    }
+}
+
+/// Validates and lowercases a DNS endpoint name.
+///
+/// # Errors
+///
+/// Returns the corresponding [`LexicalError`] when the name is not a canonical non-IP DNS name.
+pub fn canonical_dns_name(name: &str) -> Result<String, LexicalError> {
+    validate_dns_name(name, false)?;
+    if name.parse::<IpAddr>().is_ok() {
+        return Err(LexicalError::IpAddress);
+    }
+    Ok(name.to_ascii_lowercase())
+}
+
+/// Validates and lowercases a DNS certificate identity, including a leading `*.` wildcard.
+///
+/// # Errors
+///
+/// Returns the corresponding [`LexicalError`] when the identity is not a canonical DNS name.
+pub fn canonical_certificate_dns_name(name: &str) -> Result<String, LexicalError> {
+    validate_dns_name(name, true)?;
+    let exact_name = name.strip_prefix("*.").unwrap_or(name);
+    if exact_name.parse::<IpAddr>().is_ok() {
+        return Err(LexicalError::IpAddress);
+    }
+    Ok(name.to_ascii_lowercase())
+}
+
+fn validate_dns_name(name: &str, certificate_wildcard: bool) -> Result<(), LexicalError> {
+    if !name.is_ascii() {
+        return Err(LexicalError::NonAsciiDnsName);
+    }
+    if name.is_empty() {
+        return Err(LexicalError::Empty);
+    }
+    if name.len() > MAX_SERVER_NAME_BYTES {
+        return Err(LexicalError::TooLong);
+    }
+    if name.ends_with('.') {
+        return Err(LexicalError::InvalidDnsLabel);
+    }
+    let exact_name = if certificate_wildcard {
+        name.strip_prefix("*.").unwrap_or(name)
+    } else {
+        name
+    };
+    if exact_name.contains('*') {
+        return Err(LexicalError::Wildcard);
+    }
+    if exact_name.is_empty() || !exact_name.split('.').all(is_valid_dns_label) {
+        return Err(LexicalError::InvalidDnsLabel);
+    }
+    Ok(())
+}
+
+/// Validates an absolute file path without normalizing authored separators.
+///
+/// # Errors
+///
+/// Returns the corresponding [`LexicalError`] when the path violates the canonical file grammar.
+pub fn validate_absolute_file_path(path: &Path) -> Result<(), LexicalError> {
+    let path = path.to_str().ok_or(LexicalError::InvalidUtf8)?;
+    if path.len() > MAX_FILE_PATH_BYTES {
+        return Err(LexicalError::TooLong);
+    }
+    if !path.starts_with('/') {
+        return Err(LexicalError::RelativePath);
+    }
+    if path.as_bytes().contains(&0) {
+        return Err(LexicalError::Nul);
+    }
+    if path.contains("//") {
+        return Err(LexicalError::RepeatedSeparator);
+    }
+    if path.ends_with('/') {
+        return Err(LexicalError::TrailingSeparator);
+    }
+    if path
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+    {
+        return Err(LexicalError::DotSegment);
+    }
+    Ok(())
+}
+
+/// Normalizes an absolute Unix socket path and enforces its normalized 107-byte bound.
+///
+/// # Errors
+///
+/// Returns the corresponding [`LexicalError`] when the path cannot be normalized safely.
+pub fn normalize_unix_socket_path(path: &mut PathBuf) -> Result<(), LexicalError> {
+    let value = path.to_str().ok_or(LexicalError::InvalidUtf8)?;
+    if !value.starts_with('/') {
+        return Err(LexicalError::RelativePath);
+    }
+    if value.as_bytes().contains(&0) {
+        return Err(LexicalError::Nul);
+    }
+    if value.ends_with('/') {
+        return Err(LexicalError::TrailingSeparator);
+    }
+
+    let mut normalized = String::with_capacity(value.len());
+    for segment in value.split('/').filter(|segment| !segment.is_empty()) {
+        if segment == "." || segment == ".." {
+            return Err(LexicalError::DotSegment);
+        }
+        normalized.push('/');
+        normalized.push_str(segment);
+    }
+    if normalized.is_empty() {
+        return Err(LexicalError::Empty);
+    }
+    if normalized.len() > MAX_UNIX_SOCKET_PATH_BYTES {
+        return Err(LexicalError::TooLong);
+    }
+    *path = normalized.into();
+    Ok(())
+}
+
 pub(crate) fn validate_file_path(
     kind: &'static str,
     name: &str,
     field: &'static str,
     path: &Path,
 ) -> Result<(), ConfigError> {
-    validate_path(
+    let invalid = |detail| ConfigError::InvalidFilePath {
         kind,
-        name,
+        name: name.into(),
         field,
-        path,
-        "path must identify a file, not end with `/`",
-    )
+        detail,
+    };
+    validate_absolute_file_path(path).map_err(|error| invalid(file_path_detail(error)))
 }
 
 pub(crate) fn validate_directory_path(
@@ -161,14 +320,12 @@ fn normalize_unix_path(
         field,
         detail,
     };
-    normalize_absolute_path(
-        path,
-        MAX_UNIX_SOCKET_PATH_BYTES,
-        "path must identify a socket, not end with `/`",
-        "path must identify a socket",
-        "path exceeds 107 bytes",
-    )
-    .map_err(invalid)
+    if path.to_str().is_some_and(|value| {
+        value.starts_with('/') && value.bytes().any(|byte| byte.is_ascii_control())
+    }) {
+        return Err(invalid("path must not contain NUL or control bytes"));
+    }
+    normalize_unix_socket_path(path).map_err(|error| invalid(unix_path_detail(error)))
 }
 
 pub(crate) fn normalize_recording_root(path: &mut PathBuf) -> Result<(), &'static str> {
@@ -294,13 +451,6 @@ pub(crate) fn validate_recording_suffix_template(
     Ok(())
 }
 
-pub(crate) fn canonical_ip(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V6(ipv6) => ipv6.to_ipv4_mapped().map_or(IpAddr::V6(ipv6), IpAddr::V4),
-        IpAddr::V4(_) => ip,
-    }
-}
-
 pub(crate) fn normalize_upstream_server_names(upstream_pools: &mut [UpstreamPool]) {
     for tls in upstream_pools
         .iter_mut()
@@ -311,40 +461,37 @@ pub(crate) fn normalize_upstream_server_names(upstream_pools: &mut [UpstreamPool
 }
 
 pub(crate) fn is_valid_certificate_dns_name(dns_name: &str) -> bool {
-    if dns_name.parse::<IpAddr>().is_ok() {
-        return true;
-    }
-    if !dns_name.is_ascii()
-        || dns_name.is_empty()
-        || dns_name.len() > MAX_SERVER_NAME_BYTES
-        || dns_name.ends_with('.')
-    {
-        return false;
-    }
-
-    let exact_name = if let Some(exact_name) = dns_name.strip_prefix("*.") {
-        if exact_name.parse::<IpAddr>().is_ok() {
-            return false;
-        }
-        exact_name
-    } else {
-        if dns_name.contains('*') {
-            return false;
-        }
-        dns_name
-    };
-
-    !exact_name.is_empty() && exact_name.split('.').all(is_valid_dns_label)
+    dns_name.parse::<IpAddr>().is_ok() || canonical_certificate_dns_name(dns_name).is_ok()
 }
 
 pub(crate) fn is_valid_dns_name(name: &str) -> bool {
-    name.is_ascii()
-        && !name.is_empty()
-        && name.len() <= MAX_SERVER_NAME_BYTES
-        && !name.ends_with('.')
-        && !name.contains('*')
-        && name.parse::<IpAddr>().is_err()
-        && name.split('.').all(is_valid_dns_label)
+    canonical_dns_name(name).is_ok()
+}
+
+const fn file_path_detail(error: LexicalError) -> &'static str {
+    match error {
+        LexicalError::InvalidUtf8 => "path must be valid UTF-8",
+        LexicalError::TooLong => "path exceeds 4096 bytes",
+        LexicalError::RelativePath => "path must be absolute",
+        LexicalError::Nul => "path must not contain NUL",
+        LexicalError::RepeatedSeparator => "path must not contain repeated `/` separators",
+        LexicalError::TrailingSeparator => "path must identify a file, not end with `/`",
+        LexicalError::DotSegment => "path must not contain `.` or `..` segments",
+        _ => unreachable!(),
+    }
+}
+
+const fn unix_path_detail(error: LexicalError) -> &'static str {
+    match error {
+        LexicalError::InvalidUtf8 => "path must be valid UTF-8",
+        LexicalError::Empty => "path must identify a socket",
+        LexicalError::TooLong => "path exceeds 107 bytes",
+        LexicalError::RelativePath => "path must be absolute",
+        LexicalError::Nul => "path must not contain NUL or control bytes",
+        LexicalError::TrailingSeparator => "path must identify a socket, not end with `/`",
+        LexicalError::DotSegment => "path must not contain `.` or `..` segments",
+        _ => unreachable!(),
+    }
 }
 
 fn is_valid_dns_label(label: &str) -> bool {

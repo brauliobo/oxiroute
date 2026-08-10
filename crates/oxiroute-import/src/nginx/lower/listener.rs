@@ -14,7 +14,8 @@ use oxiroute_config::{
     HttpRoutePolicy, HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
     HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersionPolicy, Listener,
     ListenerBind, Protocol, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint,
-    UpstreamPool, UpstreamServer, UpstreamTls, canonicalize_http_path,
+    UpstreamPool, UpstreamServer, UpstreamTls, canonical_dns_name as canonical_endpoint_dns_name,
+    canonicalize_http_path,
 };
 
 use crate::canonical::absolute_file_path;
@@ -113,7 +114,7 @@ pub(super) fn canonical_exact_host(host: &str) -> Option<String> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Some(ip.to_string());
     }
-    canonical_dns_name(host).then(|| host.to_ascii_lowercase())
+    canonical_endpoint_dns_name(host).ok()
 }
 
 pub(super) fn canonical_wildcard_host(host: &str) -> bool {
