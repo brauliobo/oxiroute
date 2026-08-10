@@ -1,6 +1,7 @@
 import type { Page, Request } from '@playwright/test'
 
 import type { CanonicalConfig, ConfigSnapshot } from '../../src/config'
+import type { SseMockResponse } from './support/sse'
 import {
   contractCatalog,
   contractConfigSnapshot,
@@ -10,6 +11,8 @@ import {
   emptyConfigSnapshot,
 } from '../../src/test/contractFixtures'
 
+export { shutdownStream, sse, type SseMockResponse } from './support/sse'
+
 export const MANAGEMENT_TOKEN = 'browser-test-management-token'
 export const CONFIG_TOKEN = 'browser-test-config-token'
 
@@ -17,11 +20,6 @@ export type JsonMockResponse = {
   kind?: 'json'
   status?: number
   body: unknown
-}
-
-export type SseMockResponse = {
-  kind: 'sse'
-  body: string
 }
 
 export type ApiMockResponse = JsonMockResponse | SseMockResponse
@@ -66,10 +64,6 @@ export async function installApiMock(page: Page, handler: ApiMockHandler): Promi
 
 export function json(body: unknown, status = 200): JsonMockResponse {
   return { body, status }
-}
-
-export function sse(body: string): SseMockResponse {
-  return { body, kind: 'sse' }
 }
 
 export function requestPath(request: Request): string {
@@ -170,11 +164,6 @@ export function managementEventPage() {
     hasMore: false,
     oldestCursor: 4,
   }
-}
-
-export function shutdownStream(): SseMockResponse {
-  return sse('event: ready\ndata: {"cursor":0}\n\n' +
-    'event: shutdown\ndata: {"reason":"server_shutdown"}\n\n')
 }
 
 export function managementMonitoring(): ApiMockResponse {

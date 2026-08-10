@@ -7,6 +7,8 @@ mod http_support;
 #[allow(dead_code)]
 #[path = "support/process.rs"]
 mod process_support;
+#[path = "support/revision.rs"]
+mod revision_support;
 #[path = "support/rtmp.rs"]
 mod rtmp_support;
 
@@ -38,6 +40,7 @@ use config_support::{empty_config, rtmp_recorder_with_queue_bytes, socket_bind};
 use fixture_support::create_secure_root;
 use http_support::http_request;
 use process_support::{ServerProcess, reserve_tcp_address, write_config};
+use revision_support::{active_revision, wait_for_new_revision};
 use rtmp_support::RtmpWireClient;
 
 const TOKEN: &str = "55f17e0e05826acaa3bc493350f59986f12d42ad762ddf934570c51fd28bea74";
@@ -857,43 +860,6 @@ async fn connect_many(address: SocketAddr, count: usize) -> Vec<TcpStream> {
         streams.push(stream.expect("connection task"));
     }
     streams
-}
-
-async fn wait_for_new_revision(address: SocketAddr, authorization: &str, original: &str) {
-    timeout(WIRE_TIMEOUT, async {
-        loop {
-            let status = http_request(
-                address,
-                "GET",
-                "/api/v1/status",
-                &[("Authorization", authorization)],
-                &[],
-            )
-            .await;
-            assert_eq!(status.status, 200);
-            if status.json()["activeRevision"].as_str() != Some(original) {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("generation reload timed out");
-}
-
-async fn active_revision(address: SocketAddr, authorization: &str) -> String {
-    http_request(
-        address,
-        "GET",
-        "/api/v1/status",
-        &[("Authorization", authorization)],
-        &[],
-    )
-    .await
-    .json()["activeRevision"]
-        .as_str()
-        .expect("active revision")
-        .to_owned()
 }
 
 async fn assert_http_connections(

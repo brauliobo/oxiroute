@@ -2,6 +2,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
+import { deferred } from './test/deferred'
 import type { ConfigValidationResponse } from './api'
 import { CANONICAL_FIELD_REGISTRY, isCanonicalConfig } from './config'
 import { defaultHttpCachePolicy, defaultRtmpAutoPush, defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from './configuration/canonicalDefaults'
@@ -301,17 +302,6 @@ function validationResponse(config: CanonicalConfig, diagnostics: ConfigDiagnost
       overlays: [],
     },
   }
-}
-
-function deferred<T>(): {
-  promise: Promise<T>
-  resolve: (value: T) => void
-} {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise
-  })
-  return { promise, resolve }
 }
 
 function findButton(wrapper: VueWrapper, text: string) {

@@ -219,10 +219,13 @@ fn reusable_rtmp_callback_controls_expand_dynamic_call_site_prefixes() {
         .collect::<BTreeSet<_>>();
     assert_eq!(suffixes.len(), 13, "RTMP callback control suffixes");
 
-    let service_editor = read_source("ui/src/configuration/RtmpServiceEditor.vue");
-    let base_paths = component_field_paths(&service_editor, "RtmpCallbackEditor")
-        .into_iter()
-        .collect::<BTreeSet<_>>();
+    let base_paths = [
+        "ui/src/configuration/RtmpServiceEditor.vue",
+        "ui/src/configuration/RtmpServicePolicyEditor.vue",
+    ]
+    .into_iter()
+    .flat_map(|path| component_field_paths(&read_source(path), "RtmpCallbackEditor"))
+    .collect::<BTreeSet<_>>();
     assert_eq!(
         base_paths,
         BTreeSet::from([
@@ -381,7 +384,7 @@ fn serde_field_skipped(attributes: &[Attribute]) -> bool {
 }
 
 fn ui_registry_fields() -> BTreeSet<String> {
-    let source = read_source("ui/src/config.ts");
+    let source = read_source("ui/src/config/fieldRegistry.ts");
     let registry = source
         .split("export const CANONICAL_FIELD_REGISTRY = [")
         .nth(1)

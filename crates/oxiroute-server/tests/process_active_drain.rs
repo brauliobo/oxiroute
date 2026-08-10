@@ -10,6 +10,8 @@ mod http_support;
 mod process_support;
 #[path = "support/rtmp.rs"]
 mod rtmp_support;
+#[path = "support/sse.rs"]
+mod sse_support;
 #[path = "support/mod.rs"]
 mod wire_support;
 
@@ -18,6 +20,7 @@ use std::{
     fmt::Write as _,
     io,
     net::{Ipv4Addr, SocketAddr},
+    path::Path,
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
@@ -46,6 +49,7 @@ use config_support::{empty_config, socket_bind, socket_endpoint};
 use http_support::{HttpResponse, http_request};
 use process_support::{ServerProcess, reserve_tcp_address, write_config};
 use rtmp_support::RtmpWireClient;
+use sse_support::{open_event_stream, read_chunk};
 
 const TOKEN: &str = "7a89c4b6cefd8b4c11b6b4f9d1e6b5d0e8f1a2c3d4e5f60718293a4b5c6d7e8f";
 const WIRE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -200,7 +204,13 @@ async fn forward_h2_reload_sends_goaway_while_the_candidate_serves_new_connectio
     let management_address = reserve_tcp_address();
     let listener_address = reserve_tcp_address();
     let (origin_address, origin_task) = start_echo_upstream().await;
-    let mut initial = forward_h2_config(management_address, listener_address, origin_address);
+    let private_key = fixture_support::private_key_fixture("proxy-a-key.pem");
+    let mut initial = forward_h2_config(
+        management_address,
+        listener_address,
+        origin_address,
+        private_key.path(),
+    );
     let mut server = ServerProcess::start(&initial, Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(listener_address).await;
@@ -412,7 +422,8 @@ async fn event_sse_closes_with_a_bounded_shutdown_frame_and_releases_its_listene
     let mut server = ServerProcess::start(&config, Some(TOKEN));
     server.wait_for_tcp(management_address).await;
 
-    let (mut events, _) = open_event_stream(management_address).await;
+    let authorization = format!("Bearer {TOKEN}");
+    let (mut events, _) = open_event_stream(management_address, &authorization, None).await;
     let ready = read_chunk(&mut events).await;
     assert!(
         String::from_utf8_lossy(&ready).starts_with("event: ready\ndata: {\"cursor\":"),
@@ -522,6 +533,7 @@ fn forward_h2_config(
     management_address: SocketAddr,
     listener_address: SocketAddr,
     origin_address: SocketAddr,
+    private_key_path: &Path,
 ) -> Config {
     Config {
         management: Some(management(management_address)),
@@ -530,7 +542,7 @@ fn forward_h2_config(
             dns_names: vec![wire_support::PROXY_SERVER_NAME.into()],
             source: CertificateSource::Files {
                 certificate_chain_path: fixture_support::fixture("proxy-a.pem"),
-                private_key_path: fixture_support::fixture("proxy-a-key.pem"),
+                private_key_path: private_key_path.to_path_buf(),
             },
         }],
         tls_profiles: vec![TlsProfile {
@@ -925,52 +937,6 @@ async fn assert_no_rtmp_handshake(address: SocketAddr) {
         !matches!(outcome, Ok(Ok(_))),
         "new RTMP admission produced a handshake after drain"
     );
-}
-
-async fn open_event_stream(address: SocketAddr) -> (TcpStream, Vec<u8>) {
-    let mut stream = TcpStream::connect(address).await.expect("SSE connection");
-    stream
-        .write_all(
-            format!(
-                "GET /api/v1/events/stream HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
-            )
-            .as_bytes(),
-        )
-        .await
-        .expect("SSE request");
-    let mut head = Vec::new();
-    let mut byte = [0_u8; 1];
-    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
-        stream
-            .read_exact(&mut byte)
-            .await
-            .expect("SSE response headers");
-        head.push(byte[0]);
-    }
-    (stream, head)
-}
-
-async fn read_chunk(stream: &mut TcpStream) -> Vec<u8> {
-    let mut line = Vec::new();
-    let mut byte = [0_u8; 1];
-    while !line.ends_with(b"\r\n") {
-        stream.read_exact(&mut byte).await.expect("SSE chunk size");
-        line.push(byte[0]);
-    }
-    let size = usize::from_str_radix(
-        std::str::from_utf8(&line[..line.len() - 2]).expect("SSE chunk size UTF-8"),
-        16,
-    )
-    .expect("SSE chunk size");
-    let mut body = vec![0_u8; size];
-    stream.read_exact(&mut body).await.expect("SSE chunk body");
-    let mut terminator = [0_u8; 2];
-    stream
-        .read_exact(&mut terminator)
-        .await
-        .expect("SSE chunk terminator");
-    assert_eq!(terminator, *b"\r\n");
-    body
 }
 
 fn assert_listener_released<const N: usize>(addresses: [SocketAddr; N]) {
