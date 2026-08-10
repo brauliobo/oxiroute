@@ -16,6 +16,7 @@ use openssl::{rand::rand_bytes, symm};
 use crate::{
     MediaEvent, MediaEventKind, PublisherIncarnation, StreamKey,
     dash_segmenter::{DashOutputConfig, DashSegmenter},
+    media_parser::{parse_aac_configuration, parse_avc_configuration},
     media_storage::{MediaStore, MediaStoreError},
 };
 
@@ -1010,68 +1011,31 @@ fn encrypt_segment(key: &[u8; 16], sequence: u64, bytes: &[u8]) -> Vec<u8> {
 }
 
 fn parse_aac_config(payload: &[u8]) -> Option<AacConfig> {
-    if payload.len() < 4 || payload[0] >> 4 != 10 || payload[1] != 0 {
-        return None;
-    }
-    let first = payload[2];
-    let second = payload[3];
-    let object_type = first >> 3;
-    let sample_rate_index = ((first & 0x07) << 1) | (second >> 7);
-    let channel_configuration = (second >> 3) & 0x0f;
-    if !(1..=4).contains(&object_type)
-        || sample_rate_index == 15
-        || sample_rate_index == 0
-        || channel_configuration == 0
-        || channel_configuration > 6
+    let parsed = parse_aac_configuration(payload)?;
+    if !(1..=4).contains(&parsed.audio_object_type)
+        || parsed.sample_rate_index == 15
+        || parsed.sample_rate_index == 0
+        || parsed.channel_configuration == 0
+        || parsed.channel_configuration > 6
     {
         return None;
     }
     Some(AacConfig {
-        profile: object_type.saturating_sub(1),
-        sample_rate_index,
-        channel_configuration,
+        profile: parsed.audio_object_type.saturating_sub(1),
+        sample_rate_index: parsed.sample_rate_index,
+        channel_configuration: parsed.channel_configuration,
     })
 }
 
 fn parse_avc_config(payload: &[u8]) -> Option<AvcConfig> {
-    if payload.len() < 11 || payload[0] & 0x0f != 7 || payload[1] != 0 || payload[5] != 1 {
-        return None;
-    }
-    let nal_length_size = usize::from(payload[9] & 0x03) + 1;
-    let mut cursor = 10;
-    let sps_count = usize::from(payload[cursor] & 0x1f);
-    cursor += 1;
-    let mut sps = Vec::with_capacity(sps_count.min(4));
-    for _ in 0..sps_count {
-        let length = usize::from(u16::from_be_bytes([
-            *payload.get(cursor)?,
-            *payload.get(cursor + 1)?,
-        ]));
-        cursor = cursor.checked_add(2)?;
-        let end = cursor.checked_add(length)?;
-        sps.push(payload.get(cursor..end)?.to_vec());
-        cursor = end;
-    }
-    let pps_count = usize::from(*payload.get(cursor)?);
-    cursor += 1;
-    let mut pps = Vec::with_capacity(pps_count.min(4));
-    for _ in 0..pps_count {
-        let length = usize::from(u16::from_be_bytes([
-            *payload.get(cursor)?,
-            *payload.get(cursor + 1)?,
-        ]));
-        cursor = cursor.checked_add(2)?;
-        let end = cursor.checked_add(length)?;
-        pps.push(payload.get(cursor..end)?.to_vec());
-        cursor = end;
-    }
-    if sps.is_empty() || pps.is_empty() {
+    let parsed = parse_avc_configuration(payload)?;
+    if parsed.sps.is_empty() || parsed.pps.is_empty() {
         return None;
     }
     Some(AvcConfig {
-        nal_length_size,
-        sps,
-        pps,
+        nal_length_size: parsed.nal_length_size,
+        sps: parsed.sps.into_iter().map(Vec::from).collect(),
+        pps: parsed.pps.into_iter().map(Vec::from).collect(),
     })
 }
 
