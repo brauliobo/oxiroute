@@ -11,6 +11,7 @@ use pingora::{apps::http_app::ServeHttp, protocols::http::ServerSession};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::html::escape_html;
 use crate::{
     ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics,
     prometheus::render_prometheus,
@@ -860,19 +861,6 @@ fn token_error() -> io::Error {
         io::ErrorKind::PermissionDenied,
         "statistics admin token could not be loaded securely",
     )
-}
-
-fn escape_html(output: &mut String, value: &str) {
-    for character in value.chars() {
-        match character {
-            '&' => output.push_str("&amp;"),
-            '<' => output.push_str("&lt;"),
-            '>' => output.push_str("&gt;"),
-            '"' => output.push_str("&quot;"),
-            '\'' => output.push_str("&#39;"),
-            character => output.push(character),
-        }
-    }
 }
 
 #[cfg(test)]

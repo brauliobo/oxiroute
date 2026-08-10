@@ -6,6 +6,7 @@ mod encoding;
 mod forward_proxy;
 mod generation;
 mod health;
+mod html;
 mod http3;
 mod http3_upstream;
 mod http_action;

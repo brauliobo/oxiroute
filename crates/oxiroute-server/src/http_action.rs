@@ -1907,7 +1907,9 @@ fn render_autoindex(
     );
     for entry in entries {
         let href = percent_encode_path_segment(&entry.name);
-        let label = html_escape(&String::from_utf8_lossy(&entry.name));
+        let label_value = String::from_utf8_lossy(&entry.name);
+        let mut label = String::with_capacity(label_value.len());
+        crate::html::escape_html(&mut label, &label_value);
         let suffix = if entry.directory { "/" } else { "" };
         let modified = autoindex_time(entry.modified, local_time);
         let size = if entry.directory {
@@ -1968,21 +1970,6 @@ fn percent_encode_path_segment(value: &[u8]) -> String {
         }
     }
     encoded
-}
-
-fn html_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            _ => escaped.push(character),
-        }
-    }
-    escaped
 }
 
 fn same_file_snapshot(first: &rustix_fs::Stat, second: &rustix_fs::Stat) -> bool {
