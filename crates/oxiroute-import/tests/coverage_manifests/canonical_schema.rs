@@ -210,6 +210,40 @@ fn forward_proxy_cache_uses_the_serialized_wire_path() {
     );
 }
 
+#[test]
+fn reusable_rtmp_callback_controls_expand_dynamic_call_site_prefixes() {
+    let callback_editor = read_source("ui/src/configuration/RtmpCallbackEditor.vue");
+    let suffixes = callback_editor
+        .lines()
+        .flat_map(extract_dynamic_field_suffixes)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(suffixes.len(), 13, "RTMP callback control suffixes");
+
+    let service_editor = read_source("ui/src/configuration/RtmpServiceEditor.vue");
+    let base_paths = component_field_paths(&service_editor, "RtmpCallbackEditor")
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        base_paths,
+        BTreeSet::from([
+            "rtmp_services[].applications[].callbacks".to_owned(),
+            "rtmp_services[].callbacks".to_owned(),
+        ]),
+        "RTMP callback component call-site prefixes"
+    );
+
+    let controls = ui_control_fields();
+    for base in base_paths {
+        for suffix in &suffixes {
+            let path = format!("{base}{suffix}");
+            assert!(
+                controls.contains(&path),
+                "missing expanded control `{path}`"
+            );
+        }
+    }
+}
+
 fn collect_ui_type(
     schema: &syn::File,
     type_name: &str,
@@ -403,25 +437,27 @@ fn ui_control_fields() -> BTreeSet<String> {
         })
         .collect::<BTreeSet<_>>();
 
-    let cache_editor = sources
-        .iter()
-        .find(|(path, _)| path.ends_with("HttpCachePolicyEditor.vue"))
-        .map(|(_, source)| source)
-        .expect("locate reusable HTTP cache editor");
-    let dynamic_suffixes = cache_editor
-        .lines()
-        .flat_map(extract_dynamic_field_suffixes)
-        .collect::<BTreeSet<_>>();
-    let cache_base_paths = sources
-        .iter()
-        .flat_map(|(_, source)| component_field_paths(source, "HttpCachePolicyEditor"))
-        .collect::<BTreeSet<_>>();
-    for base in cache_base_paths {
-        controls.extend(
-            dynamic_suffixes
-                .iter()
-                .map(|suffix| format!("{base}{suffix}")),
-        );
+    for component in ["HttpCachePolicyEditor", "RtmpCallbackEditor"] {
+        let editor_name = format!("{component}.vue");
+        let (_, editor) = sources
+            .iter()
+            .find(|(path, _)| path.ends_with(&editor_name))
+            .unwrap_or_else(|| panic!("locate reusable {component}"));
+        let dynamic_suffixes = editor
+            .lines()
+            .flat_map(extract_dynamic_field_suffixes)
+            .collect::<BTreeSet<_>>();
+        let base_paths = sources
+            .iter()
+            .flat_map(|(_, source)| component_field_paths(source, component))
+            .collect::<BTreeSet<_>>();
+        for base in base_paths {
+            controls.extend(
+                dynamic_suffixes
+                    .iter()
+                    .map(|suffix| format!("{base}{suffix}")),
+            );
+        }
     }
     controls
 }
