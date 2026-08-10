@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     io,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     sync::Arc,
     thread::{self, JoinHandle},
     time::Duration,
@@ -38,11 +38,13 @@ use crate::{
     ListenerMetrics, ListenerReservation, ListenerRuntimeState, RuntimeGeneration, RuntimeMode,
     RuntimeReferenceKind, TlsProfilePlan,
     http_action::{
-        HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RedirectLocationPlan,
-        RequestHeaderMutationPlan, RequestHeaderValuePlan, StaticErrorTarget, StaticFile,
-        StaticRequestDecision, StaticServeError, StaticTarget,
+        HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget,
+        StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
     },
-    http_policy::{RedirectContext, expand_redirect_location, normalized_redirect_host},
+    http_policy::{
+        RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
+        decide_request_header, expand_redirect_location, normalized_redirect_host,
+    },
     http_proxy::{
         apply_response_policy_map, remove_upstream_hop_by_hop_response_headers_map,
         rewrite_upstream_path, selected_upstream_host,
@@ -993,6 +995,20 @@ where
             return send_h3_static_request(stream, files, request, deadline).await;
         }
         HttpActionPlan::Proxy(proxy) => {
+            let request_header_decisions =
+                match h3_request_header_decisions(request, authority, &proxy.policy, client_addr) {
+                    Ok(decisions) => decisions,
+                    Err(_) => {
+                        return send_h3_error(
+                            stream,
+                            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                            b"request header policy expansion failed\n",
+                            deadline,
+                        )
+                        .await
+                        .then_some(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE.as_u16());
+                    }
+                };
             if proxy.pool.h3().is_none() {
                 return send_h3_error(
                     stream,
@@ -1091,9 +1107,9 @@ where
                 request,
                 authority,
                 proxy,
+                &request_header_decisions,
                 body,
                 metrics,
-                client_addr,
                 deadline,
                 shutdown,
             )
@@ -1108,9 +1124,9 @@ async fn dispatch_h3_upstream_request<S>(
     request: &Request<()>,
     authority: &Authority,
     proxy: &ProxyActionPlan,
+    request_header_decisions: &[RequestHeaderDecision],
     body: Bytes,
     metrics: &ListenerMetrics,
-    client_addr: Option<SocketAddr>,
     deadline: Instant,
     mut shutdown: watch::Receiver<bool>,
 ) -> Option<u16>
@@ -1190,10 +1206,9 @@ where
         let Ok(upstream_request) = build_h3_upstream_request(
             request,
             body.len(),
-            authority,
             &selected_host,
             &proxy.policy,
-            client_addr,
+            request_header_decisions,
         ) else {
             last_error = H3UpstreamError::Protocol;
             break;
@@ -1440,10 +1455,9 @@ where
 fn build_h3_upstream_request(
     request: &Request<()>,
     body_length: usize,
-    authority: &Authority,
     selected_host: &HeaderValue,
     policy: &ProxyPolicyPlan,
-    client_addr: Option<SocketAddr>,
+    request_header_decisions: &[RequestHeaderDecision],
 ) -> Result<Request<()>, ()> {
     let mut uri = request.uri().clone();
     if let Some(rewrite) = &policy.upstream_path_rewrite {
@@ -1480,14 +1494,7 @@ fn build_h3_upstream_request(
         CONTENT_LENGTH,
         HeaderValue::from_str(&body_length.to_string()).map_err(|_| ())?,
     );
-    apply_h3_header_mutations(
-        request,
-        &mut headers,
-        authority,
-        policy,
-        client_addr,
-        selected_host,
-    )?;
+    apply_h3_header_mutations(&mut headers, request_header_decisions, selected_host)?;
     let mut output = Request::builder()
         .method(request.method().clone())
         .uri(uri)
@@ -1499,81 +1506,49 @@ fn build_h3_upstream_request(
 }
 
 fn apply_h3_header_mutations(
-    incoming: &Request<()>,
     headers: &mut HeaderMap,
-    authority: &Authority,
-    policy: &ProxyPolicyPlan,
-    client_addr: Option<SocketAddr>,
+    decisions: &[RequestHeaderDecision],
     selected_upstream_host: &HeaderValue,
 ) -> Result<(), ()> {
-    for mutation in &policy.request_headers {
-        if mutation.is_pingora_managed_upgrade() {
-            continue;
-        }
-        match mutation {
-            RequestHeaderMutationPlan::Remove { name } => {
+    for decision in decisions {
+        match decision {
+            RequestHeaderDecision::Remove(name) => {
                 headers.remove(name);
             }
-            RequestHeaderMutationPlan::Set { name, value } => {
-                let value = match value {
-                    RequestHeaderValuePlan::Literal(value) => value.clone(),
-                    RequestHeaderValuePlan::IncomingAuthority => {
-                        HeaderValue::from_str(authority.as_str()).map_err(|_| ())?
-                    }
-                    RequestHeaderValuePlan::NormalizedHost => {
-                        HeaderValue::from_str(&normalized_h3_host(authority).unwrap_or_default())
-                            .map_err(|_| ())?
-                    }
-                    RequestHeaderValuePlan::NginxHost { fallback } => {
-                        nginx_h3_host(authority).unwrap_or_else(|| fallback.clone())
-                    }
-                    RequestHeaderValuePlan::ClientIp => {
-                        HeaderValue::from_str(&client_addr.ok_or(())?.ip().to_string())
-                            .map_err(|_| ())?
-                    }
-                    RequestHeaderValuePlan::AppendedXForwardedFor {
-                        max_bytes,
-                        except_source_cidrs,
-                    } => {
-                        if client_addr.is_some_and(|address| {
-                            except_source_cidrs
-                                .iter()
-                                .any(|cidr| cidr.contains(address.ip()))
-                        }) {
-                            continue;
-                        }
-                        let mut value = joined_h3_headers(
-                            incoming.headers(),
-                            &HeaderName::from_static("x-forwarded-for"),
-                            *max_bytes,
-                        )?
-                        .unwrap_or_default();
-                        if let Some(address) = client_addr {
-                            if !value.is_empty() {
-                                value.extend_from_slice(b", ");
-                            }
-                            value.extend_from_slice(address.ip().to_string().as_bytes());
-                        }
-                        if value.len() > *max_bytes {
-                            return Err(());
-                        }
-                        HeaderValue::from_bytes(&value).map_err(|_| ())?
-                    }
-                    RequestHeaderValuePlan::DownstreamScheme => HeaderValue::from_static("https"),
-                    RequestHeaderValuePlan::IncomingHeader { name, max_bytes } => {
-                        HeaderValue::from_bytes(
-                            &joined_h3_headers(incoming.headers(), name, *max_bytes)?
-                                .unwrap_or_default(),
-                        )
-                        .map_err(|_| ())?
-                    }
-                    RequestHeaderValuePlan::SelectedUpstreamHost => selected_upstream_host.clone(),
+            RequestHeaderDecision::Set { name, value } => {
+                let Some(value) = value
+                    .complete(Some(selected_upstream_host))
+                    .map_err(|_| ())?
+                else {
+                    continue;
                 };
                 headers.insert(name.clone(), value);
             }
         }
     }
     Ok(())
+}
+
+fn h3_request_header_decisions(
+    request: &Request<()>,
+    authority: &Authority,
+    policy: &ProxyPolicyPlan,
+    client_addr: Option<SocketAddr>,
+) -> Result<Box<[RequestHeaderDecision]>, RequestPolicyError> {
+    let context = RequestPolicyContext {
+        authority: Some(authority),
+        downstream_scheme: "https",
+        client_ip: client_addr.map(|address| address.ip()),
+        incoming_headers: request.headers(),
+    };
+    let mut decisions = Vec::with_capacity(policy.request_headers.len());
+    for mutation in &policy.request_headers {
+        if mutation.is_pingora_managed_upgrade() {
+            continue;
+        }
+        decisions.push(decide_request_header(mutation, context)?);
+    }
+    Ok(decisions.into_boxed_slice())
 }
 
 fn request_deadline(
@@ -2269,53 +2244,6 @@ fn h3_redirect_location(
     )
 }
 
-fn joined_h3_headers(
-    headers: &HeaderMap,
-    name: &HeaderName,
-    max_bytes: usize,
-) -> Result<Option<Vec<u8>>, ()> {
-    let mut joined = Vec::new();
-    for value in headers.get_all(name) {
-        if !joined.is_empty() {
-            joined.extend_from_slice(b", ");
-        }
-        if joined.len().saturating_add(value.as_bytes().len()) > max_bytes {
-            return Err(());
-        }
-        joined.extend_from_slice(value.as_bytes());
-    }
-    Ok((!joined.is_empty()).then_some(joined))
-}
-
-fn normalized_h3_host(authority: &Authority) -> Option<String> {
-    let host = authority.host();
-    let unbracketed = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
-    unbracketed
-        .parse::<IpAddr>()
-        .map(|ip| ip.to_string())
-        .ok()
-        .or_else(|| Some(host.to_ascii_lowercase()))
-}
-
-fn nginx_h3_host(authority: &Authority) -> Option<HeaderValue> {
-    let host = authority.host();
-    let unbracketed = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
-    let value = unbracketed.parse::<IpAddr>().map_or_else(
-        |_| host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase(),
-        |ip| match ip {
-            IpAddr::V4(ip) => ip.to_string(),
-            IpAddr::V6(ip) => format!("[{ip}]"),
-        },
-    );
-    HeaderValue::from_str(&value).ok()
-}
-
 fn unix_time_ms() -> Option<u64> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2743,12 +2671,16 @@ mod tests {
             .headers_mut()
             .append("x-source", HeaderValue::from_static("two"));
         let mut headers = incoming.headers().clone();
-        apply_h3_header_mutations(
+        let decisions = h3_request_header_decisions(
             &incoming,
-            &mut headers,
             &authority,
             &policy,
             Some("127.0.0.1:1234".parse().unwrap()),
+        )
+        .expect("H3 request decisions");
+        apply_h3_header_mutations(
+            &mut headers,
+            &decisions,
             &HeaderValue::from_static("selected.example:9443"),
         )
         .expect("H3 request values");
@@ -2782,12 +2714,16 @@ mod tests {
             ..HttpProxyPolicy::default()
         });
         let mut excepted_headers = incoming.headers().clone();
-        apply_h3_header_mutations(
+        let decisions = h3_request_header_decisions(
             &incoming,
-            &mut excepted_headers,
             &authority,
             &excepted,
             Some("127.0.0.1:1234".parse().unwrap()),
+        )
+        .expect("excepted H3 request decisions");
+        apply_h3_header_mutations(
+            &mut excepted_headers,
+            &decisions,
             &HeaderValue::from_static("selected.example:9443"),
         )
         .expect("excepted H3 request values");
@@ -2796,20 +2732,47 @@ mod tests {
 
     #[test]
     fn h3_join_bounds_include_inserted_separators() {
-        let name = HeaderName::from_static("x-source");
-        let mut headers = HeaderMap::new();
-        headers.append(name.clone(), HeaderValue::from_static("abc"));
-        headers.append(name.clone(), HeaderValue::from_static(""));
+        let authority = "example.test".parse().unwrap();
+        let mut incoming = Request::builder()
+            .uri("https://example.test/")
+            .header("x-source", "abc")
+            .body(())
+            .unwrap();
+        incoming
+            .headers_mut()
+            .append("x-source", HeaderValue::from_static("de"));
+        let policy = |max_bytes| {
+            ProxyPolicyPlan::compile(&HttpProxyPolicy {
+                request_headers: vec![HttpRequestHeaderMutation::Set {
+                    name: "x-joined".into(),
+                    value: HttpRequestHeaderValue::IncomingHeader {
+                        name: "x-source".into(),
+                        max_bytes,
+                    },
+                }],
+                ..HttpProxyPolicy::default()
+            })
+        };
+
+        let exact = policy(7);
+        let decisions = h3_request_header_decisions(&incoming, &authority, &exact, None).unwrap();
+        let mut headers = incoming.headers().clone();
+        apply_h3_header_mutations(
+            &mut headers,
+            &decisions,
+            &HeaderValue::from_static("selected.test"),
+        )
+        .unwrap();
+        assert_eq!(headers["x-joined"], "abc, de");
 
         assert_eq!(
-            joined_h3_headers(&headers, &name, 5),
-            Ok(Some(b"abc, ".to_vec()))
+            h3_request_header_decisions(&incoming, &authority, &policy(6), None),
+            Err(RequestPolicyError::SourceTooLarge)
         );
-        assert_eq!(joined_h3_headers(&headers, &name, 4), Err(()));
     }
 
     #[test]
-    fn h3_missing_peer_xff_currently_inserts_an_empty_value() {
+    fn h3_missing_peer_xff_is_noop_without_an_existing_value() {
         let authority = "example.test".parse().unwrap();
         let selected = HeaderValue::from_static("selected.test");
         let policy = ProxyPolicyPlan::compile(&HttpProxyPolicy {
@@ -2822,7 +2785,7 @@ mod tests {
             }],
             ..HttpProxyPolicy::default()
         });
-        for (existing, expected) in [(None, ""), (Some("trusted"), "trusted")] {
+        for (existing, expected) in [(None, None), (Some("trusted"), Some("trusted"))] {
             let mut incoming = Request::builder()
                 .uri("https://example.test/")
                 .body(())
@@ -2833,16 +2796,15 @@ mod tests {
                     .insert("x-forwarded-for", HeaderValue::from_static(existing));
             }
             let mut headers = incoming.headers().clone();
-            apply_h3_header_mutations(
-                &incoming,
-                &mut headers,
-                &authority,
-                &policy,
-                None,
-                &selected,
-            )
-            .unwrap();
-            assert_eq!(headers["x-forwarded-for"], expected);
+            let decisions =
+                h3_request_header_decisions(&incoming, &authority, &policy, None).unwrap();
+            apply_h3_header_mutations(&mut headers, &decisions, &selected).unwrap();
+            assert_eq!(
+                headers
+                    .get("x-forwarded-for")
+                    .and_then(|value| value.to_str().ok()),
+                expected
+            );
         }
     }
 
