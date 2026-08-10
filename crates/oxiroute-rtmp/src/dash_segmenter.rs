@@ -9,6 +9,7 @@ use std::{
 
 use crate::{
     MediaEvent, MediaEventKind, PublisherIncarnation, StreamKey,
+    media_parser::{parse_aac_configuration, parse_avc_configuration},
     media_storage::{MediaStore, MediaStoreError},
 };
 
@@ -989,91 +990,62 @@ fn append_full_box(output: &mut Vec<u8>, kind: [u8; 4], version_flags: u32, payl
 }
 
 fn parse_avc_config(payload: &[u8]) -> Option<AvcConfig> {
-    if payload.len() < 11 || payload[0] & 0x0f != 7 || payload[1] != 0 || payload[5] != 1 {
+    let parsed = parse_avc_configuration(payload)?;
+    if parsed.nal_length_size != 4
+        || parsed.sps.is_empty()
+        || parsed.sps.len() > MAX_CODEC_PARAMETER_SETS
+        || parsed.pps.is_empty()
+        || parsed.pps.len() > MAX_CODEC_PARAMETER_SETS
+        || !parsed.trailing.is_empty()
+    {
         return None;
     }
-    let nal_length_size = usize::from(payload[9] & 0x03) + 1;
-    if nal_length_size != 4 {
+    if parsed.sps.iter().any(|parameter_set| {
+        parameter_set.is_empty()
+            || parameter_set.len() > MAX_CODEC_PARAMETER_SET_BYTES
+            || parameter_set[0] & 0x1f != 7
+    }) || parsed.pps.iter().any(|parameter_set| {
+        parameter_set.is_empty()
+            || parameter_set.len() > MAX_CODEC_PARAMETER_SET_BYTES
+            || parameter_set[0] & 0x1f != 8
+    }) {
         return None;
     }
-    let mut cursor = 10;
-    let sps_count = usize::from(payload[cursor] & 0x1f);
-    cursor += 1;
-    if sps_count == 0 || sps_count > MAX_CODEC_PARAMETER_SETS {
-        return None;
-    }
-    let mut sps = Vec::with_capacity(sps_count);
-    for _ in 0..sps_count {
-        let length = usize::from(u16::from_be_bytes([
-            *payload.get(cursor)?,
-            *payload.get(cursor + 1)?,
-        ]));
-        cursor = cursor.checked_add(2)?;
-        if length == 0 || length > MAX_CODEC_PARAMETER_SET_BYTES {
-            return None;
-        }
-        let end = cursor.checked_add(length)?;
-        let parameter_set = payload.get(cursor..end)?.to_vec();
-        if parameter_set.first().copied()? & 0x1f != 7 {
-            return None;
-        }
-        sps.push(parameter_set);
-        cursor = end;
-    }
-    let pps_count = usize::from(*payload.get(cursor)?);
-    cursor += 1;
-    if pps_count == 0 || pps_count > MAX_CODEC_PARAMETER_SETS {
-        return None;
-    }
-    let mut pps = Vec::with_capacity(pps_count);
-    for _ in 0..pps_count {
-        let length = usize::from(u16::from_be_bytes([
-            *payload.get(cursor)?,
-            *payload.get(cursor + 1)?,
-        ]));
-        cursor = cursor.checked_add(2)?;
-        if length == 0 || length > MAX_CODEC_PARAMETER_SET_BYTES {
-            return None;
-        }
-        let end = cursor.checked_add(length)?;
-        let parameter_set = payload.get(cursor..end)?.to_vec();
-        if parameter_set.first().copied()? & 0x1f != 8 {
-            return None;
-        }
-        pps.push(parameter_set);
-        cursor = end;
-    }
-    (cursor == payload.len()).then_some(AvcConfig {
-        profile: payload[6],
-        compatibility: payload[7],
-        level: payload[8],
-        configuration_record: payload[5..].to_vec(),
+    Some(AvcConfig {
+        profile: parsed.profile,
+        compatibility: parsed.compatibility,
+        level: parsed.level,
+        configuration_record: parsed.configuration_record.to_vec(),
     })
 }
 
 fn parse_aac_config(payload: &[u8]) -> Option<AacConfig> {
-    if payload.len() < 4 || payload[0] >> 4 != 10 || payload[1] != 0 {
-        return None;
-    }
-    let first = payload[2];
-    let second = payload[3];
-    let audio_object_type = first >> 3;
-    let sample_rate_index = ((first & 0x07) << 1) | (second >> 7);
-    let channel_configuration = (second >> 3) & 0x0f;
+    let parsed = parse_aac_configuration(payload)?;
     let sample_rate = [
         96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025,
         8_000, 7_350,
     ]
-    .get(usize::from(sample_rate_index))
+    .get(usize::from(parsed.sample_rate_index))
     .copied()?;
-    if audio_object_type != 2 || channel_configuration == 0 || channel_configuration > 6 {
+    if parsed.audio_object_type != 2
+        || parsed.channel_configuration == 0
+        || parsed.channel_configuration > 6
+    {
         return None;
     }
+    let mut audio_specific_config = Vec::with_capacity(
+        parsed
+            .audio_specific_config
+            .len()
+            .saturating_add(parsed.trailing.len()),
+    );
+    audio_specific_config.extend_from_slice(parsed.audio_specific_config);
+    audio_specific_config.extend_from_slice(parsed.trailing);
     Some(AacConfig {
-        audio_object_type,
+        audio_object_type: parsed.audio_object_type,
         sample_rate,
-        channel_configuration,
-        audio_specific_config: payload[2..].to_vec(),
+        channel_configuration: parsed.channel_configuration,
+        audio_specific_config,
     })
 }
 
