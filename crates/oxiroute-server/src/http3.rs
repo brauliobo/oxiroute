@@ -2513,6 +2513,10 @@ impl ResolvesServerCert for QuicCertificateResolver {
 
 #[cfg(test)]
 mod tests {
+    use oxiroute_config::{
+        HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    };
+
     use super::*;
     use crate::{AdministrativeState, ListenerSnapshot};
 
@@ -2686,5 +2690,224 @@ mod tests {
         trailers.insert(CONTENT_LENGTH, HeaderValue::from_static("1"));
         sanitize_h3_trailers(&mut trailers).expect("safe H3 trailers");
         assert!(!trailers.contains_key(CONTENT_LENGTH));
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one request-value matrix keeps H3 policy behavior comparable"
+    )]
+    fn h3_request_values_join_fields_and_honor_source_exceptions() {
+        let policy = ProxyPolicyPlan::compile(&HttpProxyPolicy {
+            request_headers: vec![
+                HttpRequestHeaderMutation::Set {
+                    name: "x-literal".into(),
+                    value: HttpRequestHeaderValue::Literal {
+                        value: "literal".into(),
+                    },
+                },
+                HttpRequestHeaderMutation::Set {
+                    name: "x-authority".into(),
+                    value: HttpRequestHeaderValue::IncomingAuthority,
+                },
+                HttpRequestHeaderMutation::Set {
+                    name: "x-normalized".into(),
+                    value: HttpRequestHeaderValue::NormalizedHost,
+                },
+                HttpRequestHeaderMutation::Set {
+                    name: "x-nginx".into(),
+                    value: HttpRequestHeaderValue::NginxHost {
+                        fallback: "fallback.test".into(),
+                    },
+                },
+                HttpRequestHeaderMutation::Set {
+                    name: "x-client".into(),
+                    value: HttpRequestHeaderValue::ClientIp,
+                },
+                HttpRequestHeaderMutation::Set {
+                    name: "x-forwarded-for".into(),
+                    value: HttpRequestHeaderValue::AppendedXForwardedFor {
+                        max_bytes: 128,
+                        except_source_cidrs: Vec::new(),
+                    },
+                },
+                HttpRequestHeaderMutation::Set {
+                    name: "x-scheme".into(),
+                    value: HttpRequestHeaderValue::DownstreamScheme,
+                },
+                HttpRequestHeaderMutation::Set {
+                    name: "x-joined".into(),
+                    value: HttpRequestHeaderValue::IncomingHeader {
+                        name: "x-source".into(),
+                        max_bytes: 32,
+                    },
+                },
+                HttpRequestHeaderMutation::Set {
+                    name: "x-selected".into(),
+                    value: HttpRequestHeaderValue::SelectedUpstreamHost,
+                },
+                HttpRequestHeaderMutation::Remove {
+                    name: "x-remove".into(),
+                },
+            ],
+            ..HttpProxyPolicy::default()
+        });
+        let authority = "Client.Example.:8080"
+            .parse()
+            .expect("mixed-case authority");
+        let mut incoming = Request::builder()
+            .uri("https://Client.Example.:8080/path?q=1")
+            .header("x-forwarded-for", "trusted")
+            .header("x-source", "one")
+            .header("x-remove", "stale")
+            .body(())
+            .unwrap();
+        incoming
+            .headers_mut()
+            .append("x-source", HeaderValue::from_static("two"));
+        let mut headers = incoming.headers().clone();
+        apply_h3_header_mutations(
+            &incoming,
+            &mut headers,
+            &authority,
+            &policy,
+            Some("127.0.0.1:1234".parse().unwrap()),
+            &HeaderValue::from_static("selected.example:9443"),
+        )
+        .expect("H3 request values");
+        for (name, expected) in [
+            ("x-literal", "literal"),
+            ("x-authority", "Client.Example.:8080"),
+            ("x-normalized", "client.example."),
+            ("x-nginx", "client.example"),
+            ("x-client", "127.0.0.1"),
+            ("x-forwarded-for", "trusted, 127.0.0.1"),
+            ("x-scheme", "https"),
+            ("x-joined", "one, two"),
+            ("x-selected", "selected.example:9443"),
+        ] {
+            assert_eq!(
+                headers.get(name),
+                Some(&HeaderValue::from_static(expected)),
+                "{name}"
+            );
+        }
+        assert!(!headers.contains_key("x-remove"));
+
+        let excepted = ProxyPolicyPlan::compile(&HttpProxyPolicy {
+            request_headers: vec![HttpRequestHeaderMutation::Set {
+                name: "x-forwarded-for".into(),
+                value: HttpRequestHeaderValue::AppendedXForwardedFor {
+                    max_bytes: 128,
+                    except_source_cidrs: vec!["127.0.0.0/8".into()],
+                },
+            }],
+            ..HttpProxyPolicy::default()
+        });
+        let mut excepted_headers = incoming.headers().clone();
+        apply_h3_header_mutations(
+            &incoming,
+            &mut excepted_headers,
+            &authority,
+            &excepted,
+            Some("127.0.0.1:1234".parse().unwrap()),
+            &HeaderValue::from_static("selected.example:9443"),
+        )
+        .expect("excepted H3 request values");
+        assert_eq!(excepted_headers["x-forwarded-for"], "trusted");
+    }
+
+    #[test]
+    fn h3_join_bounds_include_inserted_separators() {
+        let name = HeaderName::from_static("x-source");
+        let mut headers = HeaderMap::new();
+        headers.append(name.clone(), HeaderValue::from_static("abc"));
+        headers.append(name.clone(), HeaderValue::from_static(""));
+
+        assert_eq!(
+            joined_h3_headers(&headers, &name, 5),
+            Ok(Some(b"abc, ".to_vec()))
+        );
+        assert_eq!(joined_h3_headers(&headers, &name, 4), Err(()));
+    }
+
+    #[test]
+    fn h3_missing_peer_xff_currently_inserts_an_empty_value() {
+        let authority = "example.test".parse().unwrap();
+        let selected = HeaderValue::from_static("selected.test");
+        let policy = ProxyPolicyPlan::compile(&HttpProxyPolicy {
+            request_headers: vec![HttpRequestHeaderMutation::Set {
+                name: "x-forwarded-for".into(),
+                value: HttpRequestHeaderValue::AppendedXForwardedFor {
+                    max_bytes: 128,
+                    except_source_cidrs: Vec::new(),
+                },
+            }],
+            ..HttpProxyPolicy::default()
+        });
+        for (existing, expected) in [(None, ""), (Some("trusted"), "trusted")] {
+            let mut incoming = Request::builder()
+                .uri("https://example.test/")
+                .body(())
+                .unwrap();
+            if let Some(existing) = existing {
+                incoming
+                    .headers_mut()
+                    .insert("x-forwarded-for", HeaderValue::from_static(existing));
+            }
+            let mut headers = incoming.headers().clone();
+            apply_h3_header_mutations(
+                &incoming,
+                &mut headers,
+                &authority,
+                &policy,
+                None,
+                &selected,
+            )
+            .unwrap();
+            assert_eq!(headers["x-forwarded-for"], expected);
+        }
+    }
+
+    #[test]
+    fn h3_redirect_templates_characterize_context_and_bounds() {
+        let authority = "Client.Example.:8443".parse().unwrap();
+        let uri = "/path/to?q=1".parse().unwrap();
+        let template = |value: &str| HttpRedirectLocation::RequestTemplate {
+            value: value.into(),
+            nginx_host_fallback: Some("fallback.test".into()),
+        };
+        for (location, expected) in [
+            (
+                template("$scheme://$host$request_uri"),
+                Some("https://client.example./path/to?q=1"),
+            ),
+            (template("$unknown"), None),
+        ] {
+            assert_eq!(
+                h3_redirect_location(&location, &authority, &uri)
+                    .as_ref()
+                    .and_then(|value| value.to_str().ok()),
+                expected
+            );
+        }
+        for (length, accepted) in [(8192, true), (8193, false)] {
+            let location = HttpRedirectLocation::Literal {
+                value: "x".repeat(length),
+            };
+            assert_eq!(
+                h3_redirect_location(&location, &authority, &uri).is_some(),
+                accepted,
+                "literal length {length}"
+            );
+        }
+        let boundary_uri = format!("/{}", "x".repeat(8191)).parse().unwrap();
+        assert!(
+            h3_redirect_location(&template("$request_uri"), &authority, &boundary_uri).is_some()
+        );
+        let oversized_uri = format!("/{}", "x".repeat(8192)).parse().unwrap();
+        assert!(
+            h3_redirect_location(&template("$request_uri"), &authority, &oversized_uri).is_none()
+        );
     }
 }

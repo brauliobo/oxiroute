@@ -23,10 +23,12 @@ use h3::{client::RequestStream, error::Code, proto::coding::BufMutExt as _, serv
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, Config, DownstreamTimeoutPolicy,
-    HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
-    HttpStaticMimePolicy, HttpStaticPathMapping, HttpVersion, HttpVersionPolicy, Listener,
-    ListenerBind, Management, Protocol, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamPool,
-    UpstreamTls, validate_config,
+    HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpPathSelector, HttpProxyPolicy,
+    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    HttpResponseHeaderMutation, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpSameSite,
+    HttpService, HttpStaticMimePolicy, HttpStaticPathMapping, HttpVersion, HttpVersionPolicy,
+    Listener, ListenerBind, Management, Protocol, TlsProfile, TlsVersion, UpstreamAlgorithm,
+    UpstreamPool, UpstreamTls, validate_config,
 };
 use quinn::crypto::rustls::{HandshakeData, QuicClientConfig, QuicServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
@@ -228,6 +230,286 @@ async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool() {
 
     let released = std::net::UdpSocket::bind(listener_address).expect("UDP listener release");
     drop(released);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn reverse_h3_characterizes_http_policy_parity_and_early_origin_contact() {
+    let origin_endpoint =
+        quinn::Endpoint::server(origin_server_config(), (Ipv4Addr::LOCALHOST, 0).into())
+            .expect("policy origin endpoint");
+    let origin_address = origin_endpoint.local_addr().expect("policy origin address");
+    let origin_task = tokio::spawn(async move {
+        let incoming = origin_endpoint
+            .accept()
+            .await
+            .expect("policy origin accept");
+        let connection = incoming.await.expect("policy origin connection");
+        let mut h3: Connection<_, Bytes> = h3::server::builder()
+            .build(h3_quinn::Connection::new(connection))
+            .await
+            .expect("policy origin H3 connection");
+        let resolver = h3
+            .accept()
+            .await
+            .expect("policy origin H3 accept")
+            .expect("policy origin request");
+        let (request, mut stream) = resolver.resolve_request().await.expect("policy request");
+        assert_eq!(request.uri().path(), "/proxy");
+        for (name, expected) in [
+            ("x-literal", "literal"),
+            ("x-forwarded-for", "trusted, 127.0.0.1"),
+            ("x-joined", "one, two"),
+            ("x-scheme", "https"),
+        ] {
+            assert_eq!(request.headers()[name], expected, "{name}");
+        }
+        assert!(
+            stream
+                .recv_data()
+                .await
+                .expect("policy request body")
+                .is_none()
+        );
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .header("content-length", "2")
+            .header("x-set", "upstream")
+            .header("x-add", "upstream")
+            .header("x-remove", "stale")
+            .header(
+                "set-cookie",
+                "sid=1; Path=/internal; Secure; SameSite=Strict",
+            )
+            .header("set-cookie", "other=2; Path=/internal")
+            .body(())
+            .expect("policy origin response");
+        stream
+            .send_response(response)
+            .await
+            .expect("policy response headers");
+        stream
+            .send_data(Bytes::from_static(b"ok"))
+            .await
+            .expect("policy response body");
+        stream.finish().await.expect("policy response finish");
+
+        if let Ok(Ok(Some(_))) = timeout(Duration::from_millis(300), h3.accept()).await {
+            panic!("redirect or bounded policy failure contacted the H3 origin");
+        }
+    });
+
+    let listener_address = reserve_udp_address();
+    let key = fixture_support::private_key_fixture("proxy-a-key.pem");
+    let policy = HttpProxyPolicy {
+        request_headers: vec![
+            HttpRequestHeaderMutation::Set {
+                name: "x-literal".into(),
+                value: HttpRequestHeaderValue::Literal {
+                    value: "literal".into(),
+                },
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-forwarded-for".into(),
+                value: HttpRequestHeaderValue::AppendedXForwardedFor {
+                    max_bytes: 128,
+                    except_source_cidrs: Vec::new(),
+                },
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-joined".into(),
+                value: HttpRequestHeaderValue::IncomingHeader {
+                    name: "x-source".into(),
+                    max_bytes: 8,
+                },
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-scheme".into(),
+                value: HttpRequestHeaderValue::DownstreamScheme,
+            },
+        ],
+        response_headers: vec![
+            HttpResponseHeaderMutation::Set {
+                name: "x-set".into(),
+                value: "policy".into(),
+                always: true,
+            },
+            HttpResponseHeaderMutation::Add {
+                name: "x-add".into(),
+                value: "policy".into(),
+                always: false,
+            },
+            HttpResponseHeaderMutation::Remove {
+                name: "x-remove".into(),
+            },
+        ],
+        response_cookie_path_rewrites: vec![HttpCookiePathRewrite {
+            from: "/internal".into(),
+            to: "/".into(),
+        }],
+        response_cookie_attributes: vec![HttpCookieAttributePolicy {
+            name: "sid".into(),
+            secure: Some(false),
+            http_only: Some(true),
+            same_site: Some(HttpSameSite::Lax),
+        }],
+        ..HttpProxyPolicy::default()
+    };
+    let service = HttpService {
+        name: "web".into(),
+        routes: vec![
+            HttpRoute {
+                host: None,
+                path: HttpPathSelector::Exact {
+                    value: "/proxy".into(),
+                },
+                methods: Vec::new(),
+                access_policy: None,
+                policy: HttpRoutePolicy {
+                    max_request_body_bytes: Some(64 * 1024),
+                    request_buffering: true,
+                    ..HttpRoutePolicy::default()
+                },
+                action: HttpRouteAction::Proxy {
+                    upstream_pool: "origin".into(),
+                    policy,
+                },
+            },
+            HttpRoute {
+                host: None,
+                path: HttpPathSelector::Exact {
+                    value: "/redirect".into(),
+                },
+                methods: Vec::new(),
+                access_policy: None,
+                policy: HttpRoutePolicy {
+                    max_request_body_bytes: Some(64 * 1024),
+                    request_buffering: true,
+                    ..HttpRoutePolicy::default()
+                },
+                action: HttpRouteAction::Redirect {
+                    status: 308,
+                    location: HttpRedirectLocation::RequestTemplate {
+                        value: "$scheme://$host$request_uri".into(),
+                        nginx_host_fallback: None,
+                    },
+                    headers: Vec::new(),
+                },
+            },
+        ],
+        automatic_response_headers: true,
+        upstream_io_timeout_ms: 5_000,
+        max_request_body_bytes: Some(64 * 1024),
+        gzip: None,
+        access_log: None,
+    };
+    let config = reverse_config(
+        listener_address,
+        key.path(),
+        service,
+        vec![h3_pool(origin_address)],
+        Some(8),
+    );
+    let server = process_support::ServerProcess::start(&config, None);
+    let endpoint = client_endpoint().expect("policy H3 client endpoint");
+    let connection = connect_h3(&endpoint, listener_address).await;
+    let (driver, mut sender) = h3::client::new(h3_quinn::Connection::new(connection))
+        .await
+        .expect("policy H3 client connection");
+    let driver = drive_client(driver);
+
+    let mut request = Request::builder()
+        .uri("https://Client.Example.:8443/proxy")
+        .header("x-forwarded-for", "trusted")
+        .header("x-source", "one")
+        .body(())
+        .expect("policy H3 request");
+    request
+        .headers_mut()
+        .append("x-source", HeaderValue::from_static("two"));
+    let mut stream = sender
+        .send_request(request)
+        .await
+        .expect("send policy request");
+    stream.finish().await.expect("finish policy request");
+    let response = stream.recv_response().await.expect("policy response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-set"], "policy");
+    assert_eq!(
+        response
+            .headers()
+            .get_all("x-add")
+            .iter()
+            .map(HeaderValue::as_bytes)
+            .collect::<Vec<_>>(),
+        [b"upstream".as_slice(), b"policy".as_slice()]
+    );
+    assert!(!response.headers().contains_key("x-remove"));
+    assert_eq!(
+        response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .map(HeaderValue::as_bytes)
+            .collect::<Vec<_>>(),
+        [
+            b"sid=1; Path=/; SameSite=Lax; HttpOnly".as_slice(),
+            b"other=2; Path=/".as_slice(),
+        ]
+    );
+    assert_eq!(recv_body(&mut stream).await.as_ref(), b"ok");
+
+    let mut redirect = sender
+        .send_request(
+            Request::builder()
+                .uri("https://Actions.Example.:8443/redirect?next=1")
+                .body(())
+                .unwrap(),
+        )
+        .await
+        .expect("send redirect request");
+    redirect.finish().await.expect("finish redirect request");
+    let response = redirect.recv_response().await.expect("redirect response");
+    assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(
+        response.headers()[http::header::LOCATION],
+        "https://actions.example./redirect?next=1"
+    );
+    assert!(recv_body(&mut redirect).await.is_empty());
+
+    let mut rejected = sender
+        .send_request(
+            Request::builder()
+                .uri("https://client.example/proxy")
+                .header("x-source", "123456789")
+                .body(())
+                .unwrap(),
+        )
+        .await
+        .expect("send bounded policy request");
+    rejected
+        .finish()
+        .await
+        .expect("finish bounded policy request");
+    assert_eq!(
+        rejected
+            .recv_response()
+            .await
+            .expect("bounded policy response")
+            .status(),
+        StatusCode::BAD_GATEWAY,
+        "current H3 drift: policy expansion failure is 502; Pingora returns 431"
+    );
+    let _ = recv_body(&mut rejected).await;
+
+    origin_task.await.expect("policy origin task");
+    drop(stream);
+    drop(redirect);
+    drop(rejected);
+    drop(sender);
+    endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
+    driver.await.expect("policy H3 driver task");
+    server.shutdown_gracefully();
 }
 
 #[tokio::test]

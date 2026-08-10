@@ -3130,6 +3130,7 @@ mod tests {
     use std::{
         collections::HashMap,
         net::SocketAddr,
+        os::fd::AsRawFd as _,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -3138,10 +3139,16 @@ mod tests {
     };
 
     use oxiroute_config::{
-        HttpProxyPathRewrite, HttpProxyPolicy, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-        HttpResponseHeaderMutation, HttpRetryPolicy, UpstreamAlgorithm, UpstreamConnectionReuse,
+        HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpProxyPathRewrite, HttpProxyPolicy,
+        HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+        HttpResponseHeaderMutation, HttpRetryPolicy, HttpSameSite, UpstreamAlgorithm,
+        UpstreamConnectionReuse,
     };
-    use pingora::{protocols::Stream, proxy::Session, upstreams::peer::Peer};
+    use pingora::{
+        protocols::{GetSocketDigest as _, SocketDigest, Stream},
+        proxy::Session,
+        upstreams::peer::Peer,
+    };
     use tokio::io::AsyncWriteExt as _;
     use tokio::net::{TcpListener, TcpStream};
 
@@ -3283,9 +3290,9 @@ mod tests {
             .write_all(request)
             .await
             .expect("write downstream request");
-        let mut session = Session::new_h1(Box::new(pingora::protocols::l4::stream::Stream::from(
-            downstream,
-        )));
+        let mut downstream = pingora::protocols::l4::stream::Stream::from(downstream);
+        downstream.set_socket_digest(SocketDigest::from_raw_fd(downstream.as_raw_fd()));
+        let mut session = Session::new_h1(Box::new(downstream));
         session
             .read_request()
             .await
@@ -3435,6 +3442,378 @@ mod tests {
             unix_request_session(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n").await;
         assert!(bounded_request_header_sources(&session, &route));
         assert_eq!(appended_x_forwarded_for(&session, 128).unwrap(), None);
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one request-value matrix keeps Pingora policy behavior comparable"
+    )]
+    async fn pingora_request_values_join_fields_and_honor_source_exceptions() {
+        let request_headers = vec![
+            HttpRequestHeaderMutation::Set {
+                name: "x-literal".into(),
+                value: HttpRequestHeaderValue::Literal {
+                    value: "literal".into(),
+                },
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-authority".into(),
+                value: HttpRequestHeaderValue::IncomingAuthority,
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-normalized".into(),
+                value: HttpRequestHeaderValue::NormalizedHost,
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-nginx".into(),
+                value: HttpRequestHeaderValue::NginxHost {
+                    fallback: "fallback.test".into(),
+                },
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-client".into(),
+                value: HttpRequestHeaderValue::ClientIp,
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-forwarded-for".into(),
+                value: HttpRequestHeaderValue::AppendedXForwardedFor {
+                    max_bytes: 128,
+                    except_source_cidrs: Vec::new(),
+                },
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-scheme".into(),
+                value: HttpRequestHeaderValue::DownstreamScheme,
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-joined".into(),
+                value: HttpRequestHeaderValue::IncomingHeader {
+                    name: "x-source".into(),
+                    max_bytes: 32,
+                },
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-selected".into(),
+                value: HttpRequestHeaderValue::SelectedUpstreamHost,
+            },
+            HttpRequestHeaderMutation::Remove {
+                name: "x-remove".into(),
+            },
+        ];
+        let policy = HttpProxyPolicy {
+            request_headers,
+            ..HttpProxyPolicy::default()
+        };
+        let (proxy, mut session, mut context, _client) = request_preparation_fixture(
+            policy,
+            UpstreamConnectionReuse::Safe,
+            b"GET / HTTP/1.1\r\nHost: Client.Example.:8080\r\nX-Forwarded-For: trusted\r\nX-Source: one\r\nX-Source: two\r\nX-Remove: stale\r\n\r\n",
+        )
+        .await;
+        context.authority = Some(
+            "Client.Example.:8080"
+                .parse()
+                .expect("mixed-case authority"),
+        );
+
+        let PreparedUpstreamRequest::Owned(request) = proxy
+            .prepare_upstream_request(&mut session, &mut context)
+            .await
+            .expect("prepare request values")
+        else {
+            panic!("request policy requires owned preparation")
+        };
+        for (name, expected) in [
+            ("x-literal", "literal"),
+            ("x-authority", "Client.Example.:8080"),
+            ("x-normalized", "client.example."),
+            ("x-nginx", "client.example"),
+            ("x-client", "127.0.0.1"),
+            ("x-forwarded-for", "trusted, 127.0.0.1"),
+            ("x-scheme", "http"),
+            ("x-joined", "one, two"),
+            ("x-selected", "example.test"),
+        ] {
+            assert_eq!(
+                request.headers.get(name),
+                Some(&HeaderValue::from_static(expected)),
+                "{name}"
+            );
+        }
+        assert!(!request.headers.contains_key("x-remove"));
+
+        let excepted = HttpProxyPolicy {
+            request_headers: vec![HttpRequestHeaderMutation::Set {
+                name: "x-forwarded-for".into(),
+                value: HttpRequestHeaderValue::AppendedXForwardedFor {
+                    max_bytes: 128,
+                    except_source_cidrs: vec!["127.0.0.0/8".into()],
+                },
+            }],
+            ..HttpProxyPolicy::default()
+        };
+        let (_proxy, session, context, _client) = request_preparation_fixture(
+            excepted,
+            UpstreamConnectionReuse::Safe,
+            b"GET / HTTP/1.1\r\nHost: example.test\r\nX-Forwarded-For: trusted\r\n\r\n",
+        )
+        .await;
+        let mut request = session.req_header().clone();
+        apply_request_header_mutations(&session, &mut request, &context)
+            .expect("excepted request mutation");
+        assert_eq!(request.headers["x-forwarded-for"], "trusted");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pingora_join_bounds_include_inserted_separators() {
+        let (mut session, _client) =
+            unix_request_session(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n").await;
+        let name = HeaderName::from_static("x-source");
+        session
+            .req_header_mut()
+            .append_header(name.clone(), "abc")
+            .unwrap();
+        session
+            .req_header_mut()
+            .append_header(name.clone(), "")
+            .unwrap();
+
+        assert_eq!(
+            joined_header_values(session.req_header(), &name, 5).unwrap(),
+            Some(b"abc, ".to_vec())
+        );
+        assert!(joined_header_values(session.req_header(), &name, 4).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pingora_redirect_templates_characterize_context_and_bounds() {
+        let (session, _client) =
+            unix_request_session(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n").await;
+        let template =
+            |value: &str, fallback: Option<&str>| HttpRedirectLocation::RequestTemplate {
+                value: value.into(),
+                nginx_host_fallback: fallback.map(str::to_owned),
+            };
+        let uri = "/path/to?q=1".parse().expect("redirect URI");
+        for (location, host, expected) in [
+            (
+                template("$scheme://$host$request_uri", None),
+                Some("normalized.test"),
+                Some("http://normalized.test/path/to?q=1"),
+            ),
+            (
+                template("//$host$request_uri", Some("fallback.test")),
+                None,
+                Some("//fallback.test/path/to?q=1"),
+            ),
+            (template("$unknown", None), None, None),
+        ] {
+            assert_eq!(
+                redirect_location(&location, &session, host, &uri)
+                    .as_ref()
+                    .and_then(|value| value.to_str().ok()),
+                expected
+            );
+        }
+
+        for (length, accepted) in [(8192, true), (8193, false)] {
+            let location = HttpRedirectLocation::Literal {
+                value: "x".repeat(length),
+            };
+            assert_eq!(
+                redirect_location(&location, &session, None, &uri).is_some(),
+                accepted,
+                "literal length {length}"
+            );
+        }
+        let boundary_uri = format!("/{}", "x".repeat(8191))
+            .parse()
+            .expect("boundary redirect URI");
+        assert!(
+            redirect_location(
+                &template("$request_uri", None),
+                &session,
+                None,
+                &boundary_uri,
+            )
+            .is_some()
+        );
+        let oversized_uri = format!("/{}", "x".repeat(8192))
+            .parse()
+            .expect("oversized redirect URI");
+        assert!(
+            redirect_location(
+                &template("$request_uri", None),
+                &session,
+                None,
+                &oversized_uri,
+            )
+            .is_none()
+        );
+    }
+
+    fn response_characterization_policy() -> ProxyPolicyPlan {
+        ProxyPolicyPlan::compile(&HttpProxyPolicy {
+            response_headers: vec![
+                HttpResponseHeaderMutation::Set {
+                    name: "x-set".into(),
+                    value: "set".into(),
+                    always: true,
+                },
+                HttpResponseHeaderMutation::Add {
+                    name: "x-add".into(),
+                    value: "added".into(),
+                    always: false,
+                },
+                HttpResponseHeaderMutation::Add {
+                    name: "x-always".into(),
+                    value: "always".into(),
+                    always: true,
+                },
+                HttpResponseHeaderMutation::Remove {
+                    name: "x-remove".into(),
+                },
+            ],
+            response_cookie_path_rewrites: vec![HttpCookiePathRewrite {
+                from: "/internal".into(),
+                to: "/".into(),
+            }],
+            response_cookie_attributes: vec![HttpCookieAttributePolicy {
+                name: "sid".into(),
+                secure: Some(false),
+                http_only: Some(true),
+                same_site: Some(HttpSameSite::Lax),
+            }],
+            ..HttpProxyPolicy::default()
+        })
+    }
+
+    fn response_headers_fixture() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.append("x-set", HeaderValue::from_static("old-one"));
+        headers.append("x-set", HeaderValue::from_static("old-two"));
+        headers.append("x-add", HeaderValue::from_static("upstream"));
+        headers.insert("x-remove", HeaderValue::from_static("remove"));
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::from_static(
+                "sid=1; Path=/internal; secure; HTTPONLY; SameSite=Strict; Priority=High",
+            ),
+        );
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::from_static("sid=2; Path=/internal"),
+        );
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::from_static("other=3; Path=/internal"),
+        );
+        headers
+    }
+
+    fn values(headers: &HeaderMap, name: impl http::header::AsHeaderName) -> Vec<&[u8]> {
+        headers
+            .get_all(name)
+            .iter()
+            .map(HeaderValue::as_bytes)
+            .collect()
+    }
+
+    #[test]
+    fn response_policy_adapters_match_mutation_status_and_cookie_ordering() {
+        let policy = response_characterization_policy();
+        for (status, expected_adds) in [(StatusCode::OK, 2), (StatusCode::NOT_FOUND, 1)] {
+            let initial = response_headers_fixture();
+            let mut map = initial.clone();
+            apply_response_policy_map(status, &mut map, &policy).expect("HeaderMap policy");
+
+            let mut response = pingora::http::ResponseHeader::build(status, None).unwrap();
+            response.headers = initial;
+            apply_response_policy(&mut response, &policy).expect("ResponseHeader policy");
+
+            assert_eq!(response.headers, map);
+            assert_eq!(values(&map, "x-set"), [b"set".as_slice()]);
+            assert_eq!(values(&map, "x-add").len(), expected_adds);
+            assert_eq!(values(&map, "x-always"), [b"always".as_slice()]);
+            assert!(!map.contains_key("x-remove"));
+            assert_eq!(
+                values(&map, SET_COOKIE),
+                [
+                    b"sid=1; Path=/; HTTPONLY; SameSite=Lax; Priority=High".as_slice(),
+                    b"sid=2; Path=/; HttpOnly; SameSite=Lax".as_slice(),
+                    b"other=3; Path=/".as_slice(),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn response_policy_adapters_preserve_non_utf8_cookies() {
+        let policy = response_characterization_policy();
+        let cookie = HeaderValue::from_bytes(b"sid=\xff; Path=/internal").unwrap();
+        let mut map = HeaderMap::new();
+        map.append(SET_COOKIE, cookie.clone());
+        apply_response_policy_map(StatusCode::OK, &mut map, &policy).unwrap();
+        assert_eq!(map[SET_COOKIE], cookie);
+
+        let mut response = pingora::http::ResponseHeader::build(200, None).unwrap();
+        response.append_header(SET_COOKIE, cookie.clone()).unwrap();
+        apply_response_policy(&mut response, &policy).unwrap();
+        assert_eq!(response.headers[SET_COOKIE], cookie);
+    }
+
+    fn hop_by_hop_fixture() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.append(CONNECTION, HeaderValue::from_static("x-first, keep-alive"));
+        headers.append(CONNECTION, HeaderValue::from_static("x-second"));
+        headers.insert("x-first", HeaderValue::from_static("remove"));
+        headers.insert("x-second", HeaderValue::from_static("remove"));
+        headers.insert(TE, HeaderValue::from_static("trailers"));
+        headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+        headers.insert("x-end-to-end", HeaderValue::from_static("keep"));
+        headers
+    }
+
+    #[test]
+    fn hop_by_hop_adapters_remove_nominations_from_every_connection_field() {
+        let initial = hop_by_hop_fixture();
+        let mut map = initial.clone();
+        remove_upstream_hop_by_hop_response_headers_map(&mut map).unwrap();
+
+        let mut response = pingora::http::ResponseHeader::build(200, None).unwrap();
+        response.headers = initial;
+        remove_upstream_hop_by_hop_response_headers(&mut response).unwrap();
+
+        assert_eq!(response.headers, map);
+        for name in [
+            "connection",
+            "x-first",
+            "x-second",
+            "keep-alive",
+            "te",
+            "upgrade",
+        ] {
+            assert!(!map.contains_key(name), "{name}");
+        }
+        assert_eq!(map["x-end-to-end"], "keep");
+    }
+
+    #[test]
+    fn hop_by_hop_adapters_reject_empty_nominations_before_mutating() {
+        let mut initial = HeaderMap::new();
+        initial.insert(CONNECTION, HeaderValue::from_static("x-first, "));
+        initial.insert("x-first", HeaderValue::from_static("still-present"));
+        let mut map = initial.clone();
+        assert!(remove_upstream_hop_by_hop_response_headers_map(&mut map).is_err());
+        assert_eq!(map, initial);
+
+        let mut response = pingora::http::ResponseHeader::build(200, None).unwrap();
+        response.headers = initial.clone();
+        assert!(remove_upstream_hop_by_hop_response_headers(&mut response).is_err());
+        assert_eq!(response.headers, initial);
     }
 
     #[test]
