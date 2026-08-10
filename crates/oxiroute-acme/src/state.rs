@@ -23,6 +23,7 @@ pub const MAX_CERTIFICATE_BYTES: usize = 1024 * 1024;
 pub const MAX_JOB_BYTES: usize = 64 * 1024;
 
 const MAX_SLUG_BYTES: usize = 128;
+const MAX_JOB_ATTEMPTS: u32 = 64;
 const ROOT_MODE: u32 = 0o700;
 const SECRET_MODE: u32 = 0o600;
 const PUBLIC_MODE: u32 = 0o644;
@@ -69,6 +70,10 @@ pub enum AcmeStateError {
     Json(#[source] serde_json::Error),
     #[error("ACME state revision is invalid")]
     InvalidRevision,
+    #[error("ACME job state is invalid")]
+    InvalidJob,
+    #[error("ACME job lifecycle transition is invalid")]
+    InvalidJobTransition,
     #[error("ACME certificate material is incomplete")]
     IncompleteCertificate,
     #[error("ACME DNS cleanup is unresolved; state deletion is blocked")]
@@ -135,19 +140,81 @@ impl RedactedOutcome {
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JobState {
-    pub id: String,
-    pub certificate: String,
-    pub operation: String,
+    id: String,
+    certificate: String,
+    operation: String,
     #[serde(default)]
-    pub correlation_id: Option<String>,
-    pub status: JobStatus,
-    pub created_at_unix_seconds: u64,
-    pub updated_at_unix_seconds: u64,
-    pub attempt: u32,
-    pub next_action_unix_seconds: Option<u64>,
-    pub disk_revision: Option<String>,
-    pub active_revision: Option<String>,
-    pub last_outcome: Option<RedactedOutcome>,
+    correlation_id: Option<String>,
+    status: JobStatus,
+    created_at_unix_seconds: u64,
+    updated_at_unix_seconds: u64,
+    attempt: u32,
+    next_action_unix_seconds: Option<u64>,
+    disk_revision: Option<String>,
+    active_revision: Option<String>,
+    last_outcome: Option<RedactedOutcome>,
+}
+
+impl JobState {
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[must_use]
+    pub fn certificate(&self) -> &str {
+        &self.certificate
+    }
+
+    #[must_use]
+    pub fn operation(&self) -> &str {
+        &self.operation
+    }
+
+    #[must_use]
+    pub fn correlation_id(&self) -> Option<&str> {
+        self.correlation_id.as_deref()
+    }
+
+    #[must_use]
+    pub fn status(&self) -> &JobStatus {
+        &self.status
+    }
+
+    #[must_use]
+    pub fn created_at_unix_seconds(&self) -> u64 {
+        self.created_at_unix_seconds
+    }
+
+    #[must_use]
+    pub fn updated_at_unix_seconds(&self) -> u64 {
+        self.updated_at_unix_seconds
+    }
+
+    #[must_use]
+    pub fn attempt(&self) -> u32 {
+        self.attempt
+    }
+
+    #[must_use]
+    pub fn next_action_unix_seconds(&self) -> Option<u64> {
+        self.next_action_unix_seconds
+    }
+
+    #[must_use]
+    pub fn disk_revision(&self) -> Option<&str> {
+        self.disk_revision.as_deref()
+    }
+
+    #[must_use]
+    pub fn active_revision(&self) -> Option<&str> {
+        self.active_revision.as_deref()
+    }
+
+    #[must_use]
+    pub fn last_outcome(&self) -> Option<&RedactedOutcome> {
+        self.last_outcome.as_ref()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
@@ -329,31 +396,192 @@ impl StateStore {
         }
     }
 
-    /// Persists one redacted lifecycle job document under the bounded jobs namespace.
+    /// Creates one queued lifecycle job under the bounded jobs namespace.
     ///
     /// # Errors
     ///
-    /// Returns an error when the job identity or serialized state is unsafe or cannot be committed
-    /// atomically.
-    pub fn write_job(&self, job: &JobState) -> Result<(), AcmeStateError> {
-        validate_slug(&job.id)?;
-        validate_slug(&job.certificate)?;
-        if job.operation.is_empty()
-            || job.operation.len() > MAX_SLUG_BYTES
-            || !is_safe_component(&job.operation)
-        {
-            return Err(AcmeStateError::UnsafePath);
+    /// Returns an error when the identity is unsafe, the job already exists, or persistence fails.
+    pub fn create_job(
+        &self,
+        id: impl Into<String>,
+        certificate: impl Into<String>,
+        operation: impl Into<String>,
+        correlation_id: Option<String>,
+        now_unix_seconds: u64,
+    ) -> Result<JobState, AcmeStateError> {
+        let job = JobState {
+            id: id.into(),
+            certificate: certificate.into(),
+            operation: operation.into(),
+            correlation_id,
+            status: JobStatus::Queued,
+            created_at_unix_seconds: now_unix_seconds,
+            updated_at_unix_seconds: now_unix_seconds,
+            attempt: 0,
+            next_action_unix_seconds: None,
+            disk_revision: None,
+            active_revision: None,
+            last_outcome: None,
+        };
+        match self.read_job(&job.id) {
+            Err(AcmeStateError::FileOpen(error)) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => return Err(AcmeStateError::InvalidJobTransition),
+            Err(error) => return Err(error),
         }
-        if job.correlation_id.as_deref().is_some_and(|correlation| {
-            correlation.is_empty()
-                || correlation.len() > 64
-                || !correlation.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
-                })
-        }) {
-            return Err(AcmeStateError::UnsafePath);
-        }
-        self.write_json(&format!("jobs/{}.json", job.id), job)
+        self.persist_job(&job)?;
+        Ok(job)
+    }
+
+    /// Moves a queued job to its first bounded execution attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the persisted job cannot legally start or cannot be written.
+    pub fn start_job(&self, id: &str, now_unix_seconds: u64) -> Result<JobState, AcmeStateError> {
+        self.transition_job(
+            id,
+            JobStatus::Running,
+            now_unix_seconds,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Marks a running issuance job as waiting for challenge completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transition or emitted job state is invalid.
+    pub fn wait_job(&self, id: &str, now_unix_seconds: u64) -> Result<JobState, AcmeStateError> {
+        self.transition_job(
+            id,
+            JobStatus::WaitingForChallenge,
+            now_unix_seconds,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Marks a running or challenge-complete issuance job as finalizing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transition or emitted job state is invalid.
+    pub fn finalize_job(
+        &self,
+        id: &str,
+        now_unix_seconds: u64,
+    ) -> Result<JobState, AcmeStateError> {
+        self.transition_job(
+            id,
+            JobStatus::Finalizing,
+            now_unix_seconds,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Completes an active job successfully with a redacted outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transition or emitted job state is invalid.
+    pub fn succeed_job(
+        &self,
+        id: &str,
+        now_unix_seconds: u64,
+        disk_revision: Option<String>,
+        active_revision: Option<String>,
+        outcome: RedactedOutcome,
+    ) -> Result<JobState, AcmeStateError> {
+        self.transition_job(
+            id,
+            JobStatus::Succeeded,
+            now_unix_seconds,
+            None,
+            disk_revision,
+            active_revision,
+            Some(outcome),
+        )
+    }
+
+    /// Completes an active job unsuccessfully with an optional retry time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transition or emitted job state is invalid.
+    pub fn fail_job(
+        &self,
+        id: &str,
+        now_unix_seconds: u64,
+        next_action_unix_seconds: Option<u64>,
+        disk_revision: Option<String>,
+        active_revision: Option<String>,
+        outcome: RedactedOutcome,
+    ) -> Result<JobState, AcmeStateError> {
+        self.transition_job(
+            id,
+            JobStatus::Failed,
+            now_unix_seconds,
+            next_action_unix_seconds,
+            disk_revision,
+            active_revision,
+            Some(outcome),
+        )
+    }
+
+    /// Completes an active job as cooperatively cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transition or emitted job state is invalid.
+    pub fn cancel_job(
+        &self,
+        id: &str,
+        now_unix_seconds: u64,
+        disk_revision: Option<String>,
+        active_revision: Option<String>,
+        outcome: RedactedOutcome,
+    ) -> Result<JobState, AcmeStateError> {
+        self.transition_job(
+            id,
+            JobStatus::Cancelled,
+            now_unix_seconds,
+            None,
+            disk_revision,
+            active_revision,
+            Some(outcome),
+        )
+    }
+
+    /// Completes an active job because managed issuance was paused.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transition or emitted job state is invalid.
+    pub fn pause_job(
+        &self,
+        id: &str,
+        now_unix_seconds: u64,
+        disk_revision: Option<String>,
+        active_revision: Option<String>,
+        outcome: RedactedOutcome,
+    ) -> Result<JobState, AcmeStateError> {
+        self.transition_job(
+            id,
+            JobStatus::Paused,
+            now_unix_seconds,
+            None,
+            disk_revision,
+            active_revision,
+            Some(outcome),
+        )
     }
 
     /// Loads one redacted lifecycle job document from the jobs namespace.
@@ -364,6 +592,58 @@ impl StateStore {
     pub fn read_job(&self, id: &str) -> Result<JobState, AcmeStateError> {
         validate_slug(id)?;
         self.read_json(&format!("jobs/{id}.json"), MAX_JOB_BYTES)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn transition_job(
+        &self,
+        id: &str,
+        status: JobStatus,
+        now_unix_seconds: u64,
+        next_action_unix_seconds: Option<u64>,
+        disk_revision: Option<String>,
+        active_revision: Option<String>,
+        last_outcome: Option<RedactedOutcome>,
+    ) -> Result<JobState, AcmeStateError> {
+        let current = self.read_job(id)?;
+        if now_unix_seconds < current.updated_at_unix_seconds
+            || !legal_job_transition(&current.status, &status)
+        {
+            return Err(AcmeStateError::InvalidJobTransition);
+        }
+        let attempt = if status == JobStatus::Running {
+            current
+                .attempt
+                .checked_add(1)
+                .filter(|attempt| *attempt <= MAX_JOB_ATTEMPTS)
+                .ok_or(AcmeStateError::InvalidJobTransition)?
+        } else {
+            current.attempt
+        };
+        let job = JobState {
+            id: current.id,
+            certificate: current.certificate,
+            operation: current.operation,
+            correlation_id: current.correlation_id,
+            status,
+            created_at_unix_seconds: current.created_at_unix_seconds,
+            updated_at_unix_seconds: now_unix_seconds,
+            attempt,
+            next_action_unix_seconds,
+            disk_revision,
+            active_revision,
+            last_outcome,
+        };
+        self.persist_job(&job)?;
+        Ok(job)
+    }
+
+    fn persist_job(&self, job: &JobState) -> Result<(), AcmeStateError> {
+        validate_job_identity(job)?;
+        if !is_valid_emitted_job(job) {
+            return Err(AcmeStateError::InvalidJob);
+        }
+        self.write_json(&format!("jobs/{}.json", job.id), job)
     }
 
     fn write_atomic(&self, relative: &str, bytes: &[u8], mode: u32) -> Result<(), AcmeStateError> {
@@ -806,6 +1086,97 @@ fn install_current(
     )));
     fs::rename(&temporary, directory.join("current")).map_err(AcmeStateError::Rename)?;
     sync_directory(&directory)
+}
+
+fn legal_job_transition(current: &JobStatus, next: &JobStatus) -> bool {
+    matches!(
+        (current, next),
+        (JobStatus::Queued, JobStatus::Running)
+            | (
+                JobStatus::Running,
+                JobStatus::WaitingForChallenge
+                    | JobStatus::Finalizing
+                    | JobStatus::Succeeded
+                    | JobStatus::Failed
+                    | JobStatus::Cancelled
+                    | JobStatus::Paused
+            )
+            | (
+                JobStatus::WaitingForChallenge,
+                JobStatus::Finalizing
+                    | JobStatus::Failed
+                    | JobStatus::Cancelled
+                    | JobStatus::Paused
+            )
+            | (
+                JobStatus::Finalizing,
+                JobStatus::Succeeded | JobStatus::Failed | JobStatus::Cancelled | JobStatus::Paused
+            )
+    )
+}
+
+fn validate_job_identity(job: &JobState) -> Result<(), AcmeStateError> {
+    validate_slug(&job.id)?;
+    validate_slug(&job.certificate)?;
+    if job.operation.is_empty()
+        || job.operation.len() > MAX_SLUG_BYTES
+        || !is_safe_component(&job.operation)
+    {
+        return Err(AcmeStateError::UnsafePath);
+    }
+    if job.correlation_id.as_deref().is_some_and(|correlation| {
+        correlation.is_empty()
+            || correlation.len() > 64
+            || !correlation.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+            })
+    }) {
+        return Err(AcmeStateError::UnsafePath);
+    }
+    Ok(())
+}
+
+fn is_valid_emitted_job(job: &JobState) -> bool {
+    if job.updated_at_unix_seconds < job.created_at_unix_seconds
+        || job.attempt > MAX_JOB_ATTEMPTS
+        || job
+            .next_action_unix_seconds
+            .is_some_and(|next| next < job.updated_at_unix_seconds)
+        || !job
+            .disk_revision
+            .iter()
+            .chain(job.active_revision.iter())
+            .all(|revision| {
+                !revision.is_empty()
+                    && revision.len() <= MAX_SLUG_BYTES
+                    && is_safe_component(revision)
+            })
+        || job.last_outcome.as_ref().is_some_and(|outcome| {
+            outcome.code.is_empty()
+                || outcome.code.len() > MAX_SLUG_BYTES
+                || !is_safe_component(&outcome.code)
+                || outcome.message.is_empty()
+                || outcome.message.len() > 1_024
+                || outcome.message.chars().any(char::is_control)
+        })
+    {
+        return false;
+    }
+
+    let has_transition_output = job.next_action_unix_seconds.is_some()
+        || job.disk_revision.is_some()
+        || job.active_revision.is_some()
+        || job.last_outcome.is_some();
+    match job.status {
+        JobStatus::Queued => job.attempt == 0 && !has_transition_output,
+        JobStatus::Running | JobStatus::WaitingForChallenge | JobStatus::Finalizing => {
+            job.attempt > 0 && !has_transition_output
+        }
+        JobStatus::Succeeded | JobStatus::Cancelled | JobStatus::Paused => {
+            job.attempt > 0 && job.next_action_unix_seconds.is_none() && job.last_outcome.is_some()
+        }
+        JobStatus::Failed => job.attempt > 0 && job.last_outcome.is_some(),
+    }
 }
 
 fn validate_slug(value: &str) -> Result<(), AcmeStateError> {
@@ -1303,25 +1674,211 @@ mod tests {
     fn job_state_is_durable_and_contains_only_redacted_outcomes() {
         let directory = tempfile::tempdir().expect("tempdir");
         let state = StateStore::open(directory.path().join("state")).expect("state");
-        let job = JobState {
-            id: "job-1".into(),
-            certificate: "edge".into(),
-            operation: "renew".into(),
-            correlation_id: None,
-            status: JobStatus::Failed,
-            created_at_unix_seconds: 1,
-            updated_at_unix_seconds: 2,
-            attempt: 1,
-            next_action_unix_seconds: Some(3),
-            disk_revision: None,
-            active_revision: Some("old".into()),
-            last_outcome: Some(RedactedOutcome::new("transport_failed", "retry scheduled")),
-        };
-        state.write_job(&job).expect("write job");
+        state
+            .create_job("job-1", "edge", "renew", None, 1)
+            .expect("create job");
+        state.start_job("job-1", 2).expect("start job");
+        let job = state
+            .fail_job(
+                "job-1",
+                3,
+                Some(4),
+                None,
+                Some("old".into()),
+                RedactedOutcome::new("transport_failed", "retry scheduled"),
+            )
+            .expect("fail job");
         assert_eq!(state.read_job("job-1").expect("read job"), job);
+        assert_eq!(job.id(), "job-1");
+        assert_eq!(job.certificate(), "edge");
+        assert_eq!(job.operation(), "renew");
+        assert_eq!(job.correlation_id(), None);
+        assert_eq!(job.status(), &JobStatus::Failed);
+        assert_eq!(job.created_at_unix_seconds(), 1);
+        assert_eq!(job.updated_at_unix_seconds(), 3);
+        assert_eq!(job.attempt(), 1);
+        assert_eq!(job.next_action_unix_seconds(), Some(4));
+        assert_eq!(job.disk_revision(), None);
+        assert_eq!(job.active_revision(), Some("old"));
+        assert_eq!(
+            job.last_outcome().map(|outcome| outcome.code.as_str()),
+            Some("transport_failed")
+        );
         let json =
             fs::read_to_string(directory.path().join("state/jobs/job-1.json")).expect("job JSON");
+        assert!(json.contains(r#""status":"failed""#));
+        assert!(json.contains(r#""correlationId":null"#));
+        assert!(json.contains(r#""createdAtUnixSeconds":1"#));
+        assert!(json.contains(r#""updatedAtUnixSeconds":3"#));
+        assert!(json.contains(r#""nextActionUnixSeconds":4"#));
         assert!(!json.contains("private"));
+        assert!(!json.contains("token"));
+    }
+
+    #[test]
+    fn job_transition_matrix_is_explicit_and_terminal_states_are_terminal() {
+        let statuses = [
+            JobStatus::Queued,
+            JobStatus::Running,
+            JobStatus::WaitingForChallenge,
+            JobStatus::Finalizing,
+            JobStatus::Paused,
+            JobStatus::Succeeded,
+            JobStatus::Failed,
+            JobStatus::Cancelled,
+        ];
+        let legal = [
+            (JobStatus::Queued, JobStatus::Running),
+            (JobStatus::Running, JobStatus::WaitingForChallenge),
+            (JobStatus::Running, JobStatus::Finalizing),
+            (JobStatus::Running, JobStatus::Succeeded),
+            (JobStatus::Running, JobStatus::Failed),
+            (JobStatus::Running, JobStatus::Cancelled),
+            (JobStatus::Running, JobStatus::Paused),
+            (JobStatus::WaitingForChallenge, JobStatus::Finalizing),
+            (JobStatus::WaitingForChallenge, JobStatus::Failed),
+            (JobStatus::WaitingForChallenge, JobStatus::Cancelled),
+            (JobStatus::WaitingForChallenge, JobStatus::Paused),
+            (JobStatus::Finalizing, JobStatus::Succeeded),
+            (JobStatus::Finalizing, JobStatus::Failed),
+            (JobStatus::Finalizing, JobStatus::Cancelled),
+            (JobStatus::Finalizing, JobStatus::Paused),
+        ];
+
+        for current in &statuses {
+            for next in &statuses {
+                assert_eq!(
+                    legal_job_transition(current, next),
+                    legal.contains(&(current.clone(), next.clone())),
+                    "{current:?} -> {next:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_store_emitted_status_satisfies_job_invariants() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let state = StateStore::open(directory.path().join("state")).expect("state");
+        let outcome = || RedactedOutcome::new("complete", "redacted outcome");
+
+        let queued = state
+            .create_job("queued", "edge", "renew", Some("trace:1".into()), 1)
+            .expect("queued");
+        assert!(is_valid_emitted_job(&queued));
+        let running = state.start_job("queued", 2).expect("running");
+        assert!(is_valid_emitted_job(&running));
+        let waiting = state.wait_job("queued", 3).expect("waiting");
+        assert!(is_valid_emitted_job(&waiting));
+        let finalizing = state.finalize_job("queued", 4).expect("finalizing");
+        assert!(is_valid_emitted_job(&finalizing));
+        let succeeded = state
+            .succeed_job(
+                "queued",
+                5,
+                Some("disk".into()),
+                Some("active".into()),
+                outcome(),
+            )
+            .expect("succeeded");
+        assert!(is_valid_emitted_job(&succeeded));
+        assert!(matches!(
+            state.fail_job("queued", 6, None, None, None, outcome()),
+            Err(AcmeStateError::InvalidJobTransition)
+        ));
+
+        for (id, expected) in [
+            ("failed", JobStatus::Failed),
+            ("cancelled", JobStatus::Cancelled),
+            ("paused", JobStatus::Paused),
+            ("action", JobStatus::Succeeded),
+        ] {
+            state
+                .create_job(id, "edge", "renew", None, 10)
+                .expect("create terminal job");
+            state.start_job(id, 11).expect("start terminal job");
+            let terminal = match expected {
+                JobStatus::Failed => state
+                    .fail_job(id, 12, Some(13), None, None, outcome())
+                    .expect("failed"),
+                JobStatus::Cancelled => state
+                    .cancel_job(id, 12, None, None, outcome())
+                    .expect("cancelled"),
+                JobStatus::Paused => state
+                    .pause_job(id, 12, None, None, outcome())
+                    .expect("paused"),
+                JobStatus::Succeeded => state
+                    .succeed_job(id, 12, None, None, outcome())
+                    .expect("action succeeded"),
+                _ => unreachable!(),
+            };
+            assert_eq!(terminal.status(), &expected);
+            assert!(is_valid_emitted_job(&terminal));
+        }
+    }
+
+    #[test]
+    fn historical_json_recovers_every_status_without_enforcing_new_write_invariants() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let state = StateStore::open(directory.path().join("state")).expect("state");
+        for (index, (spelling, status)) in [
+            ("queued", JobStatus::Queued),
+            ("running", JobStatus::Running),
+            ("waiting_for_challenge", JobStatus::WaitingForChallenge),
+            ("finalizing", JobStatus::Finalizing),
+            ("paused", JobStatus::Paused),
+            ("succeeded", JobStatus::Succeeded),
+            ("failed", JobStatus::Failed),
+            ("cancelled", JobStatus::Cancelled),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = format!("historical-{index}");
+            let json = format!(
+                r#"{{"id":"{id}","certificate":"edge","operation":"renew","status":"{spelling}","createdAtUnixSeconds":20,"updatedAtUnixSeconds":10,"attempt":999,"nextActionUnixSeconds":1,"diskRevision":"","activeRevision":null,"lastOutcome":null}}"#
+            );
+            state
+                .write_public(&format!("jobs/{id}.json"), json.as_bytes())
+                .expect("historical JSON");
+            let recovered = state.read_job(&id).expect("recover historical job");
+            assert_eq!(recovered.status(), &status);
+            assert_eq!(recovered.correlation_id(), None);
+            assert_eq!(recovered.attempt(), 999);
+            assert!(!is_valid_emitted_job(&recovered));
+        }
+    }
+
+    #[test]
+    fn job_timestamps_are_monotonic_created_time_is_immutable_and_attempts_are_bounded() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let state = StateStore::open(directory.path().join("state")).expect("state");
+        state
+            .create_job("clock", "edge", "renew", None, 10)
+            .expect("create");
+        assert!(matches!(
+            state.start_job("clock", 9),
+            Err(AcmeStateError::InvalidJobTransition)
+        ));
+        let running = state.start_job("clock", 11).expect("start");
+        assert_eq!(running.created_at_unix_seconds(), 10);
+        assert_eq!(running.updated_at_unix_seconds(), 11);
+        assert_eq!(running.attempt(), 1);
+        assert!(matches!(
+            state.finalize_job("clock", 10),
+            Err(AcmeStateError::InvalidJobTransition)
+        ));
+
+        let bounded = format!(
+            r#"{{"id":"bounded","certificate":"edge","operation":"renew","status":"queued","createdAtUnixSeconds":1,"updatedAtUnixSeconds":1,"attempt":{MAX_JOB_ATTEMPTS},"nextActionUnixSeconds":null,"diskRevision":null,"activeRevision":null,"lastOutcome":null}}"#
+        );
+        state
+            .write_public("jobs/bounded.json", bounded.as_bytes())
+            .expect("historical bounded job");
+        assert!(matches!(
+            state.start_job("bounded", 2),
+            Err(AcmeStateError::InvalidJobTransition)
+        ));
     }
 
     #[test]
