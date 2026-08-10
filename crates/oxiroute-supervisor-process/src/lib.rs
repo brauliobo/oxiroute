@@ -709,49 +709,43 @@ impl AuthenticatedWorkerChannel<'_> {
     }
 }
 
-/// One fully authenticated frame with its authentication prefix removed.
+/// Proof that one validated transport frame passed authentication.
 #[derive(Debug)]
 pub struct AuthenticatedFrame {
-    header: FrameHeader,
-    payload: Vec<u8>,
-    descriptors: Vec<OwnedFd>,
-    peer_identity: PeerIdentity,
+    frame: Frame,
 }
 
 impl AuthenticatedFrame {
     /// Returns the validated transport header.
     #[must_use]
     pub const fn header(&self) -> FrameHeader {
-        self.header
+        self.frame.header()
     }
 
     /// Returns the application payload after authentication metadata.
     #[must_use]
     pub fn payload(&self) -> &[u8] {
-        &self.payload
+        &self.frame.payload()[AUTH_PREFIX_SIZE..]
     }
 
     /// Returns descriptors received with this authenticated frame.
     #[must_use]
     pub fn descriptors(&self) -> &[OwnedFd] {
-        &self.descriptors
+        self.frame.descriptors()
     }
 
     /// Returns the kernel-authenticated direct peer identity.
     #[must_use]
     pub const fn peer_identity(&self) -> PeerIdentity {
-        self.peer_identity
+        self.frame.peer_identity()
     }
 
     /// Separates frame metadata from descriptor ownership.
     #[must_use]
     pub fn into_parts(self) -> (FrameHeader, Vec<u8>, Vec<OwnedFd>, PeerIdentity) {
-        (
-            self.header,
-            self.payload,
-            self.descriptors,
-            self.peer_identity,
-        )
+        let (header, mut payload, descriptors, peer_identity) = self.frame.into_parts();
+        let payload = payload.split_off(AUTH_PREFIX_SIZE);
+        (header, payload, descriptors, peer_identity)
     }
 }
 
@@ -1184,19 +1178,19 @@ fn authenticate_frame(
     identity: WorkerIdentity,
     nonce: &SpawnHandshakeNonce,
 ) -> Result<AuthenticatedFrame, AuthenticatedChannelError> {
-    let (header, payload, descriptors, peer_identity) = frame.into_parts();
-    if peer_identity.pid() != expected_pid {
+    if frame.peer_identity().pid() != expected_pid {
         return Err(AuthenticatedChannelError::CredentialMismatch {
             expected: expected_pid,
-            actual: peer_identity.pid(),
+            actual: frame.peer_identity().pid(),
         });
     }
-    if header.instance() != identity.instance {
+    if frame.header().instance() != identity.instance {
         return Err(AuthenticatedChannelError::InstanceMismatch);
     }
-    if header.generation() != identity.generation {
+    if frame.header().generation() != identity.generation {
         return Err(AuthenticatedChannelError::GenerationMismatch);
     }
+    let payload = frame.payload();
     if payload.len() < AUTH_PREFIX_SIZE {
         return Err(AuthenticatedChannelError::InvalidPayload);
     }
@@ -1207,12 +1201,7 @@ fn authenticate_frame(
     if &payload[2..AUTH_PREFIX_SIZE] != nonce.as_bytes() {
         return Err(AuthenticatedChannelError::NonceMismatch);
     }
-    Ok(AuthenticatedFrame {
-        header,
-        payload: payload[AUTH_PREFIX_SIZE..].to_vec(),
-        descriptors,
-        peer_identity,
-    })
+    Ok(AuthenticatedFrame { frame })
 }
 
 fn receive_startup_frame(
