@@ -5,8 +5,8 @@ use std::{
 
 use crate::{
     ActivationRequirement, CanonicalCandidate as SharedCanonicalCandidate, CanonicalDraft,
-    CanonicalProvenance, DeploymentRequirement, Diagnostic, OperationalOverlayRequirement,
-    ProvenanceSpan,
+    DeploymentRequirement, Diagnostic, OperationalOverlayRequirement, ProvenanceSpan,
+    candidate::CanonicalProvenanceLedger,
 };
 
 use super::{
@@ -30,7 +30,7 @@ pub(super) struct Lowerer<'a> {
     effective: &'a EffectiveConfiguration,
     diagnostics: Vec<Diagnostic>,
     draft: CanonicalDraft,
-    provenance: Vec<CanonicalProvenance<ProvenanceSpan>>,
+    provenance: CanonicalProvenanceLedger<ProvenanceSpan>,
     lowered_pools: HashSet<SectionId>,
     certificate_names: HashMap<(PathBuf, PathBuf), (String, usize)>,
     deployment_requirements: Vec<DeploymentRequirement<ProvenanceSpan>>,

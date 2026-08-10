@@ -19,6 +19,7 @@ use crate::{
     CanonicalCandidate, CanonicalDraft, CanonicalFinalization, CanonicalProvenance, Diagnostic,
     DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_SEMANTICS_NOT_REPRESENTABLE,
     E_UNRESOLVED_REFERENCE, E_UNSUPPORTED_FEATURE, Severity, SourceImportMetadata,
+    candidate::{CanonicalProvenanceLedger, EmptyOriginPolicy},
 };
 
 use super::{
@@ -564,28 +565,26 @@ fn lower(effective: &EffectiveConfiguration) -> Result<LoweredCanonical, Semanti
     })
 }
 
-#[derive(Default)]
 struct ProvenanceRecorder {
-    entries: Vec<CanonicalProvenance<DirectiveOrigin>>,
+    ledger: CanonicalProvenanceLedger<DirectiveOrigin>,
+}
+
+impl Default for ProvenanceRecorder {
+    fn default() -> Self {
+        Self {
+            ledger: CanonicalProvenanceLedger::new(EmptyOriginPolicy::Require),
+        }
+    }
 }
 
 impl ProvenanceRecorder {
-    fn record(&mut self, path: String, mut origins: Vec<DirectiveOrigin>) {
-        assert!(
-            !origins.is_empty(),
-            "finalized Squid canonical field lacks source provenance: {path}"
-        );
-        origins.sort_unstable_by_key(|origin| origin.occurrence);
-        origins.dedup_by_key(|origin| origin.occurrence);
-        if let Some(existing) = self.entries.iter_mut().find(|entry| entry.path == path) {
-            existing.origins.extend(origins);
-            existing
-                .origins
-                .sort_unstable_by_key(|origin| origin.occurrence);
-            existing.origins.dedup_by_key(|origin| origin.occurrence);
-        } else {
-            self.entries.push(CanonicalProvenance { path, origins });
-        }
+    fn record(&mut self, path: String, origins: Vec<DirectiveOrigin>) {
+        self.ledger
+            .record(path, origins, |origin| origin.occurrence);
+    }
+
+    fn into_entries(self) -> Vec<CanonicalProvenance<DirectiveOrigin>> {
+        self.ledger.into_entries()
     }
 }
 
@@ -815,7 +814,7 @@ fn lower_provenance(
         service_path,
     );
 
-    recorder.entries
+    recorder.into_entries()
 }
 
 fn record_peer_policy(

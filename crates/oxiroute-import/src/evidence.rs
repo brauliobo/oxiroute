@@ -688,42 +688,102 @@ fn source_roots(root: Option<SourceId>, sources: &[SourceReference]) -> Vec<Sour
     }]
 }
 
+struct SourceDependencyAdapter {
+    source_id: u32,
+    target_source_id: Option<u32>,
+    requested_path: Option<String>,
+    canonical_path: Option<String>,
+    optional: Option<bool>,
+    status: &'static str,
+    span: Option<SpanEvidence>,
+    failure_code: Option<String>,
+    truncated: bool,
+}
+
+struct SourceGraphEvidenceBuilder {
+    roots: Vec<SourceRootEvidence>,
+    sources: Vec<SourceReference>,
+    dependencies: Vec<DependencyEvidence>,
+    dependencies_complete: bool,
+    snapshot_stable: Option<bool>,
+}
+
+impl SourceGraphEvidenceBuilder {
+    fn new(
+        root: Option<SourceId>,
+        sources: Vec<SourceReference>,
+        dependencies_complete: bool,
+        snapshot_stable: Option<bool>,
+    ) -> Self {
+        Self {
+            roots: source_roots(root, &sources),
+            sources,
+            dependencies: Vec::new(),
+            dependencies_complete,
+            snapshot_stable,
+        }
+    }
+
+    fn dependency(&mut self, adapter: SourceDependencyAdapter) {
+        self.dependencies.push(DependencyEvidence {
+            source_id: adapter.source_id,
+            target_source_id: adapter.target_source_id,
+            kind: "include".into(),
+            requested_path: adapter.requested_path,
+            canonical_path: adapter.canonical_path,
+            optional: adapter.optional,
+            status: adapter.status.into(),
+            span: adapter.span,
+            failure_code: adapter.failure_code,
+            fingerprint_sha256: source_fingerprint(&self.sources, adapter.target_source_id),
+            truncated: adapter.truncated,
+        });
+    }
+
+    fn finish(self) -> SourceGraphEvidence {
+        SourceGraphEvidence {
+            roots: self.roots,
+            sources: self.sources,
+            dependencies: self.dependencies,
+            dependencies_complete: self.dependencies_complete,
+            snapshot_stable: self.snapshot_stable,
+        }
+    }
+}
+
 fn nginx_graph(graph: &crate::nginx::SourceGraph) -> SourceGraphEvidence {
     let sources = graph
         .sources
         .iter()
         .map(|source| source_reference(&source.source, Some(&source.canonical_path)))
         .collect::<Vec<_>>();
-    let mut dependencies = Vec::new();
+    let mut builder =
+        SourceGraphEvidenceBuilder::new(graph.root, sources, true, Some(graph.snapshot_stable));
     for edge in &graph.includes {
         if edge.candidates.is_empty() {
             for target in &edge.targets {
-                dependencies.push(DependencyEvidence {
+                builder.dependency(SourceDependencyAdapter {
                     source_id: edge.source.get(),
                     target_source_id: Some(target.get()),
-                    kind: "include".into(),
                     requested_path: bytes_string(&edge.pattern),
                     canonical_path: None,
                     optional: Some(false),
-                    status: "expanded".into(),
+                    status: "expanded",
                     span: Some(span_evidence(edge.span)),
                     failure_code: edge.failure.map(|code| code.as_str().into()),
-                    fingerprint_sha256: source_fingerprint(&sources, Some(target.get())),
                     truncated: edge.truncated,
                 });
             }
             if edge.targets.is_empty() {
-                dependencies.push(DependencyEvidence {
+                builder.dependency(SourceDependencyAdapter {
                     source_id: edge.source.get(),
                     target_source_id: None,
-                    kind: "include".into(),
                     requested_path: bytes_string(&edge.pattern),
                     canonical_path: None,
                     optional: Some(false),
-                    status: "failed".into(),
+                    status: "failed",
                     span: Some(span_evidence(edge.span)),
                     failure_code: edge.failure.map(|code| code.as_str().into()),
-                    fingerprint_sha256: None,
                     truncated: edge.truncated,
                 });
             }
@@ -731,28 +791,20 @@ fn nginx_graph(graph: &crate::nginx::SourceGraph) -> SourceGraphEvidence {
         }
         for candidate in &edge.candidates {
             let (target_source_id, status) = nginx_target_status(candidate.status);
-            dependencies.push(DependencyEvidence {
+            builder.dependency(SourceDependencyAdapter {
                 source_id: edge.source.get(),
                 target_source_id,
-                kind: "include".into(),
                 requested_path: path_string(&candidate.path),
                 canonical_path: candidate.canonical_path.as_deref().and_then(path_string),
                 optional: Some(false),
-                status: status.into(),
+                status,
                 span: Some(span_evidence(edge.span)),
                 failure_code: edge.failure.map(|code| code.as_str().into()),
-                fingerprint_sha256: source_fingerprint(&sources, target_source_id),
                 truncated: edge.truncated,
             });
         }
     }
-    SourceGraphEvidence {
-        roots: source_roots(graph.root, &sources),
-        sources,
-        dependencies,
-        dependencies_complete: true,
-        snapshot_stable: Some(graph.snapshot_stable),
-    }
+    builder.finish()
 }
 
 fn nginx_target_status(
@@ -787,40 +839,37 @@ fn apache_graph(graph: &crate::apache::SourceGraph) -> SourceGraphEvidence {
         .iter()
         .map(|source| source_reference(&source.source, Some(&source.canonical_path)))
         .collect::<Vec<_>>();
-    let mut dependencies = Vec::new();
+    let mut builder =
+        SourceGraphEvidenceBuilder::new(graph.root, sources, true, Some(graph.snapshot_stable));
     for edge in &graph.includes {
         if edge.candidates.is_empty() {
             for target in &edge.targets {
-                dependencies.push(DependencyEvidence {
+                builder.dependency(SourceDependencyAdapter {
                     source_id: edge.source.get(),
                     target_source_id: Some(target.get()),
-                    kind: "include".into(),
                     requested_path: bytes_string(&edge.pattern),
                     canonical_path: None,
                     optional: Some(edge.optional),
-                    status: "expanded".into(),
+                    status: "expanded",
                     span: Some(span_evidence(edge.span)),
                     failure_code: edge.failure.map(|code| code.as_str().into()),
-                    fingerprint_sha256: source_fingerprint(&sources, Some(target.get())),
                     truncated: edge.truncated,
                 });
             }
             if edge.targets.is_empty() {
-                dependencies.push(DependencyEvidence {
+                builder.dependency(SourceDependencyAdapter {
                     source_id: edge.source.get(),
                     target_source_id: None,
-                    kind: "include".into(),
                     requested_path: bytes_string(&edge.pattern),
                     canonical_path: None,
                     optional: Some(edge.optional),
                     status: if edge.optional && edge.failure.is_none() {
-                        "optional_missing".into()
+                        "optional_missing"
                     } else {
-                        "failed".into()
+                        "failed"
                     },
                     span: Some(span_evidence(edge.span)),
                     failure_code: edge.failure.map(|code| code.as_str().into()),
-                    fingerprint_sha256: None,
                     truncated: edge.truncated,
                 });
             }
@@ -828,28 +877,20 @@ fn apache_graph(graph: &crate::apache::SourceGraph) -> SourceGraphEvidence {
         }
         for candidate in &edge.candidates {
             let (target_source_id, status) = apache_target_status(candidate.status);
-            dependencies.push(DependencyEvidence {
+            builder.dependency(SourceDependencyAdapter {
                 source_id: edge.source.get(),
                 target_source_id,
-                kind: "include".into(),
                 requested_path: path_string(&candidate.path),
                 canonical_path: candidate.canonical_path.as_deref().and_then(path_string),
                 optional: Some(edge.optional),
-                status: status.into(),
+                status,
                 span: Some(span_evidence(edge.span)),
                 failure_code: edge.failure.map(|code| code.as_str().into()),
-                fingerprint_sha256: source_fingerprint(&sources, target_source_id),
                 truncated: edge.truncated,
             });
         }
     }
-    SourceGraphEvidence {
-        roots: source_roots(graph.root, &sources),
-        sources,
-        dependencies,
-        dependencies_complete: true,
-        snapshot_stable: Some(graph.snapshot_stable),
-    }
+    builder.finish()
 }
 
 fn apache_target_status(
@@ -875,48 +916,39 @@ fn varnish_graph(graph: &crate::varnish::SourceGraph) -> SourceGraphEvidence {
         .iter()
         .map(|source| source_reference(&source.source, source.canonical_path.as_deref()))
         .collect::<Vec<_>>();
-    let mut dependencies = Vec::new();
+    let mut builder =
+        SourceGraphEvidenceBuilder::new(graph.root, sources, true, Some(graph.snapshot_stable));
     for edge in &graph.includes {
         if edge.targets.is_empty() {
-            dependencies.push(DependencyEvidence {
+            builder.dependency(SourceDependencyAdapter {
                 source_id: edge.source.get(),
                 target_source_id: None,
-                kind: "include".into(),
                 requested_path: bytes_string(&edge.pattern),
                 canonical_path: None,
                 optional: Some(false),
-                status: "failed".into(),
+                status: "failed",
                 span: Some(span_evidence(edge.span)),
                 failure_code: edge.failure.map(|code| code.as_str().into()),
-                fingerprint_sha256: None,
                 truncated: edge.truncated,
             });
             continue;
         }
         for target in &edge.targets {
             let (target_source_id, status) = varnish_target_status(target.status);
-            dependencies.push(DependencyEvidence {
+            builder.dependency(SourceDependencyAdapter {
                 source_id: edge.source.get(),
                 target_source_id,
-                kind: "include".into(),
                 requested_path: path_string(&target.requested_path),
                 canonical_path: target.canonical_path.as_deref().and_then(path_string),
                 optional: Some(false),
-                status: status.into(),
+                status,
                 span: Some(span_evidence(edge.span)),
                 failure_code: edge.failure.map(|code| code.as_str().into()),
-                fingerprint_sha256: source_fingerprint(&sources, target_source_id),
                 truncated: edge.truncated,
             });
         }
     }
-    SourceGraphEvidence {
-        roots: source_roots(graph.root, &sources),
-        sources,
-        dependencies,
-        dependencies_complete: true,
-        snapshot_stable: Some(graph.snapshot_stable),
-    }
+    builder.finish()
 }
 
 fn varnish_target_status(
@@ -943,47 +975,38 @@ fn squid_graph(graph: &crate::squid::SourceGraph) -> SourceGraphEvidence {
         .iter()
         .map(|source| source_reference(&source.source, Some(&source.canonical_path)))
         .collect::<Vec<_>>();
-    let mut dependencies = Vec::new();
+    let mut builder =
+        SourceGraphEvidenceBuilder::new(graph.root, sources, true, Some(graph.snapshot_stable));
     for edge in &graph.includes {
         if edge.targets.is_empty() {
-            dependencies.push(DependencyEvidence {
+            builder.dependency(SourceDependencyAdapter {
                 source_id: edge.source.get(),
                 target_source_id: None,
-                kind: "include".into(),
                 requested_path: None,
                 canonical_path: None,
                 optional: Some(false),
-                status: "failed".into(),
+                status: "failed",
                 span: Some(span_evidence(edge.span)),
                 failure_code: edge.failure.map(|code| code.as_str().into()),
-                fingerprint_sha256: None,
                 truncated: edge.truncated,
             });
         }
         for target in &edge.targets {
             let (target_source_id, status) = squid_target_status(target.status);
-            dependencies.push(DependencyEvidence {
+            builder.dependency(SourceDependencyAdapter {
                 source_id: edge.source.get(),
                 target_source_id,
-                kind: "include".into(),
                 requested_path: path_string(&target.requested_path),
                 canonical_path: target.canonical_path.as_deref().and_then(path_string),
                 optional: Some(false),
-                status: status.into(),
+                status,
                 span: Some(span_evidence(edge.span)),
                 failure_code: edge.failure.map(|code| code.as_str().into()),
-                fingerprint_sha256: source_fingerprint(&sources, target_source_id),
                 truncated: edge.truncated,
             });
         }
     }
-    SourceGraphEvidence {
-        roots: source_roots(graph.root, &sources),
-        sources,
-        dependencies,
-        dependencies_complete: true,
-        snapshot_stable: Some(graph.snapshot_stable),
-    }
+    builder.finish()
 }
 
 #[cfg(unix)]
@@ -1042,13 +1065,14 @@ fn haproxy_graph<P: AsRef<Path>>(
     } else {
         Some(true)
     };
-    SourceGraphEvidence {
+    SourceGraphEvidenceBuilder {
         roots: root_evidence,
         sources,
         dependencies: Vec::new(),
         dependencies_complete: false,
         snapshot_stable,
     }
+    .finish()
 }
 
 fn nginx_origin(origin: &crate::nginx::DirectiveOrigin) -> OriginEvidence {
