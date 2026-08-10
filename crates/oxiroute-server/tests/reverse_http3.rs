@@ -601,7 +601,63 @@ async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
     let response = success.recv_response().await.expect("static GET response");
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[http::header::CONTENT_LENGTH], "10");
+    let etag = response.headers()[http::header::ETAG].clone();
+    let last_modified = response.headers()[http::header::LAST_MODIFIED].clone();
     assert_eq!(recv_body(&mut success).await.as_ref(), b"0123456789");
+
+    let mut not_modified = sender
+        .send_request(
+            Request::builder()
+                .method(Method::GET)
+                .uri("https://example.test/ok.txt")
+                .header(http::header::IF_NONE_MATCH, etag.clone())
+                .body(())
+                .expect("conditional static GET"),
+        )
+        .await
+        .expect("send conditional static GET");
+    not_modified
+        .finish()
+        .await
+        .expect("finish conditional static GET");
+    let response = not_modified
+        .recv_response()
+        .await
+        .expect("conditional static GET response");
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(response.headers()[http::header::ETAG], etag);
+    assert_eq!(
+        response.headers()[http::header::LAST_MODIFIED],
+        last_modified
+    );
+    assert!(recv_body(&mut not_modified).await.is_empty());
+
+    let mut precondition_failed = sender
+        .send_request(
+            Request::builder()
+                .method(Method::GET)
+                .uri("https://example.test/ok.txt")
+                .header(http::header::IF_MATCH, "\"stale\"")
+                .body(())
+                .expect("precondition static GET"),
+        )
+        .await
+        .expect("send precondition static GET");
+    precondition_failed
+        .finish()
+        .await
+        .expect("finish precondition static GET");
+    let response = precondition_failed
+        .recv_response()
+        .await
+        .expect("precondition static GET response");
+    assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+    assert_eq!(response.headers()[http::header::ETAG], etag);
+    assert_eq!(
+        response.headers()[http::header::LAST_MODIFIED],
+        last_modified
+    );
+    assert!(recv_body(&mut precondition_failed).await.is_empty());
 
     let mut head = sender
         .send_request(
@@ -638,6 +694,29 @@ async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
         "bytes 2-5/10"
     );
     assert_eq!(recv_body(&mut range).await.as_ref(), b"2345");
+
+    let mut stale_if_range = sender
+        .send_request(
+            Request::builder()
+                .method(Method::GET)
+                .uri("https://example.test/ok.txt")
+                .header(http::header::RANGE, "bytes=2-5")
+                .header(http::header::IF_RANGE, "\"stale\"")
+                .body(())
+                .expect("stale If-Range static GET"),
+        )
+        .await
+        .expect("send stale If-Range static GET");
+    stale_if_range
+        .finish()
+        .await
+        .expect("finish stale If-Range static GET");
+    let response = stale_if_range
+        .recv_response()
+        .await
+        .expect("stale If-Range static GET response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(recv_body(&mut stale_if_range).await.as_ref(), b"0123456789");
 
     config.http_services[0].routes[0].action = HttpRouteAction::FixedResponse {
         status: 200,
