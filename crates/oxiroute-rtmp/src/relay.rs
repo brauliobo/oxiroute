@@ -3,13 +3,13 @@ use std::{
     fmt,
     io::{self, Read, Write},
     net::{SocketAddr, ToSocketAddrs},
-    sync::{
-        Arc, Condvar, Mutex, MutexGuard, OnceLock,
-        mpsc::{self, SyncSender, TrySendError},
-    },
-    thread,
+    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock},
     time::{Duration, Instant},
 };
+
+mod executor;
+
+use executor::BoundedExecutor;
 
 use bytes::Bytes;
 use rml_rtmp::{
@@ -808,45 +808,18 @@ impl PullShared {
     }
 }
 
-struct PullExecutor {
-    sender: SyncSender<Arc<PullShared>>,
-}
-
-impl PullExecutor {
-    fn new() -> Self {
-        let (sender, receiver) = mpsc::sync_channel::<Arc<PullShared>>(MAX_QUEUED_RTMP_RELAYS);
-        let receiver = Arc::new(Mutex::new(receiver));
-        for index in 0..RTMP_RELAY_WORKER_THREADS {
-            let receiver = Arc::clone(&receiver);
-            thread::Builder::new()
-                .name(format!("rtmp-pull-worker-{index}"))
-                .spawn(move || {
-                    loop {
-                        let task = receiver
-                            .lock()
-                            .expect("RTMP pull executor mutex poisoned")
-                            .recv();
-                        let Ok(shared) = task else {
-                            return;
-                        };
-                        run_pull(&shared);
-                    }
-                })
-                .expect("shared RTMP pull worker must start");
-        }
-        Self { sender }
-    }
-
-    fn admit(&self, shared: Arc<PullShared>) -> Result<(), ()> {
-        self.sender.try_send(shared).map_err(|error| match error {
-            TrySendError::Full(_) | TrySendError::Disconnected(_) => (),
-        })
-    }
-}
-
-fn pull_executor() -> &'static PullExecutor {
-    static EXECUTOR: OnceLock<PullExecutor> = OnceLock::new();
-    EXECUTOR.get_or_init(PullExecutor::new)
+fn pull_executor() -> &'static BoundedExecutor<Arc<PullShared>> {
+    static EXECUTOR: OnceLock<BoundedExecutor<Arc<PullShared>>> = OnceLock::new();
+    EXECUTOR.get_or_init(|| {
+        BoundedExecutor::new(
+            MAX_QUEUED_RTMP_RELAYS,
+            RTMP_RELAY_WORKER_THREADS,
+            "rtmp-pull-worker",
+            "RTMP pull executor mutex poisoned",
+            "shared RTMP pull worker must start",
+            |shared| run_pull(shared),
+        )
+    })
 }
 
 #[allow(
@@ -1235,45 +1208,18 @@ impl RelayCache {
     }
 }
 
-struct RelayExecutor {
-    sender: SyncSender<Arc<RelayShared>>,
-}
-
-impl RelayExecutor {
-    fn new() -> Self {
-        let (sender, receiver) = mpsc::sync_channel::<Arc<RelayShared>>(MAX_QUEUED_RTMP_RELAYS);
-        let receiver = Arc::new(Mutex::new(receiver));
-        for index in 0..RTMP_RELAY_WORKER_THREADS {
-            let receiver = Arc::clone(&receiver);
-            thread::Builder::new()
-                .name(format!("rtmp-relay-worker-{index}"))
-                .spawn(move || {
-                    loop {
-                        let task = receiver
-                            .lock()
-                            .expect("RTMP relay executor mutex poisoned")
-                            .recv();
-                        let Ok(shared) = task else {
-                            return;
-                        };
-                        run_relay(&shared);
-                    }
-                })
-                .expect("shared RTMP relay worker must start");
-        }
-        Self { sender }
-    }
-
-    fn admit(&self, shared: Arc<RelayShared>) -> Result<(), ()> {
-        self.sender.try_send(shared).map_err(|error| match error {
-            TrySendError::Full(_) | TrySendError::Disconnected(_) => (),
-        })
-    }
-}
-
-fn relay_executor() -> &'static RelayExecutor {
-    static EXECUTOR: OnceLock<RelayExecutor> = OnceLock::new();
-    EXECUTOR.get_or_init(RelayExecutor::new)
+fn relay_executor() -> &'static BoundedExecutor<Arc<RelayShared>> {
+    static EXECUTOR: OnceLock<BoundedExecutor<Arc<RelayShared>>> = OnceLock::new();
+    EXECUTOR.get_or_init(|| {
+        BoundedExecutor::new(
+            MAX_QUEUED_RTMP_RELAYS,
+            RTMP_RELAY_WORKER_THREADS,
+            "rtmp-relay-worker",
+            "RTMP relay executor mutex poisoned",
+            "shared RTMP relay worker must start",
+            |shared| run_relay(shared),
+        )
+    })
 }
 
 fn fits_queue(events: &[MediaEvent], config: &RtmpRelayConfig) -> bool {
@@ -1574,7 +1520,10 @@ fn write_packets(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        thread,
+    };
 
     use super::*;
 
