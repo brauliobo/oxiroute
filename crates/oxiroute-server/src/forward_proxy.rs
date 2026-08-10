@@ -31,9 +31,7 @@ use openssl::{
     ssl::{SslConnector, SslMethod, SslVerifyMode},
 };
 use oxiroute_acme::ChallengeStore;
-use oxiroute_cache::{
-    CacheResponse, CachedResponse, FillOutcome, Lookup, ResponseTiming, StoreOutcome, Validators,
-};
+use oxiroute_cache::{CacheResponse, CachedResponse, Lookup, ResponseTiming, StoreOutcome};
 use oxiroute_config::{
     ForwardAccessAction, ForwardAccessCondition, ForwardAccessMatcher, ForwardAccessPolicy,
     ForwardAuditMode, ForwardDirectFallback, ForwardHeaderPolicy, ForwardHttpVersion, ForwardPeer,
@@ -64,7 +62,11 @@ use tokio_openssl::SslStream;
 use crate::{
     H3UpstreamError, H3UpstreamPlan,
     capsule::relay_udp,
-    http_action::{BasicHtpasswdAccess, CacheFill, CacheFillJoin, CacheRequest, HttpCachePlan},
+    http_action::BasicHtpasswdAccess,
+    http_cache::{
+        CacheBackendError, CacheFill, CacheRequest, CacheRevalidation, CacheStart,
+        CacheStartFailure, CacheTransaction, HttpCachePlan,
+    },
     monitoring::CacheEvent,
     secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
 };
@@ -453,19 +455,12 @@ struct AuthorizedRequest {
     lifetime_deadline: Instant,
 }
 
-struct ForwardCacheRevalidation {
-    key: oxiroute_cache::CacheKey,
-    response: CachedResponse,
-    validators: Validators,
-    stale_if_error: bool,
-}
-
 struct ForwardCacheState {
     plan: Arc<HttpCachePlan>,
     request: CacheRequest,
     fill: Option<CacheFill>,
     listener: crate::ListenerMetrics,
-    revalidation: Option<ForwardCacheRevalidation>,
+    revalidation: Option<CacheRevalidation>,
     store_response: bool,
 }
 
@@ -870,20 +865,6 @@ async fn finish_forward_cache_capture(mut capture: ForwardCacheCapture) {
     }
 }
 
-async fn wait_for_forward_fill(waiter: oxiroute_cache::FillWaiter, waits: &mut usize) -> bool {
-    *waits = waits.saturating_add(1);
-    if *waits > 2 {
-        return false;
-    }
-    match waiter.wait().await {
-        FillOutcome::Stored => true,
-        FillOutcome::NotStored
-        | FillOutcome::Cancelled
-        | FillOutcome::Purged
-        | FillOutcome::Filling => *waits < 2,
-    }
-}
-
 async fn finish_forward_cache_revalidation(
     mut state: ForwardCacheState,
     headers: &HeaderMap,
@@ -1048,7 +1029,7 @@ fn record_forward_cache_event(listener: &crate::ListenerMetrics, event: CacheEve
 async fn purge_forward_cache_base(
     plan: &HttpCachePlan,
     request: &CacheRequest,
-) -> Result<oxiroute_cache::PurgeResult, crate::http_action::CacheBackendError> {
+) -> Result<oxiroute_cache::PurgeResult, CacheBackendError> {
     let base = plan.cache.base(request)?;
     plan.cache.purge_base(&base).await
 }
@@ -1832,9 +1813,6 @@ impl ForwardHttp1ServicePlan {
             return ForwardCacheDecision::Bypass;
         }
         let headers = request.headers().clone();
-        let only_if_cached = oxiroute_cache::CacheControl::parse(&headers)
-            .ok()
-            .is_some_and(|control| control.only_if_cached);
         let cache_request = CacheRequest {
             method: request.method().clone(),
             scheme: target.scheme.as_str(),
@@ -1844,99 +1822,34 @@ impl ForwardHttp1ServicePlan {
             headers,
             request_started: plan.cache.now(),
         };
-        let mut waits = 0;
-        loop {
-            let lookup = match plan.cache.lookup(&cache_request).await {
-                Ok(lookup) => lookup,
-                Err(error) => {
-                    if !error.is_invalid_request() {
-                        log::warn!("forward cache lookup bypassed: {error}");
-                    }
-                    return ForwardCacheDecision::Bypass;
+        match CacheTransaction::new(Arc::clone(plan), cache_request, listener.clone())
+            .start()
+            .await
+        {
+            CacheStart::Bypass(failure) => {
+                if let CacheStartFailure::Lookup(error) = failure
+                    && !error.is_invalid_request()
+                {
+                    log::warn!("forward cache lookup bypassed: {error}");
                 }
-            };
-            match lookup {
-                Lookup::Bypass { .. } => return ForwardCacheDecision::Bypass,
-                Lookup::Hit { response, .. } => {
-                    record_forward_cache_event(listener, CacheEvent::Hit);
-                    return ForwardCacheDecision::Respond(cached_forward_response(
-                        response,
-                        request.method(),
-                    ));
-                }
-                Lookup::Miss {
-                    base,
-                    only_if_cached: miss_only_if_cached,
-                    ..
-                } => {
-                    record_forward_cache_event(listener, CacheEvent::Miss);
-                    if only_if_cached || miss_only_if_cached {
-                        return ForwardCacheDecision::Respond(response(
-                            StatusCode::GATEWAY_TIMEOUT,
-                            Bytes::new(),
-                        ));
-                    }
-                    let fill = match plan.cache.begin_fill(base).await {
-                        Ok(CacheFillJoin::Leader(fill)) => fill,
-                        Ok(CacheFillJoin::Follower(waiter)) => {
-                            if !wait_for_forward_fill(waiter, &mut waits).await {
-                                return ForwardCacheDecision::Bypass;
-                            }
-                            continue;
-                        }
-                        Ok(CacheFillJoin::AtCapacity) | Err(_) => {
-                            return ForwardCacheDecision::Bypass;
-                        }
-                    };
-                    return ForwardCacheDecision::Continue(ForwardCacheState {
-                        plan: Arc::clone(plan),
-                        request: cache_request,
-                        fill: Some(fill),
-                        listener: listener.clone(),
-                        revalidation: None,
-                        store_response: request.method() == Method::GET,
-                    });
-                }
-                Lookup::Revalidate {
-                    response: cached,
-                    validators,
-                    stale_if_error,
-                    ..
-                } => {
-                    record_forward_cache_event(listener, CacheEvent::Miss);
-                    if only_if_cached {
-                        return ForwardCacheDecision::Respond(response(
-                            StatusCode::GATEWAY_TIMEOUT,
-                            Bytes::new(),
-                        ));
-                    }
-                    let base = cached.key.base().clone();
-                    let fill = match plan.cache.begin_fill(base).await {
-                        Ok(CacheFillJoin::Leader(fill)) => fill,
-                        Ok(CacheFillJoin::Follower(waiter)) => {
-                            if !wait_for_forward_fill(waiter, &mut waits).await {
-                                return ForwardCacheDecision::Bypass;
-                            }
-                            continue;
-                        }
-                        Ok(CacheFillJoin::AtCapacity) | Err(_) => {
-                            return ForwardCacheDecision::Bypass;
-                        }
-                    };
-                    return ForwardCacheDecision::Continue(ForwardCacheState {
-                        plan: Arc::clone(plan),
-                        request: cache_request,
-                        fill: Some(fill),
-                        listener: listener.clone(),
-                        revalidation: Some(ForwardCacheRevalidation {
-                            key: cached.key.clone(),
-                            response: cached,
-                            validators,
-                            stale_if_error,
-                        }),
-                        store_response: request.method() == Method::GET,
-                    });
-                }
+                ForwardCacheDecision::Bypass
+            }
+            CacheStart::Hit(cached) => {
+                ForwardCacheDecision::Respond(cached_forward_response(cached, request.method()))
+            }
+            CacheStart::OnlyIfCached => {
+                ForwardCacheDecision::Respond(response(StatusCode::GATEWAY_TIMEOUT, Bytes::new()))
+            }
+            CacheStart::MissLeader(transaction) | CacheStart::RevalidationLeader(transaction) => {
+                let leader = transaction.into_leader_parts();
+                ForwardCacheDecision::Continue(ForwardCacheState {
+                    plan: leader.plan,
+                    request: leader.request,
+                    fill: Some(leader.fill),
+                    listener: listener.clone(),
+                    revalidation: leader.revalidation,
+                    store_response: request.method() == Method::GET,
+                })
             }
         }
     }
