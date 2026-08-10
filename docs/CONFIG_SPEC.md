@@ -419,7 +419,9 @@ Current constraints:
   documented suffix semantics.
 - `path_prefix` defaults to `/`, matches only complete path segments, and has trailing slashes
   normalized away except for `/`. A missing or empty `methods` list matches every method;
-  configured methods MUST be uppercase HTTP tokens.
+  configured methods accept 1 through 32 authored HTTP-token bytes and normalize ASCII letters to
+  uppercase during validation. Digits and RFC token punctuation are preserved. Route and cache method
+  lists sort after normalization; ordered forward-access method lists preserve authored order.
 - Route precedence is exact host, wildcard host, then host catch-all; within a host class the
   longest path prefix wins, and source order resolves any remaining tie. No match returns `404`.
 - Routes with identical normalized host, path, and method matchers are rejected. Source order only

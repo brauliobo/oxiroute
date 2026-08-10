@@ -9,7 +9,7 @@ use crate::{
         MAX_CACHE_TAG_BYTES, MAX_CACHE_TAGS_PER_OBJECT,
     },
     http_validation::normalize_header_name,
-    lexical::{normalize_absolute_directory, validate_file_path},
+    lexical::{normalize_absolute_directory, normalize_http_token, validate_file_path},
     model::{
         CacheKeyComponent, CachePredicate, CachePurgeAuthorization, CacheStore, ConfigError,
         HttpCachePolicy,
@@ -277,7 +277,12 @@ fn validate_cache_key(
     }
     let mut methods = HashSet::with_capacity(policy.methods.len());
     for method in &mut policy.methods {
-        method.make_ascii_uppercase();
+        if normalize_http_token(method).is_err() {
+            return Err(invalid(
+                "methods",
+                "each method must be an HTTP token of at most 32 bytes".into(),
+            ));
+        }
         if !matches!(method.as_str(), "GET" | "HEAD") {
             return Err(invalid("methods", "only GET and HEAD are cacheable".into()));
         }

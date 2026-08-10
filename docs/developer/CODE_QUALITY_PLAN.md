@@ -225,6 +225,11 @@ victims, inserting, snapshotting every resident key, and deleting differences.
 
 ### P1.5 Canonical lexical and HTTP-method ownership
 
+**Status:** Complete. Neutral DNS/path primitives are shared with importers, and route, cache, and
+forward validation now use one bounded HTTP-token normalizer. Plain Serde preserves authored method
+strings; `validate_config` uppercases accepted tokens, route/cache retain sorting, forward access
+retains declaration order, and render validates a clone without mutating its caller.
+
 **Finding:** DNS-label and safe-path rules have import-side copies, and route, cache, and forward
 method validators have drifted grammar and normalization behavior.
 
@@ -240,9 +245,10 @@ method validators have drifted grammar and normalization behavior.
 
 - [x] Expose narrow, neutral lexical primitives from `oxiroute-config` and wrap their errors with
   product-specific diagnostics.
-- [ ] Add one HTTP-token parser/normalizer; keep list bounds, deduplication, sorting, and GET/HEAD
+- [x] Add one HTTP-token parser/normalizer; keep list bounds, deduplication, sorting, and GET/HEAD
   restrictions at their current owners.
-- [ ] Explicitly decide whether authored forward-proxy methods normalize or must already be uppercase.
+- [x] Normalize authored forward-proxy methods to uppercase during validation while preserving access
+  rule method order.
 
 ### P1.6 RTMP media parser and snapshot invariants
 
