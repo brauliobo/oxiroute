@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
+import { deferred } from './test/deferred'
 import {
   contractCatalog,
   contractMonitoring,
@@ -17,20 +18,6 @@ const topology = contractTopology()
 
 function monitoringSample() {
   return contractMonitoring()
-}
-
-function deferred<T>(): {
-  promise: Promise<T>
-  resolve: (value: T) => void
-  reject: (reason: unknown) => void
-} {
-  let resolve!: (value: T) => void
-  let reject!: (reason: unknown) => void
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise
-    reject = rejectPromise
-  })
-  return { promise, resolve, reject }
 }
 
 afterEach(() => {

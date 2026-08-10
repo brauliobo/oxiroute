@@ -9,6 +9,8 @@ mod fixture_support;
 mod http_support;
 #[path = "support/process.rs"]
 mod process_support;
+#[path = "support/revision.rs"]
+mod revision_support;
 
 use std::{
     net::{Ipv4Addr, SocketAddr, UdpSocket as StdUdpSocket},
@@ -29,6 +31,7 @@ use tokio::{
 use config_support::{empty_config, socket_endpoint};
 use http_support::{HttpResponse, http_request};
 use process_support::{ServerProcess, reserve_tcp_address, write_config};
+use revision_support::{active_revision, wait_for_new_revision};
 
 const TOKEN: &str = "2d9e0b7f5c4a3e1d8f6b0a9c7e5d3b1f2a4c6e8d0b9f7a5c3e1d9b7f5a3c1e8d";
 const WIRE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -190,21 +193,6 @@ fn udp_config(
     }
 }
 
-async fn active_revision(address: SocketAddr, authorization: &str) -> String {
-    http_request(
-        address,
-        "GET",
-        "/api/v1/status",
-        &[("Authorization", authorization)],
-        &[],
-    )
-    .await
-    .json()["activeRevision"]
-        .as_str()
-        .expect("active UDP revision")
-        .to_owned()
-}
-
 async fn wait_for_udp_listener(address: SocketAddr, authorization: &str) {
     timeout(WIRE_TIMEOUT, async {
         loop {
@@ -229,30 +217,6 @@ async fn wait_for_udp_listener(address: SocketAddr, authorization: &str) {
     })
     .await
     .expect("UDP listener readiness timed out");
-}
-
-async fn wait_for_new_revision(address: SocketAddr, authorization: &str, original: &str) {
-    timeout(WIRE_TIMEOUT, async {
-        loop {
-            let response = http_request(
-                address,
-                "GET",
-                "/api/v1/status",
-                &[("Authorization", authorization)],
-                &[],
-            )
-            .await;
-            if response.json()["activeRevision"]
-                .as_str()
-                .is_some_and(|revision| revision != original)
-            {
-                return;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("UDP generation reload timed out");
 }
 
 async fn receive_upstream(socket: &UdpSocket, expected: &[u8]) -> SocketAddr {
