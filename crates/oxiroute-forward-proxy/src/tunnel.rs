@@ -399,194 +399,174 @@ impl BoundedTunnel {
                     .unwrap_or(usize::MAX),
             );
 
-            if downstream_open {
+            let event = if downstream_open {
                 tokio::select! {
-                    () = sleep_until(lifetime_deadline) => {
-                        return h2_ended(
-                            &mut downstream,
-                            TunnelEnd::LifetimeTimeout,
-                            load_stats(&left_to_right, &right_to_left),
-                        ).await;
-                    }
-                    () = sleep_until(idle_deadline) => {
-                        return h2_ended(
-                            &mut downstream,
-                            TunnelEnd::IdleTimeout,
-                            load_stats(&left_to_right, &right_to_left),
-                        ).await;
-                    }
-                    result = downstream.recv_data() => {
-                        let data = match result {
-                            Ok(Some(data)) => data,
-                            Ok(None) => {
-                                downstream_open = false;
-                                if upstream_write_open {
-                                    match shutdown_with_deadlines(
-                                        &mut upstream,
-                                        lifetime_deadline,
-                                        idle_deadline,
-                                    ).await {
-                                        Ok(()) => upstream_write_open = false,
-                                        Err(error) => {
-                                            return h2_operation_failure(
-                                                &mut downstream,
-                                                error,
-                                                load_stats(&left_to_right, &right_to_left),
-                                            ).await;
-                                        }
-                                    }
-                                }
-                                continue;
-                            }
-                            Err(source) => {
-                                return h2_io(
-                                    &mut downstream,
-                                    load_stats(&left_to_right, &right_to_left),
-                                    source,
-                                ).await;
-                            }
-                        };
-                        let left_to_right_current = left_to_right.load(Ordering::Relaxed);
-                        if left_to_right_current >= self.limits.max_bytes_per_direction {
-                            return h2_ended(
-                                &mut downstream,
-                                TunnelEnd::ByteLimitLeftToRight,
-                                load_stats(&left_to_right, &right_to_left),
-                            ).await;
-                        }
-                        let allowed = data.len().min(
-                            usize::try_from(
-                                self.limits.max_bytes_per_direction - left_to_right_current,
-                            )
-                            .unwrap_or(usize::MAX),
-                        );
-                        if allowed > 0 {
-                            if let Err(error) = write_with_deadlines(
-                                &mut upstream,
-                                &data[..allowed],
-                                lifetime_deadline,
-                                idle_deadline,
-                            )
-                            .await
-                            {
-                                return h2_operation_failure(
-                                    &mut downstream,
-                                    error,
-                                    load_stats(&left_to_right, &right_to_left),
-                                )
-                                .await;
-                            }
-                            left_to_right.fetch_add(
-                                u64::try_from(allowed).unwrap_or(u64::MAX),
-                                Ordering::Relaxed,
-                            );
-                            idle_deadline = Instant::now() + self.limits.idle_timeout;
-                        }
-                        if allowed < data.len()
-                            || left_to_right.load(Ordering::Relaxed)
-                                >= self.limits.max_bytes_per_direction
-                        {
-                            return h2_ended(
-                                &mut downstream,
-                                TunnelEnd::ByteLimitLeftToRight,
-                                load_stats(&left_to_right, &right_to_left),
-                            )
-                            .await;
-                        }
-                    }
+                    () = sleep_until(lifetime_deadline) => H2RelayEvent::LifetimeTimeout,
+                    () = sleep_until(idle_deadline) => H2RelayEvent::IdleTimeout,
+                    result = downstream.recv_data() => H2RelayEvent::DownstreamData(result),
                     result = upstream.read(&mut buffer[..read_limit]), if upstream_read_open => {
-                        match relay_h2_upstream_read(
-                            &mut downstream,
-                            result,
-                            &buffer,
-                            &right_to_left,
-                            self.limits.max_bytes_per_direction,
-                            lifetime_deadline,
-                            self.limits.idle_timeout,
-                            &mut idle_deadline,
-                        ).await {
-                            Ok(H2UpstreamEvent::Continue) => {}
-                            Ok(H2UpstreamEvent::Eof) => {
-                                upstream_read_open = false;
-                                response_open = false;
-                            }
-                            Ok(H2UpstreamEvent::Limit) => {
-                                return h2_ended(
-                                    &mut downstream,
-                                    TunnelEnd::ByteLimitRightToLeft,
-                                    load_stats(&left_to_right, &right_to_left),
-                                ).await;
-                            }
-                            Err(error) => {
-                                return h2_operation_failure(
-                                    &mut downstream,
-                                    error,
-                                    load_stats(&left_to_right, &right_to_left),
-                                ).await;
-                            }
-                        }
+                        H2RelayEvent::UpstreamData(result)
                     }
                 }
             } else {
                 tokio::select! {
-                    () = sleep_until(lifetime_deadline) => {
-                        return h2_ended(
-                            &mut downstream,
-                            TunnelEnd::LifetimeTimeout,
-                            load_stats(&left_to_right, &right_to_left),
-                        ).await;
-                    }
-                    () = sleep_until(idle_deadline) => {
-                        return h2_ended(
-                            &mut downstream,
-                            TunnelEnd::IdleTimeout,
-                            load_stats(&left_to_right, &right_to_left),
-                        ).await;
-                    }
-                    result = downstream.wait_closed() => {
-                        let source = match result {
-                            Ok(()) => io::Error::new(
-                                io::ErrorKind::BrokenPipe,
-                                "HTTP/2 stream was reset",
-                            ),
-                            Err(source) => source,
-                        };
-                        return h2_io(
-                            &mut downstream,
-                            load_stats(&left_to_right, &right_to_left),
-                            source,
-                        ).await;
-                    }
+                    () = sleep_until(lifetime_deadline) => H2RelayEvent::LifetimeTimeout,
+                    () = sleep_until(idle_deadline) => H2RelayEvent::IdleTimeout,
+                    result = downstream.wait_closed() => H2RelayEvent::DownstreamClosed(result),
                     result = upstream.read(&mut buffer[..read_limit]), if upstream_read_open => {
-                        match relay_h2_upstream_read(
+                        H2RelayEvent::UpstreamData(result)
+                    }
+                }
+            };
+
+            match event {
+                H2RelayEvent::LifetimeTimeout => {
+                    return h2_ended(
+                        &mut downstream,
+                        TunnelEnd::LifetimeTimeout,
+                        load_stats(&left_to_right, &right_to_left),
+                    )
+                    .await;
+                }
+                H2RelayEvent::IdleTimeout => {
+                    return h2_ended(
+                        &mut downstream,
+                        TunnelEnd::IdleTimeout,
+                        load_stats(&left_to_right, &right_to_left),
+                    )
+                    .await;
+                }
+                H2RelayEvent::DownstreamData(result) => {
+                    let data = match result {
+                        Ok(Some(data)) => data,
+                        Ok(None) => {
+                            downstream_open = false;
+                            if upstream_write_open {
+                                match shutdown_with_deadlines(
+                                    &mut upstream,
+                                    lifetime_deadline,
+                                    idle_deadline,
+                                )
+                                .await
+                                {
+                                    Ok(()) => upstream_write_open = false,
+                                    Err(error) => {
+                                        return h2_operation_failure(
+                                            &mut downstream,
+                                            error,
+                                            load_stats(&left_to_right, &right_to_left),
+                                        )
+                                        .await;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        Err(source) => {
+                            return h2_io(
+                                &mut downstream,
+                                load_stats(&left_to_right, &right_to_left),
+                                source,
+                            )
+                            .await;
+                        }
+                    };
+                    let left_to_right_current = left_to_right.load(Ordering::Relaxed);
+                    if left_to_right_current >= self.limits.max_bytes_per_direction {
+                        return h2_ended(
                             &mut downstream,
-                            result,
-                            &buffer,
-                            &right_to_left,
-                            self.limits.max_bytes_per_direction,
+                            TunnelEnd::ByteLimitLeftToRight,
+                            load_stats(&left_to_right, &right_to_left),
+                        )
+                        .await;
+                    }
+                    let allowed = data.len().min(
+                        usize::try_from(
+                            self.limits.max_bytes_per_direction - left_to_right_current,
+                        )
+                        .unwrap_or(usize::MAX),
+                    );
+                    if allowed > 0 {
+                        if let Err(error) = write_with_deadlines(
+                            &mut upstream,
+                            &data[..allowed],
                             lifetime_deadline,
-                            self.limits.idle_timeout,
-                            &mut idle_deadline,
-                        ).await {
-                            Ok(H2UpstreamEvent::Continue) => {}
-                            Ok(H2UpstreamEvent::Eof) => {
-                                upstream_read_open = false;
-                                response_open = false;
-                            }
-                            Ok(H2UpstreamEvent::Limit) => {
-                                return h2_ended(
-                                    &mut downstream,
-                                    TunnelEnd::ByteLimitRightToLeft,
-                                    load_stats(&left_to_right, &right_to_left),
-                                ).await;
-                            }
-                            Err(error) => {
-                                return h2_operation_failure(
-                                    &mut downstream,
-                                    error,
-                                    load_stats(&left_to_right, &right_to_left),
-                                ).await;
-                            }
+                            idle_deadline,
+                        )
+                        .await
+                        {
+                            return h2_operation_failure(
+                                &mut downstream,
+                                error,
+                                load_stats(&left_to_right, &right_to_left),
+                            )
+                            .await;
+                        }
+                        left_to_right.fetch_add(
+                            u64::try_from(allowed).unwrap_or(u64::MAX),
+                            Ordering::Relaxed,
+                        );
+                        idle_deadline = Instant::now() + self.limits.idle_timeout;
+                    }
+                    if allowed < data.len()
+                        || left_to_right.load(Ordering::Relaxed)
+                            >= self.limits.max_bytes_per_direction
+                    {
+                        return h2_ended(
+                            &mut downstream,
+                            TunnelEnd::ByteLimitLeftToRight,
+                            load_stats(&left_to_right, &right_to_left),
+                        )
+                        .await;
+                    }
+                }
+                H2RelayEvent::DownstreamClosed(result) => {
+                    let source = match result {
+                        Ok(()) => {
+                            io::Error::new(io::ErrorKind::BrokenPipe, "HTTP/2 stream was reset")
+                        }
+                        Err(source) => source,
+                    };
+                    return h2_io(
+                        &mut downstream,
+                        load_stats(&left_to_right, &right_to_left),
+                        source,
+                    )
+                    .await;
+                }
+                H2RelayEvent::UpstreamData(result) => {
+                    match relay_h2_upstream_read(
+                        &mut downstream,
+                        result,
+                        &buffer,
+                        &right_to_left,
+                        self.limits.max_bytes_per_direction,
+                        lifetime_deadline,
+                        self.limits.idle_timeout,
+                        &mut idle_deadline,
+                    )
+                    .await
+                    {
+                        Ok(H2UpstreamEvent::Continue) => {}
+                        Ok(H2UpstreamEvent::Eof) => {
+                            upstream_read_open = false;
+                            response_open = false;
+                        }
+                        Ok(H2UpstreamEvent::Limit) => {
+                            return h2_ended(
+                                &mut downstream,
+                                TunnelEnd::ByteLimitRightToLeft,
+                                load_stats(&left_to_right, &right_to_left),
+                            )
+                            .await;
+                        }
+                        Err(error) => {
+                            return h2_operation_failure(
+                                &mut downstream,
+                                error,
+                                load_stats(&left_to_right, &right_to_left),
+                            )
+                            .await;
                         }
                     }
                 }
@@ -606,6 +586,15 @@ enum H2UpstreamEvent {
     Continue,
     Eof,
     Limit,
+}
+
+#[derive(Debug)]
+enum H2RelayEvent {
+    LifetimeTimeout,
+    IdleTimeout,
+    DownstreamData(io::Result<Option<Bytes>>),
+    DownstreamClosed(io::Result<()>),
+    UpstreamData(io::Result<usize>),
 }
 
 #[allow(clippy::too_many_arguments)]
