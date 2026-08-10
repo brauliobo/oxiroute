@@ -974,6 +974,7 @@ fn bare_nginx_proxy_timeouts_preserve_seconds_for_slow_upstreams() {
     assert_eq!(policy.connect_timeout_ms, 600_000);
     assert_eq!(policy.read_timeout_ms, 600_000);
     assert_eq!(policy.write_timeout_ms, 600_000);
+    assert_eq!(config.http_services[0].upstream_io_timeout_ms, 600_000);
 }
 
 #[test]
