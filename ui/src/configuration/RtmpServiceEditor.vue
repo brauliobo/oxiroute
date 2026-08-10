@@ -68,50 +68,11 @@ fieldset.object-block(data-field="rtmp_services[].outbound_policy")
     label.field(data-field="rtmp_services[].outbound_policy.max_chain_depth")
       span Maximum relay chain depth
       input(type="number" min="1" max="16" step="1" v-model.number="service.outbound_policy.max_chain_depth")
-fieldset.object-block(data-field="rtmp_services[].callbacks")
-  legend Service callbacks
-  .field-grid
-    label.field(data-field="rtmp_services[].callbacks.on_connect")
-      span Connect callback
-      input(type="text" v-model="service.callbacks.on_connect" autocomplete="off")
-    label.field(data-field="rtmp_services[].callbacks.on_disconnect")
-      span Disconnect callback
-      input(type="text" v-model="service.callbacks.on_disconnect" autocomplete="off")
-    label.field(data-field="rtmp_services[].callbacks.on_publish")
-      span Publish callback
-      input(type="text" v-model="service.callbacks.on_publish" autocomplete="off")
-    label.field(data-field="rtmp_services[].callbacks.on_publish_done")
-      span Publish done callback
-      input(type="text" v-model="service.callbacks.on_publish_done" autocomplete="off")
-    label.field(data-field="rtmp_services[].callbacks.on_play")
-      span Play callback
-      input(type="text" v-model="service.callbacks.on_play" autocomplete="off")
-    label.field(data-field="rtmp_services[].callbacks.on_play_done")
-      span Play done callback
-      input(type="text" v-model="service.callbacks.on_play_done" autocomplete="off")
-    label.field(data-field="rtmp_services[].callbacks.on_done")
-      span Done callback
-      input(type="text" v-model="service.callbacks.on_done" autocomplete="off")
-    label.field(data-field="rtmp_services[].callbacks.on_update")
-      span Update callback
-      input(type="text" v-model="service.callbacks.on_update" autocomplete="off")
-    label.field(data-field="rtmp_services[].callbacks.notify_method")
-      span Callback method
-      select(v-model="service.callbacks.notify_method")
-        option(value="post") POST
-        option(value="get") GET
-    label.field(data-field="rtmp_services[].callbacks.timeout_ms")
-      span Callback timeout (ms)
-      input(type="number" min="1" max="86400000" step="1" v-model.number="service.callbacks.timeout_ms")
-    label.field(data-field="rtmp_services[].callbacks.notify_update_timeout_ms")
-      span Update timeout (ms)
-      input(type="number" min="1" max="86400000" step="1" v-model.number="service.callbacks.notify_update_timeout_ms")
-    label.enable-row.compact-enable(data-field="rtmp_services[].callbacks.notify_update_strict")
-      input(type="checkbox" v-model="service.callbacks.notify_update_strict")
-      span Require update callback success
-    label.enable-row.compact-enable(data-field="rtmp_services[].callbacks.notify_relay_redirect")
-      input(type="checkbox" v-model="service.callbacks.notify_relay_redirect")
-      span Notify relay redirects
+RtmpCallbackEditor(
+  :callbacks="service.callbacks"
+  field-path="rtmp_services[].callbacks"
+  legend="Service callbacks"
+)
 fieldset.route-list(data-field="rtmp_services[].exec_profiles")
   .route-heading
     legend Exec profiles
@@ -406,50 +367,11 @@ fieldset.route-list(data-field="rtmp_services[].applications")
           label.field(data-field="rtmp_services[].applications[].relay.handshake_timeout_ms")
             span Relay handshake timeout (ms)
             input(type="number" min="1" max="86400000" step="1" v-model.number="application.relay.handshake_timeout_ms")
-      fieldset.object-block(data-field="rtmp_services[].applications[].callbacks")
-        legend Application callbacks
-        .field-grid
-          label.field(data-field="rtmp_services[].applications[].callbacks.on_connect")
-            span Connect callback
-            input(type="text" v-model="application.callbacks.on_connect" autocomplete="off")
-          label.field(data-field="rtmp_services[].applications[].callbacks.on_disconnect")
-            span Disconnect callback
-            input(type="text" v-model="application.callbacks.on_disconnect" autocomplete="off")
-          label.field(data-field="rtmp_services[].applications[].callbacks.on_publish")
-            span Publish callback
-            input(type="text" v-model="application.callbacks.on_publish" autocomplete="off")
-          label.field(data-field="rtmp_services[].applications[].callbacks.on_publish_done")
-            span Publish done callback
-            input(type="text" v-model="application.callbacks.on_publish_done" autocomplete="off")
-          label.field(data-field="rtmp_services[].applications[].callbacks.on_play")
-            span Play callback
-            input(type="text" v-model="application.callbacks.on_play" autocomplete="off")
-          label.field(data-field="rtmp_services[].applications[].callbacks.on_play_done")
-            span Play done callback
-            input(type="text" v-model="application.callbacks.on_play_done" autocomplete="off")
-          label.field(data-field="rtmp_services[].applications[].callbacks.on_done")
-            span Done callback
-            input(type="text" v-model="application.callbacks.on_done" autocomplete="off")
-          label.field(data-field="rtmp_services[].applications[].callbacks.on_update")
-            span Update callback
-            input(type="text" v-model="application.callbacks.on_update" autocomplete="off")
-          label.field(data-field="rtmp_services[].applications[].callbacks.notify_method")
-            span Callback method
-            select(v-model="application.callbacks.notify_method")
-              option(value="post") POST
-              option(value="get") GET
-          label.field(data-field="rtmp_services[].applications[].callbacks.timeout_ms")
-            span Callback timeout (ms)
-            input(type="number" min="1" max="86400000" step="1" v-model.number="application.callbacks.timeout_ms")
-          label.field(data-field="rtmp_services[].applications[].callbacks.notify_update_timeout_ms")
-            span Update timeout (ms)
-            input(type="number" min="1" max="86400000" step="1" v-model.number="application.callbacks.notify_update_timeout_ms")
-          label.enable-row.compact-enable(data-field="rtmp_services[].applications[].callbacks.notify_update_strict")
-            input(type="checkbox" v-model="application.callbacks.notify_update_strict")
-            span Require update callback success
-          label.enable-row.compact-enable(data-field="rtmp_services[].applications[].callbacks.notify_relay_redirect")
-            input(type="checkbox" v-model="application.callbacks.notify_relay_redirect")
-            span Notify relay redirects
+      RtmpCallbackEditor(
+        :callbacks="application.callbacks"
+        field-path="rtmp_services[].applications[].callbacks"
+        legend="Application callbacks"
+      )
     fieldset.object-block(data-field="rtmp_services[].applications[].fanout")
       legend Fanout bounds
       .field-grid
@@ -606,7 +528,6 @@ fieldset.route-list(data-field="rtmp_services[].applications")
 <script setup lang="ts">
 import StringListField from '../StringListField.vue'
 import type {
-  RtmpAccessPolicyConfig,
   RtmpApplicationConfig,
   RtmpDashPolicyConfig,
   RtmpExecEnvironmentConfig,
@@ -618,8 +539,9 @@ import type {
   RtmpRecorderConfig,
   RtmpServiceConfig,
 } from '../config'
-import { defaultRtmpCallback, defaultRtmpRelay } from './canonicalDefaults'
+import { defaultRtmpApplication } from './canonicalDefaults'
 import RtmpAccessPolicyEditor from './RtmpAccessPolicyEditor.vue'
+import RtmpCallbackEditor from './RtmpCallbackEditor.vue'
 import RtmpRecorderEditor from './RtmpRecorderEditor.vue'
 
 const props = defineProps<{ service: RtmpServiceConfig }>()
@@ -629,31 +551,7 @@ const emit = defineEmits<{
 }>()
 
 function newApplication(): RtmpApplicationConfig {
-  return {
-    name: '',
-    live: true,
-    idle_streams: true,
-    publish: newAccessPolicy(),
-    play: newAccessPolicy(),
-    limits: {
-      max_connections: 1_024,
-      max_publishers: 256,
-      max_viewers: 1_024,
-    },
-    push_targets: [],
-    pull_targets: [],
-    relay: defaultRtmpRelay(),
-    callbacks: defaultRtmpCallback(),
-    fanout: {
-      max_subscribers: 1_024,
-      max_queue_messages_per_subscriber: 256,
-      max_queue_bytes_per_subscriber: 8_388_608,
-    },
-    vod: null,
-    hls: null,
-    dash: null,
-    recorders: [],
-  }
+  return defaultRtmpApplication()
 }
 
 function newHlsPolicy(): RtmpHlsPolicyConfig {
@@ -715,10 +613,6 @@ function newExecProfile(): RtmpExecProfileConfig {
     respawn_delay_ms: 1_000,
     max_respawns: 0,
   }
-}
-
-function newAccessPolicy(): RtmpAccessPolicyConfig {
-  return { rules: [], token: null }
 }
 
 function newRecorder(): RtmpRecorderConfig {

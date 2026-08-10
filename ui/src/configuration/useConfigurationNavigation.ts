@@ -9,10 +9,10 @@ import type {
 import {
   defaultCacheStore,
   defaultForwardProxyService,
-  defaultRtmpCallback,
+  defaultRtmpApplication,
   defaultRtmpAutoPush,
+  defaultRtmpCallback,
   defaultRtmpOutboundPolicy,
-  defaultRtmpRelay,
 } from './canonicalDefaults'
 import { defaultHttpRoute } from './httpDefaults'
 
@@ -264,29 +264,7 @@ export function useConfigurationNavigation(
           outbound_policy: defaultRtmpOutboundPolicy(),
           callbacks: defaultRtmpCallback(),
           auto_push: defaultRtmpAutoPush(),
-          applications: [{
-            name: '',
-            live: true,
-            idle_streams: true,
-            publish: { rules: [], token: null },
-            play: { rules: [], token: null },
-            limits: {
-              max_connections: 1_024,
-              max_publishers: 256,
-              max_viewers: 1_024,
-            },
-            push_targets: [],
-            pull_targets: [],
-            relay: defaultRtmpRelay(),
-            callbacks: defaultRtmpCallback(),
-            fanout: {
-              max_subscribers: 1_024,
-              max_queue_messages_per_subscriber: 256,
-              max_queue_bytes_per_subscriber: 8_388_608,
-            },
-            vod: null,
-            recorders: [],
-          }],
+          applications: [defaultRtmpApplication()],
         })
         break
       case 'l4_services':
