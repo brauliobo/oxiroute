@@ -29,6 +29,7 @@ pub use protocol::{
     ServiceProtocol,
 };
 pub use replacement::{
-    Instance, ReplacementAction, ReplacementError, ReplacementEvent, ReplacementSupervisor,
+    Instance, ReplacementAction, ReplacementError, ReplacementEvent, ReplacementPhase,
+    ReplacementSupervisor,
 };
 pub use snapshot::{SnapshotEnvelope, SnapshotError};

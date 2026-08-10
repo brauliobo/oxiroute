@@ -1,6 +1,6 @@
 use oxiroute_supervision::{
     GenerationId, Instance, InstanceId, Lifecycle, ReplacementAction, ReplacementError,
-    ReplacementEvent, ReplacementSupervisor,
+    ReplacementEvent, ReplacementPhase, ReplacementSupervisor,
 };
 
 fn id(name: &str) -> InstanceId {
@@ -667,7 +667,7 @@ fn retired_at(lifecycle: Lifecycle) -> ReplacementSupervisor {
 }
 
 #[test]
-fn retired_failure_and_termination_timeout_are_characterized_as_representable() {
+fn retired_failure_transitions_every_owned_state_to_forced_stopping() {
     for lifecycle in [Lifecycle::Draining, Lifecycle::Snapshotting] {
         let mut supervisor = retired_at(lifecycle);
         let before = supervisor.clone();
@@ -682,11 +682,15 @@ fn retired_failure_and_termination_timeout_are_characterized_as_representable() 
         assert_eq!(supervisor, before);
     }
 
-    let mut supervisor = retired_at(Lifecycle::Stopping);
-    for _ in 0..2 {
+    for lifecycle in [
+        Lifecycle::Draining,
+        Lifecycle::Snapshotting,
+        Lifecycle::Stopping,
+    ] {
+        let mut supervisor = retired_at(lifecycle);
         assert_step(
             &mut supervisor,
-            ReplacementEvent::TerminationTimedOut {
+            ReplacementEvent::RetiredFailed {
                 instance_id: id("active-1"),
             },
             vec![ReplacementAction::Kill {
@@ -696,14 +700,30 @@ fn retired_failure_and_termination_timeout_are_characterized_as_representable() 
             None,
             Some(instance("active-1", 1, Lifecycle::Stopping)),
         );
+
+        for _ in 0..2 {
+            assert_step(
+                &mut supervisor,
+                ReplacementEvent::TerminationTimedOut {
+                    instance_id: id("active-1"),
+                },
+                vec![ReplacementAction::Kill {
+                    instance_id: id("active-1"),
+                }],
+                instance("candidate-2", 2, Lifecycle::Active),
+                None,
+                Some(instance("active-1", 1, Lifecycle::Stopping)),
+            );
+        }
     }
 
+    let mut supervisor = ReplacementSupervisor::new(active()).unwrap();
     let before = supervisor.clone();
     assert_eq!(
-        supervisor.apply(ReplacementEvent::CandidateFailed {
+        supervisor.apply(ReplacementEvent::RetiredFailed {
             instance_id: id("active-1"),
         }),
-        Err(ReplacementError::MissingRole { role: "candidate" })
+        Err(ReplacementError::MissingRole { role: "retired" })
     );
     assert_eq!(supervisor, before);
 }
@@ -731,17 +751,24 @@ fn stale_and_wrong_role_ids_are_rejected_atomically() {
     }
 
     let mut supervisor = retired_at(Lifecycle::Draining);
-    let before = supervisor.clone();
-    assert!(matches!(
-        supervisor.apply(ReplacementEvent::RetiredDrained {
+    for event in [
+        ReplacementEvent::RetiredDrained {
             instance_id: id("candidate-2"),
-        }),
-        Err(ReplacementError::UnexpectedInstanceId {
-            role: "retired",
-            ..
-        })
-    ));
-    assert_eq!(supervisor, before);
+        },
+        ReplacementEvent::RetiredFailed {
+            instance_id: id("candidate-2"),
+        },
+    ] {
+        let before = supervisor.clone();
+        assert!(matches!(
+            supervisor.apply(event),
+            Err(ReplacementError::UnexpectedInstanceId {
+                role: "retired",
+                ..
+            })
+        ));
+        assert_eq!(supervisor, before);
+    }
 }
 
 #[test]
@@ -828,6 +855,9 @@ fn bounded_event_corpus() -> Vec<ReplacementEvent> {
             ReplacementEvent::RetiredSnapshotCaptured {
                 instance_id: instance_id.clone(),
             },
+            ReplacementEvent::RetiredFailed {
+                instance_id: instance_id.clone(),
+            },
             ReplacementEvent::RetiredStopped {
                 instance_id: instance_id.clone(),
             },
@@ -835,6 +865,32 @@ fn bounded_event_corpus() -> Vec<ReplacementEvent> {
         ]);
     }
     events
+}
+
+fn characterized_phase(supervisor: &ReplacementSupervisor) -> ReplacementPhase {
+    if let Some(retired) = supervisor.retired() {
+        return match retired.lifecycle {
+            Lifecycle::Draining | Lifecycle::Snapshotting => ReplacementPhase::DrainingRetired,
+            Lifecycle::Stopping => ReplacementPhase::StoppingRetired,
+            lifecycle => panic!("uncharacterized retired lifecycle: {lifecycle:?}"),
+        };
+    }
+    if let Some(candidate) = supervisor.candidate() {
+        return match candidate.lifecycle {
+            Lifecycle::Spawned | Lifecycle::Handshaking | Lifecycle::Preparing => {
+                ReplacementPhase::AdoptingCandidate
+            }
+            Lifecycle::Ready => ReplacementPhase::Quiescing,
+            Lifecycle::Activating => ReplacementPhase::ActivatingCandidate,
+            Lifecycle::Stopping => ReplacementPhase::RollingBack,
+            lifecycle => panic!("uncharacterized candidate lifecycle: {lifecycle:?}"),
+        };
+    }
+    match supervisor.active().lifecycle {
+        Lifecycle::Active => ReplacementPhase::Running,
+        Lifecycle::Reactivating => ReplacementPhase::RollingBack,
+        lifecycle => panic!("uncharacterized active lifecycle: {lifecycle:?}"),
+    }
 }
 
 #[test]
@@ -845,6 +901,7 @@ fn every_invalid_event_is_atomic_over_bounded_reachable_states() {
     let mut cursor = 0;
     while cursor < reachable.len() {
         let state = reachable[cursor].clone();
+        assert_eq!(state.phase(), characterized_phase(&state));
         for event in bounded_event_corpus() {
             let mut next = state.clone();
             if next.apply(event).is_err() {
@@ -861,4 +918,15 @@ fn every_invalid_event_is_atomic_over_bounded_reachable_states() {
     }
 
     assert_eq!(reachable.len(), 57);
+    for phase in [
+        ReplacementPhase::Running,
+        ReplacementPhase::AdoptingCandidate,
+        ReplacementPhase::Quiescing,
+        ReplacementPhase::ActivatingCandidate,
+        ReplacementPhase::RollingBack,
+        ReplacementPhase::DrainingRetired,
+        ReplacementPhase::StoppingRetired,
+    ] {
+        assert!(reachable.iter().any(|state| state.phase() == phase));
+    }
 }
