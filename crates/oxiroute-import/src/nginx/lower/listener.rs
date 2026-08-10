@@ -556,6 +556,19 @@ impl Lowerer {
         } else {
             Some(AccessLogPolicy::Disabled)
         };
+        let upstream_io_timeout_ms = routes
+            .iter()
+            .filter_map(|route| {
+                matches!(&route.action, HttpRouteAction::Proxy { .. }).then_some(
+                    route
+                        .policy
+                        .connect_timeout_ms
+                        .max(route.policy.read_timeout_ms)
+                        .max(route.policy.write_timeout_ms),
+                )
+            })
+            .max()
+            .unwrap_or(NGINX_DEFAULT_PROXY_TIMEOUT_MS);
         Some(BindCandidate {
             listener: Listener {
                 name: format!("nginx-http-listener-{http_index}-{bind_index}"),
@@ -571,7 +584,7 @@ impl Lowerer {
                 name: service_name,
                 routes,
                 automatic_response_headers: true,
-                upstream_io_timeout_ms: NGINX_DEFAULT_PROXY_TIMEOUT_MS,
+                upstream_io_timeout_ms,
                 max_request_body_bytes: Some(NGINX_DEFAULT_BODY_BYTES),
                 gzip,
                 access_log,
