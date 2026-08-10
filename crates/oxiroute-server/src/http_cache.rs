@@ -621,14 +621,36 @@ impl CacheTransaction {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "protocol adapters migrate validator ownership in a later slice"
-    )]
-    pub(crate) fn validators(&self) -> Option<&Validators> {
-        self.revalidation
-            .as_ref()
-            .map(|revalidation| &revalidation.validators)
+    pub(crate) fn request(&self) -> &CacheRequest {
+        &self.request
+    }
+
+    pub(crate) fn now(&self) -> MonoTime {
+        self.plan.cache.now()
+    }
+
+    pub(crate) fn max_body_bytes(&self) -> usize {
+        self.plan.cache.config().max_body_bytes
+    }
+
+    pub(crate) fn cache_tags_within_limits(&self, tags: &[Bytes]) -> bool {
+        self.plan.cache_tags_within_limits(tags)
+    }
+
+    pub(crate) fn surrogate_header(&self) -> Option<&HeaderName> {
+        self.plan.surrogate_header.as_ref()
+    }
+
+    pub(crate) fn is_revalidation(&self) -> bool {
+        self.revalidation.is_some()
+    }
+
+    pub(crate) fn apply_validators(&self, headers: &mut HeaderMap) {
+        if self.plan.revalidate
+            && let Some(revalidation) = self.revalidation.as_ref()
+        {
+            revalidation.validators.apply(headers);
+        }
     }
 
     #[allow(
@@ -645,10 +667,6 @@ impl CacheTransaction {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "protocol adapters migrate stale response ownership in a later slice"
-    )]
     pub(crate) async fn stale_response(
         &mut self,
         failure: CacheFailureClass,
@@ -660,10 +678,58 @@ impl CacheTransaction {
         self.plan.cache.stale_if_error(&key).await.ok().flatten()
     }
 
-    #[allow(
-        dead_code,
-        reason = "body adapters migrate transaction admission in a later slice"
-    )]
+    pub(crate) fn prepare_response(
+        &self,
+        status: http::StatusCode,
+        headers: &HeaderMap,
+        body: Bytes,
+        timing: ResponseTiming,
+        tags: &[&[u8]],
+    ) -> Result<PreparedEntry, CacheBackendError> {
+        self.plan.cache.prepare_with_timeline(
+            self.request.representation_input(),
+            CacheResponse {
+                status,
+                headers,
+                body,
+                timing,
+                tags,
+            },
+            &self.plan.timeline,
+        )
+    }
+
+    pub(crate) async fn finish_revalidation(
+        &mut self,
+        not_modified: &HeaderMap,
+        timing: ResponseTiming,
+    ) -> CachedResponse {
+        let revalidation = self
+            .revalidation
+            .as_ref()
+            .expect("revalidation transaction has cached metadata")
+            .clone();
+        let prepared = self.plan.cache.prepare_not_modified_with_timeline(
+            self.request.representation_input(),
+            &revalidation.key,
+            not_modified,
+            timing,
+            &self.plan.timeline,
+        );
+        let admitted = if let Ok(entry) = prepared {
+            matches!(self.admit(entry).await, Ok(CacheAdmission::Stored { .. }))
+        } else {
+            self.complete_without_store();
+            false
+        };
+        if admitted
+            && let Ok(Lookup::Hit { response, .. }) = self.plan.cache.lookup(&self.request).await
+        {
+            return response;
+        }
+        revalidation.response
+    }
+
     pub(crate) async fn admit(
         &mut self,
         entry: PreparedEntry,
@@ -689,10 +755,6 @@ impl CacheTransaction {
         Ok(admission)
     }
 
-    #[allow(
-        dead_code,
-        reason = "body adapters migrate transaction completion in a later slice"
-    )]
     pub(crate) fn complete_without_store(&mut self) -> bool {
         let completed = self
             .fill
@@ -703,10 +765,6 @@ impl CacheTransaction {
         completed
     }
 
-    #[allow(
-        dead_code,
-        reason = "protocol adapters migrate explicit cancellation in a later slice"
-    )]
     pub(crate) fn cancel(&mut self) {
         self.fill.take();
         self.state = CacheTransactionState::Cancelled;
@@ -720,6 +778,10 @@ impl CacheTransaction {
             fill: self.fill.take().expect("leader transaction owns a fill"),
             revalidation: self.revalidation,
         }
+    }
+
+    pub(crate) fn record_hit(&self) {
+        self.record(CacheEvent::Hit);
     }
 
     fn record(&self, event: CacheEvent) {
@@ -992,6 +1054,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_leader_transaction_cancels_fill_and_wakes_follower() {
+        let fixture = Fixture::new(config());
+        let CacheStart::MissLeader(leader) = fixture
+            .transaction("/dropped", HeaderMap::new())
+            .start()
+            .await
+        else {
+            panic!("first request must lead");
+        };
+        let follower = tokio::spawn(fixture.transaction("/dropped", HeaderMap::new()).start());
+        tokio::task::yield_now().await;
+        drop(leader);
+
+        let CacheStart::MissLeader(mut replacement) = follower.await.expect("follower task") else {
+            panic!("dropped fill must release replacement leadership");
+        };
+        replacement.complete_without_store();
+    }
+
+    #[tokio::test]
     async fn transaction_trace_bounds_followers_and_reports_fill_capacity() {
         let mut limits = config();
         limits.max_in_flight = 1;
@@ -1036,7 +1118,12 @@ mod tests {
         else {
             panic!("expired response must revalidate");
         };
-        assert!(transaction.validators().is_some());
+        let mut validators = HeaderMap::new();
+        transaction.apply_validators(&mut validators);
+        assert_eq!(
+            validators.get(http::header::IF_NONE_MATCH),
+            Some(&HeaderValue::from_static("\"kernel\""))
+        );
         assert_eq!(
             transaction.stale_eligibility(CacheFailureClass::Upstream),
             StaleEligibility::Allowed
@@ -1058,6 +1145,78 @@ mod tests {
                 .is_none()
         );
         transaction.complete_without_store();
+    }
+
+    #[tokio::test]
+    async fn transaction_revalidation_merges_304_metadata_and_admits_once() {
+        let fixture = Fixture::new(config());
+        seed(&fixture, "/not-modified", "public, max-age=1").await;
+        fixture.clock.set(2);
+
+        let CacheStart::RevalidationLeader(mut transaction) = fixture
+            .transaction("/not-modified", HeaderMap::new())
+            .start()
+            .await
+        else {
+            panic!("expired response must revalidate");
+        };
+        let mut not_modified = HeaderMap::new();
+        not_modified.insert(
+            http::header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=60"),
+        );
+        not_modified.insert(
+            http::header::ETAG,
+            HeaderValue::from_static("\"refreshed\""),
+        );
+        let timing = ResponseTiming {
+            request_started: transaction.request().request_started,
+            response_received: transaction.now(),
+            response_received_wall: SystemTime::now(),
+        };
+
+        let response = transaction.finish_revalidation(&not_modified, timing).await;
+        assert_eq!(response.body, Bytes::from_static(b"cached"));
+        assert_eq!(
+            response.headers.get(http::header::ETAG),
+            Some(&HeaderValue::from_static("\"refreshed\""))
+        );
+        let metrics = fixture.cache_metrics();
+        assert_eq!(metrics.misses, 2);
+        assert_eq!(metrics.admissions, 2);
+        assert_eq!(metrics.hits, 0);
+    }
+
+    #[tokio::test]
+    async fn transaction_follower_stops_after_two_unsuccessful_waits() {
+        let fixture = Fixture::new(config());
+        let CacheStart::MissLeader(mut first) = fixture
+            .transaction("/two-waits", HeaderMap::new())
+            .start()
+            .await
+        else {
+            panic!("first request must lead");
+        };
+        let base = first.plan.cache.base(&first.request).expect("fill base");
+        let follower = tokio::spawn(fixture.transaction("/two-waits", HeaderMap::new()).start());
+        tokio::task::yield_now().await;
+        first.cancel();
+        let CacheFillJoin::Leader(second) = fixture
+            .plan
+            .cache
+            .begin_fill(base)
+            .await
+            .expect("second fill")
+        else {
+            panic!("replacement fill must lead");
+        };
+        tokio::task::yield_now().await;
+        second.complete_without_store();
+
+        assert!(matches!(
+            follower.await.expect("follower task"),
+            CacheStart::Bypass(CacheStartFailure::Follower(FillOutcome::NotStored))
+        ));
     }
 
     #[tokio::test]

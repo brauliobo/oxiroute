@@ -17,7 +17,7 @@ use http::{
 };
 use log::warn;
 use oxiroute_acme::ChallengeStore;
-use oxiroute_cache::{CacheResponse, CachedResponse, Lookup, ResponseTiming, StoreOutcome};
+use oxiroute_cache::{CachedResponse, ResponseTiming};
 use oxiroute_config::{
     HttpGzipMinimumVersion, HttpProxyPathRewrite, HttpRetryTarget, HttpRetryTrigger,
     HttpUpstreamHost, is_unambiguous_http_path,
@@ -40,8 +40,8 @@ use crate::{
         StaticErrorTarget, StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
     },
     http_cache::{
-        CacheFill, CacheRequest, CacheRevalidation, CacheStart, CacheStartFailure,
-        CacheTransaction, HttpCachePlan,
+        CacheFailureClass, CacheRequest, CacheStart, CacheStartFailure, CacheTransaction,
+        HttpCachePlan,
     },
     http_policy::{
         RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
@@ -49,7 +49,6 @@ use crate::{
         decide_response_headers, expand_redirect_location, nginx_request_host,
         normalized_redirect_host, normalized_request_host,
     },
-    monitoring::CacheEvent,
     upstream_peer::{
         SelectedEndpoint, UpstreamPlan, enforce_http_version, validate_tls_connection,
     },
@@ -125,10 +124,7 @@ pub struct HttpRequestContext {
     deadline: Instant,
     operation_result: Option<HttpOperationResult>,
     websocket_reference: Option<GenerationReference>,
-    cache_plan: Option<Arc<HttpCachePlan>>,
-    cache_request: Option<CacheRequest>,
-    cache_fill: Option<CacheFill>,
-    cache_revalidation: Option<CacheRevalidation>,
+    cache_transaction: Option<CacheTransaction>,
     cache_capture: Option<CacheCapture>,
     response_buffer: Option<ResponseBuffer>,
     cache_response_handled: bool,
@@ -220,6 +216,9 @@ impl Drop for HttpRequestContext {
         if self.operation_result.is_some() {
             return;
         }
+        if let Some(transaction) = self.cache_transaction.as_mut() {
+            transaction.cancel();
+        }
         let timed_out = Instant::now() >= self.deadline;
         let result = if timed_out {
             HttpOperationResult::Timeout
@@ -269,10 +268,7 @@ impl ProxyHttp for HttpReverseProxy {
             deadline: started_at + self.service.upstream_io_timeout(),
             operation_result: None,
             websocket_reference: None,
-            cache_plan: None,
-            cache_request: None,
-            cache_fill: None,
-            cache_revalidation: None,
+            cache_transaction: None,
             cache_capture: None,
             response_buffer: None,
             cache_response_handled: false,
@@ -586,27 +582,22 @@ impl ProxyHttp for HttpReverseProxy {
                 can_reuse_downstream: false,
             };
         }
-        if error.esource() == &pingora::ErrorSource::Upstream
-            && let Some(revalidation) = ctx.cache_revalidation.as_ref()
-            && revalidation.stale_if_error
-        {
-            let stale = if let Some(plan) = ctx.cache_plan.as_ref() {
-                plan.cache
-                    .stale_if_error(&revalidation.key)
+        if error.esource() == &pingora::ErrorSource::Upstream {
+            let stale = if let Some(transaction) = ctx.cache_transaction.as_mut() {
+                transaction
+                    .stale_response(CacheFailureClass::Upstream)
                     .await
-                    .ok()
-                    .flatten()
             } else {
                 None
             };
             if let Some(stale) = stale
                 && write_cached_response(session, &stale).await.is_ok()
             {
-                if let Some(fill) = ctx.cache_fill.take() {
-                    let _ = fill.complete_without_store();
+                if let Some(transaction) = ctx.cache_transaction.as_mut() {
+                    transaction.complete_without_store();
+                    transaction.record_hit();
                 }
                 ctx.cache_response_handled = true;
-                record_cache_event(&ctx.listener, CacheEvent::Hit);
                 return FailToProxy {
                     error_code: stale.status.as_u16(),
                     can_reuse_downstream: false,
@@ -714,17 +705,14 @@ impl ProxyHttp for HttpReverseProxy {
             rewrite_upstream_path(&mut upstream_request.uri, rewrite)?;
         }
         if ctx
-            .cache_request
+            .cache_transaction
             .as_ref()
-            .is_some_and(|request| request.method == Method::HEAD)
+            .is_some_and(|transaction| transaction.request().method == Method::HEAD)
         {
             upstream_request.method = Method::GET;
         }
-        if let Some(cache) = ctx.cache_plan.as_ref()
-            && cache.revalidate
-            && let Some(revalidation) = ctx.cache_revalidation.as_ref()
-        {
-            revalidation.validators.apply(&mut upstream_request.headers);
+        if let Some(transaction) = ctx.cache_transaction.as_ref() {
+            transaction.apply_validators(&mut upstream_request.headers);
         }
         if let Some(host) = &ctx.selected_upstream_host {
             upstream_request.insert_header(HOST, host.clone())?;
@@ -802,17 +790,19 @@ impl ProxyHttp for HttpReverseProxy {
         }
         apply_response_policy(response, proxy_policy(ctx), remove_hop_by_hop)?;
         ctx.response_buffer = None;
-        if let Some(revalidation) = ctx.cache_revalidation.clone() {
+        if ctx
+            .cache_transaction
+            .as_ref()
+            .is_some_and(CacheTransaction::is_revalidation)
+        {
             if response.status == StatusCode::NOT_MODIFIED {
-                return finish_cache_revalidation(session, ctx, revalidation, response).await;
+                return finish_cache_revalidation(session, ctx, response).await;
             }
-            if response.status.is_server_error() && revalidation.stale_if_error {
-                let stale = if let Some(plan) = ctx.cache_plan.as_ref() {
-                    plan.cache
-                        .stale_if_error(&revalidation.key)
+            if response.status.is_server_error() {
+                let stale = if let Some(transaction) = ctx.cache_transaction.as_mut() {
+                    transaction
+                        .stale_response(CacheFailureClass::Upstream)
                         .await
-                        .ok()
-                        .flatten()
                 } else {
                     None
                 };
@@ -849,7 +839,7 @@ impl ProxyHttp for HttpReverseProxy {
                 body: Vec::new(),
             });
         }
-        if let Some(cache_request) = &ctx.cache_request {
+        if let Some(transaction) = &ctx.cache_transaction {
             let status = response.status;
             if !status.is_informational() && status != StatusCode::SWITCHING_PROTOCOLS {
                 let complete = status == StatusCode::NO_CONTENT
@@ -862,21 +852,14 @@ impl ProxyHttp for HttpReverseProxy {
                     status,
                     headers: response.headers.clone(),
                     body: Vec::new(),
-                    tags: ctx
-                        .cache_plan
-                        .as_ref()
-                        .and_then(|plan| plan.surrogate_header.as_ref())
+                    tags: transaction
+                        .surrogate_header()
                         .map_or_else(Vec::new, |header| {
                             response_surrogate_tags(&response.headers, header)
                         }),
                     timing: ResponseTiming {
-                        request_started: cache_request.request_started,
-                        response_received: ctx
-                            .cache_plan
-                            .as_ref()
-                            .expect("cache request has a plan")
-                            .cache
-                            .now(),
+                        request_started: transaction.request().request_started,
+                        response_received: transaction.now(),
                         response_received_wall: SystemTime::now(),
                     },
                     complete,
@@ -955,12 +938,10 @@ impl ProxyHttp for HttpReverseProxy {
                 && let Some(data) = body.as_ref()
             {
                 let limit = ctx
-                    .cache_plan
+                    .cache_transaction
                     .as_ref()
-                    .expect("cache capture has a plan")
-                    .cache
-                    .config()
-                    .max_body_bytes;
+                    .expect("cache capture has a transaction")
+                    .max_body_bytes();
                 if capture.body.len().saturating_add(data.len()) > limit {
                     capture.admissible = false;
                     capture.body.clear();
@@ -1009,7 +990,9 @@ impl ProxyHttp for HttpReverseProxy {
             finish_cache_fill(ctx).await;
         } else {
             ctx.cache_capture = None;
-            complete_cache_fill_without_store(ctx);
+            if let Some(transaction) = ctx.cache_transaction.as_mut() {
+                transaction.complete_without_store();
+            }
         }
         let response_status = session
             .response_written()
@@ -1063,57 +1046,20 @@ impl ProxyHttp for HttpReverseProxy {
 async fn finish_cache_revalidation(
     session: &mut Session,
     ctx: &mut HttpRequestContext,
-    revalidation: CacheRevalidation,
     response: &pingora::http::ResponseHeader,
 ) -> pingora::Result<()> {
-    let plan = ctx
-        .cache_plan
-        .as_ref()
-        .expect("revalidation has a cache plan")
-        .clone();
-    let request = ctx
-        .cache_request
-        .as_ref()
-        .expect("revalidation has a cache request");
+    let transaction = ctx
+        .cache_transaction
+        .as_mut()
+        .expect("revalidation has a cache transaction");
     let timing = ResponseTiming {
-        request_started: request.request_started,
-        response_received: plan.cache.now(),
+        request_started: transaction.request().request_started,
+        response_received: transaction.now(),
         response_received_wall: SystemTime::now(),
     };
-    let not_modified_headers = response.headers.clone();
-    let stored = plan.cache.prepare_not_modified_with_timeline(
-        request.representation_input(),
-        &revalidation.key,
-        &not_modified_headers,
-        timing,
-        &plan.timeline,
-    );
-    let mut admitted = false;
-    if let Some(fill) = ctx.cache_fill.take() {
-        match stored {
-            Ok(entry) => match fill.store(entry).await {
-                Ok(StoreOutcome::Stored { evicted }) => {
-                    admitted = true;
-                    record_cache_event(&ctx.listener, CacheEvent::Admission);
-                    for _ in 0..evicted {
-                        record_cache_event(&ctx.listener, CacheEvent::Eviction);
-                    }
-                }
-                Ok(StoreOutcome::GenerationLost) | Err(_) => {}
-            },
-            Err(_) => {
-                let _ = fill.complete_without_store();
-            }
-        }
-    }
-    let cached = if admitted {
-        match plan.cache.lookup(request).await {
-            Ok(Lookup::Hit { response, .. }) => response,
-            _ => revalidation.response,
-        }
-    } else {
-        revalidation.response
-    };
+    let cached = transaction
+        .finish_revalidation(&response.headers, timing)
+        .await;
     finish_cache_response(session, ctx, cached).await
 }
 
@@ -1122,8 +1068,8 @@ async fn finish_cache_stale_response(
     ctx: &mut HttpRequestContext,
     response: CachedResponse,
 ) -> pingora::Result<()> {
-    if let Some(fill) = ctx.cache_fill.take() {
-        let _ = fill.complete_without_store();
+    if let Some(transaction) = ctx.cache_transaction.as_mut() {
+        transaction.complete_without_store();
     }
     finish_cache_response(session, ctx, response).await
 }
@@ -1133,10 +1079,12 @@ async fn finish_cache_response(
     ctx: &mut HttpRequestContext,
     response: CachedResponse,
 ) -> pingora::Result<()> {
-    ctx.cache_revalidation = None;
     ctx.cache_capture = None;
     ctx.cache_response_handled = true;
-    record_cache_event(&ctx.listener, CacheEvent::Hit);
+    ctx.cache_transaction
+        .as_ref()
+        .expect("cached response has a transaction")
+        .record_hit();
     write_cached_response_conditionally(session, &response).await?;
     Err(Error::new_in(ErrorType::InternalError))
 }
@@ -1187,11 +1135,7 @@ async fn cache_request_filter(
             Ok(true)
         }
         CacheStart::MissLeader(transaction) | CacheStart::RevalidationLeader(transaction) => {
-            let leader = transaction.into_leader_parts();
-            ctx.cache_plan = Some(leader.plan);
-            ctx.cache_request = Some(leader.request);
-            ctx.cache_fill = Some(leader.fill);
-            ctx.cache_revalidation = leader.revalidation;
+            ctx.cache_transaction = Some(transaction);
             Ok(false)
         }
     }
@@ -1318,18 +1262,12 @@ async fn cache_purge_filter(
 
 async fn finish_cache_fill(ctx: &mut HttpRequestContext) {
     let Some(capture) = ctx.cache_capture.take() else {
-        complete_cache_fill_without_store(ctx);
+        if let Some(transaction) = ctx.cache_transaction.as_mut() {
+            transaction.complete_without_store();
+        }
         return;
     };
-    let Some(fill) = ctx.cache_fill.take() else {
-        return;
-    };
-    let Some(plan) = ctx.cache_plan.as_ref() else {
-        let _ = fill.complete_without_store();
-        return;
-    };
-    let Some(request) = ctx.cache_request.as_ref() else {
-        let _ = fill.complete_without_store();
+    let Some(transaction) = ctx.cache_transaction.as_mut() else {
         return;
     };
     let CacheCapture {
@@ -1341,46 +1279,23 @@ async fn finish_cache_fill(ctx: &mut HttpRequestContext) {
         complete,
         admissible,
     } = capture;
-    let tags_valid = plan.cache_tags_within_limits(&tags);
+    let tags_valid = transaction.cache_tags_within_limits(&tags);
     if !complete
         || !admissible
         || !tags_valid
         || !response_representation_valid(status, &headers, body.len())
     {
-        let _ = fill.complete_without_store();
+        transaction.complete_without_store();
         return;
     }
     let tag_refs = tags.iter().map(Bytes::as_ref).collect::<Vec<_>>();
-    let prepared = plan.cache.prepare_with_timeline(
-        request.representation_input(),
-        CacheResponse {
-            status,
-            headers: &headers,
-            body: Bytes::from(body),
-            timing,
-            tags: &tag_refs,
-        },
-        &plan.timeline,
-    );
+    let prepared =
+        transaction.prepare_response(status, &headers, Bytes::from(body), timing, &tag_refs);
     let Ok(entry) = prepared else {
-        let _ = fill.complete_without_store();
+        transaction.complete_without_store();
         return;
     };
-    match fill.store(entry).await {
-        Ok(StoreOutcome::Stored { evicted }) => {
-            record_cache_event(&ctx.listener, CacheEvent::Admission);
-            for _ in 0..evicted {
-                record_cache_event(&ctx.listener, CacheEvent::Eviction);
-            }
-        }
-        Ok(StoreOutcome::GenerationLost) | Err(_) => {}
-    }
-}
-
-fn complete_cache_fill_without_store(ctx: &mut HttpRequestContext) {
-    if let Some(fill) = ctx.cache_fill.take() {
-        let _ = fill.complete_without_store();
-    }
+    let _ = transaction.admit(entry).await;
 }
 
 fn response_representation_valid(status: StatusCode, headers: &HeaderMap, body_len: usize) -> bool {
@@ -1534,12 +1449,6 @@ async fn write_cached_response(
             .await?;
     }
     Ok(())
-}
-
-fn record_cache_event(listener: &ListenerMetrics, event: CacheEvent) {
-    if let Err(error) = listener.record_cache_event(event) {
-        warn!("could not account for cache metrics: {error}");
-    }
 }
 
 struct ConfiguredCompressionBuilder {
@@ -2338,7 +2247,7 @@ fn apply_request_header_mutations(
 
 fn upstream_request_requires_mutation(session: &Session, ctx: &HttpRequestContext) -> bool {
     let request = session.req_header();
-    if ctx.cache_request.is_some() || proxy_policy(ctx).upstream_path_rewrite.is_some() {
+    if ctx.cache_transaction.is_some() || proxy_policy(ctx).upstream_path_rewrite.is_some() {
         return true;
     }
     if request.version == http::Version::HTTP_10 {

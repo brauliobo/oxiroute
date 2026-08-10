@@ -274,6 +274,89 @@ async fn memory_cache_reuses_get_and_head_responses() {
 }
 
 #[tokio::test]
+async fn head_miss_warms_get_representation_with_upstream_get() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("HEAD warming origin bind");
+        let address = listener.local_addr().expect("HEAD warming origin address");
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("HEAD warming accept");
+            let request = read_request_head_bytes(&mut stream)
+                .await
+                .expect("HEAD warming request");
+            assert!(request.starts_with(b"GET /warm HTTP/1.1\r\n"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nCache-Control: max-age=60\r\nConnection: close\r\n\r\nwarmed",
+                )
+                .await
+                .expect("HEAD warming response");
+        });
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[address])],
+            vec![cached_route(None, "/", "origin")],
+            2,
+        )
+        .await;
+
+        let head = proxy
+            .request("HEAD /warm HTTP/1.1\r\nHost: cache.test\r\n")
+            .await;
+        let get = proxy
+            .request("GET /warm HTTP/1.1\r\nHost: cache.test\r\n")
+            .await;
+        assert_eq!(head.status, 200);
+        assert!(head.body.is_empty());
+        assert_origin_response(&get, "warmed");
+        let cache = proxy.metrics.snapshot().expect("metrics").listeners[0]
+            .cache
+            .clone()
+            .expect("cache metrics");
+        assert_eq!(cache.hits, 1);
+        assert_eq!(cache.misses, 1);
+        assert_eq!(cache.admissions, 1);
+
+        proxy.finish().await;
+        origin.await.expect("HEAD warming origin");
+    })
+    .await
+    .expect("HEAD warming test timed out");
+}
+
+#[tokio::test]
+async fn only_if_cached_miss_returns_gateway_timeout_without_origin_contact() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start("unused", 1).await;
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![cached_route(None, "/", "origin")],
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request(
+                "GET /uncached HTTP/1.1\r\nHost: cache.test\r\nCache-Control: only-if-cached\r\n",
+            )
+            .await;
+        assert_eq!(response.status, 504, "response: {}", response.text());
+        let cache = proxy.metrics.snapshot().expect("metrics").listeners[0]
+            .cache
+            .clone()
+            .expect("cache metrics");
+        assert_eq!(cache.hits, 0);
+        assert_eq!(cache.misses, 1);
+        assert_eq!(cache.admissions, 0);
+
+        proxy.finish().await;
+        origin.assert_not_contacted().await;
+    })
+    .await
+    .expect("only-if-cached test timed out");
+}
+
+#[tokio::test]
 async fn unknown_length_get_bodies_bypass_cache_admission() {
     timeout(TEST_TIMEOUT, async {
         let origin = Origin::start("chunked-request", 2).await;
@@ -735,6 +818,78 @@ async fn chunked_responses_are_forwarded_without_cache_admission() {
     })
     .await
     .expect("streaming cache test timed out");
+}
+
+#[tokio::test]
+async fn incomplete_responses_cancel_fill_without_cache_admission() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start_incomplete(2).await;
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![cached_route(None, "/", "origin")],
+            2,
+        )
+        .await;
+
+        for _ in 0..2 {
+            let response = proxy
+                .request("GET /incomplete HTTP/1.1\r\nHost: cache.test\r\n")
+                .await;
+            assert_eq!(response.status, 200, "response: {}", response.text());
+            assert_eq!(response.body(), b"short");
+        }
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        let cache = proxy.metrics.snapshot().expect("metrics").listeners[0]
+            .cache
+            .clone()
+            .expect("cache metrics");
+        assert_eq!(cache.admissions, 0);
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("incomplete cache response test timed out");
+}
+
+#[tokio::test]
+async fn cache_serves_stale_only_for_transport_and_server_failures() {
+    for server_error in [false, true] {
+        timeout(TEST_TIMEOUT, async {
+            let origin = Origin::start_stale_then_failure("stale", server_error).await;
+            let proxy = ProxyHarness::start_with_memory_cache(
+                vec![pool("origin", &[origin.address])],
+                vec![cached_route(None, "/", "origin")],
+                2,
+            )
+            .await;
+
+            assert_origin_response(
+                &proxy
+                    .request("GET /stale HTTP/1.1\r\nHost: cache.test\r\n")
+                    .await,
+                "stale",
+            );
+            assert_origin_response(
+                &proxy
+                    .request("GET /stale HTTP/1.1\r\nHost: cache.test\r\n")
+                    .await,
+                "stale",
+            );
+            let cache = proxy.metrics.snapshot().expect("metrics").listeners[0]
+                .cache
+                .clone()
+                .expect("cache metrics");
+            assert_eq!(cache.hits, 1);
+            assert_eq!(cache.misses, 2);
+            assert_eq!(cache.admissions, 1);
+
+            proxy.finish().await;
+            origin.finish().await;
+        })
+        .await
+        .expect("stale-if-error test timed out");
+    }
 }
 
 #[tokio::test]
@@ -5665,6 +5820,71 @@ impl Origin {
             }
         });
 
+        Self {
+            address,
+            accepted,
+            task: Some(task),
+        }
+    }
+
+    async fn start_incomplete(expected_requests: usize) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_by_task = Arc::clone(&accepted);
+        let task = tokio::spawn(async move {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().await.expect("origin accept");
+                accepted_by_task.fetch_add(1, Ordering::SeqCst);
+                read_request_head(&mut stream)
+                    .await
+                    .expect("origin request");
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nCache-Control: max-age=60\r\nConnection: close\r\n\r\nshort",
+                    )
+                    .await
+                    .expect("incomplete origin response");
+            }
+        });
+        Self {
+            address,
+            accepted,
+            task: Some(task),
+        }
+    }
+
+    async fn start_stale_then_failure(name: &'static str, server_error: bool) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_by_task = Arc::clone(&accepted);
+        let task = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.expect("origin accept");
+                accepted_by_task.fetch_add(1, Ordering::SeqCst);
+                read_request_head(&mut stream)
+                    .await
+                    .expect("origin request");
+                if attempt == 0 {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: max-age=0\r\nAge: 1\r\nConnection: close\r\n\r\n{name}",
+                        name.len()
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("cache seed response");
+                } else if server_error {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .expect("server error response");
+                }
+            }
+        });
         Self {
             address,
             accepted,
