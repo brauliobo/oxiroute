@@ -34,9 +34,11 @@ explicitly rejected and is not used as a TCP CONNECT substitute.
   targets. User information, invalid DNS labels, unbracketed IPv6, zero ports, and ports above 65535
   fail closed.
 - DNS runs through the injected `Resolver`. Policy evaluates every complete answer, and
-  `ApprovedDestination` carries the exact socket addresses the connector must use. A runtime must
-  not connect to an address outside that approved set. The daemon's optional connect revalidation
-  evaluates the final answer through the same policy before replacing the approved set.
+  `ApprovedDestination` is an unforgeable, read-only capability carrying the destination and exact
+  socket addresses the connector must use. A runtime reads them through `destination()` and
+  `socket_addresses()` and must not connect to an address outside that approved set. The daemon's
+  optional connect revalidation evaluates the final answer through the same policy before replacing
+  the approved set.
 - `ForbiddenDestinationPolicy` rejects localhost names, mixed public/private answers, and common
   non-public, special-use, mapped, NAT64, multicast, documentation, benchmark, and reserved IP
   ranges. Deployments can provide a stricter `DestinationPolicy`, including port or tenant rules.
@@ -99,7 +101,7 @@ that reverse-proxy implementation:
    ownership of the shared H2 connection. H3 malformed classic CONNECT shapes must reset the
    stream with `H3_MESSAGE_ERROR` when `DecisionError::InvalidHttp3` is returned.
 3. Inject production authentication, DNS, and destination policy implementations. Connect only an
-   address from `ApprovedDestination.socket_addresses`, retaining that selected address for audit.
+   address from `ApprovedDestination::socket_addresses()`, retaining that selected address for audit.
 4. For forwarding, create an upstream session from the approved address, use the normalized
    origin-form target and sanitized headers, and select upstream TLS from `ForwardScheme`.
 5. For H1 CONNECT, preserve the post-2xx underlying stream and parser over-read bytes without

@@ -97,7 +97,7 @@ async fn h2_forward_and_connect_cross_real_frames() {
                         .status(StatusCode::OK)
                         .header(
                             "x-proxy-decision",
-                            format!("tunnel:{}", tunnel.destination.destination.authority()),
+                            format!("tunnel:{}", tunnel.destination.destination().authority()),
                         )
                         .body(())
                         .expect("H2 CONNECT response");

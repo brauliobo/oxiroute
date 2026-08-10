@@ -56,9 +56,21 @@ pub trait DestinationPolicy: Send + Sync {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A destination whose resolved addresses have passed destination policy authorization.
+///
+/// Callers can inspect the approved values but cannot construct or mutate this capability.
+///
+/// ```compile_fail
+/// use oxiroute_forward_proxy::ApprovedDestination;
+///
+/// let _ = ApprovedDestination {
+///     destination: todo!(),
+///     socket_addresses: todo!(),
+/// };
+/// ```
 pub struct ApprovedDestination {
-    pub destination: Destination,
-    pub socket_addresses: Arc<[SocketAddr]>,
+    destination: Destination,
+    socket_addresses: Arc<[SocketAddr]>,
 }
 
 impl ApprovedDestination {
@@ -72,6 +84,16 @@ impl ApprovedDestination {
             destination,
             socket_addresses,
         }
+    }
+
+    #[must_use]
+    pub const fn destination(&self) -> &Destination {
+        &self.destination
+    }
+
+    #[must_use]
+    pub fn socket_addresses(&self) -> &[SocketAddr] {
+        &self.socket_addresses
     }
 }
 
@@ -801,9 +823,9 @@ mod tests {
             .approve(&context(), &destination, &addresses)
             .expect("approved destination");
 
-        assert_eq!(approved.destination, destination);
+        assert_eq!(approved.destination(), &destination);
         assert_eq!(
-            approved.socket_addresses.as_ref(),
+            approved.socket_addresses(),
             &["93.184.216.34:443".parse().unwrap()]
         );
     }
