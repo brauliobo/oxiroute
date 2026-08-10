@@ -976,8 +976,96 @@ impl FixedResponsePlan {
 #[derive(Debug)]
 pub(crate) struct RedirectPlan {
     pub(crate) status: u16,
-    pub(crate) location: HttpRedirectLocation,
+    pub(crate) location: RedirectLocationPlan,
     pub(crate) headers: Box<[(HeaderName, HeaderValue)]>,
+}
+
+impl RedirectPlan {
+    pub(crate) fn compile(
+        status: u16,
+        location: &HttpRedirectLocation,
+        headers: &[HttpLiteralHeader],
+    ) -> Self {
+        Self {
+            status,
+            location: RedirectLocationPlan::compile(location)
+                .expect("validated redirect location template"),
+            headers: headers
+                .iter()
+                .filter(|header| header.always || nginx_add_header_status(status))
+                .map(|header| {
+                    (
+                        HeaderName::from_bytes(header.name.as_bytes())
+                            .expect("validated redirect header name"),
+                        HeaderValue::from_str(&header.value)
+                            .expect("validated redirect header value"),
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum RedirectLocationPlan {
+    Literal(HeaderValue),
+    RequestTemplate {
+        segments: Box<[RedirectTemplateSegment]>,
+        nginx_host_fallback: Option<Box<str>>,
+    },
+}
+
+impl RedirectLocationPlan {
+    pub(crate) fn compile(location: &HttpRedirectLocation) -> Option<Self> {
+        match location {
+            HttpRedirectLocation::Literal { value } => (value.len() <= MAX_REDIRECT_LOCATION_BYTES)
+                .then(|| HeaderValue::from_str(value).ok())
+                .flatten()
+                .map(Self::Literal),
+            HttpRedirectLocation::RequestTemplate {
+                value,
+                nginx_host_fallback,
+            } => Some(Self::RequestTemplate {
+                segments: compile_redirect_segments(value)?.into_boxed_slice(),
+                nginx_host_fallback: nginx_host_fallback.as_deref().map(Into::into),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum RedirectTemplateSegment {
+    Literal(Box<str>),
+    Scheme,
+    Host,
+    RequestUri,
+}
+
+pub(crate) const MAX_REDIRECT_LOCATION_BYTES: usize = 8 * 1024;
+
+fn compile_redirect_segments(value: &str) -> Option<Vec<RedirectTemplateSegment>> {
+    let mut segments = Vec::new();
+    let mut remainder = value;
+    while let Some((literal, variable)) = remainder.split_once('$') {
+        if !literal.is_empty() {
+            segments.push(RedirectTemplateSegment::Literal(literal.into()));
+        }
+        if let Some(after) = variable.strip_prefix("scheme") {
+            segments.push(RedirectTemplateSegment::Scheme);
+            remainder = after;
+        } else if let Some(after) = variable.strip_prefix("host") {
+            segments.push(RedirectTemplateSegment::Host);
+            remainder = after;
+        } else {
+            let after = variable.strip_prefix("request_uri")?;
+            segments.push(RedirectTemplateSegment::RequestUri);
+            remainder = after;
+        }
+    }
+    if !remainder.is_empty() {
+        segments.push(RedirectTemplateSegment::Literal(remainder.into()));
+    }
+    Some(segments)
 }
 
 pub(crate) struct BearerTokenAccess {

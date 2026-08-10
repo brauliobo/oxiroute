@@ -9,6 +9,7 @@ mod health;
 mod http3;
 mod http3_upstream;
 mod http_action;
+mod http_policy;
 mod http_proxy;
 mod http_server_app;
 mod l4_service;

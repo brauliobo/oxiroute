@@ -23,8 +23,8 @@ use oxiroute_cache::{
     StoreOutcome, Validators,
 };
 use oxiroute_config::{
-    HttpGzipMinimumVersion, HttpProxyPathRewrite, HttpRedirectLocation, HttpRetryTarget,
-    HttpRetryTrigger, HttpSameSite, HttpUpstreamHost, is_unambiguous_http_path,
+    HttpGzipMinimumVersion, HttpProxyPathRewrite, HttpRetryTarget, HttpRetryTrigger, HttpSameSite,
+    HttpUpstreamHost, is_unambiguous_http_path,
 };
 use pingora::{
     Error, ErrorSource, ErrorType,
@@ -41,10 +41,11 @@ use crate::{
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
         CacheFill, CacheFillJoin, CacheRequest, HttpActionPlan, HttpCachePlan, HttpGzipPlan,
-        HttpRoutePlan, ProxyPolicyPlan, RequestHeaderMutationPlan, RequestHeaderValuePlan,
-        ResponseHeaderMutationPlan, StaticErrorTarget, StaticFile, StaticRequestDecision,
-        StaticServeError, StaticTarget,
+        HttpRoutePlan, ProxyPolicyPlan, RedirectLocationPlan, RequestHeaderMutationPlan,
+        RequestHeaderValuePlan, ResponseHeaderMutationPlan, StaticErrorTarget, StaticFile,
+        StaticRequestDecision, StaticServeError, StaticTarget,
     },
+    http_policy::{RedirectContext, expand_redirect_location, normalized_redirect_host},
     monitoring::CacheEvent,
     upstream_peer::{
         SelectedEndpoint, UpstreamPlan, enforce_http_version, validate_tls_connection,
@@ -1806,13 +1807,9 @@ async fn execute_route_action(
                 return Ok(true);
             }
             HttpActionPlan::Redirect(redirect) => {
-                let normalized_host = ctx.authority.as_ref().and_then(normalized_host);
-                let Some(location) = redirect_location(
-                    &redirect.location,
-                    session,
-                    normalized_host.as_deref(),
-                    &uri,
-                ) else {
+                let Some(location) =
+                    redirect_location(&redirect.location, session, ctx.authority.as_ref(), &uri)
+                else {
                     session.respond_error(400).await?;
                     return Ok(true);
                 };
@@ -2342,52 +2339,32 @@ async fn write_local_response(
 }
 
 fn redirect_location(
-    location: &HttpRedirectLocation,
+    location: &RedirectLocationPlan,
     session: &Session,
-    host: Option<&str>,
+    authority: Option<&Authority>,
     uri: &http::Uri,
 ) -> Option<HeaderValue> {
-    let value = match location {
-        HttpRedirectLocation::Literal { value } => value.clone(),
-        HttpRedirectLocation::RequestTemplate {
-            value,
-            nginx_host_fallback,
-        } => {
-            let scheme = if session
-                .digest()
-                .and_then(|digest| digest.ssl_digest.as_ref())
-                .is_some()
-            {
-                "https"
-            } else {
-                "http"
-            };
-            let request_uri = uri
-                .path_and_query()
-                .map_or(uri.path(), |value| value.as_str());
-            let mut expanded = String::with_capacity(value.len() + request_uri.len());
-            let mut remainder = value.as_str();
-            while let Some((literal, variable)) = remainder.split_once('$') {
-                expanded.push_str(literal);
-                if let Some(after) = variable.strip_prefix("scheme") {
-                    expanded.push_str(scheme);
-                    remainder = after;
-                } else if let Some(after) = variable.strip_prefix("host") {
-                    expanded.push_str(host.or(nginx_host_fallback.as_deref()).unwrap_or_default());
-                    remainder = after;
-                } else {
-                    let after = variable.strip_prefix("request_uri")?;
-                    expanded.push_str(request_uri);
-                    remainder = after;
-                }
-            }
-            expanded.push_str(remainder);
-            expanded
-        }
+    let scheme = if session
+        .digest()
+        .and_then(|digest| digest.ssl_digest.as_ref())
+        .is_some()
+    {
+        "https"
+    } else {
+        "http"
     };
-    (value.len() <= 8192)
-        .then(|| HeaderValue::from_str(&value).ok())
-        .flatten()
+    let host = authority.map(normalized_redirect_host);
+    let request_uri = uri
+        .path_and_query()
+        .map_or(uri.path(), |value| value.as_str());
+    expand_redirect_location(
+        location,
+        RedirectContext {
+            scheme,
+            normalized_host: host.as_deref(),
+            request_uri,
+        },
+    )
 }
 
 fn normalized_host(authority: &Authority) -> Option<String> {
@@ -3598,10 +3575,10 @@ mod tests {
                 nginx_host_fallback: fallback.map(str::to_owned),
             };
         let uri = "/path/to?q=1".parse().expect("redirect URI");
-        for (location, host, expected) in [
+        for (location, authority, expected) in [
             (
                 template("$scheme://$host$request_uri", None),
-                Some("normalized.test"),
+                Some("Normalized.Test.:8443"),
                 Some("http://normalized.test/path/to?q=1"),
             ),
             (
@@ -3611,10 +3588,13 @@ mod tests {
             ),
             (template("$unknown", None), None, None),
         ] {
+            let location = RedirectLocationPlan::compile(&location);
+            let authority = authority.map(|value| value.parse().expect("redirect authority"));
+            let actual = location.as_ref().and_then(|location| {
+                redirect_location(location, &session, authority.as_ref(), &uri)
+            });
             assert_eq!(
-                redirect_location(&location, &session, host, &uri)
-                    .as_ref()
-                    .and_then(|value| value.to_str().ok()),
+                actual.as_ref().and_then(|value| value.to_str().ok()),
                 expected
             );
         }
@@ -3623,8 +3603,12 @@ mod tests {
             let location = HttpRedirectLocation::Literal {
                 value: "x".repeat(length),
             };
+            let location = RedirectLocationPlan::compile(&location);
             assert_eq!(
-                redirect_location(&location, &session, None, &uri).is_some(),
+                location
+                    .as_ref()
+                    .and_then(|location| redirect_location(location, &session, None, &uri))
+                    .is_some(),
                 accepted,
                 "literal length {length}"
             );
@@ -3633,25 +3617,21 @@ mod tests {
             .parse()
             .expect("boundary redirect URI");
         assert!(
-            redirect_location(
-                &template("$request_uri", None),
-                &session,
-                None,
-                &boundary_uri,
-            )
-            .is_some()
+            RedirectLocationPlan::compile(&template("$request_uri", None))
+                .and_then(|location| {
+                    redirect_location(&location, &session, None, &boundary_uri)
+                })
+                .is_some()
         );
         let oversized_uri = format!("/{}", "x".repeat(8192))
             .parse()
             .expect("oversized redirect URI");
         assert!(
-            redirect_location(
-                &template("$request_uri", None),
-                &session,
-                None,
-                &oversized_uri,
-            )
-            .is_none()
+            RedirectLocationPlan::compile(&template("$request_uri", None))
+                .and_then(|location| {
+                    redirect_location(&location, &session, None, &oversized_uri)
+                })
+                .is_none()
         );
     }
 
