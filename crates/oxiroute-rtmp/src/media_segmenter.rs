@@ -18,6 +18,7 @@ use crate::{
     dash_segmenter::{DashOutputConfig, DashSegmenter},
     media_parser::{parse_aac_configuration, parse_avc_configuration},
     media_storage::{MediaStore, MediaStoreError},
+    segment_window::SegmentWindowConfig,
 };
 
 const TS_PACKET_BYTES: usize = 188;
@@ -64,6 +65,10 @@ pub struct HlsOutputConfig {
 }
 
 impl HlsOutputConfig {
+    fn segment_window(&self) -> SegmentWindowConfig {
+        SegmentWindowConfig::new(self.segment_duration, self.max_segment_duration)
+    }
+
     fn variants(&self) -> Vec<HlsVariant> {
         if self.variants.is_empty() {
             return vec![HlsVariant {
@@ -559,12 +564,9 @@ impl HlsSegmenter {
 
     fn should_cut(&self, timestamp_ms: u32) -> bool {
         self.current.as_ref().is_some_and(|segment| {
-            let elapsed = u64::from(timestamp_ms.saturating_sub(segment.start_timestamp_ms));
-            let target =
-                u64::try_from(self.config.segment_duration.as_millis()).unwrap_or(u64::MAX);
-            let maximum =
-                u64::try_from(self.config.max_segment_duration.as_millis()).unwrap_or(u64::MAX);
-            elapsed >= target.min(maximum)
+            self.config
+                .segment_window()
+                .should_cut(segment.start_timestamp_ms, timestamp_ms)
         })
     }
 
