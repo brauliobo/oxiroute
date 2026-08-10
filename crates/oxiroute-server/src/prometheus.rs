@@ -909,7 +909,8 @@ mod tests {
     use oxiroute_config::UpstreamAlgorithm;
     use oxiroute_rtmp::RtmpCapabilities;
 
-    use crate::{HealthFailure, RoundRobinPool, RuntimeEndpoint};
+    use crate::routing::RuntimeServer;
+    use crate::{HealthFailure, PassiveFailurePolicy, RoundRobinPool, RuntimeEndpoint};
 
     use super::*;
 
@@ -1122,15 +1123,27 @@ mod tests {
     fn exposition_contains_bounded_passive_endpoint_observability() {
         let metrics = RuntimeMetrics::new();
         let pool = Arc::new(
-            RoundRobinPool::new_named(
+            RoundRobinPool::new_named_servers_with_policy(
                 "observability".into(),
-                [RuntimeEndpoint::from(
-                    "127.0.0.1:3000"
-                        .parse::<std::net::SocketAddr>()
-                        .expect("endpoint"),
-                )],
+                [RuntimeServer {
+                    name: "0".into(),
+                    endpoint: RuntimeEndpoint::from(
+                        "127.0.0.1:3000"
+                            .parse::<std::net::SocketAddr>()
+                            .expect("endpoint"),
+                    ),
+                    max_connections: None,
+                    pinned_addresses: None,
+                    protected_addresses: Arc::from([]),
+                }],
                 UpstreamAlgorithm::RoundRobin,
-                false,
+                None,
+                None,
+                PassiveFailurePolicy::new(
+                    3,
+                    std::time::Duration::from_secs(30),
+                    std::time::Duration::from_mins(5),
+                ),
             )
             .expect("pool"),
         );
