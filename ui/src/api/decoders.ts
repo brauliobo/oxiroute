@@ -8,7 +8,7 @@ import type {
   RuntimeStatus,
   ServerInventoryEntry,
   ServerInventoryResponse,
-} from './endpoints'
+} from './managementContracts'
 
 export function parseRuntimeStatus(value: unknown): RuntimeStatus {
   if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.buildVersion !== 'string' ||
