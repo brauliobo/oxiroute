@@ -857,11 +857,7 @@ impl<T: AcmeTransport> AcmeClient<T> {
     ///
     /// Returns an error for a malformed challenge URL or ACME failure.
     pub fn respond_to_challenge(&mut self, challenge: &Http01Challenge) -> Result<(), AcmeError> {
-        let response = self.signed_account_request(&challenge.challenge_url, &json!({}))?;
-        if response.status != 200 {
-            return Err(problem_or_status(&response));
-        }
-        Ok(())
+        self.respond_to_challenge_url(&challenge.challenge_url)
     }
 
     /// Notifies the CA that a TLS-ALPN-01 challenge is provisioned.
@@ -873,11 +869,7 @@ impl<T: AcmeTransport> AcmeClient<T> {
         &mut self,
         challenge: &TlsAlpn01Challenge,
     ) -> Result<(), AcmeError> {
-        let response = self.signed_account_request(&challenge.challenge_url, &json!({}))?;
-        if response.status != 200 {
-            return Err(problem_or_status(&response));
-        }
-        Ok(())
+        self.respond_to_challenge_url(&challenge.challenge_url)
     }
 
     /// Notifies the CA that a DNS-01 TXT record is provisioned.
@@ -889,7 +881,11 @@ impl<T: AcmeTransport> AcmeClient<T> {
         &mut self,
         challenge: &Dns01Challenge,
     ) -> Result<(), AcmeError> {
-        let response = self.signed_account_request(challenge.challenge_url(), &json!({}))?;
+        self.respond_to_challenge_url(challenge.challenge_url())
+    }
+
+    fn respond_to_challenge_url(&mut self, challenge_url: &str) -> Result<(), AcmeError> {
+        let response = self.signed_account_request(challenge_url, &json!({}))?;
         if response.status != 200 {
             return Err(problem_or_status(&response));
         }
@@ -1073,34 +1069,9 @@ impl<T: AcmeTransport> AcmeClient<T> {
         protected_key: ProtectedKey<'_>,
     ) -> Result<HttpResponse, AcmeError> {
         self.policy.permits(url)?;
-        let mut retried_bad_nonce = false;
-        loop {
-            let nonce = self.take_nonce()?;
-            let body = self.jws(url, nonce, payload, protected_key)?;
-            if body.len() > MAX_ACME_BODY_BYTES {
-                return Err(AcmeError::RequestTooLarge {
-                    limit: MAX_ACME_BODY_BYTES,
-                });
-            }
-            let mut request = HttpRequest::new("POST", url, body);
-            request
-                .headers
-                .insert("content-type".into(), "application/jose+json".into());
-            let response = self
-                .transport
-                .request(request)
-                .map_err(AcmeError::Transport)?;
-            validate_response_url(url, &response, &self.policy)?;
-            self.record_nonce(&response)?;
-            if is_bad_nonce(&response) {
-                if retried_bad_nonce {
-                    return Err(AcmeError::BadNonceRetryExhausted);
-                }
-                retried_bad_nonce = true;
-                continue;
-            }
-            return Ok(response);
-        }
+        self.request_with_bad_nonce_retry(url, |client, nonce| {
+            client.jws(url, nonce, payload, protected_key)
+        })
     }
 
     fn jws(
@@ -1160,9 +1131,7 @@ impl<T: AcmeTransport> AcmeClient<T> {
         new_key: &AccountKey,
         account_url: &str,
     ) -> Result<HttpResponse, AcmeError> {
-        let mut retried_bad_nonce = false;
-        loop {
-            let nonce = self.take_nonce()?;
+        self.request_with_bad_nonce_retry(url, |client, nonce| {
             let inner = Self::jws_with_key(
                 new_key,
                 url,
@@ -1172,7 +1141,19 @@ impl<T: AcmeTransport> AcmeClient<T> {
             )?;
             let inner = serde_json::from_slice::<Value>(&inner)
                 .map_err(|_| AcmeError::MalformedResponse)?;
-            let body = self.jws(url, nonce, &inner, ProtectedKey::Kid(account_url))?;
+            client.jws(url, nonce, &inner, ProtectedKey::Kid(account_url))
+        })
+    }
+
+    fn request_with_bad_nonce_retry(
+        &mut self,
+        url: &str,
+        mut build_body: impl FnMut(&Self, String) -> Result<Vec<u8>, AcmeError>,
+    ) -> Result<HttpResponse, AcmeError> {
+        let mut retried_bad_nonce = false;
+        loop {
+            let nonce = self.take_nonce()?;
+            let body = build_body(self, nonce)?;
             if body.len() > MAX_ACME_BODY_BYTES {
                 return Err(AcmeError::RequestTooLarge {
                     limit: MAX_ACME_BODY_BYTES,
@@ -1551,18 +1532,10 @@ fn parse_authorization(
         .find(|challenge| challenge.get("type").and_then(Value::as_str) == Some("http-01"));
     let challenge = http01_challenge
         .map(|challenge| {
-            let challenge_url = challenge
-                .get("url")
-                .and_then(Value::as_str)
-                .ok_or(AcmeError::MissingField)?
-                .to_owned();
-            policy.permits(&challenge_url)?;
-            let token = challenge
-                .get("token")
-                .and_then(Value::as_str)
-                .ok_or(AcmeError::MissingField)?
-                .to_owned();
-            validate_token(&token)?;
+            let ChallengeValue {
+                challenge_url,
+                token,
+            } = parse_challenge_value(challenge, policy)?;
             Ok(Http01Challenge {
                 authorization_url: url.into(),
                 challenge_url,
@@ -1575,18 +1548,10 @@ fn parse_authorization(
         .iter()
         .find(|challenge| challenge.get("type").and_then(Value::as_str) == Some("dns-01"))
         .map(|challenge| {
-            let challenge_url = challenge
-                .get("url")
-                .and_then(Value::as_str)
-                .ok_or(AcmeError::MissingField)?
-                .to_owned();
-            policy.permits(&challenge_url)?;
-            let token = challenge
-                .get("token")
-                .and_then(Value::as_str)
-                .ok_or(AcmeError::MissingField)?
-                .to_owned();
-            validate_token(&token)?;
+            let ChallengeValue {
+                challenge_url,
+                token,
+            } = parse_challenge_value(challenge, policy)?;
             let dns_name = identifier.strip_prefix("*.").unwrap_or(&identifier);
             let record_name = format!("_acme-challenge.{dns_name}");
             let key_authorization = key.key_authorization(&token);
@@ -1599,18 +1564,10 @@ fn parse_authorization(
         .iter()
         .find(|challenge| challenge.get("type").and_then(Value::as_str) == Some("tls-alpn-01"))
         .map(|challenge| {
-            let challenge_url = challenge
-                .get("url")
-                .and_then(Value::as_str)
-                .ok_or(AcmeError::MissingField)?
-                .to_owned();
-            policy.permits(&challenge_url)?;
-            let token = challenge
-                .get("token")
-                .and_then(Value::as_str)
-                .ok_or(AcmeError::MissingField)?
-                .to_owned();
-            validate_token(&token)?;
+            let ChallengeValue {
+                challenge_url,
+                token,
+            } = parse_challenge_value(challenge, policy)?;
             Ok(TlsAlpn01Challenge {
                 authorization_url: url.into(),
                 challenge_url,
@@ -1639,6 +1596,33 @@ fn parse_authorization(
         challenge,
         dns01_challenge,
         tls_alpn01_challenge,
+    })
+}
+
+struct ChallengeValue {
+    challenge_url: String,
+    token: String,
+}
+
+fn parse_challenge_value(
+    challenge: &Value,
+    policy: &OriginPolicy,
+) -> Result<ChallengeValue, AcmeError> {
+    let challenge_url = challenge
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or(AcmeError::MissingField)?
+        .to_owned();
+    policy.permits(&challenge_url)?;
+    let token = challenge
+        .get("token")
+        .and_then(Value::as_str)
+        .ok_or(AcmeError::MissingField)?
+        .to_owned();
+    validate_token(&token)?;
+    Ok(ChallengeValue {
+        challenge_url,
+        token,
     })
 }
 
@@ -2246,6 +2230,77 @@ mod tests {
         let inner_protected = decode_jws_protected(&inner);
         assert!(inner_protected.get("jwk").is_some());
         assert!(inner.get("signature").and_then(Value::as_str).is_some());
+    }
+
+    #[test]
+    fn account_key_rollover_rebuilds_nested_jws_for_one_bad_nonce_retry() {
+        let transport = ScriptedTransport::new([
+            directory_with_actions("https://acme.test/directory"),
+            HttpResponse::new(204, "https://acme.test/acme/new-nonce", Vec::new())
+                .with_header("replay-nonce", "nonce-registration"),
+            account(),
+            HttpResponse::new(
+                400,
+                "https://acme.test/acme/key-change",
+                br#"{"type":"urn:ietf:params:acme:error:badNonce"}"#.to_vec(),
+            )
+            .with_header("replay-nonce", "nonce-rollover-retry"),
+            HttpResponse::new(
+                200,
+                "https://acme.test/acme/key-change",
+                br#"{"status":"valid","contact":["mailto:ops@example.test"],"termsOfServiceAgreed":true}"#.to_vec(),
+            ),
+        ]);
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let old_key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("old key");
+        let new_key = AccountKey::generate(AccountKeyAlgorithm::Rsa2048).expect("new key");
+        let mut client = AcmeClient::new(
+            transport.clone(),
+            "https://acme.test/directory",
+            policy,
+            old_key,
+            Arc::new(FakeClock::new(100)),
+        )
+        .expect("client");
+        client
+            .register_account(&AccountRequest {
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+            })
+            .expect("account");
+
+        client
+            .rollover_account_key(new_key)
+            .expect("retried rollover");
+
+        let requests = transport.requests();
+        let attempts = [&requests[3], &requests[4]];
+        let mut nonces = Vec::new();
+        for request in attempts {
+            let outer: Value = serde_json::from_slice(&request.body).expect("outer JWS");
+            let protected = decode_jws_protected(&outer);
+            assert!(protected.get("kid").is_some());
+            nonces.push(
+                protected
+                    .get("nonce")
+                    .and_then(Value::as_str)
+                    .expect("outer nonce")
+                    .to_owned(),
+            );
+            let inner: Value = serde_json::from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(
+                        outer
+                            .get("payload")
+                            .and_then(Value::as_str)
+                            .expect("inner payload"),
+                    )
+                    .expect("inner encoding"),
+            )
+            .expect("inner JWS");
+            assert!(decode_jws_protected(&inner).get("jwk").is_some());
+        }
+        assert_eq!(nonces, ["nonce-account", "nonce-rollover-retry"]);
     }
 
     #[test]
