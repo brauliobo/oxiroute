@@ -13,7 +13,7 @@ use std::{
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
-use super::{CertbotReconciler, certbot_reconcile::PublicationGate};
+use super::{CertbotReconciler, certificate::PublicationGate};
 
 const MAX_RECONCILERS: usize = 256;
 const MIN_RESCAN_INTERVAL: Duration = Duration::from_secs(1);

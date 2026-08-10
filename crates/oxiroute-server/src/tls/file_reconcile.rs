@@ -6,10 +6,8 @@ use std::{
 
 use super::{
     ActiveCertificateGeneration, CertificateGeneration, TlsBuildError,
-    certbot_reconcile::PublicationGate,
+    certificate::{CertificatePublication, CertificatePublicationError, PublicationGate},
 };
-
-const MAX_CAS_REREADS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileReconcileOutcome {
@@ -195,66 +193,33 @@ impl FileReconciler {
         gate: Option<&PublicationGate>,
         before_publish: &mut dyn FnMut(usize),
     ) -> Result<Option<FileReconcileOutcome>, FileReconcileError> {
-        for attempt in 0..MAX_CAS_REREADS {
-            if gate.is_some_and(PublicationGate::is_stopped) {
-                return Ok(None);
-            }
-            let candidate = CertificateGeneration::from_files(
+        let publication = self.active.publish_transaction(gate, before_publish, || {
+            CertificateGeneration::from_files(
                 self.certificate.clone(),
                 &self.declared_dns_names,
                 &self.certificate_chain_path,
                 &self.private_key_path,
             )
+            .map(|candidate| ((), candidate))
             .map_err(|source| FileReconcileError::InvalidCandidate {
                 certificate: self.certificate.clone(),
                 active_content_revision: self.active.snapshot().metadata().revision.clone(),
                 source: Box::new(source),
-            })?;
-            let expected = self.active.snapshot();
-            if candidate.metadata().revision == expected.metadata().revision {
-                before_publish(attempt);
-                let publication = if let Some(gate) = gate {
-                    let Some(publication) = gate.publish(|| {
-                        self.active
-                            .publish_prevalidated_if_current(&expected, Arc::clone(&expected))
-                    }) else {
-                        return Ok(None);
-                    };
-                    publication
-                } else {
-                    self.active
-                        .publish_prevalidated_if_current(&expected, Arc::clone(&expected))
-                };
-                if publication {
-                    return Ok(Some(FileReconcileOutcome::Unchanged));
-                }
-                continue;
+            })
+        });
+        match publication {
+            Ok(CertificatePublication::Unchanged(())) => Ok(Some(FileReconcileOutcome::Unchanged)),
+            Ok(CertificatePublication::Activated(())) => Ok(Some(FileReconcileOutcome::Activated)),
+            Err(CertificatePublicationError::Candidate(error)) => Err(error),
+            Err(CertificatePublicationError::Conflict { attempts }) => {
+                Err(FileReconcileError::PublicationConflict {
+                    certificate: self.certificate.clone(),
+                    active_content_revision: self.active.snapshot().metadata().revision.clone(),
+                    attempts,
+                })
             }
-
-            before_publish(attempt);
-            let replacement = Arc::new(candidate);
-            let publication = if let Some(gate) = gate {
-                let Some(publication) = gate.publish(|| {
-                    self.active
-                        .publish_prevalidated_if_current(&expected, Arc::clone(&replacement))
-                }) else {
-                    return Ok(None);
-                };
-                publication
-            } else {
-                self.active
-                    .publish_prevalidated_if_current(&expected, replacement)
-            };
-            if publication {
-                return Ok(Some(FileReconcileOutcome::Activated));
-            }
+            Err(CertificatePublicationError::Stopped) => Ok(None),
         }
-
-        Err(FileReconcileError::PublicationConflict {
-            certificate: self.certificate.clone(),
-            active_content_revision: self.active.snapshot().metadata().revision.clone(),
-            attempts: MAX_CAS_REREADS,
-        })
     }
 }
 

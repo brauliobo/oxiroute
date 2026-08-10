@@ -1,15 +1,13 @@
 use std::{
     cmp::Ordering,
     fmt,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering as AtomicOrdering},
-    },
+    sync::{Arc, Mutex},
 };
 
-use super::{ActiveCertificateGeneration, CertbotLineage, TlsBuildError};
-
-const MAX_CAS_REREADS: usize = 4;
+use super::{
+    ActiveCertificateGeneration, CertbotLineage, TlsBuildError,
+    certificate::{CertificatePublication, CertificatePublicationError, PublicationGate},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CertbotActivationDirection {
@@ -225,10 +223,7 @@ impl CertbotReconciler {
         gate: Option<&PublicationGate>,
         before_publish: &mut dyn FnMut(usize),
     ) -> Result<Option<CertbotReconcileOutcome>, CertbotReconcileError> {
-        for attempt in 0..MAX_CAS_REREADS {
-            if gate.is_some_and(PublicationGate::is_stopped) {
-                return Ok(None);
-            }
+        let publication = self.active.publish_transaction(gate, before_publish, || {
             let candidate = self
                 .lineage
                 .load_candidate(&self.certificate, &self.declared_dns_names)
@@ -237,65 +232,39 @@ impl CertbotReconciler {
                     active_archive_revision: state.active_archive_revision,
                     source: Box::new(source),
                 })?;
-            let archive_revision = candidate.archive_revision();
-            let expected = self.active.snapshot();
-            if candidate.generation().metadata().revision == expected.metadata().revision {
-                before_publish(attempt);
-                let publication = if let Some(gate) = gate {
-                    let Some(publication) = gate.publish(|| {
-                        self.active
-                            .publish_prevalidated_if_current(&expected, Arc::clone(&expected))
-                    }) else {
-                        return Ok(None);
-                    };
-                    publication
-                } else {
-                    self.active
-                        .publish_prevalidated_if_current(&expected, Arc::clone(&expected))
-                };
-                if publication {
-                    state.active_archive_revision = archive_revision;
-                    return Ok(Some(CertbotReconcileOutcome::Unchanged {
-                        archive_revision,
-                    }));
-                }
-                continue;
-            }
-            let previous_archive_revision = state.active_archive_revision;
-            let direction = match archive_revision.cmp(&previous_archive_revision) {
-                Ordering::Greater => CertbotActivationDirection::Forward,
-                Ordering::Less => CertbotActivationDirection::Rollback,
-                Ordering::Equal => CertbotActivationDirection::Replacement,
-            };
-            before_publish(attempt);
-            let replacement = Arc::new(candidate.into_generation());
-            let publication = if let Some(gate) = gate {
-                let Some(publication) = gate.publish(|| {
-                    self.active
-                        .publish_prevalidated_if_current(&expected, Arc::clone(&replacement))
-                }) else {
-                    return Ok(None);
-                };
-                publication
-            } else {
-                self.active
-                    .publish_prevalidated_if_current(&expected, replacement)
-            };
-            if publication {
+            Ok((candidate.archive_revision(), candidate.into_generation()))
+        });
+        match publication {
+            Ok(CertificatePublication::Unchanged(archive_revision)) => {
                 state.active_archive_revision = archive_revision;
-                return Ok(Some(CertbotReconcileOutcome::Activated {
+                Ok(Some(CertbotReconcileOutcome::Unchanged {
+                    archive_revision,
+                }))
+            }
+            Ok(CertificatePublication::Activated(archive_revision)) => {
+                let previous_archive_revision = state.active_archive_revision;
+                let direction = match archive_revision.cmp(&previous_archive_revision) {
+                    Ordering::Greater => CertbotActivationDirection::Forward,
+                    Ordering::Less => CertbotActivationDirection::Rollback,
+                    Ordering::Equal => CertbotActivationDirection::Replacement,
+                };
+                state.active_archive_revision = archive_revision;
+                Ok(Some(CertbotReconcileOutcome::Activated {
                     previous_archive_revision,
                     archive_revision,
                     direction,
-                }));
+                }))
             }
+            Err(CertificatePublicationError::Candidate(error)) => Err(error),
+            Err(CertificatePublicationError::Conflict { attempts }) => {
+                Err(CertbotReconcileError::PublicationConflict {
+                    certificate: self.certificate.clone(),
+                    active_archive_revision: state.active_archive_revision,
+                    attempts,
+                })
+            }
+            Err(CertificatePublicationError::Stopped) => Ok(None),
         }
-
-        Err(CertbotReconcileError::PublicationConflict {
-            certificate: self.certificate.clone(),
-            active_archive_revision: state.active_archive_revision,
-            attempts: MAX_CAS_REREADS,
-        })
     }
 }
 
@@ -306,43 +275,5 @@ impl fmt::Debug for CertbotReconciler {
             .field("certificate", &self.certificate)
             .field("active_archive_revision", &self.active_archive_revision())
             .finish_non_exhaustive()
-    }
-}
-
-pub(crate) struct PublicationGate {
-    stopped: AtomicBool,
-    publication: Mutex<()>,
-}
-
-impl PublicationGate {
-    pub(crate) fn new() -> Self {
-        Self {
-            stopped: AtomicBool::new(false),
-            publication: Mutex::new(()),
-        }
-    }
-
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.stopped.load(AtomicOrdering::Acquire)
-    }
-
-    pub(crate) fn stop(&self) {
-        let _publication = self
-            .publication
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.stopped.store(true, AtomicOrdering::Release);
-    }
-
-    pub(crate) fn publish<T>(&self, publish: impl FnOnce() -> T) -> Option<T> {
-        let _publication = self
-            .publication
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.is_stopped() {
-            None
-        } else {
-            Some(publish())
-        }
     }
 }

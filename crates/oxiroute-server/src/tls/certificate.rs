@@ -4,7 +4,10 @@ use std::{
     fmt,
     net::IpAddr,
     path::Path,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
 };
 
 use super::{
@@ -59,6 +62,7 @@ const DH_PARAMETERS_FILE: &str = "DH parameters";
 const ESTIMATED_SESSION_BYTES: u64 = 256;
 const MAX_DNS_NAMES: usize = 100;
 const MAX_SELF_SIGNED_VALIDITY_DAYS: u32 = 30;
+const MAX_CERTIFICATE_PUBLICATION_ATTEMPTS: usize = 4;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum CertificateIdentity {
@@ -643,6 +647,97 @@ impl ActiveCertificateGeneration {
             &self.current.compare_and_swap(expected, replacement),
             expected,
         )
+    }
+
+    pub(super) fn publish_transaction<T, E>(
+        &self,
+        gate: Option<&PublicationGate>,
+        before_publish: &mut dyn FnMut(usize),
+        mut load_candidate: impl FnMut() -> Result<(T, CertificateGeneration), E>,
+    ) -> Result<CertificatePublication<T>, CertificatePublicationError<E>> {
+        for attempt in 0..MAX_CERTIFICATE_PUBLICATION_ATTEMPTS {
+            if gate.is_some_and(PublicationGate::is_stopped) {
+                return Err(CertificatePublicationError::Stopped);
+            }
+            let (context, candidate) =
+                load_candidate().map_err(CertificatePublicationError::Candidate)?;
+            let expected = self.snapshot();
+            let unchanged = candidate.metadata().revision == expected.metadata().revision;
+            let replacement = if unchanged {
+                Arc::clone(&expected)
+            } else {
+                Arc::new(candidate)
+            };
+            before_publish(attempt);
+            let publish =
+                || self.publish_prevalidated_if_current(&expected, Arc::clone(&replacement));
+            let published = if let Some(gate) = gate {
+                gate.publish(publish)
+                    .ok_or(CertificatePublicationError::Stopped)?
+            } else {
+                publish()
+            };
+            if published {
+                return Ok(if unchanged {
+                    CertificatePublication::Unchanged(context)
+                } else {
+                    CertificatePublication::Activated(context)
+                });
+            }
+        }
+
+        Err(CertificatePublicationError::Conflict {
+            attempts: MAX_CERTIFICATE_PUBLICATION_ATTEMPTS,
+        })
+    }
+}
+
+pub(super) enum CertificatePublication<T> {
+    Unchanged(T),
+    Activated(T),
+}
+
+pub(super) enum CertificatePublicationError<E> {
+    Candidate(E),
+    Conflict { attempts: usize },
+    Stopped,
+}
+
+pub(crate) struct PublicationGate {
+    stopped: AtomicBool,
+    publication: Mutex<()>,
+}
+
+impl PublicationGate {
+    pub(crate) fn new() -> Self {
+        Self {
+            stopped: AtomicBool::new(false),
+            publication: Mutex::new(()),
+        }
+    }
+
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stopped.load(AtomicOrdering::Acquire)
+    }
+
+    pub(crate) fn stop(&self) {
+        let _publication = self
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.stopped.store(true, AtomicOrdering::Release);
+    }
+
+    pub(crate) fn publish<T>(&self, publish: impl FnOnce() -> T) -> Option<T> {
+        let _publication = self
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.is_stopped() {
+            None
+        } else {
+            Some(publish())
+        }
     }
 }
 
