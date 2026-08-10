@@ -2,6 +2,8 @@
 set -euo pipefail
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=release-archive-policy.sh
+source "${repo_dir}/scripts/release-archive-policy.sh"
 archive=${1:-}
 version=${2:-}
 shift 2 || true
@@ -54,13 +56,10 @@ tar -tzf "${archive}" >"${entries}"
 LC_ALL=C sort "${entries}" >"${sorted_entries}"
 LC_ALL=C sort "${entries}" -c
 
-has_cargo_lock=false
-has_cargo_toml=false
-has_license=false
-has_fuzz_lock=false
-has_loadgen_lock=false
-has_ui_lock=false
-has_remotion_lock=false
+declare -A required_paths=()
+declare -A allowed_secret_paths=()
+for path in "${RELEASE_REQUIRED_PATHS[@]}"; do required_paths["${path}"]=false; done
+for path in "${RELEASE_ALLOWED_SECRET_PATHS[@]}"; do allowed_secret_paths["${path}"]=true; done
 while IFS= read -r entry; do
   case "${entry}" in
     "${root}"/*) relative=${entry#"${root}/"} ;;
@@ -74,48 +73,15 @@ while IFS= read -r entry; do
     exit 1
   }
   path_for_policy=${relative,,}
-  case "${path_for_policy}" in
-    crates/oxiroute-import/tests/fixtures/haproxy/tls-chain.pem.key|\
-    crates/oxiroute-import/tests/fixtures/haproxy/tls-no-identities.pem.key|\
-    crates/oxiroute-import/tests/fixtures/nginx/proxy-key.pem|\
-    crates/oxiroute-import/tests/fixtures/nginx/proxy-mismatched-key.pem|\
-    crates/oxiroute-server/src/tls/tests.rs|\
-    crates/oxiroute-server/tests/fixtures/origin-key.pem|\
-    crates/oxiroute-server/tests/fixtures/proxy-a-key.pem|\
-    crates/oxiroute-server/tests/fixtures/proxy-b-key.pem|\
-    vendor/pingora-core/examples/keys/client-ca/key.pem|\
-    vendor/pingora-core/examples/keys/clients/invalid-key.pem|\
-    vendor/pingora-core/examples/keys/clients/key-1.pem|\
-    vendor/pingora-core/examples/keys/clients/key-2.pem|\
-    vendor/pingora-core/examples/keys/server/key.pem)
-      # These deterministic test fixtures shipped in v0.4.1; keep the allowlist exact.
-      ;;
-    target|target/*|*/target|*/target/*|node_modules|node_modules/*|*/node_modules|*/node_modules/*)
-      printf 'release archive contains a build artifact or secret-shaped path: %s\n' "${entry}" >&2
-      exit 1
-      ;;
-    remotion/out|remotion/out/*|*/remotion/out|*/remotion/out/*|test-results|test-results/*|*/test-results|*/test-results/*)
-      printf 'release archive contains a build artifact or secret-shaped path: %s\n' "${entry}" >&2
-      exit 1
-      ;;
-    benchmarks/reports|benchmarks/reports/*|*/benchmarks/reports|*/benchmarks/reports/*|.git|.git/*|*/.git|*/.git/*)
-      printf 'release archive contains a build artifact or secret-shaped path: %s\n' "${entry}" >&2
-      exit 1
-      ;;
-    *.env|*.env.*|*.token|*.secret|*.secrets|*credentials*|*.key|*.p12|*.pfx|*/id_rsa|*/id_ed25519)
-      printf 'release archive contains a build artifact or secret-shaped path: %s\n' "${entry}" >&2
-      exit 1
-      ;;
-  esac
-  case "${relative}" in
-    Cargo.lock) has_cargo_lock=true ;;
-    Cargo.toml) has_cargo_toml=true ;;
-    LICENSE) has_license=true ;;
-    fuzz/Cargo.lock) has_fuzz_lock=true ;;
-    benchmarks/loadgen/Cargo.lock) has_loadgen_lock=true ;;
-    ui/pnpm-lock.yaml) has_ui_lock=true ;;
-    remotion/pnpm-lock.yaml) has_remotion_lock=true ;;
-  esac
+  if [[ -z "${allowed_secret_paths[${path_for_policy}]+allowed}" ]]; then
+    for pattern in "${RELEASE_DENIED_PATH_PATTERNS[@]}" "${RELEASE_SECRET_PATH_PATTERNS[@]}"; do
+      if [[ "${path_for_policy}" == ${pattern} ]]; then
+        printf 'release archive contains a build artifact or secret-shaped path: %s\n' "${entry}" >&2
+        exit 1
+      fi
+    done
+  fi
+  if [[ -n "${required_paths[${relative}]+required}" ]]; then required_paths["${relative}"]=true; fi
 done <"${sorted_entries}"
 
 tar \
@@ -124,7 +90,7 @@ tar \
   --file="${archive}" \
   --to-command='
     if [ "${TAR_FILETYPE:-}" = f ]; then
-      LC_ALL=C grep -aE -- "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|(^|[^A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])gh[pousr]_[A-Za-z0-9_]{20,}([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])github_pat_[A-Za-z0-9_]{20,}([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])xox[baprs]-[A-Za-z0-9-]{20,}([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])npm_[A-Za-z0-9]{20,}([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])sk_live_[A-Za-z0-9]{16,}([^A-Za-z0-9]|$)" >/dev/null
+       LC_ALL=C grep -aE -- "${RELEASE_SECRET_CONTENT_PATTERN}" >/dev/null
       status=$?
       if [ "${status}" -gt 1 ]; then
         exit "${status}"
@@ -144,35 +110,15 @@ while IFS= read -r entry; do
       exit 1
       ;;
   esac
-  case "${relative}" in
-    crates/oxiroute-import/tests/fixtures/haproxy/tls-chain.pem.key|\
-    crates/oxiroute-import/tests/fixtures/haproxy/tls-no-identities.pem.key|\
-    crates/oxiroute-import/tests/fixtures/nginx/proxy-key.pem|\
-    crates/oxiroute-import/tests/fixtures/nginx/proxy-mismatched-key.pem|\
-    crates/oxiroute-server/src/tls/tests.rs|\
-    crates/oxiroute-server/tests/fixtures/origin-key.pem|\
-    crates/oxiroute-server/tests/fixtures/proxy-a-key.pem|\
-    crates/oxiroute-server/tests/fixtures/proxy-b-key.pem|\
-    vendor/pingora-core/examples/keys/client-ca/key.pem|\
-    vendor/pingora-core/examples/keys/clients/invalid-key.pem|\
-    vendor/pingora-core/examples/keys/clients/key-1.pem|\
-    vendor/pingora-core/examples/keys/clients/key-2.pem|\
-    vendor/pingora-core/examples/keys/server/key.pem)
-      ;;
-    *)
-      printf 'release archive contains unallowlisted private-key or credential material: %s\n' "${entry}" >&2
-      exit 1
-      ;;
-  esac
+  [[ -n "${allowed_secret_paths[${relative,,}]+allowed}" ]] || {
+    printf 'release archive contains unallowlisted private-key or credential material: %s\n' "${entry}" >&2
+    exit 1
+  }
 done <"${secret_entries}"
 
-${has_cargo_lock} || { printf 'archive is missing Cargo.lock\n' >&2; exit 1; }
-${has_cargo_toml} || { printf 'archive is missing Cargo.toml\n' >&2; exit 1; }
-${has_license} || { printf 'archive is missing LICENSE\n' >&2; exit 1; }
-${has_fuzz_lock} || { printf 'archive is missing fuzz/Cargo.lock\n' >&2; exit 1; }
-${has_loadgen_lock} || { printf 'archive is missing benchmarks/loadgen/Cargo.lock\n' >&2; exit 1; }
-${has_ui_lock} || { printf 'archive is missing ui/pnpm-lock.yaml\n' >&2; exit 1; }
-${has_remotion_lock} || { printf 'archive is missing remotion/pnpm-lock.yaml\n' >&2; exit 1; }
+for path in "${RELEASE_REQUIRED_PATHS[@]}"; do
+  [[ "${required_paths[${path}]}" == true ]] || { printf 'archive is missing %s\n' "${path}" >&2; exit 1; }
+done
 
 if [[ "${compare_worktree}" == true ]]; then
   while IFS= read -r -d '' path; do
@@ -180,14 +126,7 @@ if [[ "${compare_worktree}" == true ]]; then
   done < <(
     git -C "${repo_dir}" ls-files -z -- \
       . \
-      ':(exclude)packaging/arch/**' \
-      ':(exclude)benchmarks/reports/**' \
-      ':(exclude)target/**' \
-      ':(exclude)**/target/**' \
-      ':(exclude)node_modules/**' \
-      ':(exclude)**/node_modules/**' \
-      ':(exclude)remotion/out/**' \
-      ':(exclude)test-results/**'
+      "${RELEASE_ARCHIVE_EXCLUDES[@]}"
   ) >"${expected_entries}"
   LC_ALL=C sort "${expected_entries}" >"${sorted_expected}"
   if ! diff -u "${sorted_expected}" "${sorted_entries}"; then
