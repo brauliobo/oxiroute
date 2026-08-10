@@ -99,11 +99,11 @@ impl PublishSession {
     }
 
     pub(super) fn application(&self) -> &str {
-        &self.key.application
+        identity::application(&self.key)
     }
 
     pub(super) fn stream_name(&self) -> &str {
-        &self.key.name
+        identity::stream_name(&self.key)
     }
 
     pub(super) fn handle_metadata(
