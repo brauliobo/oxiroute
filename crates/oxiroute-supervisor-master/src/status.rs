@@ -1,4 +1,6 @@
-use oxiroute_supervision::{GenerationId, InstanceId};
+use oxiroute_supervision::{
+    BoundedWireProtocol, BoundedWireReader, BoundedWireWriter, GenerationId, InstanceId,
+};
 use oxiroute_supervision_unix::MessageType;
 use oxiroute_supervisor_process::AuthenticatedFrame;
 use thiserror::Error;
@@ -162,7 +164,7 @@ pub(crate) fn encode_status(status: &WorkerStatus) -> Result<Vec<u8>, StatusProt
     if status.events.len() > MAX_STATUS_EVENTS {
         return Err(StatusProtocolError::CollectionTooLong { kind: "events" });
     }
-    let mut encoder = Encoder::new();
+    let mut encoder = Encoder::new(MAX_STATUS_BYTES);
     encoder.u16(STATUS_FORMAT_VERSION)?;
     encoder.u16(CONTROL_PROTOCOL_VERSION)?;
     encoder.u64(status.sequence)?;
@@ -508,47 +510,13 @@ const fn decode_administrative_state(
     }
 }
 
-struct Encoder {
-    bytes: Vec<u8>,
+trait StatusEncoder {
+    fn string(&mut self, value: &str) -> Result<(), StatusProtocolError>;
+
+    fn optional_string(&mut self, value: Option<&str>) -> Result<(), StatusProtocolError>;
 }
 
-impl Encoder {
-    fn new() -> Self {
-        Self { bytes: Vec::new() }
-    }
-
-    fn bytes(&mut self, value: &[u8]) -> Result<(), StatusProtocolError> {
-        let next =
-            self.bytes
-                .len()
-                .checked_add(value.len())
-                .ok_or(StatusProtocolError::TooLarge {
-                    maximum: MAX_STATUS_BYTES,
-                })?;
-        if next > MAX_STATUS_BYTES {
-            return Err(StatusProtocolError::TooLarge {
-                maximum: MAX_STATUS_BYTES,
-            });
-        }
-        self.bytes
-            .try_reserve_exact(value.len())
-            .map_err(|_| StatusProtocolError::Allocation)?;
-        self.bytes.extend_from_slice(value);
-        Ok(())
-    }
-
-    fn u8(&mut self, value: u8) -> Result<(), StatusProtocolError> {
-        self.bytes(&[value])
-    }
-
-    fn u16(&mut self, value: u16) -> Result<(), StatusProtocolError> {
-        self.bytes(&value.to_be_bytes())
-    }
-
-    fn u64(&mut self, value: u64) -> Result<(), StatusProtocolError> {
-        self.bytes(&value.to_be_bytes())
-    }
-
+impl StatusEncoder for BoundedWireWriter<StatusWire> {
     fn string(&mut self, value: &str) -> Result<(), StatusProtocolError> {
         if value.len() > MAX_STATUS_STRING_BYTES {
             return Err(StatusProtocolError::StringTooLong {
@@ -572,51 +540,17 @@ impl Encoder {
             None => self.u8(0),
         }
     }
-
-    fn finish(self) -> Vec<u8> {
-        self.bytes
-    }
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    position: usize,
+trait StatusDecoder {
+    fn flag(&mut self) -> Result<bool, StatusProtocolError>;
+
+    fn string(&mut self) -> Result<String, StatusProtocolError>;
+
+    fn optional_string(&mut self) -> Result<Option<String>, StatusProtocolError>;
 }
 
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    fn bytes(&mut self, length: usize) -> Result<&'a [u8], StatusProtocolError> {
-        let end = self
-            .position
-            .checked_add(length)
-            .ok_or(StatusProtocolError::InvalidPayload)?;
-        let value = self
-            .bytes
-            .get(self.position..end)
-            .ok_or(StatusProtocolError::InvalidPayload)?;
-        self.position = end;
-        Ok(value)
-    }
-
-    fn u8(&mut self) -> Result<u8, StatusProtocolError> {
-        Ok(self.bytes(1)?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, StatusProtocolError> {
-        Ok(u16::from_be_bytes(
-            self.bytes(2)?.try_into().expect("fixed status slice"),
-        ))
-    }
-
-    fn u64(&mut self) -> Result<u64, StatusProtocolError> {
-        Ok(u64::from_be_bytes(
-            self.bytes(8)?.try_into().expect("fixed status slice"),
-        ))
-    }
-
+impl StatusDecoder for BoundedWireReader<'_, StatusWire> {
     fn flag(&mut self) -> Result<bool, StatusProtocolError> {
         match self.u8()? {
             0 => Ok(false),
@@ -643,13 +577,28 @@ impl<'a> Decoder<'a> {
             _ => Err(StatusProtocolError::InvalidPayload),
         }
     }
+}
 
-    fn finish(self) -> Result<(), StatusProtocolError> {
-        (self.position == self.bytes.len())
-            .then_some(())
-            .ok_or(StatusProtocolError::InvalidPayload)
+struct StatusWire;
+
+impl BoundedWireProtocol for StatusWire {
+    type Error = StatusProtocolError;
+
+    fn invalid() -> Self::Error {
+        StatusProtocolError::InvalidPayload
+    }
+
+    fn too_large(_actual: usize, maximum: usize) -> Self::Error {
+        StatusProtocolError::TooLarge { maximum }
+    }
+
+    fn allocation() -> Self::Error {
+        StatusProtocolError::Allocation
     }
 }
+
+type Encoder = BoundedWireWriter<StatusWire>;
+type Decoder<'a> = BoundedWireReader<'a, StatusWire>;
 
 #[cfg(test)]
 mod tests {
@@ -744,5 +693,16 @@ mod tests {
             encode_status(&status),
             Err(StatusProtocolError::CollectionTooLong { kind: "events" })
         ));
+    }
+
+    #[test]
+    fn status_prefix_and_tags_stay_byte_exact() {
+        let payload = encode_status(&status()).expect("encode status");
+        assert_eq!(
+            &payload[..23],
+            &[
+                0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7, 3, 3, 0
+            ]
+        );
     }
 }
