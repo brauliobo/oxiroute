@@ -4,10 +4,7 @@ use std::{
     io::{Read as _, Write as _},
     os::fd::OwnedFd,
     path::{Component, Path},
-    sync::{
-        Arc, Mutex, OnceLock, RwLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex, OnceLock, RwLock},
     time::SystemTime,
 };
 
@@ -19,7 +16,7 @@ use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use tokio::sync::Notify;
 
 use crate::config_coordinator::ConfigRevision;
-use crate::logging::{redact_identifier, redact_text};
+use crate::logging::{next_correlation_id, redact_identifier, redact_text, valid_correlation_id};
 use crate::monitoring::{ObservedTransport, TransportOutcome};
 use crate::routing::HealthFailure;
 
@@ -51,22 +48,15 @@ pub(crate) struct AuditContext {
 
 impl AuditContext {
     pub(crate) fn generated() -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         Self {
-            correlation_id: format!("op-{:08x}-{:016x}", std::process::id(), sequence),
+            correlation_id: next_correlation_id(),
             actor: "system".into(),
             source: "runtime".into(),
         }
     }
 
     pub(crate) fn from_external(value: &str) -> Option<Self> {
-        if value.is_empty()
-            || value.len() > CORRELATION_ID_MAX_BYTES
-            || !value.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
-            })
-        {
+        if !valid_correlation_id(value) {
             return None;
         }
         Some(Self {
