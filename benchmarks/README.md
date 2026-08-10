@@ -36,7 +36,8 @@ lanes and older Rust commands do not describe the current `ce310df` capability b
 - Origin, proxy, and load generator are pinned to distinct configured CPUs. The harness performs no
   governor/kernel tuning and does not cover TLS, h2c, cache warming, remote clients, or uploads.
 
-`lanes.json` is the machine-readable lane contract. Cache, forward-proxy, H2, and H3 lanes are
+`lanes.json` is the machine-readable lane and default-settings contract consumed by every harness
+entry point. Cache, forward-proxy, H2, and H3 lanes are
 explicit skips. OxiRoute's reverse HTTP and eligible forward HTTP/1 paths activate bounded cache
 behavior, while the narrow forward-proxy listener and active reverse H3 service require different
 configuration and clients. Reverse H2 requires TLS and a different client/configuration matrix;

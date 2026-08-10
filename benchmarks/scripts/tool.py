@@ -26,6 +26,19 @@ HISTORICAL_REPORTS = {
     "2026-07-23-local-v2.json",
     "2026-07-23-optimization-v1.json",
 }
+BENCHMARK_SETTING_KEYS = (
+    "origin_port",
+    "proxy_port",
+    "connections",
+    "warmup_seconds",
+    "duration_seconds",
+    "stop_timeout_seconds",
+    "proxy_cpu",
+    "origin_cpu",
+    "load_cpu",
+    "oxiroute_binary",
+    "loadgen_binary",
+)
 
 
 def write_json(path, value):
@@ -754,9 +767,67 @@ def summarize_loadgen(args):
 
 
 def skipped_lanes(args):
-    manifest = json.loads(pathlib.Path(args.input).read_text(encoding="utf-8"))
+    manifest = load_lane_manifest(args.input)
     skipped = [lane for lane in manifest["lanes"] if lane["status"] == "skipped"]
     write_json(args.output, {"schema": manifest["schema"], "lanes": skipped})
+
+
+def load_lane_manifest(path):
+    manifest = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or manifest.get("schema") != "oxiroute.local-v1.lanes.v1":
+        raise SystemExit("unsupported benchmark lane schema")
+    settings = manifest.get("settings")
+    if not isinstance(settings, dict) or set(settings) != set(BENCHMARK_SETTING_KEYS):
+        raise SystemExit("benchmark settings do not match the canonical contract")
+    for key in BENCHMARK_SETTING_KEYS[:6]:
+        if not isinstance(settings[key], int) or isinstance(settings[key], bool) or settings[key] <= 0:
+            raise SystemExit(f"benchmark setting {key} must be a positive integer")
+    for key in BENCHMARK_SETTING_KEYS[6:9]:
+        if not isinstance(settings[key], int) or isinstance(settings[key], bool) or settings[key] < 0:
+            raise SystemExit(f"benchmark setting {key} must be a nonnegative integer")
+    for key in BENCHMARK_SETTING_KEYS[9:]:
+        value = settings[key]
+        if not isinstance(value, str) or not value or pathlib.PurePosixPath(value).is_absolute():
+            raise SystemExit(f"benchmark setting {key} must be a relative path")
+
+    lanes = manifest.get("lanes")
+    if not isinstance(lanes, list) or not lanes:
+        raise SystemExit("benchmark lanes must be a nonempty array")
+    ids = set()
+    runnable = []
+    for lane in lanes:
+        if not isinstance(lane, dict) or not isinstance(lane.get("id"), str) or not lane["id"]:
+            raise SystemExit("benchmark lane has an invalid id")
+        if lane["id"] in ids:
+            raise SystemExit(f"duplicate benchmark lane: {lane['id']}")
+        ids.add(lane["id"])
+        if lane.get("status") == "runnable":
+            implementations = lane.get("implementations")
+            if (
+                not isinstance(implementations, list)
+                or not implementations
+                or any(not isinstance(item, str) for item in implementations)
+                or len(set(implementations)) != len(implementations)
+                or any(item not in {"oxiroute", "nginx", "haproxy"} for item in implementations)
+            ):
+                raise SystemExit(f"runnable lane {lane['id']} has invalid implementations")
+            runnable.append(lane)
+        elif lane.get("status") == "skipped":
+            if not all(isinstance(lane.get(key), str) and lane[key] for key in ("reason_code", "reason")):
+                raise SystemExit(f"skipped lane {lane['id']} has no reason")
+        else:
+            raise SystemExit(f"benchmark lane {lane['id']} has invalid status")
+    if len(runnable) != 1:
+        raise SystemExit("local-v1 requires exactly one runnable benchmark lane")
+    return manifest
+
+
+def benchmark_settings(args):
+    manifest = load_lane_manifest(args.input)
+    settings = manifest["settings"]
+    for key in BENCHMARK_SETTING_KEYS:
+        print(settings[key])
+    print(" ".join(next(lane for lane in manifest["lanes"] if lane["status"] == "runnable")["implementations"]))
 
 
 def result_value(args):
@@ -821,6 +892,10 @@ def build_parser():
     command.add_argument("input")
     command.add_argument("output")
     command.set_defaults(function=skipped_lanes)
+
+    command = commands.add_parser("benchmark-settings")
+    command.add_argument("input")
+    command.set_defaults(function=benchmark_settings)
 
     command = commands.add_parser("result-value")
     command.add_argument("input")

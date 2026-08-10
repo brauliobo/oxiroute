@@ -1,5 +1,18 @@
 {
   "schema": "oxiroute.local-v1.lanes.v1",
+  "settings": {
+    "origin_port": 19080,
+    "proxy_port": 19081,
+    "connections": 128,
+    "warmup_seconds": 10,
+    "duration_seconds": 30,
+    "stop_timeout_seconds": 10,
+    "proxy_cpu": 2,
+    "origin_cpu": 3,
+    "load_cpu": 4,
+    "oxiroute_binary": "target/release/oxiroute",
+    "loadgen_binary": "benchmarks/loadgen/target/release/oxiroute-loadgen"
+  },
   "lanes": [
     {
       "id": "reverse-h1",

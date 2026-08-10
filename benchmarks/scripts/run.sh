@@ -4,6 +4,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+source "${BENCHMARK_ROOT}/scripts/settings.sh"
 
 implementation=all
 output=
@@ -23,23 +24,8 @@ while (($#)); do
   esac
 done
 
-case $implementation in
-  all) implementations=(oxiroute nginx haproxy) ;;
-  origin | oxiroute | nginx | haproxy) implementations=("$implementation") ;;
-  *) die "unknown implementation: $implementation" ;;
-esac
-
-origin_port=${BENCH_ORIGIN_PORT:-19080}
-proxy_port=${BENCH_PROXY_PORT:-19081}
-connections=${BENCH_CONNECTIONS:-128}
-warmup_seconds=${BENCH_WARMUP_SECONDS:-10}
-duration_seconds=${BENCH_DURATION_SECONDS:-30}
-BENCH_STOP_TIMEOUT_SECONDS=${BENCH_STOP_TIMEOUT_SECONDS:-10}
-proxy_cpu=${BENCH_PROXY_CPU:-2}
-origin_cpu=${BENCH_ORIGIN_CPU:-3}
-load_cpu=${BENCH_LOAD_CPU:-4}
-oxiroute_bin=${OXIROUTE_BIN:-"$REPOSITORY_ROOT/target/release/oxiroute"}
-loadgen_bin=${BENCH_LOADGEN_BIN:-"$BENCHMARK_ROOT/loadgen/target/release/oxiroute-loadgen"}
+load_benchmark_settings
+select_benchmark_implementations "$implementation"
 export BENCH_STOP_TIMEOUT_SECONDS
 
 for pair in \
