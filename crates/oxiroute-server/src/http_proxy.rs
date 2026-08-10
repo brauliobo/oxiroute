@@ -1,5 +1,4 @@
 use std::{
-    net::IpAddr,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -41,11 +40,14 @@ use crate::{
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
         CacheFill, CacheFillJoin, CacheRequest, HttpActionPlan, HttpCachePlan, HttpGzipPlan,
-        HttpRoutePlan, ProxyPolicyPlan, RedirectLocationPlan, RequestHeaderMutationPlan,
-        RequestHeaderValuePlan, ResponseHeaderMutationPlan, StaticErrorTarget, StaticFile,
-        StaticRequestDecision, StaticServeError, StaticTarget,
+        HttpRoutePlan, ProxyPolicyPlan, RedirectLocationPlan, ResponseHeaderMutationPlan,
+        StaticErrorTarget, StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
     },
-    http_policy::{RedirectContext, expand_redirect_location, normalized_redirect_host},
+    http_policy::{
+        RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
+        decide_request_header, expand_redirect_location, nginx_request_host,
+        normalized_redirect_host, normalized_request_host,
+    },
     monitoring::CacheEvent,
     upstream_peer::{
         SelectedEndpoint, UpstreamPlan, enforce_http_version, validate_tls_connection,
@@ -111,6 +113,7 @@ pub struct HttpRequestContext {
     selected: Option<SelectedEndpoint>,
     selected_observation: Option<EndpointObservation>,
     selected_upstream_host: Option<HeaderValue>,
+    request_header_decisions: Box<[RequestHeaderDecision]>,
     connection_retryable: bool,
     replay_retryable: bool,
     retry_server: Option<String>,
@@ -262,6 +265,7 @@ impl ProxyHttp for HttpReverseProxy {
             selected: None,
             selected_observation: None,
             selected_upstream_host: None,
+            request_header_decisions: Box::new([]),
             connection_retryable: false,
             replay_retryable: false,
             retry_server: None,
@@ -391,10 +395,14 @@ impl ProxyHttp for HttpReverseProxy {
             return Ok(true);
         }
 
-        if !bounded_request_header_sources(session, &route) {
-            session.respond_error(431).await?;
-            ctx.allow_downstream_drain(session);
-            return Ok(true);
+        match pingora_request_header_decisions(session, &route, ctx.authority.as_ref()) {
+            Ok(decisions) => ctx.request_header_decisions = decisions,
+            Err(RequestPolicyError::SourceTooLarge) => {
+                session.respond_error(431).await?;
+                ctx.allow_downstream_drain(session);
+                return Ok(true);
+            }
+            Err(error) => return Err(pingora_request_policy_error(error).into()),
         }
         if let HttpActionPlan::Proxy(proxy) = &route.action
             && let Some(cache) = &proxy.policy.cache
@@ -688,7 +696,7 @@ impl ProxyHttp for HttpReverseProxy {
 
     async fn upstream_request_filter(
         &self,
-        session: &mut Session,
+        _session: &mut Session,
         upstream_request: &mut pingora::http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
@@ -735,7 +743,7 @@ impl ProxyHttp for HttpReverseProxy {
         }) {
             upstream_request.insert_header(CONNECTION, "close")?;
         }
-        apply_request_header_mutations(session, upstream_request, ctx)?;
+        apply_request_header_mutations(upstream_request, ctx)?;
         Ok(())
     }
 
@@ -1046,7 +1054,7 @@ impl ProxyHttp for HttpReverseProxy {
                     .and_then(|duration| u64::try_from(duration.as_millis()).ok()),
                 "service": access_log.service(),
                 "route": ctx.route.as_ref().map(|route| route.route_id.as_str()),
-                "host": ctx.authority.as_ref().and_then(normalized_host),
+                "host": ctx.authority.as_ref().map(normalized_request_host),
                 "method": request.method.as_str(),
                 "status": response_status,
                 "bytesReceived": session.body_bytes_read().to_string(),
@@ -2250,41 +2258,54 @@ fn proxy_route(ctx: &HttpRequestContext) -> &HttpRoutePlan {
     ctx.route.as_ref().expect("proxy route context")
 }
 
-fn bounded_request_header_sources(session: &Session, route: &HttpRoutePlan) -> bool {
+fn pingora_request_header_decisions(
+    session: &Session,
+    route: &HttpRoutePlan,
+    authority: Option<&Authority>,
+) -> Result<Box<[RequestHeaderDecision]>, RequestPolicyError> {
     let HttpActionPlan::Proxy(proxy) = &route.action else {
-        return true;
+        return Ok(Box::new([]));
     };
+    let client_ip = session
+        .client_addr()
+        .and_then(|address| address.as_inet())
+        .map(std::net::SocketAddr::ip);
+    let downstream_scheme = if session
+        .digest()
+        .and_then(|digest| digest.ssl_digest.as_ref())
+        .is_some()
+    {
+        "https"
+    } else {
+        "http"
+    };
+    let context = RequestPolicyContext {
+        authority,
+        downstream_scheme,
+        client_ip,
+        incoming_headers: &session.req_header().headers,
+    };
+    let mut decisions = Vec::with_capacity(proxy.policy.request_headers.len());
     for mutation in &proxy.policy.request_headers {
-        let RequestHeaderMutationPlan::Set { value, .. } = mutation else {
+        if mutation.is_pingora_managed_upgrade() {
             continue;
-        };
-        match value {
-            RequestHeaderValuePlan::AppendedXForwardedFor {
-                max_bytes,
-                except_source_cidrs,
-            } => {
-                if source_matches_exception(session, except_source_cidrs) {
-                    continue;
-                }
-                if appended_x_forwarded_for(session, *max_bytes).is_err() {
-                    return false;
-                }
-            }
-            RequestHeaderValuePlan::IncomingHeader { name, max_bytes } => {
-                if joined_header_values(session.req_header(), name, *max_bytes).is_err() {
-                    return false;
-                }
-            }
-            RequestHeaderValuePlan::Literal(_)
-            | RequestHeaderValuePlan::IncomingAuthority
-            | RequestHeaderValuePlan::NormalizedHost
-            | RequestHeaderValuePlan::NginxHost { .. }
-            | RequestHeaderValuePlan::ClientIp
-            | RequestHeaderValuePlan::DownstreamScheme
-            | RequestHeaderValuePlan::SelectedUpstreamHost => {}
+        }
+        decisions.push(decide_request_header(mutation, context)?);
+    }
+    Ok(decisions.into_boxed_slice())
+}
+
+fn pingora_request_policy_error(error: RequestPolicyError) -> Error {
+    *match error {
+        RequestPolicyError::SourceTooLarge => Error::new_down(ErrorType::HTTPStatus(431)),
+        RequestPolicyError::InvalidHeader => Error::new_in(ErrorType::InvalidHTTPHeader),
+        RequestPolicyError::ClientIpUnavailable => {
+            Error::new_in(ErrorType::Custom("ClientIpUnavailable"))
+        }
+        RequestPolicyError::SelectedUpstreamHostUnavailable => {
+            Error::new_in(ErrorType::InternalError)
         }
     }
-    true
 }
 
 fn content_length(headers: &http::HeaderMap) -> Result<Option<u64>, ()> {
@@ -2367,41 +2388,6 @@ fn redirect_location(
     )
 }
 
-fn normalized_host(authority: &Authority) -> Option<String> {
-    let host = authority.host();
-    let unbracketed = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
-    unbracketed
-        .parse::<IpAddr>()
-        .map(|ip| ip.to_string())
-        .ok()
-        .or_else(|| Some(host.to_ascii_lowercase()))
-}
-
-fn nginx_host(
-    authority: Option<&Authority>,
-    fallback: &HeaderValue,
-) -> pingora::Result<HeaderValue> {
-    let Some(authority) = authority else {
-        return Ok(fallback.clone());
-    };
-    let host = authority.host();
-    let unbracketed = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
-    let normalized = unbracketed.parse::<IpAddr>().map_or_else(
-        |_| host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase(),
-        |ip| match ip {
-            IpAddr::V4(ip) => ip.to_string(),
-            IpAddr::V6(ip) => format!("[{ip}]"),
-        },
-    );
-    dynamic_header_value(&normalized)
-}
-
 pub(crate) fn selected_upstream_host(
     endpoint: &RuntimeEndpoint,
     policy: HttpUpstreamHost,
@@ -2417,7 +2403,9 @@ pub(crate) fn selected_upstream_host(
         HttpUpstreamHost::NginxHost { fallback } => {
             let fallback = HeaderValue::from_str(&fallback)
                 .map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))?;
-            return nginx_host(incoming, &fallback).map(Some);
+            return Ok(nginx_request_host(incoming, &fallback)
+                .map(Some)
+                .map_err(pingora_request_policy_error)?);
         }
         HttpUpstreamHost::Endpoint { unix_fallback } => match endpoint {
             RuntimeEndpoint::Socket { address } => address.to_string(),
@@ -2432,82 +2420,20 @@ pub(crate) fn selected_upstream_host(
 }
 
 fn apply_request_header_mutations(
-    session: &Session,
     request: &mut pingora::http::RequestHeader,
     ctx: &HttpRequestContext,
 ) -> pingora::Result<()> {
-    for mutation in &proxy_policy(ctx).request_headers {
-        if mutation.is_pingora_managed_upgrade() {
-            continue;
-        }
-        match mutation {
-            RequestHeaderMutationPlan::Remove { name } => {
+    for decision in &ctx.request_header_decisions {
+        match decision {
+            RequestHeaderDecision::Remove(name) => {
                 request.remove_header(name);
             }
-            RequestHeaderMutationPlan::Set { name, value } => {
-                let excepted = match value {
-                    RequestHeaderValuePlan::AppendedXForwardedFor {
-                        except_source_cidrs,
-                        ..
-                    } => source_matches_exception(session, except_source_cidrs),
-                    _ => false,
-                };
-                if excepted {
+            RequestHeaderDecision::Set { name, value } => {
+                let Some(value) = value
+                    .complete(ctx.selected_upstream_host.as_ref())
+                    .map_err(pingora_request_policy_error)?
+                else {
                     continue;
-                }
-                let value = match value {
-                    RequestHeaderValuePlan::Literal(value) => value.clone(),
-                    RequestHeaderValuePlan::IncomingAuthority => dynamic_header_value(
-                        ctx.authority
-                            .as_ref()
-                            .map(Authority::as_str)
-                            .unwrap_or_default(),
-                    )?,
-                    RequestHeaderValuePlan::NormalizedHost => {
-                        let host = ctx
-                            .authority
-                            .as_ref()
-                            .and_then(normalized_host)
-                            .unwrap_or_default();
-                        dynamic_header_value(&host)?
-                    }
-                    RequestHeaderValuePlan::NginxHost { fallback } => {
-                        nginx_host(ctx.authority.as_ref(), fallback)?
-                    }
-                    RequestHeaderValuePlan::ClientIp => {
-                        let client_ip = session
-                            .client_addr()
-                            .and_then(|address| address.as_inet())
-                            .map(|address| address.ip().to_string())
-                            .ok_or_else(|| {
-                                Error::new_in(ErrorType::Custom("ClientIpUnavailable"))
-                            })?;
-                        dynamic_header_value(&client_ip)?
-                    }
-                    RequestHeaderValuePlan::AppendedXForwardedFor { max_bytes, .. } => {
-                        let Some(value) = appended_x_forwarded_for(session, *max_bytes)? else {
-                            continue;
-                        };
-                        value
-                    }
-                    RequestHeaderValuePlan::DownstreamScheme => HeaderValue::from_static(
-                        if session
-                            .digest()
-                            .and_then(|digest| digest.ssl_digest.as_ref())
-                            .is_some()
-                        {
-                            "https"
-                        } else {
-                            "http"
-                        },
-                    ),
-                    RequestHeaderValuePlan::IncomingHeader { name, max_bytes } => {
-                        bounded_incoming_header(session.req_header(), name, *max_bytes)?
-                    }
-                    RequestHeaderValuePlan::SelectedUpstreamHost => ctx
-                        .selected_upstream_host
-                        .clone()
-                        .ok_or_else(|| Error::new_in(ErrorType::InternalError))?,
                 };
                 request.insert_header(name.clone(), value)?;
             }
@@ -2536,25 +2462,9 @@ fn upstream_request_requires_mutation(session: &Session, ctx: &HttpRequestContex
         return true;
     }
 
-    for mutation in &proxy_policy(ctx).request_headers {
-        if mutation.is_pingora_managed_upgrade() {
-            continue;
-        }
-        if let RequestHeaderMutationPlan::Set {
-            value:
-                RequestHeaderValuePlan::AppendedXForwardedFor {
-                    except_source_cidrs,
-                    ..
-                },
-            ..
-        } = mutation
-            && source_matches_exception(session, except_source_cidrs)
-        {
-            continue;
-        }
-        return true;
-    }
-    false
+    ctx.request_header_decisions
+        .iter()
+        .any(RequestHeaderDecision::requires_mutation)
 }
 
 fn has_single_canonical_host(
@@ -2575,89 +2485,6 @@ fn has_single_canonical_host(
         .case_header_iter()
         .find(|(name, _)| name.as_slice().eq_ignore_ascii_case(b"host"))
         .is_some_and(|(name, _)| name.as_slice() == b"Host")
-}
-
-fn source_matches_exception(
-    session: &Session,
-    exceptions: &[crate::http_action::SourceCidr],
-) -> bool {
-    if exceptions.is_empty() {
-        return false;
-    }
-    let Some(client_ip) = session
-        .client_addr()
-        .and_then(|address| address.as_inet())
-        .map(std::net::SocketAddr::ip)
-    else {
-        return false;
-    };
-    exceptions
-        .iter()
-        .any(|exception| exception.contains(client_ip))
-}
-
-fn appended_x_forwarded_for(
-    session: &Session,
-    max_bytes: usize,
-) -> pingora::Result<Option<HeaderValue>> {
-    let client_ip = session
-        .client_addr()
-        .and_then(|address| address.as_inet())
-        .map(|address| address.ip().to_string());
-    let existing = joined_header_values(
-        session.req_header(),
-        &HeaderName::from_static("x-forwarded-for"),
-        max_bytes,
-    )?;
-    let Some(client_ip) = client_ip else {
-        return existing
-            .map(|value| bounded_header_value(&value, max_bytes))
-            .transpose();
-    };
-    let mut value = existing.unwrap_or_default();
-    if !value.is_empty() {
-        value.extend_from_slice(b", ");
-    }
-    value.extend_from_slice(client_ip.as_bytes());
-    bounded_header_value(&value, max_bytes).map(Some)
-}
-
-fn bounded_incoming_header(
-    request: &pingora::http::RequestHeader,
-    name: &HeaderName,
-    max_bytes: usize,
-) -> pingora::Result<HeaderValue> {
-    let value = joined_header_values(request, name, max_bytes)?.unwrap_or_default();
-    bounded_header_value(&value, max_bytes)
-}
-
-fn joined_header_values(
-    request: &pingora::http::RequestHeader,
-    name: &HeaderName,
-    max_bytes: usize,
-) -> pingora::Result<Option<Vec<u8>>> {
-    let mut joined = Vec::new();
-    for value in &request.headers.get_all(name) {
-        if !joined.is_empty() {
-            joined.extend_from_slice(b", ");
-        }
-        if joined.len().saturating_add(value.as_bytes().len()) > max_bytes {
-            return Err(Error::new_down(ErrorType::HTTPStatus(431)));
-        }
-        joined.extend_from_slice(value.as_bytes());
-    }
-    Ok((!joined.is_empty()).then_some(joined))
-}
-
-fn bounded_header_value(value: &[u8], max_bytes: usize) -> pingora::Result<HeaderValue> {
-    if value.len() > max_bytes {
-        return Err(Error::new_down(ErrorType::HTTPStatus(431)));
-    }
-    HeaderValue::from_bytes(value).map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))
-}
-
-fn dynamic_header_value(value: &str) -> pingora::Result<HeaderValue> {
-    HeaderValue::from_str(value).map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))
 }
 
 pub(crate) fn remove_upstream_hop_by_hop_response_headers(
@@ -3235,7 +3062,7 @@ mod tests {
         let fallback = HeaderValue::from_static("fallback.example");
 
         assert_eq!(
-            nginx_host(Some(&authority), &fallback).unwrap(),
+            nginx_request_host(Some(&authority), &fallback).unwrap(),
             "[2001:db8::1]"
         );
     }
@@ -3321,6 +3148,12 @@ mod tests {
         context.pool = Some(plan);
         context.route = Some(route);
         context.selected_upstream_host = Some(HeaderValue::from_static("example.test"));
+        context.request_header_decisions = pingora_request_header_decisions(
+            &session,
+            context.route.as_ref().expect("request route"),
+            context.authority.as_ref(),
+        )
+        .expect("request header decisions");
         (proxy, session, context, client)
     }
 
@@ -3389,36 +3222,27 @@ mod tests {
             ),
             route_id: "unix-xff".into(),
         };
-        let HttpActionPlan::Proxy(proxy) = &route.action else {
-            unreachable!()
-        };
-        let RequestHeaderMutationPlan::Set {
-            value:
-                RequestHeaderValuePlan::AppendedXForwardedFor {
-                    except_source_cidrs,
-                    ..
-                },
-            ..
-        } = &proxy.policy.request_headers[0]
-        else {
-            panic!("compiled X-Forwarded-For mutation")
-        };
         let (session, _client) = unix_request_session(
             b"GET / HTTP/1.1\r\nHost: example.test\r\nX-Forwarded-For: trusted\r\n\r\n",
         )
         .await;
 
-        assert!(!source_matches_exception(&session, except_source_cidrs));
-        assert!(bounded_request_header_sources(&session, &route));
+        let decisions = pingora_request_header_decisions(&session, &route, None).unwrap();
+        let RequestHeaderDecision::Set { value, .. } = &decisions[0] else {
+            panic!("X-Forwarded-For set decision")
+        };
         assert_eq!(
-            appended_x_forwarded_for(&session, 128).unwrap(),
+            value.complete(None).unwrap(),
             Some(HeaderValue::from_static("trusted"))
         );
 
         let (session, _client) =
             unix_request_session(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n").await;
-        assert!(bounded_request_header_sources(&session, &route));
-        assert_eq!(appended_x_forwarded_for(&session, 128).unwrap(), None);
+        let decisions = pingora_request_header_decisions(&session, &route, None).unwrap();
+        let RequestHeaderDecision::Set { value, .. } = &decisions[0] else {
+            panic!("X-Forwarded-For no-op decision")
+        };
+        assert_eq!(value.complete(None).unwrap(), None);
     }
 
     #[tokio::test]
@@ -3493,6 +3317,12 @@ mod tests {
                 .parse()
                 .expect("mixed-case authority"),
         );
+        context.request_header_decisions = pingora_request_header_decisions(
+            &session,
+            context.route.as_ref().expect("request route"),
+            context.authority.as_ref(),
+        )
+        .expect("request header decisions");
 
         let PreparedUpstreamRequest::Owned(request) = proxy
             .prepare_upstream_request(&mut session, &mut context)
@@ -3537,8 +3367,7 @@ mod tests {
         )
         .await;
         let mut request = session.req_header().clone();
-        apply_request_header_mutations(&session, &mut request, &context)
-            .expect("excepted request mutation");
+        apply_request_header_mutations(&mut request, &context).expect("excepted request mutation");
         assert_eq!(request.headers["x-forwarded-for"], "trusted");
     }
 
@@ -3558,10 +3387,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            joined_header_values(session.req_header(), &name, 5).unwrap(),
-            Some(b"abc, ".to_vec())
+            crate::http_policy::join_header_values(&session.req_header().headers, &name, 5),
+            Ok(Some(b"abc, ".to_vec()))
         );
-        assert!(joined_header_values(session.req_header(), &name, 4).is_err());
+        assert_eq!(
+            crate::http_policy::join_header_values(&session.req_header().headers, &name, 4),
+            Err(RequestPolicyError::SourceTooLarge)
+        );
     }
 
     #[cfg(unix)]
