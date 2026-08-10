@@ -14,6 +14,8 @@ use tokio::{
     time::timeout,
 };
 
+use crate::shutdown::wait_for_shutdown;
+
 pub const MAX_V1_HEADER_BYTES: usize = 108;
 pub const MAX_V2_PAYLOAD_BYTES: usize = u16::MAX as usize;
 pub const MAX_V2_HEADER_BYTES: usize = 16 + MAX_V2_PAYLOAD_BYTES;
@@ -636,17 +638,6 @@ fn read_limit(input: &[u8], version: ProxyProtocolVersion) -> Option<usize> {
     expected
         .checked_sub(input.len())
         .filter(|remaining| *remaining > 0)
-}
-
-async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
-    loop {
-        if *shutdown.borrow_and_update() {
-            return;
-        }
-        if shutdown.changed().await.is_err() {
-            return;
-        }
-    }
 }
 
 #[cfg(test)]

@@ -26,6 +26,7 @@ mod routing;
 mod rtmp_api;
 mod secure_bearer;
 mod service_plan;
+mod shutdown;
 mod stats;
 mod tcp_relay;
 pub mod tls;
