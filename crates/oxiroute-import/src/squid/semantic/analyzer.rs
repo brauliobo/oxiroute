@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::canonical::dns_name;
 use crate::{
     Diagnostic, DiagnosticStage, E_DUPLICATE_IDENTITY, E_UNRESOLVED_REFERENCE,
     E_UNSUPPORTED_FEATURE, Report, Severity,
@@ -1445,32 +1446,7 @@ fn is_static_parent_peer(peer: &CachePeer) -> bool {
             .ok()
             .and_then(|value| value.parse::<std::net::IpAddr>().ok())
             .is_some()
-            || valid_peer_dns_name(&peer.host.value))
-}
-
-fn valid_peer_dns_name(value: &[u8]) -> bool {
-    let Ok(value) = std::str::from_utf8(value) else {
-        return false;
-    };
-    value.is_ascii()
-        && !value.is_empty()
-        && value.len() <= 253
-        && !value.ends_with('.')
-        && value.split('.').all(|label| {
-            !label.is_empty()
-                && label.len() <= 63
-                && label
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-                && label
-                    .as_bytes()
-                    .first()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-                && label
-                    .as_bytes()
-                    .last()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-        })
+            || dns_name(&peer.host.value).is_some())
 }
 
 fn peer_secret_kind(value: &[u8]) -> Option<SecretKind> {
