@@ -32,8 +32,28 @@ pub enum ReplacementEvent {
     ActiveReactivated { instance_id: InstanceId },
     RetiredDrained { instance_id: InstanceId },
     RetiredSnapshotCaptured { instance_id: InstanceId },
+    RetiredFailed { instance_id: InstanceId },
     RetiredStopped { instance_id: InstanceId },
     TerminationTimedOut { instance_id: InstanceId },
+}
+
+/// Authoritative phase derived from replacement role ownership and lifecycles.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplacementPhase {
+    /// One active instance is serving with no replacement work in progress.
+    Running,
+    /// A candidate is starting, handshaking, or preparing.
+    AdoptingCandidate,
+    /// The active instance is quiescing for a ready candidate.
+    Quiescing,
+    /// The candidate is activating before ownership commits.
+    ActivatingCandidate,
+    /// Candidate termination and active reactivation are completing after failure.
+    RollingBack,
+    /// The retired instance is draining or snapshotting.
+    DrainingRetired,
+    /// The retired instance remains owned until it stops.
+    StoppingRetired,
 }
 
 /// A side effect requested by the pure replacement state machine.
@@ -94,6 +114,34 @@ impl ReplacementSupervisor {
     #[must_use]
     pub const fn retired(&self) -> Option<&Instance> {
         self.retired.as_ref()
+    }
+
+    /// Returns the replacement phase derived solely from role and lifecycle state.
+    #[must_use]
+    pub fn phase(&self) -> ReplacementPhase {
+        if let Some(retired) = &self.retired {
+            return match retired.lifecycle {
+                Lifecycle::Draining | Lifecycle::Snapshotting => ReplacementPhase::DrainingRetired,
+                Lifecycle::Stopping => ReplacementPhase::StoppingRetired,
+                _ => unreachable!("retired role has an invalid lifecycle"),
+            };
+        }
+        if let Some(candidate) = &self.candidate {
+            return match candidate.lifecycle {
+                Lifecycle::Spawned | Lifecycle::Handshaking | Lifecycle::Preparing => {
+                    ReplacementPhase::AdoptingCandidate
+                }
+                Lifecycle::Ready => ReplacementPhase::Quiescing,
+                Lifecycle::Activating => ReplacementPhase::ActivatingCandidate,
+                Lifecycle::Stopping => ReplacementPhase::RollingBack,
+                _ => unreachable!("candidate role has an invalid lifecycle"),
+            };
+        }
+        if matches!(self.active.lifecycle, Lifecycle::Reactivating) {
+            ReplacementPhase::RollingBack
+        } else {
+            ReplacementPhase::Running
+        }
     }
 
     /// Applies one event and returns ordered side effects for the caller to execute.
@@ -172,6 +220,16 @@ impl ReplacementSupervisor {
                 let instance_id =
                     self.transition_retired(Lifecycle::Snapshotting, Lifecycle::Stopping)?;
                 Ok(vec![ReplacementAction::Terminate { instance_id }])
+            }
+            ReplacementEvent::RetiredFailed { instance_id } => {
+                self.expect_retired_id(&instance_id)?;
+                let retired = self
+                    .retired
+                    .as_mut()
+                    .ok_or(ReplacementError::MissingRole { role: "retired" })?;
+                retired.transition(Lifecycle::Failed)?;
+                retired.transition(Lifecycle::Stopping)?;
+                Ok(vec![ReplacementAction::Kill { instance_id }])
             }
             ReplacementEvent::RetiredStopped { instance_id } => {
                 self.expect_retired_id(&instance_id)?;
