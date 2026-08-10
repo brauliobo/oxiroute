@@ -25,50 +25,11 @@ pub(super) fn avc_cases() -> Vec<ConfigCase> {
     let sps = vec![0x67, 0x42, 0, 0x1e];
     let pps = vec![0x68, 0xce];
     let canonical = avc_config(4, std::slice::from_ref(&sps), std::slice::from_ref(&pps), &[]);
-    let mut cases = vec![config_case("canonical", canonical.clone(), true, true)];
-
-    for length in 0..canonical.len() {
-        cases.push(config_case(
-            format!("canonical truncated at byte {length}"),
-            canonical[..length].to_vec(),
-            false,
-            false,
-        ));
-    }
-
-    let mut wrong_wrapper = canonical.clone();
-    wrong_wrapper[0] = 0x16;
-    cases.push(config_case("wrong AVC wrapper", wrong_wrapper, false, false));
-    let mut wrong_packet_type = canonical.clone();
-    wrong_packet_type[1] = 1;
-    cases.push(config_case(
-        "wrong AVC packet type",
-        wrong_packet_type,
-        false,
-        false,
-    ));
-    let mut wrong_version = canonical;
-    wrong_version[5] = 2;
-    cases.push(config_case(
-        "wrong AVC configuration version",
-        wrong_version,
-        false,
-        false,
-    ));
-
-    for length_size in 1..=3 {
-        cases.push(config_case(
-            format!("{length_size}-byte NAL lengths"),
-            avc_config(
-                length_size,
-                std::slice::from_ref(&sps),
-                std::slice::from_ref(&pps),
-                &[],
-            ),
-            true,
-            false,
-        ));
-    }
+    let mut cases = avc_format_cases(
+        canonical,
+        std::slice::from_ref(&sps),
+        std::slice::from_ref(&pps),
+    );
 
     cases.push(config_case(
         "zero SPS entries",
@@ -144,6 +105,50 @@ pub(super) fn avc_cases() -> Vec<ConfigCase> {
         true,
         false,
     ));
+
+    cases
+}
+
+fn avc_format_cases(canonical: Vec<u8>, sps: &[Vec<u8>], pps: &[Vec<u8>]) -> Vec<ConfigCase> {
+    let mut cases = vec![config_case("canonical", canonical.clone(), true, true)];
+
+    for length in 0..canonical.len() {
+        cases.push(config_case(
+            format!("canonical truncated at byte {length}"),
+            canonical[..length].to_vec(),
+            false,
+            false,
+        ));
+    }
+
+    let mut wrong_wrapper = canonical.clone();
+    wrong_wrapper[0] = 0x16;
+    cases.push(config_case("wrong AVC wrapper", wrong_wrapper, false, false));
+    let mut wrong_packet_type = canonical.clone();
+    wrong_packet_type[1] = 1;
+    cases.push(config_case(
+        "wrong AVC packet type",
+        wrong_packet_type,
+        false,
+        false,
+    ));
+    let mut wrong_version = canonical;
+    wrong_version[5] = 2;
+    cases.push(config_case(
+        "wrong AVC configuration version",
+        wrong_version,
+        false,
+        false,
+    ));
+
+    for length_size in 1..=3 {
+        cases.push(config_case(
+            format!("{length_size}-byte NAL lengths"),
+            avc_config(length_size, sps, pps, &[]),
+            true,
+            false,
+        ));
+    }
 
     cases
 }
