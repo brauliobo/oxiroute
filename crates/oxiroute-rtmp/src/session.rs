@@ -196,7 +196,20 @@ impl RtmpSession {
     ///
     /// Returns an error if the catalog no longer contains the role owned by this session.
     pub fn close(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
-        let result = self.detach_roles(at_unix_ms);
+        self.cleanup(Some(at_unix_ms))
+    }
+
+    fn cleanup(&mut self, at_unix_ms: Option<u64>) -> Result<(), CatalogError> {
+        let result = if let Some(at_unix_ms) = at_unix_ms {
+            self.detach_roles(at_unix_ms)
+        } else {
+            // Drop historically notified before role destructors performed their best-effort release.
+            for role in self.roles.values() {
+                self.notify_role_callbacks(role);
+            }
+            self.roles.clear();
+            Ok(())
+        };
         if let Some(application) = self.connected_application.take() {
             let context = self.callback_context(&application, None, None);
             let _ = self
@@ -678,25 +691,59 @@ impl RtmpSession {
 impl Drop for RtmpSession {
     fn drop(&mut self) {
         // Recorder controllers must submit their workers before the session releases its reaper.
-        for role in self.roles.values() {
-            self.notify_role_callbacks(role);
-        }
-        if let Some(application) = self.connected_application.as_deref() {
-            let context = self.callback_context(application, None, None);
-            let _ = self
-                .runtime
-                .callbacks()
-                .notify(RtmpCallbackEvent::Disconnect, &context);
-            if let Some(callbacks) = self
-                .runtime
-                .application(application)
-                .map(|application| application.callbacks().clone())
-            {
-                let _ = callbacks.notify(RtmpCallbackEvent::Disconnect, &context);
-            }
-        }
-        self.roles.clear();
+        let _ = self.cleanup(None);
         self.runtime.registry().unregister_session(self.session_id);
+    }
+}
+
+pub(super) struct AdmissionTransaction<'a> {
+    session: &'a mut RtmpSession,
+    request_id: u32,
+    protocol_stream_id: u32,
+    at_unix_ms: u64,
+    role: Option<SessionRole>,
+}
+
+impl<'a> AdmissionTransaction<'a> {
+    fn new(
+        session: &'a mut RtmpSession,
+        request_id: u32,
+        protocol_stream_id: u32,
+        at_unix_ms: u64,
+        role: SessionRole,
+    ) -> Self {
+        Self {
+            session,
+            request_id,
+            protocol_stream_id,
+            at_unix_ms,
+            role: Some(role),
+        }
+    }
+
+    fn commit(mut self) -> Result<Vec<ServerSessionResult>, RtmpSessionError> {
+        let accepted = match self.session.protocol_mut().accept_request(self.request_id) {
+            Ok(results) => results,
+            Err(error) => {
+                self.close()?;
+                return Err(error.into());
+            }
+        };
+        let role = self.role.take().expect("uncommitted admission owns a role");
+        self.session.roles.insert(self.protocol_stream_id, role);
+        Ok(accepted)
+    }
+
+    fn close(&mut self) -> Result<(), CatalogError> {
+        self.role
+            .take()
+            .map_or(Ok(()), |mut role| role.release(self.at_unix_ms))
+    }
+}
+
+impl Drop for AdmissionTransaction<'_> {
+    fn drop(&mut self) {
+        let _ = self.close();
     }
 }
 
@@ -705,5 +752,78 @@ fn non_empty(bytes: Vec<u8>) -> Vec<Vec<u8>> {
         Vec::new()
     } else {
         vec![bytes]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rml_rtmp::handshake::{HandshakeProcessResult, PeerType};
+
+    use super::*;
+    use crate::{LiveHubLimits, RtmpApplication, RtmpCapabilities, StreamKey};
+
+    #[test]
+    fn failed_protocol_accept_compensates_an_acquired_role_once() {
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: false,
+        }));
+        let hub = LiveHub::new(LiveHubLimits::default());
+        let mut session = RtmpSession::new(
+            "edge",
+            Arc::clone(&registry),
+            hub.clone(),
+            RtmpSessionPolicy::new([RtmpApplication::new("live", true, true)]),
+        );
+        let mut client = Handshake::new(PeerType::Client);
+        let hello = client.generate_outbound_p0_and_p1().expect("client hello");
+        let response = session.receive(&hello, 1).expect("server hello").concat();
+        let finish = match client.process_bytes(&response).expect("server response") {
+            HandshakeProcessResult::Completed { response_bytes, .. } => response_bytes,
+            HandshakeProcessResult::InProgress { .. } => panic!("incomplete client handshake"),
+        };
+        session
+            .receive(&finish, 2)
+            .expect("server protocol startup");
+
+        let role = session
+            .runtime
+            .acquire_publisher_role(
+                StreamKey::new("edge", "live", "camera"),
+                session.session_id,
+                3,
+            )
+            .expect("publisher role");
+        assert_eq!(hub.stats().publishers, 1);
+        assert_eq!(registry.snapshot().streams.len(), 1);
+
+        let error =
+            AdmissionTransaction::new(&mut session, u32::MAX, 1, 4, SessionRole::Publisher(role))
+                .commit()
+                .expect_err("unknown request cannot be accepted");
+
+        assert!(matches!(error, RtmpSessionError::Session(_)));
+        assert_eq!(hub.stats().publishers, 0);
+        assert!(registry.snapshot().streams.is_empty());
+        assert!(session.roles.is_empty());
+    }
+
+    #[test]
+    fn explicit_cleanup_is_idempotent() {
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: false,
+        }));
+        let mut session = RtmpSession::new(
+            "edge",
+            Arc::clone(&registry),
+            LiveHub::new(LiveHubLimits::default()),
+            RtmpSessionPolicy::new([RtmpApplication::new("live", true, true)]),
+        );
+
+        session.close(1).expect("first close");
+        session.close(2).expect("repeated close");
+        assert!(session.roles.is_empty());
+        assert!(session.connected_application.is_none());
     }
 }

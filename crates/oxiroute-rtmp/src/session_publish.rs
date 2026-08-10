@@ -17,7 +17,7 @@ use crate::{
 };
 
 use super::{
-    RtmpSession,
+    AdmissionTransaction, RtmpSession,
     identity::{self, StreamIdentity},
     runtime::{RTMP_STALE_PUBLISHER_THRESHOLD_MS, SessionOperation, SessionRole},
     status::{self, PUBLISH_REJECTION_CODE, Rejection, RtmpSessionError},
@@ -346,7 +346,7 @@ pub(super) fn handle_request(
         );
     }
 
-    let mut role = match session.runtime.acquire_publisher_role(
+    let role = match session.runtime.acquire_publisher_role(
         identity.into_key(),
         session.session_id,
         at_unix_ms,
@@ -358,15 +358,12 @@ pub(super) fn handle_request(
         }
     };
 
-    let accepted = match session.protocol_mut().accept_request(request_id) {
-        Ok(results) => results,
-        Err(error) => {
-            role.release(at_unix_ms)?;
-            return Err(error.into());
-        }
-    };
-    session
-        .roles
-        .insert(protocol_stream_id, SessionRole::Publisher(role));
-    Ok(accepted)
+    AdmissionTransaction::new(
+        session,
+        request_id,
+        protocol_stream_id,
+        at_unix_ms,
+        SessionRole::Publisher(role),
+    )
+    .commit()
 }
