@@ -80,6 +80,72 @@ pub const MAX_WORKER_METADATA_BYTES: usize = 64 * 1024;
 static STDIN_ADOPTED: AtomicBool = AtomicBool::new(false);
 static REAPER: OnceLock<Reaper> = OnceLock::new();
 
+type WorkerEnvironment = Vec<(OsString, OsString)>;
+
+struct WorkerMetadata {
+    arguments: Vec<OsString>,
+    environment: WorkerEnvironment,
+}
+
+impl WorkerMetadata {
+    fn new(
+        arguments: Vec<OsString>,
+        environment: WorkerEnvironment,
+    ) -> Result<Self, WorkerMetadataError> {
+        if arguments.len() > MAX_WORKER_ARGUMENTS {
+            return Err(WorkerMetadataError::TooManyArguments {
+                actual: arguments.len(),
+                maximum: MAX_WORKER_ARGUMENTS,
+            });
+        }
+        if environment.len() > MAX_WORKER_ENVIRONMENT {
+            return Err(WorkerMetadataError::TooManyEnvironmentEntries {
+                actual: environment.len(),
+                maximum: MAX_WORKER_ENVIRONMENT,
+            });
+        }
+        let mut total = 0_usize;
+        for value in arguments
+            .iter()
+            .chain(environment.iter().flat_map(|(key, value)| [key, value]))
+        {
+            let length = value.as_bytes().len();
+            if length > MAX_WORKER_METADATA_ITEM_BYTES {
+                return Err(WorkerMetadataError::ItemTooLarge {
+                    actual: length,
+                    maximum: MAX_WORKER_METADATA_ITEM_BYTES,
+                });
+            }
+            total = total.saturating_add(length);
+        }
+        if total > MAX_WORKER_METADATA_BYTES {
+            return Err(WorkerMetadataError::MetadataTooLarge {
+                actual: total,
+                maximum: MAX_WORKER_METADATA_BYTES,
+            });
+        }
+        if environment.iter().any(|(key, _)| {
+            key.as_bytes().is_empty()
+                || key.as_bytes().contains(&0)
+                || key.as_bytes().contains(&b'=')
+        }) || environment
+            .iter()
+            .any(|(_, value)| value.as_bytes().contains(&0))
+            || arguments.iter().any(|value| value.as_bytes().contains(&0))
+        {
+            return Err(WorkerMetadataError::InvalidEnvironmentOrArgument);
+        }
+        Ok(Self {
+            arguments,
+            environment,
+        })
+    }
+
+    fn into_parts(self) -> (Vec<OsString>, WorkerEnvironment) {
+        (self.arguments, self.environment)
+    }
+}
+
 /// Public, non-secret identity carried in every authenticated frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkerIdentity {
@@ -149,14 +215,15 @@ impl WorkerCommand {
         launcher: &Path,
         endpoint: SeqpacketEndpoint,
     ) -> Result<Command, WorkerMetadataError> {
-        self.validate_metadata()?;
+        let metadata = WorkerMetadata::new(self.args, self.env)?;
+        let (arguments, environment) = metadata.into_parts();
         let mut command = Command::new(launcher);
         command
             .arg(self.program)
-            .arg(self.args.len().to_string())
-            .args(self.args.iter().map(|value| encode_hex(value.as_bytes())))
-            .arg(self.env.len().to_string());
-        for (key, value) in self.env {
+            .arg(arguments.len().to_string())
+            .args(arguments.iter().map(|value| encode_hex(value.as_bytes())))
+            .arg(environment.len().to_string());
+        for (key, value) in environment {
             command
                 .arg(encode_hex(key.as_bytes()))
                 .arg(encode_hex(value.as_bytes()));
@@ -166,55 +233,6 @@ impl WorkerCommand {
             .stdin(Stdio::from(endpoint.into_owned_fd()))
             .process_group(0);
         Ok(command)
-    }
-
-    fn validate_metadata(&self) -> Result<(), WorkerMetadataError> {
-        if self.args.len() > MAX_WORKER_ARGUMENTS {
-            return Err(WorkerMetadataError::TooManyArguments {
-                actual: self.args.len(),
-                maximum: MAX_WORKER_ARGUMENTS,
-            });
-        }
-        if self.env.len() > MAX_WORKER_ENVIRONMENT {
-            return Err(WorkerMetadataError::TooManyEnvironmentEntries {
-                actual: self.env.len(),
-                maximum: MAX_WORKER_ENVIRONMENT,
-            });
-        }
-        let mut total = 0_usize;
-        for value in self
-            .args
-            .iter()
-            .chain(self.env.iter().flat_map(|(key, value)| [key, value]))
-        {
-            let length = value.as_bytes().len();
-            if length > MAX_WORKER_METADATA_ITEM_BYTES {
-                return Err(WorkerMetadataError::ItemTooLarge {
-                    actual: length,
-                    maximum: MAX_WORKER_METADATA_ITEM_BYTES,
-                });
-            }
-            total = total.saturating_add(length);
-        }
-        if total > MAX_WORKER_METADATA_BYTES {
-            return Err(WorkerMetadataError::MetadataTooLarge {
-                actual: total,
-                maximum: MAX_WORKER_METADATA_BYTES,
-            });
-        }
-        if self.env.iter().any(|(key, _)| {
-            key.as_bytes().is_empty()
-                || key.as_bytes().contains(&0)
-                || key.as_bytes().contains(&b'=')
-        }) || self
-            .env
-            .iter()
-            .any(|(_, value)| value.as_bytes().contains(&0))
-            || self.args.iter().any(|value| value.as_bytes().contains(&0))
-        {
-            return Err(WorkerMetadataError::InvalidEnvironmentOrArgument);
-        }
-        Ok(())
     }
 }
 
