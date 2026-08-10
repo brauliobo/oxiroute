@@ -28,8 +28,9 @@ does not create a byte tunnel. A production explicit proxy needs a dedicated par
 stream-takeover path that preserves bytes read beyond the CONNECT headers.
 
 Pingora currently has no downstream HTTP/3 implementation. The active forward and reverse HTTP/3
-paths therefore use separately tested QUIC/H3 frontends; reverse requests reuse Pingora's immutable
-upstream HTTP session and pool plans after H3 dispatch. Neither path may silently fall back to HTTP/2.
+paths therefore use separately tested QUIC/H3 frontends. Reverse proxy routes reuse the immutable
+upstream pool selection and policy plan, but require an exact H3 upstream and use the native H3
+transport rather than a Pingora HTTP session. There is no H1/H2 fallback.
 
 Pingora's included memory cache is not a production persistent Squid-style store.
 Persistent cache indexing, eviction, recovery, collapsed forwarding, purge, and disk

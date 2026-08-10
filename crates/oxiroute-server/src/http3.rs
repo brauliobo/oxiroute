@@ -22,7 +22,7 @@ use oxiroute_config::{
     DownstreamTimeoutPolicy, HttpRedirectLocation, HttpRetryTarget, HttpRetryTrigger,
     is_unambiguous_http_path,
 };
-use pingora::{apps::AcceptGateParticipant, connectors::http::Connector, http::RequestHeader};
+use pingora::apps::AcceptGateParticipant;
 use quinn::crypto::rustls::QuicServerConfig;
 use quinn::{Endpoint, EndpointConfig, ServerConfig, TransportConfig, VarInt};
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -44,12 +44,9 @@ use crate::{
         StaticServeError, StaticTarget,
     },
     http_proxy::{
-        apply_response_policy, apply_response_policy_map,
-        remove_upstream_hop_by_hop_response_headers,
-        remove_upstream_hop_by_hop_response_headers_map, rewrite_upstream_path,
-        selected_upstream_host,
+        apply_response_policy_map, remove_upstream_hop_by_hop_response_headers_map,
+        rewrite_upstream_path, selected_upstream_host,
     },
-    upstream_peer::validate_tls_connection,
 };
 
 pub(crate) const H3_HANDSHAKE_LIMIT: usize = 64;
@@ -137,8 +134,8 @@ impl Http3Runtime {
     /// Starts one active reverse HTTP/3 listener on a previously reserved UDP socket.
     ///
     /// The reverse listener owns QUIC directly because Pingora does not expose a downstream H3
-    /// service app. Origin requests still use Pingora's immutable upstream pool and HTTP session
-    /// plans; no H3 request is relabeled as an H1/H2 downstream response.
+    /// service app. Proxy routes require an exact H3 upstream pool and use the native H3 upstream
+    /// transport without an H1/H2 fallback.
     ///
     /// # Errors
     ///
@@ -587,7 +584,6 @@ async fn run_reverse_connection(
         }
     };
     let request_slots = Arc::new(Semaphore::new(H3_BIDI_STREAM_LIMIT as usize));
-    let connector = Arc::new(Connector::new(None));
     let mut requests = tokio::task::JoinSet::new();
     let (request_cancel_tx, request_cancel_rx) = watch::channel(false);
     let client_addr = Some(connection.remote_address());
@@ -609,7 +605,6 @@ async fn run_reverse_connection(
                     break true;
                 }
                 let service = Arc::clone(&service);
-                let connector = Arc::clone(&connector);
                 let metrics = metrics.clone();
                 let request_cancel = request_cancel_rx.clone();
                 let request_slots = Arc::clone(&request_slots);
@@ -617,7 +612,6 @@ async fn run_reverse_connection(
                     handle_reverse_request(
                         resolver,
                         service,
-                        connector,
                         metrics,
                         client_addr,
                         downstream_timeouts,
@@ -809,7 +803,6 @@ async fn join_h3_requests(
 async fn handle_reverse_request<C>(
     resolver: RequestResolver<C, Bytes>,
     service: Arc<HttpServicePlan>,
-    connector: Arc<Connector>,
     metrics: ListenerMetrics,
     client_addr: Option<SocketAddr>,
     downstream_timeouts: DownstreamTimeoutPolicy,
@@ -871,7 +864,6 @@ async fn handle_reverse_request<C>(
                     &request,
                     authority,
                     &service,
-                    &connector,
                     &metrics,
                     client_addr,
                     deadline,
@@ -923,7 +915,6 @@ async fn dispatch_reverse_request<S>(
     request: &Request<()>,
     authority: &Authority,
     service: &HttpServicePlan,
-    connector: &Connector,
     metrics: &ListenerMetrics,
     client_addr: Option<SocketAddr>,
     deadline: Instant,
@@ -1095,244 +1086,18 @@ where
                 Err(ReverseBodyError::Cancelled) => return None,
             };
             let _ = metrics.record_bytes_received(u64::try_from(body.len()).unwrap_or(u64::MAX));
-            if proxy.pool.h3().is_some() {
-                return dispatch_h3_upstream_request(
-                    stream,
-                    request,
-                    authority,
-                    proxy,
-                    body,
-                    metrics,
-                    client_addr,
-                    deadline,
-                    shutdown,
-                )
-                .await;
-            }
-            let mut selected = match timeout_at(deadline, proxy.pool.select_endpoint(&[])).await {
-                Ok(Ok(selected)) => selected,
-                Ok(Err(_)) => {
-                    return send_h3_error(
-                        stream,
-                        StatusCode::BAD_GATEWAY,
-                        b"upstream endpoint is unavailable\n",
-                        deadline,
-                    )
-                    .await
-                    .then_some(StatusCode::BAD_GATEWAY.as_u16());
-                }
-                Err(_) => {
-                    return send_h3_error(
-                        stream,
-                        StatusCode::GATEWAY_TIMEOUT,
-                        b"upstream selection timed out\n",
-                        deadline,
-                    )
-                    .await
-                    .then_some(StatusCode::GATEWAY_TIMEOUT.as_u16());
-                }
-            };
-            let upstream_host = match selected_upstream_host(
-                selected.endpoint(),
-                proxy.policy.upstream_host.clone(),
-                Some(authority),
-            ) {
-                Ok(Some(host)) => host,
-                Ok(None) => HeaderValue::from_static(""),
-                Err(_) => {
-                    return send_h3_error(
-                        stream,
-                        StatusCode::BAD_GATEWAY,
-                        b"upstream host policy is invalid\n",
-                        deadline,
-                    )
-                    .await
-                    .then_some(StatusCode::BAD_GATEWAY.as_u16());
-                }
-            };
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let connect_timeout = remaining.min(route.policy.connect_timeout);
-            let read_timeout = remaining.min(route.policy.read_timeout);
-            let write_timeout = remaining.min(route.policy.write_timeout);
-            let peer = match timeout_at(
+            dispatch_h3_upstream_request(
+                stream,
+                request,
+                authority,
+                proxy,
+                body,
+                metrics,
+                client_addr,
                 deadline,
-                selected.prepare_peer_with_timeouts(
-                    proxy.pool.as_ref(),
-                    connect_timeout,
-                    read_timeout,
-                    write_timeout,
-                ),
+                shutdown,
             )
             .await
-            {
-                Ok(Ok(peer)) => peer,
-                Ok(Err(_)) | Err(_) => {
-                    return send_h3_error(
-                        stream,
-                        StatusCode::BAD_GATEWAY,
-                        b"upstream connection failed\n",
-                        deadline,
-                    )
-                    .await
-                    .then_some(StatusCode::BAD_GATEWAY.as_u16());
-                }
-            };
-            let mut upstream = match timeout_at(deadline, connector.get_http_session(&peer)).await {
-                Ok(Ok((upstream, _reused))) => upstream,
-                Ok(Err(_)) | Err(_) => {
-                    return send_h3_error(
-                        stream,
-                        StatusCode::BAD_GATEWAY,
-                        b"upstream HTTP session failed\n",
-                        deadline,
-                    )
-                    .await
-                    .then_some(StatusCode::BAD_GATEWAY.as_u16());
-                }
-            };
-            upstream.set_read_timeout(Some(read_timeout));
-            upstream.set_write_timeout(Some(write_timeout));
-            let request_header = match build_upstream_request(
-                request,
-                &body,
-                &upstream_host,
-                &proxy.policy,
-                client_addr,
-            ) {
-                Ok(request) => request,
-                Err(()) => {
-                    upstream.shutdown().await;
-                    return send_h3_error(
-                        stream,
-                        StatusCode::BAD_GATEWAY,
-                        b"upstream request policy is invalid\n",
-                        deadline,
-                    )
-                    .await
-                    .then_some(StatusCode::BAD_GATEWAY.as_u16());
-                }
-            };
-            if timeout_at(deadline, upstream.write_request_header(request_header))
-                .await
-                .is_err()
-                || timeout_at(deadline, upstream.write_request_body(body, true))
-                    .await
-                    .is_err()
-                || timeout_at(deadline, upstream.finish_request_body())
-                    .await
-                    .is_err()
-            {
-                upstream.shutdown().await;
-                return send_h3_error(
-                    stream,
-                    StatusCode::BAD_GATEWAY,
-                    b"upstream request write failed\n",
-                    deadline,
-                )
-                .await
-                .then_some(StatusCode::BAD_GATEWAY.as_u16());
-            }
-            if validate_tls_connection(proxy.pool.tls(), upstream.digest()).is_err() {
-                upstream.shutdown().await;
-                return send_h3_error(
-                    stream,
-                    StatusCode::BAD_GATEWAY,
-                    b"upstream TLS policy rejected the connection\n",
-                    deadline,
-                )
-                .await
-                .then_some(StatusCode::BAD_GATEWAY.as_u16());
-            }
-            if timeout_at(deadline, upstream.read_response_header())
-                .await
-                .is_err()
-            {
-                upstream.shutdown().await;
-                return send_h3_error(
-                    stream,
-                    StatusCode::BAD_GATEWAY,
-                    b"upstream response header failed\n",
-                    deadline,
-                )
-                .await
-                .then_some(StatusCode::BAD_GATEWAY.as_u16());
-            }
-            let Some(mut response_header) = upstream.response_header().cloned() else {
-                upstream.shutdown().await;
-                return send_h3_error(
-                    stream,
-                    StatusCode::BAD_GATEWAY,
-                    b"upstream response header is unavailable\n",
-                    deadline,
-                )
-                .await
-                .then_some(StatusCode::BAD_GATEWAY.as_u16());
-            };
-            if remove_upstream_hop_by_hop_response_headers(&mut response_header).is_err()
-                || apply_response_policy(&mut response_header, &proxy.policy).is_err()
-            {
-                upstream.shutdown().await;
-                return send_h3_error(
-                    stream,
-                    StatusCode::BAD_GATEWAY,
-                    b"upstream response headers are invalid\n",
-                    deadline,
-                )
-                .await
-                .then_some(StatusCode::BAD_GATEWAY.as_u16());
-            }
-            let status = response_header.status.as_u16();
-            let response = match h3_response_from_pingora(&response_header) {
-                Ok(response) => response,
-                Err(()) => {
-                    upstream.shutdown().await;
-                    return send_h3_error(
-                        stream,
-                        StatusCode::BAD_GATEWAY,
-                        b"upstream response cannot be represented as HTTP/3\n",
-                        deadline,
-                    )
-                    .await
-                    .then_some(StatusCode::BAD_GATEWAY.as_u16());
-                }
-            };
-            if !matches!(
-                timeout_at(deadline, stream.send_response(response)).await,
-                Ok(Ok(()))
-            ) {
-                upstream.shutdown().await;
-                return None;
-            }
-            let mut sent = 0_u64;
-            loop {
-                let chunk = match timeout_at(deadline, upstream.read_response_body()).await {
-                    Ok(Ok(Some(chunk))) => chunk,
-                    Ok(Ok(None)) => break,
-                    Ok(Err(_)) | Err(_) => {
-                        upstream.shutdown().await;
-                        return Some(status);
-                    }
-                };
-                let next = sent.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-                if next > H3_MAX_RESPONSE_BODY_BYTES {
-                    stream.stop_stream(h3::error::Code::H3_EXCESSIVE_LOAD);
-                    stream.stop_sending(h3::error::Code::H3_EXCESSIVE_LOAD);
-                    upstream.shutdown().await;
-                    return Some(status);
-                }
-                sent = next;
-                let _ = metrics.record_bytes_sent(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-                if !matches!(
-                    timeout_at(deadline, stream.send_data(chunk)).await,
-                    Ok(Ok(()))
-                ) {
-                    upstream.shutdown().await;
-                    return None;
-                }
-            }
-            let _ = timeout_at(deadline, stream.finish()).await;
-            connector.release_http_session(upstream, &peer, None).await;
-            Some(status)
         }
     }
 }
@@ -2527,128 +2292,6 @@ fn h3_redirect_location(
         .flatten()
 }
 
-fn build_upstream_request(
-    request: &Request<()>,
-    body: &Bytes,
-    upstream_host: &HeaderValue,
-    policy: &ProxyPolicyPlan,
-    client_addr: Option<SocketAddr>,
-) -> Result<Box<RequestHeader>, ()> {
-    let mut uri = request.uri().clone();
-    if let Some(rewrite) = &policy.upstream_path_rewrite {
-        rewrite_upstream_path(&mut uri, rewrite).map_err(|_| ())?;
-    }
-    let path = uri
-        .path_and_query()
-        .map_or(uri.path(), |value| value.as_str());
-    let mut upstream =
-        RequestHeader::build(request.method().clone(), path.as_bytes(), Some(1)).map_err(|_| ())?;
-    for (name, value) in request.headers() {
-        if name == HOST || name == CONTENT_LENGTH || h3_hop_by_hop(name) {
-            continue;
-        }
-        upstream
-            .append_header(name.clone(), value.clone())
-            .map_err(|_| ())?;
-    }
-    upstream
-        .insert_header(HOST, upstream_host.clone())
-        .map_err(|_| ())?;
-    upstream
-        .insert_header(CONTENT_LENGTH, body.len().to_string())
-        .map_err(|_| ())?;
-    let authority = request_authority(request).ok_or(())?;
-    apply_h3_request_mutations(
-        request,
-        &mut upstream,
-        &authority,
-        policy,
-        client_addr,
-        upstream_host,
-    )?;
-    Ok(Box::new(upstream))
-}
-
-fn apply_h3_request_mutations(
-    incoming: &Request<()>,
-    upstream: &mut RequestHeader,
-    authority: &Authority,
-    policy: &ProxyPolicyPlan,
-    client_addr: Option<SocketAddr>,
-    selected_upstream_host: &HeaderValue,
-) -> Result<(), ()> {
-    for mutation in &policy.request_headers {
-        if mutation.is_pingora_managed_upgrade() {
-            continue;
-        }
-        match mutation {
-            RequestHeaderMutationPlan::Remove { name } => {
-                upstream.remove_header(name);
-            }
-            RequestHeaderMutationPlan::Set { name, value } => {
-                let value = match value {
-                    RequestHeaderValuePlan::Literal(value) => value.clone(),
-                    RequestHeaderValuePlan::IncomingAuthority => {
-                        HeaderValue::from_str(authority.as_str()).map_err(|_| ())?
-                    }
-                    RequestHeaderValuePlan::NormalizedHost => {
-                        HeaderValue::from_str(&normalized_h3_host(authority).unwrap_or_default())
-                            .map_err(|_| ())?
-                    }
-                    RequestHeaderValuePlan::NginxHost { fallback } => {
-                        nginx_h3_host(authority).unwrap_or_else(|| fallback.clone())
-                    }
-                    RequestHeaderValuePlan::ClientIp => {
-                        HeaderValue::from_str(&client_addr.ok_or(())?.ip().to_string())
-                            .map_err(|_| ())?
-                    }
-                    RequestHeaderValuePlan::AppendedXForwardedFor {
-                        max_bytes,
-                        except_source_cidrs,
-                    } => {
-                        if client_addr.is_some_and(|address| {
-                            except_source_cidrs
-                                .iter()
-                                .any(|cidr| cidr.contains(address.ip()))
-                        }) {
-                            continue;
-                        }
-                        let mut value = joined_h3_headers(
-                            incoming.headers(),
-                            &HeaderName::from_static("x-forwarded-for"),
-                            *max_bytes,
-                        )?
-                        .unwrap_or_default();
-                        if let Some(address) = client_addr {
-                            if !value.is_empty() {
-                                value.extend_from_slice(b", ");
-                            }
-                            value.extend_from_slice(address.ip().to_string().as_bytes());
-                        }
-                        if value.len() > *max_bytes {
-                            return Err(());
-                        }
-                        HeaderValue::from_bytes(&value).map_err(|_| ())?
-                    }
-                    RequestHeaderValuePlan::DownstreamScheme => HeaderValue::from_static("https"),
-                    RequestHeaderValuePlan::IncomingHeader { name, max_bytes } => {
-                        HeaderValue::from_bytes(
-                            &joined_h3_headers(incoming.headers(), name, *max_bytes)?
-                                .unwrap_or_default(),
-                        )
-                        .map_err(|_| ())?
-                    }
-                    RequestHeaderValuePlan::SelectedUpstreamHost => selected_upstream_host.clone(),
-                };
-                upstream
-                    .insert_header(name.clone(), value)
-                    .map_err(|_| ())?;
-            }
-        }
-    }
-    Ok(())
-}
-
 fn joined_h3_headers(
     headers: &HeaderMap,
     name: &HeaderName,
@@ -2665,27 +2308,6 @@ fn joined_h3_headers(
         joined.extend_from_slice(value.as_bytes());
     }
     Ok((!joined.is_empty()).then_some(joined))
-}
-
-fn h3_response_from_pingora(response: &pingora::http::ResponseHeader) -> Result<Response<()>, ()> {
-    let mut output = Response::builder()
-        .status(response.status)
-        .body(())
-        .map_err(|_| ())?;
-    for (name, value) in &response.headers {
-        output.headers_mut().append(name.clone(), value.clone());
-    }
-    Ok(output)
-}
-
-fn h3_hop_by_hop(name: &HeaderName) -> bool {
-    name == CONNECTION
-        || name == KEEP_ALIVE
-        || name == PROXY_CONNECTION
-        || name == TE
-        || name == TRAILER
-        || name == TRANSFER_ENCODING
-        || name == UPGRADE
 }
 
 fn normalized_h3_host(authority: &Authority) -> Option<String> {

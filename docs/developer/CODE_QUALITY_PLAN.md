@@ -119,16 +119,14 @@ body or partial body where the other adapters return `304`, `412`, or a full bod
 
 ### P0.4 Decide HTTP/3 reverse-upstream behavior
 
-**Finding:** Routes without an H3 upstream are rejected at `http3.rs:1003-1012`, and routes with an
-H3 upstream return at `1097-1110`; the Pingora fallback at `1111-1334` is unreachable.
+**Prior finding:** The runtime rejected routes without an H3 upstream before returning through the H3
+transport, which made the subsequent Pingora H1/H2 fallback unreachable.
 
-**Plan:**
-
-- [ ] Record the product decision in the HTTP compatibility contract.
-- [ ] If H3-to-H3 is mandatory, delete the dead fallback and retain the explicit `502`.
-- [ ] If H3 downstream may use H1/H2 upstream, choose one `ReverseUpstreamTransport` before body
-  dispatch and make both paths reachable.
-- [ ] Test both pool capabilities and assert the selected upstream protocol.
+**Resolved contract:** Reverse HTTP/3 proxy routes require an exact H3 upstream pool and dispatch H3
+to H3. Configuration rejects exact H1, flexible H1/H2, and exact H2 pools. Runtime retains a
+defensive `502` invariant check when no H3 transport is available; it does not fall back to Pingora
+H1/H2 sessions. Validation covers all rejected pool capabilities and exact H3 acceptance, while the
+process test proves that the origin negotiates H3.
 
 ## Phase 1: Put Invariants at Their Owners
 
