@@ -582,6 +582,7 @@ const MAX_PASSIVE_EJECTION_DURATION: Duration = Duration::from_hours(24);
 /// Bounded policy for passively ejecting endpoints after attributed upstream failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PassiveFailurePolicy {
+    enabled: bool,
     pub consecutive_failure_threshold: u16,
     pub initial_ejection_duration: Duration,
     pub max_ejection_duration: Duration,
@@ -600,6 +601,7 @@ impl PassiveFailurePolicy {
         max_ejection_duration: Duration,
     ) -> Self {
         Self {
+            enabled: true,
             consecutive_failure_threshold,
             initial_ejection_duration,
             max_ejection_duration,
@@ -614,6 +616,7 @@ impl PassiveFailurePolicy {
     #[must_use]
     pub(crate) fn from_config(policy: &ConfigPassiveHealthPolicy) -> Self {
         Self {
+            enabled: true,
             consecutive_failure_threshold: match policy.on_error {
                 PassiveOnError::Count | PassiveOnError::MarkDown => policy.error_limit,
                 PassiveOnError::Immediately => 1,
@@ -629,6 +632,9 @@ impl PassiveFailurePolicy {
     }
 
     fn observes(self, failure: HealthFailure) -> bool {
+        if !self.enabled {
+            return false;
+        }
         match self.observe {
             PassiveObserve::Layer4 => {
                 matches!(
@@ -688,11 +694,17 @@ impl PassiveFailurePolicy {
 
 impl Default for PassiveFailurePolicy {
     fn default() -> Self {
-        Self::new(
-            DEFAULT_PASSIVE_FAILURE_THRESHOLD,
-            DEFAULT_PASSIVE_EJECTION_DURATION,
-            DEFAULT_PASSIVE_MAX_EJECTION_DURATION,
-        )
+        Self {
+            enabled: false,
+            consecutive_failure_threshold: DEFAULT_PASSIVE_FAILURE_THRESHOLD,
+            initial_ejection_duration: DEFAULT_PASSIVE_EJECTION_DURATION,
+            max_ejection_duration: DEFAULT_PASSIVE_MAX_EJECTION_DURATION,
+            observe: PassiveObserve::Layer7,
+            on_error: PassiveOnError::Count,
+            mark_down: false,
+            mark_up: false,
+            recovery_threshold: 1,
+        }
     }
 }
 
@@ -4088,6 +4100,30 @@ mod tests {
             pool.health_snapshot().endpoints[1].state,
             EndpointHealthState::Healthy
         );
+    }
+
+    #[test]
+    fn unconfigured_passive_health_never_counts_or_ejects_failures() {
+        let pool = RoundRobinPool::new_named_servers(
+            "no-passive-policy".into(),
+            [runtime_server("only", 3000, None)],
+            UpstreamAlgorithm::First,
+            None,
+            None,
+        )
+        .expect("pool without passive policy");
+
+        for _ in 0..10 {
+            pool.record_passive_failure_at(0, HealthFailure::Timeout, now_unix_ms());
+        }
+
+        let snapshot = pool.health_snapshot();
+        assert_eq!(snapshot.available_endpoints, 1);
+        assert_eq!(snapshot.unavailable_selections, 0);
+        assert_eq!(snapshot.endpoints[0].passive_failure_count, 0);
+        assert_eq!(snapshot.endpoints[0].passive_ejection_count, 0);
+        assert!(!snapshot.endpoints[0].passive_ejected);
+        assert!(pool.select().is_some());
     }
 
     #[test]
