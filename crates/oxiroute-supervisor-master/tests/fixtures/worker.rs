@@ -97,13 +97,21 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 ControlOutcome::Accepted,
             )?;
         }
-        if (behavior == "delay-activate" && phase == ControlPhase::Activate)
+        if (behavior == "delay-adopt" && phase == ControlPhase::AdoptListeners)
+            || (behavior == "delay-activate" && phase == ControlPhase::Activate)
             || (behavior == "delay-quiesce" && phase == ControlPhase::Quiesce)
             || (behavior == "delay-reactivate" && phase == ControlPhase::Reactivate)
+            || (behavior == "delay-drain" && phase == ControlPhase::Drain)
         {
             thread::sleep(Duration::from_millis(150));
         }
+        if behavior == "timeout-activate" && phase == ControlPhase::Activate {
+            thread::sleep(Duration::from_secs(1));
+        }
         control.acknowledge(&request, ControlOutcome::Accepted)?;
+        if behavior == "delay-status-after-quiesce" && phase == ControlPhase::Quiesce {
+            thread::sleep(Duration::from_millis(150));
+        }
         control.report_status(&WorkerStatus {
             sequence: status_sequence,
             generation_id: identity.generation,
@@ -176,6 +184,9 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         if behavior == "crash-after-activate" && phase == ControlPhase::Activate {
             thread::sleep(Duration::from_millis(100));
             std::process::abort();
+        }
+        if behavior == "delay-exit-after-shutdown" && phase == ControlPhase::Shutdown {
+            thread::sleep(Duration::from_secs(1));
         }
         if phase == ControlPhase::Shutdown && behavior != "ignore-shutdown" {
             if let Some(serving) = serving.take() {

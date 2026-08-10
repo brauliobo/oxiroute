@@ -585,6 +585,224 @@ fn candidate_activation_ack_precedes_collected_old_active_exit() {
 }
 
 #[test]
+fn successful_replacement_has_exact_public_state_and_event_sequence() {
+    let mut harness = Harness::launch("normal");
+    harness.replace("normal", 2);
+    let mut states = vec![harness.master.state()];
+    let mut events = Vec::new();
+    while harness.master.state() != MasterState::Running
+        || harness.master.active_instance().unwrap().as_str() != "b"
+    {
+        events.extend(harness.master.poll(Instant::now()).unwrap());
+        let state = harness.master.state();
+        if states.last() != Some(&state) {
+            states.push(state);
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+
+    assert_eq!(
+        states,
+        [
+            MasterState::AdoptingCandidate,
+            MasterState::Quiescing,
+            MasterState::ActivatingCandidate,
+            MasterState::DrainingRetired,
+            MasterState::StoppingRetired,
+            MasterState::Running,
+        ]
+    );
+    assert_eq!(
+        replacement_event_sequence(&events),
+        [
+            "started",
+            "committed",
+            "retired-termination-requested",
+            "retired-exited",
+            "completed",
+        ]
+    );
+    harness.shutdown();
+}
+
+#[test]
+fn rollback_completes_after_reactivation_and_reap_in_either_order() {
+    let mut reactivated_first = Harness::launch("normal");
+    reactivated_first.replace("reject-activate", 2);
+    let mut events = reactivated_first.until(|master| master.state() == MasterState::RollingBack);
+    thread::sleep(Duration::from_millis(50));
+    events.extend(reactivated_first.until(|master| master.state() == MasterState::Running));
+    assert_eq!(
+        rollback_event_sequence(&events),
+        [
+            "started",
+            "rollback-started",
+            "candidate-termination-requested",
+            "candidate-exited",
+            "rollback-completed",
+        ]
+    );
+    reactivated_first.shutdown();
+
+    let mut reaped_first = Harness::launch("delay-reactivate");
+    reaped_first.replace("reject-activate", 2);
+    let mut events = reaped_first.until(|master| {
+        master.state() == MasterState::RollingBack
+            && master.worker_state(WorkerRole::Candidate).is_none()
+    });
+    assert_eq!(reaped_first.master.state(), MasterState::RollingBack);
+    events.extend(reaped_first.until(|master| master.state() == MasterState::Running));
+    assert_eq!(
+        rollback_event_sequence(&events),
+        [
+            "started",
+            "rollback-started",
+            "candidate-termination-requested",
+            "candidate-exited",
+            "rollback-completed",
+        ]
+    );
+    reaped_first.shutdown();
+}
+
+#[test]
+fn deferred_old_active_exit_precedes_candidate_timeout_and_fails_closed() {
+    let mut harness = Harness::launch("crash-after-quiesce");
+    harness.replace("timeout-activate", 2);
+    harness.until(|master| master.state() == MasterState::ActivatingCandidate);
+    thread::sleep(Duration::from_millis(75));
+    let mut events = harness.master.poll(Instant::now()).unwrap();
+    assert_eq!(harness.master.state(), MasterState::ActivatingCandidate);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        MasterEvent::WorkerExited {
+            role: WorkerRole::Active,
+            ..
+        }
+    )));
+
+    let deadline = harness.master.next_deadline().unwrap();
+    events.extend(harness.master.poll(deadline + POLL_INTERVAL).unwrap());
+    events.extend(harness.until(|master| master.state() == MasterState::Failed));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        MasterEvent::FailClosed {
+            phase: FailurePhase::Crash
+        }
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, MasterEvent::RollbackStarted { .. }))
+    );
+}
+
+#[test]
+fn shutdown_completes_from_every_replacement_phase() {
+    let mut adopting = Harness::launch("normal");
+    adopting.replace("delay-adopt", 2);
+    assert_shutdown_from_phase(adopting, MasterState::AdoptingCandidate);
+
+    let mut quiescing = Harness::launch("delay-quiesce");
+    quiescing.replace("normal", 2);
+    quiescing.until(|master| master.state() == MasterState::Quiescing);
+    assert_shutdown_from_phase(quiescing, MasterState::Quiescing);
+
+    let mut activating = Harness::launch("normal");
+    activating.replace("delay-activate", 2);
+    activating.until(|master| master.state() == MasterState::ActivatingCandidate);
+    assert_shutdown_from_phase(activating, MasterState::ActivatingCandidate);
+
+    let mut rolling_back = Harness::launch("delay-reactivate");
+    rolling_back.replace("reject-activate", 2);
+    rolling_back.until(|master| master.state() == MasterState::RollingBack);
+    assert_shutdown_from_phase(rolling_back, MasterState::RollingBack);
+
+    let mut draining = Harness::launch("delay-drain");
+    draining.replace("normal", 2);
+    draining.until(|master| master.state() == MasterState::DrainingRetired);
+    assert_shutdown_from_phase(draining, MasterState::DrainingRetired);
+
+    let mut stopping = Harness::launch("delay-exit-after-shutdown");
+    stopping.replace("normal", 2);
+    stopping.until(|master| master.state() == MasterState::StoppingRetired);
+    assert_shutdown_from_phase(stopping, MasterState::StoppingRetired);
+}
+
+#[test]
+fn retired_shutdown_ack_keeps_exit_deadline_until_delayed_reap() {
+    let mut harness = Harness::launch("delay-exit-after-shutdown");
+    harness.replace("normal", 2);
+    harness.until(|master| master.state() == MasterState::StoppingRetired);
+    let deadline = harness.master.next_deadline().unwrap();
+    harness.until(|master| {
+        master
+            .worker_status(WorkerRole::Retired)
+            .is_some_and(|status| {
+                status.lifecycle == oxiroute_supervisor_master::WorkerLifecycle::Stopping
+            })
+    });
+    assert_eq!(harness.master.next_deadline(), Some(deadline));
+    assert_eq!(
+        harness.master.worker_state(WorkerRole::Retired),
+        Some(WorkerState::Terminating { forced: false })
+    );
+
+    let mut events = harness.master.poll(deadline + POLL_INTERVAL).unwrap();
+    assert_eq!(
+        harness.master.worker_state(WorkerRole::Retired),
+        Some(WorkerState::Terminating { forced: true })
+    );
+    events.extend(harness.until(|master| master.state() == MasterState::Running));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        MasterEvent::RetiredFailed {
+            phase: FailurePhase::Shutdown
+        }
+    )));
+    harness.shutdown();
+}
+
+#[test]
+fn batched_old_active_status_follows_role_move_to_retired() {
+    let mut harness = Harness::launch("delay-status-after-quiesce");
+    harness.replace("normal", 2);
+    while harness.master.state() != MasterState::ActivatingCandidate {
+        harness.master.poll(Instant::now()).unwrap();
+        thread::sleep(POLL_INTERVAL);
+    }
+    thread::sleep(Duration::from_millis(175));
+    let events = harness.master.poll(Instant::now()).unwrap();
+    let committed = events
+        .iter()
+        .position(|event| matches!(event, MasterEvent::ReplacementCommitted { .. }))
+        .expect("candidate activation committed");
+    let moved_status = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                MasterEvent::WorkerStatusUpdated {
+                    role: WorkerRole::Retired,
+                    instance_id,
+                    ..
+                } if instance_id.as_str() == "a"
+            )
+        })
+        .expect("old active status resolved after the role move");
+    assert!(committed < moved_status);
+    harness.until(|master| master.state() == MasterState::Running);
+    harness.shutdown();
+}
+
+#[test]
+fn replacement_supervisor_is_never_reconstructed() {
+    let source = include_str!("../src/master.rs");
+    assert_eq!(source.matches("ReplacementSupervisor::new(").count(), 1);
+    assert!(!source.contains("expect_action"));
+}
+
+#[test]
 fn channel_disconnect_waits_for_exit_and_rolls_back_consistently() {
     let mut harness = Harness::launch("normal");
     harness.replace("disconnect-activate", 2);
@@ -1150,6 +1368,61 @@ fn assert_preparation_failure(events: &[MasterEvent], phase: ControlPhase, step:
             ..
         } if *actual_phase == phase && *actual_step == step
     )));
+}
+
+fn assert_shutdown_from_phase(mut harness: Harness, phase: MasterState) {
+    assert_eq!(harness.master.state(), phase);
+    assert!(matches!(
+        harness.master.shutdown(Instant::now()).unwrap(),
+        ShutdownProgress::Pending { .. }
+    ));
+    assert_eq!(harness.master.state(), MasterState::ShuttingDown);
+    let events = harness.until(|master| master.state() == MasterState::Stopped);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MasterEvent::ShutdownCompleted { .. }))
+    );
+}
+
+fn replacement_event_sequence(events: &[MasterEvent]) -> Vec<&'static str> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            MasterEvent::ReplacementStarted { .. } => Some("started"),
+            MasterEvent::ReplacementCommitted { .. } => Some("committed"),
+            MasterEvent::TerminationRequested {
+                role: WorkerRole::Retired,
+                ..
+            } => Some("retired-termination-requested"),
+            MasterEvent::WorkerExited {
+                role: WorkerRole::Retired,
+                ..
+            } => Some("retired-exited"),
+            MasterEvent::ReplacementCompleted { .. } => Some("completed"),
+            _ => None,
+        })
+        .collect()
+}
+
+fn rollback_event_sequence(events: &[MasterEvent]) -> Vec<&'static str> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            MasterEvent::ReplacementStarted { .. } => Some("started"),
+            MasterEvent::RollbackStarted { .. } => Some("rollback-started"),
+            MasterEvent::TerminationRequested {
+                role: WorkerRole::Candidate,
+                ..
+            } => Some("candidate-termination-requested"),
+            MasterEvent::WorkerExited {
+                role: WorkerRole::Candidate,
+                ..
+            } => Some("candidate-exited"),
+            MasterEvent::RollbackCompleted { .. } => Some("rollback-completed"),
+            _ => None,
+        })
+        .collect()
 }
 
 fn probe_tcp(address: SocketAddr) -> u64 {
