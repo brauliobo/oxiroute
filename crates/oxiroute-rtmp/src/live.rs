@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use bytes::Bytes;
 use rml_rtmp::{
     rml_amf0::{Amf0Value, serialize},
     sessions::StreamMetadata,
@@ -185,6 +186,9 @@ impl MediaEvent {
         let mut event = Self::new(kind, timestamp_ms, payload.into())?;
         event.video_codec = video_codec_identifier.and_then(VideoCodecIdentifier::codec);
         event.video_codec_identifier = video_codec_identifier;
+        if kind == MediaEventKind::Metadata {
+            event.metadata = decode_metadata(event.payload()).map(Arc::new);
+        }
         Ok(event)
     }
 
@@ -386,6 +390,32 @@ fn encode_metadata(metadata: &StreamMetadata) -> Result<Vec<u8>, MediaEventError
         Amf0Value::Object(properties),
     ])
     .map_err(|error| MediaEventError::MetadataEncoding(error.to_string()))
+}
+
+fn decode_metadata(payload: &[u8]) -> Option<StreamMetadata> {
+    use rml_rtmp::{
+        messages::{MessagePayload, RtmpMessage},
+        time::RtmpTimestamp,
+    };
+
+    let payload = MessagePayload {
+        timestamp: RtmpTimestamp::new(0),
+        type_id: 18,
+        message_stream_id: 0,
+        data: Bytes::copy_from_slice(payload),
+    };
+    let RtmpMessage::Amf0Data { mut values } = payload.to_rtmp_message().ok()? else {
+        return None;
+    };
+    if !matches!(values.first(), Some(Amf0Value::Utf8String(name)) if name == "onMetaData") {
+        return None;
+    }
+    let Amf0Value::Object(properties) = values.get_mut(1)? else {
+        return None;
+    };
+    let mut metadata = StreamMetadata::new();
+    metadata.apply_metadata_values(std::mem::take(properties));
+    Some(metadata)
 }
 
 /// Explicit service and per-viewer bounds for a [`LiveHub`].

@@ -264,10 +264,10 @@ publisher, relay, and auto-push paths calculate media snapshots differently.
 
 **Plan:**
 
-- [ ] Build one malformed-input corpus and differential tests before changing acceptance.
-- [ ] Extract a structural FLV AVC/AAC parser that returns canonical records, then apply explicit HLS
+- [x] Build one malformed-input corpus and differential tests before changing acceptance.
+- [x] Extract a structural FLV AVC/AAC parser that returns canonical records, then apply explicit HLS
   and DASH capability policies.
-- [ ] Add one `MediaSnapshotAccumulator` and prove identical traces yield identical observations on
+- [x] Add one `MediaSnapshotAccumulator` and prove identical traces yield identical observations on
   all three publication paths.
 
 ### P1.7 Supervision replacement ownership

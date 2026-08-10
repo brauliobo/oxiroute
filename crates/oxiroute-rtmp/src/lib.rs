@@ -13,6 +13,7 @@ mod flv;
 mod live;
 mod media_parser;
 mod media_segmenter;
+mod media_snapshot;
 mod media_storage;
 mod nginx;
 mod recording_path;
