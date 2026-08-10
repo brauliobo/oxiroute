@@ -1,5 +1,4 @@
 use std::{
-    fmt,
     sync::{
         Arc, Condvar, Mutex, MutexGuard, Weak,
         atomic::{AtomicU64, Ordering},
@@ -9,11 +8,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod policy;
+
+pub use policy::{RtmpRecorderPolicy, RtmpRecorderStart};
+
 use crate::{
     MediaEvent, MediaEventKind, OperationId, RecorderEnqueueResult, RecorderErrorCode,
     RecorderFailure, RecorderId, RecorderWorker, RecorderWorkerConfig, RecorderWorkerPhase,
-    RecorderWorkerStatus, RecorderWorkerSupervisor, RecordingDateTime, RecordingPathPolicy,
-    RecordingStore, RtmpRegistry, SessionId, StreamId,
+    RecorderWorkerStatus, RecorderWorkerSupervisor, RecordingDateTime, RtmpRegistry, SessionId,
+    StreamId,
 };
 
 const REAPER_POLL_INTERVAL: Duration = Duration::from_millis(2);
@@ -21,77 +24,6 @@ const REAPER_POLL_INTERVAL: Duration = Duration::from_millis(2);
 const CONTINUOUS_RESTART_DELAY: Duration = Duration::from_millis(10);
 #[cfg(not(test))]
 const CONTINUOUS_RESTART_DELAY: Duration = Duration::from_millis(250);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RtmpRecorderStart {
-    Continuous,
-    Manual,
-}
-
-#[derive(Clone)]
-pub struct RtmpRecorderPolicy {
-    name: String,
-    start: RtmpRecorderStart,
-    store: RecordingStore,
-    path: RecordingPathPolicy,
-    worker: RecorderWorkerConfig,
-}
-
-impl RtmpRecorderPolicy {
-    #[must_use]
-    pub fn new(
-        name: impl Into<String>,
-        start: RtmpRecorderStart,
-        store: RecordingStore,
-        path: RecordingPathPolicy,
-        worker: RecorderWorkerConfig,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            start,
-            store,
-            path,
-            worker,
-        }
-    }
-
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    #[must_use]
-    pub const fn start(&self) -> RtmpRecorderStart {
-        self.start
-    }
-
-    #[must_use]
-    pub const fn store(&self) -> &RecordingStore {
-        &self.store
-    }
-
-    #[must_use]
-    pub const fn path_policy(&self) -> &RecordingPathPolicy {
-        &self.path
-    }
-
-    #[must_use]
-    pub const fn worker_config(&self) -> RecorderWorkerConfig {
-        self.worker
-    }
-}
-
-impl fmt::Debug for RtmpRecorderPolicy {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("RtmpRecorderPolicy")
-            .field("name", &self.name)
-            .field("start", &self.start)
-            .field("path", &self.path)
-            .field("worker", &self.worker)
-            .finish_non_exhaustive()
-    }
-}
 
 pub(crate) struct RecorderController {
     policy: RtmpRecorderPolicy,
@@ -367,17 +299,17 @@ impl RecorderController {
             .map_err(|_| RecorderStartFailure::Failed(RecorderErrorCode::OpenFailed))?;
         let mut bootstrap = state
             .bootstrap
-            .replay_events(self.policy.worker, reserved_event)
+            .replay_events(self.policy.worker_config(), reserved_event)
             .ok_or(RecorderStartFailure::Failed(
                 RecorderErrorCode::QueueDiscontinuity,
             ))?;
         let worker = match RecorderWorker::start(
-            self.policy.store.clone(),
-            &self.policy.path,
+            self.policy.store().clone(),
+            self.policy.path_policy(),
             &self.stream_name,
             opened_at_unix_seconds,
             opened_at_utc,
-            self.policy.worker,
+            self.policy.worker_config(),
         ) {
             Ok(worker) => worker,
             Err(crate::RecorderWorkerStartError::Capacity(
@@ -1550,8 +1482,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        RecorderEnqueueResult, RecorderFailure, RecorderWorkerPhase, RecordingStoreLimits,
-        RtmpCapabilities,
+        RecorderEnqueueResult, RecorderFailure, RecorderWorkerPhase, RecordingPathPolicy,
+        RecordingStore, RecordingStoreLimits, RtmpCapabilities,
     };
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(1);
