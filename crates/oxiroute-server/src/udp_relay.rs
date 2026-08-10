@@ -20,6 +20,7 @@ use tokio::{
     time::{Instant, Sleep, sleep, timeout},
 };
 
+use crate::shutdown::wait_for_shutdown;
 use crate::{
     ConnectionGuard, EndpointLease, HealthFailure, L4ServicePlan, ListenerMetrics,
     ListenerReservation, MAX_V1_HEADER_BYTES, ProxyProtocolError, ProxyProtocolErrorKind,
@@ -895,17 +896,6 @@ async fn send_proxy_datagram(
             Ok(Err(error)) => Err(ProxyProtocolError::io(error)),
             Err(_) => Err(ProxyProtocolError::new(ProxyProtocolErrorKind::Timeout)),
         },
-    }
-}
-
-async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
-    loop {
-        if *shutdown.borrow_and_update() {
-            return;
-        }
-        if shutdown.changed().await.is_err() {
-            return;
-        }
     }
 }
 
