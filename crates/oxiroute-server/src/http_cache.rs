@@ -490,13 +490,6 @@ pub(crate) struct CacheTransaction {
     trace: Vec<CacheTraceEvent>,
 }
 
-pub(crate) struct CacheLeaderParts {
-    pub(crate) plan: Arc<HttpCachePlan>,
-    pub(crate) request: CacheRequest,
-    pub(crate) fill: CacheFill,
-    pub(crate) revalidation: Option<CacheRevalidation>,
-}
-
 impl CacheTransaction {
     pub(crate) fn new(
         plan: Arc<HttpCachePlan>,
@@ -769,15 +762,6 @@ impl CacheTransaction {
         self.fill.take();
         self.state = CacheTransactionState::Cancelled;
         self.trace(CacheTraceEvent::Cancelled);
-    }
-
-    pub(crate) fn into_leader_parts(mut self) -> CacheLeaderParts {
-        CacheLeaderParts {
-            plan: self.plan,
-            request: self.request,
-            fill: self.fill.take().expect("leader transaction owns a fill"),
-            revalidation: self.revalidation,
-        }
     }
 
     pub(crate) fn record_hit(&self) {
