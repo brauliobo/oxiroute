@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
 import type { ConfigValidationResponse } from './api'
 import { CANONICAL_FIELD_REGISTRY, isCanonicalConfig } from './config'
-import { defaultRtmpAutoPush, defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from './configuration/canonicalDefaults'
+import { defaultHttpCachePolicy, defaultRtmpAutoPush, defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from './configuration/canonicalDefaults'
 import { contractConfigSnapshot, jsonResponse } from './test/contractFixtures'
 import type {
   CanonicalConfig,
@@ -1687,6 +1687,36 @@ describe('ConfigurationWorkspace', () => {
     expect(wrapper.get('.diagnostic-list').text()).toContain('Listener references an unknown HTTP service')
     expect(wrapper.get('.revision-banner.error').text()).toContain('Candidate is invalid')
     expect((findButton(wrapper, 'Review save').element as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('focuses the forward cache store named by a backend diagnostic', async () => {
+    const snapshot = configSnapshot()
+    snapshot.config.forward_proxy_services[0]!.cache = defaultHttpCachePolicy('responses')
+    const diagnostic: ConfigDiagnostic = {
+      code: 'E_UNRESOLVED_REFERENCE',
+      severity: 'error',
+      stage: 'validation',
+      path: 'forward_proxy_services[0].cache.store',
+      message: 'Forward cache store does not resolve.',
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/v1/config' && !init?.method) return jsonResponse(snapshot)
+      if (url === '/api/v1/config/validate') {
+        const body = JSON.parse(String(init?.body)) as { config: CanonicalConfig }
+        return jsonResponse(validationResponse(body.config, [diagnostic]))
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    }))
+    const wrapper = await mountUnlocked(true)
+
+    await findButton(wrapper, 'Validate candidate').trigger('click')
+    await flushPromises()
+    await findButton(wrapper, diagnostic.message).trigger('click')
+    await flushPromises()
+
+    const store = wrapper.get('[data-field="forward_proxy_services[].cache.store"] select')
+    expect(document.activeElement).toBe(store.element)
   })
 
   it('aborts and generation-gates superseded validation success and errors', async () => {

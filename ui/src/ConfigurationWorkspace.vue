@@ -322,6 +322,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
           ForwardProxyServiceEditor(
             v-else-if="selectedForwardProxyService"
             :service="selectedForwardProxyService"
+            :cache-store-names="cacheStoreNames"
             @remove="removeSelected('forward_proxy_services')"
           )
           RtmpServiceEditor(
@@ -349,9 +350,12 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
           .diagnostic-code
             span {{ diagnostic.severity }}
             code {{ diagnostic.code }}
-          div
+          button.diagnostic-target(v-if="diagnostic.path" type="button" @click="focusDiagnostic(diagnostic.path)")
             strong {{ diagnostic.message }}
             p.diagnostic-meta {{ diagnostic.stage }}{{ diagnostic.path ? ` / ${diagnostic.path}` : '' }}
+          div(v-else)
+            strong {{ diagnostic.message }}
+            p.diagnostic-meta {{ diagnostic.stage }}
 
     section.validation-output(v-if="validationCurrent && validationResult" :inert="reviewOpen ? '' : null" aria-label="Validated candidate output")
       article.preview-panel
@@ -816,6 +820,28 @@ function trapReviewFocus(event: KeyboardEvent): void {
     event.preventDefault()
     first.focus()
   }
+}
+
+async function focusDiagnostic(path: string): Promise<void> {
+  const indexedObject = path.match(/^([a-z_]+)\[(\d+)\]/) ?? path.match(/^\/([a-z_]+)\/(\d+)/)
+  if (indexedObject) selectedKey.value = `${indexedObject[1]}:${indexedObject[2]}`
+  else if (path.startsWith('management') || path.startsWith('/management')) selectedKey.value = 'management'
+  else if (path.startsWith('stats') || path.startsWith('/stats')) selectedKey.value = 'stats'
+  else selectedKey.value = 'general'
+
+  const fieldPath = path.startsWith('/')
+    ? path.slice(1).split('/').reduce((result, segment) =>
+        /^\d+$/.test(segment) ? `${result}[]` : `${result}${result ? '.' : ''}${segment}`,
+      '')
+    : path.replace(/\[\d+\]/g, '[]')
+  await nextTick()
+  const field = Array.from(workspaceRoot.value?.querySelectorAll<HTMLElement>('[data-field]') ?? [])
+    .find((candidate) => candidate.dataset.field === fieldPath)
+  const control = field?.matches('input, select, textarea, button')
+    ? field
+    : field?.querySelector<HTMLElement>('input, select, textarea, button')
+  control?.focus()
+  field?.scrollIntoView?.({ block: 'center' })
 }
 
 function inputValue(event: Event): string {
@@ -1483,6 +1509,20 @@ button:disabled {
   color: #929a89;
   font-size: 0.76rem;
   line-height: 1.5;
+}
+
+.diagnostic-target {
+  padding: 0;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.diagnostic-target:focus-visible {
+  outline: 2px solid #b7f34a;
+  outline-offset: 4px;
 }
 
 .diagnostic .resolution {

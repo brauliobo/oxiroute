@@ -260,6 +260,11 @@ const currentCanonicalFields = [
   'forward_proxy_services[].destination_policy.allow_cidrs',
   'forward_proxy_services[].destination_policy.deny_cidrs',
   'forward_proxy_services[].destination_policy.deny_private',
+  'forward_proxy_services[].header_policy',
+  'forward_proxy_services[].header_policy.forwarded_for',
+  'forward_proxy_services[].header_policy.via',
+  'forward_proxy_services[].cache',
+  'forward_proxy_services[].cache.store',
   'forward_proxy_services[].connect_timeout_ms',
   'forward_proxy_services[].idle_timeout_ms',
   'forward_proxy_services[].lifetime_timeout_ms',
@@ -342,6 +347,7 @@ describe('canonical field registry', () => {
       'http_services[].routes[].policy.connect_timeout_ms',
       'rtmp_services[].applications[].fanout.max_subscribers',
     ]))
+    expect(registered.some((path) => path.startsWith('forward_proxy_services[].header_policy.cache'))).toBe(false)
   })
 
   it('accepts new canonical variants and rejects invalid final redispatch shapes', () => {
