@@ -1,3 +1,4 @@
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 /// Validates upstream-pool identities, resources, endpoints, and health policies.

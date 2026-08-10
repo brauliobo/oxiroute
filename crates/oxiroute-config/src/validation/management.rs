@@ -1,3 +1,4 @@
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 pub(super) fn validate_management(management: Option<&Management>) -> Result<(), ConfigError> {
