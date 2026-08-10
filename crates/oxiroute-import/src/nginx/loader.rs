@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     ffi::OsString,
     fs, io,
     os::unix::ffi::{OsStrExt, OsStringExt},
@@ -12,7 +11,7 @@ use crate::{
     MAX_AGGREGATE_SOURCE_BYTES, MAX_DIRECTIVES_PER_SOURCE, MAX_EXPANDED_DIRECTIVES,
     MAX_GLOB_MATCHES, MAX_INCLUDE_DEPTH, MAX_SOURCE_BYTES, MAX_SOURCE_FILES, MAX_STRUCTURAL_DEPTH,
     MAX_TOKENS_PER_SOURCE, Report, Severity, SourceFile, SourceId, Span,
-    source::{FileFingerprint, StableReadFailure, read_stable_file, stable_file_changed},
+    source::{SourceBudget, SourceCatalog, SourceCatalogFailure, SourceIdentity, SourceNaming},
 };
 
 use super::{Directive, Document, E_SYNTAX, parser::parse_with_limits};
@@ -246,13 +245,12 @@ struct Loader {
     root_observation: RootObservation,
     root: Option<SourceId>,
     sources: Vec<SourceRecord>,
-    source_ids: HashMap<PathBuf, SourceId>,
+    source_catalog: SourceCatalog,
     includes: Vec<IncludeEdge>,
     observations: Vec<IncludeObservation>,
     expanded_directives: Vec<ExpandedDirective>,
     expanded_occurrences: Vec<ExpandedOccurrence>,
     diagnostics: Vec<Diagnostic>,
-    aggregate_source_bytes: usize,
     expanded_directive_count: usize,
     expansion_limit_reached: bool,
 }
@@ -269,13 +267,16 @@ impl Loader {
             root_observation,
             root: None,
             sources: Vec::new(),
-            source_ids: HashMap::new(),
+            source_catalog: SourceCatalog::new(SourceBudget {
+                files: limits.max_source_files,
+                source_bytes: limits.max_source_bytes,
+                aggregate_bytes: limits.max_aggregate_source_bytes,
+            }),
             includes: Vec::new(),
             observations: Vec::new(),
             expanded_directives: Vec::new(),
             expanded_occurrences: Vec::new(),
             diagnostics: Vec::new(),
-            aggregate_source_bytes: 0,
             expanded_directive_count: 0,
             expansion_limit_reached: false,
         }
@@ -287,26 +288,34 @@ impl Loader {
         primary_span: Option<Span>,
         include_stack: &[IncludeFrame],
     ) -> Result<SourceId, SourceLoadFailure> {
-        if let Some(id) = self.source_ids.get(canonical_path) {
-            return Ok(*id);
+        if let Some(id) = self.source_catalog.source_id(canonical_path) {
+            return Ok(id);
         }
-        if self.sources.len() == self.limits.max_source_files {
-            self.push_diagnostic(
-                E_SOURCE_LIMIT,
-                DiagnosticStage::Source,
-                format!(
-                    "source file count exceeds the maximum of {}",
-                    self.limits.max_source_files
-                ),
-                primary_span,
-                include_stack,
-            );
-            return Err(SourceLoadFailure::SourceFileLimit);
-        }
-
-        let snapshot = match read_stable_file(canonical_path, self.limits.max_source_bytes) {
-            Ok(read) => read,
-            Err(StableReadFailure::TooLarge) => {
+        let stack_spans = include_stack
+            .iter()
+            .map(|frame| frame.directive_span)
+            .collect::<Vec<_>>();
+        let source = match self.source_catalog.load(
+            canonical_path,
+            stack_spans.clone(),
+            SourceIdentity::Catalog,
+            SourceNaming::Anonymous,
+        ) {
+            Ok(source) => source,
+            Err(SourceCatalogFailure::SourceFileLimit) => {
+                self.push_diagnostic(
+                    E_SOURCE_LIMIT,
+                    DiagnosticStage::Source,
+                    format!(
+                        "source file count exceeds the maximum of {}",
+                        self.limits.max_source_files
+                    ),
+                    primary_span,
+                    include_stack,
+                );
+                return Err(SourceLoadFailure::SourceFileLimit);
+            }
+            Err(SourceCatalogFailure::SourceSizeLimit) => {
                 self.push_diagnostic(
                     E_SOURCE_LIMIT,
                     DiagnosticStage::Source,
@@ -319,7 +328,7 @@ impl Loader {
                 );
                 return Err(SourceLoadFailure::SourceSizeLimit);
             }
-            Err(StableReadFailure::Changed) => {
+            Err(SourceCatalogFailure::Changed) => {
                 self.push_diagnostic(
                     E_SOURCE_CHANGED,
                     DiagnosticStage::Source,
@@ -329,7 +338,7 @@ impl Loader {
                 );
                 return Err(SourceLoadFailure::SourceChanged);
             }
-            Err(StableReadFailure::Io(error)) => {
+            Err(SourceCatalogFailure::Io(error)) => {
                 self.push_diagnostic(
                     E_SOURCE_IO,
                     DiagnosticStage::Source,
@@ -339,21 +348,12 @@ impl Loader {
                 );
                 return Err(SourceLoadFailure::SourceIo);
             }
+            Err(SourceCatalogFailure::AggregateSourceLimit) => {
+                self.push_aggregate_limit(primary_span, include_stack);
+                return Err(SourceLoadFailure::AggregateSourceLimit);
+            }
         };
-        let bytes = snapshot.bytes;
-        let fingerprint = snapshot.fingerprint;
-        let Some(aggregate_source_bytes) = self.aggregate_source_bytes.checked_add(bytes.len())
-        else {
-            self.push_aggregate_limit(primary_span, include_stack);
-            return Err(SourceLoadFailure::AggregateSourceLimit);
-        };
-        if aggregate_source_bytes > self.limits.max_aggregate_source_bytes {
-            self.push_aggregate_limit(primary_span, include_stack);
-            return Err(SourceLoadFailure::AggregateSourceLimit);
-        }
-
-        let id = SourceId::new(u32::try_from(self.sources.len()).expect("source limit fits u32"));
-        let source = SourceFile::new(id, format!("native-source-{}", id.get()), bytes);
+        let id = source.id();
         let (document, parse_diagnostics) = parse_with_limits(
             &source,
             self.limits.max_source_bytes,
@@ -362,25 +362,17 @@ impl Loader {
             self.limits.max_structural_depth,
         )
         .into_parts();
-        let stack_spans = include_stack
-            .iter()
-            .map(|frame| frame.directive_span)
-            .collect::<Vec<_>>();
         self.diagnostics.extend(
             parse_diagnostics
                 .into_iter()
                 .map(|diagnostic| diagnostic.with_include_stack(stack_spans.iter().copied())),
         );
-        self.aggregate_source_bytes = aggregate_source_bytes;
-        self.source_ids.insert(canonical_path.to_path_buf(), id);
         self.sources.push(SourceRecord {
             parsed: ParsedSource {
                 source,
                 canonical_path: canonical_path.to_path_buf(),
                 document,
             },
-            fingerprint,
-            first_include_stack: stack_spans,
         });
         Ok(id)
     }
@@ -785,42 +777,31 @@ impl Loader {
             }
         }
 
-        for source_index in 0..self.sources.len() {
-            let record = &self.sources[source_index];
-            let changed = stable_file_changed(
-                &record.parsed.canonical_path,
-                self.limits.max_source_bytes,
-                record.parsed.source.bytes(),
-                &record.fingerprint,
-            );
-            if changed {
-                let source = SourceId::new(
-                    u32::try_from(source_index).expect("source limit keeps identifiers in u32"),
-                );
-                for edge in &mut self.includes {
-                    let mut reaches_changed_source = false;
-                    for candidate in &mut edge.candidates {
-                        if matches!(candidate.status, IncludeCandidateStatus::Expanded(id) if id == source)
-                        {
-                            candidate.status = IncludeCandidateStatus::SourceChanged;
-                            reaches_changed_source = true;
-                        }
-                    }
-                    if reaches_changed_source {
-                        edge.failure = Some(E_SOURCE_CHANGED);
+        for (changed_source, first_include_stack) in self.source_catalog.changed_snapshots() {
+            let source = changed_source.id();
+            for edge in &mut self.includes {
+                let mut reaches_changed_source = false;
+                for candidate in &mut edge.candidates {
+                    if matches!(candidate.status, IncludeCandidateStatus::Expanded(id) if id == source)
+                    {
+                        candidate.status = IncludeCandidateStatus::SourceChanged;
+                        reaches_changed_source = true;
                     }
                 }
-                self.diagnostics.push(
-                    Diagnostic::new(
-                        E_SOURCE_CHANGED,
-                        Severity::Error,
-                        DiagnosticStage::Source,
-                        "source changed while loading the graph",
-                    )
-                    .with_primary_span(record.parsed.source.full_span())
-                    .with_include_stack(record.first_include_stack.iter().copied()),
-                );
+                if reaches_changed_source {
+                    edge.failure = Some(E_SOURCE_CHANGED);
+                }
             }
+            self.diagnostics.push(
+                Diagnostic::new(
+                    E_SOURCE_CHANGED,
+                    Severity::Error,
+                    DiagnosticStage::Source,
+                    "source changed while loading the graph",
+                )
+                .with_primary_span(changed_source.full_span())
+                .with_include_stack(first_include_stack),
+            );
         }
     }
 
@@ -902,8 +883,6 @@ fn empty_include_edge(
 
 struct SourceRecord {
     parsed: ParsedSource,
-    fingerprint: FileFingerprint,
-    first_include_stack: Vec<Span>,
 }
 
 struct CandidateWork {

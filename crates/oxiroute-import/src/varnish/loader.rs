@@ -16,7 +16,7 @@ use crate::{
     MAX_AGGREGATE_SOURCE_BYTES, MAX_DIRECTIVES_PER_SOURCE, MAX_EXPANDED_DIRECTIVES,
     MAX_GLOB_MATCHES, MAX_INCLUDE_DEPTH, MAX_SOURCE_BYTES, MAX_SOURCE_FILES, MAX_STRUCTURAL_DEPTH,
     MAX_TOKENS_PER_SOURCE, Report, Severity, SourceFile, SourceId, Span,
-    source::{FileFingerprint, StableReadFailure, read_stable_file, stable_file_changed},
+    source::{SourceBudget, SourceCatalog, SourceCatalogFailure, SourceIdentity, SourceNaming},
 };
 
 use super::{
@@ -430,11 +430,10 @@ struct FilesystemLoader {
     limits: VarnishLoadLimits,
     root: Option<SourceId>,
     records: Vec<SourceRecord>,
-    source_ids: HashMap<PathBuf, SourceId>,
+    source_catalog: SourceCatalog,
     includes: Vec<IncludeEdge>,
     expanded: Vec<LoadedDeclaration>,
     diagnostics: Vec<Diagnostic>,
-    aggregate_bytes: usize,
     glob_work: usize,
     glob_observations: Vec<GlobObservation>,
     path_observations: Vec<PathObservation>,
@@ -449,11 +448,14 @@ impl FilesystemLoader {
             limits,
             root: None,
             records: Vec::new(),
-            source_ids: HashMap::new(),
+            source_catalog: SourceCatalog::new(SourceBudget {
+                files: limits.source_files,
+                source_bytes: limits.source_bytes,
+                aggregate_bytes: limits.aggregate_source_bytes,
+            }),
             includes: Vec::new(),
             expanded: Vec::new(),
             diagnostics: Vec::new(),
-            aggregate_bytes: 0,
             glob_work: 0,
             glob_observations: Vec::new(),
             path_observations: Vec::new(),
@@ -471,24 +473,29 @@ impl FilesystemLoader {
         span: Option<Span>,
         include_stack: &[Span],
     ) -> Result<SourceId, SourceLoadFailure> {
-        if let Some(id) = self.source_ids.get(path) {
-            return Ok(*id);
+        if let Some(id) = self.source_catalog.source_id(path) {
+            return Ok(id);
         }
-        if self.records.len() == self.limits.source_files {
-            self.error(
-                E_SOURCE_LIMIT,
-                format!(
-                    "VCL source count exceeds the maximum of {}",
-                    self.limits.source_files
-                ),
-                span,
-                include_stack,
-            );
-            return Err(SourceLoadFailure::SourceFileLimit);
-        }
-        let snapshot = match read_stable_file(path, self.limits.source_bytes) {
-            Ok(read) => read,
-            Err(StableReadFailure::TooLarge) => {
+        let source = match self.source_catalog.load(
+            path,
+            include_stack.to_vec(),
+            SourceIdentity::Catalog,
+            SourceNaming::Path,
+        ) {
+            Ok(source) => source,
+            Err(SourceCatalogFailure::SourceFileLimit) => {
+                self.error(
+                    E_SOURCE_LIMIT,
+                    format!(
+                        "VCL source count exceeds the maximum of {}",
+                        self.limits.source_files
+                    ),
+                    span,
+                    include_stack,
+                );
+                return Err(SourceLoadFailure::SourceFileLimit);
+            }
+            Err(SourceCatalogFailure::SourceSizeLimit) => {
                 self.error(
                     E_SOURCE_LIMIT,
                     "VCL source exceeds its byte limit",
@@ -497,7 +504,7 @@ impl FilesystemLoader {
                 );
                 return Err(SourceLoadFailure::SourceSizeLimit);
             }
-            Err(StableReadFailure::Changed) => {
+            Err(SourceCatalogFailure::Changed) => {
                 self.snapshot_stable = false;
                 self.error(
                     E_SOURCE_CHANGED,
@@ -507,7 +514,7 @@ impl FilesystemLoader {
                 );
                 return Err(SourceLoadFailure::SourceChanged);
             }
-            Err(StableReadFailure::Io(error)) => {
+            Err(SourceCatalogFailure::Io(error)) => {
                 self.error(
                     E_SOURCE_IO,
                     format!("failed to read VCL source: {error}"),
@@ -516,20 +523,17 @@ impl FilesystemLoader {
                 );
                 return Err(SourceLoadFailure::SourceIo);
             }
+            Err(SourceCatalogFailure::AggregateSourceLimit) => {
+                self.error(
+                    E_SOURCE_LIMIT,
+                    "VCL aggregate source byte limit exceeded",
+                    span,
+                    include_stack,
+                );
+                return Err(SourceLoadFailure::AggregateSourceLimit);
+            }
         };
-        let bytes = snapshot.bytes;
-        let fingerprint = snapshot.fingerprint;
-        if self.aggregate_bytes.saturating_add(bytes.len()) > self.limits.aggregate_source_bytes {
-            self.error(
-                E_SOURCE_LIMIT,
-                "VCL aggregate source byte limit exceeded",
-                span,
-                include_stack,
-            );
-            return Err(SourceLoadFailure::AggregateSourceLimit);
-        }
-        let id = SourceId::new(u32::try_from(self.records.len()).expect("source limit fits u32"));
-        let source = SourceFile::from_path(id, path, bytes);
+        let id = source.id();
         let (document, diagnostics) = parse_with_limits(
             &source,
             ParserLimits {
@@ -545,16 +549,12 @@ impl FilesystemLoader {
                 .into_iter()
                 .map(|diagnostic| diagnostic.with_include_stack(include_stack.iter().copied())),
         );
-        self.aggregate_bytes += source.len();
-        self.source_ids.insert(path.to_path_buf(), id);
         self.records.push(SourceRecord {
             parsed: ParsedSource {
                 source,
                 canonical_path: Some(path.to_path_buf()),
                 document,
             },
-            fingerprint,
-            first_include_stack: include_stack.to_vec(),
         });
         Ok(id)
     }
@@ -837,31 +837,18 @@ impl FilesystemLoader {
                 ));
             }
         }
-        for record in &self.records {
-            let path = record
-                .parsed
-                .canonical_path
-                .as_deref()
-                .expect("filesystem path");
-            let changed = stable_file_changed(
-                path,
-                self.limits.source_bytes,
-                record.parsed.source.bytes(),
-                &record.fingerprint,
+        for (source, first_include_stack) in self.source_catalog.changed_snapshots() {
+            self.snapshot_stable = false;
+            self.diagnostics.push(
+                Diagnostic::new(
+                    E_SOURCE_CHANGED,
+                    Severity::Error,
+                    DiagnosticStage::Source,
+                    "VCL source changed while its graph was loaded",
+                )
+                .with_primary_span(source.full_span())
+                .with_include_stack(first_include_stack),
             );
-            if changed {
-                self.snapshot_stable = false;
-                self.diagnostics.push(
-                    Diagnostic::new(
-                        E_SOURCE_CHANGED,
-                        Severity::Error,
-                        DiagnosticStage::Source,
-                        "VCL source changed while its graph was loaded",
-                    )
-                    .with_primary_span(record.parsed.source.full_span())
-                    .with_include_stack(record.first_include_stack.iter().copied()),
-                );
-            }
         }
         for observation in &self.glob_observations {
             let mut work = 0;
@@ -920,8 +907,6 @@ impl FilesystemLoader {
 #[cfg(unix)]
 struct SourceRecord {
     parsed: ParsedSource,
-    fingerprint: FileFingerprint,
-    first_include_stack: Vec<Span>,
 }
 
 #[cfg(unix)]
