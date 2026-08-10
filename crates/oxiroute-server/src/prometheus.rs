@@ -8,7 +8,10 @@ use oxiroute_rtmp::RtmpRegistry;
 use crate::{GenerationManager, RuntimeMetrics};
 
 mod format;
-use format::*;
+use format::{
+    component_state, endpoint_state, labels, listener_state, metric, render_latency_histogram,
+    render_transport_latency_histogram, sample,
+};
 
 /// Renders a Prometheus text exposition without endpoint addresses, paths, stream names, or secret
 /// material in labels.
