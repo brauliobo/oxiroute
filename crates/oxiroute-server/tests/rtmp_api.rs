@@ -468,10 +468,18 @@ fn exposes_enhanced_video_codec_identity_with_recording_support() {
     let response = api.handle("GET", "/api/v1/rtmp/streams", 300);
     let body: Value = serde_json::from_slice(&response.body).expect("JSON response");
     let video = &body["streams"][0]["media"]["video"];
-    assert!(video["codec_id"].is_null());
-    assert_eq!(video["codec_fourcc"], "hvc1");
-    assert_eq!(video["codec_name"], "hevc");
-    assert_eq!(video["recording_supported"], true);
+    assert_eq!(
+        video,
+        &serde_json::json!({
+            "codec_id": null,
+            "codec_fourcc": "hvc1",
+            "codec_name": "hevc",
+            "recording_supported": true,
+            "payload_bytes": "4096",
+            "last_rtmp_timestamp_ms": null,
+            "last_observed_at_unix_ms": null,
+        })
+    );
 }
 
 #[test]

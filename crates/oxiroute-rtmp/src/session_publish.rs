@@ -7,10 +7,11 @@ use rml_rtmp::{
 };
 
 use crate::{
-    CatalogError, LiveHub, MediaEvent, MediaSnapshot, PublisherLease, PublisherRegistration,
-    RtmpCallbackEvent, RtmpRegistry, SessionId, StreamId, StreamKey, VideoCodecIdentifier,
+    CatalogError, LiveHub, MediaEvent, PublisherLease, PublisherRegistration, RtmpCallbackEvent,
+    RtmpRegistry, SessionId, StreamId, StreamKey,
     auto_push::AutoPushPublisher,
     exec_worker::{ExecProfileSet, ExecWorker},
+    media_snapshot::MediaSnapshotAccumulator,
     recording_runtime::RecorderController,
     relay::RtmpRelayController,
 };
@@ -30,7 +31,8 @@ pub(super) struct PublishSession {
     registry: Arc<RtmpRegistry>,
     session_id: SessionId,
     _session_lease: super::runtime::ApplicationSessionLease,
-    media: MediaSnapshot,
+    media: MediaSnapshotAccumulator,
+    fanout_payload_bytes_queued: u64,
     media_sequence: u64,
     last_media_activity_at_unix_ms: u64,
     recorders: Vec<(crate::RecorderId, Arc<RecorderController>)>,
@@ -79,7 +81,8 @@ impl PublishSession {
             registry,
             session_id,
             _session_lease: session_lease,
-            media: MediaSnapshot::default(),
+            media: MediaSnapshotAccumulator::default(),
+            fanout_payload_bytes_queued: 0,
             media_sequence: 0,
             last_media_activity_at_unix_ms,
             recorders,
@@ -108,16 +111,10 @@ impl PublishSession {
         metadata: StreamMetadata,
         at_unix_ms: u64,
     ) -> Result<(), RtmpSessionError> {
-        let video_codec = metadata
-            .video_codec_id
-            .and_then(|codec| u8::try_from(codec).ok());
-        self.media.video.flv_codec_id = video_codec;
-        self.media.video.video_codec = video_codec.map(VideoCodecIdentifier::Flv);
-        self.media.audio.flv_codec_id = metadata
-            .audio_codec_id
-            .and_then(|codec| u8::try_from(codec).ok());
+        let event = MediaEvent::metadata(metadata)?;
+        self.media.observe(&event, at_unix_ms);
         self.last_media_activity_at_unix_ms = self.last_media_activity_at_unix_ms.max(at_unix_ms);
-        self.publish_event(&MediaEvent::metadata(metadata)?, at_unix_ms)
+        self.publish_event(&event, at_unix_ms)
     }
 
     pub(super) fn handle_audio(
@@ -127,14 +124,7 @@ impl PublishSession {
         at_unix_ms: u64,
     ) -> Result<(), RtmpSessionError> {
         let event = MediaEvent::audio(timestamp.value, Arc::<[u8]>::from(data.as_ref()))?;
-        self.media.audio.flv_codec_id = data.first().map(|byte| byte >> 4);
-        self.media.audio.payload_bytes_received = self
-            .media
-            .audio
-            .payload_bytes_received
-            .saturating_add(data.len() as u64);
-        self.media.audio.last_rtmp_timestamp_ms = Some(timestamp.value);
-        self.media.audio.last_observed_at_unix_ms = Some(at_unix_ms);
+        self.media.observe(&event, at_unix_ms);
         self.last_media_activity_at_unix_ms = self.last_media_activity_at_unix_ms.max(at_unix_ms);
         self.publish_event(&event, at_unix_ms)
     }
@@ -146,17 +136,7 @@ impl PublishSession {
         at_unix_ms: u64,
     ) -> Result<(), RtmpSessionError> {
         let event = MediaEvent::video(timestamp.value, Arc::<[u8]>::from(data.as_ref()))?;
-        self.media.video.flv_codec_id = event
-            .video_codec_identifier()
-            .and_then(VideoCodecIdentifier::flv_codec_id);
-        self.media.video.video_codec = event.video_codec_identifier();
-        self.media.video.payload_bytes_received = self
-            .media
-            .video
-            .payload_bytes_received
-            .saturating_add(data.len() as u64);
-        self.media.video.last_rtmp_timestamp_ms = Some(timestamp.value);
-        self.media.video.last_observed_at_unix_ms = Some(at_unix_ms);
+        self.media.observe(&event, at_unix_ms);
         self.last_media_activity_at_unix_ms = self.last_media_activity_at_unix_ms.max(at_unix_ms);
         self.publish_event(&event, at_unix_ms)
     }
@@ -223,7 +203,7 @@ impl PublishSession {
             .as_ref()
             .expect("active publisher owns a fanout lease")
             .publish(event.clone())?;
-        self.media.fanout_payload_bytes_queued =
+        self.fanout_payload_bytes_queued =
             u64::try_from(report.stream_fanout_bytes).unwrap_or(u64::MAX);
         self.media_sequence = self
             .media_sequence
@@ -255,7 +235,7 @@ impl PublishSession {
             stream_id,
             self.session_id,
             self.media_sequence,
-            self.media,
+            self.media.snapshot(self.fanout_payload_bytes_queued),
             at_unix_ms,
         )?;
         Ok(())

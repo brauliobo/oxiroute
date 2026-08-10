@@ -105,17 +105,22 @@ fn pull_reconnects_to_a_rotated_loopback_address_and_keeps_the_local_publisher_b
         Arc::clone(&connections),
     );
 
-    let mut media_seen = false;
+    let mut observed_media = None;
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        media_seen |= local_registry
+        observed_media = local_registry
             .snapshot()
             .streams
             .first()
-            .is_some_and(|stream| {
+            .filter(|stream| {
                 stream.publisher.is_some() && stream.media.video.payload_bytes_received > 0
-            });
-        if connections.load(Ordering::Acquire) >= 2 && resolver.calls() >= 2 && media_seen {
+            })
+            .map(|stream| stream.media)
+            .or(observed_media);
+        if connections.load(Ordering::Acquire) >= 2
+            && resolver.calls() >= 2
+            && observed_media.is_some()
+        {
             break;
         }
         thread::sleep(Duration::from_millis(5));
@@ -129,12 +134,21 @@ fn pull_reconnects_to_a_rotated_loopback_address_and_keeps_the_local_publisher_b
         )
     });
     assert!(
-        connections.load(Ordering::Acquire) >= 2 && resolver.calls() >= 2 && media_seen,
-        "connections={}, resolver_calls={}, media_seen={}, state={state:?}",
+        connections.load(Ordering::Acquire) >= 2
+            && resolver.calls() >= 2
+            && observed_media.is_some(),
+        "connections={}, resolver_calls={}, observed_media={observed_media:?}, state={state:?}",
         connections.load(Ordering::Acquire),
         resolver.calls(),
-        media_seen
     );
+    let media = observed_media.expect("pull media snapshot");
+    assert_eq!(media.video.flv_codec_id, Some(7));
+    assert_eq!(
+        media.video.video_codec,
+        Some(oxiroute_rtmp::VideoCodecIdentifier::Flv(7))
+    );
+    assert!(media.video.last_observed_at_unix_ms.is_some());
+    assert_eq!(media.fanout_payload_bytes_queued, 0);
     local_runtime.close_admission();
     first_server.join().expect("first source server");
     second_server.join().expect("second source server");

@@ -72,8 +72,8 @@ mod unix {
 
     use super::{RtmpAutoPushConfig, RtmpAutoPushError, RtmpAutoPushStatus};
     use crate::{
-        LiveHub, MediaEvent, MediaEventKind, MediaSnapshot, PublisherIncarnation,
-        PublisherRegistration, RtmpRegistry, SessionId, StreamKey, TrackSnapshot, VideoCodec,
+        LiveHub, MediaEvent, MediaEventKind, PublisherIncarnation, PublisherRegistration,
+        RtmpRegistry, SessionId, StreamKey, VideoCodec, media_snapshot::MediaSnapshotAccumulator,
     };
 
     const PROTOCOL_MAGIC: [u8; 4] = *b"ORAP";
@@ -161,7 +161,7 @@ mod unix {
         lease: crate::PublisherLease,
         registration: PublisherRegistration,
         sequence: u64,
-        media: MediaSnapshot,
+        media: MediaSnapshotAccumulator,
         hub: LiveHub,
         registry: Arc<RtmpRegistry>,
     }
@@ -628,7 +628,8 @@ mod unix {
                     state.counters.frames_dropped = state.counters.frames_dropped.saturating_add(1);
                     return;
                 }
-                if apply_remote_frame(remote, frame).is_err() {
+                let at_unix_ms = unix_time_ms();
+                if apply_remote_frame(remote, frame, at_unix_ms).is_err() {
                     state.counters.frames_dropped = state.counters.frames_dropped.saturating_add(1);
                 }
                 return;
@@ -674,11 +675,11 @@ mod unix {
                 lease,
                 registration,
                 sequence: 0,
-                media: MediaSnapshot::default(),
+                media: MediaSnapshotAccumulator::default(),
                 hub,
                 registry: Arc::clone(&self.registry),
             };
-            if apply_remote_frame(&mut remote, frame).is_err() {
+            if apply_remote_frame(&mut remote, frame, now).is_err() {
                 remote.shutdown(now);
                 state.counters.frames_dropped = state.counters.frames_dropped.saturating_add(1);
                 return;
@@ -822,62 +823,29 @@ mod unix {
         }
     }
 
-    fn apply_remote_frame(remote: &mut RemoteStream, frame: &AutoPushFrame) -> Result<(), ()> {
+    fn apply_remote_frame(
+        remote: &mut RemoteStream,
+        frame: &AutoPushFrame,
+        at_unix_ms: u64,
+    ) -> Result<(), ()> {
         if frame.sequence <= remote.sequence || frame.token != remote.token {
             return Err(());
         }
         remote.lease.publish(frame.event.clone()).map_err(|_| ())?;
         remote.sequence = frame.sequence;
-        update_media_snapshot(&mut remote.media, &frame.event);
-        remote.registration.observe_at(unix_time_ms());
+        remote.media.observe(&frame.event, at_unix_ms);
+        remote.registration.observe_at(at_unix_ms);
         remote
             .registry
             .update_media_sample(
                 remote.stream_id,
                 remote.session_id,
                 remote.sequence,
-                remote.media,
-                unix_time_ms(),
+                remote.media.snapshot(0),
+                at_unix_ms,
             )
             .map_err(|_| ())?;
         Ok(())
-    }
-
-    fn update_media_snapshot(media: &mut MediaSnapshot, event: &MediaEvent) {
-        match event.kind() {
-            MediaEventKind::Metadata => {}
-            MediaEventKind::AacSequenceHeader | MediaEventKind::Audio => {
-                media.audio = TrackSnapshot {
-                    flv_codec_id: media.audio.flv_codec_id,
-                    video_codec: media.audio.video_codec,
-                    payload_bytes_received: media
-                        .audio
-                        .payload_bytes_received
-                        .saturating_add(event.payload_len() as u64),
-                    last_rtmp_timestamp_ms: Some(event.timestamp_ms()),
-                    last_observed_at_unix_ms: Some(unix_time_ms()),
-                };
-            }
-            MediaEventKind::AvcSequenceHeader
-            | MediaEventKind::HevcSequenceHeader
-            | MediaEventKind::Av1SequenceHeader
-            | MediaEventKind::VideoKeyframe
-            | MediaEventKind::VideoInterframe
-            | MediaEventKind::VideoDisposable => {
-                media.video = TrackSnapshot {
-                    flv_codec_id: event
-                        .video_codec_identifier()
-                        .and_then(crate::VideoCodecIdentifier::flv_codec_id),
-                    video_codec: event.video_codec_identifier(),
-                    payload_bytes_received: media
-                        .video
-                        .payload_bytes_received
-                        .saturating_add(event.payload_len() as u64),
-                    last_rtmp_timestamp_ms: Some(event.timestamp_ms()),
-                    last_observed_at_unix_ms: Some(unix_time_ms()),
-                };
-            }
-        }
     }
 
     fn accept_loop(listener: &UnixListener, shared: &Arc<AutoPushShared>) {
@@ -1286,7 +1254,7 @@ mod unix {
         })
     }
 
-    fn decode_event(
+    pub(super) fn decode_event(
         kind: u8,
         timestamp: u32,
         payload: Vec<u8>,
@@ -1690,7 +1658,9 @@ mod tests {
     use super::*;
     use crate::{
         LiveHub, LiveHubLimits, MediaEvent, RtmpCapabilities, RtmpRegistry, SessionId, StreamKey,
+        VideoCodecIdentifier,
     };
+    use rml_rtmp::sessions::StreamMetadata;
 
     fn config(directory: &std::path::Path) -> RtmpAutoPushConfig {
         RtmpAutoPushConfig {
@@ -1757,12 +1727,18 @@ mod tests {
         assert_eq!(source.status().peers, 1);
         assert_eq!(target.status().peers, 1);
 
-        publisher.publish(
-            &MediaEvent::audio(1, Arc::<[u8]>::from(&[0xaf, 1, 0x10][..])).expect("audio event"),
-            1,
-        );
+        publish_snapshot_trace(&publisher);
         for _ in 0..100 {
-            if target.status().remote_streams == 1 && subscription.queued_messages() > 0 {
+            if target.status().remote_streams == 1
+                && target_registry
+                    .snapshot()
+                    .streams
+                    .first()
+                    .is_some_and(|stream| {
+                        stream.media.audio.payload_bytes_received == 3
+                            && stream.media.video.payload_bytes_received == 6
+                    })
+            {
                 break;
             }
             thread::sleep(Duration::from_millis(10));
@@ -1776,40 +1752,100 @@ mod tests {
         );
         assert!(subscription.try_next().is_some());
         assert_eq!(target.status().source_streams, 0);
-        assert_eq!(target_registry.snapshot().streams.len(), 1);
+        assert_remote_snapshot(&target_registry);
 
-        let reverse_key = StreamKey::new("live", "broadcast", "reverse");
-        let reverse_lease = target_hub
-            .attach_publisher(reverse_key.clone())
-            .expect("reverse source publisher lease");
-        let reverse_publisher = target
-            .source(
-                reverse_key.clone(),
-                SessionId::new(),
-                reverse_lease.incarnation(),
+        assert_reverse_copy(&target, &source, &target_hub, &source_hub);
+    }
+
+    fn publish_snapshot_trace(publisher: &AutoPushPublisher) {
+        let mut metadata = StreamMetadata::new();
+        metadata.audio_codec_id = Some(10);
+        metadata.video_codec_id = Some(7);
+        publisher.publish(&MediaEvent::metadata(metadata).expect("metadata event"), 1);
+        publisher.publish(
+            &MediaEvent::audio(1, Arc::<[u8]>::from(&[0xaf, 1, 0x10][..])).expect("audio event"),
+            2,
+        );
+        publisher.publish(
+            &MediaEvent::video(
+                2,
+                Arc::<[u8]>::from(&[0x91, b'h', b'v', b'c', b'1', 0x20][..]),
             )
+            .expect("video event"),
+            3,
+        );
+    }
+
+    fn assert_remote_snapshot(registry: &RtmpRegistry) {
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.streams.len(), 1);
+        let media = snapshot.streams[0].media;
+        assert_eq!(media.audio.flv_codec_id, Some(10));
+        assert_eq!(media.audio.last_rtmp_timestamp_ms, Some(1));
+        assert!(media.audio.last_observed_at_unix_ms.is_some());
+        assert_eq!(
+            media.video.video_codec,
+            Some(VideoCodecIdentifier::FourCc(*b"hvc1"))
+        );
+        assert_eq!(media.video.last_rtmp_timestamp_ms, Some(2));
+        assert!(media.video.last_observed_at_unix_ms.is_some());
+        assert_eq!(media.fanout_payload_bytes_queued, 0);
+    }
+
+    fn assert_reverse_copy(
+        target: &AutoPushCoordinator,
+        source: &AutoPushCoordinator,
+        target_hub: &LiveHub,
+        source_hub: &LiveHub,
+    ) {
+        let key = StreamKey::new("live", "broadcast", "reverse");
+        let lease = target_hub
+            .attach_publisher(key.clone())
+            .expect("reverse source publisher lease");
+        let publisher = target
+            .source(key.clone(), SessionId::new(), lease.incarnation())
             .expect("reverse source admission")
             .expect("reverse auto-push publisher");
-        let reverse_subscription = source_hub
-            .subscribe(reverse_key)
+        let subscription = source_hub
+            .subscribe(key)
             .expect("reverse target subscription");
-        reverse_publisher.publish(
+        publisher.publish(
             &MediaEvent::audio(2, Arc::<[u8]>::from(&[0xaf, 1, 0x20][..])).expect("audio event"),
             1,
         );
         for _ in 0..100 {
-            if source.status().remote_streams == 1 && reverse_subscription.queued_messages() > 0 {
+            if source.status().remote_streams == 1 && subscription.queued_messages() > 0 {
                 break;
             }
             thread::sleep(Duration::from_millis(10));
         }
+        assert_eq!(source.status().remote_streams, 1);
+        assert!(subscription.try_next().is_some());
+    }
+
+    #[test]
+    fn metadata_decode_is_best_effort_for_accepted_auto_push_frames() {
+        let mut metadata = StreamMetadata::new();
+        metadata.audio_codec_id = Some(10);
+        metadata.video_codec_id = Some(7);
+        let encoded = MediaEvent::metadata(metadata).expect("metadata event");
+        let decoded = unix::decode_event(0, 0, encoded.payload().to_vec())
+            .expect("structured metadata remains accepted");
         assert_eq!(
-            source.status().remote_streams,
-            1,
-            "source status: {:?}, target status: {:?}",
-            source.status(),
-            target.status()
+            decoded
+                .stream_metadata()
+                .and_then(|value| value.audio_codec_id),
+            Some(10)
         );
-        assert!(reverse_subscription.try_next().is_some());
+        assert_eq!(
+            decoded
+                .stream_metadata()
+                .and_then(|value| value.video_codec_id),
+            Some(7)
+        );
+
+        let opaque =
+            unix::decode_event(0, 0, vec![0xff]).expect("opaque metadata remains accepted");
+        assert!(opaque.stream_metadata().is_none());
     }
 }

@@ -78,6 +78,54 @@ fn publishes_media_into_the_catalog_and_detaches_on_stop() {
 }
 
 #[test]
+fn publisher_catalog_snapshot_uses_one_observation_for_each_media_event() {
+    let registry = registry();
+    let mut server = session(
+        Arc::clone(&registry),
+        LiveHub::new(LiveHubLimits::default()),
+    );
+    let mut client = connect(&mut server, "broadcast");
+    request_publish(&mut client, &mut server, 2_000);
+
+    let mut metadata = StreamMetadata::new();
+    metadata.audio_codec_id = Some(10);
+    metadata.video_codec_id = Some(7);
+    let metadata = client.publish_metadata(&metadata).expect("metadata packet");
+    exchange(&mut client, &mut server, vec![metadata], 2_100);
+    let audio = client
+        .publish_audio_data(
+            Bytes::from_static(&[0xaf, 0x01, 0x44]),
+            RtmpTimestamp::new(42),
+            false,
+        )
+        .expect("audio packet");
+    exchange(&mut client, &mut server, vec![audio], 2_200);
+    let video = client
+        .publish_video_data(
+            Bytes::from_static(&[0x91, b'h', b'v', b'c', b'1', 0x55]),
+            RtmpTimestamp::new(40),
+            false,
+        )
+        .expect("video packet");
+    exchange(&mut client, &mut server, vec![video], 2_300);
+
+    let media = registry.snapshot().streams[0].media;
+    assert_eq!(media.audio.flv_codec_id, Some(10));
+    assert_eq!(media.audio.payload_bytes_received, 3);
+    assert_eq!(media.audio.last_rtmp_timestamp_ms, Some(42));
+    assert_eq!(media.audio.last_observed_at_unix_ms, Some(2_200));
+    assert_eq!(
+        media.video.video_codec,
+        Some(VideoCodecIdentifier::FourCc(*b"hvc1"))
+    );
+    assert_eq!(media.video.flv_codec_id, None);
+    assert_eq!(media.video.payload_bytes_received, 6);
+    assert_eq!(media.video.last_rtmp_timestamp_ms, Some(40));
+    assert_eq!(media.video.last_observed_at_unix_ms, Some(2_300));
+    assert_eq!(media.fanout_payload_bytes_queued, 0);
+}
+
+#[test]
 fn rejects_a_second_publisher_for_the_same_stream() {
     let registry = registry();
     let hub = LiveHub::new(LiveHubLimits::default());

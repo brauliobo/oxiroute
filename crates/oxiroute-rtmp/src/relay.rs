@@ -22,9 +22,10 @@ use rml_rtmp::{
 };
 
 use crate::{
-    LiveHub, MediaEvent, MediaEventKind, MediaSnapshot, RtmpClientOptions, RtmpOutboundPolicy,
-    RtmpRegistry, RtmpTransport, SessionId, StreamKey, VideoCodec,
+    LiveHub, MediaEvent, MediaEventKind, RtmpClientOptions, RtmpOutboundPolicy, RtmpRegistry,
+    RtmpTransport, SessionId, StreamKey, VideoCodec,
     client::{self, RtmpStream},
+    media_snapshot::MediaSnapshotAccumulator,
 };
 
 const HANDSHAKE_RESPONSE_BYTES: usize = 3_073;
@@ -940,7 +941,7 @@ fn run_pull(shared: &PullShared) {
         }
 
         let stream_id = registration.stream_id();
-        let mut media = MediaSnapshot::default();
+        let mut media = MediaSnapshotAccumulator::default();
         let mut sequence = 0_u64;
         let mut failed = None;
         let mut buffer = [0; RELAY_READ_BUFFER_BYTES];
@@ -984,7 +985,8 @@ fn run_pull(shared: &PullShared) {
                             continue;
                         };
                         sequence = sequence.saturating_add(1);
-                        update_media_snapshot(&mut media, &event);
+                        let at_unix_ms = unix_time_ms();
+                        media.observe(&event, at_unix_ms);
                         if lease.publish(event.clone()).is_err()
                             || shared
                                 .registry
@@ -992,8 +994,8 @@ fn run_pull(shared: &PullShared) {
                                     stream_id,
                                     publisher_session_id,
                                     sequence,
-                                    media,
-                                    unix_time_ms(),
+                                    media.snapshot(0),
+                                    at_unix_ms,
                                 )
                                 .is_err()
                         {
@@ -1088,40 +1090,6 @@ fn pull_media_event(event: ClientSessionEvent) -> Option<MediaEvent> {
         | ClientSessionEvent::UnhandleableOnStatusCode { .. }
         | ClientSessionEvent::AcknowledgementReceived { .. }
         | ClientSessionEvent::PingResponseReceived { .. } => None,
-    }
-}
-
-fn update_media_snapshot(media: &mut MediaSnapshot, event: &MediaEvent) {
-    match event.kind() {
-        MediaEventKind::Metadata => {
-            if let Some(metadata) = event.stream_metadata() {
-                media.audio.flv_codec_id = metadata
-                    .audio_codec_id
-                    .and_then(|value| u8::try_from(value).ok());
-                media.video.flv_codec_id = metadata
-                    .video_codec_id
-                    .and_then(|value| u8::try_from(value).ok());
-            }
-        }
-        MediaEventKind::Audio | MediaEventKind::AacSequenceHeader => {
-            media.audio.payload_bytes_received = media
-                .audio
-                .payload_bytes_received
-                .saturating_add(event.payload_len() as u64);
-            media.audio.last_rtmp_timestamp_ms = Some(event.timestamp_ms());
-        }
-        MediaEventKind::AvcSequenceHeader
-        | MediaEventKind::HevcSequenceHeader
-        | MediaEventKind::Av1SequenceHeader
-        | MediaEventKind::VideoKeyframe
-        | MediaEventKind::VideoInterframe
-        | MediaEventKind::VideoDisposable => {
-            media.video.payload_bytes_received = media
-                .video
-                .payload_bytes_received
-                .saturating_add(event.payload_len() as u64);
-            media.video.last_rtmp_timestamp_ms = Some(event.timestamp_ms());
-        }
     }
 }
 
