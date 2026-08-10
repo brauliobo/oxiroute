@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{File, Metadata},
     io::{self, Read},
     path::{Path, PathBuf},
@@ -61,6 +62,150 @@ pub(crate) enum StableReadFailure {
 pub(crate) struct StableFileSnapshot {
     pub(crate) bytes: Vec<u8>,
     pub(crate) fingerprint: FileFingerprint,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SourceBudget {
+    pub(crate) files: usize,
+    pub(crate) source_bytes: usize,
+    pub(crate) aggregate_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[allow(
+    dead_code,
+    reason = "product integration tests compile this internal module with only one identity mode"
+)]
+pub(crate) enum SourceIdentity {
+    Catalog,
+    Occurrence(SourceId),
+}
+
+#[derive(Clone, Copy, Debug)]
+#[allow(
+    dead_code,
+    reason = "product integration tests compile this internal module with only one naming mode"
+)]
+pub(crate) enum SourceNaming {
+    Anonymous,
+    Path,
+}
+
+#[derive(Debug)]
+pub(crate) enum SourceCatalogFailure {
+    SourceFileLimit,
+    SourceSizeLimit,
+    AggregateSourceLimit,
+    Changed,
+    Io(io::Error),
+}
+
+#[derive(Clone)]
+struct SourceSnapshot {
+    source: SourceFile,
+    path: PathBuf,
+    fingerprint: FileFingerprint,
+    first_include_stack: Vec<Span>,
+}
+
+pub(crate) struct SourceCatalog {
+    budget: SourceBudget,
+    aggregate_bytes: usize,
+    snapshots: Vec<SourceSnapshot>,
+    source_ids: HashMap<PathBuf, SourceId>,
+}
+
+impl SourceCatalog {
+    pub(crate) fn new(budget: SourceBudget) -> Self {
+        Self {
+            budget,
+            aggregate_bytes: 0,
+            snapshots: Vec::new(),
+            source_ids: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn source_id(&self, path: &Path) -> Option<SourceId> {
+        self.source_ids.get(path).copied()
+    }
+
+    pub(crate) fn load(
+        &mut self,
+        path: &Path,
+        first_include_stack: Vec<Span>,
+        identity: SourceIdentity,
+        naming: SourceNaming,
+    ) -> Result<SourceFile, SourceCatalogFailure> {
+        if matches!(identity, SourceIdentity::Catalog)
+            && let Some(id) = self.source_id(path)
+        {
+            return Ok(self
+                .snapshots
+                .iter()
+                .find(|snapshot| snapshot.source.id() == id)
+                .expect("catalog source identity has a snapshot")
+                .source
+                .clone());
+        }
+        if self.snapshots.len() >= self.budget.files {
+            return Err(SourceCatalogFailure::SourceFileLimit);
+        }
+        let id = match identity {
+            SourceIdentity::Catalog => SourceId::new(
+                u32::try_from(self.snapshots.len())
+                    .map_err(|_| SourceCatalogFailure::SourceFileLimit)?,
+            ),
+            SourceIdentity::Occurrence(id) => id,
+        };
+        let snapshot =
+            read_stable_file(path, self.budget.source_bytes).map_err(|failure| match failure {
+                StableReadFailure::TooLarge => SourceCatalogFailure::SourceSizeLimit,
+                StableReadFailure::Changed => SourceCatalogFailure::Changed,
+                StableReadFailure::Io(error) => SourceCatalogFailure::Io(error),
+            })?;
+        let aggregate_bytes = self
+            .aggregate_bytes
+            .checked_add(snapshot.bytes.len())
+            .filter(|bytes| *bytes <= self.budget.aggregate_bytes)
+            .ok_or(SourceCatalogFailure::AggregateSourceLimit)?;
+        let source = match naming {
+            SourceNaming::Anonymous => {
+                SourceFile::new(id, format!("native-source-{}", id.get()), snapshot.bytes)
+            }
+            SourceNaming::Path => SourceFile::from_path(id, path, snapshot.bytes),
+        };
+        self.aggregate_bytes = aggregate_bytes;
+        if matches!(identity, SourceIdentity::Catalog) {
+            self.source_ids.insert(path.to_path_buf(), id);
+        }
+        self.snapshots.push(SourceSnapshot {
+            source: source.clone(),
+            path: path.to_path_buf(),
+            fingerprint: snapshot.fingerprint,
+            first_include_stack,
+        });
+        Ok(source)
+    }
+
+    pub(crate) fn changed_snapshots(&self) -> Vec<(SourceFile, Vec<Span>)> {
+        self.snapshots
+            .iter()
+            .filter(|snapshot| {
+                stable_file_changed(
+                    &snapshot.path,
+                    self.budget.source_bytes,
+                    snapshot.source.bytes(),
+                    &snapshot.fingerprint,
+                )
+            })
+            .map(|snapshot| {
+                (
+                    snapshot.source.clone(),
+                    snapshot.first_include_stack.clone(),
+                )
+            })
+            .collect()
+    }
 }
 
 pub(crate) fn read_stable_file(

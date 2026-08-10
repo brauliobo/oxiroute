@@ -8,7 +8,7 @@ use crate::{
     Diagnostic, DiagnosticStage, E_SOURCE_CHANGED, E_SOURCE_IO, E_SOURCE_LIMIT,
     MAX_AGGREGATE_SOURCE_BYTES, MAX_GLOB_MATCHES, MAX_SOURCE_BYTES, MAX_SOURCE_FILES, Report,
     Severity, SourceFile, SourceId,
-    source::{FileFingerprint, StableReadFailure, read_stable_file, stable_file_changed},
+    source::{SourceBudget, SourceCatalog, SourceCatalogFailure, SourceIdentity, SourceNaming},
 };
 
 /// Resource bounds applied while expanding and snapshotting `HAProxy` source roots.
@@ -172,10 +172,9 @@ where
 struct Loader {
     limits: HaproxyLoadLimits,
     next_file_ordinal: usize,
-    aggregate_source_bytes: usize,
+    source_catalog: SourceCatalog,
     source_file_limit_reported: bool,
     sources: Vec<LoadedSource>,
-    source_observations: Vec<SourceObservation>,
     directory_observations: Vec<DirectoryObservation>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -185,10 +184,13 @@ impl Loader {
         Self {
             limits,
             next_file_ordinal: 0,
-            aggregate_source_bytes: 0,
+            source_catalog: SourceCatalog::new(SourceBudget {
+                files: limits.max_source_files,
+                source_bytes: limits.max_source_bytes,
+                aggregate_bytes: limits.max_aggregate_source_bytes,
+            }),
             source_file_limit_reported: false,
             sources: Vec::new(),
-            source_observations: Vec::new(),
             directory_observations: Vec::new(),
             diagnostics: Vec::new(),
         }
@@ -290,9 +292,14 @@ impl Loader {
         };
         let source_id = SourceId::new(source_id);
 
-        let snapshot = match read_stable_file(&path, self.limits.max_source_bytes) {
-            Ok(read) => read,
-            Err(StableReadFailure::TooLarge) => {
+        let source = match self.source_catalog.load(
+            &path,
+            Vec::new(),
+            SourceIdentity::Occurrence(source_id),
+            SourceNaming::Path,
+        ) {
+            Ok(source) => source,
+            Err(SourceCatalogFailure::SourceSizeLimit) => {
                 self.diagnostics.push(Diagnostic::new(
                     E_SOURCE_LIMIT,
                     Severity::Error,
@@ -305,7 +312,7 @@ impl Loader {
                 ));
                 return Err(RootLoadFailure::SourceSizeLimit);
             }
-            Err(StableReadFailure::Changed) => {
+            Err(SourceCatalogFailure::Changed) => {
                 self.diagnostics.push(Diagnostic::new(
                     E_SOURCE_CHANGED,
                     Severity::Error,
@@ -317,42 +324,34 @@ impl Loader {
                 ));
                 return Err(RootLoadFailure::SourceChanged);
             }
-            Err(StableReadFailure::Io(error)) => {
+            Err(SourceCatalogFailure::Io(error)) => {
                 self.file_error(root_ordinal, Some(file_ordinal), &path, "read", &error);
                 return Err(RootLoadFailure::SourceIo);
             }
+            Err(SourceCatalogFailure::AggregateSourceLimit) => {
+                self.push_source_limit(format!(
+                    "HAProxy aggregate source size exceeds the maximum of {} bytes",
+                    self.limits.max_aggregate_source_bytes
+                ));
+                return Err(RootLoadFailure::AggregateSourceLimit);
+            }
+            Err(SourceCatalogFailure::SourceFileLimit) => {
+                if !self.source_file_limit_reported {
+                    self.source_file_limit_reported = true;
+                    self.push_source_limit(format!(
+                        "HAProxy expanded source file count exceeds the maximum of {} occurrences",
+                        self.limits.max_source_files
+                    ));
+                }
+                return Err(RootLoadFailure::SourceFileLimit);
+            }
         };
-        let bytes = snapshot.bytes;
-        let fingerprint = snapshot.fingerprint;
 
-        let Some(next_aggregate_source_bytes) =
-            self.aggregate_source_bytes.checked_add(bytes.len())
-        else {
-            self.push_source_limit(format!(
-                "HAProxy aggregate source size exceeds the maximum of {} bytes",
-                self.limits.max_aggregate_source_bytes
-            ));
-            return Err(RootLoadFailure::AggregateSourceLimit);
-        };
-        if next_aggregate_source_bytes > self.limits.max_aggregate_source_bytes {
-            self.push_source_limit(format!(
-                "HAProxy aggregate source size exceeds the maximum of {} bytes",
-                self.limits.max_aggregate_source_bytes
-            ));
-            return Err(RootLoadFailure::AggregateSourceLimit);
-        }
-
-        let source_index = self.sources.len();
         self.sources.push(LoadedSource {
             root_ordinal,
             file_ordinal,
-            source: SourceFile::from_path(source_id, path.clone(), bytes),
             path,
-        });
-        self.aggregate_source_bytes = next_aggregate_source_bytes;
-        self.source_observations.push(SourceObservation {
-            source_index,
-            fingerprint,
+            source,
         });
         Ok(())
     }
@@ -382,31 +381,27 @@ impl Loader {
             }
         }
 
-        for observation in &self.source_observations {
-            let loaded = &self.sources[observation.source_index];
-            let changed = stable_file_changed(
-                &loaded.path,
-                self.limits.max_source_bytes,
-                loaded.source.bytes(),
-                &observation.fingerprint,
+        for (source, _) in self.source_catalog.changed_snapshots() {
+            let loaded = self
+                .sources
+                .iter()
+                .find(|loaded| loaded.source.id() == source.id())
+                .expect("catalog snapshot has a loaded HAProxy source");
+            changed_roots.push(loaded.root_ordinal);
+            self.diagnostics.push(
+                Diagnostic::new(
+                    E_SOURCE_CHANGED,
+                    Severity::Error,
+                    DiagnosticStage::Source,
+                    format!(
+                        "HAProxy source root {}, file {} `{}` changed while sources were being loaded",
+                        loaded.root_ordinal,
+                        loaded.file_ordinal,
+                        loaded.path.display()
+                    ),
+                )
+                .with_primary_span(source.full_span()),
             );
-            if changed {
-                changed_roots.push(loaded.root_ordinal);
-                self.diagnostics.push(
-                    Diagnostic::new(
-                        E_SOURCE_CHANGED,
-                        Severity::Error,
-                        DiagnosticStage::Source,
-                        format!(
-                            "HAProxy source root {}, file {} `{}` changed while sources were being loaded",
-                            loaded.root_ordinal,
-                            loaded.file_ordinal,
-                            loaded.path.display()
-                        ),
-                    )
-                    .with_primary_span(loaded.source.full_span()),
-                );
-            }
         }
         changed_roots.sort_unstable();
         changed_roots.dedup();
@@ -463,12 +458,6 @@ struct DirectoryObservation {
     root_ordinal: usize,
     path: PathBuf,
     files: Vec<PathBuf>,
-}
-
-#[derive(Default)]
-struct SourceObservation {
-    source_index: usize,
-    fingerprint: FileFingerprint,
 }
 
 enum DirectoryReadFailure {

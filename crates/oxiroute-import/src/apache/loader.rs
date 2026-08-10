@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     ffi::OsString,
     fs, io,
     path::{Component, Path, PathBuf},
@@ -14,7 +13,7 @@ use crate::{
     MAX_AGGREGATE_SOURCE_BYTES, MAX_DIRECTIVES_PER_SOURCE, MAX_EXPANDED_DIRECTIVES,
     MAX_GLOB_MATCHES, MAX_INCLUDE_DEPTH, MAX_SOURCE_BYTES, MAX_SOURCE_FILES, MAX_STRUCTURAL_DEPTH,
     MAX_TOKENS_PER_SOURCE, Report, Severity, SourceFile, SourceId, Span,
-    source::{FileFingerprint, StableReadFailure, read_stable_file, stable_file_changed},
+    source::{SourceBudget, SourceCatalog, SourceCatalogFailure, SourceIdentity, SourceNaming},
 };
 
 use super::{Directive, Document, E_SYNTAX, parser::parse_with_limits};
@@ -199,12 +198,11 @@ struct Loader {
     root_observation: PathObservation,
     include_base: PathBuf,
     sources: Vec<SourceRecord>,
-    source_ids: HashMap<PathBuf, SourceId>,
+    source_catalog: SourceCatalog,
     includes: Vec<IncludeEdge>,
     expanded_directives: Vec<ExpandedDirective>,
     expanded_occurrences: Vec<ExpandedOccurrence>,
     diagnostics: Vec<Diagnostic>,
-    aggregate_source_bytes: usize,
     expanded_count: usize,
     observations: Vec<IncludeObservation>,
 }
@@ -225,12 +223,15 @@ impl Loader {
             },
             include_base,
             sources: Vec::new(),
-            source_ids: HashMap::new(),
+            source_catalog: SourceCatalog::new(SourceBudget {
+                files: limits.max_source_files,
+                source_bytes: limits.max_source_bytes,
+                aggregate_bytes: limits.max_aggregate_source_bytes,
+            }),
             includes: Vec::new(),
             expanded_directives: Vec::new(),
             expanded_occurrences: Vec::new(),
             diagnostics: Vec::new(),
-            aggregate_source_bytes: 0,
             expanded_count: 0,
             observations: Vec::new(),
         }
@@ -242,23 +243,32 @@ impl Loader {
         primary_span: Option<Span>,
         include_stack: &[IncludeFrame],
     ) -> Result<SourceId, SourceLoadFailure> {
-        if let Some(id) = self.source_ids.get(canonical_path) {
-            return Ok(*id);
+        if let Some(id) = self.source_catalog.source_id(canonical_path) {
+            return Ok(id);
         }
-        if self.sources.len() >= self.limits.max_source_files {
-            self.source_limit(
-                format!(
-                    "Apache source file count exceeds the maximum of {}",
-                    self.limits.max_source_files
-                ),
-                primary_span,
-                include_stack,
-            );
-            return Err(SourceLoadFailure::SourceFileLimit);
-        }
-        let snapshot = match read_stable_file(canonical_path, self.limits.max_source_bytes) {
-            Ok(snapshot) => snapshot,
-            Err(StableReadFailure::TooLarge) => {
+        let stack = include_stack
+            .iter()
+            .map(|frame| frame.directive_span)
+            .collect::<Vec<_>>();
+        let source = match self.source_catalog.load(
+            canonical_path,
+            stack.clone(),
+            SourceIdentity::Catalog,
+            SourceNaming::Path,
+        ) {
+            Ok(source) => source,
+            Err(SourceCatalogFailure::SourceFileLimit) => {
+                self.source_limit(
+                    format!(
+                        "Apache source file count exceeds the maximum of {}",
+                        self.limits.max_source_files
+                    ),
+                    primary_span,
+                    include_stack,
+                );
+                return Err(SourceLoadFailure::SourceFileLimit);
+            }
+            Err(SourceCatalogFailure::SourceSizeLimit) => {
                 self.source_limit(
                     format!(
                         "Apache source exceeds the maximum size of {} bytes",
@@ -269,7 +279,7 @@ impl Loader {
                 );
                 return Err(SourceLoadFailure::SourceSizeLimit);
             }
-            Err(StableReadFailure::Changed) => {
+            Err(SourceCatalogFailure::Changed) => {
                 self.source_error(
                     E_SOURCE_CHANGED,
                     "Apache source changed while it was being read",
@@ -278,7 +288,7 @@ impl Loader {
                 );
                 return Err(SourceLoadFailure::SourceChanged);
             }
-            Err(StableReadFailure::Io(error)) => {
+            Err(SourceCatalogFailure::Io(error)) => {
                 self.source_error(
                     E_SOURCE_IO,
                     format!("failed to read Apache source: {error}"),
@@ -287,20 +297,12 @@ impl Loader {
                 );
                 return Err(SourceLoadFailure::SourceIo);
             }
+            Err(SourceCatalogFailure::AggregateSourceLimit) => {
+                self.aggregate_limit(primary_span, include_stack);
+                return Err(SourceLoadFailure::AggregateSourceLimit);
+            }
         };
-        let bytes = snapshot.bytes;
-        let fingerprint = snapshot.fingerprint;
-        let Some(aggregate) = self.aggregate_source_bytes.checked_add(bytes.len()) else {
-            self.aggregate_limit(primary_span, include_stack);
-            return Err(SourceLoadFailure::AggregateSourceLimit);
-        };
-        if aggregate > self.limits.max_aggregate_source_bytes {
-            self.aggregate_limit(primary_span, include_stack);
-            return Err(SourceLoadFailure::AggregateSourceLimit);
-        }
-
-        let id = SourceId::new(u32::try_from(self.sources.len()).expect("source limit fits u32"));
-        let source = SourceFile::from_path(id, canonical_path.to_path_buf(), bytes);
+        let id = source.id();
         let (document, parse_diagnostics) = parse_with_limits(
             &source,
             self.limits.max_source_bytes,
@@ -309,25 +311,17 @@ impl Loader {
             self.limits.max_structural_depth,
         )
         .into_parts();
-        let stack = include_stack
-            .iter()
-            .map(|frame| frame.directive_span)
-            .collect::<Vec<_>>();
         self.diagnostics.extend(
             parse_diagnostics
                 .into_iter()
                 .map(|diagnostic| diagnostic.with_include_stack(stack.iter().copied())),
         );
-        self.aggregate_source_bytes = aggregate;
-        self.source_ids.insert(canonical_path.to_path_buf(), id);
         self.sources.push(SourceRecord {
             parsed: ParsedSource {
                 source,
                 canonical_path: canonical_path.to_path_buf(),
                 document,
             },
-            fingerprint,
-            first_include_stack: stack,
         });
         Ok(id)
     }
@@ -688,24 +682,17 @@ impl Loader {
                 );
             }
         }
-        for record in &self.sources {
-            if stable_file_changed(
-                &record.parsed.canonical_path,
-                self.limits.max_source_bytes,
-                record.parsed.source.bytes(),
-                &record.fingerprint,
-            ) {
-                self.diagnostics.push(
-                    Diagnostic::new(
-                        E_SOURCE_CHANGED,
-                        Severity::Error,
-                        DiagnosticStage::Source,
-                        "Apache source changed while loading the graph",
-                    )
-                    .with_primary_span(record.parsed.source.full_span())
-                    .with_include_stack(record.first_include_stack.iter().copied()),
-                );
-            }
+        for (source, first_include_stack) in self.source_catalog.changed_snapshots() {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    E_SOURCE_CHANGED,
+                    Severity::Error,
+                    DiagnosticStage::Source,
+                    "Apache source changed while loading the graph",
+                )
+                .with_primary_span(source.full_span())
+                .with_include_stack(first_include_stack),
+            );
         }
     }
 
@@ -784,8 +771,6 @@ fn is_include(directive: &Directive) -> bool {
 #[derive(Clone)]
 struct SourceRecord {
     parsed: ParsedSource,
-    fingerprint: FileFingerprint,
-    first_include_stack: Vec<Span>,
 }
 
 #[derive(Clone)]
