@@ -180,7 +180,7 @@ section.provenance-workspace(aria-labelledby="provenance-heading" :aria-busy="lo
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { ApiError, fetchImportReports } from './api'
 import type {
@@ -190,6 +190,7 @@ import type {
   ImportReportRequirement,
   ImportReportSummary,
 } from './api'
+import { useLatestAbortableTask } from './useLatestAbortableTask'
 
 const props = defineProps<{ token: string }>()
 const emit = defineEmits<{ unauthorized: [] }>()
@@ -199,10 +200,9 @@ const selectedIndex = ref<number | null>(null)
 const report = ref<ImportReportEnvelope | null>(null)
 const preview = ref<ImportReportPreview | null>(null)
 const visibleRevision = ref<string | null>(null)
-const loading = ref(false)
 const error = ref<string | null>(null)
 const stale = ref(false)
-let controller: AbortController | null = null
+const { loading, run: runLoad, cancel: cancelLoad } = useLatestAbortableTask()
 
 const selectedSummary = computed(() => reports.value.find((summary) => summary.index === selectedIndex.value))
 const requirements = computed<ImportReportRequirement[]>(() => [
@@ -212,59 +212,54 @@ const requirements = computed<ImportReportRequirement[]>(() => [
 const requirementCount = computed(() => requirements.value.length)
 
 async function load(): Promise<void> {
-  if (!props.token || loading.value) return
-  controller?.abort()
-  const nextController = new AbortController()
-  controller = nextController
-  loading.value = true
+  const token = props.token
+  if (!token) return
   error.value = null
-  try {
-    const inventory = await fetchImportReports(props.token, undefined, nextController.signal)
-    if (nextController.signal.aborted) return
-    reports.value = inventory.reports
-    if (inventory.reports.length === 0) {
-      selectedIndex.value = null
-      report.value = null
-      preview.value = null
-      visibleRevision.value = null
-      stale.value = false
-      return
-    }
-    const nextIndex = inventory.reports.some((summary) => summary.index === selectedIndex.value)
-      ? selectedIndex.value!
-      : inventory.reports[0]!.index
-    selectedIndex.value = nextIndex
-    await loadSelected(nextIndex, nextController, false)
-  } catch (requestError) {
-    if (nextController.signal.aborted) return
-    handleRequestError(requestError)
-  } finally {
-    if (controller === nextController) controller = null
-    loading.value = false
-  }
+  await runLoad(
+    async (signal) => {
+      const inventory = await fetchImportReports(token, undefined, signal)
+      signal.throwIfAborted()
+      if (inventory.reports.length === 0) return { inventory, selected: null }
+      const index = inventory.reports.some((summary) => summary.index === selectedIndex.value)
+        ? selectedIndex.value!
+        : inventory.reports[0]!.index
+      const selected = await loadSelected(index, token, signal)
+      return { inventory, selected: { index, response: selected } }
+    },
+    ({ inventory, selected }) => {
+      reports.value = inventory.reports
+      if (selected === null) {
+        selectedIndex.value = null
+        report.value = null
+        preview.value = null
+        visibleRevision.value = null
+        stale.value = false
+        return
+      }
+      selectedIndex.value = selected.index
+      applySelected(selected.response, false)
+    },
+    handleRequestError,
+  )
 }
 
 async function selectReport(): Promise<void> {
-  if (selectedIndex.value === null || !props.token || loading.value) return
-  controller?.abort()
-  const nextController = new AbortController()
-  controller = nextController
-  loading.value = true
+  const index = selectedIndex.value
+  const token = props.token
+  if (index === null || !token) return
   error.value = null
-  try {
-    await loadSelected(selectedIndex.value, nextController, true)
-  } catch (requestError) {
-    if (nextController.signal.aborted) return
-    handleRequestError(requestError)
-  } finally {
-    if (controller === nextController) controller = null
-    loading.value = false
-  }
+  await runLoad(
+    (signal) => loadSelected(index, token, signal),
+    (response) => applySelected(response, true),
+    handleRequestError,
+  )
 }
 
-async function loadSelected(index: number, nextController: AbortController, retainOnRevisionChange: boolean): Promise<void> {
-  const next = await fetchImportReports(props.token, index, nextController.signal)
-  if (nextController.signal.aborted) return
+function loadSelected(index: number, token: string, signal: AbortSignal) {
+  return fetchImportReports(token, index, signal)
+}
+
+function applySelected(next: Awaited<ReturnType<typeof loadSelected>>, retainOnRevisionChange: boolean): void {
   if (retainOnRevisionChange && visibleRevision.value !== null && next.diskRevision !== visibleRevision.value) {
     stale.value = true
     return
@@ -286,7 +281,7 @@ function originLabel(origin: ImportReportOrigin): string {
 }
 
 watch(() => props.token, (token) => {
-  controller?.abort()
+  cancelLoad()
   if (!token) {
     reports.value = []
     selectedIndex.value = null
@@ -302,10 +297,6 @@ watch(() => props.token, (token) => {
 
 onMounted(() => {
   if (props.token) void load()
-})
-
-onBeforeUnmount(() => {
-  controller?.abort()
 })
 </script>
 
