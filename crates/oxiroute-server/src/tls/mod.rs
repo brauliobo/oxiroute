@@ -22,6 +22,7 @@ mod file_reconcile;
 mod file_watcher;
 mod tls_alpn;
 mod upstream;
+mod watcher_engine;
 
 pub use acme::{
     AcmeDnsCleanupRecovery, AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy,

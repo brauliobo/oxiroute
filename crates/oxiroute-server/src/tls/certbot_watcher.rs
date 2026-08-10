@@ -2,18 +2,22 @@ use std::{
     collections::BTreeSet,
     fmt, io,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
-    },
-    thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    sync::Arc,
+    time::Duration,
 };
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
-use super::{CertbotReconciler, certificate::PublicationGate};
+#[cfg(test)]
+use super::watcher_engine::DebounceWindow;
+use super::{
+    CertbotReconciler,
+    certificate::PublicationGate,
+    watcher_engine::{
+        ReconcileResult, WakeQueue, WatcherEngine, WatcherMonitor, WatcherSource,
+        WatcherStartError, WatcherStatus, WatcherTiming, handle_notify_event,
+    },
+};
 
 const MAX_RECONCILERS: usize = 256;
 const MIN_RESCAN_INTERVAL: Duration = Duration::from_secs(1);
@@ -35,6 +39,16 @@ impl Default for CertbotWatcherConfig {
     }
 }
 
+impl From<CertbotWatcherConfig> for WatcherTiming {
+    fn from(config: CertbotWatcherConfig) -> Self {
+        Self {
+            rescan_interval: config.rescan_interval,
+            event_debounce: config.event_debounce,
+            event_max_delay: config.event_max_delay,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CertbotWatcherStatus {
     pub running: bool,
@@ -47,6 +61,23 @@ pub struct CertbotWatcherStatus {
     pub rescans: u64,
     pub periodic_rescans: u64,
     pub reconciliation_failures: u64,
+}
+
+impl From<WatcherStatus> for CertbotWatcherStatus {
+    fn from(status: WatcherStatus) -> Self {
+        Self {
+            running: status.running,
+            degraded: status.degraded,
+            coalesced_events: status.coalesced_events,
+            ignored_access_events: status.ignored_access_events,
+            backend_errors: status.backend_errors,
+            watch_recoveries: status.watch_recoveries,
+            watch_refreshes: status.watch_refreshes,
+            rescans: status.rescans,
+            periodic_rescans: status.periodic_rescans,
+            reconciliation_failures: status.reconciliation_failures,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -90,64 +121,15 @@ pub enum CertbotWatcherError {
     },
 }
 
-#[derive(Default)]
-struct WatcherState {
-    running: AtomicBool,
-    backend_degraded: AtomicBool,
-    reconciliation_degraded: AtomicBool,
-    coalesced_events: AtomicU64,
-    ignored_access_events: AtomicU64,
-    backend_errors: AtomicU64,
-    watch_recoveries: AtomicU64,
-    watch_refreshes: AtomicU64,
-    rescans: AtomicU64,
-    periodic_rescans: AtomicU64,
-    reconciliation_failures: AtomicU64,
-}
-
-impl WatcherState {
-    fn snapshot(&self) -> CertbotWatcherStatus {
-        CertbotWatcherStatus {
-            running: self.running.load(Ordering::Acquire),
-            degraded: self.backend_degraded.load(Ordering::Acquire)
-                || self.reconciliation_degraded.load(Ordering::Acquire),
-            coalesced_events: self.coalesced_events.load(Ordering::Relaxed),
-            ignored_access_events: self.ignored_access_events.load(Ordering::Relaxed),
-            backend_errors: self.backend_errors.load(Ordering::Relaxed),
-            watch_recoveries: self.watch_recoveries.load(Ordering::Relaxed),
-            watch_refreshes: self.watch_refreshes.load(Ordering::Relaxed),
-            rescans: self.rescans.load(Ordering::Relaxed),
-            periodic_rescans: self.periodic_rescans.load(Ordering::Relaxed),
-            reconciliation_failures: self.reconciliation_failures.load(Ordering::Relaxed),
-        }
-    }
-
-    fn mark_backend_degraded(&self) {
-        self.backend_degraded.store(true, Ordering::Release);
-        self.backend_errors.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn mark_backend_recovered(&self) {
-        if self.backend_degraded.swap(false, Ordering::AcqRel) {
-            self.watch_recoveries.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn set_reconciliation_degraded(&self, degraded: bool) {
-        self.reconciliation_degraded
-            .store(degraded, Ordering::Release);
-    }
-}
-
 #[derive(Clone)]
 pub struct CertbotWatcherMonitor {
-    state: Arc<WatcherState>,
+    monitor: WatcherMonitor,
 }
 
 impl CertbotWatcherMonitor {
     #[must_use]
     pub fn status(&self) -> CertbotWatcherStatus {
-        self.state.snapshot()
+        self.monitor.status().into()
     }
 }
 
@@ -160,52 +142,8 @@ impl fmt::Debug for CertbotWatcherMonitor {
     }
 }
 
-#[derive(Clone)]
-struct WakeQueue {
-    sender: SyncSender<()>,
-    state: Arc<WatcherState>,
-}
-
-impl WakeQueue {
-    fn new() -> (Self, Receiver<()>, Arc<WatcherState>) {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let state = Arc::new(WatcherState::default());
-        (
-            Self {
-                sender,
-                state: Arc::clone(&state),
-            },
-            receiver,
-            state,
-        )
-    }
-
-    fn event(&self) {
-        match self.sender.try_send(()) {
-            Ok(()) | Err(TrySendError::Disconnected(())) => {}
-            Err(TrySendError::Full(())) => {
-                self.state.coalesced_events.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-
-    fn ignored_access(&self) {
-        self.state
-            .ignored_access_events
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn backend_error(&self) {
-        self.state.mark_backend_degraded();
-        self.event();
-    }
-}
-
 pub struct CertbotWatcherSupervisor {
-    gate: Arc<PublicationGate>,
-    wake: WakeQueue,
-    state: Arc<WatcherState>,
-    worker: Option<JoinHandle<()>>,
+    engine: WatcherEngine,
 }
 
 impl CertbotWatcherSupervisor {
@@ -217,7 +155,7 @@ impl CertbotWatcherSupervisor {
             return Ok(());
         }
         validate_configuration(reconcilers.len(), config)?;
-        let (wake, _receiver, _state) = WakeQueue::new();
+        let (wake, _receiver, _monitor) = WakeQueue::new();
         let _watcher = WatcherBackend::new(reconcilers, &wake)?;
         Ok(())
     }
@@ -257,52 +195,30 @@ impl CertbotWatcherSupervisor {
     ) -> Result<Self, CertbotWatcherError> {
         validate_configuration(reconcilers.len(), config)?;
 
-        let (wake, receiver, state) = WakeQueue::new();
-        let watcher = WatcherBackend::new(&reconcilers, &wake)?;
-        let gate = Arc::new(PublicationGate::new());
-        let worker_gate = Arc::clone(&gate);
-        let worker_state = Arc::clone(&state);
-        let worker_wake = wake.clone();
-        state.running.store(true, Ordering::Release);
-        let worker = thread::Builder::new()
-            .name("certbot-watcher".into())
-            .spawn(move || {
-                let _running = RunningGuard(Arc::clone(&worker_state));
-                run_worker(
-                    &receiver,
-                    &reconcilers,
-                    config,
-                    &worker_gate,
-                    &worker_state,
-                    &worker_wake,
-                    watcher,
-                );
+        let timing = config.into();
+        let engine = WatcherEngine::start("certbot-watcher", timing, move |wake| {
+            let watcher = WatcherBackend::new(&reconcilers, wake)?;
+            Ok(CertbotWatcherSource {
+                reconcilers,
+                watcher,
             })
-            .map_err(|source| {
-                state.running.store(false, Ordering::Release);
-                CertbotWatcherError::Thread { source }
-            })?;
-        // Reconcile once after all watches are installed. This closes the preparation-to-watcher
-        // startup window without waiting for the periodic backstop.
-        wake.event();
-
-        Ok(Self {
-            gate,
-            wake,
-            state,
-            worker: Some(worker),
         })
+        .map_err(|error| match error {
+            WatcherStartError::Source(error) => error,
+            WatcherStartError::Thread(source) => CertbotWatcherError::Thread { source },
+        })?;
+        Ok(Self { engine })
     }
 
     #[must_use]
     pub fn status(&self) -> CertbotWatcherStatus {
-        self.state.snapshot()
+        self.engine.status().into()
     }
 
     #[must_use]
     pub fn monitor(&self) -> CertbotWatcherMonitor {
         CertbotWatcherMonitor {
-            state: Arc::clone(&self.state),
+            monitor: self.engine.monitor(),
         }
     }
 
@@ -312,20 +228,7 @@ impl CertbotWatcherSupervisor {
     /// filesystem can therefore delay this call after the main process has completed bounded
     /// service-runtime shutdown.
     pub fn shutdown(&mut self) {
-        self.gate.stop();
-        self.wake.event();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-        self.state.running.store(false, Ordering::Release);
-    }
-}
-
-struct RunningGuard(Arc<WatcherState>);
-
-impl Drop for RunningGuard {
-    fn drop(&mut self) {
-        self.0.running.store(false, Ordering::Release);
+        self.engine.shutdown();
     }
 }
 
@@ -334,14 +237,8 @@ impl fmt::Debug for CertbotWatcherSupervisor {
         formatter
             .debug_struct("CertbotWatcherSupervisor")
             .field("status", &self.status())
-            .field("running", &self.worker.is_some())
+            .field("running", &self.engine.is_running())
             .finish_non_exhaustive()
-    }
-}
-
-impl Drop for CertbotWatcherSupervisor {
-    fn drop(&mut self) {
-        self.shutdown();
     }
 }
 
@@ -382,6 +279,41 @@ impl fmt::Debug for WatcherBackend {
         formatter
             .debug_struct("WatcherBackend")
             .finish_non_exhaustive()
+    }
+}
+
+struct CertbotWatcherSource {
+    reconcilers: Vec<Arc<CertbotReconciler>>,
+    watcher: WatcherBackend,
+}
+
+impl WatcherSource for CertbotWatcherSource {
+    fn reconcile(&mut self, gate: &PublicationGate) -> ReconcileResult {
+        let mut failures = 0;
+        for reconciler in &self.reconcilers {
+            if gate.is_stopped() {
+                return ReconcileResult::Stopped;
+            }
+            match reconciler.reconcile_while_running(gate) {
+                Ok(Some(_outcome)) => {}
+                Ok(None) => return ReconcileResult::Stopped,
+                Err(error) => {
+                    log::warn!("Certbot reconciliation failed: {error}");
+                    failures += 1;
+                }
+            }
+        }
+        ReconcileResult::Completed { failures }
+    }
+
+    fn refresh(&mut self, wake: &WakeQueue) -> bool {
+        match self.watcher.rebuild(&self.reconcilers, wake) {
+            Ok(()) => true,
+            Err(error) => {
+                log::error!("failed to refresh Certbot filesystem watches: {error}");
+                false
+            }
+        }
     }
 }
 
@@ -443,121 +375,9 @@ fn canonical_watch_path(path: &Path) -> Result<PathBuf, CertbotWatcherError> {
     Ok(canonical)
 }
 
-fn handle_notify_event(wake: &WakeQueue, event: notify::Result<notify::Event>) {
-    match event {
-        Ok(event) if event.need_rescan() => wake.backend_error(),
-        Ok(event) if event.kind.is_access() => wake.ignored_access(),
-        Ok(_event) => wake.event(),
-        Err(_error) => wake.backend_error(),
-    }
-}
-
-fn run_worker(
-    receiver: &Receiver<()>,
-    reconcilers: &[Arc<CertbotReconciler>],
-    config: CertbotWatcherConfig,
-    gate: &PublicationGate,
-    state: &WatcherState,
-    wake: &WakeQueue,
-    mut watcher: WatcherBackend,
-) {
-    loop {
-        let periodic = match receiver.recv_timeout(config.rescan_interval) {
-            Ok(()) => {
-                if !debounce_events(receiver, gate, config) {
-                    return;
-                }
-                false
-            }
-            Err(RecvTimeoutError::Timeout) => true,
-            Err(RecvTimeoutError::Disconnected) => return,
-        };
-        if gate.is_stopped() {
-            return;
-        }
-        state.rescans.fetch_add(1, Ordering::Relaxed);
-        if periodic {
-            state.periodic_rescans.fetch_add(1, Ordering::Relaxed);
-        }
-        let mut reconciliation_degraded = false;
-        for reconciler in reconcilers {
-            if gate.is_stopped() {
-                return;
-            }
-            match reconciler.reconcile_while_running(gate) {
-                Ok(Some(_outcome)) => {}
-                Ok(None) => return,
-                Err(error) => {
-                    log::warn!("Certbot reconciliation failed: {error}");
-                    reconciliation_degraded = true;
-                    state
-                        .reconciliation_failures
-                        .fetch_add(1, Ordering::Relaxed);
-                }
-            }
-        }
-        state.set_reconciliation_degraded(reconciliation_degraded);
-        match watcher.rebuild(reconcilers, wake) {
-            Ok(()) => {
-                state.watch_refreshes.fetch_add(1, Ordering::Relaxed);
-                state.mark_backend_recovered();
-            }
-            Err(error) => {
-                log::error!("failed to refresh Certbot filesystem watches: {error}");
-                state.mark_backend_degraded();
-            }
-        }
-    }
-}
-
-fn debounce_events(
-    receiver: &Receiver<()>,
-    gate: &PublicationGate,
-    config: CertbotWatcherConfig,
-) -> bool {
-    let mut window = DebounceWindow::new(Instant::now());
-    loop {
-        if gate.is_stopped() {
-            return false;
-        }
-        let now = Instant::now();
-        let deadline = window.deadline(config.event_debounce, config.event_max_delay);
-        if now >= deadline {
-            return true;
-        }
-        match receiver.recv_timeout(deadline - now) {
-            Ok(()) => window.note_event(Instant::now()),
-            Err(RecvTimeoutError::Timeout) => return true,
-            Err(RecvTimeoutError::Disconnected) => return false,
-        }
-    }
-}
-
-struct DebounceWindow {
-    first_event: Instant,
-    last_event: Instant,
-}
-
-impl DebounceWindow {
-    fn new(now: Instant) -> Self {
-        Self {
-            first_event: now,
-            last_event: now,
-        }
-    }
-
-    fn note_event(&mut self, now: Instant) {
-        self.last_event = now;
-    }
-
-    fn deadline(&self, debounce: Duration, max_delay: Duration) -> Instant {
-        (self.last_event + debounce).min(self.first_event + max_delay)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc::TryRecvError;
+    use std::{sync::mpsc::TryRecvError, time::Instant};
 
     use notify::{
         Event, EventKind,
@@ -568,7 +388,7 @@ mod tests {
 
     #[test]
     fn bounded_wake_queue_coalesces_events() {
-        let (wake, receiver, state) = WakeQueue::new();
+        let (wake, receiver, monitor) = WakeQueue::new();
 
         wake.event();
         wake.event();
@@ -576,13 +396,13 @@ mod tests {
 
         receiver.try_recv().unwrap();
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
-        assert_eq!(state.snapshot().coalesced_events, 2);
-        assert!(!state.snapshot().degraded);
+        assert_eq!(monitor.status().coalesced_events, 2);
+        assert!(!monitor.status().degraded);
     }
 
     #[test]
     fn notify_access_open_and_read_events_are_ignored() {
-        let (wake, receiver, state) = WakeQueue::new();
+        let (wake, receiver, monitor) = WakeQueue::new();
         for kind in [
             AccessKind::Read,
             AccessKind::Open(AccessMode::Read),
@@ -592,19 +412,19 @@ mod tests {
         }
 
         assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
-        assert_eq!(state.snapshot().ignored_access_events, 3);
+        assert_eq!(monitor.status().ignored_access_events, 3);
     }
 
     #[test]
     fn backend_degradation_and_recovery_are_visible() {
-        let (wake, receiver, state) = WakeQueue::new();
+        let (wake, receiver, monitor) = WakeQueue::new();
 
         wake.backend_error();
         receiver.try_recv().unwrap();
-        assert!(state.snapshot().degraded);
+        assert!(monitor.status().degraded);
 
-        state.mark_backend_recovered();
-        let status = state.snapshot();
+        wake.backend_recovered();
+        let status = monitor.status();
         assert!(!status.degraded);
         assert_eq!(status.backend_errors, 1);
         assert_eq!(status.watch_recoveries, 1);
@@ -612,13 +432,13 @@ mod tests {
 
     #[test]
     fn notify_overflow_rescan_flag_marks_degradation() {
-        let (wake, receiver, state) = WakeQueue::new();
+        let (wake, receiver, monitor) = WakeQueue::new();
         let overflow = Event::new(EventKind::Other).set_flag(Flag::Rescan);
 
         handle_notify_event(&wake, Ok(overflow));
 
         receiver.try_recv().unwrap();
-        assert!(state.snapshot().degraded);
+        assert!(monitor.status().degraded);
     }
 
     #[test]
