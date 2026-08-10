@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(decision.target, "/resource");
         assert!(!decision.headers.contains_key(header::PROXY_AUTHORIZATION));
         assert!(!format!("{decision:?}").contains("do-not-retain"));
-        assert_eq!(decision.destination.socket_addresses.len(), 1);
+        assert_eq!(decision.destination.socket_addresses().len(), 1);
     }
 
     #[tokio::test]
@@ -354,7 +354,7 @@ mod tests {
         };
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         assert_eq!(
-            decision.destination.socket_addresses.as_ref(),
+            decision.destination.socket_addresses(),
             &["93.184.216.34:80".parse().unwrap()]
         );
     }

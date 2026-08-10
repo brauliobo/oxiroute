@@ -1241,7 +1241,7 @@ impl ForwardHttp1ServicePlan {
             let destination = result
                 .as_ref()
                 .ok()
-                .map(|request| request.approved.destination.authority());
+                .map(|request| request.approved.destination().authority());
             let authenticated = result
                 .as_ref()
                 .ok()
@@ -1400,7 +1400,7 @@ impl ForwardHttp1ServicePlan {
                     lifetime_deadline,
                     self.connect_tunnel_until(
                         &destination,
-                        approved.socket_addresses.as_ref(),
+                        approved.socket_addresses(),
                         connect_deadline,
                     ),
                 )
@@ -1416,7 +1416,7 @@ impl ForwardHttp1ServicePlan {
                 if lifetime_timeout.is_zero() {
                     return self.rejection(RequestFailure::GatewayTimeout);
                 }
-                let tunnel_destination = approved.destination.authority();
+                let tunnel_destination = approved.destination().authority();
                 let completion = lifecycle.start();
                 tokio::spawn(async move {
                     let _completion = completion;
@@ -1457,7 +1457,7 @@ impl ForwardHttp1ServicePlan {
             ParsedTarget::UdpTunnel(_) => {
                 let socket = match timeout_at(
                     lifetime_deadline,
-                    self.connect_udp_until(approved.socket_addresses.as_ref(), connect_deadline),
+                    self.connect_udp_until(approved.socket_addresses(), connect_deadline),
                 )
                 .await
                 {
@@ -1470,7 +1470,7 @@ impl ForwardHttp1ServicePlan {
                 if lifetime_timeout.is_zero() {
                     return self.rejection(RequestFailure::GatewayTimeout);
                 }
-                let tunnel_destination = approved.destination.authority();
+                let tunnel_destination = approved.destination().authority();
                 let completion = lifecycle.start();
                 let limits = TunnelLimits {
                     idle_timeout: self.idle_timeout,
@@ -1556,7 +1556,7 @@ impl ForwardHttp1ServicePlan {
             self.connect_http_with_peers(
                 &target.destination,
                 target.scheme,
-                approved.socket_addresses.as_ref(),
+                approved.socket_addresses(),
                 connect_deadline,
             ),
         )
@@ -1995,7 +1995,7 @@ impl ForwardHttp1ServicePlan {
                 let connect_deadline = lifetime_deadline.min(Instant::now() + self.connect_timeout);
                 let upstream = match timeout_at(
                     lifetime_deadline,
-                    self.connect_tcp_until(approved.socket_addresses.as_ref(), connect_deadline),
+                    self.connect_tcp_until(approved.socket_addresses(), connect_deadline),
                 )
                 .await
                 {
@@ -2042,7 +2042,7 @@ impl ForwardHttp1ServicePlan {
                         log::info!(
                             target: "oxiroute::forward_proxy",
                             "event=forward_tunnel protocol=h3 destination={} outcome={} bytes_left_to_right={} bytes_right_to_left={}",
-                            approved.destination.authority(),
+                            approved.destination().authority(),
                             outcome.kind().as_str(),
                             outcome.stats().left_to_right,
                             outcome.stats().right_to_left,
@@ -2051,7 +2051,7 @@ impl ForwardHttp1ServicePlan {
                     None => log::info!(
                         target: "oxiroute::forward_proxy",
                         "event=forward_tunnel protocol=h3 destination={} outcome=cancelled bytes_left_to_right=0 bytes_right_to_left=0",
-                        approved.destination.authority(),
+                        approved.destination().authority(),
                     ),
                 }
             }
@@ -2183,7 +2183,7 @@ impl ForwardHttp1ServicePlan {
                 };
                 let mut response = None;
                 let mut last_error = H3UpstreamError::Connect;
-                for address in approved.socket_addresses.iter() {
+                for address in approved.socket_addresses() {
                     match h3_upstream
                         .request(
                             *address,
@@ -2849,7 +2849,7 @@ impl HttpServerApp for ForwardHttp1ServicePlan {
         let connect_deadline = lifetime_deadline.min(Instant::now() + self.connect_timeout);
         let upstream = match timeout_at(
             lifetime_deadline,
-            self.connect_tcp_until(approved.socket_addresses.as_ref(), connect_deadline),
+            self.connect_tcp_until(approved.socket_addresses(), connect_deadline),
         )
         .await
         {
@@ -3506,7 +3506,7 @@ async fn forward_h3_http_request(
             service.connect_http_with_peers(
                 &target.destination,
                 ForwardScheme::Http,
-                approved.socket_addresses.as_ref(),
+                approved.socket_addresses(),
                 connect_deadline,
             ),
         ) => match result {

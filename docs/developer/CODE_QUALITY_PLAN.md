@@ -156,20 +156,23 @@ state, and Squid carries a special parallel shape.
 
 ### P1.2 Forward-proxy destination capability
 
-**Finding:** `ApprovedDestination` is intended to prove that resolution and policy authorization
-already succeeded, but its fields are public and allow callers to forge the capability.
+**Status:** Complete. `ApprovedDestination` now proves that resolution and policy authorization
+succeeded: external callers can inspect its destination and approved socket addresses but cannot
+construct or mutate the capability.
 
 **Evidence:**
 
-- Public fields: `crates/oxiroute-forward-proxy/src/policy.rs:58-75`
+- Sealed fields and read-only accessors: `crates/oxiroute-forward-proxy/src/policy.rs:58-97`
 - Authorized construction: `crates/oxiroute-forward-proxy/src/decision.rs:173-232`
 - Trusted use: `crates/oxiroute-server/src/forward_proxy.rs:1397-1474`
 
 **Plan:**
 
-- [ ] Make fields private, retain crate-private construction, and expose read-only accessors.
-- [ ] Review `ForwardDecision` and `TunnelDecision` for the same proof-type leak.
-- [ ] Add an external compile-fail test that cannot construct an approved destination directly.
+- [x] Make fields private, retain crate-private construction, and expose read-only accessors.
+- [x] Review `ForwardDecision` and `TunnelDecision`; their public capability fields remain safe
+  because `ApprovedDestination` itself is sealed and read-only.
+- [x] Add a Rustdoc compile-fail proof that external code cannot construct an approved destination
+  directly.
 
 ### P1.3 ACME job lifecycle
 

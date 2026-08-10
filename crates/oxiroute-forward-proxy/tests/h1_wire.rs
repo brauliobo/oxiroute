@@ -54,7 +54,7 @@ async fn h1_connect_ipv6_authority_crosses_a_real_http_connection() {
                             panic!("H1 CONNECT must produce a tunnel");
                         };
                         assert_eq!(
-                            tunnel.destination.destination.authority(),
+                            tunnel.destination.destination().authority(),
                             "[2606:4700:4700::1111]:443"
                         );
                         let upgrade = hyper::upgrade::on(&mut request);
@@ -190,11 +190,11 @@ async fn exchange(request: &[u8]) -> String {
                             format!(
                                 "forward:{}:{}",
                                 forward.target,
-                                forward.destination.destination.authority()
+                                forward.destination.destination().authority()
                             )
                         }
                         Decision::Tunnel(tunnel) => {
-                            format!("tunnel:{}", tunnel.destination.destination.authority())
+                            format!("tunnel:{}", tunnel.destination.destination().authority())
                         }
                     };
                     Ok::<_, Infallible>(

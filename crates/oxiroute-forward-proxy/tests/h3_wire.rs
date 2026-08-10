@@ -46,7 +46,7 @@ async fn h3_absolute_target_crosses_quic_tls_and_h3_frames() {
             panic!("H3 request must be forwarded");
         };
         assert_eq!(
-            forward.destination.destination.authority(),
+            forward.destination.destination().authority(),
             "example.com:80"
         );
         stream
