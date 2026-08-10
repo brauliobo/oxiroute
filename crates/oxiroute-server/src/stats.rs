@@ -11,6 +11,7 @@ use pingora::{apps::http_app::ServeHttp, protocols::http::ServerSession};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::generation_health::generation_component_status;
 use crate::html::escape_html;
 use crate::{
     ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics,
@@ -182,7 +183,7 @@ impl HaproxyStatsApi {
                 serde_json::json!({
                     "process": { "state": "degraded", "reason": "runtime_sampling_failed" },
                     "host": { "state": "degraded", "reason": "runtime_sampling_failed" },
-                    "generation": generation_component_status(&status),
+                    "generation": generation_component_status(Some(&status)),
                     "audit": audit.clone(),
                 })
             },
@@ -190,7 +191,7 @@ impl HaproxyStatsApi {
                 serde_json::json!({
                     "process": runtime.process.status,
                     "host": runtime.host.status,
-                    "generation": generation_component_status(&status),
+                    "generation": generation_component_status(Some(&status)),
                     "audit": audit.clone(),
                 })
             },
@@ -281,22 +282,6 @@ impl HaproxyStatsApi {
             return ApiResponse::error(404, "server_not_found", "upstream server was not found");
         }
         ApiResponse::bytes(204, Vec::new(), "text/plain; charset=utf-8")
-    }
-}
-
-fn generation_component_status(status: &crate::GenerationStatus) -> Value {
-    if status.degraded {
-        serde_json::json!({
-            "state": "degraded",
-            "reason": status.last_failure,
-        })
-    } else if status.active_revision.is_some() {
-        serde_json::json!({ "state": "healthy" })
-    } else {
-        serde_json::json!({
-            "state": "degraded",
-            "reason": "active_generation_unavailable",
-        })
     }
 }
 

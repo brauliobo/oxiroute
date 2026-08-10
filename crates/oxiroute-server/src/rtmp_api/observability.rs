@@ -3,6 +3,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::ApiResponse;
+use crate::generation_health::generation_component_status;
 use crate::{
     GenerationManager, RuntimeMetrics, RuntimeSnapshot, TOPOLOGY_SCHEMA_VERSION, TopologyNodeKind,
     TopologySnapshot, render_prometheus,
@@ -105,20 +106,6 @@ fn status_response(
             "tlsProfiles": tls_profiles,
         }),
     )
-}
-
-fn generation_component_status(generation: Option<&crate::GenerationStatus>) -> serde_json::Value {
-    match generation {
-        Some(status) if status.degraded => json!({
-            "state": "degraded",
-            "reason": status.last_failure,
-        }),
-        Some(status) if status.active_revision.is_some() => json!({ "state": "healthy" }),
-        Some(_) | None => json!({
-            "state": "degraded",
-            "reason": "active_generation_unavailable",
-        }),
-    }
 }
 
 fn capabilities_response(metrics: &RuntimeMetrics) -> ApiResponse {
