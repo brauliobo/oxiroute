@@ -850,12 +850,15 @@ export interface ImportReportProvenance {
   origins: ImportReportOrigin[]
 }
 
-export interface ImportReportCandidate {
-  finalized: boolean
-  config: CanonicalConfig | null
+interface ImportReportCandidateEvidence {
   draft: ImportReportCandidateDraft
   provenance: ImportReportProvenance[]
 }
+
+export type ImportReportCandidate = ImportReportCandidateEvidence & (
+  | { finalized: true; config: CanonicalConfig }
+  | { finalized: false; config: null }
+)
 
 export interface ImportReportBlocker {
   id: string
@@ -2348,8 +2351,9 @@ function isImportReportSpan(value: unknown): value is ImportReportSpan {
 }
 
 function isImportReportCandidate(value: unknown): value is ImportReportCandidate {
-  return isRecord(value) && typeof value.finalized === 'boolean' &&
-    (value.config === null || isCanonicalConfig(value.config)) &&
+  return isRecord(value) &&
+    ((value.finalized === true && isCanonicalConfig(value.config)) ||
+      (value.finalized === false && value.config === null)) &&
     isImportReportCandidateDraft(value.draft) && boundedArray(value.provenance, isImportReportProvenance)
 }
 

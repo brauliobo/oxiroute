@@ -72,7 +72,7 @@ async fn imported_varnish_candidate_serves_and_caches_http_on_a_real_listener() 
     assert_eq!(report.lowering, LoweringStatus::Lowered);
     let config = report
         .candidate
-        .config
+        .into_config()
         .expect("finalized Varnish candidate");
     let rendered = render_lua(&config).expect("render finalized Varnish candidate");
     load_lua(&rendered).expect("decode rendered Varnish candidate");

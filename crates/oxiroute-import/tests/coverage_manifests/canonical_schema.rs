@@ -484,7 +484,7 @@ fn collect_canonical_type(
             _ => None,
         })
         .unwrap_or_else(|| panic!("canonical schema references unknown type `{type_name}`"));
-    entries.insert((EntryKind::Enum, type_name.to_owned()));
+    entries.insert((EntryKind::Enum, type_name.clone()));
     for variant in &item.variants {
         entries.insert((
             EntryKind::Variant,

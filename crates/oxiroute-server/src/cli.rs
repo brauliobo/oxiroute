@@ -711,7 +711,7 @@ fn import_nginx(
     let report = oxiroute_import::nginx::import_root_with_options(path, root_prefix, &options);
     match output {
         ImportOutput::Preview => preview_with_shadow_listener_offset(
-            report.candidate.config.as_ref(),
+            report.candidate.config(),
             shadow_port_offset,
             format,
         ),
@@ -745,11 +745,9 @@ fn import_haproxy(
         },
     );
     match output {
-        ImportOutput::Preview => preview_with_shadow_listener_offset(
-            report.value().config.as_ref(),
-            shadow_port_offset,
-            format,
-        ),
+        ImportOutput::Preview => {
+            preview_with_shadow_listener_offset(report.value().config(), shadow_port_offset, format)
+        }
         ImportOutput::Report => {
             if shadow_port_offset.is_some() {
                 return Err("--shadow-port-offset requires --output preview".into());
@@ -770,9 +768,11 @@ fn import_squid(
 ) -> Result<String, Box<dyn Error>> {
     let report = oxiroute_import::squid::import(path);
     match output {
-        ImportOutput::Preview => {
-            preview_with_shadow_listener_offset(report.config.as_ref(), shadow_port_offset, format)
-        }
+        ImportOutput::Preview => preview_with_shadow_listener_offset(
+            report.candidate.config(),
+            shadow_port_offset,
+            format,
+        ),
         ImportOutput::Report => {
             if shadow_port_offset.is_some() {
                 return Err("--shadow-port-offset requires --output preview".into());
@@ -791,7 +791,7 @@ fn import_apache(
     let report = oxiroute_import::apache::import_root(path);
     match output {
         ImportOutput::Preview => preview_with_shadow_listener_offset(
-            report.candidate.config.as_ref(),
+            report.candidate.config(),
             shadow_port_offset,
             format,
         ),
@@ -815,7 +815,7 @@ fn import_varnish(
     let report = oxiroute_import::varnish::import(path, &invocation);
     match output {
         ImportOutput::Preview => preview_with_shadow_listener_offset(
-            report.candidate.config.as_ref(),
+            report.candidate.config(),
             shadow_port_offset,
             format,
         ),

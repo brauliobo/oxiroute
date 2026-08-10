@@ -210,9 +210,7 @@ fn assert_finalization_contract(value: &Value, product: &str, expected_finalized
         "{product} config"
     );
     assert_eq!(
-        value["blockers"]
-            .as_array()
-            .is_some_and(|blockers| blockers.is_empty()),
+        value["blockers"].as_array().is_some_and(Vec::is_empty),
         expected_finalized,
         "{product} blockers"
     );

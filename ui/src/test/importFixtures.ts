@@ -45,8 +45,9 @@ export function importReportResponse(blocked = false): ImportReportResponse {
       sourceMaps: [],
     },
     candidate: {
-      finalized: !blocked,
-      config: blocked ? null : structuredClone(contractConfigSnapshot().config),
+      ...(blocked
+        ? { finalized: false as const, config: null }
+        : { finalized: true as const, config: structuredClone(contractConfigSnapshot().config) }),
       draft: {
         version: 1,
         maxConnections: null,

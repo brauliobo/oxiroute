@@ -6,12 +6,11 @@ use std::{
 
 use http::{HeaderName, HeaderValue};
 use oxiroute_config::{
-    CacheKeyComponent, CacheStore, Config, DnsResolutionPolicy, DownstreamTimeoutPolicy,
-    HealthCheck, HealthCheckType, HealthStartup, HttpCachePolicy, HttpProxyPolicy,
-    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRoute,
-    HttpRouteAction, HttpRoutePolicy, HttpService, HttpUpstreamHost, Listener, ListenerBind,
-    Protocol, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
-    UpstreamServer, validate_config,
+    CacheKeyComponent, CacheStore, DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck,
+    HealthCheckType, HealthStartup, HttpCachePolicy, HttpProxyPolicy, HttpRequestHeaderMutation,
+    HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRoute, HttpRouteAction,
+    HttpRoutePolicy, HttpService, HttpUpstreamHost, Listener, ListenerBind, Protocol,
+    UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
 
 use crate::{
@@ -215,8 +214,12 @@ impl<'a> Lowerer<'a> {
             self.lower_builtin_graph();
         }
 
-        let config = has_canonical_graph.then(|| self.finalize()).flatten();
-        let status = if config.is_some() {
+        let finalization = if has_canonical_graph {
+            self.finalize()
+        } else {
+            crate::CanonicalFinalization::Blocked
+        };
+        let status = if finalization.is_finalized() {
             LoweringStatus::Lowered
         } else if !has_canonical_graph {
             LoweringStatus::Blocked(LoweringBlocker::NoCanonicalGraph)
@@ -238,15 +241,15 @@ impl<'a> Lowerer<'a> {
                 .collect(),
             ..SourceImportMetadata::default()
         };
-        let candidate = VarnishCanonicalCandidate {
-            draft: self.draft,
-            provenance: self.provenance,
-            deployment_requirements: Vec::new(),
-            activation_requirements: Vec::new(),
-            operational_overlays: Vec::new(),
+        let candidate = VarnishCanonicalCandidate::new(
+            self.draft,
+            self.provenance,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
             source_metadata,
-            config,
-        };
+            finalization,
+        );
         let ((), diagnostics) = crate::Report::new((), self.diagnostics).into_parts();
         (candidate, status, diagnostics)
     }
@@ -1668,22 +1671,20 @@ impl<'a> Lowerer<'a> {
             .collect()
     }
 
-    fn finalize(&mut self) -> Option<Config> {
-        if self.has_errors() {
-            return None;
+    fn finalize(&mut self) -> crate::CanonicalFinalization {
+        match self.draft.finalize(!self.has_errors()) {
+            Ok(finalization) => finalization,
+            Err(error) => {
+                self.block(
+                    LoweringBlocker::Validation,
+                    E_INVALID_VALUE,
+                    DiagnosticStage::Validate,
+                    format!("lowered Varnish canonical draft is invalid: {error}"),
+                    self.root_span(),
+                );
+                crate::CanonicalFinalization::Blocked
+            }
         }
-        let mut config = self.draft.to_config();
-        if let Err(error) = validate_config(&mut config) {
-            self.block(
-                LoweringBlocker::Validation,
-                E_INVALID_VALUE,
-                DiagnosticStage::Validate,
-                format!("lowered Varnish canonical draft is invalid: {error}"),
-                self.root_span(),
-            );
-            return None;
-        }
-        Some(config)
     }
 
     fn record(&mut self, path: String, origins: Vec<Provenance>) {

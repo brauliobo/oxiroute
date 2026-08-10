@@ -1,10 +1,10 @@
 use std::{collections::HashMap, path::Path};
 
-use oxiroute_config::{Config, ListenerBind, UpstreamTls, validate_config};
+use oxiroute_config::{Config, ListenerBind, UpstreamTls};
 
 use crate::{
-    CanonicalDraft, CanonicalProvenance, Diagnostic, DiagnosticCode, DiagnosticStage,
-    E_INVALID_VALUE, Report, Severity,
+    CanonicalDraft, CanonicalFinalization, CanonicalProvenance, Diagnostic, DiagnosticCode,
+    DiagnosticStage, E_INVALID_VALUE, Report, Severity,
 };
 
 use super::{Lowerer, provenance::lower_diagnostic};
@@ -28,7 +28,7 @@ pub struct ImportReport {
     pub blocked_services: Vec<BlockedService>,
     pub draft: CanonicalDraft,
     pub provenance: Vec<CanonicalProvenance<crate::nginx::DirectiveOrigin>>,
-    pub config: Option<Config>,
+    finalization: CanonicalFinalization,
     pub(crate) used_upstream_tls_overlays: std::collections::HashSet<Vec<u8>>,
     pub(crate) used_bearer_token_overlays: std::collections::HashSet<Vec<u8>>,
     pub(crate) used_certificate_overlays: std::collections::HashSet<OccurrenceId>,
@@ -43,6 +43,16 @@ impl ImportReport {
         self.diagnostics
             .iter()
             .any(|diagnostic| diagnostic.severity() == Severity::Error)
+    }
+
+    #[must_use]
+    pub fn config(&self) -> Option<&Config> {
+        self.finalization.config()
+    }
+
+    #[must_use]
+    pub fn into_config(self) -> Option<Config> {
+        self.finalization.into_config()
     }
 }
 
@@ -125,7 +135,7 @@ impl Lowerer {
         }
 
         let draft = self.draft.clone();
-        let config = self.finalize(&draft);
+        let finalization = self.finalize(&draft);
         let used_upstream_tls_overlays = self.used_upstream_tls_overlays.into_inner();
         let used_bearer_token_overlays = self.used_bearer_token_overlays.into_inner();
         let used_certificate_overlays = self.used_certificate_overlays.into_inner();
@@ -140,7 +150,7 @@ impl Lowerer {
             blocked_services: self.blocked_services,
             draft,
             provenance: self.provenance,
-            config,
+            finalization,
             used_upstream_tls_overlays,
             used_bearer_token_overlays,
             used_certificate_overlays,
@@ -179,33 +189,31 @@ impl Lowerer {
         });
     }
 
-    fn finalize(&mut self, draft: &CanonicalDraft) -> Option<Config> {
-        if self
+    fn finalize(&mut self, draft: &CanonicalDraft) -> CanonicalFinalization {
+        let eligible = !self
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.severity() == Severity::Error)
-        {
-            return None;
-        }
-        let mut config = draft.to_config();
-        if let Err(error) = validate_config(&mut config) {
-            let mut diagnostic = Diagnostic::new(
-                E_INVALID_VALUE,
-                Severity::Error,
-                DiagnosticStage::Validate,
-                format!("lowered nginx canonical draft is invalid: {error}"),
-            );
-            if let Some(origin) = self
-                .provenance
-                .first()
-                .and_then(|provenance| provenance.origins.first())
-            {
-                diagnostic = diagnostic.with_primary_span(origin.span);
+            .any(|diagnostic| diagnostic.severity() == Severity::Error);
+        match draft.finalize(eligible) {
+            Ok(finalization) => finalization,
+            Err(error) => {
+                let mut diagnostic = Diagnostic::new(
+                    E_INVALID_VALUE,
+                    Severity::Error,
+                    DiagnosticStage::Validate,
+                    format!("lowered nginx canonical draft is invalid: {error}"),
+                );
+                if let Some(origin) = self
+                    .provenance
+                    .first()
+                    .and_then(|provenance| provenance.origins.first())
+                {
+                    diagnostic = diagnostic.with_primary_span(origin.span);
+                }
+                self.diagnostics.push(diagnostic);
+                CanonicalFinalization::Blocked
             }
-            self.diagnostics.push(diagnostic);
-            return None;
         }
-        Some(config)
     }
 
     #[expect(

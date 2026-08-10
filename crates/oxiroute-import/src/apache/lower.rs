@@ -4,11 +4,10 @@ use std::{
 };
 
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, Config, DnsResolutionPolicy,
-    DownstreamTimeoutPolicy, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction,
-    HttpRoutePolicy, HttpService, HttpVersionPolicy, Listener, ListenerBind, Protocol, TlsPolicy,
-    TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool,
-    UpstreamServer, UpstreamTls, validate_config,
+    AlpnProtocol, Certificate, CertificateSource, DnsResolutionPolicy, DownstreamTimeoutPolicy,
+    HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
+    HttpVersionPolicy, Listener, ListenerBind, Protocol, TlsPolicy, TlsProfile, TlsVersion,
+    UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool, UpstreamServer, UpstreamTls,
 };
 
 use crate::{
@@ -159,7 +158,7 @@ impl Lowerer {
         }
 
         let draft = self.draft.clone();
-        let config = self.finalize(&draft);
+        let finalization = self.finalize(&draft);
         let source_metadata = SourceImportMetadata {
             original_sources: self
                 .graph
@@ -174,15 +173,15 @@ impl Lowerer {
             occurrence_ledger: self.resolution.decisions,
             diagnostics: Report::new((), self.diagnostics).into_parts().1,
             blocked_virtual_hosts: self.blocked_virtual_hosts,
-            candidate: CanonicalCandidate {
+            candidate: CanonicalCandidate::new(
                 draft,
-                provenance: self.provenance,
-                deployment_requirements: self.deployment_requirements,
-                activation_requirements: self.activation_requirements,
-                operational_overlays: self.operational_overlays,
+                self.provenance,
+                self.deployment_requirements,
+                self.activation_requirements,
+                self.operational_overlays,
                 source_metadata,
-                config,
-            },
+                finalization,
+            ),
         }
     }
 
@@ -828,40 +827,38 @@ impl Lowerer {
         self.record_blocked_virtual_host(&virtual_host);
     }
 
-    fn finalize(&mut self, draft: &CanonicalDraft) -> Option<Config> {
-        if self
+    fn finalize(&mut self, draft: &CanonicalDraft) -> crate::CanonicalFinalization {
+        let eligible = !self
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.severity() == Severity::Error)
-        {
-            return None;
-        }
-        let mut config = draft.to_config();
-        if let Err(error) = validate_config(&mut config) {
-            let mut diagnostic = Diagnostic::new(
-                E_INVALID_VALUE,
-                Severity::Error,
-                DiagnosticStage::Validate,
-                format!("lowered Apache canonical draft is invalid: {error}"),
-            );
-            if let Some(origin) = self
-                .provenance
-                .first()
-                .and_then(|entry| entry.origins.first())
-            {
-                diagnostic = diagnostic
-                    .with_primary_span(origin.span)
-                    .with_include_stack(
-                        origin
-                            .include_stack
-                            .iter()
-                            .map(|frame| frame.directive_span),
-                    );
+            .any(|diagnostic| diagnostic.severity() == Severity::Error);
+        match draft.finalize(eligible) {
+            Ok(finalization) => finalization,
+            Err(error) => {
+                let mut diagnostic = Diagnostic::new(
+                    E_INVALID_VALUE,
+                    Severity::Error,
+                    DiagnosticStage::Validate,
+                    format!("lowered Apache canonical draft is invalid: {error}"),
+                );
+                if let Some(origin) = self
+                    .provenance
+                    .first()
+                    .and_then(|entry| entry.origins.first())
+                {
+                    diagnostic = diagnostic
+                        .with_primary_span(origin.span)
+                        .with_include_stack(
+                            origin
+                                .include_stack
+                                .iter()
+                                .map(|frame| frame.directive_span),
+                        );
+                }
+                self.diagnostics.push(diagnostic);
+                crate::CanonicalFinalization::Blocked
             }
-            self.diagnostics.push(diagnostic);
-            return None;
         }
-        Some(config)
     }
 
     #[allow(clippy::naive_bytecount)]
