@@ -7,7 +7,6 @@ pub(crate) fn render(value: &Value) -> Result<String, ConfigSourceError> {
         .collect();
     render_uci_document(&UciDocument { sections })
 }
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RecordKind {
     Object,
@@ -472,4 +471,3 @@ fn flatten_value(
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
-

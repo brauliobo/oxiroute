@@ -2,7 +2,6 @@ pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
     let document = parse_uci_document(source.as_bytes())?;
     decode_document(&document)
 }
-
 pub(crate) fn decode_with_directives(
     source: &str,
 ) -> Result<(Value, Vec<NativeDirective>), ConfigSourceError> {
@@ -320,4 +319,3 @@ fn parse_uci_bool(
         )),
     }
 }
-
