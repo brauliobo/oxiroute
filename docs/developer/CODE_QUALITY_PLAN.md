@@ -272,6 +272,10 @@ publisher, relay, and auto-push paths calculate media snapshots differently.
 
 ### P1.7 Supervision replacement ownership
 
+**Status:** Complete. `ReplacementSupervisor` owns the authoritative replacement role and lifecycle
+state and derives `ReplacementPhase` from it. The master retains boot, shutdown, failure, process,
+and reaping state while one action driver executes the pure machine's ordered side effects.
+
 **Finding:** `ReplacementSupervisor` is authoritative, while master `Stage` mirrors candidate adoption,
 quiescing, activation, rollback, drain, and termination transitions with repeated action assertions.
 
@@ -279,14 +283,20 @@ quiescing, activation, rollback, drain, and termination transitions with repeate
 
 - `crates/oxiroute-supervision/src/replacement.rs:21-366`
 - `crates/oxiroute-supervisor-master/src/master.rs:362-414,1106-1534`
+- Derived authoritative phase and bounded model traces:
+  `crates/oxiroute-supervision/src/replacement.rs`,
+  `crates/oxiroute-supervision/tests/replacement.rs`
+- Ordered action driver and master lifecycle coverage:
+  `crates/oxiroute-supervisor-master/src/master.rs`,
+  `crates/oxiroute-supervisor-master/tests/master.rs`
 
 **Plan:**
 
-- [ ] Add model-based event traces against the pure state machine.
-- [ ] Keep master-only boot, shutdown, failure, process ownership, and reaping state.
-- [ ] Derive replacement phase from the pure machine, or introduce a `ReplacementDriver` that owns the
-  machine plus exactly one pending side effect.
-- [ ] Do not merge lifecycle enums directly; observations and ownership states have different roles.
+- [x] Add model-based event traces against the pure state machine.
+- [x] Keep master-only boot, shutdown, failure, process ownership, and reaping state.
+- [x] Derive replacement phase from the pure machine and drive its ordered actions through one master
+  action executor.
+- [x] Do not merge lifecycle enums directly; observations and ownership states have different roles.
 
 ## Phase 2: Consolidate Shared Behavior
 
