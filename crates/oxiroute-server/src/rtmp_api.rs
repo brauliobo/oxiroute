@@ -11,6 +11,7 @@ mod service;
 mod streams;
 mod ui;
 mod vod;
+mod wire;
 
 pub(crate) use self::{config::preflight_management_token, ui::UiAssets};
 pub use self::{
