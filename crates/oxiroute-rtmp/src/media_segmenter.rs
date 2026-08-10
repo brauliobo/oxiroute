@@ -1357,6 +1357,10 @@ mod tests {
     use super::*;
     use crate::{DashSegmentNaming, LiveHub, LiveHubLimits, MediaEvent, MediaStoreLimits};
 
+    mod media_config_corpus {
+        include!("../tests/corpus/media_configs.rs");
+    }
+
     fn test_config(store: Arc<MediaStore>) -> Arc<HlsOutputConfig> {
         Arc::new(HlsOutputConfig {
             store,
@@ -1399,6 +1403,193 @@ mod tests {
             0x84,
             0x21,
         ]
+    }
+
+    fn segmenter(root: &Path) -> HlsSegmenter {
+        let store = Arc::new(
+            MediaStore::open(
+                root.join("hls"),
+                MediaStoreLimits {
+                    max_bytes: 4 * 1024 * 1024,
+                    max_files: 64,
+                    max_active_streams: 2,
+                    max_file_bytes: 1024 * 1024,
+                },
+            )
+            .expect("HLS store"),
+        );
+        let hub = LiveHub::new(LiveHubLimits::default());
+        let key = StreamKey::new("live", "broadcast", "camera");
+        let lease = hub.attach_publisher(key.clone()).expect("publisher");
+        store
+            .attach(&key, lease.incarnation())
+            .expect("HLS media incarnation");
+        HlsSegmenter::new(
+            key,
+            lease.incarnation(),
+            Arc::clone(&store),
+            test_config(store),
+        )
+    }
+
+    #[test]
+    fn characterizes_avc_configuration_acceptance() {
+        for case in media_config_corpus::avc_cases() {
+            assert_eq!(
+                parse_avc_config(&case.payload).is_some(),
+                case.accepted_by(media_config_corpus::Consumer::Hls),
+                "{}",
+                case.name,
+            );
+        }
+    }
+
+    #[test]
+    fn characterizes_aac_configuration_acceptance() {
+        for case in media_config_corpus::aac_cases() {
+            assert_eq!(
+                parse_aac_config(&case.payload).is_some(),
+                case.accepted_by(media_config_corpus::Consumer::Hls),
+                "{}",
+                case.name,
+            );
+        }
+    }
+
+    #[test]
+    fn recovers_from_invalid_headers_and_preserves_accepted_configs() {
+        let root = tempdir().expect("HLS root");
+        let mut segmenter = segmenter(root.path());
+        let mut invalid_avc = avc_sequence_header();
+        invalid_avc[5] = 2;
+        segmenter.accept(
+            &MediaEvent::video(0, Arc::<[u8]>::from(invalid_avc)).expect("invalid AVC event"),
+            0,
+        );
+        segmenter.accept(
+            &MediaEvent::audio(0, Arc::<[u8]>::from([0xaf, 0, 0x2a, 0x10].as_slice()))
+                .expect("invalid AAC event"),
+            0,
+        );
+        assert!(segmenter.video_config.is_none());
+        assert!(segmenter.audio_config.is_none());
+        assert!(!segmenter.failed);
+
+        segmenter.accept(
+            &MediaEvent::video(0, Arc::<[u8]>::from(avc_sequence_header()))
+                .expect("valid AVC event"),
+            0,
+        );
+        segmenter.accept(
+            &MediaEvent::audio(0, Arc::<[u8]>::from([0xaf, 0, 0x12, 0x10].as_slice()))
+                .expect("valid AAC event"),
+            0,
+        );
+        assert!(segmenter.video_config.is_some());
+        assert!(segmenter.audio_config.is_some());
+
+        segmenter.accept(
+            &MediaEvent::video(0, Arc::<[u8]>::from([0x17, 0, 0, 0, 0, 2].as_slice()))
+                .expect("invalid replacement AVC event"),
+            0,
+        );
+        segmenter.accept(
+            &MediaEvent::audio(0, Arc::<[u8]>::from([0xaf, 0, 0x2a, 0x10].as_slice()))
+                .expect("invalid replacement AAC event"),
+            0,
+        );
+        assert!(segmenter.video_config.is_some());
+        assert!(segmenter.audio_config.is_some());
+        assert!(!segmenter.failed);
+    }
+
+    #[test]
+    fn avc_replacement_finishes_the_current_segment() {
+        let root = tempdir().expect("HLS root");
+        let mut segmenter = segmenter(root.path());
+        segmenter.accept(
+            &MediaEvent::audio(0, Arc::<[u8]>::from([0xaf, 0, 0x12, 0x10].as_slice()))
+                .expect("AAC config"),
+            0,
+        );
+        segmenter.accept(
+            &MediaEvent::video(0, Arc::<[u8]>::from(avc_sequence_header())).expect("AVC config"),
+            0,
+        );
+        segmenter.accept(
+            &MediaEvent::video(0, Arc::<[u8]>::from(avc_frame(true))).expect("keyframe"),
+            0,
+        );
+        segmenter.accept(
+            &MediaEvent::audio(1, Arc::<[u8]>::from([0xaf, 1, 1].as_slice())).expect("AAC frame"),
+            1,
+        );
+        assert!(segmenter.current.is_some());
+
+        let mut replacement = avc_sequence_header();
+        replacement[16] = 1;
+        segmenter.accept(
+            &MediaEvent::video(2, Arc::<[u8]>::from(replacement)).expect("replacement AVC config"),
+            2,
+        );
+        assert!(segmenter.current.is_none());
+        assert_eq!(segmenter.published.len(), 1);
+        assert_eq!(segmenter.next_sequence, 1);
+    }
+
+    #[test]
+    fn aac_replacement_updates_future_segments_without_a_boundary() {
+        let root = tempdir().expect("HLS root");
+        let mut segmenter = segmenter(root.path());
+        segmenter.accept(
+            &MediaEvent::audio(0, Arc::<[u8]>::from([0xaf, 0, 0x12, 0x10].as_slice()))
+                .expect("AAC config"),
+            0,
+        );
+        segmenter.accept(
+            &MediaEvent::video(0, Arc::<[u8]>::from(avc_sequence_header())).expect("AVC config"),
+            0,
+        );
+        segmenter.accept(
+            &MediaEvent::video(0, Arc::<[u8]>::from(avc_frame(true))).expect("keyframe"),
+            0,
+        );
+        segmenter.accept(
+            &MediaEvent::audio(1, Arc::<[u8]>::from([0xaf, 1, 1].as_slice())).expect("AAC frame"),
+            1,
+        );
+
+        segmenter.accept(
+            &MediaEvent::audio(2, Arc::<[u8]>::from([0xaf, 0, 0x11, 0x90].as_slice()))
+                .expect("replacement AAC config"),
+            2,
+        );
+        assert!(segmenter.current.is_some());
+        assert!(segmenter.published.is_empty());
+        assert_eq!(
+            segmenter
+                .audio_config
+                .expect("replacement config")
+                .sample_rate_index,
+            3,
+        );
+    }
+
+    #[test]
+    fn ignores_enhanced_avc_hevc_and_av1_headers() {
+        let root = tempdir().expect("HLS root");
+        let mut segmenter = segmenter(root.path());
+        for four_cc in [*b"avc1", *b"hvc1", *b"av01"] {
+            let mut payload = vec![0x90];
+            payload.extend_from_slice(&four_cc);
+            payload.push(1);
+            segmenter.accept(
+                &MediaEvent::video(0, Arc::<[u8]>::from(payload)).expect("enhanced header"),
+                0,
+            );
+        }
+        assert!(segmenter.video_config.is_none());
+        assert!(!segmenter.failed);
     }
 
     #[test]
