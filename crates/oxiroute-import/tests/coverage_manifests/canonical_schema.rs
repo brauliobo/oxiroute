@@ -169,6 +169,47 @@ fn ui_schema_fields() -> (BTreeSet<String>, BTreeSet<String>) {
     (fields, editable)
 }
 
+#[test]
+fn forward_proxy_cache_uses_the_serialized_wire_path() {
+    let canonical = canonical_schema_entries();
+    let (ui_fields, editable_fields) = ui_schema_fields();
+    let controls = ui_control_fields();
+
+    for path in [
+        "forward_proxy_services[].cache",
+        "forward_proxy_services[].cache.store",
+    ] {
+        assert!(
+            canonical.contains(&(EntryKind::Field, path.to_owned())),
+            "canonical schema omits wire field `{path}`"
+        );
+        assert!(
+            ui_fields.contains(path),
+            "UI schema omits wire field `{path}`"
+        );
+    }
+    assert!(
+        editable_fields.contains("forward_proxy_services[].cache.store"),
+        "wire cache store must remain editable"
+    );
+    assert!(
+        controls.contains("forward_proxy_services[].cache.store"),
+        "reusable cache editor omits the wire cache store control"
+    );
+    assert!(
+        !canonical
+            .iter()
+            .any(|(_, path)| path.starts_with("forward_proxy_services[].header_policy.cache")),
+        "canonical schema exposes the skipped in-memory cache path"
+    );
+    assert!(
+        !ui_fields
+            .iter()
+            .any(|path| path.starts_with("forward_proxy_services[].header_policy.cache")),
+        "UI schema exposes the skipped in-memory cache path"
+    );
+}
+
 fn collect_ui_type(
     schema: &syn::File,
     type_name: &str,
@@ -176,6 +217,7 @@ fn collect_ui_type(
     fields: &mut BTreeSet<String>,
     editable: &mut BTreeSet<String>,
 ) {
+    let type_name = serialized_schema_type(schema, type_name);
     if let Some(item) = schema.items.iter().find_map(|item| match item {
         Item::Struct(item) if item.ident == type_name => Some(item),
         _ => None,
@@ -215,6 +257,9 @@ fn collect_ui_fields(
         return;
     };
     for field in &source_fields.named {
+        if serde_field_skipped(&field.attrs) {
+            continue;
+        }
         let (inner, collection) = unwrap_schema_type(&field.ty);
         if serde_field_flattened(&field.attrs) {
             let type_name = rust_type_name(inner).expect("flattened schema field type");
@@ -281,6 +326,26 @@ fn serde_field_flattened(attributes: &[Attribute]) -> bool {
     flattened
 }
 
+fn serde_field_skipped(attributes: &[Attribute]) -> bool {
+    let mut skipped = false;
+    for attribute in attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("serde"))
+    {
+        attribute
+            .parse_nested_meta(|meta| {
+                if meta.path.is_ident("skip") {
+                    skipped = true;
+                } else if meta.input.peek(syn::Token![=]) {
+                    let _: syn::Expr = meta.value()?.parse()?;
+                }
+                Ok(())
+            })
+            .expect("valid serde field attribute");
+    }
+    skipped
+}
+
 fn ui_registry_fields() -> BTreeSet<String> {
     let source = read_source("ui/src/config.ts");
     let registry = source
@@ -312,11 +377,18 @@ fn ui_control_fields() -> BTreeSet<String> {
         .collect::<Vec<_>>();
     editors.sort();
     paths.extend(editors);
-    paths
+    let sources = paths
         .into_iter()
-        .flat_map(|path| {
-            fs::read_to_string(&path)
-                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+        .map(|path| {
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            (path, source)
+        })
+        .collect::<Vec<_>>();
+    let mut controls = sources
+        .iter()
+        .flat_map(|(_, source)| {
+            source
                 .lines()
                 .filter(|line| !line.contains(":data-field"))
                 .flat_map(|line| {
@@ -329,6 +401,57 @@ fn ui_control_fields() -> BTreeSet<String> {
                 })
                 .collect::<Vec<_>>()
         })
+        .collect::<BTreeSet<_>>();
+
+    let cache_editor = sources
+        .iter()
+        .find(|(path, _)| path.ends_with("HttpCachePolicyEditor.vue"))
+        .map(|(_, source)| source)
+        .expect("locate reusable HTTP cache editor");
+    let dynamic_suffixes = cache_editor
+        .lines()
+        .flat_map(extract_dynamic_field_suffixes)
+        .collect::<BTreeSet<_>>();
+    let cache_base_paths = sources
+        .iter()
+        .flat_map(|(_, source)| component_field_paths(source, "HttpCachePolicyEditor"))
+        .collect::<BTreeSet<_>>();
+    for base in cache_base_paths {
+        controls.extend(
+            dynamic_suffixes
+                .iter()
+                .map(|suffix| format!("{base}{suffix}")),
+        );
+    }
+    controls
+}
+
+fn component_field_paths(source: &str, component: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut in_component = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&format!("{component}(")) {
+            in_component = true;
+        }
+        if in_component {
+            if let Some(path) = extract_quoted_attribute(line, "field-path=\"") {
+                paths.push(path);
+            }
+            if trimmed == ")" {
+                in_component = false;
+            }
+        }
+    }
+    paths
+}
+
+fn extract_dynamic_field_suffixes(line: &str) -> Vec<String> {
+    line.split("`${fieldPath}")
+        .skip(1)
+        .filter_map(|value| value.split('`').next())
+        .filter(|suffix| !suffix.is_empty())
+        .map(str::to_owned)
         .collect()
 }
 
@@ -344,6 +467,7 @@ fn collect_canonical_type(
     prefix: &str,
     entries: &mut BTreeSet<(EntryKind, String)>,
 ) {
+    let type_name = serialized_schema_type(schema, type_name);
     if let Some(item) = schema.items.iter().find_map(|item| match item {
         Item::Struct(item) if item.ident == type_name => Some(item),
         _ => None,
@@ -383,6 +507,9 @@ fn collect_canonical_fields(
         return;
     };
     for field in &fields.named {
+        if serde_field_skipped(&field.attrs) {
+            continue;
+        }
         let (inner, collection) = unwrap_schema_type(&field.ty);
         if serde_field_flattened(&field.attrs) {
             let type_name = rust_type_name(inner).expect("flattened canonical field type");
@@ -480,6 +607,15 @@ fn schema_type_exists(schema: &syn::File, name: &str) -> bool {
         Item::Enum(item) => item.ident == name,
         _ => false,
     })
+}
+
+fn serialized_schema_type(schema: &syn::File, name: &str) -> String {
+    let wire_name = format!("{name}Wire");
+    if schema_type_exists(schema, &wire_name) {
+        wire_name
+    } else {
+        name.to_owned()
+    }
 }
 
 fn schema_object_type(schema: &syn::File, name: &str) -> bool {
