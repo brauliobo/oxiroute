@@ -212,11 +212,13 @@ fn validate_cache_policy(
             "requires allow_absolute_form = true",
         ));
     }
-    if !service.enabled_versions.contains(&ForwardHttpVersion::H1) {
+    if !service.enabled_versions.contains(&ForwardHttpVersion::H1)
+        && !service.enabled_versions.contains(&ForwardHttpVersion::H3)
+    {
         return Err(invalid(
             &service.name,
             "cache",
-            "requires forward HTTP/1 to be enabled",
+            "requires forward HTTP/1 or HTTP/3 to be enabled",
         ));
     }
     crate::cache_validation::validate_cache_policy(&service.name, 0, policy, cache_stores)?;

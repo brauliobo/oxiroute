@@ -87,7 +87,10 @@ firewalling, NAT, routing, or conntrack.
 - Opt-in HTTP/1 RFC 9298 `CONNECT-UDP` MUST use the HTTP/1.1 Upgrade and Capsule Protocol path,
   with explicit destination-port policy; it is a `forward_http1` capability only.
 - CONNECT parsing MUST preserve bytes received after the header terminator.
-- HTTP/2 and HTTP/3 proxy modes MUST be implemented only against their stream and tunnel standards; they MUST NOT be HTTP/1 tunnels hidden behind version labels. The current forward-proxy slice exposes authority-only classic CONNECT on H2/H3; arbitrary request forms and H3 absolute-form forwarding are not current capabilities.
+- HTTP/2 and HTTP/3 proxy modes MUST be implemented only against their stream and tunnel standards;
+  they MUST NOT be HTTP/1 tunnels hidden behind version labels. The current forward-proxy slice
+  exposes authority-only classic CONNECT on H2/H3 and bounded H3 absolute-form forwarding; arbitrary
+  H2 request forms, CONNECT-UDP over H2/H3, and broader H3 conformance are not current capabilities.
 - Non-public and special-use destinations MUST be denied by default. An omitted authentication
   policy and empty allow lists MAY permit public destinations; configured domain/CIDR allow lists
   constrain the complete target and DNS answer, and deny rules always override allows.
@@ -196,17 +199,19 @@ The current contract is:
   readiness and metrics probes, round-robin, weighted round-robin, least-connections, and first
   selection, bounded configurable safe retry/passive-health policies, bounded event polling, durable
   redacted audit history, and external Certbot lineage reconciliation.
-- `partial`: reverse HTTP and TCP/UDP relay with bounded explicit PROXY protocol propagation, HTTP/1 forward absolute-form/CONNECT/CONNECT-UDP, authority-only classic CONNECT on H2/H3, and reverse HTTP/3, RTMP live/recording/relay slices,
+- `partial`: reverse HTTP and TCP/UDP relay with bounded explicit PROXY protocol propagation, HTTP/1
+  forward absolute-form/CONNECT/CONNECT-UDP, authority-only classic CONNECT on H2/H3, bounded H3
+  absolute-form forwarding, reverse HTTP/3, RTMP live/recording/relay slices,
   bounded authenticated SSE delivery, managed ACME HTTP-01/DNS-01/TLS-ALPN-01 issuance, wildcard
-  renewal, bounded reverse HTTP cache, structured access logs, RTMP statistics/session controls,
+  renewal, bounded reverse and eligible HTTP/1/H3 forward cache, structured access logs, RTMP statistics/session controls,
   HLS/DASH/isolated-exec/auto-push slices, and native nginx/HAProxy/Apache/Squid/Varnish import
   subsets with canonical provenance and a partial Vue control plane. Native import reports are
   browsable as read-only evidence, weighted-round-robin weight editing and durable audit browsing
   are current frontend workflows, while native source editing remains outside the frontend. TLS-ALPN
   challenge selection and listener-deployment guidance are exposed; listener deployment and
   CA-staging evidence remain gates.
-- `foundation`: forward-proxy request forms outside the active HTTP/1 and authority-only H2/H3
-  classic CONNECT paths; these are not active daemon capabilities.
+- `foundation`: forward-proxy request forms outside the active HTTP/1/H3 absolute-form and
+  authority-only H2/H3 classic CONNECT paths; these are not active daemon capabilities.
 - `planned`: broader cache conformance, broader managed ACME authenticators, durable replay/history
   for the non-durable operational event ring, and broader protocol/import compatibility.
 - `research`: remote administration, broader DNS provider policy, external key providers, and

@@ -388,22 +388,26 @@ Current constraints:
   cache/query/address/TTL limits, connection/body/header limits, connect/idle/lifetime deadlines,
   header privacy, and metadata-only audit mode are explicit. Forward HTTP/2 listeners implement
   only authority-only classic CONNECT and reject non-CONNECT or arbitrary forwarding forms. Forward
-  HTTP/3 listeners currently expose only authority-only classic CONNECT; CONNECT-UDP and H3
-  absolute-form forwarding are not advertised capabilities. Reverse H3 uses the UDP `http3`
-  listener contract; forward H3 uses `forward_http3`. Both require TLS 1.3 with only `h3` ALPN, and
-  neither silently falls back to another downstream protocol.
+  HTTP/3 listeners expose authority-only classic CONNECT and bounded absolute-form forwarding;
+  CONNECT-UDP remains an HTTP/1-only capability. Reverse H3 uses the UDP `http3` listener contract;
+  forward H3 uses `forward_http3`. Both require TLS 1.3 with only `h3` ALPN, and neither silently
+  falls back to another downstream protocol.
 - A forward service's optional `cache` references a named memory or persistent `cache_store`. Only
-  absolute-form H1 GET/HEAD requests with a safe request shape are eligible. CONNECT, unsafe methods,
-  ranges, conditionals, proxy/authenticated requests, cookies, private or `Set-Cookie` responses,
-  unsupported `Vary`, and oversized or incomplete responses bypass admission or fail closed. Cache
-  fills are collapsed and revalidated through the same bounded cache contract as reverse HTTP;
-  configured bearer-protected `PURGE` handles an exact request key or surrogate tag.
+  absolute-form H1 or H3 GET/HEAD requests with a safe request shape are eligible. CONNECT, unsafe
+  methods, ranges, unsafe conditionals, proxy/authenticated requests, cookies, private or
+  `Set-Cookie` responses, unsupported `Vary`, trailers, and oversized or incomplete responses bypass
+  admission or fail closed. Cache fills are collapsed and revalidated through the same bounded cache
+  contract as reverse HTTP; configured bearer-protected `PURGE` handles an exact request key or
+  surrogate tag.
 - HTTP/3 reverse services require a bounded service and route request body, request buffering, no
-  response buffering, no cache, no gzip, no upgrade header mutation, and an exact `3/3` upstream
-  pool for every proxy route. Fixed, redirect, and descriptor-pinned static-file actions are active;
-  cache, compression, and upgrades remain explicitly unsupported. The runtime uses bounded QUIC
-  admission, field sections, streams, request bodies (at most 64 MiB), response bodies, safe response
-  framing, and graceful GOAWAY drain; migration and 0-RTT are disabled.
+  response buffering, no gzip, no upgrade header mutation, and an exact `3/3` upstream pool for every
+  proxy route. Fixed, redirect, descriptor-pinned static-file, and bounded memory/persistent cache
+  actions are active; compression and upgrades remain explicitly unsupported. H3 cache uses the
+  shared freshness, revalidation, stale-if-error, collapsed-fill, authenticated purge, surrogate-tag,
+  bounded admission, and listener-metric contract. Trailer-bearing responses are forwarded but not
+  admitted. The runtime uses bounded QUIC admission, field sections, streams, request bodies (at most
+  64 MiB), response bodies, safe response framing, and graceful GOAWAY drain; migration and 0-RTT are
+  disabled.
 - `automatic_response_headers` defaults to true. When enabled, the runtime generates downstream
   HTTP/1 Date and Connection headers and HTTP/2 Date headers. When disabled, none of those headers
   are generated; mandatory HTTP/2 hop-header removal still applies.
@@ -538,7 +542,7 @@ logging, named-server capacity and bounded queue waits, pool deadlines/reuse, st
 all four balancing algorithms, configurable passive health, and the extended health policy.
 Bounded request buffering and bounded fixed-length response buffering are active; only unbounded
 buffering fails startup. Supported memory/persistent cache policies are active for reverse HTTP and
-eligible HTTP/1 forward requests, while unsupported cache forms fail closed. RTMP relay/fanout
+eligible HTTP/1 and HTTP/3 forward requests, while unsupported cache forms fail closed. RTMP relay/fanout
 controls and canonical named-recorder policies compile into the current runtime, including bounded
 HLS/DASH media, same-daemon auto-push, and isolated RTMP exec profiles; unsupported native RTMP
 semantics and enhanced codecs remain blocked. Importers

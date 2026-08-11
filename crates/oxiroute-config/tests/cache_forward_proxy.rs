@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use oxiroute_config::{CacheStore, CacheStoreKind, ConfigError, load_lua, render_lua};
+use oxiroute_config::{CacheStore, CacheStoreKind, load_lua, render_lua};
 
 fn proxy_config(stores: &str, cache: &str) -> String {
     format!(
@@ -455,25 +455,11 @@ fn forward_listener_cache_support_matches_the_protocol_runtime() {
     ))
     .expect("forward HTTP/2 classic CONNECT remains valid");
 
-    let error = load_lua(&config(
+    load_lua(&config(
         &listener("http3", r#"{ type = "udp", address = "127.0.0.1:8443" }"#),
         &tls("1.3", "h3"),
     ))
-    .expect_err("forward HTTP/3 cache policy must be rejected");
-    let ConfigError::InvalidForwardProxyService {
-        service,
-        field,
-        detail,
-    } = error
-    else {
-        panic!("unexpected forward HTTP/3 cache error: {error}");
-    };
-    assert_eq!(service, "egress");
-    assert_eq!(field, "cache");
-    assert_eq!(
-        detail,
-        "is not supported by forward HTTP/3 listener `forward-http3`"
-    );
+    .expect("forward HTTP/3 cache policy");
 
     let uncached_h3 = r#"{
       name = "egress",

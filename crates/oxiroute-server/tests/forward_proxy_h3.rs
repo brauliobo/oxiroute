@@ -12,10 +12,11 @@ use std::{net::Ipv4Addr, time::Duration};
 use bytes::Bytes;
 use http::{Method, Request, StatusCode};
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, DownstreamTimeoutPolicy, ForwardAuditMode,
-    ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHeaderPolicy, ForwardHttpVersion,
-    ForwardPeerPolicy, ForwardProxyService, ForwardResolverPolicy, Listener, ListenerBind,
-    Protocol, TlsProfile, TlsVersion,
+    AlpnProtocol, CacheKeyComponent, CacheStore, Certificate, CertificateSource,
+    DownstreamTimeoutPolicy, ForwardAuditMode, ForwardConnectPolicy, ForwardDestinationPolicy,
+    ForwardHeaderPolicy, ForwardHttpVersion, ForwardPeerPolicy, ForwardProxyService,
+    ForwardResolverPolicy, HttpCachePolicy, Listener, ListenerBind, Protocol, TlsProfile,
+    TlsVersion,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},

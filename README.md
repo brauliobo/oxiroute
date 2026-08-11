@@ -37,11 +37,11 @@ goal. These are the current building blocks:
   weighted round-robin, and least-connections selection, active TCP/HTTP checks, bounded configurable
   retries/passive health, request and connection limits, WebSocket upgrades, downstream TLS, verified
   upstream TLS/SNI, and a tested HTTP/2/gRPC slice.
-- **Explicit forward proxy:** a narrow HTTP/1 absolute-form, CONNECT, and opt-in RFC 9298 CONNECT-UDP
-  path with authentication, resolved-address destination policy, header privacy, bounded tunnels,
-  and an opt-in bounded memory/persistent cache for eligible GET/HEAD requests. HTTP/2 and HTTP/3
-  listeners currently expose only tested classic CONNECT tunnels; arbitrary forward request forms
-  remain bounded or unsupported. It is partial, not a general Squid replacement.
+- **Explicit forward proxy:** narrow HTTP/1 and HTTP/3 absolute-form paths, CONNECT, and opt-in HTTP/1
+  RFC 9298 CONNECT-UDP with authentication, resolved-address destination policy, header privacy,
+  bounded tunnels, and opt-in bounded memory/persistent caching for eligible GET/HEAD requests.
+  HTTP/2 remains limited to tested classic CONNECT tunnels, and broader request-form conformance is
+  partial. It is not a general Squid replacement.
 - **Opaque TCP relay:** socket, DNS, and Unix upstreams, half-close handling, health-aware pools,
   backpressure, and connect/idle/lifetime limits.
 - **Configuration control plane:** KDL 2.0 by default, plus restricted Lua, HOCON, and UCI source
@@ -180,13 +180,13 @@ Use these labels consistently in issues, docs, and deployment decisions:
 
 The important current exclusions are:
 
-- UDP relay remains partial. Forward-proxy HTTP/2 and HTTP/3 are limited to authority-only classic
-  CONNECT in the current tested contract; arbitrary request forms and H3 absolute-form forwarding
-  are not advertised. The `http3` reverse listener and `forward_http3` listener are active partial
-  capabilities through separate bounded Quinn/H3 services.
+- UDP relay remains partial. Forward HTTP/2 is limited to authority-only classic CONNECT; forward H3
+  has tested classic CONNECT and bounded absolute-form forwarding through its separate Quinn/H3
+  service. Broader forward request-form and MASQUE conformance remains incomplete.
 - HTTP caching is partial: bounded memory and persistent GET/HEAD caching, revalidation, collapsed
   fills, authenticated purge, and listener cache metrics are active for reverse HTTP and eligible
-  HTTP/1 forward requests; broader conformance remains.
+  HTTP/1 and HTTP/3 forward requests; trailer-bearing and unsafe-framing responses are served but not
+  admitted, and broader conformance remains.
 - Managed ACME is partial: HTTP-01, DNS-01, and TLS-ALPN-01 orchestration, certificate status,
   renewal controls, and configuration UI are implemented; CA-staging and production active-traffic
   evidence remain release gates. External Certbot lineage reconciliation is also implemented.

@@ -455,6 +455,13 @@ enum ForwardCacheDecision {
     Continue(CacheTransaction),
 }
 
+enum H3ForwardCacheDecision {
+    Bypass,
+    Respond(Box<CachedResponse>),
+    OnlyIfCached,
+    Continue(Box<CacheTransaction>),
+}
+
 enum ParsedTarget {
     Forward(oxiroute_forward_proxy::ForwardTarget),
     Tunnel(Destination),
@@ -1808,6 +1815,117 @@ impl ForwardHttp1ServicePlan {
         }
     }
 
+    async fn prepare_h3_forward_cache(
+        &self,
+        request: &Request<()>,
+        target: &oxiroute_forward_proxy::ForwardTarget,
+        authenticated: bool,
+        body_empty: bool,
+        listener: &crate::ListenerMetrics,
+    ) -> H3ForwardCacheDecision {
+        let Some(plan) = &self.cache else {
+            return H3ForwardCacheDecision::Bypass;
+        };
+        if authenticated
+            || !matches!(request.method(), &Method::GET | &Method::HEAD)
+            || !plan.allows_method(request.method())
+            || !body_empty
+            || request.headers().contains_key(header::AUTHORIZATION)
+            || request.headers().contains_key(header::PROXY_AUTHORIZATION)
+            || request.headers().contains_key(header::COOKIE)
+            || crate::http_proxy::cache_request_bypasses_cache(request.headers())
+        {
+            return H3ForwardCacheDecision::Bypass;
+        }
+        let cache_request = CacheRequest {
+            method: request.method().clone(),
+            scheme: target.scheme.as_str(),
+            authority: target.destination.authority(),
+            path: target.origin_form.path().to_owned(),
+            query: target.origin_form.query().map(str::to_owned),
+            headers: request.headers().clone(),
+            request_started: plan.cache.now(),
+        };
+        match CacheTransaction::new(Arc::clone(plan), cache_request, listener.clone())
+            .start()
+            .await
+        {
+            CacheStart::Bypass(failure) => {
+                if let CacheStartFailure::Lookup(error) = failure
+                    && !error.is_invalid_request()
+                {
+                    log::warn!("forward HTTP/3 cache lookup bypassed: {error}");
+                }
+                H3ForwardCacheDecision::Bypass
+            }
+            CacheStart::Hit(response) => H3ForwardCacheDecision::Respond(Box::new(response)),
+            CacheStart::OnlyIfCached => H3ForwardCacheDecision::OnlyIfCached,
+            CacheStart::MissLeader(transaction) | CacheStart::RevalidationLeader(transaction) => {
+                H3ForwardCacheDecision::Continue(Box::new(transaction))
+            }
+        }
+    }
+
+    async fn handle_h3_forward_cache_purge(
+        &self,
+        request: &Request<()>,
+        target: &oxiroute_forward_proxy::ForwardTarget,
+        body_empty: bool,
+    ) -> H3ForwardResponse {
+        let Some(plan) = &self.cache else {
+            return h3_forward_status_response(StatusCode::BAD_REQUEST);
+        };
+        let Some(access) = &plan.purge_access else {
+            return h3_forward_status_response(StatusCode::BAD_REQUEST);
+        };
+        if !access.authorizes(request.headers()) {
+            let mut response = h3_forward_status_response(StatusCode::UNAUTHORIZED);
+            response
+                .headers
+                .insert(header::PROXY_AUTHENTICATE, access.challenge().clone());
+            return response;
+        }
+        if !body_empty {
+            return h3_forward_status_response(StatusCode::BAD_REQUEST);
+        }
+        let cache_request = CacheRequest {
+            method: request.method().clone(),
+            scheme: target.scheme.as_str(),
+            authority: target.destination.authority(),
+            path: target.origin_form.path().to_owned(),
+            query: target.origin_form.query().map(str::to_owned),
+            headers: request.headers().clone(),
+            request_started: plan.cache.now(),
+        };
+        let result = if let Some(value) = plan
+            .surrogate_header
+            .as_ref()
+            .and_then(|header| request.headers().get(header))
+        {
+            plan.cache.purge_tag(value.as_bytes()).await
+        } else {
+            purge_forward_cache_base(plan, &cache_request).await
+        };
+        let status = match result {
+            Ok(result) if result.entries == 0 => StatusCode::NOT_FOUND,
+            Ok(_) => StatusCode::OK,
+            Err(error) => {
+                log::warn!("forward HTTP/3 cache purge failed: {error}");
+                if error.is_invalid_request() {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+            }
+        };
+        let mut response = h3_forward_status_response(status);
+        response.headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+        response
+    }
+
     async fn forward_failure(
         &self,
         cache_transaction: &mut Option<CacheTransaction>,
@@ -1843,11 +1961,13 @@ impl ForwardHttp1ServicePlan {
         mut stream: h3::server::RequestStream<S, Bytes>,
         client_addr: Option<SocketAddr>,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
+        listener: crate::ListenerMetrics,
     ) where
         S: h3::quic::BidiStream<Bytes> + Send,
     {
         let AuthorizedRequest {
             approved,
+            authenticated,
             parsed,
             lifetime_deadline,
             ..
@@ -1973,6 +2093,59 @@ impl ForwardHttp1ServicePlan {
                     }
                 };
                 let request_method = request.method().clone();
+                if request_method.as_str().eq_ignore_ascii_case("PURGE")
+                    && self
+                        .cache
+                        .as_ref()
+                        .is_some_and(|plan| plan.purge_access.is_some())
+                {
+                    let response = self
+                        .handle_h3_forward_cache_purge(&request, &target, body.is_empty())
+                        .await;
+                    let _ = send_h3_forward_response(
+                        &mut stream,
+                        &request_method,
+                        response,
+                        lifetime_deadline,
+                        self.challenge.as_ref(),
+                    )
+                    .await;
+                    return;
+                }
+                let mut cache_transaction = match self
+                    .prepare_h3_forward_cache(
+                        &request,
+                        &target,
+                        authenticated,
+                        body.is_empty(),
+                        &listener,
+                    )
+                    .await
+                {
+                    H3ForwardCacheDecision::Bypass => None,
+                    H3ForwardCacheDecision::Respond(response) => {
+                        let response = h3_cached_forward_response(*response);
+                        let _ = send_h3_forward_response(
+                            &mut stream,
+                            &request_method,
+                            response,
+                            lifetime_deadline,
+                            self.challenge.as_ref(),
+                        )
+                        .await;
+                        return;
+                    }
+                    H3ForwardCacheDecision::OnlyIfCached => {
+                        let _ = send_h3_failure(
+                            &mut stream,
+                            RequestFailure::GatewayTimeout,
+                            self.challenge.as_ref(),
+                        )
+                        .await;
+                        return;
+                    }
+                    H3ForwardCacheDecision::Continue(transaction) => Some(*transaction),
+                };
                 if target.scheme == ForwardScheme::Http {
                     let response = match forward_h3_http_request(
                         self,
@@ -1983,20 +2156,29 @@ impl ForwardHttp1ServicePlan {
                         lifetime_deadline,
                         lifetime_deadline.min(Instant::now() + self.connect_timeout),
                         &mut shutdown,
+                        cache_transaction.as_ref(),
                     )
                     .await
                     {
                         Ok(response) => response,
                         Err(error) => {
-                            let _ =
-                                send_h3_failure(&mut stream, error, self.challenge.as_ref()).await;
+                            send_h3_forward_failure(
+                                &mut stream,
+                                &request,
+                                &mut cache_transaction,
+                                error,
+                                lifetime_deadline,
+                                self.challenge.as_ref(),
+                            )
+                            .await;
                             return;
                         }
                     };
-                    send_h3_forward_response(
+                    finish_h3_forward_response(
                         &mut stream,
-                        &request_method,
+                        &request,
                         response,
+                        &mut cache_transaction,
                         lifetime_deadline,
                         self.challenge.as_ref(),
                     )
@@ -2004,6 +2186,9 @@ impl ForwardHttp1ServicePlan {
                     return;
                 }
                 if target.scheme != ForwardScheme::Https {
+                    if let Some(transaction) = cache_transaction.as_mut() {
+                        transaction.complete_without_store();
+                    }
                     let _ = send_h3_failure(
                         &mut stream,
                         RequestFailure::BadGateway,
@@ -2013,9 +2198,12 @@ impl ForwardHttp1ServicePlan {
                     return;
                 }
                 let Some(h3_upstream) = self.h3_upstream() else {
-                    let _ = send_h3_failure(
+                    send_h3_forward_failure(
                         &mut stream,
+                        &request,
+                        &mut cache_transaction,
                         RequestFailure::BadGateway,
+                        lifetime_deadline,
                         self.challenge.as_ref(),
                     )
                     .await;
@@ -2024,6 +2212,9 @@ impl ForwardHttp1ServicePlan {
                 let Ok(mut headers) =
                     sanitize_request_headers(request.headers(), &target.destination)
                 else {
+                    if let Some(transaction) = cache_transaction.as_mut() {
+                        transaction.complete_without_store();
+                    }
                     let _ = send_h3_failure(
                         &mut stream,
                         RequestFailure::BadRequest,
@@ -2033,6 +2224,9 @@ impl ForwardHttp1ServicePlan {
                     return;
                 };
                 apply_header_policy(&mut headers, &self.header_policy);
+                if let Some(transaction) = cache_transaction.as_ref() {
+                    transaction.apply_validators(&mut headers);
+                }
                 headers.remove(header::HOST);
                 let mut parts = request.into_parts().0;
                 let path = target
@@ -2045,6 +2239,9 @@ impl ForwardHttp1ServicePlan {
                     .path_and_query(path)
                     .build()
                 else {
+                    if let Some(transaction) = cache_transaction.as_mut() {
+                        transaction.complete_without_store();
+                    }
                     let _ = send_h3_failure(
                         &mut stream,
                         RequestFailure::BadRequest,
@@ -2056,6 +2253,12 @@ impl ForwardHttp1ServicePlan {
                 parts.uri = uri;
                 parts.version = http::Version::HTTP_3;
                 parts.headers = headers;
+                if cache_transaction
+                    .as_ref()
+                    .is_some_and(|transaction| transaction.request().method == Method::HEAD)
+                {
+                    parts.method = Method::GET;
+                }
                 let request = Request::from_parts(parts, ());
                 let server_name = match &target.destination.host {
                     Host::Dns(host) => host.as_str().to_owned(),
@@ -2095,18 +2298,36 @@ impl ForwardHttp1ServicePlan {
                     } else {
                         RequestFailure::BadGateway
                     };
-                    let _ = send_h3_failure(&mut stream, failure, self.challenge.as_ref()).await;
+                    send_h3_forward_failure(
+                        &mut stream,
+                        &Request::builder()
+                            .method(request_method.clone())
+                            .uri(target.origin_form.clone())
+                            .body(())
+                            .expect("validated forward request"),
+                        &mut cache_transaction,
+                        failure,
+                        lifetime_deadline,
+                        self.challenge.as_ref(),
+                    )
+                    .await;
                     return;
                 };
-                send_h3_forward_response(
+                let downstream_request = Request::builder()
+                    .method(request_method)
+                    .uri(target.origin_form.clone())
+                    .body(())
+                    .expect("validated forward request");
+                finish_h3_forward_response(
                     &mut stream,
-                    &request_method,
+                    &downstream_request,
                     H3ForwardResponse {
                         status: response.status,
                         headers: response.headers,
                         body: response.body,
                         trailers: response.trailers,
                     },
+                    &mut cache_transaction,
                     lifetime_deadline,
                     self.challenge.as_ref(),
                 )
@@ -3366,6 +3587,196 @@ struct H3ForwardResponse {
     trailers: Option<HeaderMap>,
 }
 
+fn h3_forward_status_response(status: StatusCode) -> H3ForwardResponse {
+    H3ForwardResponse {
+        status,
+        headers: HeaderMap::new(),
+        body: Bytes::new(),
+        trailers: None,
+    }
+}
+
+fn h3_cached_forward_response(response: CachedResponse) -> H3ForwardResponse {
+    let mut headers = response.headers;
+    if matches!(
+        response.status,
+        StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED
+    ) {
+        headers.remove(header::CONTENT_LENGTH);
+    } else {
+        let length = if response.status == StatusCode::RESET_CONTENT {
+            0
+        } else {
+            response.body.len()
+        };
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&length.to_string()).expect("bounded cache body length"),
+        );
+    }
+    H3ForwardResponse {
+        status: response.status,
+        headers,
+        body: response.body,
+        trailers: None,
+    }
+}
+
+async fn send_h3_forward_failure<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    request: &Request<()>,
+    cache_transaction: &mut Option<CacheTransaction>,
+    failure: RequestFailure,
+    deadline: Instant,
+    challenge: Option<&HeaderValue>,
+) where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    let cache_class = if matches!(
+        failure,
+        RequestFailure::BadGateway | RequestFailure::GatewayTimeout
+    ) {
+        CacheFailureClass::Upstream
+    } else {
+        CacheFailureClass::Local
+    };
+    if let Some(transaction) = cache_transaction.as_mut()
+        && let Some(response) = transaction.stale_response(cache_class).await
+    {
+        transaction.complete_without_store();
+        transaction.record_hit();
+        let response = h3_cached_forward_response(response);
+        let _ =
+            send_h3_forward_response(stream, request.method(), response, deadline, challenge).await;
+        return;
+    }
+    if let Some(transaction) = cache_transaction.as_mut() {
+        transaction.complete_without_store();
+    }
+    let _ = send_h3_failure(stream, failure, challenge).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn finish_h3_forward_response<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    request: &Request<()>,
+    mut response: H3ForwardResponse,
+    cache_transaction: &mut Option<CacheTransaction>,
+    deadline: Instant,
+    challenge: Option<&HeaderValue>,
+) where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    let uncacheable_framing = response
+        .trailers
+        .as_ref()
+        .is_some_and(|trailers| !trailers.is_empty())
+        || response.headers.contains_key(header::TRANSFER_ENCODING)
+        || response.headers.contains_key(header::TRAILER);
+    if crate::http3::sanitize_h3_response_headers(
+        &mut response.headers,
+        response.status,
+        u64::try_from(response.body.len()).unwrap_or(u64::MAX),
+        request.method() == Method::HEAD,
+    )
+    .is_err()
+    {
+        if let Some(transaction) = cache_transaction.as_mut() {
+            transaction.complete_without_store();
+        }
+        let _ = send_h3_failure(stream, RequestFailure::BadGateway, challenge).await;
+        return;
+    }
+    if cache_transaction
+        .as_ref()
+        .is_some_and(CacheTransaction::is_revalidation)
+    {
+        if response.status == StatusCode::NOT_MODIFIED {
+            let transaction = cache_transaction
+                .as_mut()
+                .expect("revalidation has a cache transaction");
+            let timing = ResponseTiming {
+                request_started: transaction.request().request_started,
+                response_received: transaction.now(),
+                response_received_wall: SystemTime::now(),
+            };
+            let cached = transaction
+                .finish_revalidation(&response.headers, timing)
+                .await;
+            let response = h3_cached_forward_response(cached);
+            let _ =
+                send_h3_forward_response(stream, request.method(), response, deadline, challenge)
+                    .await;
+            return;
+        }
+        if response.status.is_server_error()
+            && let Some(transaction) = cache_transaction.as_mut()
+            && let Some(stale) = transaction
+                .stale_response(CacheFailureClass::Upstream)
+                .await
+        {
+            transaction.complete_without_store();
+            transaction.record_hit();
+            let response = h3_cached_forward_response(stale);
+            let _ =
+                send_h3_forward_response(stream, request.method(), response, deadline, challenge)
+                    .await;
+            return;
+        }
+    }
+
+    let mut prepared = None;
+    if let Some(transaction) = cache_transaction.as_mut() {
+        if transaction.request().method == Method::GET && !uncacheable_framing {
+            let tags = transaction
+                .surrogate_header()
+                .map_or_else(Vec::new, |header| {
+                    response_surrogate_tags_forward(&response.headers, header)
+                });
+            if transaction.cache_tags_within_limits(&tags)
+                && response_representation_valid_forward(
+                    response.status,
+                    &response.headers,
+                    response.body.len(),
+                )
+            {
+                let tag_refs = tags.iter().map(Bytes::as_ref).collect::<Vec<_>>();
+                let timing = ResponseTiming {
+                    request_started: transaction.request().request_started,
+                    response_received: transaction.now(),
+                    response_received_wall: SystemTime::now(),
+                };
+                prepared = transaction
+                    .prepare_response(
+                        response.status,
+                        &response.headers,
+                        response.body.clone(),
+                        timing,
+                        &tag_refs,
+                    )
+                    .ok();
+            }
+        }
+        if prepared.is_none() {
+            transaction.complete_without_store();
+        }
+    }
+
+    let sent =
+        send_h3_forward_response(stream, request.method(), response, deadline, challenge).await;
+    if !sent {
+        if let Some(transaction) = cache_transaction.as_mut() {
+            transaction.cancel();
+        }
+        return;
+    }
+    if let Some(entry) = prepared
+        && let Some(transaction) = cache_transaction.as_mut()
+    {
+        let _ = transaction.admit(entry).await;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn forward_h3_http_request(
     service: &ForwardHttp1ServicePlan,
@@ -3376,6 +3787,7 @@ async fn forward_h3_http_request(
     lifetime_deadline: Instant,
     connect_deadline: Instant,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
+    cache_transaction: Option<&CacheTransaction>,
 ) -> Result<H3ForwardResponse, RequestFailure> {
     let ConnectedHttp {
         stream: upstream,
@@ -3404,12 +3816,18 @@ async fn forward_h3_http_request(
     let mut headers = sanitize_request_headers(request.headers(), &target.destination)
         .map_err(|_| RequestFailure::BadRequest)?;
     apply_header_policy(&mut headers, &service.header_policy);
+    if let Some(transaction) = cache_transaction {
+        transaction.apply_validators(&mut headers);
+    }
     headers.remove(header::CONTENT_LENGTH);
     headers.insert(
         header::CONTENT_LENGTH,
         HeaderValue::from_str(&body.len().to_string()).expect("bounded H3 request body length"),
     );
     let mut parts = request.clone().into_parts().0;
+    if cache_transaction.is_some_and(|transaction| transaction.request().method == Method::HEAD) {
+        parts.method = Method::GET;
+    }
     parts.uri = request_uri;
     parts.version = http::Version::HTTP_11;
     parts.headers = headers;
@@ -3474,7 +3892,8 @@ async fn send_h3_forward_response<S>(
     mut response: H3ForwardResponse,
     deadline: Instant,
     challenge: Option<&HeaderValue>,
-) where
+) -> bool
+where
     S: h3::quic::BidiStream<Bytes> + Send,
 {
     let head = *method == Method::HEAD;
@@ -3487,7 +3906,7 @@ async fn send_h3_forward_response<S>(
     .is_err()
     {
         let _ = send_h3_failure(stream, RequestFailure::BadGateway, challenge).await;
-        return;
+        return false;
     }
     let body_forbidden = matches!(
         response.status,
@@ -3501,7 +3920,7 @@ async fn send_h3_forward_response<S>(
         timeout_at(deadline, stream.send_response(head_response)).await,
         Ok(Ok(()))
     ) {
-        return;
+        return false;
     }
     if !head
         && !body_forbidden
@@ -3511,20 +3930,20 @@ async fn send_h3_forward_response<S>(
             Ok(Ok(()))
         )
     {
-        return;
+        return false;
     }
     if !head && let Some(mut trailers) = response.trailers {
         if crate::http3::sanitize_h3_trailers(&mut trailers).is_err() {
-            return;
+            return false;
         }
         if !matches!(
             timeout_at(deadline, stream.send_trailers(trailers)).await,
             Ok(Ok(()))
         ) {
-            return;
+            return false;
         }
     }
-    let _ = timeout_at(deadline, stream.finish()).await;
+    matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(())))
 }
 
 #[cfg(test)]
