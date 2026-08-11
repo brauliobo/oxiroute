@@ -68,9 +68,9 @@ reverse `http3`, and forward `forward_http3` listeners. `active` requires a list
 ready administrative state. The response reports `supervision.mode` as `direct` or `supervised` and
 the typed descriptor-adoption manifest version and negotiated datagram/QUIC capabilities. H3 reports
 direct QUIC transport, `h3` ALPN, TLS 1.3 minimum, disabled 0-RTT, disabled migration, bounded
-stream/header/body limits, graceful `goAway`, explicit `unsupported: ["cache", "compression",
-"upgrades"]`, and `fallback: "none"`. A blocked listener also reports whether it failed, stopped,
-or never reached listening state.
+stream/header/body limits, graceful `goAway`, explicit `unsupported: ["compression", "upgrades"]`,
+and `fallback: "none"`. Cache is supported for eligible reverse and forward H3 GET/HEAD requests. A
+blocked listener also reports whether it failed, stopped, or never reached listening state.
 
 Native import routes expose evidence only; they do not edit native files or activate standalone
 reports. Unbounded event streaming is not implemented. Bounded event polling and

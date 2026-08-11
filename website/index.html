@@ -137,11 +137,11 @@
             <article class="tab-panel is-active" role="tabpanel" id="cap-traffic" aria-labelledby="tab-traffic" data-panel>
               <div class="capability-heading"><div><span class="status-chip status-partial">PARTIAL</span><h3>Route HTTP and opaque TCP without hiding the policy.</h3></div><span class="panel-index">01</span></div>
               <div class="feature-grid">
-                <div class="feature-card"><span class="feature-icon">H1</span><h4>Reverse HTTP</h4><p>Deterministic host/path/method routing, WebSocket upgrades, request limits, retries, and health-aware pools.</p></div>
+                <div class="feature-card"><span class="feature-icon">H3</span><h4>HTTP across versions</h4><p>Deterministic reverse routing plus bounded H3 reverse and absolute-form forward paths with no silent fallback.</p></div>
                 <div class="feature-card"><span class="feature-icon">L4</span><h4>TCP relay</h4><p>Opaque bytes, half-close, backpressure, socket/DNS/Unix endpoints, and bounded connection lifetimes.</p></div>
-                <div class="feature-card"><span class="feature-icon">TLS</span><h4>Explicit TLS</h4><p>Exact, wildcard, and default SNI selection with verified upstream TLS, SNI, custom CA, and ALPN policy.</p></div>
+                <div class="feature-card"><span class="feature-icon">CCH</span><h4>Shared H3 cache</h4><p>Memory or persistent GET/HEAD caching with revalidation, collapsed fills, stale-if-error, purge, and bounded admission.</p></div>
               </div>
-              <div class="boundary-strip"><strong>Not implied:</strong> complete parity. HTTP/3, UDP relay, and cache are bounded partial paths with separate protocol and conformance limits.</div>
+              <div class="boundary-strip"><strong>Not implied:</strong> complete parity. H3 compression, upgrades, CONNECT-UDP, trailer admission, and broader conformance remain outside the active cache path.</div>
             </article>
             <article class="tab-panel" role="tabpanel" id="cap-control" aria-labelledby="tab-control" data-panel hidden>
               <div class="capability-heading"><div><span class="status-chip status-partial">PARTIAL</span><h3>Inspect the generation before editing the source.</h3></div><span class="panel-index">02</span></div>
@@ -191,6 +191,7 @@
             <article class="feature-card"><span class="feature-icon">IMP</span><h4>Importer provenance</h4><p>Varnish report tests retain source fingerprints, declared version, canonical provenance, and blockers for finalized and blocked fixtures.</p></article>
             <article class="feature-card"><span class="feature-icon">RTP</span><h4>RTMP hardening</h4><p>Malformed AMF commands fail without panics, and byte-fragmented interleaving keeps two chunk-stream states isolated.</p></article>
             <article class="feature-card"><span class="feature-icon">UDP</span><h4>UDP lifecycle</h4><p>Reload and drain coverage retains existing sessions, rejects new work, cancels at the deadline, and releases the listener.</p></article>
+            <article class="feature-card"><span class="feature-icon">H3C</span><h4>H3 cache reuse</h4><p>Independent reverse and forward wire tests prove that a second eligible H3 GET is served without a second origin request.</p></article>
             <article class="feature-card"><span class="feature-icon">UI</span><h4>UI contract</h4><p>Component and desktop/mobile browser checks cover redacted native reports, provenance, preview, read-only GETs, and responsive layout.</p></article>
           </div>
           <div class="boundary-strip"><strong>Local verification:</strong> Rust 1.97.1 format, clippy, and locked workspace tests plus UI unit, type-check, build, and browser gates pass. GitNexus reports zero import cycles. Direct PEM parsing uses <code>rustls-pki-types</code>; the bounded fuzz check passes, and optional smoke skips without <code>cargo-fuzz</code>.</div>
@@ -258,7 +259,7 @@
                 <tr><th scope="row">Management UI/API</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Loopback observability, revisioned config control, certificate/import/event views, and bounded audit surfaces.</td></tr>
                 <tr><th scope="row">RTMP live/recording</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Live publish/play, fanout, catalog, legacy AVC/AAC recording, bounded HLS/DASH, and VOD slices.</td></tr>
                 <tr><th scope="row">Native imports</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Strict subsets of nginx, HAProxy, Apache, Squid, and Varnish can report and sometimes finalize; no full parity.</td></tr>
-                <tr><th scope="row">Cache / HTTP/3 / UDP</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Bounded cache, authority-only H2/H3 forward CONNECT, reverse H3, and UDP relay paths are active; broader conformance remains.</td></tr>
+                <tr><th scope="row">Cache / HTTP/3 / UDP</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Bounded reverse and forward H3 cache, H3 absolute-form and classic CONNECT, reverse H3, and UDP relay paths are active; broader conformance remains.</td></tr>
               </tbody>
             </table>
           </div>

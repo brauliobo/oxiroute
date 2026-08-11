@@ -337,8 +337,8 @@ quiescing, activation, rollback, drain, and termination transitions with repeate
 **Status:** Complete. Redirect expansion, request mutation, and response/cookie decisions now have
 protocol-neutral owners shared by reverse H1/H2 and H3. A shared cache transaction owns reverse and
 forward HTTP lookup, leadership, revalidation, stale eligibility, admission, completion, and
-cancellation, while protocol adapters retain body I/O. Forward H3 cache policy is rejected explicitly
-because that adapter does not implement the shared cache transaction lifecycle.
+cancellation, while protocol adapters retain body I/O. Reverse and forward H3 adapters now implement
+that shared transaction lifecycle, including bounded admission and cancellation.
 
 **Finding:** Request mutation, response mutation, redirect expansion, and cache orchestration are
 implemented separately across Pingora reverse HTTP, H3 reverse HTTP, and forward HTTP.
@@ -358,9 +358,9 @@ implemented separately across Pingora reverse HTTP, H3 reverse HTTP, and forward
   `crates/oxiroute-server/tests/http_proxy_routing.rs`,
   `crates/oxiroute-server/tests/reverse_http3.rs`, and
   `crates/oxiroute-server/tests/forward_proxy_h1.rs`
-- Unsupported forward-H3 cache rejection: `crates/oxiroute-config/src/validation.rs`,
-  `crates/oxiroute-config/tests/cache_forward_proxy.rs`, and
-  `crates/oxiroute-server/src/http3.rs`
+- H3 cache validation and wire reuse: `crates/oxiroute-config/tests/cache_forward_proxy.rs`,
+  `crates/oxiroute-server/tests/reverse_http3.rs`, and
+  `crates/oxiroute-server/tests/forward_proxy_h3/absolute_form.rs`
 
 **Plan:**
 
@@ -370,8 +370,8 @@ implemented separately across Pingora reverse HTTP, H3 reverse HTTP, and forward
 - [x] Introduce a shared `CacheTransaction` for lookup, collapsed-fill leadership, revalidation, stale
   eligibility, completion, cancellation, and admission; leave body I/O in protocol adapters.
 - [x] Add table-driven parity and leader/follower cancellation tests before migration.
-- [x] Reject forward-H3 cache policy explicitly until that adapter implements the shared transaction
-  lifecycle.
+- [x] Integrate reverse and forward H3 cache adapters with the shared transaction lifecycle and
+  protocol-specific body I/O.
 
 ### P1.9 Bearer-token file security
 

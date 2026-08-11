@@ -18,8 +18,8 @@ cargo clippy -p oxiroute-forward-proxy --all-targets --all-features --locked -- 
 | HTTP/3 | Absolute URI reconstructed from QPACK pseudo-fields | Authority-only RFC 9114 classic CONNECT with DATA-frame tunnel relay | Quinn QUIC with TLS, negotiated `h3` ALPN, real QPACK HEADERS, bidirectional DATA, FIN, reset, rejection, and limit tests |
 
 The table describes crate-level parser and tunnel primitives. The checked-in daemon's
-`forward_http3` listener advertises only authority-only classic CONNECT; H3 absolute-form parsing
-is not a positive daemon capability.
+`forward_http3` listener supports authority-only classic CONNECT plus bounded HTTP/HTTPS absolute-form
+forwarding and eligible GET/HEAD memory or persistent caching. CONNECT-UDP remains HTTP/1-only.
 
 The selected Rust-1.97-compatible H3 stack is `h3 0.0.8`, `h3-quinn 0.0.10`, and Quinn 0.11. The
 workspace uses Rust `1.97.1` as its active MSRV. The

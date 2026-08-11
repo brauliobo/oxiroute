@@ -22,9 +22,9 @@ use bytes::{Buf as _, Bytes, BytesMut};
 use h3::{client::RequestStream, error::Code, proto::coding::BufMutExt as _, server::Connection};
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, Config, DownstreamTimeoutPolicy,
-    HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpPathSelector, HttpProxyPolicy,
-    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    AlpnProtocol, CacheKeyComponent, CacheStore, Certificate, CertificateSource, Config,
+    DownstreamTimeoutPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpPathSelector,
+    HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
     HttpResponseHeaderMutation, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpSameSite,
     HttpService, HttpStaticMimePolicy, HttpStaticPathMapping, HttpVersion, HttpVersionPolicy,
     Listener, ListenerBind, Management, Protocol, TlsProfile, TlsVersion, UpstreamAlgorithm,
@@ -230,6 +230,221 @@ async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool() {
 
     let released = std::net::UdpSocket::bind(listener_address).expect("UDP listener release");
     drop(released);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn reverse_h3_cache_serves_a_second_get_without_origin_contact() {
+    let origin_endpoint =
+        quinn::Endpoint::server(origin_server_config(), (Ipv4Addr::LOCALHOST, 0).into())
+            .expect("cache origin endpoint");
+    let origin_address = origin_endpoint.local_addr().expect("cache origin address");
+    let second_origin_endpoint = origin_endpoint.clone();
+    let origin_task = tokio::spawn(async move {
+        let incoming = origin_endpoint.accept().await.expect("cache origin accept");
+        let connection = incoming.await.expect("cache origin connection");
+        let mut h3: Connection<_, Bytes> = h3::server::builder()
+            .build(h3_quinn::Connection::new(connection))
+            .await
+            .expect("cache origin H3 connection");
+        let resolver = h3
+            .accept()
+            .await
+            .expect("cache origin H3 accept")
+            .expect("cache origin request");
+        let (request, mut stream) = resolver
+            .resolve_request()
+            .await
+            .expect("cache origin request");
+        assert_eq!(request.method(), Method::GET);
+        assert_eq!(request.uri().path(), "/cached");
+        assert!(
+            stream
+                .recv_data()
+                .await
+                .expect("cache origin request body")
+                .is_none()
+        );
+        stream
+            .send_response(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("cache-control", "public, max-age=60")
+                    .header("content-length", "6")
+                    .body(())
+                    .expect("cache origin response"),
+            )
+            .await
+            .expect("cache origin response headers");
+        stream
+            .send_data(Bytes::from_static(b"cached"))
+            .await
+            .expect("cache origin response body");
+        stream.finish().await.expect("cache origin response finish");
+        assert!(
+            timeout(Duration::from_millis(300), second_origin_endpoint.accept())
+                .await
+                .is_err(),
+            "reverse H3 cache hit contacted the origin"
+        );
+    });
+
+    let listener_address = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("reserve cache UDP address")
+        .local_addr()
+        .expect("reserved cache UDP address");
+    let key = fixture_support::private_key_fixture("proxy-a-key.pem");
+    let mut config = support::empty_config();
+    config
+        .cache_stores
+        .push(CacheStore::memory("memory", 1024 * 1024));
+    config.certificates.push(Certificate {
+        name: "downstream".into(),
+        dns_names: vec![support::PROXY_SERVER_NAME.into()],
+        source: CertificateSource::Files {
+            certificate_chain_path: fixture_support::fixture("proxy-a.pem"),
+            private_key_path: key.path().to_path_buf(),
+        },
+    });
+    config.tls_profiles.push(TlsProfile {
+        name: "downstream".into(),
+        certificates: vec!["downstream".into()],
+        default_certificate: "downstream".into(),
+        min_version: TlsVersion::Tls13,
+        alpn: vec![AlpnProtocol::H3],
+        policy: oxiroute_config::TlsPolicy::default(),
+    });
+    config.upstream_pools.push(UpstreamPool {
+        name: "origin".into(),
+        servers: Vec::new(),
+        endpoints: vec![support::socket_endpoint(origin_address)],
+        algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: None,
+        passive_health: None,
+        tls: Some(UpstreamTls {
+            server_name: support::ORIGIN_SERVER_NAME.into(),
+            ca_certificate_path: Some(fixture_support::fixture("ca-a.pem")),
+        }),
+        http_versions: HttpVersionPolicy {
+            min: HttpVersion::Http3,
+            max: HttpVersion::Http3,
+        },
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+    });
+    let proxy_policy = HttpProxyPolicy {
+        cache: Some(Box::new(oxiroute_config::HttpCachePolicy {
+            store: "memory".into(),
+            methods: vec!["GET".into(), "HEAD".into()],
+            key_components: vec![
+                CacheKeyComponent::Scheme,
+                CacheKeyComponent::NormalizedHost,
+                CacheKeyComponent::PathAndQuery,
+            ],
+            use_origin_cache_control: true,
+            default_ttl_ms: 60_000,
+            status_ttls: Vec::new(),
+            grace_ms: 30_000,
+            keep_ms: 300_000,
+            revalidate: true,
+            collapsed_forwarding: true,
+            stale_on: Vec::new(),
+            bypass_request: Vec::new(),
+            no_store_request: Vec::new(),
+            no_store_response: Vec::new(),
+            set_cookie_policy: oxiroute_config::CacheSetCookiePolicy::default(),
+            authorization_policy: oxiroute_config::CacheAuthorizationPolicy::default(),
+            vary_policy: oxiroute_config::CacheVaryPolicy::default(),
+            surrogate_tags: None,
+            purge_authorization: None,
+        })),
+        ..HttpProxyPolicy::default()
+    };
+    config.http_services.push(HttpService {
+        name: "web".into(),
+        routes: vec![HttpRoute {
+            host: None,
+            path: HttpPathSelector::SegmentPrefix { value: "/".into() },
+            methods: Vec::new(),
+            access_policy: None,
+            policy: HttpRoutePolicy {
+                max_request_body_bytes: Some(64 * 1024),
+                request_buffering: true,
+                ..HttpRoutePolicy::default()
+            },
+            action: HttpRouteAction::Proxy {
+                upstream_pool: "origin".into(),
+                policy: proxy_policy,
+            },
+        }],
+        automatic_response_headers: true,
+        upstream_io_timeout_ms: 5_000,
+        max_request_body_bytes: Some(64 * 1024),
+        gzip: None,
+        access_log: None,
+    });
+    config.listeners.push(Listener {
+        name: "reverse".into(),
+        bind: ListenerBind::Udp {
+            address: listener_address,
+        },
+        protocol: Protocol::Http3,
+        service: Some("web".into()),
+        tls_profile: Some("downstream".into()),
+        proxy_protocol: None,
+        max_connections: Some(8),
+        downstream_timeouts: DownstreamTimeoutPolicy::default(),
+    });
+
+    validate_config(&mut config).expect("valid cached reverse H3 configuration");
+    let server = process_support::ServerProcess::start(&config, None);
+    let endpoint = client_endpoint().expect("cache H3 client endpoint");
+    let connection = timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(connecting) = endpoint.connect(listener_address, support::PROXY_SERVER_NAME)
+                && let Ok(connection) = connecting.await
+            {
+                break connection;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cache H3 daemon connection timeout");
+    let (driver, mut sender) = h3::client::new(h3_quinn::Connection::new(connection))
+        .await
+        .expect("cache H3 client connection");
+    let driver = drive_client(driver);
+    for _ in 0..2 {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("https://example.test/cached")
+            .body(())
+            .expect("cache H3 request");
+        let mut stream = sender
+            .send_request(request)
+            .await
+            .expect("send cache H3 request");
+        stream.finish().await.expect("finish cache H3 request");
+        let response = stream.recv_response().await.expect("cache H3 response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(recv_chunk(&mut stream).await.as_ref(), b"cached");
+        assert!(
+            stream
+                .recv_data()
+                .await
+                .expect("cache H3 response finish")
+                .is_none()
+        );
+    }
+
+    origin_task.await.expect("cache origin task");
+    drop(sender);
+    endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
+    driver.await.expect("cache H3 driver task");
+    server.shutdown_gracefully();
 }
 
 #[tokio::test]

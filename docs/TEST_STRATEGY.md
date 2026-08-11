@@ -206,12 +206,14 @@ service behavior. Synthetic fixtures remain implementation evidence only.
 - HTTP semantics use standards-derived tests and independent clients/servers.
 - HTTP/2 versions are asserted from negotiation and wire behavior, including the active forward
   listener's authority-only classic CONNECT path and rejection of arbitrary request forms. The active
-  `forward_http3` listener is asserted through independent QUIC/H3 process-level tests for authority-only
-  classic CONNECT and bounded failure paths; no positive H3 absolute-form forwarding claim is made.
+  `forward_http3` listener is asserted through independent QUIC/H3 process-level tests for
+  authority-only classic CONNECT, bounded absolute-form forwarding, and cache admission/reuse without
+  second-origin contact.
 - H3 upstream unit/wire tests use an independent QUIC origin to assert TLS/SNI/`h3` negotiation,
   request bodies, safe response framing and trailers, no-ALPN rejection, bounded request/response
   admission, malformed input, cancellation, and disabled migration/0-RTT. Reverse H3 process tests
-  implement and test fixed/redirect/static/proxy responses, generation-owned GOAWAY drain, reload,
+  implement and test fixed/redirect/static/proxy responses, cache admission/reuse, generation-owned
+  GOAWAY drain, reload,
   generation-owned UDP listener release, exhaustion, malformed traffic, and no silent protocol
   fallback; passing active-traffic drain evidence remains a gate.
 - Supervised process tests transfer authenticated typed TCP, Unix, UDP, and QUIC descriptors, verify

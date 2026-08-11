@@ -115,7 +115,10 @@ status observations for lifecycle, listener, metric, reload, degradation, and dr
 process crate performs authenticated worker spawning and launcher work. Linux-specific process and
 `/proc` behavior stays behind platform modules.
 
-The cache crate is integrated into reverse HTTP and eligible HTTP/1 forward requests. Forward-proxy
-code has narrow active H2/H3 classic-CONNECT paths, while Varnish IR and managed ACME each expose
-bounded partial contracts. A public feature claim must still follow integration into the active
-generation path and its failure evidence.
+The cache crate is integrated into reverse HTTP and eligible HTTP/1/H3 forward requests. The shared
+cache transaction owns lookup, collapsed-fill leadership, revalidation, stale eligibility, admission,
+completion, and cancellation; protocol adapters retain body I/O and reject trailer-bearing responses
+from admission. Forward-proxy code has narrow active H2/H3 classic-CONNECT paths and bounded H3
+absolute-form forwarding, while Varnish IR and managed ACME each expose bounded partial contracts. A
+public feature claim must still follow integration into the active generation path and its failure
+evidence.

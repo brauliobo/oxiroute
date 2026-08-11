@@ -18,6 +18,7 @@ use http::{
     uri::Authority,
 };
 use log::{error, warn};
+use oxiroute_cache::{CachedResponse, ResponseTiming};
 use oxiroute_config::{
     DownstreamTimeoutPolicy, HttpRetryTarget, HttpRetryTrigger, is_unambiguous_http_path,
 };
@@ -41,11 +42,18 @@ use crate::{
         HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget,
         StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
     },
+    http_cache::{
+        CacheFailureClass, CacheRequest, CacheStart, CacheStartFailure, CacheTransaction,
+        HttpCachePlan,
+    },
     http_policy::{
         RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
         decide_request_header, expand_redirect_location, normalized_redirect_host,
     },
-    http_proxy::{apply_response_policy_map, rewrite_upstream_path, selected_upstream_host},
+    http_proxy::{
+        apply_response_policy_map, cache_request_bypasses_cache, rewrite_upstream_path,
+        selected_upstream_host,
+    },
 };
 
 pub(crate) const H3_HANDSHAKE_LIMIT: usize = 64;
@@ -64,6 +72,13 @@ const H3_CLOSE_CODE: VarInt = VarInt::from_u32(0x100);
 const KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
 const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
 const MAX_STATIC_REDIRECTS: usize = 10;
+
+enum H3CacheDecision {
+    Bypass,
+    Respond(Box<CachedResponse>),
+    OnlyIfCached,
+    Continue(Box<CacheTransaction>),
+}
 
 pub struct Http3Runtime {
     thread: Option<JoinHandle<()>>,
@@ -608,7 +623,7 @@ async fn run_reverse_connection(
                 let request_cancel = request_cancel_rx.clone();
                 let request_slots = Arc::clone(&request_slots);
                 requests.spawn(async move {
-                    handle_reverse_request(
+                    Box::pin(handle_reverse_request(
                         resolver,
                         service,
                         metrics,
@@ -616,7 +631,7 @@ async fn run_reverse_connection(
                         downstream_timeouts,
                         request_cancel,
                         request_slots,
-                    )
+                    ))
                     .await;
                 });
             }
@@ -712,9 +727,10 @@ async fn run_connection(
                     break true;
                 }
                 let service = Arc::clone(&service);
+                let metrics = metrics.clone();
                 let request_cancel = request_cancel_rx.clone();
                 requests.spawn(async move {
-                    handle_request(resolver, service, client_addr, request_cancel).await;
+                    handle_request(resolver, service, client_addr, request_cancel, metrics).await;
                 });
             }
         }
@@ -992,6 +1008,22 @@ where
             return send_h3_static_request(stream, files, request, deadline).await;
         }
         HttpActionPlan::Proxy(proxy) => {
+            if method.as_str().eq_ignore_ascii_case("PURGE")
+                && proxy
+                    .policy
+                    .cache
+                    .as_ref()
+                    .is_some_and(|cache| cache.purge_access.is_some())
+            {
+                return purge_h3_cache(
+                    stream,
+                    request,
+                    authority,
+                    Arc::clone(proxy.policy.cache.as_ref().expect("checked cache plan")),
+                    deadline,
+                )
+                .await;
+            }
             let request_header_decisions =
                 match h3_request_header_decisions(request, authority, &proxy.policy, client_addr) {
                     Ok(decisions) => decisions,
@@ -1099,6 +1131,35 @@ where
                 Err(ReverseBodyError::Cancelled) => return None,
             };
             let _ = metrics.record_bytes_received(u64::try_from(body.len()).unwrap_or(u64::MAX));
+            let mut cache_transaction = None;
+            if body.is_empty()
+                && let Some(cache) = proxy.policy.cache.as_ref()
+                && cache.allows_method(method)
+                && !cache_request_bypasses_cache(request.headers())
+            {
+                match start_h3_cache(cache, request, authority, metrics).await {
+                    H3CacheDecision::Bypass => {}
+                    H3CacheDecision::Respond(response) => {
+                        let status = conditional_h3_cache_status(request, &response);
+                        return send_h3_cached_response(stream, request, *response, deadline)
+                            .await
+                            .then_some(status.as_u16());
+                    }
+                    H3CacheDecision::OnlyIfCached => {
+                        return send_h3_error(
+                            stream,
+                            StatusCode::GATEWAY_TIMEOUT,
+                            b"cache entry is unavailable\n",
+                            deadline,
+                        )
+                        .await
+                        .then_some(StatusCode::GATEWAY_TIMEOUT.as_u16());
+                    }
+                    H3CacheDecision::Continue(transaction) => {
+                        cache_transaction = Some(*transaction);
+                    }
+                }
+            }
             dispatch_h3_upstream_request(
                 stream,
                 request,
@@ -1109,6 +1170,7 @@ where
                 metrics,
                 deadline,
                 shutdown,
+                cache_transaction,
             )
             .await
         }
@@ -1126,6 +1188,7 @@ async fn dispatch_h3_upstream_request<S>(
     metrics: &ListenerMetrics,
     deadline: Instant,
     mut shutdown: watch::Receiver<bool>,
+    mut cache_transaction: Option<CacheTransaction>,
 ) -> Option<u16>
 where
     S: h3::quic::BidiStream<Bytes> + Send,
@@ -1200,7 +1263,7 @@ where
             last_error = H3UpstreamError::Protocol;
             break;
         };
-        let Ok(upstream_request) = build_h3_upstream_request(
+        let Ok(mut upstream_request) = build_h3_upstream_request(
             request,
             body.len(),
             &selected_host,
@@ -1210,6 +1273,12 @@ where
             last_error = H3UpstreamError::Protocol;
             break;
         };
+        if let Some(transaction) = cache_transaction.as_ref() {
+            if transaction.request().method == Method::HEAD {
+                *upstream_request.method_mut() = Method::GET;
+            }
+            transaction.apply_validators(upstream_request.headers_mut());
+        }
         attempted.push(selected.server_name().to_owned());
         let mut response = None;
         loop {
@@ -1265,7 +1334,13 @@ where
                     if !delay.is_zero() {
                         if delay > deadline.saturating_duration_since(Instant::now()) {
                             return send_h3_upstream_response(
-                                stream, request, response, proxy, metrics, deadline,
+                                stream,
+                                request,
+                                response,
+                                proxy,
+                                metrics,
+                                deadline,
+                                &mut cache_transaction,
                             )
                             .await;
                         }
@@ -1283,8 +1358,16 @@ where
                     continue;
                 }
             }
-            return send_h3_upstream_response(stream, request, response, proxy, metrics, deadline)
-                .await;
+            return send_h3_upstream_response(
+                stream,
+                request,
+                response,
+                proxy,
+                metrics,
+                deadline,
+                &mut cache_transaction,
+            )
+            .await;
         }
 
         if let Some(failure) = h3_passive_failure(&last_error) {
@@ -1329,6 +1412,15 @@ where
     } else {
         StatusCode::BAD_GATEWAY
     };
+    if let Some(response) = stale_h3_response(&mut cache_transaction).await {
+        let status = conditional_h3_cache_status(request, &response);
+        return send_h3_cached_response(stream, request, response, deadline)
+            .await
+            .then_some(status.as_u16());
+    }
+    if let Some(transaction) = cache_transaction.as_mut() {
+        transaction.complete_without_store();
+    }
     send_h3_error(
         stream,
         status,
@@ -1368,6 +1460,7 @@ fn h3_passive_failure(error: &H3UpstreamError) -> Option<HealthFailure> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn send_h3_upstream_response<S>(
     stream: &mut h3::server::RequestStream<S, Bytes>,
     request: &Request<()>,
@@ -1375,13 +1468,19 @@ async fn send_h3_upstream_response<S>(
     proxy: &ProxyActionPlan,
     metrics: &ListenerMetrics,
     deadline: Instant,
+    cache_transaction: &mut Option<CacheTransaction>,
 ) -> Option<u16>
 where
     S: h3::quic::BidiStream<Bytes> + Send,
 {
     let status = response.status;
     let mut headers = response.headers;
+    let body = response.body;
+    let mut trailers = response.trailers;
     if apply_response_policy_map(status, &mut headers, &proxy.policy).is_err() {
+        if let Some(transaction) = cache_transaction.as_mut() {
+            transaction.complete_without_store();
+        }
         let _ = send_h3_error(
             stream,
             StatusCode::BAD_GATEWAY,
@@ -1391,7 +1490,7 @@ where
         .await;
         return Some(StatusCode::BAD_GATEWAY.as_u16());
     }
-    let body_length = u64::try_from(response.body.len()).unwrap_or(u64::MAX);
+    let body_length = u64::try_from(body.len()).unwrap_or(u64::MAX);
     if sanitize_h3_response_headers(
         &mut headers,
         status,
@@ -1400,6 +1499,9 @@ where
     )
     .is_err()
     {
+        if let Some(transaction) = cache_transaction.as_mut() {
+            transaction.complete_without_store();
+        }
         let _ = send_h3_error(
             stream,
             StatusCode::BAD_GATEWAY,
@@ -1409,6 +1511,60 @@ where
         .await;
         return Some(StatusCode::BAD_GATEWAY.as_u16());
     }
+
+    if cache_transaction
+        .as_ref()
+        .is_some_and(CacheTransaction::is_revalidation)
+    {
+        if status == StatusCode::NOT_MODIFIED {
+            let transaction = cache_transaction
+                .as_mut()
+                .expect("revalidation has a cache transaction");
+            let timing = ResponseTiming {
+                request_started: transaction.request().request_started,
+                response_received: transaction.now(),
+                response_received_wall: std::time::SystemTime::now(),
+            };
+            let cached = transaction.finish_revalidation(&headers, timing).await;
+            let cached_status = conditional_h3_cache_status(request, &cached);
+            return send_h3_cached_response(stream, request, cached, deadline)
+                .await
+                .then_some(cached_status.as_u16());
+        }
+        if status.is_server_error()
+            && let Some(cached) = stale_h3_response(cache_transaction).await
+        {
+            let cached_status = conditional_h3_cache_status(request, &cached);
+            return send_h3_cached_response(stream, request, cached, deadline)
+                .await
+                .then_some(cached_status.as_u16());
+        }
+    }
+
+    let mut prepared = None;
+    if let Some(transaction) = cache_transaction.as_mut() {
+        let tags = transaction
+            .surrogate_header()
+            .map_or_else(Vec::new, |header| h3_surrogate_tags(&headers, header));
+        let tags_valid = transaction.cache_tags_within_limits(&tags);
+        if trailers.as_ref().is_none_or(HeaderMap::is_empty)
+            && tags_valid
+            && h3_cache_representation_valid(status, &headers, body.len())
+        {
+            let tag_refs = tags.iter().map(Bytes::as_ref).collect::<Vec<_>>();
+            let timing = ResponseTiming {
+                request_started: transaction.request().request_started,
+                response_received: transaction.now(),
+                response_received_wall: std::time::SystemTime::now(),
+            };
+            prepared = transaction
+                .prepare_response(status, &headers, body.clone(), timing, &tag_refs)
+                .ok();
+        }
+        if prepared.is_none() {
+            transaction.complete_without_store();
+        }
+    }
     let mut response_head = Response::new(());
     *response_head.status_mut() = status;
     *response_head.headers_mut() = headers;
@@ -1416,33 +1572,50 @@ where
         timeout_at(deadline, stream.send_response(response_head)).await,
         Ok(Ok(()))
     ) {
+        if let Some(transaction) = cache_transaction.as_mut() {
+            transaction.cancel();
+        }
         return None;
     }
     let body_forbidden = matches!(
         status,
         StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
     );
-    if request.method() != Method::HEAD && !body_forbidden && !response.body.is_empty() {
+    if request.method() != Method::HEAD && !body_forbidden && !body.is_empty() {
         let _ = metrics.record_bytes_sent(body_length);
         if !matches!(
-            timeout_at(deadline, stream.send_data(response.body)).await,
+            timeout_at(deadline, stream.send_data(body)).await,
             Ok(Ok(()))
         ) {
+            if let Some(transaction) = cache_transaction.as_mut() {
+                transaction.cancel();
+            }
             return None;
         }
     }
     if request.method() != Method::HEAD
-        && let Some(mut trailers) = response.trailers
+        && let Some(mut trailers) = trailers.take()
         && (sanitize_h3_trailers(&mut trailers).is_err()
             || !matches!(
                 timeout_at(deadline, stream.send_trailers(trailers)).await,
                 Ok(Ok(()))
             ))
     {
+        if let Some(transaction) = cache_transaction.as_mut() {
+            transaction.cancel();
+        }
         return None;
     }
     if !matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(()))) {
+        if let Some(transaction) = cache_transaction.as_mut() {
+            transaction.cancel();
+        }
         return None;
+    }
+    if let Some(entry) = prepared
+        && let Some(transaction) = cache_transaction.as_mut()
+    {
+        let _ = transaction.admit(entry).await;
     }
     Some(status.as_u16())
 }
@@ -2173,6 +2346,250 @@ pub(crate) fn sanitize_h3_trailers(headers: &mut HeaderMap) -> Result<(), ()> {
         .ok_or(())
 }
 
+async fn start_h3_cache(
+    cache: &Arc<HttpCachePlan>,
+    request: &Request<()>,
+    authority: &Authority,
+    metrics: &ListenerMetrics,
+) -> H3CacheDecision {
+    let request = CacheRequest {
+        method: request.method().clone(),
+        scheme: "https",
+        authority: authority.as_str().to_owned(),
+        path: request.uri().path().to_owned(),
+        query: request.uri().query().map(str::to_owned),
+        headers: request.headers().clone(),
+        request_started: cache.cache.now(),
+    };
+    match CacheTransaction::new(Arc::clone(cache), request, metrics.clone())
+        .start()
+        .await
+    {
+        CacheStart::Bypass(failure) => {
+            if let CacheStartFailure::Lookup(error) = failure
+                && !error.is_invalid_request()
+            {
+                warn!("HTTP/3 cache lookup bypassed after validation failure: {error}");
+            }
+            H3CacheDecision::Bypass
+        }
+        CacheStart::Hit(response) => H3CacheDecision::Respond(Box::new(response)),
+        CacheStart::OnlyIfCached => H3CacheDecision::OnlyIfCached,
+        CacheStart::MissLeader(transaction) | CacheStart::RevalidationLeader(transaction) => {
+            H3CacheDecision::Continue(Box::new(transaction))
+        }
+    }
+}
+
+async fn stale_h3_response(
+    cache_transaction: &mut Option<CacheTransaction>,
+) -> Option<CachedResponse> {
+    let transaction = cache_transaction.as_mut()?;
+    let response = transaction
+        .stale_response(CacheFailureClass::Upstream)
+        .await?;
+    transaction.complete_without_store();
+    transaction.record_hit();
+    Some(response)
+}
+
+async fn purge_h3_cache<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    request: &Request<()>,
+    authority: &Authority,
+    cache: Arc<HttpCachePlan>,
+    deadline: Instant,
+) -> Option<u16>
+where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    let access = cache
+        .purge_access
+        .as_ref()
+        .expect("purge dispatch requires access policy");
+    if !access.authorizes(request.headers()) {
+        let headers = [(http::header::WWW_AUTHENTICATE, access.challenge().clone())];
+        return send_h3_response(
+            stream,
+            StatusCode::UNAUTHORIZED,
+            &headers,
+            Bytes::new(),
+            false,
+            deadline,
+        )
+        .await
+        .then_some(StatusCode::UNAUTHORIZED.as_u16());
+    }
+    let cache_request = CacheRequest {
+        method: request.method().clone(),
+        scheme: "https",
+        authority: authority.as_str().to_owned(),
+        path: request.uri().path().to_owned(),
+        query: request.uri().query().map(str::to_owned),
+        headers: request.headers().clone(),
+        request_started: cache.cache.now(),
+    };
+    let result = if let Some(value) = cache
+        .surrogate_header
+        .as_ref()
+        .and_then(|header| request.headers().get(header))
+    {
+        cache.cache.purge_tag(value.as_bytes()).await
+    } else {
+        match cache.cache.base(&cache_request) {
+            Ok(base) => cache.cache.purge_base(&base).await,
+            Err(error) => Err(error),
+        }
+    };
+    let status = match result {
+        Ok(result) if result.entries == 0 => StatusCode::NOT_FOUND,
+        Ok(_) => StatusCode::OK,
+        Err(error) => {
+            warn!("HTTP/3 cache purge failed: {error}");
+            if error.is_invalid_request() {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        }
+    };
+    let headers = [(
+        http::header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    )];
+    send_h3_response(stream, status, &headers, Bytes::new(), false, deadline)
+        .await
+        .then_some(status.as_u16())
+}
+
+async fn send_h3_cached_response<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    request: &Request<()>,
+    mut response: CachedResponse,
+    deadline: Instant,
+) -> bool
+where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    if conditional_h3_cache_status(request, &response) == StatusCode::NOT_MODIFIED {
+        response.status = StatusCode::NOT_MODIFIED;
+        response.body = Bytes::new();
+    }
+    let headers = response
+        .headers
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect::<Vec<_>>();
+    send_h3_response(
+        stream,
+        response.status,
+        &headers,
+        response.body,
+        request.method() == Method::HEAD,
+        deadline,
+    )
+    .await
+}
+
+fn conditional_h3_cache_status(request: &Request<()>, response: &CachedResponse) -> StatusCode {
+    if h3_cached_response_matches_condition(request, response) {
+        StatusCode::NOT_MODIFIED
+    } else {
+        response.status
+    }
+}
+
+fn h3_cached_response_matches_condition(request: &Request<()>, response: &CachedResponse) -> bool {
+    if let Some(if_none_match) = request.headers().get(http::header::IF_NONE_MATCH) {
+        return if_none_match
+            .as_bytes()
+            .split(|byte| *byte == b',')
+            .map(trim_h3_ows)
+            .any(|candidate| {
+                candidate == b"*"
+                    || response
+                        .headers
+                        .get(http::header::ETAG)
+                        .is_some_and(|current| {
+                            strip_h3_weak_etag(candidate) == strip_h3_weak_etag(current.as_bytes())
+                        })
+            });
+    }
+    if !matches!(request.method(), &Method::GET | &Method::HEAD) {
+        return false;
+    }
+    let Some(if_modified_since) = request.headers().get(http::header::IF_MODIFIED_SINCE) else {
+        return false;
+    };
+    let Some(last_modified) = response.headers.get(http::header::LAST_MODIFIED) else {
+        return false;
+    };
+    let (Ok(if_modified_since), Ok(last_modified)) =
+        (if_modified_since.to_str(), last_modified.to_str())
+    else {
+        return false;
+    };
+    let (Ok(if_modified_since), Ok(last_modified)) = (
+        httpdate::parse_http_date(if_modified_since),
+        httpdate::parse_http_date(last_modified),
+    ) else {
+        return false;
+    };
+    last_modified <= if_modified_since
+}
+
+fn trim_h3_ows(value: &[u8]) -> &[u8] {
+    let start = value
+        .iter()
+        .position(|byte| !matches!(byte, b' ' | b'\t'))
+        .unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|byte| !matches!(byte, b' ' | b'\t'))
+        .map_or(start, |index| index + 1);
+    &value[start..end]
+}
+
+fn strip_h3_weak_etag(value: &[u8]) -> &[u8] {
+    let value = trim_h3_ows(value);
+    value
+        .strip_prefix(b"W/")
+        .or_else(|| value.strip_prefix(b"w/"))
+        .unwrap_or(value)
+}
+
+fn h3_cache_representation_valid(status: StatusCode, headers: &HeaderMap, body_len: usize) -> bool {
+    if status.is_informational()
+        || matches!(
+            status,
+            StatusCode::SWITCHING_PROTOCOLS | StatusCode::NOT_MODIFIED
+        )
+    {
+        return false;
+    }
+    if matches!(status, StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT) && body_len != 0 {
+        return false;
+    }
+    request_content_length(headers)
+        .ok()
+        .flatten()
+        .is_none_or(|length| length == u64::try_from(body_len).unwrap_or(u64::MAX))
+}
+
+fn h3_surrogate_tags(headers: &HeaderMap, name: &HeaderName) -> Vec<Bytes> {
+    headers
+        .get_all(name)
+        .iter()
+        .flat_map(|value| {
+            value
+                .as_bytes()
+                .split(u8::is_ascii_whitespace)
+                .filter(|tag| !tag.is_empty())
+                .map(Bytes::copy_from_slice)
+        })
+        .collect()
+}
+
 async fn send_h3_response<S>(
     stream: &mut h3::server::RequestStream<S, Bytes>,
     status: StatusCode,
@@ -2363,7 +2780,7 @@ fn listener_capability(listeners: &[crate::ListenerSnapshot], protocol: &str) ->
         "migration": "disabled",
         "goAway": "graceful",
         "fallback": "none",
-        "unsupported": ["cache", "compression", "upgrades"],
+        "unsupported": ["compression", "upgrades"],
         "limits": {
             "maxHandshakesAndConnections": H3_HANDSHAKE_LIMIT,
             "maxBidirectionalStreams": H3_BIDI_STREAM_LIMIT,
@@ -2381,6 +2798,7 @@ async fn handle_request<C>(
     service: Arc<ForwardHttp1ServicePlan>,
     client_addr: Option<std::net::SocketAddr>,
     shutdown: watch::Receiver<bool>,
+    metrics: ListenerMetrics,
 ) where
     C: h3::quic::Connection<bytes::Bytes> + Send + 'static,
     C::BidiStream: h3::quic::BidiStream<bytes::Bytes> + Send + 'static,
@@ -2389,7 +2807,7 @@ async fn handle_request<C>(
         return;
     };
     service
-        .handle_h3(request, stream, client_addr, shutdown)
+        .handle_h3(request, stream, client_addr, shutdown, metrics)
         .await;
 }
 
@@ -2452,7 +2870,7 @@ mod tests {
         assert_eq!(value["http3"]["reverse"]["fallback"], "none");
         assert_eq!(
             value["http3"]["reverse"]["unsupported"],
-            serde_json::json!(["cache", "compression", "upgrades"])
+            serde_json::json!(["compression", "upgrades"])
         );
         assert_eq!(
             value["http3"]["reverse"]["limits"]["maxRequestBodyBytes"],
@@ -2474,12 +2892,12 @@ mod tests {
     }
 
     #[test]
-    fn reports_forward_h3_cache_as_unsupported() {
+    fn reports_forward_h3_cache_as_supported() {
         let value = capability_snapshot(&[], RuntimeMode::Direct);
 
         assert_eq!(
             value["http3"]["forward"]["unsupported"],
-            serde_json::json!(["cache", "compression", "upgrades"])
+            serde_json::json!(["compression", "upgrades"])
         );
     }
 

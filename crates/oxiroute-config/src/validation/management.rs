@@ -554,9 +554,6 @@ fn validate_http3_listener(
         }
         match &route.action {
             HttpRouteAction::Proxy { policy, .. } => {
-                if policy.cache.is_some() {
-                    return Err(invalid("HTTP/3 reverse cache policy is not supported"));
-                }
                 if policy.request_headers.iter().any(|mutation| {
                     matches!(
                         mutation,
@@ -707,16 +704,6 @@ fn validate_forward_listener(
             "referenced service `{}` does not enable {version:?}",
             service.name
         )));
-    }
-    if version == ForwardHttpVersion::H3 && service.header_policy.cache.is_some() {
-        return Err(ConfigError::InvalidForwardProxyService {
-            service: service.name.clone(),
-            field: "cache",
-            detail: format!(
-                "is not supported by forward HTTP/3 listener `{}`",
-                listener.name
-            ),
-        });
     }
     if version == ForwardHttpVersion::H3
         && service

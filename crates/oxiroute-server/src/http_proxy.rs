@@ -1334,7 +1334,7 @@ fn response_surrogate_tags(headers: &HeaderMap, name: &HeaderName) -> Vec<Bytes>
         .collect()
 }
 
-fn cache_request_bypasses_cache(headers: &HeaderMap) -> bool {
+pub(crate) fn cache_request_bypasses_cache(headers: &HeaderMap) -> bool {
     headers.contains_key(RANGE)
         || headers.contains_key(IF_RANGE)
         || headers.contains_key(IF_MATCH)

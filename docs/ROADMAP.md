@@ -215,9 +215,9 @@ forwarding forms remain outside the daemon contract.
   and cancellation conformance coverage (integrated; non-CONNECT and arbitrary H2 forward requests
   remain blocked).
 - Bounded forward HTTP/3 through a separate UDP listener with TLS 1.3/`h3` negotiation, shared
-  forward policy, generation-aware drain, and authority-only classic CONNECT (integrated; H3
-  absolute-form forwarding and broader request-form conformance remain unsupported or unadvertised).
-- Opt-in bounded memory/persistent caching for eligible HTTP/1 forward GET/HEAD requests, with
+  forward policy, generation-aware drain, authority-only classic CONNECT, and bounded HTTP/HTTPS
+  absolute-form forwarding (integrated; broader request-form and MASQUE conformance remain).
+- Opt-in bounded memory/persistent caching for eligible HTTP/1 and HTTP/3 forward GET/HEAD requests, with
   collapsed fills, origin revalidation, fail-closed privacy admission, authenticated purge, and
   listener cache outcome metrics (integrated; broader HTTP cache conformance remains).
 
@@ -226,15 +226,15 @@ peer protocols, ICP/HTCP, and broad Squid helper compatibility.
 
 ## Milestone 4: cache and HTTP/3
 
-Status: partial; bounded reverse HTTP and eligible HTTP/1 forward cache integrations are active.
+Status: partial; bounded reverse HTTP and eligible HTTP/1/H3 forward cache integrations are active.
 Both H3 directions remain partial capabilities pending broader conformance.
 
 - Production cache storage with recovery, eviction, exclusive-root ownership, bounded asynchronous
   request-path I/O, and cache-bound prepared-entry admission is active for reverse HTTP and forward
-  HTTP/1.
+  HTTP/1/H3.
 - Cache freshness, revalidation, conditional validators, collapsed forwarding, bounded surrogate-tag
-  purge, streaming/range bypass, and request-level observability are active; H3 cache remains
-  explicitly unsupported.
+  purge, streaming/range bypass, stale-if-error, and request-level observability are active across
+  reverse and eligible forward H3 paths; trailer-bearing H3 responses bypass admission.
 - Reverse QUIC/H3 frontend selected through a proof of compatibility with Pingora's service model
   and reusing immutable upstream service/pool plans.
 - HTTP/3 broader conformance remains; bounded response conformance, resource-exhaustion,
