@@ -1,7 +1,39 @@
 # Code Reuse, Encapsulation, and Decomposition Plan
 
-Status: repository-wide audit snapshot from 2026-08-10. This document plans changes; it does not
-claim that the refactors have been implemented.
+Status: implementation audit updated 2026-08-10. The bounded implementation described below is
+integrated, but the entire plan is not complete; explicitly deferred design, semver, and lifecycle
+work remains open.
+
+## Integrated Implementation Status
+
+The implementation range is `44e1915..2865f4e`: 96 commits after the original plan commit
+`3240c2b`, ending at the clean integration result `2865f4e`. Phase 0 corrections, Phase 1 invariant
+ownership, and the safe Phase 2 shared owners are implemented. Phase 2's bootstrap-cache core remains
+deferred pending an explicit semantics decision. Phase 3 and Phase 4 include only the bounded
+decompositions, exact helpers, and test moves marked complete below; they do not complete every
+proposed central-file split.
+
+The integration result records passing Rust 1.97.1 format, lint, and locked workspace tests, plus UI
+unit, type-check, production-build, and browser gates. The browser result was 21 passing tests with
+one existing desktop-only skip. `coverage/evidence.json` remained consistent after the final test
+organization commit, and GitNexus reported zero directed import cycles. These are local integration
+checks, not CA-staging, production-traffic, long-running fuzz, or external interoperability evidence.
+
+The remaining decisions are intentional:
+
+- RTMP bootstrap sharing requires one contract for ordering, multi-codec retention, fallback audio,
+  and queue-fit behavior; the three existing paths are not equivalent enough to consolidate safely.
+- `ConfigDraft`/`ValidatedConfig` is a separate CRITICAL-impact design. It requires an API and
+  migration proposal for validation, rendering, runtime planning, import drafts, and mutable callers,
+  not an incidental module-split change.
+- Reducing public RTMP recording types is deferred to the `0.5` semver decision; the current `0.4.1`
+  public surface was not narrowed during behavior-neutral decomposition.
+- Disk-cache, recording-store, and ACME pinned directories have different symlink, locking,
+  recovery, and durability contracts. Varnish source and include paths likewise retain product-
+  specific semantics. Neither area was generalized merely because paths look structurally similar.
+- Deeper server, RTMP, supervision, and test-suite decompositions stopped where moving code would
+  widen private visibility or separate tightly coupled lifecycle state. Further work requires an
+  ownership redesign rather than additional move-only files.
 
 ## Scope and Method
 
@@ -73,11 +105,11 @@ return while `loading` or `loadRequest` still describes the aborted operation.
 
 **Plan:**
 
-- [ ] Add tests that hold token-A requests open, switch to token B, and prove B starts immediately.
-- [ ] Introduce a focused `useLatestAbortableTask` composable that owns one generation-tagged task,
+- [x] Add tests that hold token-A requests open, switch to token B, and prove B starts immediately.
+- [x] Introduce a focused `useLatestAbortableTask` composable that owns one generation-tagged task,
   aborts and replaces in-flight work, ignores stale completion, and cancels on unmount.
-- [ ] Migrate the four workspaces without changing each workspace's stale-data or error policy.
-- [ ] Prove an aborted task cannot clear the replacement task's loading state or emit unauthorized.
+- [x] Migrate the four workspaces without changing each workspace's stale-data or error policy.
+- [x] Prove an aborted task cannot clear the replacement task's loading state or emit unauthorized.
 
 ### P0.2 Forward-cache diagnostic paths
 
@@ -93,9 +125,9 @@ focus the corresponding controls.
 
 **Plan:**
 
-- [ ] Correct field paths before performing component extraction.
-- [ ] Add a diagnostic-navigation test for `forward_proxy_services[0].cache.store`.
-- [ ] Generalize `HttpCachePolicyEditor.vue` into a model-value component with `fieldPath` and
+- [x] Correct field paths before performing component extraction.
+- [x] Add a diagnostic-navigation test for `forward_proxy_services[0].cache.store`.
+- [x] Generalize `HttpCachePolicyEditor.vue` into a model-value component with `fieldPath` and
   `storeNames`, then use it for HTTP-route and forward-proxy cache policies.
 
 ### P0.3 Static-file semantics across HTTP adapters
@@ -111,11 +143,11 @@ body or partial body where the other adapters return `304`, `412`, or a full bod
 
 **Plan:**
 
-- [ ] Add one protocol-parity matrix for GET/HEAD, every precondition, strong/date `If-Range`,
+- [x] Add one protocol-parity matrix for GET/HEAD, every precondition, strong/date `If-Range`,
   duplicate/multi-range headers, empty files, and ETag-disabled plans.
-- [ ] Move precondition and range evaluation into a protocol-neutral static-request decision owned
+- [x] Move precondition and range evaluation into a protocol-neutral static-request decision owned
   beside `StaticFilesPlan`.
-- [ ] Keep file streaming and header serialization in the Pingora and H3 adapters.
+- [x] Keep file streaming and header serialization in the Pingora and H3 adapters.
 
 ### P0.4 Decide HTTP/3 reverse-upstream behavior
 
@@ -147,12 +179,12 @@ state, and Squid carries a special parallel shape.
 
 **Plan:**
 
-- [ ] Make finalized config private and represent blocked/finalized outcomes explicitly.
-- [ ] Require the owning finalizer to receive the product eligibility decision; retain product-specific
+- [x] Make finalized config private and represent blocked/finalized outcomes explicitly.
+- [x] Require the owning finalizer to receive the product eligibility decision; retain product-specific
   diagnostic policy in each importer.
-- [ ] Migrate Squid to the shared candidate/report shape.
-- [ ] Remove evidence-layer correction after all products prove that blockers imply no final config.
-- [ ] Preserve report JSON ordering and shapes.
+- [x] Migrate Squid to the shared candidate/report shape.
+- [x] Remove evidence-layer correction after all products prove that blockers imply no final config.
+- [x] Preserve report JSON ordering and shapes.
 
 ### P1.2 Forward-proxy destination capability
 
@@ -378,13 +410,13 @@ challenge parsing, and bad-nonce retry.
 
 **Plan:**
 
-- [ ] Move the publication transaction beside `ActiveCertificateGeneration`; keep candidate loading and
+- [x] Move the publication transaction beside `ActiveCertificateGeneration`; keep candidate loading and
   outcome classification source-specific.
-- [ ] Extract only watcher notify/debounce/reconciliation/supervision mechanics; retain each source's
+- [x] Extract only watcher notify/debounce/reconciliation/supervision mechanics; retain each source's
   path and filesystem semantics.
-- [ ] Add a private ACME polling driver that alone owns deadlines, attempts, cancellation,
+- [x] Add a private ACME polling driver that alone owns deadlines, attempts, cancellation,
   `Retry-After`, jitter, sleep, and backoff.
-- [ ] Add common challenge endpoint/value parsing and a bad-nonce request driver; keep nested key-change
+- [x] Add common challenge endpoint/value parsing and a bad-nonce request driver; keep nested key-change
   JWS construction distinct.
 
 ### P1.11 Native-source snapshot kernel
@@ -402,11 +434,11 @@ include-stack retention, final rereads, fingerprint comparison, and read-failure
 
 **Plan:**
 
-- [ ] Add an internal source catalog/budget in `source.rs` that owns identity, bounds, stable snapshots,
+- [x] Add an internal source catalog/budget in `source.rs` that owns identity, bounds, stable snapshots,
   and rerechecks.
-- [ ] Keep include syntax, path bases, glob dialect, ordering, cycle policy, edge statuses, and
+- [x] Keep include syntax, path bases, glob dialect, ordering, cycle policy, edge statuses, and
   diagnostics product-specific.
-- [ ] Do not create a generic include loader.
+- [x] Do not create a generic include loader.
 
 ### P2.1 Import provenance and evidence builders
 
@@ -422,10 +454,10 @@ four evidence paths serialize the same source graph separately.
 
 **Plan:**
 
-- [ ] Add a stable-order indexed `CanonicalProvenanceLedger` with caller-supplied origin identity and
+- [x] Add a stable-order indexed `CanonicalProvenanceLedger` with caller-supplied origin identity and
   product-specific empty-origin policy.
-- [ ] Add one source-graph evidence builder with small edge/status adapters per product.
-- [ ] Preserve serialized ordering and failed-empty edge behavior.
+- [x] Add one source-graph evidence builder with small edge/status adapters per product.
+- [x] Preserve serialized ordering and failed-empty edge behavior.
 
 ### P2.2 Cache-store common fields
 
@@ -437,9 +469,9 @@ rendering, and importer defaults.
 
 **Plan:**
 
-- [ ] Preserve the flat serialized enum.
-- [ ] Add common views/accessors and canonical memory/disk constructors.
-- [ ] Do not introduce a flattened nested serde object under `deny_unknown_fields`.
+- [x] Preserve the flat serialized enum.
+- [x] Add common views/accessors and canonical memory/disk constructors.
+- [x] Do not introduce a flattened nested serde object under `deny_unknown_fields`.
 
 ### P2.3 RTMP segment, bootstrap, and admission workflows
 
@@ -455,12 +487,13 @@ classification with semantic drift; publish/playback repeat role admission and r
 
 **Plan:**
 
-- [ ] Share immutable `SegmentWindowConfig` and elapsed/cut calculations, not complete segmenter state
+- [x] Share immutable `SegmentWindowConfig` and elapsed/cut calculations, not complete segmenter state
   machines.
 - [ ] Define ordering, multi-codec retention, fallback-audio, and queue-fit policies before sharing a
-  bootstrap cache core.
-- [ ] Add an admission transaction that owns a role until protocol acceptance and map insertion commit.
-- [ ] Make explicit close and `Drop` call one idempotent cleanup primitive while preserving explicit
+  bootstrap cache core. **Deferred:** recorder, auto-push, and relay semantics require an explicit
+  common contract before a shared owner would be correct.
+- [x] Add an admission transaction that owns a role until protocol acceptance and map insertion commit.
+- [x] Make explicit close and `Drop` call one idempotent cleanup primitive while preserving explicit
   error reporting.
 
 ### P2.4 Forward tunnel coordination
@@ -472,10 +505,10 @@ and outcome coordination. The H2 path repeats its own timeout/upstream-read bran
 
 **Plan:**
 
-- [ ] Extract the duplicated H2 branch first.
-- [ ] Introduce a shared budget/deadline/outcome coordinator around protocol-specific pumps.
-- [ ] Keep H2/H3 flow control and reset behavior in protocol adapters.
-- [ ] Test asymmetric/simultaneous EOF, every limit, timeout races, reset, blocked flow control, and
+- [x] Extract the duplicated H2 branch first.
+- [x] Introduce a shared budget/deadline/outcome coordinator around protocol-specific pumps.
+- [x] Keep H2/H3 flow control and reset behavior in protocol adapters.
+- [x] Test asymmetric/simultaneous EOF, every limit, timeout races, reset, blocked flow control, and
   exact byte accounting.
 
 ### P2.5 Supervision wire primitives
@@ -492,10 +525,10 @@ and outcome coordination. The H2 path repeats its own timeout/upstream-read bran
 
 **Plan:**
 
-- [ ] Add bounded wire reader/writer primitives with protocol-specific error mapping.
-- [ ] Keep `AuthenticatedFrame` as a proof wrapper around a validated frame; do not alias away the
+- [x] Add bounded wire reader/writer primitives with protocol-specific error mapping.
+- [x] Keep `AuthenticatedFrame` as a proof wrapper around a validated frame; do not alias away the
   authentication boundary.
-- [ ] Introduce one `WorkerMetadata` value used by parent encoding and launcher decoding.
+- [x] Introduce one `WorkerMetadata` value used by parent encoding and launcher decoding.
 
 ### P2.6 UI API and form reuse
 
@@ -512,10 +545,10 @@ cache forms are duplicated; workspaces repeat presentation helpers.
 
 **Plan:**
 
-- [ ] Make transport return `unknown`; require one decoder per endpoint response contract.
-- [ ] Define monitoring endpoint classification once.
-- [ ] Add `RtmpCallbackEditor` and one `defaultRtmpApplication` owner.
-- [ ] Move shared presentation formatting to `formatters.ts` and add one narrow API-error presenter.
+- [x] Make transport return `unknown`; require one decoder per endpoint response contract.
+- [x] Define monitoring endpoint classification once.
+- [x] Add `RtmpCallbackEditor` and one `defaultRtmpApplication` owner.
+- [x] Move shared presentation formatting to `formatters.ts` and add one narrow API-error presenter.
 
 ### P2.7 Tooling manifests as sources of truth
 
@@ -533,9 +566,9 @@ have multiple independently maintained definitions.
 
 **Plan:**
 
-- [ ] Define one declarative release-file policy consumed by archive creation and verification.
-- [ ] Make `lanes.json` authoritative and add one benchmark settings loader for defaults/validation.
-- [ ] Define one fuzz-target manifest, verify every Rust target limit against it, and use one command
+- [x] Define one declarative release-file policy consumed by archive creation and verification.
+- [x] Make `lanes.json` authoritative and add one benchmark settings loader for defaults/validation.
+- [x] Define one fuzz-target manifest, verify every Rust target limit against it, and use one command
   array for evidence and execution.
 
 ## Phase 3: Encapsulate Lifecycles and Split Central Files
@@ -563,6 +596,14 @@ Existing facades and public re-exports should remain until callers have migrated
 | `crates/oxiroute-server/src/rtmp_api/service.rs` (1,223) | Pure route matcher, ordinary response adapter, SSE body, VOD/media body, Pingora transport. | Preserve method restrictions and streaming behavior. |
 | `crates/oxiroute-server/src/prometheus.rs` / `crates/oxiroute-server/src/stats.rs` | Metric-family appenders; stats routing, HTML, and status DTO modules. | Preserve names, labels, readiness, and JSON exactly. |
 
+Implemented bounded server/runtime slices:
+
+- [x] Move `routing.rs` unit tests to a private child test module.
+- [x] Split Prometheus formatting behind the existing metrics facade.
+- [ ] Continue the remaining central-file splits only after their private state and lifecycle owners can
+  move without widening visibility or separating coupled transitions. Shared HTTP policy/cache and
+  exact helper prerequisites are complete, but they do not by themselves complete these file rows.
+
 Additional server lifecycle work:
 
 - [ ] Consolidate duplicated generation preparation at `generation.rs:81-212` into reservation
@@ -588,12 +629,22 @@ Additional server lifecycle work:
 | `crates/oxiroute-config-source/src/uci.rs` (1,153) | AST/parser/renderer (`16-248`), native sections (`249-571`), JSON records (`572-1046`), tokenizer (`1047-1153`). | Do not create one generic source-adapter trait. |
 | `crates/oxiroute-config-source/src/resolver.rs` | Product import workflows and small dependency adapters. | Share only a source-dependency view where path semantics align. |
 
+Implemented configuration/import decomposition:
+
+- [x] Split config model, validation, and rendering domains behind stable facades and preserve the
+  serialized and rendered contracts.
+- [x] Split HAProxy resolver, nginx listener lowering, Varnish parser/semantic ownership, Apache
+  semantic ownership, UCI ownership, and config-source workflows at the planned boundaries.
+- [x] Keep Varnish source/include path policy product-specific; it is not equivalent to the other
+  native source path contracts and was not generalized by the move-only split.
+
 Separate design project, not an incidental cleanup:
 
 - [ ] Evaluate `ConfigDraft` and `ValidatedConfig` proof types so runtime planning cannot accept
   unvalidated mutable configuration. The current mutable `Config`, mutating validator, render-time
   clone/revalidation, and `CanonicalDraft` duplication justify the design, but `validate_config` has
-  CRITICAL impact and must not be changed during module splitting.
+  CRITICAL impact and must not be changed during module splitting. **Deferred:** approve the type/API
+  migration and caller rollout as a separate design project first.
 
 ### RTMP/cache/ACME/forward/supervision split map
 
@@ -611,14 +662,26 @@ Separate design project, not an incidental cleanup:
 | `crates/oxiroute-supervisor-master/src/master.rs` (1,904) | Transition driver, request dispatch, observation/status, termination. | Follow model-based replacement work. |
 | `crates/oxiroute-supervisor-process/src/lib.rs` (1,348) | Metadata, handshake, authenticated channel, process owner, reaper. | Preserve launcher fail-closed behavior. |
 
+Implemented bounded subsystem splits:
+
+- [x] Split disk-cache record codecs, the ACME polling driver, and the forward-tunnel H3 adapter.
+- [x] Type recording-store commit phases and split FLV inspection, recording worker status, recording
+  runtime policy, and auto-push wire primitives behind their existing facades.
+- [x] Split supervisor-process reaping and supervisor-master observations without moving authoritative
+  lifecycle state.
+- [ ] Continue deeper RTMP, cache, ACME, forward, and supervision splits only with an ownership design
+  that preserves private visibility and coupled lifecycle ordering.
+
 Encapsulation tasks within these splits:
 
 - [ ] Review public RTMP recording re-exports in `rtmp/src/lib.rs:74-83`; keep policy/controller APIs
-  public and make low-level leases, commits, files, and workers crate-private only after a semver review.
+  public and make low-level leases, commits, files, and workers crate-private only after a semver
+  review. **Deferred:** decide the visibility break for `0.5`; do not narrow the `0.4.1` surface.
 - [ ] Keep secure pinned-directory behavior separate across disk cache, recording store, and ACME state
   until their symlink, locking, recovery, and durability threat models are documented. Do not create a
-  shared filesystem crate merely because the code looks similar.
-- [ ] Preserve `AuthenticatedFrame` as evidence of authentication, not a type alias for raw transport.
+  shared filesystem crate merely because the code looks similar. **Deferred:** these directory
+  contracts are not equivalent and no shared abstraction has been approved.
+- [x] Preserve `AuthenticatedFrame` as evidence of authentication, not a type alias for raw transport.
 
 ### UI split map
 
@@ -630,55 +693,68 @@ Encapsulation tasks within these splits:
 | `ui/src/ConfigurationWorkspace.vue` (1,738) | Keep as workspace facade; move only responsibilities not already owned by lifecycle/navigation composables. | Avoid a generic form framework. Reassess after cache and RTMP subeditors. |
 | `ui/src/App.vue` (2,001) | Keep navigation/composition root; consider a resource-loader primitive only after latest-task ownership is established. | Different resources intentionally have different stale/error fallbacks. |
 
+Implemented UI decomposition:
+
+- [x] Split API transport, decoders, and endpoints behind stable `api.ts` exports.
+- [x] Split configuration model, decoding, and field registry behind stable `config.ts` exports.
+- [x] Extract the RTMP callback, service-policy, and exec-profile editor boundaries with one canonical
+  application-default owner.
+- [ ] Keep `ConfigurationWorkspace.vue` and `App.vue` as composition roots; further splitting was not
+  justified after the focused owners moved and would disturb intentionally distinct lifecycle policy.
+
 ## Phase 4: Mechanical Reuse and Test Organization
 
 These are low-risk after the owning abstractions above are settled.
 
 ### P3.1 Small exact production duplication
 
-- [ ] Correlation IDs: make `operational_event.rs:45-78` use `logging.rs:55-67`.
-- [ ] HTML escaping: share one server-owned writer for `http_action.rs:2137-2149` and
+- [x] Correlation IDs: make `operational_event.rs:45-78` use `logging.rs:55-67`.
+- [x] HTML escaping: share one server-owned writer for `http_action.rs:2137-2149` and
   `stats.rs:865-876`.
-- [ ] Generation health DTO: replace duplicate JSON construction in `stats.rs:286-300` and
+- [x] Generation health DTO: replace duplicate JSON construction in `stats.rs:286-300` and
   `rtmp_api/observability.rs:110-122`.
-- [ ] RTMP relay wire mappings: share `rtmp_api/streams.rs:210-239` and
+- [x] RTMP relay wire mappings: share `rtmp_api/streams.rs:210-239` and
   `rtmp_api/observability.rs:449-479`; keep operational event codes distinct.
-- [ ] Four-segment management routes: share a prefix-parameterized parser for
+- [x] Four-segment management routes: share a prefix-parameterized parser for
   `rtmp_api/media.rs:1-24` and `rtmp_api/vod.rs:1-24`.
-- [ ] Shutdown watch loop: share `proxy_protocol.rs:641-650` and `udp_relay.rs:901-909` at the
+- [x] Shutdown watch loop: share `proxy_protocol.rs:641-650` and `udp_relay.rs:901-909` at the
   shutdown abstraction owner.
-- [ ] OWS trimming: share cache-owned logic from `cache/src/key.rs:313-327` and
+- [x] OWS trimming: share cache-owned logic from `cache/src/key.rs:313-327` and
   `cache/src/policy.rs:789-803`.
-- [ ] RTMP wall-clock milliseconds: centralize `relay.rs:1128-1134`, `auto_push.rs:1614-1620`,
+- [x] RTMP wall-clock milliseconds: centralize `relay.rs:1128-1134`, `auto_push.rs:1614-1620`,
   `media_segmenter.rs:927-933`, and `dash_segmenter.rs:1191-1197` behind an injectable clock where
   behavior is tested.
-- [ ] RTMP pull/push bounded executors: consolidate `relay.rs:809-847,1277-1316`.
-- [ ] Publisher/playback identity accessors: move shared identity behavior from
+- [x] RTMP pull/push bounded executors: consolidate `relay.rs:809-847,1277-1316`.
+- [x] Publisher/playback identity accessors: move shared identity behavior from
   `session_publish.rs:94-104` and `session_playback.rs:49-59` to the identity owner.
-- [ ] Stream delegation wrappers: share the mechanical forwarding in `client.rs:317-338`,
+- [x] Stream delegation wrappers: share the mechanical forwarding in `client.rs:317-338`,
   `vod.rs:322-343`, and `callback.rs:372-393` without obscuring distinct stream types.
-- [ ] Validated-envelope deserialization: share bounded envelope mechanics in
+- [x] Validated-envelope deserialization: share bounded envelope mechanics in
   `supervision/src/protocol.rs:112-139` and `snapshot.rs:78-101`.
 
 ### P3.2 Test-support reuse and suite splits
 
-- [ ] Split `crates/oxiroute-server/tests/support/mod.rs` into certificates (`89-482`), proxy harness
+- [x] Split `crates/oxiroute-server/tests/support/mod.rs` into certificates (`89-482`), proxy harness
   (`483-756`), TLS clients (`757-1234`), H1 origins (`1235-1523`), H2 origins/clients (`1524-1983`),
   and counters/loading (`1984-2065`), re-exported from `mod.rs`.
-- [ ] Add `tests/support/http.rs` helpers for response heads, chunked streaming, authenticated SSE,
-  active revision, and bounded revision waits. Replace copies in `process_active_drain.rs`,
+- [x] Add focused test-support helpers for protocol response handling, authenticated SSE, active
+  revision, and bounded revision waits. Replace copies in `process_active_drain.rs`,
   `process_rtmp_runtime.rs`, `process_udp_drain.rs`, `reverse_http3.rs`, and `rtmp_api.rs`.
-- [ ] Add parameterized `tests/support/h3.rs` endpoint, TLS, and retry setup for
+- [x] Add parameterized `tests/support/h3.rs` endpoint, TLS, and retry setup for
   `forward_proxy_h3.rs`, `reverse_http3.rs`, `http3_client_auth.rs`, and `supervised.rs`.
 - [ ] Move large inline test modules out of `routing.rs`, `udp_relay.rs`, TLS ACME, generation,
   catalog, and recording modules where private visibility can be preserved with child test modules.
+  **Partial:** `routing.rs` moved; the rest remain where extraction would widen private visibility or
+  cross lifecycle ownership.
 - [ ] Split integration suites by behavior after support extraction:
   `http_proxy_routing.rs` (routing/cache/retries/policies/logging), `supervised.rs`
   (core/UDP/H3/replacement), `rtmp_api.rs` (runtime/auth-events/config-import), and
-  `config/tests/lua_config.rs` (statistics/core/binds/TLS/upstream/routes/sandbox).
-- [ ] Add `ui/src/test/async.ts` for `deferred`, `ui/src/test/sse.ts` for controllable streams, and
-  focused wrapper-query helpers.
-- [ ] Split `ui/tests/browser/dashboard.spec.ts` by workspace while retaining common browser support.
+  `config/tests/lua_config.rs` (statistics/core/binds/TLS/upstream/routes/sandbox). **Partial:** the
+  forward-H3 suite was safely split; these lifecycle-coupled suites remain intact pending clearer
+  behavior owners.
+- [x] Add focused UI deferred-task and controllable-SSE test helpers plus reusable wrapper-query
+  support.
+- [x] Split `ui/tests/browser/dashboard.spec.ts` by workspace while retaining common browser support.
 
 ## Recommended Delivery Order
 
