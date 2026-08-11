@@ -16,7 +16,7 @@ use std::{
         unix::fs::{PermissionsExt as _, symlink},
     },
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -1596,13 +1596,17 @@ fn empty_topology() -> Arc<TopologySnapshot> {
 }
 
 fn editable_config() -> Config {
+    static PRIVATE_KEY: OnceLock<fixture_support::PrivateKeyFixture> = OnceLock::new();
+    let private_key =
+        PRIVATE_KEY.get_or_init(|| fixture_support::private_key_fixture("proxy-a-key.pem"));
+
     Config {
         certificates: vec![Certificate {
             name: "test-certificate".into(),
             dns_names: vec!["proxy.example.test".into()],
             source: CertificateSource::Files {
                 certificate_chain_path: fixture("proxy-a.pem"),
-                private_key_path: fixture("proxy-a-key.pem"),
+                private_key_path: private_key.path().to_path_buf(),
             },
         }],
         ..empty_config()
