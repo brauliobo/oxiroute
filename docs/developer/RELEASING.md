@@ -35,9 +35,9 @@ examples, and documentation but does not enable or start systemd automatically.
 Before creating an archive, verify the version metadata and release notes:
 
 ```sh
-./scripts/verify-release-version.sh 0.4.1
-./scripts/create-release-archive.sh /tmp/oxiroute-0.4.1.tar.gz 0.4.1
-./scripts/verify-release-archive.sh /tmp/oxiroute-0.4.1.tar.gz 0.4.1 --compare-worktree
+./scripts/verify-release-version.sh 0.5.0
+./scripts/create-release-archive.sh /tmp/oxiroute-0.5.0.tar.gz 0.5.0
+./scripts/verify-release-archive.sh /tmp/oxiroute-0.5.0.tar.gz 0.5.0 --compare-worktree
 ```
 
 Read [packaging/arch/README.md](../../packaging/arch/README.md) before changing service permissions,
