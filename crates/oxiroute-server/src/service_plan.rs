@@ -1885,7 +1885,7 @@ fn compile_rtmp_hls(
     application: &oxiroute_rtmp::RtmpApplicationPlan,
     stores: &mut HashMap<PathBuf, Arc<MediaStore>>,
     mode: AcquisitionMode,
-) -> Result<Option<Arc<MediaApplication>>, ServicePlanError> {
+) -> Result<Option<Arc<HlsOutputConfig>>, ServicePlanError> {
     let Some(plan) = application
         .media()
         .and_then(oxiroute_rtmp::RtmpMediaPlan::hls)
@@ -1914,22 +1914,7 @@ fn compile_rtmp_hls(
         stores.insert(plan.root_directory().to_owned(), Arc::clone(&store));
         store
     };
-    let config = HlsOutputConfig {
-        store,
-        segment_duration: plan.segment_duration(),
-        max_segment_duration: plan.max_segment_duration(),
-        playlist_length: plan.playlist_length(),
-        naming: plan.naming(),
-        nested: plan.nested(),
-        cleanup: plan.cleanup(),
-        variants: plan.variants().to_vec(),
-        keys: plan.keys().cloned(),
-        max_segment_bytes: plan.max_segment_bytes(),
-        max_queue_messages: plan.max_queue_messages(),
-    };
-    Ok(Some(Arc::new(MediaApplication::new(Some(Arc::new(
-        config,
-    ))))))
+    Ok(Some(plan.build_output(store)))
 }
 
 fn compile_rtmp_dash(
@@ -1966,18 +1951,7 @@ fn compile_rtmp_dash(
         stores.insert(plan.root_directory().to_owned(), Arc::clone(&store));
         store
     };
-    let config = DashOutputConfig {
-        store,
-        segment_duration: plan.segment_duration(),
-        max_segment_duration: plan.max_segment_duration(),
-        playlist_length: plan.playlist_length(),
-        naming: plan.naming(),
-        nested: plan.nested(),
-        cleanup: plan.cleanup(),
-        max_segment_bytes: plan.max_segment_bytes(),
-        max_queue_messages: plan.max_queue_messages(),
-    };
-    Ok(Some(Arc::new(config)))
+    Ok(Some(plan.build_output(store)))
 }
 
 fn compile_rtmp_recorder(
