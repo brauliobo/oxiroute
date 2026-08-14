@@ -22,10 +22,10 @@ use tokio::{
 
 use crate::shutdown::wait_for_shutdown;
 use crate::{
-    ConnectionGuard, EndpointLease, HealthFailure, L4ServicePlan, ListenerMetrics,
-    ListenerReservation, MAX_V1_HEADER_BYTES, ProxyProtocolError, ProxyProtocolErrorKind,
+    EndpointLease, HealthFailure, L4ServicePlan, ListenerMetrics, ListenerReservation,
+    ListenerRuntime, MAX_V1_HEADER_BYTES, ProxyProtocolError, ProxyProtocolErrorKind,
     ProxyProtocolResult, ProxyProtocolTransport, RuntimeGeneration, RuntimeReferenceKind,
-    encode_header, parse_header,
+    TrafficLease, encode_header, parse_header,
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -362,6 +362,7 @@ async fn serve(
         })?;
     let socket = Arc::new(socket);
     let table: SessionTable = Arc::new(Mutex::new(HashMap::with_capacity(max_sessions)));
+    let listener = ListenerRuntime::new(metrics.clone());
     let next_id = AtomicU64::new(0);
     let mut sessions = JoinSet::new();
     let mut receive_buffer = vec![0_u8; max_received_bytes];
@@ -448,18 +449,12 @@ async fn serve(
                     },
                     None => (payload, Some(client)),
                 };
-                let Some(generation_reference) =
-                    generation.begin_reference(RuntimeReferenceKind::Udp)
-                else {
-                    UdpAccounting::increment(&accounting.datagrams_dropped);
-                    continue;
-                };
-                let listener_connection = match metrics.begin_connection() {
-                    Ok(connection) => connection,
+                let traffic_lease =
+                    match listener.admit_runtime_connection(&generation, RuntimeReferenceKind::Udp) {
+                    Ok(lease) => lease,
                     Err(error) => {
                         UdpAccounting::increment(&accounting.datagrams_dropped);
                         debug!("UDP listener `{listener_name}` rejected a pseudo-session: {error}");
-                        drop(generation_reference);
                         continue;
                     }
                 };
@@ -487,8 +482,7 @@ async fn serve(
                         queue_receiver,
                         service_for_task,
                         generation_for_task,
-                        listener_connection,
-                        generation_reference,
+                        traffic_lease,
                         listener_is_ipv4,
                         logical_client,
                         shutdown_for_task,
@@ -635,8 +629,7 @@ async fn run_session(
     queue_receiver: mpsc::Receiver<QueuedDatagram>,
     service: Arc<L4ServicePlan>,
     generation: Arc<RuntimeGeneration>,
-    connection: ConnectionGuard,
-    _generation_reference: crate::GenerationReference,
+    traffic_lease: TrafficLease,
     listener_is_ipv4: bool,
     logical_client: Option<std::net::SocketAddr>,
     mut shutdown: watch::Receiver<bool>,
@@ -656,7 +649,7 @@ async fn run_session(
         initial,
         queue_receiver,
         &service,
-        connection,
+        &traffic_lease,
         listener_is_ipv4,
         logical_client,
         &mut shutdown,
@@ -680,7 +673,7 @@ async fn relay_session(
     initial: Vec<u8>,
     mut queue_receiver: mpsc::Receiver<QueuedDatagram>,
     service: &L4ServicePlan,
-    connection: ConnectionGuard,
+    traffic_lease: &TrafficLease,
     listener_is_ipv4: bool,
     logical_client: Option<std::net::SocketAddr>,
     shutdown: &mut watch::Receiver<bool>,
@@ -703,7 +696,7 @@ async fn relay_session(
     };
 
     let mut session_bytes = 0_u64;
-    account_received(&connection, &mut session_bytes, initial.len(), policy)?;
+    account_received(traffic_lease, &mut session_bytes, initial.len(), policy)?;
     let outbound_proxy = service.proxy_protocol().zip(logical_client);
     if let Some((proxy_policy, source)) = outbound_proxy {
         let header = encode_header(
@@ -713,7 +706,7 @@ async fn relay_session(
             destination,
         )
         .map_err(|error| {
-            let _ = connection.record_proxy_protocol(error.result());
+            let _ = traffic_lease.record_proxy_protocol(error.result());
             SessionEnd::ProxyProtocol(error)
         })?;
         let mut datagram = Vec::with_capacity(header.len() + initial.len());
@@ -721,7 +714,7 @@ async fn relay_session(
         datagram.extend_from_slice(&initial);
         if datagram.len() > MAX_UDP_WIRE_DATAGRAM_BYTES {
             let error = ProxyProtocolError::new(ProxyProtocolErrorKind::InvalidLength);
-            let _ = connection.record_proxy_protocol(error.result());
+            let _ = traffic_lease.record_proxy_protocol(error.result());
             return Err(SessionEnd::UpstreamProxyProtocol(error));
         }
         send_proxy_datagram(
@@ -732,10 +725,10 @@ async fn relay_session(
         )
         .await
         .map_err(|error| {
-            let _ = connection.record_proxy_protocol(error.result());
+            let _ = traffic_lease.record_proxy_protocol(error.result());
             SessionEnd::UpstreamProxyProtocol(error)
         })?;
-        connection
+        traffic_lease
             .record_proxy_protocol(ProxyProtocolResult::Sent)
             .map_err(|_| SessionEnd::Accounting)?;
     } else {
@@ -758,7 +751,12 @@ async fn relay_session(
             () = &mut lifetime => return Err(SessionEnd::LifetimeTimeout),
             queued = queue_receiver.recv() => {
                 let Some(queued) = queued else { return Ok(()) };
-                account_received(&connection, &mut session_bytes, queued.payload.len(), policy)?;
+                account_received(
+                    traffic_lease,
+                    &mut session_bytes,
+                    queued.payload.len(),
+                    policy,
+                )?;
                 send_datagram(&upstream, &queued.payload, None, shutdown)
                     .await
                     .map_err(SessionEnd::UpstreamSend)?;
@@ -777,7 +775,7 @@ async fn relay_session(
                     .send_to(&upstream_buffer[..length], client)
                     .await
                     .map_err(SessionEnd::ClientSend)?;
-                connection
+                traffic_lease
                     .record_bytes_sent(u64::try_from(length).unwrap_or(u64::MAX))
                     .map_err(|_| SessionEnd::Accounting)?;
                 reset_sleep(&mut idle, relay_policy.idle);
@@ -787,13 +785,13 @@ async fn relay_session(
 }
 
 fn account_received(
-    connection: &ConnectionGuard,
+    traffic_lease: &TrafficLease,
     session_bytes: &mut u64,
     length: usize,
     policy: UdpPolicy,
 ) -> Result<(), SessionEnd> {
     account_session_bytes(session_bytes, length, policy)?;
-    connection
+    traffic_lease
         .record_bytes_received(u64::try_from(length).unwrap_or(u64::MAX))
         .map_err(|_| SessionEnd::Accounting)
 }
@@ -1087,7 +1085,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn runtime_routes_replies_and_releases_its_generation_reference() {
+    async fn runtime_routes_replies_and_releases_its_traffic_lease() {
         let upstream = UdpSocket::bind(("127.0.0.1", 0))
             .await
             .expect("upstream socket");
@@ -1605,6 +1603,21 @@ mod tests {
         assert_eq!(&received[..length], b"again");
         assert_eq!(peer, first_peer);
 
+        let listener = harness
+            .generation
+            .metrics()
+            .snapshot()
+            .expect("UDP metrics snapshot")
+            .listeners
+            .into_iter()
+            .find(|listener| {
+                listener.name == "relay" && listener.state == crate::ListenerRuntimeState::Listening
+            })
+            .expect("UDP listener snapshot");
+        assert_eq!(listener.accepted_connections, 1);
+        assert_eq!(listener.rejected_connections, 0);
+        assert_eq!(listener.active_connections, 1);
+
         assert_eq!(udp_passive_failure_count(&harness.generation), 0);
         harness.stop();
     }
@@ -1855,6 +1868,27 @@ mod tests {
             .is_err(),
             "malformed PROXY v2 datagram reached the upstream"
         );
+        timeout(Duration::from_secs(2), async {
+            while harness.runtime.stats().datagrams_dropped != 1 {
+                sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("PROXY rejection accounting timeout");
+        let listener = harness
+            .generation
+            .metrics()
+            .snapshot()
+            .expect("UDP metrics snapshot")
+            .listeners
+            .into_iter()
+            .find(|listener| {
+                listener.name == "relay" && listener.state == crate::ListenerRuntimeState::Listening
+            })
+            .expect("UDP listener snapshot");
+        assert_eq!(listener.accepted_connections, 0);
+        assert_eq!(listener.rejected_connections, 0);
+        assert_eq!(listener.active_connections, 0);
         harness.stop();
     }
 
