@@ -1672,11 +1672,9 @@ fn compile_rtmp_push_targets(
                 application: application.name().to_owned(),
                 target: target_index,
             };
-            let addresses: Vec<_> = (target.host(), target.port())
-                .to_socket_addrs()
-                .map_err(|_| resolution())?
-                .take(33)
-                .collect();
+            let addresses =
+                RtmpDestinationResolver::resolve_startup_addresses(target.host(), target.port())
+                    .map_err(|_| resolution())?;
             let transport = target.transport();
             let resolver = RtmpDestinationResolver::from_startup(
                 target.host().to_owned(),
@@ -1738,11 +1736,9 @@ fn compile_rtmp_pull_targets(
                 application: application.name().to_owned(),
                 target: target_index,
             };
-            let addresses: Vec<_> = (target.host(), target.port())
-                .to_socket_addrs()
-                .map_err(|_| resolution())?
-                .take(33)
-                .collect();
+            let addresses =
+                RtmpDestinationResolver::resolve_startup_addresses(target.host(), target.port())
+                    .map_err(|_| resolution())?;
             let transport = target.transport();
             let resolver = RtmpDestinationResolver::from_startup(
                 target.host().to_owned(),
