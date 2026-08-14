@@ -584,7 +584,7 @@ async fn run_reverse_connection(
         }
     };
     let traffic_lease =
-        match listener.admit_participant_connection(&generation, RuntimeReferenceKind::Http3) {
+        match listener.admit_runtime_connection(&generation, RuntimeReferenceKind::Http3) {
             Ok(lease) => lease,
             Err(error) => {
                 let reason = match &error {
@@ -694,20 +694,19 @@ async fn run_connection(
         connection.close(H3_CLOSE_CODE, b"service connection limit");
         return;
     };
-    let traffic_lease = match listener
-        .admit_participant_connection(&generation, RuntimeReferenceKind::ForwardHttp3)
-    {
-        Ok(lease) => lease,
-        Err(error) => {
-            let reason = match &error {
-                AdmissionError::GenerationNotAccepting => b"generation draining".as_slice(),
-                AdmissionError::Metrics(_) => b"listener connection limit".as_slice(),
-            };
-            warn!("HTTP/3 connection admission failed: {error}");
-            connection.close(H3_CLOSE_CODE, reason);
-            return;
-        }
-    };
+    let traffic_lease =
+        match listener.admit_runtime_connection(&generation, RuntimeReferenceKind::ForwardHttp3) {
+            Ok(lease) => lease,
+            Err(error) => {
+                let reason = match &error {
+                    AdmissionError::GenerationNotAccepting => b"generation draining".as_slice(),
+                    AdmissionError::Metrics(_) => b"listener connection limit".as_slice(),
+                };
+                warn!("HTTP/3 connection admission failed: {error}");
+                connection.close(H3_CLOSE_CODE, reason);
+                return;
+            }
+        };
     let mut builder = h3::server::builder();
     builder
         .max_field_section_size(u64::try_from(service.max_header_bytes()).unwrap_or(u64::MAX))

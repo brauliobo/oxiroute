@@ -58,7 +58,7 @@ impl ListenerRuntime {
             .map_err(AdmissionError::Metrics)?;
         connection.suppress_access_record();
         Ok(TrafficLease {
-            _connection: connection,
+            connection,
             _generation_reference: Some(generation_reference),
             _generation_admission: Some(generation_admission),
         })
@@ -81,13 +81,13 @@ impl ListenerRuntime {
             .map_err(AdmissionError::Metrics)?;
         connection.suppress_access_record();
         Ok(TrafficLease {
-            _connection: connection,
+            connection,
             _generation_reference: Some(generation_reference),
             _generation_admission: None,
         })
     }
 
-    pub(crate) fn admit_participant_connection(
+    pub(crate) fn admit_runtime_connection(
         &self,
         generation: &std::sync::Arc<RuntimeGeneration>,
         kind: RuntimeReferenceKind,
@@ -101,7 +101,7 @@ impl ListenerRuntime {
             .map_err(AdmissionError::Metrics)?;
         connection.suppress_access_record();
         Ok(TrafficLease {
-            _connection: connection,
+            connection,
             _generation_reference: Some(generation_reference),
             _generation_admission: None,
         })
@@ -114,7 +114,7 @@ impl ListenerRuntime {
             .map_err(AdmissionError::Metrics)?;
         connection.suppress_access_record();
         Ok(TrafficLease {
-            _connection: connection,
+            connection,
             _generation_reference: None,
             _generation_admission: None,
         })
@@ -122,9 +122,26 @@ impl ListenerRuntime {
 }
 
 pub struct TrafficLease {
-    _connection: ConnectionGuard,
+    connection: ConnectionGuard,
     _generation_reference: Option<GenerationReference>,
     _generation_admission: Option<GenerationAdmission>,
+}
+
+impl TrafficLease {
+    pub(crate) fn record_bytes_received(&self, bytes: u64) -> Result<(), MetricsError> {
+        self.connection.record_bytes_received(bytes)
+    }
+
+    pub(crate) fn record_bytes_sent(&self, bytes: u64) -> Result<(), MetricsError> {
+        self.connection.record_bytes_sent(bytes)
+    }
+
+    pub(crate) fn record_proxy_protocol(
+        &self,
+        result: crate::ProxyProtocolResult,
+    ) -> Result<(), MetricsError> {
+        self.connection.record_proxy_protocol(result)
+    }
 }
 
 #[cfg(test)]
