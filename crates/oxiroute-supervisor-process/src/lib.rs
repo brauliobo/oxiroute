@@ -171,6 +171,7 @@ pub struct WorkerCommand {
     program: PathBuf,
     args: Vec<OsString>,
     env: Vec<(OsString, OsString)>,
+    require_cgroup_containment: bool,
 }
 
 impl WorkerCommand {
@@ -187,6 +188,7 @@ impl WorkerCommand {
             program: resolve_executable(program.as_ref())?,
             args: Vec::new(),
             env: Vec::new(),
+            require_cgroup_containment: false,
         })
     }
 
@@ -212,6 +214,16 @@ impl WorkerCommand {
         if let Some(value) = env::var_os(key) {
             self.env.push((key.to_owned(), value));
         }
+        self
+    }
+
+    /// Requires delegated cgroup-v2 containment for this worker process tree.
+    ///
+    /// Spawning fails before the launcher is created when a contained worker cgroup cannot be
+    /// acquired. Commands that do not set this requirement retain process-group fallback.
+    #[must_use]
+    pub fn require_cgroup_containment(mut self) -> Self {
+        self.require_cgroup_containment = true;
         self
     }
 
@@ -304,8 +316,8 @@ impl WorkerSpawner {
     ///
     /// # Errors
     ///
-    /// Returns an error for entropy, socket, spawn, transport, timeout, early exit, or handshake
-    /// authentication failures.
+    /// Returns an error for required containment, entropy, socket, spawn, transport, timeout,
+    /// early exit, or handshake authentication failures.
     pub fn spawn(
         &self,
         command: WorkerCommand,
@@ -314,7 +326,19 @@ impl WorkerSpawner {
         ensure_reaper()?;
         let nonce = generate_nonce()?;
         let (mut parent_endpoint, child_endpoint) = SeqpacketEndpoint::pair()?;
-        let cgroup = WorkerCgroupLease::try_create(&self.cgroup_root).unwrap_or_default();
+        let require_cgroup_containment = command.require_cgroup_containment;
+        let cgroup = match WorkerCgroupLease::try_create(&self.cgroup_root) {
+            Ok(Some(cgroup)) => Some(cgroup),
+            Ok(None) if require_cgroup_containment => {
+                return Err(SpawnError::CgroupContainmentUnavailable(
+                    cgroup::probe_cgroup_v2_at(&self.cgroup_root).status,
+                ));
+            }
+            Err(_) if require_cgroup_containment => {
+                return Err(SpawnError::CgroupContainmentSetupFailed);
+            }
+            Ok(None) | Err(_) => None,
+        };
         let child = command
             .into_launcher_command(
                 &self.launcher,
@@ -860,6 +884,12 @@ pub enum WorkerMetadataError {
 /// Parent-side spawn or startup authentication failure.
 #[derive(Debug, Error)]
 pub enum SpawnError {
+    /// A worker requiring process-tree containment had no usable delegated cgroup-v2 root.
+    #[error("required worker cgroup containment is unavailable ({0:?})")]
+    CgroupContainmentUnavailable(CgroupV2ProbeStatus),
+    /// A delegated per-worker cgroup could not be acquired before launch.
+    #[error("required worker cgroup containment could not be established")]
+    CgroupContainmentSetupFailed,
     /// Operating-system I/O failure.
     #[error("worker process I/O failed: {0}")]
     Io(#[from] io::Error),

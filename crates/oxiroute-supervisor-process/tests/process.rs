@@ -125,6 +125,23 @@ fn executable_resolution_and_environment_are_sanitized() {
 }
 
 #[test]
+fn required_cgroup_containment_fails_before_spawn_without_disclosing_the_root() {
+    let directory = tempfile::tempdir().unwrap();
+    let result = spawner(HANDSHAKE_TIMEOUT)
+        .with_cgroup_root(directory.path())
+        .spawn(command("success").require_cgroup_containment(), identity());
+
+    assert!(matches!(
+        result,
+        Err(SpawnError::CgroupContainmentUnavailable(
+            oxiroute_supervisor_process::CgroupV2ProbeStatus::Unavailable
+        ))
+    ));
+    let error = result.unwrap_err().to_string();
+    assert!(!error.contains(directory.path().to_string_lossy().as_ref()));
+}
+
+#[test]
 fn launcher_removes_parent_inheritable_sentinel_descriptor() {
     let (_reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
     let flags = fcntl_getfd(&writer).unwrap();
