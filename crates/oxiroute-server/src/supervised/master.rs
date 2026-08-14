@@ -23,7 +23,10 @@ use oxiroute_server::{
         CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision, ResolvedConfigDocument,
     },
 };
-use oxiroute_supervision::{GenerationId, InstanceId};
+use oxiroute_supervision::{
+    CatalogError, GenerationId, GenerationLaunchDocument, GenerationRole, InstanceId,
+    SupervisedGenerationCatalog,
+};
 use oxiroute_supervision_unix::InstanceToken;
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, Master, MasterConfig, MasterEvent, MasterState, WorkerInput,
@@ -165,11 +168,14 @@ impl MasterRunner {
         let listeners = reservations.into_stable_listeners(config)?;
         let token = generate_instance_token()?;
         let (instance_id, identity) = worker_identity(token)?;
-        let command = self.build_worker_command(
+        let active = self.build_launch_document(
             coordinator.canonical_path(),
-            &document.effective_revision,
+            document.validated_config.clone(),
+            document.effective_revision.clone(),
+            instance_id,
             identity,
         )?;
+        let catalog = SupervisedGenerationCatalog::new(active);
         let master_config = master_config()?;
         let mut factory = WorkerSpawner::new(&self.launcher_path, WORKER_HANDSHAKE_TIMEOUT)?;
         let mut reload =
@@ -179,11 +185,7 @@ impl MasterRunner {
             master_config,
             listeners,
             &mut factory,
-            WorkerInput {
-                instance_id,
-                identity,
-                command,
-            },
+            worker_input(catalog.active()),
             Instant::now(),
         );
         let result = match launch {
@@ -192,7 +194,7 @@ impl MasterRunner {
                 &signals.stop,
                 &signals.reload,
                 coordinator,
-                document,
+                catalog,
                 &mut factory,
                 &mut reload,
             ),
@@ -210,6 +212,27 @@ impl MasterRunner {
         self.build_worker_command_with_environment(config_path, revision, identity, |key: &str| {
             std::env::var_os(key)
         })
+    }
+
+    fn build_launch_document(
+        &self,
+        config_path: &Path,
+        config: ValidatedConfig,
+        revision: EffectiveRevision,
+        instance_id: InstanceId,
+        identity: WorkerIdentity,
+    ) -> Result<LaunchDocument, Box<dyn Error>> {
+        let command = self.build_worker_command(config_path, &revision, identity)?;
+        Ok(GenerationLaunchDocument::new(
+            instance_id,
+            identity.generation,
+            revision,
+            LaunchPayload {
+                config,
+                identity,
+                command,
+            },
+        ))
     }
 
     fn build_worker_command_with_environment(
@@ -248,7 +271,7 @@ impl MasterRunner {
         stop: &AtomicBool,
         reload_requested: &AtomicBool,
         coordinator: &CanonicalConfigCoordinator,
-        initial_document: &ResolvedConfigDocument,
+        mut catalog: GenerationCatalog,
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
     ) -> Result<(), Box<dyn Error>> {
@@ -257,7 +280,7 @@ impl MasterRunner {
             stop,
             reload_requested,
             coordinator,
-            initial_document,
+            &mut catalog,
             factory,
             reload,
         );
@@ -275,11 +298,10 @@ impl MasterRunner {
         stop: &AtomicBool,
         reload_requested: &AtomicBool,
         coordinator: &CanonicalConfigCoordinator,
-        initial_document: &ResolvedConfigDocument,
+        catalog: &mut GenerationCatalog,
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
     ) -> Result<(), Box<dyn Error>> {
-        let mut reload_state = ReloadState::new(initial_document);
         while master.state() != MasterState::Running {
             if master.state() == MasterState::Failed {
                 return Err(master_failure("startup").into());
@@ -300,12 +322,12 @@ impl MasterRunner {
                     let now = Instant::now();
                     let events = master.poll(now)?;
                     log_master_events(&events);
-                    reload_state.apply_events(&events);
-                    let forced_reload = reload_state.pending.is_none()
+                    apply_catalog_events(catalog, &events)?;
+                    let forced_reload = catalog.candidate().is_none()
                         && reload_requested.swap(false, Ordering::AcqRel);
-                    if reload_state.pending.is_none() && (forced_reload || reload.next_trigger(now))
+                    if catalog.candidate().is_none() && (forced_reload || reload.next_trigger(now))
                     {
-                        self.reconcile(master, coordinator, &mut reload_state, factory, reload)?;
+                        self.reconcile(master, coordinator, catalog, factory, reload)?;
                     }
                     thread::sleep(MASTER_POLL_INTERVAL);
                 }
@@ -316,7 +338,7 @@ impl MasterRunner {
                 _ => {
                     let events = master.poll(Instant::now())?;
                     log_master_events(&events);
-                    reload_state.apply_events(&events);
+                    apply_catalog_events(catalog, &events)?;
                     thread::sleep(MASTER_POLL_INTERVAL);
                 }
             }
@@ -327,7 +349,7 @@ impl MasterRunner {
         &self,
         master: &mut Master,
         coordinator: &CanonicalConfigCoordinator,
-        reload_state: &mut ReloadState,
+        catalog: &mut GenerationCatalog,
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
     ) -> Result<(), Box<dyn Error>> {
@@ -342,7 +364,7 @@ impl MasterRunner {
             warn!("supervised master could not watch a configuration dependency: {error}");
         }
         let revision = document.effective_revision.clone();
-        if revision == reload_state.active_revision {
+        if &revision == catalog.active().revision() {
             return Ok(());
         }
         if let Err(error) = eligibility(&document.validated_config) {
@@ -351,27 +373,35 @@ impl MasterRunner {
         }
         if ListenerReservations::listener_restart_required(
             RuntimeMode::Supervised,
-            &reload_state.active_config,
+            &catalog.active().payload().config,
             &document.validated_config,
         ) {
-            warn!("supervised master ignored a configuration reload that changes listeners");
+            if has_restart_required_revision(catalog, &revision) {
+                return Ok(());
+            }
+            let restart_required = self.next_launch_document(
+                catalog,
+                coordinator.canonical_path(),
+                document.validated_config.clone(),
+                revision,
+            )?;
+            catalog.record_restart_required(restart_required)?;
+            warn!("supervised master retained a configuration reload that changes listeners");
             return Ok(());
         }
 
-        let generation = GenerationId(reload_state.next_generation);
-        reload_state.next_generation = reload_state
-            .next_generation
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("supervised worker generation exhausted"))?;
-        let token = generate_instance_token()?;
-        let (instance_id, identity) = replacement_worker_identity(token, generation)?;
-        let command =
-            self.build_worker_command(coordinator.canonical_path(), &revision, identity)?;
-        let candidate = WorkerInput {
-            instance_id,
-            identity,
-            command,
-        };
+        let candidate = self.next_launch_document(
+            catalog,
+            coordinator.canonical_path(),
+            document.validated_config.clone(),
+            revision,
+        )?;
+        catalog.begin_candidate(candidate)?;
+        let candidate = worker_input(
+            catalog
+                .candidate()
+                .expect("candidate was inserted immediately before launch"),
+        );
         if let Err(error) = master.replace(factory, candidate, Instant::now()) {
             if master.state() != MasterState::Running {
                 return Err(error.into());
@@ -379,11 +409,20 @@ impl MasterRunner {
             warn!("supervised master could not start a configuration replacement: {error}");
             return Ok(());
         }
-        reload_state.pending = Some(PendingReplacement {
-            revision,
-            config: document.validated_config.clone(),
-        });
         Ok(())
+    }
+
+    fn next_launch_document(
+        &self,
+        catalog: &mut GenerationCatalog,
+        config_path: &Path,
+        config: ValidatedConfig,
+        revision: EffectiveRevision,
+    ) -> Result<LaunchDocument, Box<dyn Error>> {
+        let generation = catalog.allocate_generation()?;
+        let token = generate_instance_token()?;
+        let (instance_id, identity) = replacement_worker_identity(token, generation)?;
+        self.build_launch_document(config_path, config, revision, instance_id, identity)
     }
 }
 
@@ -396,44 +435,90 @@ fn log_master_events(events: &[MasterEvent]) {
     }
 }
 
-struct PendingReplacement {
-    revision: EffectiveRevision,
+#[derive(Clone, Debug)]
+struct LaunchPayload {
     config: ValidatedConfig,
+    identity: WorkerIdentity,
+    command: WorkerCommand,
 }
 
-struct ReloadState {
-    active_config: ValidatedConfig,
-    active_revision: EffectiveRevision,
-    pending: Option<PendingReplacement>,
-    next_generation: u64,
-}
+type LaunchDocument = GenerationLaunchDocument<EffectiveRevision, LaunchPayload>;
+type GenerationCatalog = SupervisedGenerationCatalog<EffectiveRevision, LaunchPayload>;
 
-impl ReloadState {
-    fn new(document: &ResolvedConfigDocument) -> Self {
-        Self {
-            active_config: document.validated_config.clone(),
-            active_revision: document.effective_revision.clone(),
-            pending: None,
-            next_generation: INITIAL_GENERATION.0 + 1,
-        }
+fn worker_input(document: &LaunchDocument) -> WorkerInput<WorkerCommand> {
+    WorkerInput {
+        instance_id: document.instance_id().clone(),
+        identity: document.payload().identity,
+        command: document.payload().command.clone(),
     }
+}
 
-    fn apply_events(&mut self, events: &[MasterEvent]) {
-        for event in events {
-            match event {
-                MasterEvent::ReplacementCommitted { .. } => {
-                    if let Some(replacement) = self.pending.take() {
-                        self.active_config = replacement.config;
-                        self.active_revision = replacement.revision;
-                    }
-                }
-                MasterEvent::RollbackCompleted { .. } => {
-                    self.pending.take();
-                }
-                _ => {}
+fn has_restart_required_revision(
+    catalog: &GenerationCatalog,
+    revision: &EffectiveRevision,
+) -> bool {
+    catalog
+        .restart_required()
+        .is_some_and(|retained| retained.revision() == revision)
+}
+
+fn apply_catalog_events(
+    catalog: &mut GenerationCatalog,
+    events: &[MasterEvent],
+) -> Result<(), CatalogSyncError> {
+    for event in events {
+        match event {
+            MasterEvent::SpawnFailed { instance_id } => {
+                expect_catalog_instance(catalog, GenerationRole::Candidate, instance_id)?;
+                catalog.quarantine_candidate()?;
             }
+            MasterEvent::ReplacementCommitted { active, retired } => {
+                expect_catalog_instance(catalog, GenerationRole::Candidate, active)?;
+                expect_catalog_instance(catalog, GenerationRole::Active, retired)?;
+                catalog.commit_candidate()?;
+            }
+            MasterEvent::ReplacementCompleted { active }
+            | MasterEvent::RollbackCompleted { active } => {
+                expect_catalog_instance(catalog, GenerationRole::Active, active)?;
+            }
+            MasterEvent::RollbackStarted { candidate, .. } => {
+                expect_catalog_instance(catalog, GenerationRole::Candidate, candidate)?;
+                catalog.quarantine_candidate()?;
+            }
+            _ => {}
         }
     }
+    Ok(())
+}
+
+fn expect_catalog_instance(
+    catalog: &GenerationCatalog,
+    role: GenerationRole,
+    actual: &InstanceId,
+) -> Result<(), CatalogSyncError> {
+    let expected = catalog.get(role).map(GenerationLaunchDocument::instance_id);
+    if expected == Some(actual) {
+        return Ok(());
+    }
+    Err(CatalogSyncError::UnexpectedInstance {
+        role,
+        expected: expected.cloned(),
+        actual: actual.clone(),
+    })
+}
+
+#[derive(Debug, Error)]
+enum CatalogSyncError {
+    #[error(transparent)]
+    Catalog(#[from] CatalogError),
+    #[error(
+        "master event referenced generation instance {actual} as {role:?}, expected {expected:?}"
+    )]
+    UnexpectedInstance {
+        role: GenerationRole,
+        expected: Option<InstanceId>,
+        actual: InstanceId,
+    },
 }
 
 struct ConfigReloadMonitor {
@@ -667,6 +752,7 @@ mod tests {
     use oxiroute_config::{
         ConfigDraft, DownstreamTimeoutPolicy, Listener, ListenerBind, Management, Protocol, Stats,
     };
+    use oxiroute_supervisor_master::FailurePhase;
     use serde_json::json;
 
     use super::*;
@@ -833,6 +919,162 @@ mod tests {
         assert_eq!(second.generation, GenerationId(3));
         assert_eq!(second_id.as_str(), "oxiroute-stage-3-3");
         assert_ne!(first.instance, second.instance);
+    }
+
+    fn launch_catalog() -> (MasterRunner, GenerationCatalog) {
+        let runner = MasterRunner::new_for_test(
+            "/test-only/oxiroute-worker-launcher",
+            std::env::current_exe().expect("test executable"),
+        );
+        let revision = EffectiveRevision::from_str(&"a".repeat(64)).expect("active revision");
+        let (instance_id, identity) =
+            worker_identity(InstanceToken([0x11; 16])).expect("active identity");
+        let active = runner
+            .build_launch_document(
+                Path::new("/etc/oxiroute/oxiroute.kdl"),
+                validated(&config()),
+                revision,
+                instance_id,
+                identity,
+            )
+            .expect("active launch document");
+        (runner, SupervisedGenerationCatalog::new(active))
+    }
+
+    fn add_candidate(
+        runner: &MasterRunner,
+        catalog: &mut GenerationCatalog,
+        revision_digit: char,
+    ) -> InstanceId {
+        let generation = catalog.allocate_generation().expect("candidate generation");
+        let token_byte = u8::try_from(generation.0).expect("test generation fits token byte");
+        let (instance_id, identity) =
+            replacement_worker_identity(InstanceToken([token_byte; 16]), generation)
+                .expect("candidate identity");
+        let revision = EffectiveRevision::from_str(&revision_digit.to_string().repeat(64))
+            .expect("candidate revision");
+        let candidate = runner
+            .build_launch_document(
+                Path::new("/etc/oxiroute/oxiroute.kdl"),
+                validated(&config()),
+                revision,
+                instance_id.clone(),
+                identity,
+            )
+            .expect("candidate launch document");
+        catalog
+            .begin_candidate(candidate)
+            .expect("catalog candidate");
+        instance_id
+    }
+
+    #[test]
+    fn worker_input_is_derived_from_the_exact_catalog_candidate() {
+        let (runner, mut catalog) = launch_catalog();
+        let candidate_id = add_candidate(&runner, &mut catalog, 'b');
+        let document = catalog.candidate().expect("candidate document");
+        let input = worker_input(document);
+
+        assert_eq!(input.instance_id, candidate_id);
+        assert_eq!(input.identity, document.payload().identity);
+        assert_eq!(input.identity.generation, document.generation_id());
+        assert_eq!(
+            format!("{:?}", input.command),
+            format!("{:?}", document.payload().command)
+        );
+    }
+
+    #[test]
+    fn catalog_maps_commit_and_completion_in_master_event_order() {
+        let (runner, mut catalog) = launch_catalog();
+        let retired = catalog.active().instance_id().clone();
+        let active = add_candidate(&runner, &mut catalog, 'b');
+
+        apply_catalog_events(
+            &mut catalog,
+            &[
+                MasterEvent::ReplacementCommitted {
+                    active: active.clone(),
+                    retired: retired.clone(),
+                },
+                MasterEvent::ReplacementCompleted {
+                    active: active.clone(),
+                },
+            ],
+        )
+        .expect("ordered replacement events");
+
+        assert_eq!(catalog.active().instance_id(), &active);
+        assert_eq!(catalog.previous().unwrap().instance_id(), &retired);
+        assert!(catalog.candidate().is_none());
+    }
+
+    #[test]
+    fn catalog_quarantines_rollback_and_spawn_failure_candidates() {
+        let (runner, mut rollback_catalog) = launch_catalog();
+        let active = rollback_catalog.active().instance_id().clone();
+        let rollback = add_candidate(&runner, &mut rollback_catalog, 'b');
+        apply_catalog_events(
+            &mut rollback_catalog,
+            &[
+                MasterEvent::RollbackStarted {
+                    candidate: rollback.clone(),
+                    phase: FailurePhase::Activation,
+                },
+                MasterEvent::RollbackCompleted { active },
+            ],
+        )
+        .expect("rollback events");
+        assert_eq!(
+            rollback_catalog.quarantined().unwrap().instance_id(),
+            &rollback
+        );
+        assert!(rollback_catalog.candidate().is_none());
+
+        let (runner, mut spawn_catalog) = launch_catalog();
+        let failed = add_candidate(&runner, &mut spawn_catalog, 'c');
+        apply_catalog_events(
+            &mut spawn_catalog,
+            &[MasterEvent::SpawnFailed {
+                instance_id: failed.clone(),
+            }],
+        )
+        .expect("spawn failure event");
+        assert_eq!(spawn_catalog.quarantined().unwrap().instance_id(), &failed);
+        assert!(spawn_catalog.candidate().is_none());
+    }
+
+    #[test]
+    fn catalog_retains_and_deduplicates_restart_required_revision() {
+        let (runner, mut catalog) = launch_catalog();
+        let generation = catalog.allocate_generation().expect("restart generation");
+        let (restart_id, identity) =
+            replacement_worker_identity(InstanceToken([0x22; 16]), generation)
+                .expect("restart identity");
+        let restart = runner
+            .build_launch_document(
+                Path::new("/etc/oxiroute/oxiroute.kdl"),
+                validated(&config()),
+                EffectiveRevision::from_str(&"d".repeat(64)).expect("restart revision"),
+                restart_id.clone(),
+                identity,
+            )
+            .expect("restart launch document");
+        let revision = restart.revision().clone();
+        catalog
+            .record_restart_required(restart)
+            .expect("restart-required document");
+
+        assert_eq!(
+            catalog.restart_required().unwrap().instance_id(),
+            &restart_id
+        );
+        assert!(has_restart_required_revision(&catalog, &revision));
+        assert!(!has_restart_required_revision(
+            &catalog,
+            &EffectiveRevision::from_str(&"e".repeat(64)).expect("other revision")
+        ));
+        assert_eq!(catalog.allocate_generation(), Ok(GenerationId(3)));
     }
 
     #[test]

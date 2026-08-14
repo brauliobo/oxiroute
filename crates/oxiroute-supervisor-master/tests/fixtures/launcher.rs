@@ -18,6 +18,7 @@ use rustix::process::{Signal, getpgrp, kill_process_group};
 
 type WorkerEnvironment = Vec<(OsString, OsString)>;
 type LauncherResult<T> = Result<T, Box<dyn std::error::Error>>;
+const WORKER_METADATA_VERSION: &str = "v1";
 
 fn main() -> ExitCode {
     match launch() {
@@ -55,6 +56,11 @@ fn launch() -> LauncherResult<()> {
 fn decode_metadata(
     encoded: &mut impl Iterator<Item = OsString>,
 ) -> LauncherResult<(Vec<OsString>, WorkerEnvironment)> {
+    match encoded.next() {
+        Some(version) if version == WORKER_METADATA_VERSION => {}
+        Some(_) => return Err("unsupported worker metadata version".into()),
+        None => return Err("missing worker metadata version".into()),
+    }
     let argument_count = parse_count(encoded.next(), "argument", MAX_WORKER_ARGUMENTS)?;
     let mut total = 0_usize;
     let mut arguments = Vec::with_capacity(argument_count);
