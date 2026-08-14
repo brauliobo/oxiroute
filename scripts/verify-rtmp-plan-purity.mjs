@@ -9,7 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const crate = path.join(root, 'crates/oxiroute-rtmp')
 const checked = new Map([
   ['src/composition.rs', {
-    std: new Set(['fmt', 'net::SocketAddr', 'path::{Path, PathBuf}', 'time::Duration']),
+    std: new Set(['fmt', 'net::SocketAddr', 'path::{Path, PathBuf}', 'sync::Arc', 'time::Duration']),
     external: new Set(),
     modules: new Set(),
   }],
@@ -17,13 +17,16 @@ const checked = new Map([
 const allowedCrateSymbols = new Set([
   'DashSegmentNaming', 'DestinationPolicyError', 'ExecEnvironment', 'ExecFilesystemPolicy',
   'ExecLimits', 'ExecMode', 'ExecNetworkPolicy', 'ExecProfile', 'ExecProfileError', 'ExecTrigger',
-  'HlsFragmentNaming', 'HlsKeyConfig', 'HlsValueError', 'HlsVariant', 'RecorderWorkerConfig',
+  'HlsFragmentNaming', 'HlsKeyConfig', 'HlsValueError', 'HlsVariant', 'LiveHub', 'MediaApplication',
+  'RecorderWorkerConfig',
   'RecorderWorkerStartError', 'RecordingPathPolicy', 'RecordingStoreLimits',
   'RecordingStoreLimitsError', 'RtmpAccessAction', 'RtmpAccessPolicy', 'RtmpAccessRule', 'RtmpAutoPushConfig',
-  'RtmpAutoPushConfigError', 'RtmpCallbackMethod', 'RtmpCallbackValueError', 'RtmpNetwork',
-  'RtmpOutboundPolicy', 'RtmpPushApplication', 'RtmpRecorderStart', 'RtmpSessionCeilings',
-  'RtmpSessionLimitError', 'RtmpSessionLimits', 'RtmpStreamPath', 'RtmpTokenPolicy',
-  'RtmpTransport', 'VodLimits', 'VodSourceDefinition', 'VodValueError',
+  'RtmpApplication', 'RtmpAutoPushConfigError', 'RtmpCallbackMethod', 'RtmpCallbackPolicy',
+  'RtmpCallbackValueError', 'RtmpNetwork', 'RtmpOutboundPolicy', 'RtmpPullTarget',
+  'RtmpPushApplication', 'RtmpPushTarget', 'RtmpRecorderPolicy', 'RtmpRecorderStart',
+  'RtmpSessionCeilings', 'RtmpSessionLimitError', 'RtmpSessionLimits', 'RtmpStreamPath',
+  'RtmpTokenPolicy', 'RtmpTransport', 'VodApplication', 'VodLimits', 'VodSourceDefinition',
+  'VodValueError',
   'validate_callback_url_intrinsic',
 ])
 const allowedCargoDependencies = new Set([

@@ -38,13 +38,12 @@ use oxiroute_config::{CachePurgeAuthorization, ListenerBind, Protocol, Validated
 use oxiroute_rtmp::{
     DashOutputConfig, ExecProfile, HlsOutputConfig, LiveHub, LiveHubLimits, MediaApplication,
     MediaCatalog, MediaStore, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore,
-    RecordingStoreLimits, RtmpAccessPolicy as RuntimeRtmpAccessPolicy,
-    RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig, RtmpCallbackPolicy,
-    RtmpCapabilities, RtmpClientOptions, RtmpCredential, RtmpDestinationResolver,
-    RtmpDestinationResolverError, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushTarget,
-    RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig, RtmpServicePreparation,
-    RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionLimits, RtmpSessionPolicy, VodApplication,
-    VodCatalog,
+    RecordingStoreLimits, RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig,
+    RtmpCallbackPolicy, RtmpCapabilities, RtmpClientOptions, RtmpCredential,
+    RtmpDestinationResolver, RtmpDestinationResolverError, RtmpOutboundPolicy, RtmpPullTarget,
+    RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig,
+    RtmpServicePreparation, RtmpServiceRuntime, RtmpSessionLimits, RtmpSessionPolicy,
+    VodApplication, VodCatalog,
 };
 
 enum DiskBackendRegistryEntry {
@@ -282,7 +281,7 @@ impl RtmpServicePlan {
                             return Err(RtmpPreparationError::ServicePlan(
                                 ServicePlanError::RecorderStartup {
                                     service: self.service_id.clone(),
-                                    application: application.name.clone(),
+                                    application: application.plan.name().to_owned(),
                                     recorder: recorder.name.clone(),
                                 },
                             ));
@@ -305,7 +304,7 @@ impl RtmpServicePlan {
                                 } else {
                                     ServicePlanError::RecorderStartup {
                                         service: self.service_id.clone(),
-                                        application: application.name.clone(),
+                                        application: application.plan.name().to_owned(),
                                         recorder: recorder.name.clone(),
                                     }
                                     .into()
@@ -323,23 +322,15 @@ impl RtmpServicePlan {
                         ))
                     })
                     .collect::<Result<Vec<_>, RtmpPreparationError>>()?;
-                Ok(RuntimeRtmpApplication::with_runtime(
-                    &application.name,
-                    application.live,
-                    application.idle_streams,
+                Ok(application.plan.build_runtime_application(
                     application.hub.clone(),
                     application.push_targets.clone(),
+                    application.pull_targets.clone(),
+                    application.callbacks.clone(),
+                    application.vod.clone(),
+                    application.media.clone(),
+                    application.exec_profiles.clone(),
                     recorders,
-                )
-                .with_pull_targets(application.pull_targets.clone())
-                .with_vod(application.vod.clone())
-                .with_media(application.media.clone())
-                .with_exec_profiles(application.exec_profiles.clone())
-                .with_callbacks(application.callbacks.clone())
-                .with_authorization(
-                    application.publish_policy.clone(),
-                    application.play_policy.clone(),
-                    application.session_limits,
                 ))
             })
             .collect()
@@ -372,9 +363,10 @@ impl RtmpServicePlan {
     pub fn manual_recording(&self) -> bool {
         self.applications.iter().any(|application| {
             application
-                .recorders
+                .plan
+                .recorders()
                 .iter()
-                .any(|recorder| recorder.start == RtmpRecorderStart::Manual)
+                .any(|recorder| recorder.start() == RtmpRecorderStart::Manual)
         })
     }
 
@@ -382,7 +374,7 @@ impl RtmpServicePlan {
     pub fn recording_supported(&self) -> bool {
         self.applications
             .iter()
-            .any(|application| !application.recorders.is_empty())
+            .any(|application| !application.plan.recorders().is_empty())
     }
 
     #[must_use]
@@ -493,12 +485,7 @@ pub(crate) fn with_rtmp_runtime_fault<T>(fault: RtmpRuntimeFault, run: impl FnOn
 
 #[derive(Clone)]
 struct PreparedRtmpApplication {
-    name: String,
-    live: bool,
-    idle_streams: bool,
-    publish_policy: RuntimeRtmpAccessPolicy,
-    play_policy: RuntimeRtmpAccessPolicy,
-    session_limits: RtmpSessionCeilings,
+    plan: oxiroute_rtmp::RtmpApplicationPlan,
     hub: LiveHub,
     push_targets: Vec<RtmpPushTarget>,
     pull_targets: Vec<RtmpPullTarget>,
@@ -1549,8 +1536,6 @@ fn compile_rtmp_services(
         let mut prepared_applications = Vec::with_capacity(plan.applications().len());
         for (application, decisions) in plan.applications().iter().zip(&spec.applications) {
             let hub = LiveHub::new(decisions.fanout_limits);
-            let publish_policy = decisions.publish_policy.clone();
-            let play_policy = decisions.play_policy.clone();
             let push_targets =
                 compile_rtmp_push_targets(plan.service_id(), application, listener_addresses)?;
             let pull_targets =
@@ -1597,12 +1582,7 @@ fn compile_rtmp_services(
                 )?);
             }
             prepared_applications.push(PreparedRtmpApplication {
-                name: application.name().to_owned(),
-                live: application.live(),
-                idle_streams: application.idle_streams(),
-                publish_policy,
-                play_policy,
-                session_limits: application.session_limits(),
+                plan: application.clone(),
                 hub,
                 push_targets,
                 pull_targets,
@@ -1627,7 +1607,7 @@ fn compile_rtmp_services(
                 application.media.clone().map(|media| {
                     (
                         plan.service_id().to_owned(),
-                        application.name.clone(),
+                        application.plan.name().to_owned(),
                         media,
                     )
                 })

@@ -716,11 +716,7 @@ fn compile_rtmp_blueprint(
                     * fanout.max_queue_bytes_per_subscriber(),
                 ..oxiroute_rtmp::LiveHubLimits::default()
             };
-            Ok(RtmpApplicationBlueprint {
-                publish_policy: application.publish().runtime_policy(),
-                play_policy: application.play().runtime_policy(),
-                fanout_limits,
-            })
+            Ok(RtmpApplicationBlueprint { fanout_limits })
         })
         .collect::<Result<Box<[_]>, ServicePlanError>>()?;
     Ok(RtmpSpec {

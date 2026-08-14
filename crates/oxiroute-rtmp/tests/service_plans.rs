@@ -8,15 +8,15 @@ use tempfile::tempdir;
 
 use oxiroute_rtmp::{
     DashSegmentNaming, ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecTrigger,
-    HlsFragmentNaming, HlsKeyConfig, HlsVariant, RecorderMediaMask, RecorderWorkerConfig,
-    RecordingPathPolicy, RecordingStoreLimits, RtmpAccessAction, RtmpAccessPlan,
-    RtmpAccessRulePlan, RtmpApplicationPlan, RtmpAutoPushConfig, RtmpAutoPushPlan,
-    RtmpCallbackError, RtmpCallbackEventPlan, RtmpCallbackMethod, RtmpCallbackPlan, RtmpClientPlan,
-    RtmpCredentialPlan, RtmpDashPlan, RtmpExecEnvironmentPlan, RtmpExecPlan, RtmpFanoutPlan,
-    RtmpHlsPlan, RtmpMediaPlan, RtmpNetwork, RtmpOutboundPolicy, RtmpPrepareCategory,
-    RtmpPrepareContext, RtmpPrepareMode, RtmpPrepareSource, RtmpPullPlan, RtmpPushApplication,
-    RtmpPushPlan, RtmpRecorderPlan, RtmpRecorderStart, RtmpRelayPlan, RtmpServicePlan,
-    RtmpSessionCeilings, RtmpSessionLimits, RtmpTransport, RtmpVodPlan, VodLimits,
+    HlsFragmentNaming, HlsKeyConfig, HlsVariant, LiveHub, LiveHubLimits, RecorderMediaMask,
+    RecorderWorkerConfig, RecordingPathPolicy, RecordingStoreLimits, RtmpAccessAction,
+    RtmpAccessPlan, RtmpAccessRulePlan, RtmpApplicationPlan, RtmpAutoPushConfig, RtmpAutoPushPlan,
+    RtmpCallbackError, RtmpCallbackEventPlan, RtmpCallbackMethod, RtmpCallbackPlan,
+    RtmpCallbackPolicy, RtmpClientPlan, RtmpCredentialPlan, RtmpDashPlan, RtmpExecEnvironmentPlan,
+    RtmpExecPlan, RtmpFanoutPlan, RtmpHlsPlan, RtmpMediaPlan, RtmpNetwork, RtmpOutboundPolicy,
+    RtmpPrepareCategory, RtmpPrepareContext, RtmpPrepareMode, RtmpPrepareSource, RtmpPullPlan,
+    RtmpPushApplication, RtmpPushPlan, RtmpRecorderPlan, RtmpRecorderStart, RtmpRelayPlan,
+    RtmpServicePlan, RtmpSessionCeilings, RtmpSessionLimits, RtmpTransport, RtmpVodPlan, VodLimits,
     VodSourceDefinition,
 };
 
@@ -137,6 +137,28 @@ fn vod_acquisition_stays_inside_the_rtmp_plan_owner() {
     assert_eq!(application.service(), "streaming");
     assert_eq!(application.application(), "vod");
     assert_eq!(application.limits().max_sessions, 2);
+}
+
+#[test]
+fn runtime_application_construction_stays_inside_the_rtmp_plan_owner() {
+    let runtime = application(None).build_runtime_application(
+        LiveHub::new(LiveHubLimits::default()),
+        [],
+        [],
+        RtmpCallbackPolicy::default(),
+        None,
+        None,
+        [],
+        [],
+    );
+
+    assert_eq!(runtime.name(), "live");
+    assert!(runtime.live());
+    assert!(runtime.idle_streams());
+    assert_eq!(
+        runtime.session_limits(),
+        RtmpSessionCeilings::new(16, 4, 12)
+    );
 }
 
 #[test]

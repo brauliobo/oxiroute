@@ -4,18 +4,20 @@ use std::{
     fmt,
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
 use crate::{
     DashSegmentNaming, DestinationPolicyError, ExecEnvironment, ExecFilesystemPolicy, ExecLimits,
     ExecMode, ExecNetworkPolicy, ExecProfile, ExecProfileError, ExecTrigger, HlsFragmentNaming,
-    HlsKeyConfig, HlsValueError, HlsVariant, RecorderWorkerConfig, RecorderWorkerStartError,
-    RecordingPathPolicy, RecordingStoreLimits, RecordingStoreLimitsError, RtmpAccessAction,
-    RtmpAccessPolicy, RtmpAccessRule, RtmpAutoPushConfig, RtmpAutoPushConfigError,
-    RtmpCallbackMethod, RtmpCallbackValueError, RtmpNetwork, RtmpOutboundPolicy,
-    RtmpPushApplication, RtmpRecorderStart, RtmpSessionCeilings, RtmpSessionLimitError,
-    RtmpSessionLimits, RtmpStreamPath, RtmpTokenPolicy, RtmpTransport, VodLimits,
+    HlsKeyConfig, HlsValueError, HlsVariant, LiveHub, MediaApplication, RecorderWorkerConfig,
+    RecorderWorkerStartError, RecordingPathPolicy, RecordingStoreLimits, RecordingStoreLimitsError,
+    RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpAutoPushConfig,
+    RtmpAutoPushConfigError, RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCallbackValueError,
+    RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget,
+    RtmpRecorderPolicy, RtmpRecorderStart, RtmpSessionCeilings, RtmpSessionLimitError,
+    RtmpSessionLimits, RtmpStreamPath, RtmpTokenPolicy, RtmpTransport, VodApplication, VodLimits,
     VodSourceDefinition, VodValueError, validate_callback_url_intrinsic,
 };
 
@@ -411,6 +413,40 @@ impl RtmpApplicationPlan {
     #[must_use]
     pub fn exec(&self) -> &[RtmpExecPlan] {
         &self.exec
+    }
+
+    /// Assembles the runtime application from resources acquired by RTMP preparation.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn build_runtime_application(
+        &self,
+        hub: LiveHub,
+        push_targets: impl IntoIterator<Item = RtmpPushTarget>,
+        pull_targets: impl IntoIterator<Item = RtmpPullTarget>,
+        callbacks: RtmpCallbackPolicy,
+        vod: Option<Arc<VodApplication>>,
+        media: Option<Arc<MediaApplication>>,
+        exec_profiles: impl IntoIterator<Item = ExecProfile>,
+        recorders: impl IntoIterator<Item = RtmpRecorderPolicy>,
+    ) -> RtmpApplication {
+        RtmpApplication::with_runtime(
+            self.name.clone(),
+            self.live,
+            self.idle_streams,
+            hub,
+            push_targets,
+            recorders,
+        )
+        .with_pull_targets(pull_targets)
+        .with_vod(vod)
+        .with_media(media)
+        .with_exec_profiles(exec_profiles)
+        .with_callbacks(callbacks)
+        .with_authorization(
+            self.publish.runtime_policy(),
+            self.play.runtime_policy(),
+            self.session_limits,
+        )
     }
 }
 
