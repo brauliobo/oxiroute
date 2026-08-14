@@ -12,12 +12,13 @@ use std::{
 use oxiroute_supervision::GenerationId;
 use oxiroute_supervision_unix::InstanceToken;
 use oxiroute_supervisor_process::{
-    AuthenticatedChannelError, ExecutableError, MAX_WORKER_METADATA_ITEM_BYTES, SpawnError,
-    WorkerCommand, WorkerEvent, WorkerIdentity, WorkerMetadataError, WorkerProcess, WorkerSpawner,
+    AuthenticatedChannelError, DEFAULT_CGROUP_V2_ROOT, ExecutableError,
+    MAX_WORKER_METADATA_ITEM_BYTES, SpawnError, WorkerCommand, WorkerEvent, WorkerIdentity,
+    WorkerMetadataError, WorkerProcess, WorkerSpawner, probe_cgroup_v2,
 };
 use rustix::{
     io::{FdFlags, fcntl_getfd, fcntl_setfd},
-    process::{Pid, test_kill_process},
+    process::{Pid, Signal, kill_process, test_kill_process},
 };
 
 const INSTANCE: InstanceToken = InstanceToken(*b"process-worker01");
@@ -319,6 +320,79 @@ fn launcher_cleans_ordinary_descendants_after_worker_exit() {
     worker.wait_event().unwrap();
     assert_eq!(worker.process_group_id(), None);
     assert_process_gone(descendant);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn delegated_cgroup_cleans_a_descendant_that_escaped_the_process_group() {
+    if !probe_cgroup_v2().is_ready() {
+        return;
+    }
+
+    let temporary = tempfile::tempdir().unwrap();
+    let pid_file = temporary.path().join("escaped-descendant.pid");
+    let mut worker = spawner(HANDSHAKE_TIMEOUT)
+        .spawn(
+            command("escaped-descendant-exit").env("DESCENDANT_PID_FILE", pid_file.as_os_str()),
+            identity(),
+        )
+        .unwrap();
+    let cgroup_path = worker
+        .cgroup_path()
+        .expect("delegated worker cgroup")
+        .to_owned();
+    assert_eq!(
+        cgroup_path.parent(),
+        Some(std::path::Path::new(DEFAULT_CGROUP_V2_ROOT))
+    );
+    let descendant = wait_for_file(&pid_file).parse::<u32>().unwrap();
+
+    worker.wait_event().unwrap();
+    assert_process_gone(descendant);
+    let started = Instant::now();
+    while cgroup_path.exists() && started.elapsed() < Duration::from_secs(2) {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!cgroup_path.exists(), "worker cgroup survived cleanup");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn delegated_cgroup_owner_cleans_after_launcher_crash() {
+    if !probe_cgroup_v2().is_ready() {
+        return;
+    }
+
+    let temporary = tempfile::tempdir().unwrap();
+    let pid_file = temporary.path().join("launcher-crash-descendant.pid");
+    let mut worker = spawner(HANDSHAKE_TIMEOUT)
+        .spawn(
+            command("escaped-descendant-exit")
+                .env("DESCENDANT_PID_FILE", pid_file.as_os_str())
+                .env("LINGER_AFTER_DESCENDANT", "1"),
+            identity(),
+        )
+        .unwrap();
+    let cgroup_path = worker
+        .cgroup_path()
+        .expect("delegated worker cgroup")
+        .to_owned();
+    let descendant = wait_for_file(&pid_file).parse::<u32>().unwrap();
+    let launcher = worker
+        .process_group_id()
+        .and_then(|pid| i32::try_from(pid).ok().and_then(Pid::from_raw));
+    kill_process(launcher.expect("launcher pid"), Signal::KILL).unwrap();
+
+    worker.wait_event().unwrap();
+    assert_process_gone(descendant);
+    let started = Instant::now();
+    while cgroup_path.exists() && started.elapsed() < Duration::from_secs(2) {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        !cgroup_path.exists(),
+        "crashed launcher cgroup survived cleanup"
+    );
 }
 
 #[test]

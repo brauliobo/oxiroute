@@ -18,7 +18,7 @@ use rustix::process::{Signal, getpgrp, kill_process_group};
 
 type WorkerEnvironment = Vec<(OsString, OsString)>;
 type LauncherResult<T> = Result<T, Box<dyn std::error::Error>>;
-const WORKER_METADATA_VERSION: &str = "v1";
+const WORKER_METADATA_VERSION: &str = "v2";
 
 fn main() -> ExitCode {
     match launch() {
@@ -36,9 +36,15 @@ fn launch() -> LauncherResult<()> {
     if !Path::new(&worker).is_absolute() {
         return Err("worker executable is not absolute".into());
     }
-    let (arguments, environment) = decode_metadata(&mut encoded)?;
+    let (cgroup_path, arguments, environment) = decode_metadata(&mut encoded)?;
     if encoded.next().is_some() {
         return Err("trailing launcher metadata".into());
+    }
+    if let Some(path) = cgroup_path.as_deref() {
+        std::fs::write(
+            Path::new(path).join("cgroup.procs"),
+            std::process::id().to_string(),
+        )?;
     }
     let mut child = Command::new(worker)
         .args(arguments)
@@ -49,18 +55,34 @@ fn launch() -> LauncherResult<()> {
     let null = File::open("/dev/null")?;
     rustix::stdio::dup2_stdin(null.as_fd())?;
     let _worker_status = child.wait()?;
+    if let Some(path) = cgroup_path.as_deref() {
+        let _ = std::fs::write(Path::new(path).join("cgroup.kill"), "1");
+    }
     kill_process_group(getpgrp(), Signal::KILL)?;
     Err("process-group SIGKILL returned".into())
 }
 
 fn decode_metadata(
     encoded: &mut impl Iterator<Item = OsString>,
-) -> LauncherResult<(Vec<OsString>, WorkerEnvironment)> {
+) -> LauncherResult<(Option<OsString>, Vec<OsString>, WorkerEnvironment)> {
     match encoded.next() {
         Some(version) if version == WORKER_METADATA_VERSION => {}
         Some(_) => return Err("unsupported worker metadata version".into()),
         None => return Err("missing worker metadata version".into()),
     }
+    let cgroup_path = match encoded.next().as_deref() {
+        Some(value) if value == "0" => None,
+        Some(value) if value == "1" => {
+            let mut path_total = 0;
+            let path = decode_item(encoded.next(), &mut path_total)?;
+            if !Path::new(&path).is_absolute() {
+                return Err("worker cgroup path is not absolute".into());
+            }
+            Some(path)
+        }
+        Some(_) => return Err("invalid worker cgroup metadata".into()),
+        None => return Err("missing worker cgroup metadata".into()),
+    };
     let argument_count = parse_count(encoded.next(), "argument", MAX_WORKER_ARGUMENTS)?;
     let mut total = 0_usize;
     let mut arguments = Vec::with_capacity(argument_count);
@@ -85,7 +107,7 @@ fn decode_metadata(
     if total > MAX_WORKER_METADATA_BYTES {
         return Err("aggregate worker metadata exceeds bound".into());
     }
-    Ok((arguments, environment))
+    Ok((cgroup_path, arguments, environment))
 }
 
 fn parse_count(encoded: Option<OsString>, label: &str, maximum: usize) -> LauncherResult<usize> {
