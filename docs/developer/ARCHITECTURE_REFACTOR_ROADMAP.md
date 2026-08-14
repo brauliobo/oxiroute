@@ -776,13 +776,21 @@ implemented behind `WorkerProcess` in `oxiroute-supervisor-process`.
 
 - [ ] Version the launcher argument/metadata contract before adding containment information.
 - [ ] Add cgroup-v2 capability and delegation probing without changing behavior.
-- [ ] Reconcile systemd `Delegate=` and control-group protection for a pinned delegated subtree.
+- [x] Reconcile systemd `Delegate=` and control-group protection for a pinned delegated subtree.
 - [ ] Attach the launcher before worker spawn and kill through `cgroup.kill` while retaining launcher
   authentication and reaping.
 - [ ] Require containment first for supervised configurations with exec profiles.
 - [ ] Prove replacement, crash, drop, timeout, and shutdown leave nested process-group and `setsid`
   fixture descendants absent and the worker cgroup empty.
 - [ ] Keep direct and non-Linux runtimes unchanged; do not substitute `/proc` descendant scans.
+
+The packaging checkpoint uses empty `Delegate=` (delegation with no requested controllers),
+`DelegateSubgroup=supervisor`, and `ProtectControlGroups=private`, requiring systemd 257 or newer on a
+unified cgroup-v2 host. The service's host `ControlGroup` is the delegated boundary and appears as
+`/sys/fs/cgroup` in the service's private cgroup namespace; the main process is pinned at
+`/sys/fs/cgroup/supervisor`, while systemd retains the boundary attributes and `.control`. This grants
+the unprivileged service write authority only below its own unit cgroup and does not create, attach,
+kill, or clean up per-worker cgroups. Those process-owned behaviors remain separate unchecked items.
 
 ## Delivery Waves
 
