@@ -135,9 +135,4 @@ pub(crate) enum ServiceReference {
 pub(crate) struct RtmpSpec {
     pub(crate) plan: RtmpServicePlan,
     pub(crate) access_log: Option<AccessLogPolicy>,
-    pub(crate) applications: Box<[RtmpApplicationBlueprint]>,
-}
-
-pub(crate) struct RtmpApplicationBlueprint {
-    pub(crate) fanout_limits: oxiroute_rtmp::LiveHubLimits,
 }
