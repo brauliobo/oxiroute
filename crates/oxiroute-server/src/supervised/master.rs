@@ -31,7 +31,9 @@ use oxiroute_supervision_unix::InstanceToken;
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, Master, MasterConfig, MasterEvent, MasterState, WorkerInput,
 };
-use oxiroute_supervisor_process::{WorkerCommand, WorkerIdentity, WorkerSpawner};
+use oxiroute_supervisor_process::{
+    CgroupV2ProbeStatus, WorkerCommand, WorkerIdentity, WorkerSpawner, probe_cgroup_v2,
+};
 use signal_hook::{
     consts::signal::{SIGHUP, SIGINT, SIGTERM},
     iterator::{Handle, Signals},
@@ -57,7 +59,7 @@ const CONFIG_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) fn run_master(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let coordinator = CanonicalConfigCoordinator::new(config_path)?;
     let document = load_document(&coordinator)?;
-    eligibility(&document.validated_config)?;
+    supervised_eligibility(&document.validated_config, probe_cgroup_v2().status)?;
     MasterRunner::production()?.run_loaded(&coordinator, &document)
 }
 
@@ -66,21 +68,33 @@ pub(crate) fn run_master(config_path: &Path) -> Result<(), Box<dyn Error>> {
 /// The fixed packaged launcher is the activation gate. An eligible configuration without that
 /// launcher preserves the direct generation runtime for development installations.
 pub(crate) fn run_if_supported(config_path: &Path) -> Result<(), Box<dyn Error>> {
-    if std::env::var_os("OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME").is_some() {
-        return crate::run(config_path);
-    }
     let coordinator = CanonicalConfigCoordinator::new(config_path)?;
     let document = load_document(&coordinator)?;
-    match eligibility(&document.validated_config) {
-        Ok(()) if MasterRunner::launcher_available() => {
-            MasterRunner::production()?.run_loaded(&coordinator, &document)
-        }
-        Ok(()) => {
+    let launcher_available = MasterRunner::launcher_available();
+    let plan = config_plan(
+        &document.validated_config,
+        launcher_available,
+        probe_cgroup_v2().status,
+    )?;
+    if std::env::var_os("OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME").is_some()
+        && !contains_rtmp_exec_profiles(&document.validated_config)
+    {
+        return crate::run(config_path);
+    }
+    match plan {
+        ConfigPlan::Supervised => MasterRunner::production()?.run_loaded(&coordinator, &document),
+        ConfigPlan::Direct if !launcher_available => {
             info!("supervised launcher is unavailable; using the direct generation runtime");
             crate::run(config_path)
         }
-        Err(_unsupported) => crate::run(config_path),
+        ConfigPlan::Direct => crate::run(config_path),
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConfigPlan {
+    Supervised,
+    Direct,
 }
 
 #[derive(Debug, Eq, Error, PartialEq)]
@@ -89,8 +103,68 @@ struct UnsupportedConfig {
     reason: &'static str,
 }
 
-fn eligibility(config: &ValidatedConfig) -> Result<(), UnsupportedConfig> {
-    worker::validate_stage_one_config(config).map_err(|reason| UnsupportedConfig { reason })
+fn config_plan(
+    config: &ValidatedConfig,
+    launcher_available: bool,
+    containment_status: CgroupV2ProbeStatus,
+) -> Result<ConfigPlan, UnsupportedConfig> {
+    let contains_exec = contains_rtmp_exec_profiles(config);
+    if let Err(error) = supervised_eligibility(config, containment_status) {
+        return if contains_exec {
+            Err(error)
+        } else {
+            Ok(ConfigPlan::Direct)
+        };
+    }
+    if launcher_available {
+        Ok(ConfigPlan::Supervised)
+    } else if contains_exec {
+        Err(UnsupportedConfig {
+            reason: "RTMP exec profiles require the supervised launcher",
+        })
+    } else {
+        Ok(ConfigPlan::Direct)
+    }
+}
+
+fn supervised_eligibility(
+    config: &ValidatedConfig,
+    containment_status: CgroupV2ProbeStatus,
+) -> Result<(), UnsupportedConfig> {
+    worker::validate_stage_one_config(config).map_err(|reason| UnsupportedConfig { reason })?;
+    if contains_rtmp_exec_profiles(config) && containment_status != CgroupV2ProbeStatus::Ready {
+        return Err(UnsupportedConfig {
+            reason: containment_error_reason(containment_status),
+        });
+    }
+    Ok(())
+}
+
+fn contains_rtmp_exec_profiles(config: &ValidatedConfig) -> bool {
+    config
+        .as_draft()
+        .rtmp_services
+        .iter()
+        .any(|service| !service.exec_profiles.is_empty())
+}
+
+const fn containment_error_reason(status: CgroupV2ProbeStatus) -> &'static str {
+    match status {
+        CgroupV2ProbeStatus::Ready => "RTMP exec profile containment is ready",
+        CgroupV2ProbeStatus::Unsupported => {
+            "RTMP exec profiles require Linux cgroup-v2 containment"
+        }
+        CgroupV2ProbeStatus::Unavailable => {
+            "RTMP exec profiles require an available cgroup-v2 hierarchy"
+        }
+        CgroupV2ProbeStatus::ReadOnly => "RTMP exec profiles require writable cgroup-v2 delegation",
+        CgroupV2ProbeStatus::MissingControllers => {
+            "RTMP exec profiles require the configured cgroup-v2 controllers"
+        }
+        CgroupV2ProbeStatus::NotDelegated => {
+            "RTMP exec profiles require delegated cgroup-v2 containment"
+        }
+    }
 }
 
 fn load_document(
@@ -222,7 +296,10 @@ impl MasterRunner {
         instance_id: InstanceId,
         identity: WorkerIdentity,
     ) -> Result<LaunchDocument, Box<dyn Error>> {
-        let command = self.build_worker_command(config_path, &revision, identity)?;
+        let mut command = self.build_worker_command(config_path, &revision, identity)?;
+        if contains_rtmp_exec_profiles(&config) {
+            command = command.require_cgroup_containment();
+        }
         Ok(GenerationLaunchDocument::new(
             instance_id,
             identity.generation,
@@ -367,8 +444,10 @@ impl MasterRunner {
         if &revision == catalog.active().revision() {
             return Ok(());
         }
-        if let Err(error) = eligibility(&document.validated_config) {
-            warn!("supervised master ignored an unsupported configuration reload: {error}");
+        if let Err(error) =
+            supervised_eligibility(&document.validated_config, probe_cgroup_v2().status)
+        {
+            warn!("supervised master rejected an unsafe configuration reload: {error}");
             return Ok(());
         }
         if ListenerReservations::listener_restart_required(
@@ -852,16 +931,28 @@ mod tests {
         config
             .listeners
             .push(listener("http", Protocol::Http, None));
-        assert_eq!(eligibility(&validated(&config)), Ok(()));
+        assert_eq!(
+            supervised_eligibility(&validated(&config), CgroupV2ProbeStatus::Ready),
+            Ok(())
+        );
 
         config.listeners[0] = listener("rtmp", Protocol::Rtmp, None);
-        assert_eq!(eligibility(&validated(&config)), Ok(()));
+        assert_eq!(
+            supervised_eligibility(&validated(&config), CgroupV2ProbeStatus::Ready),
+            Ok(())
+        );
 
         config.listeners[0] = listener("forward-h3", Protocol::ForwardHttp3, Some("h3"));
-        assert_eq!(eligibility(&validated(&config)), Ok(()));
+        assert_eq!(
+            supervised_eligibility(&validated(&config), CgroupV2ProbeStatus::Ready),
+            Ok(())
+        );
 
         config.listeners[0] = listener("udp", Protocol::Udp, None);
-        assert_eq!(eligibility(&validated(&config)), Ok(()));
+        assert_eq!(
+            supervised_eligibility(&validated(&config), CgroupV2ProbeStatus::Ready),
+            Ok(())
+        );
     }
 
     #[test]
@@ -880,7 +971,7 @@ mod tests {
             })
             .collect();
         assert!(matches!(
-            eligibility(&validated(&config)),
+            supervised_eligibility(&validated(&config), CgroupV2ProbeStatus::Ready),
             Err(UnsupportedConfig {
                 reason: "Stage 2 worker listener descriptor limit is 64",
             })
@@ -894,7 +985,80 @@ mod tests {
             bind: SocketAddr::from(([127, 0, 0, 1], 9900)),
             ui_dir: None,
         });
-        assert_eq!(eligibility(&validated(&config)), Ok(()));
+        assert_eq!(
+            supervised_eligibility(&validated(&config), CgroupV2ProbeStatus::Ready),
+            Ok(())
+        );
+    }
+
+    fn config_with_exec_profile() -> ConfigDraft {
+        let mut config = config();
+        config.rtmp_services[0].exec_profiles = vec![
+            serde_json::from_value(json!({
+                "name": "publisher",
+                "application": "broadcast",
+                "executable": "/bin/true",
+                "working_directory": "/tmp"
+            }))
+            .expect("exec profile"),
+        ];
+        config
+    }
+
+    #[test]
+    fn config_plan_requires_supervision_and_ready_containment_for_exec_profiles() {
+        let config = validated(&config_with_exec_profile());
+
+        assert_eq!(
+            config_plan(&config, true, CgroupV2ProbeStatus::Ready),
+            Ok(ConfigPlan::Supervised)
+        );
+        assert_eq!(
+            config_plan(&config, false, CgroupV2ProbeStatus::Ready),
+            Err(UnsupportedConfig {
+                reason: "RTMP exec profiles require the supervised launcher"
+            })
+        );
+        for (status, reason) in [
+            (
+                CgroupV2ProbeStatus::Unsupported,
+                "RTMP exec profiles require Linux cgroup-v2 containment",
+            ),
+            (
+                CgroupV2ProbeStatus::Unavailable,
+                "RTMP exec profiles require an available cgroup-v2 hierarchy",
+            ),
+            (
+                CgroupV2ProbeStatus::ReadOnly,
+                "RTMP exec profiles require writable cgroup-v2 delegation",
+            ),
+            (
+                CgroupV2ProbeStatus::NotDelegated,
+                "RTMP exec profiles require delegated cgroup-v2 containment",
+            ),
+            (
+                CgroupV2ProbeStatus::MissingControllers,
+                "RTMP exec profiles require the configured cgroup-v2 controllers",
+            ),
+        ] {
+            let error = config_plan(&config, true, status).unwrap_err();
+            assert_eq!(error, UnsupportedConfig { reason });
+            assert!(!error.to_string().contains("/sys/fs/cgroup"));
+        }
+    }
+
+    #[test]
+    fn config_plan_preserves_no_exec_direct_and_supervised_behavior() {
+        let config = validated(&config());
+
+        assert_eq!(
+            config_plan(&config, false, CgroupV2ProbeStatus::Unavailable),
+            Ok(ConfigPlan::Direct)
+        );
+        assert_eq!(
+            config_plan(&config, true, CgroupV2ProbeStatus::Unavailable),
+            Ok(ConfigPlan::Supervised)
+        );
     }
 
     #[test]
@@ -981,6 +1145,30 @@ mod tests {
         assert_eq!(
             format!("{:?}", input.command),
             format!("{:?}", document.payload().command)
+        );
+    }
+
+    #[test]
+    fn exec_profile_launch_document_requires_cgroup_containment() {
+        let runner = MasterRunner::new_for_test(
+            "/test-only/oxiroute-worker-launcher",
+            std::env::current_exe().expect("test executable"),
+        );
+        let revision = EffectiveRevision::from_str(&"a".repeat(64)).expect("revision");
+        let (instance_id, identity) = worker_identity(InstanceToken([0x31; 16])).expect("identity");
+        let document = runner
+            .build_launch_document(
+                Path::new("/etc/oxiroute/oxiroute.kdl"),
+                validated(&config_with_exec_profile()),
+                revision,
+                instance_id,
+                identity,
+            )
+            .expect("exec launch document");
+
+        assert!(
+            format!("{:?}", document.payload().command)
+                .contains("require_cgroup_containment: true")
         );
     }
 
