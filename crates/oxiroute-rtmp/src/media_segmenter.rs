@@ -210,7 +210,7 @@ pub struct MediaCatalog {
 
 impl MediaCatalog {
     #[must_use]
-    pub fn from_applications(
+    pub(crate) fn from_applications(
         applications: impl IntoIterator<Item = (String, String, Arc<MediaApplication>)>,
     ) -> Self {
         Self {

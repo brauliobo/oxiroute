@@ -2,13 +2,16 @@ use std::str::FromStr;
 
 use http::header::HeaderName;
 use oxiroute_rtmp::{
-    RtmpCatalogSnapshot, RtmpControlHandle, RtmpSessionControlAction, RtmpSessionControlError,
-    SessionId, StreamSnapshot,
+    RtmpControlHandle, RtmpSessionControlAction, RtmpSessionControlError, SessionId,
 };
 use pingora::protocols::http::ServerSession;
-use serde_json::{Value, json};
 
 use super::ApiResponse;
+use super::dto::{
+    RtmpClientStatsResponse, RtmpGlobalStatsResponse, RtmpLiveStatsResponse,
+    RtmpSessionControlResponse, RtmpSessionRevisionConflictResponse,
+    RtmpSessionRoleConflictResponse, RtmpStatsResponse,
+};
 use crate::secure_bearer::{HeaderCardinality, single_header};
 
 const MAX_STATS_STREAMS: usize = 1_024;
@@ -84,115 +87,24 @@ fn stats_response(view: StatsView, control: &RtmpControlHandle) -> ApiResponse {
         .into_iter()
         .filter(|client| client.connected)
         .collect::<Vec<_>>();
-    let streams_truncated = snapshot.streams.len() > MAX_STATS_STREAMS;
-    let clients_truncated = clients.len() > MAX_STATS_CLIENTS;
-    let global = global_json(&snapshot);
-    let live = snapshot
-        .streams
-        .iter()
-        .take(MAX_STATS_STREAMS)
-        .map(stream_json)
-        .collect::<Vec<_>>();
-    let clients = clients
-        .iter()
-        .take(MAX_STATS_CLIENTS)
-        .map(client_json)
-        .collect::<Vec<_>>();
-    let common = json!({
-        "revision": snapshot.revision.to_string(),
-        "asOfUnixMs": snapshot.as_of_unix_ms,
-    });
     let body = match view {
-        StatsView::All => json!({
-            "revision": common["revision"],
-            "asOfUnixMs": common["asOfUnixMs"],
-            "global": global,
-            "live": live,
-            "clients": clients,
-            "liveTruncated": streams_truncated,
-            "clientsTruncated": clients_truncated,
-        }),
-        StatsView::Global => json!({
-            "revision": common["revision"],
-            "asOfUnixMs": common["asOfUnixMs"],
-            "global": global,
-        }),
-        StatsView::Live => json!({
-            "revision": common["revision"],
-            "asOfUnixMs": common["asOfUnixMs"],
-            "live": live,
-            "truncated": streams_truncated,
-        }),
-        StatsView::Clients => json!({
-            "revision": common["revision"],
-            "asOfUnixMs": common["asOfUnixMs"],
-            "clients": clients,
-            "truncated": clients_truncated,
-        }),
+        StatsView::All => serde_json::to_value(RtmpStatsResponse::project(
+            &snapshot,
+            &clients,
+            MAX_STATS_STREAMS,
+            MAX_STATS_CLIENTS,
+        )),
+        StatsView::Global => serde_json::to_value(RtmpGlobalStatsResponse::project(&snapshot)),
+        StatsView::Live => {
+            serde_json::to_value(RtmpLiveStatsResponse::project(&snapshot, MAX_STATS_STREAMS))
+        }
+        StatsView::Clients => serde_json::to_value(RtmpClientStatsResponse::project(
+            &snapshot,
+            &clients,
+            MAX_STATS_CLIENTS,
+        )),
     };
-    ApiResponse::json(200, &body)
-}
-
-fn global_json(snapshot: &RtmpCatalogSnapshot) -> Value {
-    let mut publishers = 0_u64;
-    let mut subscribers = 0_u64;
-    let mut audio_payload_bytes = 0_u64;
-    let mut video_payload_bytes = 0_u64;
-    for stream in &snapshot.streams {
-        publishers = publishers.saturating_add(u64::from(stream.publisher.is_some()));
-        subscribers =
-            subscribers.saturating_add(u64::try_from(stream.subscriber_count).unwrap_or(u64::MAX));
-        audio_payload_bytes =
-            audio_payload_bytes.saturating_add(stream.media.audio.payload_bytes_received);
-        video_payload_bytes =
-            video_payload_bytes.saturating_add(stream.media.video.payload_bytes_received);
-    }
-    json!({
-        "activeStreams": snapshot.streams.len(),
-        "publishers": publishers,
-        "subscribers": subscribers,
-        "audioPayloadBytes": audio_payload_bytes.to_string(),
-        "videoPayloadBytes": video_payload_bytes.to_string(),
-        "liveIngest": snapshot.capabilities.live_ingest,
-        "manualRecording": snapshot.capabilities.manual_recording,
-    })
-}
-
-fn stream_json(stream: &StreamSnapshot) -> Value {
-    json!({
-        "id": stream.id.to_string(),
-        "service": stream.key.server_id,
-        "application": stream.key.application,
-        "name": stream.key.name,
-        "createdAtUnixMs": stream.created_at_unix_ms,
-        "publisherSessionId": stream.publisher.map(|publisher| publisher.session_id.to_string()),
-        "subscriberCount": stream.subscriber_count,
-        "audioPayloadBytes": stream.media.audio.payload_bytes_received.to_string(),
-        "videoPayloadBytes": stream.media.video.payload_bytes_received.to_string(),
-    })
-}
-
-fn client_json(client: &oxiroute_rtmp::RtmpClientSnapshot) -> Value {
-    json!({
-        "id": client.session_id.to_string(),
-        "service": client.service_id,
-        "peerIp": client.peer_addr.map(|address| address.to_string()),
-        "connectedAtUnixMs": client.connected_at_unix_ms,
-        "application": client.application,
-        "stream": client.stream_name,
-        "role": client.role.as_str(),
-        "messageStreams": client
-            .message_streams
-            .iter()
-            .map(|stream| json!({
-                "messageStreamId": stream.message_stream_id,
-                "application": stream.application,
-                "stream": stream.stream_name,
-                "role": stream.role.as_str(),
-            }))
-            .collect::<Vec<_>>(),
-        "revision": client.revision.to_string(),
-    })
+    ApiResponse::json(200, &body.expect("RTMP stats response DTO serializes"))
 }
 
 fn drop_response(
@@ -242,35 +154,26 @@ fn drop_response(
     match control.request_session_control(session_id, action, expected_revision) {
         Ok(outcome) => ApiResponse::json(
             202,
-            &json!({
-                "outcome": if outcome.already_requested { "already_requested" } else { "requested" },
-                "sessionId": session_id.to_string(),
-                "target": action.as_str(),
-                "sessionRevision": expected_revision.to_string(),
-            }),
+            &serde_json::to_value(RtmpSessionControlResponse::project(
+                outcome.already_requested,
+                &session_id,
+                action,
+                expected_revision,
+            ))
+            .expect("RTMP session control response DTO serializes"),
         ),
         Err(RtmpSessionControlError::NotFound) => {
             ApiResponse::error(404, "session_not_found", "RTMP session does not exist")
         }
         Err(RtmpSessionControlError::RevisionMismatch { actual, .. }) => ApiResponse::json(
             409,
-            &json!({
-                "error": {
-                    "code": "session_revision_conflict",
-                    "message": "RTMP session revision changed",
-                },
-                "actualRevision": actual,
-            }),
+            &serde_json::to_value(RtmpSessionRevisionConflictResponse::new(actual))
+                .expect("RTMP session revision conflict DTO serializes"),
         ),
         Err(RtmpSessionControlError::RoleMismatch { actual, .. }) => ApiResponse::json(
             409,
-            &json!({
-                "error": {
-                    "code": "session_role_conflict",
-                    "message": "RTMP session role does not match the requested target",
-                },
-                "actualRole": actual.as_str(),
-            }),
+            &serde_json::to_value(RtmpSessionRoleConflictResponse::new(actual))
+                .expect("RTMP session role conflict DTO serializes"),
         ),
         Err(RtmpSessionControlError::AlreadyPending) => ApiResponse::error(
             409,

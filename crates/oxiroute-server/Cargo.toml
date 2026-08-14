@@ -43,6 +43,7 @@ oxiroute-cache = { path = "../oxiroute-cache" }
 oxiroute-import = { path = "../oxiroute-import" }
 oxiroute-forward-proxy = { path = "../oxiroute-forward-proxy" }
 oxiroute-rtmp = { path = "../oxiroute-rtmp" }
+oxiroute-supervision = { path = "../oxiroute-supervision" }
 pingora.workspace = true
 quinn.workspace = true
 rustix.workspace = true
@@ -60,7 +61,6 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-oxiroute-supervision = { path = "../oxiroute-supervision" }
 oxiroute-supervision-unix = { path = "../oxiroute-supervision-unix" }
 oxiroute-supervisor-master = { path = "../oxiroute-supervisor-master" }
 oxiroute-supervisor-process = { path = "../oxiroute-supervisor-process" }

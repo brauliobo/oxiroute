@@ -399,11 +399,12 @@ mod tests {
         let capacity =
             serde_json::to_value(generator.into_root_schema_for::<ServerCapacityRequest>())
                 .expect("capacity request schema");
+        let generator = SchemaSettings::default().for_deserialize().into_generator();
+        let state =
+            serde_json::to_value(generator.into_root_schema_for::<AdministrativeStateSchema>())
+                .expect("administrative state schema");
 
-        assert_eq!(
-            listener["properties"]["state"]["enum"],
-            json!(["ready", "drain", "maintenance"])
-        );
+        assert_eq!(state["enum"], json!(["ready", "drain", "maintenance"]));
         assert!(
             listener["properties"]
                 .get("expectedActiveRevision")

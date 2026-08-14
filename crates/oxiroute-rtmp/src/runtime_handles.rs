@@ -247,18 +247,6 @@ impl RtmpControlHandle {
     }
 }
 
-impl From<Arc<RtmpRegistry>> for RtmpControlHandle {
-    fn from(registry: Arc<RtmpRegistry>) -> Self {
-        Self {
-            media_catalog: Arc::new(MediaCatalog::default()),
-            registry,
-            services: Arc::new(Vec::new()),
-            service_ids: None,
-            vod_catalog: Arc::new(VodCatalog::default()),
-        }
-    }
-}
-
 /// Bounded completion handle for all recorder lifecycles in one RTMP runtime set.
 #[derive(Clone)]
 pub struct RtmpShutdown {
@@ -497,7 +485,7 @@ impl PreparedRtmpRuntimeSet {
                 }
             }
         }
-        RtmpRuntimeSet::from_started_with_catalogs(
+        RtmpRuntimeSet::assemble(
             self.registry,
             runtimes,
             VodCatalog::from_applications(vod_applications),
@@ -756,29 +744,7 @@ fn rollback_runtime(runtime: RtmpServiceRuntime, deadline: Instant) {
 }
 
 impl RtmpRuntimeSet {
-    /// Builds a handle set around already-started service runtimes.
-    ///
-    /// This is the transitional adapter for the staged runtime composition path. Planning and
-    /// resource acquisition remain in their existing owners until the full RTMP composition root
-    /// migration is complete.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when service identifiers are duplicated or a service belongs to another
-    /// registry.
-    pub fn from_started(
-        registry: Arc<RtmpRegistry>,
-        runtimes: impl IntoIterator<Item = RtmpServiceRuntime>,
-    ) -> Result<Self, RtmpRuntimeSetError> {
-        Self::from_started_with_catalogs(
-            registry,
-            runtimes,
-            Arc::new(VodCatalog::default()),
-            Arc::new(MediaCatalog::default()),
-        )
-    }
-
-    fn from_started_with_catalogs(
+    fn assemble(
         registry: Arc<RtmpRegistry>,
         runtimes: impl IntoIterator<Item = RtmpServiceRuntime>,
         vod_catalog: Arc<VodCatalog>,
@@ -888,6 +854,18 @@ mod tests {
             registry,
             LiveHub::new(LiveHubLimits::default()),
             RtmpSessionPolicy::new([RtmpApplication::new("live", true, true)]),
+        )
+    }
+
+    fn runtime_set(
+        registry: Arc<RtmpRegistry>,
+        runtimes: impl IntoIterator<Item = RtmpServiceRuntime>,
+    ) -> Result<RtmpRuntimeSet, RtmpRuntimeSetError> {
+        RtmpRuntimeSet::assemble(
+            registry,
+            runtimes,
+            Arc::new(VodCatalog::default()),
+            Arc::new(MediaCatalog::default()),
         )
     }
 
@@ -1080,8 +1058,7 @@ mod tests {
     #[test]
     fn service_lookup_and_control_share_the_started_runtime_authority() {
         let registry = registry();
-        let set = RtmpRuntimeSet::from_started(Arc::clone(&registry), [runtime(registry)])
-            .expect("runtime set");
+        let set = runtime_set(Arc::clone(&registry), [runtime(registry)]).expect("runtime set");
         let service = set.service("edge").expect("service handle");
         assert_eq!(service.service_id(), "edge");
 
@@ -1100,8 +1077,7 @@ mod tests {
     #[test]
     fn control_handle_forwards_target_checked_session_requests() {
         let registry = registry();
-        let set = RtmpRuntimeSet::from_started(Arc::clone(&registry), [runtime(registry)])
-            .expect("runtime set");
+        let set = runtime_set(Arc::clone(&registry), [runtime(registry)]).expect("runtime set");
         let session = set.service("edge").expect("service").session();
         let snapshot = set
             .control()
@@ -1136,8 +1112,8 @@ mod tests {
     #[test]
     fn control_closes_owned_admission_without_dropping_existing_session_ownership() {
         let registry = registry();
-        let set = RtmpRuntimeSet::from_started(Arc::clone(&registry), [runtime(registry.clone())])
-            .expect("runtime set");
+        let set =
+            runtime_set(Arc::clone(&registry), [runtime(registry.clone())]).expect("runtime set");
         let owned = set.service("edge").expect("owned service");
         let session = set.service("edge").expect("service").session();
 
@@ -1163,8 +1139,7 @@ mod tests {
     #[test]
     fn empty_runtime_set_does_not_close_foreign_registry_admission() {
         let registry = registry();
-        let set =
-            RtmpRuntimeSet::from_started(Arc::clone(&registry), []).expect("empty runtime set");
+        let set = runtime_set(Arc::clone(&registry), []).expect("empty runtime set");
 
         set.control().close_admission();
         assert!(
@@ -1181,7 +1156,7 @@ mod tests {
     #[test]
     fn runtime_set_rejects_duplicate_and_foreign_service_runtime_ids() {
         let expected_registry = registry();
-        let Err(duplicate) = RtmpRuntimeSet::from_started(
+        let Err(duplicate) = runtime_set(
             Arc::clone(&expected_registry),
             [
                 runtime(Arc::clone(&expected_registry)),
@@ -1198,9 +1173,7 @@ mod tests {
         );
 
         let foreign_registry = registry();
-        let Err(foreign) =
-            RtmpRuntimeSet::from_started(expected_registry, [runtime(foreign_registry)])
-        else {
+        let Err(foreign) = runtime_set(expected_registry, [runtime(foreign_registry)]) else {
             panic!("foreign registry was accepted")
         };
         assert_eq!(
@@ -1234,7 +1207,7 @@ mod tests {
                 1,
             )
             .expect("beta publisher");
-        let set = RtmpRuntimeSet::from_started(registry, [runtime_a]).expect("runtime set");
+        let set = runtime_set(registry, [runtime_a]).expect("runtime set");
         let control = set.control();
 
         assert_eq!(
@@ -1278,8 +1251,7 @@ mod tests {
         let registry = registry();
         let runtime_a = runtime_named("alpha", Arc::clone(&registry));
         let runtime_b = runtime_named("beta", Arc::clone(&registry));
-        let set =
-            RtmpRuntimeSet::from_started(Arc::clone(&registry), [runtime_a]).expect("runtime set");
+        let set = runtime_set(Arc::clone(&registry), [runtime_a]).expect("runtime set");
 
         set.control().close_admission();
         assert!(runtime_b.admission_is_open());
@@ -1298,7 +1270,7 @@ mod tests {
     #[test]
     fn runtime_set_retains_canonical_input_order_for_shutdown() {
         let registry = registry();
-        let set = RtmpRuntimeSet::from_started(
+        let set = runtime_set(
             registry.clone(),
             [
                 runtime_named("zulu", Arc::clone(&registry)),
@@ -1356,7 +1328,7 @@ mod tests {
                 )]),
             )
         };
-        let set = RtmpRuntimeSet::from_started(
+        let set = runtime_set(
             Arc::clone(&registry),
             [
                 runtime("zulu", recorder("zulu", zulu_root.path())),
@@ -1423,7 +1395,7 @@ mod tests {
                 [recorder],
             )]),
         );
-        let set = RtmpRuntimeSet::from_started(registry, [runtime]).expect("runtime set");
+        let set = runtime_set(registry, [runtime]).expect("runtime set");
         let deadline = Instant::now() + Duration::from_secs(1);
         let first = set.begin_shutdown(deadline);
         let second = set.begin_shutdown(deadline);

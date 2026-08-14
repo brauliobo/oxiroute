@@ -19,6 +19,7 @@ mod http_policy;
 mod http_proxy;
 mod http_server_app;
 mod l4_service;
+mod lifecycle_control;
 mod listener_inventory;
 mod listener_reservation;
 mod listener_runtime;
@@ -79,7 +80,7 @@ pub use monitoring::{
 };
 pub use operational_event::{WorkerEventPage, WorkerEventSnapshot, worker_event_page};
 pub use operational_event::{emit_certificate, emit_rtmp_access};
-pub use prometheus::{PrometheusError, render_prometheus};
+pub use prometheus::PrometheusError;
 pub use proxy_protocol::{
     AcceptedProxyStream, MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES, MAX_V2_PAYLOAD_BYTES,
     ParsedProxyHeader, PrefixedStream, ProxyProtocolError, ProxyProtocolErrorKind,

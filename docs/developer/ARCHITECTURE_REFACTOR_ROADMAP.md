@@ -400,10 +400,10 @@ validation-only acquisition.
 - [x] Retain the public `TlsProfilePlan::policy()` compatibility accessor for 0.5. Its canonical
   `source_policy` copy exists only in the acquired `TlsProfilePlan`; blueprint decisions use the
   separately compiled TLS policy fields and never consult that copy.
-- [ ] Phase3B: replace or narrow the classified 0.5 `RtmpCallbackEndpointBlueprint` and
-  `VodApplicationBlueprint` cross-crate acquisition APIs behind the RTMP composition root. They remain
-  public temporarily so the server can acquire DNS/filesystem resources from immutable RTMP values;
-  Phase3A does not remove or widen them.
+- [x] Phase3B: narrow the classified 0.5 `RtmpCallbackEndpointBlueprint` and
+  `VodApplicationBlueprint` cross-crate acquisition APIs behind the RTMP composition root. The value
+  blueprints remain public, but callback DNS and VOD filesystem/network acquisition methods are
+  crate-private and server preparation consumes runtime-set plans and handles.
 - [x] Move DNS, access-log, cache, media-store, recording-store, file, and watcher acquisition into
   the preparation path. `RuntimePlan` remains resource-free; an initially empty private
   `GenerationAcquisition` takes each completed typed stage immediately. Partial failure explicitly
@@ -623,11 +623,11 @@ surface with value plans and opaque runtime/control handles.
 
 ### Compatibility Metadata
 
-- [ ] Move nginx-RTMP directive metadata, forms, support status, value kinds, compatibility reports,
+- [x] Move nginx-RTMP directive metadata, forms, support status, value kinds, compatibility reports,
   and validation to `oxiroute-import::nginx`.
-- [ ] Preserve the exact directive registry and compatibility report counts.
-- [ ] Remove the production dependency from `oxiroute-import` to `oxiroute-rtmp`.
-- [ ] Do not create an RTMP compatibility crate unless a second production consumer appears.
+- [x] Preserve the exact directive registry and compatibility report counts.
+- [x] Remove the production dependency from `oxiroute-import` to `oxiroute-rtmp`.
+- [x] Do not create an RTMP compatibility crate unless a second production consumer appears.
 
 ### Runtime Composition Root
 
@@ -645,16 +645,16 @@ RtmpRuntimeSet::control(&self) -> RtmpControlHandle
 RtmpRuntimeSet::begin_shutdown(&self, deadline: Instant) -> RtmpShutdown
 ```
 
-- [ ] Introduce value-only application, media, recorder, relay, and auto-push plans without depending
+- [x] Introduce value-only application, media, recorder, relay, and auto-push plans without depending
   on `oxiroute-config`.
-- [ ] Move RTMP store, resolver, worker, and application construction behind `RtmpRuntimeSet`.
-- [ ] Keep server-owned access logging as a sidecar.
+- [x] Move RTMP store, resolver, worker, and application construction behind `RtmpRuntimeSet`.
+- [x] Keep server-owned access logging as a sidecar.
 - [ ] Split registry internals into stream catalog and session/control ownership behind existing
   behavior.
-- [ ] Migrate management, monitoring, Prometheus, and session startup to `RtmpControlHandle` and
+- [x] Migrate management, monitoring, Prometheus, and session startup to `RtmpControlHandle` and
   `RtmpServiceHandle`.
 - [ ] Consolidate generation-owned RTMP state in `RtmpGenerationRuntime`.
-- [ ] Make raw registry, hub, registration, lease, media-store, recording-store, worker, and raw
+- [x] Make raw registry, hub, registration, lease, media-store, recording-store, worker, and raw
   service-runtime constructors crate-private at the `0.5` boundary.
 
 ### Bootstrap Semantics

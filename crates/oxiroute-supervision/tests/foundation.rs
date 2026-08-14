@@ -2,6 +2,7 @@ use std::{
     cell::Cell,
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
 };
 
 use oxiroute_supervision::{
@@ -341,9 +342,19 @@ struct TestLifecycleControl;
 impl LifecycleControl for TestLifecycleControl {
     type Revision = Revision;
     type Status = &'static str;
+    type Outcome = LifecycleOperation;
+    type Error = std::convert::Infallible;
 
     fn status(&self) -> Self::Status {
         "active"
+    }
+
+    fn execute(
+        &self,
+        request: LifecycleRequest<Self::Revision>,
+        _timeout: Option<Duration>,
+    ) -> Result<Self::Outcome, Self::Error> {
+        Ok(request.operation())
     }
 }
 
@@ -366,6 +377,10 @@ fn lifecycle_control_builds_mode_neutral_revision_precondition_requests() {
     assert_eq!(
         serde_json::to_string(&control.request_shutdown(&Revision(7))).unwrap(),
         r#"{"operation":"shutdown","expected_revision":7}"#
+    );
+    assert_eq!(
+        control.execute(control.request_reload(&Revision(7)), None),
+        Ok(LifecycleOperation::Reload)
     );
 }
 

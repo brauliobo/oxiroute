@@ -1,5 +1,6 @@
 [package]
 name = "oxiroute-rtmp"
+autotests = false
 description = "RTMP protocol and runtime module for OxiRoute"
 edition.workspace = true
 license.workspace = true
@@ -27,3 +28,23 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "chunk_interop"
+path = "tests/chunk_interop.rs"
+
+[[test]]
+name = "complex_handshake"
+path = "tests/complex_handshake.rs"
+
+[[test]]
+name = "flv_muxer"
+path = "tests/flv_muxer.rs"
+
+[[test]]
+name = "recording_path"
+path = "tests/recording_path.rs"
+
+[[test]]
+name = "simple_handshake"
+path = "tests/simple_handshake.rs"

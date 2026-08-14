@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use oxiroute_rtmp::{RtmpCatalogSnapshot, RtmpControlHandle, RtmpRegistry};
+use oxiroute_rtmp::{RtmpCatalogSnapshot, RtmpControlHandle};
 
 use crate::{GenerationManager, RuntimeMetrics};
 
@@ -12,31 +12,6 @@ use format::{
     component_state, endpoint_state, labels, listener_state, metric, render_latency_histogram,
     render_transport_latency_histogram, sample,
 };
-
-/// Renders a Prometheus text exposition without endpoint addresses, paths, stream names, or secret
-/// material in labels.
-///
-/// # Errors
-///
-/// Returns a metrics sampling or formatting error.
-#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
-pub fn render_prometheus(
-    metrics: &RuntimeMetrics,
-    registry: &RtmpRegistry,
-    generations: &GenerationManager,
-) -> Result<String, PrometheusError> {
-    let rtmp = registry.snapshot();
-    render_prometheus_snapshot(
-        metrics,
-        &rtmp,
-        registry
-            .session_snapshots()
-            .into_iter()
-            .filter(|client| client.connected)
-            .count(),
-        generations,
-    )
-}
 
 pub(crate) fn render_prometheus_control(
     metrics: &RuntimeMetrics,
@@ -813,12 +788,25 @@ mod tests {
     use std::sync::Arc;
 
     use oxiroute_config::UpstreamAlgorithm;
-    use oxiroute_rtmp::RtmpCapabilities;
+    use oxiroute_rtmp::{
+        PreparedRtmpRuntimeSet, RtmpPrepareContext, RtmpPrepareMode, RtmpRuntimeSet,
+    };
 
     use crate::routing::RuntimeServer;
     use crate::{HealthFailure, PassiveFailurePolicy, RoundRobinPool, RuntimeEndpoint};
 
     use super::*;
+
+    fn empty_rtmp_runtime() -> RtmpRuntimeSet {
+        PreparedRtmpRuntimeSet::prepare(
+            [],
+            &RtmpPrepareContext::new(RtmpPrepareMode::Activation, []),
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .expect("empty RTMP preparation")
+        .start(std::time::Instant::now() + std::time::Duration::from_secs(1))
+        .expect("empty RTMP runtime")
+    }
 
     #[test]
     fn exposition_contains_operational_families_without_listener_binds() {
@@ -831,12 +819,9 @@ mod tests {
                 None,
             )
             .expect("listener");
-        let registry = RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        });
-        let output =
-            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+        let control = empty_rtmp_runtime().control();
+        let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+            .expect("exposition");
 
         assert!(output.contains("oxiroute_process_uptime_seconds"));
         assert!(output.contains("listener=\"public\\\"edge\""));
@@ -861,11 +846,9 @@ mod tests {
         metrics
             .register_listener("alpha", "http", "socket:127.0.0.1:8081", None)
             .unwrap();
-        let registry = RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        });
-        let output = render_prometheus(&metrics, &registry, &GenerationManager::new()).unwrap();
+        let control = empty_rtmp_runtime().control();
+        let output =
+            render_prometheus_control(&metrics, &control, &GenerationManager::new()).unwrap();
 
         assert!(output.find("listener=\"alpha\"") < output.find("listener=\"zulu\""));
     }
@@ -894,13 +877,10 @@ mod tests {
                 std::time::Duration::from_secs(2),
             )
             .expect("TCP result");
-        let registry = RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        });
+        let control = empty_rtmp_runtime().control();
 
-        let output =
-            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+        let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+            .expect("exposition");
 
         assert!(
             output.contains("oxiroute_http_requests_total{listener=\"edge\",result=\"success\"} 1")
@@ -954,13 +934,10 @@ mod tests {
                 )
                 .expect("transport result");
         }
-        let registry = RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        });
+        let control = empty_rtmp_runtime().control();
 
-        let output =
-            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+        let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+            .expect("exposition");
 
         assert!(output.contains(
             "oxiroute_transport_operations_total{transport=\"rtmp\",outcome=\"timeout\"} 1"
@@ -986,13 +963,10 @@ mod tests {
             "example.invalid",
         );
         let metrics = RuntimeMetrics::new();
-        let registry = RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        });
+        let control = empty_rtmp_runtime().control();
 
-        let output =
-            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+        let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+            .expect("exposition");
 
         assert!(
             output.contains(
@@ -1007,13 +981,10 @@ mod tests {
     #[test]
     fn exposition_includes_bounded_rtmp_access_log_counters_without_labels() {
         let metrics = RuntimeMetrics::new();
-        let registry = RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        });
+        let control = empty_rtmp_runtime().control();
 
-        let output =
-            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+        let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+            .expect("exposition");
 
         assert!(output.contains("oxiroute_rtmp_access_log_queue_capacity 1024"));
         assert!(output.contains("oxiroute_rtmp_access_log_queue_depth 0"));
@@ -1031,13 +1002,10 @@ mod tests {
             .register_listener("edge", "http", "socket:192.0.2.10:private-port", None)
             .expect("listener");
         listener.record_retry_attempt();
-        let registry = RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        });
+        let control = empty_rtmp_runtime().control();
 
-        let output =
-            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+        let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+            .expect("exposition");
 
         assert!(output.contains("oxiroute_upstream_retry_attempts_total 1"));
         assert!(!output.contains("192.0.2.10"));
@@ -1077,13 +1045,10 @@ mod tests {
         metrics
             .register_upstream_pools([Arc::clone(&pool)])
             .expect("upstream pools");
-        let registry = RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        });
+        let control = empty_rtmp_runtime().control();
 
-        let output =
-            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+        let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+            .expect("exposition");
 
         assert!(output.contains(
             "oxiroute_server_passive_ejected{pool=\"observability\",server=\"0\",reason=\"connect_failed\"} 1"

@@ -21,6 +21,7 @@ use super::{
 use crate::{
     GenerationManager, RuntimeMetrics, TopologySnapshot,
     config_coordinator::{CanonicalConfigCoordinator, EffectiveRevision},
+    lifecycle_control::{DirectLifecycleControl, LifecyclePort},
     operational_event::{self, AuditCategory, AuditContext, AuditLimits, AuditResult, AuditStore},
     secure_bearer::{HeaderCardinality, single_header},
 };
@@ -30,9 +31,7 @@ use http::{
     Response,
     header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, HeaderName, TRANSFER_ENCODING},
 };
-use oxiroute_rtmp::{
-    MediaCatalog, MediaStoreError, RtmpControlHandle, VodCatalog, VodError, VodRange,
-};
+use oxiroute_rtmp::{MediaStoreError, RtmpControlHandle, VodError, VodRange};
 use pingora::{
     apps::{HttpPersistentSettings, HttpServerApp, ReusedHttpStream, http_app::ServeHttp},
     http::ResponseHeader,
@@ -67,8 +66,7 @@ pub struct RtmpManagementApi {
     topology: Arc<TopologySnapshot>,
     ui: Option<UiAssets>,
     audit: Arc<AuditStore>,
-    vod_catalog: Option<Arc<VodCatalog>>,
-    media_catalog: Option<Arc<MediaCatalog>>,
+    process_shutdown: Option<Arc<AtomicBool>>,
 }
 
 pub struct RtmpManagementHttpApp {
@@ -78,7 +76,7 @@ pub struct RtmpManagementHttpApp {
 impl RtmpManagementApi {
     #[must_use]
     pub fn new(
-        control: impl Into<RtmpControlHandle>,
+        control: RtmpControlHandle,
         metrics: RuntimeMetrics,
         topology: Arc<TopologySnapshot>,
     ) -> Self {
@@ -88,12 +86,11 @@ impl RtmpManagementApi {
             generations: None,
             management: None,
             metrics,
-            control: control.into(),
+            control,
             topology,
             ui: None,
             audit: Arc::new(AuditStore::memory(AuditLimits::default())),
-            vod_catalog: None,
-            media_catalog: None,
+            process_shutdown: None,
         }
     }
 
@@ -103,7 +100,7 @@ impl RtmpManagementApi {
     ///
     /// Returns an I/O error when `index.html` or an asset cannot be read at startup.
     pub fn with_ui_dir(
-        control: impl Into<RtmpControlHandle>,
+        control: RtmpControlHandle,
         metrics: RuntimeMetrics,
         topology: Arc<TopologySnapshot>,
         directory: impl AsRef<Path>,
@@ -114,12 +111,11 @@ impl RtmpManagementApi {
             generations: None,
             management: None,
             metrics,
-            control: control.into(),
+            control,
             topology,
             ui: Some(UiAssets::load(directory.as_ref())?),
             audit: Arc::new(AuditStore::memory(AuditLimits::default())),
-            vod_catalog: None,
-            media_catalog: None,
+            process_shutdown: None,
         })
     }
 
@@ -129,40 +125,38 @@ impl RtmpManagementApi {
     }
 
     #[must_use]
-    pub fn with_vod_catalog(mut self, catalog: Arc<VodCatalog>) -> Self {
-        self.vod_catalog = Some(catalog);
-        self
-    }
-
-    #[must_use]
-    pub fn with_media_catalog(mut self, catalog: Arc<MediaCatalog>) -> Self {
-        self.media_catalog = Some(catalog);
-        self
-    }
-
-    #[must_use]
     pub fn with_generation_manager(mut self, generations: GenerationManager) -> Self {
         if let Some(config) = &mut self.config {
             config.set_generation_manager(generations.clone());
         }
-        if let Some(coordinator) = &self.coordinator {
-            self.management = Some(ManagementState::new(
-                coordinator.clone(),
-                generations.clone(),
-                self.metrics.clone(),
-                Arc::clone(&self.audit),
-            ));
-        }
         self.generations = Some(generations);
+        self.rebuild_management();
         self
     }
 
     #[must_use]
     pub fn with_process_shutdown(mut self, shutdown: Arc<AtomicBool>) -> Self {
-        if let Some(management) = &mut self.management {
-            management.set_process_shutdown(shutdown);
-        }
+        self.process_shutdown = Some(shutdown);
+        self.rebuild_management();
         self
+    }
+
+    fn rebuild_management(&mut self) {
+        let (Some(coordinator), Some(generations)) = (&self.coordinator, &self.generations) else {
+            self.management = None;
+            return;
+        };
+        let lifecycle: Arc<LifecyclePort> = Arc::new(DirectLifecycleControl::new(
+            coordinator.clone(),
+            generations.clone(),
+            self.process_shutdown.clone(),
+        ));
+        self.management = Some(ManagementState::new(
+            generations.clone(),
+            lifecycle,
+            self.metrics.clone(),
+            Arc::clone(&self.audit),
+        ));
     }
 
     /// Enables authenticated configuration routes with an injected token.
@@ -177,22 +171,11 @@ impl RtmpManagementApi {
         token: &str,
         mode: crate::RuntimeMode,
     ) -> io::Result<Self> {
-        self.coordinator = Some(coordinator.clone());
         self.audit = operational_event::configure_audit_store(None);
-        self.config = Some(ConfigApiState::new(
-            coordinator.clone(),
-            active_revision,
-            token,
-            mode,
-        )?);
-        if let Some(generations) = &self.generations {
-            self.management = Some(ManagementState::new(
-                coordinator,
-                generations.clone(),
-                self.metrics.clone(),
-                Arc::clone(&self.audit),
-            ));
-        }
+        let config = ConfigApiState::new(coordinator.clone(), active_revision, token, mode)?;
+        self.coordinator = Some(coordinator);
+        self.config = Some(config);
+        self.rebuild_management();
         Ok(self)
     }
 
@@ -208,22 +191,16 @@ impl RtmpManagementApi {
         token_file: &Path,
         mode: crate::RuntimeMode,
     ) -> io::Result<Self> {
-        self.coordinator = Some(coordinator.clone());
         self.audit = operational_event::configure_audit_store(Some(token_file));
-        self.config = Some(ConfigApiState::from_token_file(
+        let config = ConfigApiState::from_token_file(
             coordinator.clone(),
             active_revision,
             token_file,
             mode,
-        )?);
-        if let Some(generations) = &self.generations {
-            self.management = Some(ManagementState::new(
-                coordinator,
-                generations.clone(),
-                self.metrics.clone(),
-                Arc::clone(&self.audit),
-            ));
-        }
+        )?;
+        self.coordinator = Some(coordinator);
+        self.config = Some(config);
+        self.rebuild_management();
         Ok(self)
     }
 
@@ -279,13 +256,10 @@ impl RtmpManagementApi {
             .generations
             .as_ref()
             .and_then(GenerationManager::active);
-        let catalog = active
-            .as_ref()
-            .map(|generation| generation.rtmp_vod_catalog())
-            .or_else(|| self.vod_catalog.clone());
-        let Some(catalog) = catalog else {
-            return ApiResponse::error(503, "vod_unavailable", "VOD is not active");
-        };
+        let catalog = active.as_ref().map_or_else(
+            || self.control.vod_catalog(),
+            |generation| generation.rtmp_vod_catalog(),
+        );
         let service = route.service.to_owned();
         let application = route.application.to_owned();
         let source = route.source.to_owned();
@@ -347,13 +321,10 @@ impl RtmpManagementApi {
             .generations
             .as_ref()
             .and_then(GenerationManager::active);
-        let catalog = active
-            .as_ref()
-            .map(|generation| generation.rtmp_media_catalog())
-            .or_else(|| self.media_catalog.clone());
-        let Some(catalog) = catalog else {
-            return ApiResponse::error(503, "media_unavailable", "RTMP media output is not active");
-        };
+        let catalog = active.as_ref().map_or_else(
+            || self.control.media_catalog(),
+            |generation| generation.rtmp_media_catalog(),
+        );
         let service = route.service.to_owned();
         let application = route.application.to_owned();
         let stream = route.stream.to_owned();

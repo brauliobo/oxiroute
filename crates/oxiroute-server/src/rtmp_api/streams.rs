@@ -1,14 +1,11 @@
 use std::str::FromStr;
 
 use oxiroute_rtmp::{
-    CatalogError, RecorderId, RecorderPhase, RecorderSnapshot, RecordingAction, RelaySnapshot,
-    RtmpCatalogSnapshot, RtmpControlHandle, StreamId, StreamSnapshot, TrackSnapshot,
-    VideoCodecIdentifier,
+    CatalogError, RecorderId, RecorderPhase, RecordingAction, RtmpControlHandle, StreamId,
 };
-use serde_json::{Value, json};
 
 use super::ApiResponse;
-use super::wire::{relay_dns_refresh_failure, relay_failure, relay_phase};
+use super::dto::{RtmpCatalogResponse, RtmpRecorderResponse, RtmpStreamResponse};
 
 #[derive(Clone, Copy)]
 pub(super) enum Route<'a> {
@@ -59,7 +56,11 @@ pub(super) fn handle(
             if method != "GET" {
                 return ApiResponse::method_not_allowed("GET");
             }
-            ApiResponse::json(200, &catalog_json(&control.catalog_snapshot()))
+            ApiResponse::json(
+                200,
+                &serde_json::to_value(RtmpCatalogResponse::project(&control.catalog_snapshot()))
+                    .expect("RTMP catalog response DTO serializes"),
+            )
         }
         Route::Stream(stream_id) => stream_response(method, control, stream_id),
         Route::Recording {
@@ -84,7 +85,13 @@ fn stream_response(method: &str, control: &RtmpControlHandle, stream_id: &str) -
         .find(|stream| stream.id == stream_id)
         .map_or_else(
             || ApiResponse::error(404, "stream_not_found", "stream does not exist"),
-            |stream| ApiResponse::json(200, &stream_json(stream)),
+            |stream| {
+                ApiResponse::json(
+                    200,
+                    &serde_json::to_value(RtmpStreamResponse::from(stream))
+                        .expect("RTMP stream response DTO serializes"),
+                )
+            },
         )
 }
 
@@ -125,193 +132,17 @@ fn recording_response(
             } else {
                 200
             };
-            ApiResponse::json(status, &recorder_json(&recorder))
+            ApiResponse::json(
+                status,
+                &serde_json::to_value(RtmpRecorderResponse::from(&recorder))
+                    .expect("RTMP recorder response DTO serializes"),
+            )
         }
         Err(error) => catalog_error(
             &error,
             control.catalog_snapshot().capabilities.manual_recording,
             action,
         ),
-    }
-}
-
-fn catalog_json(snapshot: &RtmpCatalogSnapshot) -> Value {
-    json!({
-        "revision": snapshot.revision.to_string(),
-        "as_of_unix_ms": snapshot.as_of_unix_ms,
-        "capabilities": {
-            "live_ingest": snapshot.capabilities.live_ingest,
-            "manual_recording": snapshot.capabilities.manual_recording,
-        },
-        "streams": snapshot.streams.iter().map(stream_json).collect::<Vec<_>>(),
-    })
-}
-
-fn stream_json(stream: &StreamSnapshot) -> Value {
-    json!({
-        "id": stream.id.to_string(),
-        "revision": stream.revision.to_string(),
-        "server_id": stream.key.server_id,
-        "application": stream.key.application,
-        "name": stream.key.name,
-        "created_at_unix_ms": stream.created_at_unix_ms,
-        "publisher": stream.publisher.map(|publisher| json!({
-            "session_id": publisher.session_id.to_string(),
-            "attached_at_unix_ms": publisher.attached_at_unix_ms,
-        })),
-        "subscriber_count": stream.subscriber_count,
-        "media": {
-            "audio": track_json(&stream.media.audio),
-            "video": track_json(&stream.media.video),
-            "fanout_payload_bytes": stream.media.fanout_payload_bytes_queued.to_string(),
-        },
-        "relays": stream.relays.iter().map(relay_json).collect::<Vec<_>>(),
-        "recording_supported": !stream.recorders.is_empty(),
-        "manual_recording": stream.recorders.iter().any(|recorder| recorder.manual),
-        "recorders": stream.recorders.iter().map(recorder_json).collect::<Vec<_>>(),
-    })
-}
-
-fn relay_json(relay: &RelaySnapshot) -> Value {
-    json!({
-        "id": relay.id.to_string(),
-        "destination": {
-            "address": relay.status.destination.address.to_string(),
-            "application": relay.status.destination.application,
-            "stream_name": relay.status.destination.stream_name,
-        },
-        "phase": relay_phase(relay.status.phase),
-        "last_failure": relay.status.last_failure.map(relay_failure),
-        "queue_messages": relay.status.queue_messages,
-        "queue_bytes": relay.status.queue_bytes.to_string(),
-        "connection_attempts": relay.status.connection_attempts.to_string(),
-        "connections": relay.status.connections.to_string(),
-        "reconnects": relay.status.reconnects.to_string(),
-        "dns_refresh_attempts": relay.status.dns_refresh_attempts.to_string(),
-        "dns_refresh_successes": relay.status.dns_refresh_successes.to_string(),
-        "dns_refresh_failures": relay.status.dns_refresh_failures.to_string(),
-        "last_dns_refresh_failure": relay
-            .status
-            .last_dns_refresh_failure
-            .map(relay_dns_refresh_failure),
-        "events_enqueued": relay.status.events_enqueued.to_string(),
-        "events_sent": relay.status.events_sent.to_string(),
-        "events_dropped": relay.status.events_dropped.to_string(),
-        "payload_bytes_sent": relay.status.payload_bytes_sent.to_string(),
-    })
-}
-
-fn track_json(track: &TrackSnapshot) -> Value {
-    let codec_id = track
-        .video_codec
-        .and_then(VideoCodecIdentifier::flv_codec_id)
-        .or(track.flv_codec_id);
-    let codec_fourcc = track.video_codec.and_then(VideoCodecIdentifier::four_cc);
-    let codec_name = track
-        .video_codec
-        .and_then(video_codec_name)
-        .or_else(|| codec_id.and_then(flv_codec_name));
-    let recording_supported = track.video_codec.map_or_else(
-        || matches!(track.flv_codec_id, Some(7 | 10)),
-        VideoCodecIdentifier::recording_supported,
-    );
-    json!({
-        "codec_id": codec_id,
-        "codec_fourcc": codec_fourcc.map(|four_cc| String::from_utf8_lossy(&four_cc).into_owned()),
-        "codec_name": codec_name,
-        "recording_supported": recording_supported,
-        "payload_bytes": track.payload_bytes_received.to_string(),
-        "last_rtmp_timestamp_ms": track.last_rtmp_timestamp_ms,
-        "last_observed_at_unix_ms": track.last_observed_at_unix_ms,
-    })
-}
-
-fn recorder_json(recorder: &RecorderSnapshot) -> Value {
-    json!({
-        "id": recorder.id.to_string(),
-        "name": recorder.name,
-        "manual": recorder.manual,
-        "phase": phase_json(recorder.phase),
-        "changed_at_unix_ms": recorder.changed_at_unix_ms,
-        "bytes_written": recorder.bytes_written.to_string(),
-        "current_relative_name": recorder.current_relative_name,
-        "last_completed_relative_name": recorder.last_completed_relative_name,
-        "recoverable_partial_name": recorder.recoverable_partial_name,
-        "published_but_not_durable_relative_name": recorder.published_but_not_durable_relative_name,
-        "segments_started": recorder.segments_started.to_string(),
-        "segments_completed": recorder.segments_completed.to_string(),
-        "discontinuities": recorder.discontinuities.to_string(),
-        "last_notification": recorder.last_notification.map(notification_name),
-    })
-}
-
-const fn notification_name(notification: oxiroute_rtmp::RecorderNotification) -> &'static str {
-    match notification {
-        oxiroute_rtmp::RecorderNotification::Started => "started",
-        oxiroute_rtmp::RecorderNotification::Stopped => "stopped",
-        oxiroute_rtmp::RecorderNotification::Failed => "failed",
-    }
-}
-
-fn phase_json(phase: RecorderPhase) -> Value {
-    match phase {
-        RecorderPhase::Idle => json!({ "state": "idle" }),
-        RecorderPhase::Starting { operation_id } => json!({
-            "state": "starting",
-            "operation_id": operation_id.to_string(),
-        }),
-        RecorderPhase::Recording {
-            operation_id,
-            started_at_unix_ms,
-        } => json!({
-            "state": "recording",
-            "operation_id": operation_id.to_string(),
-            "started_at_unix_ms": started_at_unix_ms,
-        }),
-        RecorderPhase::Stopping { operation_id } => json!({
-            "state": "stopping",
-            "operation_id": operation_id.to_string(),
-        }),
-        RecorderPhase::Failed { operation_id, code } => json!({
-            "state": "failed",
-            "operation_id": operation_id.to_string(),
-            "code": recorder_error_code(code),
-        }),
-    }
-}
-
-const fn recorder_error_code(code: oxiroute_rtmp::RecorderErrorCode) -> &'static str {
-    match code {
-        oxiroute_rtmp::RecorderErrorCode::OpenFailed => "open_failed",
-        oxiroute_rtmp::RecorderErrorCode::WriteFailed => "write_failed",
-        oxiroute_rtmp::RecorderErrorCode::CloseFailed => "close_failed",
-        oxiroute_rtmp::RecorderErrorCode::BackendUnavailable => "backend_unavailable",
-        oxiroute_rtmp::RecorderErrorCode::FileSyncFailed => "file_sync_failed",
-        oxiroute_rtmp::RecorderErrorCode::PublishFailed => "publish_failed",
-        oxiroute_rtmp::RecorderErrorCode::DirectorySyncFailed => "directory_sync_failed",
-        oxiroute_rtmp::RecorderErrorCode::QueueDiscontinuity => "queue_discontinuity",
-        oxiroute_rtmp::RecorderErrorCode::UnsupportedCodec => "unsupported_codec",
-        oxiroute_rtmp::RecorderErrorCode::ShutdownTimedOut => "shutdown_timed_out",
-        oxiroute_rtmp::RecorderErrorCode::WorkerPanicked => "worker_panicked",
-        oxiroute_rtmp::RecorderErrorCode::StalePublisher => "stale_publisher",
-    }
-}
-
-fn flv_codec_name(codec_id: u8) -> Option<&'static str> {
-    match codec_id {
-        7 => Some("avc"),
-        10 => Some("aac"),
-        _ => None,
-    }
-}
-
-fn video_codec_name(codec: VideoCodecIdentifier) -> Option<&'static str> {
-    match codec {
-        VideoCodecIdentifier::Flv(codec_id) => flv_codec_name(codec_id),
-        VideoCodecIdentifier::FourCc(four_cc) if four_cc == *b"avc1" => Some("avc"),
-        VideoCodecIdentifier::FourCc(four_cc) if four_cc == *b"hvc1" => Some("hevc"),
-        VideoCodecIdentifier::FourCc(four_cc) if four_cc == *b"av01" => Some("av1"),
-        VideoCodecIdentifier::FourCc(_) => None,
     }
 }
 

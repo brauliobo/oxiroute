@@ -1074,7 +1074,9 @@ impl From<RecorderPhase> for RecorderPhaseDto {
 mod tests {
     use std::collections::BTreeSet;
 
-    use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry};
+    use oxiroute_rtmp::{
+        PreparedRtmpRuntimeSet, RtmpPrepareContext, RtmpPrepareMode, RtmpRuntimeSet,
+    };
     use schemars::generate::SchemaSettings;
     use serde_json::{Value, json};
 
@@ -1086,15 +1088,23 @@ mod tests {
         serde_json::to_value(generator.into_root_schema_for::<T>()).expect("response schema")
     }
 
+    fn empty_rtmp_runtime() -> RtmpRuntimeSet {
+        PreparedRtmpRuntimeSet::prepare(
+            [],
+            &RtmpPrepareContext::new(RtmpPrepareMode::Activation, []),
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .expect("empty RTMP preparation")
+        .start(std::time::Instant::now() + std::time::Duration::from_secs(1))
+        .expect("empty RTMP runtime")
+    }
+
     #[test]
     fn monitoring_projection_preserves_the_runtime_v1_wire_object() {
         let runtime = RuntimeMetrics::new().snapshot().expect("runtime snapshot");
         let legacy_runtime = serde_json::to_value(&runtime).expect("legacy runtime JSON");
-        let registry = RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: true,
-            manual_recording: false,
-        });
-        let projected = MonitoringResponse::project(runtime, &registry.snapshot(), false)
+        let control = empty_rtmp_runtime().control();
+        let projected = MonitoringResponse::project(runtime, &control.catalog_snapshot(), false)
             .expect("monitoring projection");
         let projected = serde_json::to_value(projected).expect("projected monitoring JSON");
 
@@ -1108,12 +1118,9 @@ mod tests {
     #[test]
     fn monitoring_projection_owns_every_runtime_snapshot_field() {
         let runtime = RuntimeMetrics::new().snapshot().expect("runtime snapshot");
-        let registry = RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: true,
-            manual_recording: false,
-        });
+        let control = empty_rtmp_runtime().control();
         let value = serde_json::to_value(
-            MonitoringResponse::project(runtime, &registry.snapshot(), false)
+            MonitoringResponse::project(runtime, &control.catalog_snapshot(), false)
                 .expect("monitoring projection"),
         )
         .expect("monitoring JSON");

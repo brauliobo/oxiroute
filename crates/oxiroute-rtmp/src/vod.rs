@@ -843,7 +843,7 @@ pub struct VodCatalog {
 
 impl VodCatalog {
     #[must_use]
-    pub fn from_applications(
+    pub(crate) fn from_applications(
         applications: impl IntoIterator<Item = Arc<VodApplication>>,
     ) -> Arc<Self> {
         let applications = applications

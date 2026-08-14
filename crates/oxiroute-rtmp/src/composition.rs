@@ -419,7 +419,7 @@ impl RtmpApplicationPlan {
     /// Assembles the runtime application from resources acquired by RTMP preparation.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
-    pub fn build_runtime_application(
+    pub(crate) fn build_runtime_application(
         &self,
         hub: LiveHub,
         push_targets: impl IntoIterator<Item = RtmpPushTarget>,
@@ -590,7 +590,7 @@ impl RtmpFanoutPlan {
 
     /// Builds the live fanout hub represented by this validated plan.
     #[must_use]
-    pub fn runtime_hub(self) -> LiveHub {
+    pub(crate) fn runtime_hub(self) -> LiveHub {
         LiveHub::new(LiveHubLimits {
             max_subscribers: self.max_subscribers,
             max_subscribers_per_stream: self.max_subscribers,
@@ -629,7 +629,7 @@ impl RtmpMediaPlan {
 
     /// Combines acquired HLS and DASH outputs into one media application.
     #[must_use]
-    pub fn combine_outputs(
+    pub(crate) fn combine_outputs(
         hls: Option<Arc<HlsOutputConfig>>,
         dash: Option<Arc<DashOutputConfig>>,
     ) -> Option<Arc<MediaApplication>> {
@@ -787,7 +787,7 @@ impl RtmpHlsPlan {
 
     /// Builds the HLS output from an already-open media store.
     #[must_use]
-    pub fn build_output(&self, store: Arc<MediaStore>) -> Arc<HlsOutputConfig> {
+    pub(crate) fn build_output(&self, store: Arc<MediaStore>) -> Arc<HlsOutputConfig> {
         Arc::new(HlsOutputConfig {
             store,
             segment_duration: self.segment_duration,
@@ -944,7 +944,7 @@ impl RtmpDashPlan {
 
     /// Builds the DASH output from an already-open media store.
     #[must_use]
-    pub fn build_output(&self, store: Arc<MediaStore>) -> Arc<DashOutputConfig> {
+    pub(crate) fn build_output(&self, store: Arc<MediaStore>) -> Arc<DashOutputConfig> {
         Arc::new(DashOutputConfig {
             store,
             segment_duration: self.segment_duration,
@@ -1044,7 +1044,7 @@ impl RtmpRecorderPlan {
 
     /// Builds this recorder's runtime policy from an already-open shared store.
     #[must_use]
-    pub fn build_policy(&self, store: crate::RecordingStore) -> RtmpRecorderPolicy {
+    pub(crate) fn build_policy(&self, store: crate::RecordingStore) -> RtmpRecorderPolicy {
         RtmpRecorderPolicy::new(
             &self.name,
             self.start,
@@ -1177,7 +1177,7 @@ impl RtmpRelayPlan {
     ///
     /// Returns a destination error when startup resolution, policy, family selection, or direct
     /// listener-loop validation fails.
-    pub fn acquire_push_target<E>(
+    pub(crate) fn acquire_push_target<E>(
         &self,
         target: &RtmpPushPlan,
         listener_addresses: impl IntoIterator<Item = SocketAddr>,
@@ -1210,7 +1210,7 @@ impl RtmpRelayPlan {
     ///
     /// Returns a destination error when startup resolution, policy, family selection, or direct
     /// listener-loop validation fails.
-    pub fn acquire_pull_target<E>(
+    pub(crate) fn acquire_pull_target<E>(
         &self,
         target: &RtmpPullPlan,
         listener_addresses: impl IntoIterator<Item = SocketAddr>,
@@ -1607,7 +1607,7 @@ impl RtmpVodPlan {
     /// # Errors
     ///
     /// Returns an acquisition error when a source root or origin cannot be prepared.
-    pub fn acquire(
+    pub(crate) fn acquire(
         &self,
         service: impl Into<String>,
         application: impl Into<String>,
@@ -1699,7 +1699,7 @@ impl RtmpCallbackPlan {
     ///
     /// Returns a redacted callback error when the endpoint is malformed, cannot be resolved, or
     /// fails the configured outbound destination policy.
-    pub fn acquire_endpoint(
+    pub(crate) fn acquire_endpoint(
         &self,
         event: RtmpCallbackEventPlan,
         outbound_policy: &RtmpOutboundPolicy,

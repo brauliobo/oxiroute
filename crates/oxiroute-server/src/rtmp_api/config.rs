@@ -1,16 +1,21 @@
 use std::{io, path::Path, str::FromStr};
 
 use http::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
-use oxiroute_config::{ConfigDraft, RtmpAccessPolicy, ValidatedConfig};
-use oxiroute_config_source::{ConfigFormat, render_config};
-use oxiroute_import::ImportReportEnvelope;
+use oxiroute_config::{ConfigDraft, ValidatedConfig};
 use pingora::protocols::http::ServerSession;
-use serde::Deserialize;
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::{
-    ApiResponse, MAX_CONFIG_REQUEST_BYTES, observability::candidate_topology,
-    response::system_time_ms, ui::UiAssets,
+    ApiResponse, MAX_CONFIG_REQUEST_BYTES,
+    dto::{
+        ConfigConflictResponse, ConfigRequest, ConfigSnapshotResponse, ConfigValidationResponse,
+        ImportReportResponse, RedactedConfigView, RedactedImportReport,
+        contains_redacted_rtmp_token_secret, restore_redacted_rtmp_token_secrets,
+    },
+    observability::candidate_topology,
+    response::system_time_ms,
+    ui::UiAssets,
 };
 use crate::{
     CertbotWatcherConfig, FileWatcherConfig, GenerationManager, RuntimeMode, RuntimePlan,
@@ -28,7 +33,6 @@ const IF_CONFIG_REVISION: &str = "if-config-revision";
 const IMPORT_REPORTS_PATH: &str = "/api/v1/import-reports";
 const MAX_IMPORT_REPORTS: usize = 64;
 const MAX_IMPORT_REPORT_RESPONSE_BYTES: usize = MAX_CONFIG_REQUEST_BYTES * 2;
-const REDACTED_IMPORT_VALUE: &str = "<redacted>";
 
 #[derive(Clone, Copy)]
 pub(super) enum Route {
@@ -181,28 +185,24 @@ impl ConfigApiState {
             }
         };
         restore_redacted_rtmp_token_secrets(draft, &authoritative);
+        if contains_redacted_rtmp_token_secret(draft) {
+            return Err(ApiResponse::error(
+                422,
+                "redacted_rtmp_token_unresolved",
+                "redacted RTMP token secrets must match an existing authoritative token",
+            ));
+        }
         Ok(())
     }
 
     fn config_response(&self) -> ApiResponse {
         match self.coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => {
-                let (config, config_preview) =
-                    redacted_config_view(&document.validated_config, document.format);
-                let mut response = json!({
-                    "schemaVersion": 1,
-                    "diskRevision": document.authored_revision,
-                    "candidateRevision": document.effective_revision,
-                    "activeRevision": self.active_revision(),
-                    "config": config,
-                    "configFormat": document.format,
-                    "compositional": document.compositional,
-                    "dependencyCount": document.dependencies.len(),
-                    "configPreview": config_preview,
-                    "diagnostics": document.diagnostics,
-                });
-                add_legacy_lua_preview(&mut response, document.format, &config_preview);
-                ApiResponse::json(200, &response)
+                let view = RedactedConfigView::new(&document.validated_config, document.format);
+                typed_json_response(
+                    200,
+                    &ConfigSnapshotResponse::new(*document, self.active_revision(), view),
+                )
             }
             ConfigLoadOutcome::Rejected(rejection) => ApiResponse::json(
                 503,
@@ -256,8 +256,7 @@ impl ConfigApiState {
             .iter()
             .enumerate()
             .map(|(index, reference)| {
-                let report = redacted_import_report(reference.evidence.clone());
-                import_report_summary(index, &report)
+                RedactedImportReport::new(reference.evidence.clone()).summary(index)
             })
             .collect::<Vec<_>>();
         let selected = match selection {
@@ -269,24 +268,17 @@ impl ConfigApiState {
                         "the requested native import report does not exist",
                     );
                 };
-                Some(redacted_import_report(reference.evidence.clone()))
+                Some(RedactedImportReport::new(reference.evidence.clone()))
             }
             None => None,
         };
-        let preview = selected.as_ref().and_then(import_report_preview);
-        let response = json!({
-            "schemaVersion": 1,
-            "diskRevision": source.disk_revision,
-            "candidateRevision": source.candidate_revision,
-            "activeRevision": self.active_revision(),
-            "configFormat": source.format,
-            "compositional": source.compositional,
-            "reports": reports,
-            "selection": selection.map(|index| json!({ "index": index })),
-            "report": selected,
-            "preview": preview,
-            "diagnostics": [],
-        });
+        let response = ImportReportResponse::new(
+            &source,
+            self.active_revision(),
+            reports,
+            selection,
+            selected,
+        );
         bounded_import_report_response(&response)
     }
 
@@ -302,28 +294,25 @@ impl ConfigApiState {
             Ok(candidate) => candidate,
             Err(response) => return response,
         };
-        let (normalized_config, config_preview) =
-            redacted_config_view(candidate.draft.validated_config(), candidate.draft.format());
-
-        let mut response = json!({
-            "candidateRevision": candidate.draft.effective_revision(),
-            "normalizedConfig": normalized_config,
-            "configFormat": candidate.draft.format(),
-            "compositional": candidate.draft.compositional(),
-            "dependencyCount": candidate.draft.dependencies().len(),
-            "configPreview": config_preview,
-            "diagnostics": candidate.draft.diagnostics(),
-            "topology": candidate.topology,
-            "restartRequired": candidate.restart_reason.is_some(),
-        });
+        let view =
+            RedactedConfigView::new(candidate.draft.validated_config(), candidate.draft.format());
+        let mut diagnostics = diagnostics_json(candidate.draft.diagnostics(), false);
         if let Some(reason) = candidate.restart_reason {
-            response["diagnostics"]
-                .as_array_mut()
-                .expect("candidate diagnostics are an array")
-                .push(restart_required_diagnostic(reason));
+            diagnostics.push(restart_required_diagnostic(reason));
         }
-        add_legacy_lua_preview(&mut response, candidate.draft.format(), &config_preview);
-        ApiResponse::json(200, &response)
+        typed_json_response(
+            200,
+            &ConfigValidationResponse::new(
+                candidate.draft.effective_revision().clone(),
+                candidate.draft.format(),
+                candidate.draft.compositional(),
+                candidate.draft.dependencies().len(),
+                view,
+                diagnostics,
+                candidate.topology,
+                candidate.restart_reason.is_some(),
+            ),
+        )
     }
 
     fn save_config_response(
@@ -523,24 +512,17 @@ impl ConfigApiState {
     fn conflict_response(&self, conflict: &ConfigConflict) -> ApiResponse {
         match self.coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => {
-                let (config, config_preview) =
-                    redacted_config_view(&document.validated_config, document.format);
-                let mut response = json!({
-                    "schemaVersion": 1,
-                    "diskRevision": document.authored_revision,
-                    "candidateRevision": document.effective_revision,
-                    "activeRevision": self.active_revision(),
-                    "expectedRevision": conflict.expected_revision,
-                    "outcome": "conflict",
-                    "config": config,
-                    "configFormat": document.format,
-                    "compositional": document.compositional,
-                    "dependencyCount": document.dependencies.len(),
-                    "configPreview": config_preview,
-                    "diagnostics": conflict.diagnostics,
-                });
-                add_legacy_lua_preview(&mut response, document.format, &config_preview);
-                ApiResponse::json(409, &response)
+                let view = RedactedConfigView::new(&document.validated_config, document.format);
+                typed_json_response(
+                    409,
+                    &ConfigConflictResponse::new(
+                        *document,
+                        self.active_revision(),
+                        conflict.expected_revision.clone(),
+                        conflict.diagnostics.clone(),
+                        view,
+                    ),
+                )
             }
             ConfigLoadOutcome::Rejected(rejection) => ApiResponse::json(
                 503,
@@ -561,99 +543,6 @@ impl ConfigApiState {
     }
 }
 
-const REDACTED_RTMP_TOKEN: &str = "<redacted>";
-
-fn redacted_config_view(
-    config: &ValidatedConfig,
-    format: ConfigFormat,
-) -> (ValidatedConfig, String) {
-    let mut config = config.to_draft();
-    for service in &mut config.rtmp_services {
-        for application in &mut service.applications {
-            for policy in [&mut application.publish, &mut application.play] {
-                if let Some(token) = policy.token.as_mut() {
-                    token.secret = REDACTED_RTMP_TOKEN.into();
-                }
-            }
-        }
-    }
-    let config = config
-        .validate()
-        .expect("normalized configuration remains valid after token redaction");
-    let preview = render_config(format, &config)
-        .expect("normalized configuration remains renderable after token redaction");
-    (config, preview)
-}
-
-fn contains_redacted_rtmp_token_secret(config: &ConfigDraft) -> bool {
-    config.rtmp_services.iter().any(|service| {
-        service.applications.iter().any(|application| {
-            [&application.publish, &application.play]
-                .into_iter()
-                .any(|policy| {
-                    policy
-                        .token
-                        .as_ref()
-                        .is_some_and(|token| token.secret == REDACTED_RTMP_TOKEN)
-                })
-        })
-    })
-}
-
-fn restore_redacted_rtmp_token_secrets(draft: &mut ConfigDraft, authoritative: &ConfigDraft) {
-    for service in &mut draft.rtmp_services {
-        let Some(authoritative_service) = authoritative
-            .rtmp_services
-            .iter()
-            .find(|candidate| candidate.name == service.name)
-        else {
-            continue;
-        };
-        for application in &mut service.applications {
-            let Some(authoritative_application) = authoritative_service
-                .applications
-                .iter()
-                .find(|candidate| candidate.name == application.name)
-            else {
-                continue;
-            };
-            restore_redacted_rtmp_token_secret(
-                &mut application.publish,
-                &authoritative_application.publish,
-            );
-            restore_redacted_rtmp_token_secret(
-                &mut application.play,
-                &authoritative_application.play,
-            );
-        }
-    }
-}
-
-fn restore_redacted_rtmp_token_secret(
-    draft: &mut RtmpAccessPolicy,
-    authoritative: &RtmpAccessPolicy,
-) {
-    let Some(token) = draft.token.as_mut() else {
-        return;
-    };
-    if token.secret != REDACTED_RTMP_TOKEN {
-        return;
-    }
-    let Some(authoritative_token) = authoritative.token.as_ref() else {
-        return;
-    };
-    token.secret.clone_from(&authoritative_token.secret);
-}
-
-fn add_legacy_lua_preview(response: &mut Value, format: ConfigFormat, preview: &str) {
-    if format == ConfigFormat::Lua {
-        response
-            .as_object_mut()
-            .expect("configuration response is an object")
-            .insert("luaPreview".to_owned(), Value::String(preview.to_owned()));
-    }
-}
-
 pub(super) fn match_route(path: &str) -> Option<Route> {
     match path {
         "/api/v1/config" => Some(Route::Config),
@@ -669,44 +558,9 @@ pub(super) fn match_route(path: &str) -> Option<Route> {
     }
 }
 
-fn import_report_summary(index: usize, report: &ImportReportEnvelope) -> Value {
-    let status = if !report.blockers.is_empty() {
-        "blocked"
-    } else if report.candidate.finalized {
-        "finalized"
-    } else {
-        "draft"
-    };
-    json!({
-        "index": index,
-        "product": report.source.product,
-        "version": report.source.version,
-        "versionSource": report.source.version_source,
-        "capabilityProfile": report.source.capability_profile,
-        "status": status,
-        "rootCount": report.source_graph.roots.len(),
-        "sourceCount": report.source_graph.sources.len(),
-        "dependencyCount": report.source_graph.dependencies.len(),
-        "blockerCount": report.blockers.len(),
-        "diagnosticCount": report.diagnostics.len(),
-        "provenanceCount": report.candidate.provenance.len(),
-        "requirementCount": report.requirements.deployment.len() + report.requirements.activation.len(),
-        "overlayCount": report.overlays.len(),
-        "previewAvailable": import_report_preview(report).is_some(),
-    })
-}
-
-fn import_report_preview(report: &ImportReportEnvelope) -> Option<Value> {
-    if !report.candidate.finalized || !report.blockers.is_empty() {
-        return None;
-    }
-    let config = report.candidate.config.as_ref()?;
-    let (_, text) = redacted_config_view(config, ConfigFormat::Kdl);
-    Some(json!({ "format": "kdl", "text": text }))
-}
-
-fn bounded_import_report_response(value: &Value) -> ApiResponse {
-    let body = value.to_string().into_bytes();
+fn bounded_import_report_response(value: &impl Serialize) -> ApiResponse {
+    let value = serde_json::to_value(value).expect("import report response DTO serializes");
+    let body = serde_json::to_vec(&value).expect("import report response JSON serializes");
     if body.len() > MAX_IMPORT_REPORT_RESPONSE_BYTES {
         return ApiResponse::error(
             413,
@@ -717,80 +571,6 @@ fn bounded_import_report_response(value: &Value) -> ApiResponse {
         );
     }
     ApiResponse::bytes(200, body, "application/json")
-}
-
-fn redacted_import_report(mut report: ImportReportEnvelope) -> ImportReportEnvelope {
-    for root in &mut report.source_graph.roots {
-        root.path = root.path.as_ref().map(|_| REDACTED_IMPORT_VALUE.to_owned());
-    }
-    for source in &mut report.source_graph.sources {
-        source.name = format!("source-{}", source.id);
-        source.path = source
-            .path
-            .as_ref()
-            .map(|_| REDACTED_IMPORT_VALUE.to_owned());
-    }
-    for dependency in &mut report.source_graph.dependencies {
-        dependency.requested_path = dependency
-            .requested_path
-            .as_ref()
-            .map(|_| REDACTED_IMPORT_VALUE.to_owned());
-        dependency.canonical_path = dependency
-            .canonical_path
-            .as_ref()
-            .map(|_| REDACTED_IMPORT_VALUE.to_owned());
-    }
-    for provenance in &mut report.candidate.provenance {
-        for origin in &mut provenance.origins {
-            redact_origin(origin);
-        }
-    }
-    for requirement in report
-        .requirements
-        .deployment
-        .iter_mut()
-        .chain(report.requirements.activation.iter_mut())
-    {
-        requirement.values.fill(REDACTED_IMPORT_VALUE.to_owned());
-        for origin in &mut requirement.origins {
-            redact_origin(origin);
-        }
-    }
-    for overlay in &mut report.overlays {
-        overlay.values.fill(REDACTED_IMPORT_VALUE.to_owned());
-        if let Some(origin) = &mut overlay.origin {
-            redact_origin(origin);
-        }
-    }
-    for blocker in &mut report.blockers {
-        blocker.scope = blocker.scope.as_deref().map(redact_scope);
-    }
-    for diagnostic in &mut report.diagnostics {
-        diagnostic.help = diagnostic
-            .help
-            .as_ref()
-            .map(|_| REDACTED_IMPORT_VALUE.to_owned());
-    }
-    if let Some(config) = report.candidate.config.take() {
-        let (config, _) = redacted_config_view(&config, ConfigFormat::Kdl);
-        report.candidate.config = Some(config);
-    }
-    report
-}
-
-fn redact_origin(origin: &mut oxiroute_import::OriginEvidence) {
-    origin.path = origin
-        .path
-        .as_ref()
-        .map(|_| REDACTED_IMPORT_VALUE.to_owned());
-}
-
-fn redact_scope(scope: &str) -> String {
-    if scope.contains('/') || scope.contains('\\') {
-        REDACTED_IMPORT_VALUE.to_owned()
-    } else {
-        scope.to_owned()
-    }
 }
 
 pub(crate) fn preflight_management_token(path: &Path) -> io::Result<()> {
@@ -834,12 +614,6 @@ struct PreparedCandidate {
     topology: Value,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ConfigRequest {
-    config: ConfigDraft,
-}
-
 fn parse_config_request(body: &[u8]) -> Result<ConfigDraft, ApiResponse> {
     let value: Value = serde_json::from_slice(body).map_err(|_| {
         ApiResponse::error(
@@ -849,7 +623,7 @@ fn parse_config_request(body: &[u8]) -> Result<ConfigDraft, ApiResponse> {
         )
     })?;
     serde_json::from_value::<ConfigRequest>(value)
-        .map(|request| request.config)
+        .map(ConfigRequest::into_config)
         .map_err(|_| {
             ApiResponse::json(
                 422,
@@ -864,6 +638,11 @@ fn parse_config_request(body: &[u8]) -> Result<ConfigDraft, ApiResponse> {
                 }),
             )
         })
+}
+
+fn typed_json_response(status: u16, value: &impl Serialize) -> ApiResponse {
+    let value = serde_json::to_value(value).expect("configuration response DTO serializes");
+    ApiResponse::json(status, &value)
 }
 
 fn prepare_config(config: &ValidatedConfig) -> Result<RuntimePlan, ConfigPreparationError> {

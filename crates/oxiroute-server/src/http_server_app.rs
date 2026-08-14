@@ -20,25 +20,19 @@ use crate::listener_runtime::{AdmissionError, ListenerRuntime};
 use crate::{ListenerMetrics, RuntimeGeneration, RuntimeReferenceKind, TlsProfilePlan};
 
 pub struct MonitoredHttpApp<A> {
-    generation: Option<Arc<RuntimeGeneration>>,
+    generation: Arc<RuntimeGeneration>,
     inner: Arc<A>,
     listener: ListenerRuntime,
 }
 
 impl<A> MonitoredHttpApp<A> {
     #[must_use]
-    pub fn new(inner: A, metrics: ListenerMetrics) -> Self {
+    pub fn new(inner: A, metrics: ListenerMetrics, generation: Arc<RuntimeGeneration>) -> Self {
         Self {
-            generation: None,
+            generation,
             inner: Arc::new(inner),
             listener: ListenerRuntime::new(metrics),
         }
-    }
-
-    #[must_use]
-    pub fn with_generation(mut self, generation: Arc<RuntimeGeneration>) -> Self {
-        self.generation = Some(generation);
-        self
     }
 }
 
@@ -48,36 +42,22 @@ where
     A: ServerApp + Send + Sync + 'static,
 {
     fn accept_gate(&self) -> Option<AcceptGate> {
-        self.generation.as_ref().map_or_else(
-            || self.inner.accept_gate(),
-            |generation| Some(generation.accept_gate()),
-        )
+        Some(self.generation.accept_gate())
     }
 
     fn accepting(&self) -> bool {
-        self.listener.accepting()
-            && self.generation.as_ref().map_or_else(
-                || self.inner.accepting(),
-                |generation| generation.accepting(),
-            )
+        self.listener.accepting() && self.generation.accepting() && self.inner.accepting()
     }
 
     fn admit_connection(&self) -> Option<ConnectionAdmission> {
-        let lease = if let Some(generation) = &self.generation {
-            match self.listener.admit(generation, RuntimeReferenceKind::Http1) {
-                Ok(lease) => lease,
-                Err(error) => {
-                    log_admission_error("HTTP", &error);
-                    return None;
-                }
-            }
-        } else {
-            match self.listener.admit_without_generation() {
-                Ok(lease) => lease,
-                Err(error) => {
-                    log_admission_error("HTTP", &error);
-                    return None;
-                }
+        let lease = match self
+            .listener
+            .admit(&self.generation, RuntimeReferenceKind::Http1)
+        {
+            Ok(lease) => lease,
+            Err(error) => {
+                log_admission_error("HTTP", &error);
+                return None;
             }
         };
         let inner = self.inner.admit_connection()?;
@@ -85,24 +65,14 @@ where
     }
 
     fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
-        let lease = if let Some(generation) = &self.generation {
-            match self
-                .listener
-                .admit_owned(generation, RuntimeReferenceKind::Http1)
-            {
-                Ok(lease) => lease,
-                Err(error) => {
-                    log_admission_error("HTTP", &error);
-                    return None;
-                }
-            }
-        } else {
-            match self.listener.admit_without_generation() {
-                Ok(lease) => lease,
-                Err(error) => {
-                    log_admission_error("HTTP", &error);
-                    return None;
-                }
+        let lease = match self
+            .listener
+            .admit_owned(&self.generation, RuntimeReferenceKind::Http1)
+        {
+            Ok(lease) => lease,
+            Err(error) => {
+                log_admission_error("HTTP", &error);
+                return None;
             }
         };
         let inner = self.inner.admit_owned_connection()?;
@@ -181,6 +151,8 @@ where
             downstream.shutdown().await;
             return None;
         }
+        // H2 has its own connection lifetime after HTTP/1 accept admission and retains this
+        // protocol reference to drive generation GOAWAY and drain independently.
         let h2_reference = if matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
             if let Some(generation) = self.generation.as_ref() {
                 let Some(reference) = generation.begin_reference(RuntimeReferenceKind::Http2)
@@ -431,6 +403,8 @@ mod tests {
         called: Arc<AtomicBool>,
     }
 
+    struct RejectingAdmissionApp;
+
     #[async_trait]
     impl ServerApp for ProcessProbe {
         async fn process_new(
@@ -458,27 +432,26 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn monitored_http_app_delegates_cleanup() {
-        let cleaned = Arc::new(AtomicBool::new(false));
-        let runtime = RuntimeMetrics::new();
-        let metrics = runtime
-            .register_listener("http", "http", "127.0.0.1:8080", 100)
-            .expect("listener metrics");
-        let app = MonitoredHttpApp::new(
-            CleanupApp {
-                cleaned: Arc::clone(&cleaned),
-            },
-            metrics,
-        );
+    #[async_trait]
+    impl ServerApp for RejectingAdmissionApp {
+        fn admit_connection(&self) -> Option<ConnectionAdmission> {
+            None
+        }
 
-        app.cleanup().await;
+        fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
+            None
+        }
 
-        assert!(cleaned.load(Ordering::Relaxed));
+        async fn process_new(
+            self: &Arc<Self>,
+            _session: Stream,
+            _shutdown: &ShutdownWatch,
+        ) -> Option<Stream> {
+            None
+        }
     }
 
-    #[tokio::test]
-    async fn h2_process_new_closes_when_generation_reference_is_unavailable() {
+    fn generation() -> Arc<RuntimeGeneration> {
         let config = ConfigDraft {
             version: 1,
             max_connections: None,
@@ -495,12 +468,12 @@ mod tests {
             l4_services: Vec::new(),
         }
         .validate()
-        .expect("valid H2 test config");
+        .expect("valid HTTP test config");
         let manager = GenerationManager::new();
         let candidate = manager
             .prepare(ResolvedConfigDocument {
-                authored_revision: AuthoredRevision::from_bytes(b"h2-test"),
-                effective_revision: EffectiveRevision::from_bytes(b"h2-test"),
+                authored_revision: AuthoredRevision::from_bytes(b"http-test"),
+                effective_revision: EffectiveRevision::from_bytes(b"http-test"),
                 validated_config: config,
                 format: ConfigFormat::Lua,
                 compositional: false,
@@ -508,10 +481,35 @@ mod tests {
                 config_preview: String::new(),
                 diagnostics: Vec::new(),
             })
-            .expect("prepared H2 test generation");
-        let generation = manager
+            .expect("prepared HTTP test generation");
+        manager
             .activate(&candidate)
-            .expect("active H2 test generation");
+            .expect("active HTTP test generation")
+    }
+
+    #[tokio::test]
+    async fn monitored_http_app_delegates_cleanup() {
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let runtime = RuntimeMetrics::new();
+        let metrics = runtime
+            .register_listener("http", "http", "127.0.0.1:8080", 100)
+            .expect("listener metrics");
+        let app = MonitoredHttpApp::new(
+            CleanupApp {
+                cleaned: Arc::clone(&cleaned),
+            },
+            metrics,
+            generation(),
+        );
+
+        app.cleanup().await;
+
+        assert!(cleaned.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn h2_process_new_closes_when_generation_reference_is_unavailable() {
+        let generation = generation();
         generation.stop_accepting();
 
         let called = Arc::new(AtomicBool::new(false));
@@ -541,5 +539,54 @@ mod tests {
         assert!(result.is_none());
         assert!(closed.load(Ordering::Acquire));
         assert!(!called.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn reverse_http_admission_rolls_back_when_inner_admission_rejects() {
+        let generation = generation();
+        let metrics = RuntimeMetrics::with_max_connections(Some(1));
+        let listener = metrics
+            .register_listener("http", "http", "127.0.0.1:8080", 1)
+            .expect("listener metrics");
+        let app = MonitoredHttpApp::new(RejectingAdmissionApp, listener, Arc::clone(&generation));
+
+        assert!(app.admit_connection().is_none());
+        assert_eq!(generation.active_references(RuntimeReferenceKind::Http1), 0);
+        let snapshot = metrics.snapshot().expect("rollback snapshot");
+        assert_eq!(snapshot.traffic.active_connections, 0);
+        assert!(snapshot.access_records.is_empty());
+    }
+
+    #[test]
+    fn reverse_http_owned_admission_retains_generation_drain_lifetime() {
+        let generation = generation();
+        let metrics = RuntimeMetrics::with_max_connections(Some(1));
+        let listener = metrics
+            .register_listener("http", "http", "127.0.0.1:8080", 1)
+            .expect("listener metrics");
+        let app = MonitoredHttpApp::new(
+            ProcessProbe {
+                called: Arc::new(AtomicBool::new(false)),
+            },
+            listener,
+            Arc::clone(&generation),
+        );
+
+        generation.stop_accepting();
+        let lease = app
+            .admit_owned_connection()
+            .expect("accept-gate-owned reverse HTTP admission");
+        assert!(!generation.drain(Duration::ZERO));
+
+        drop(lease);
+        assert!(generation.drain(Duration::from_millis(100)));
+        assert_eq!(
+            metrics
+                .snapshot()
+                .expect("released snapshot")
+                .traffic
+                .active_connections,
+            0
+        );
     }
 }

@@ -3,7 +3,7 @@
 use std::{collections::VecDeque, future::Future, net::SocketAddr, pin::Pin, time::Duration};
 
 use bytes::Bytes;
-use oxiroute_rtmp::{RtmpServiceHandle, RtmpServiceRuntime, RtmpSession};
+use oxiroute_rtmp::{RtmpServiceHandle, RtmpSession};
 use rml_rtmp::{
     handshake::{Handshake, HandshakeProcessResult, PeerType},
     sessions::{
@@ -192,10 +192,6 @@ pub struct RtmpSessionClient {
 }
 
 impl RtmpSessionClient {
-    pub fn connect(runtime: &RtmpServiceRuntime, application: &str) -> Self {
-        Self::from_session(runtime.session(), application)
-    }
-
     pub fn connect_handle(runtime: &RtmpServiceHandle, application: &str) -> Self {
         Self::from_session(runtime.session(), application)
     }

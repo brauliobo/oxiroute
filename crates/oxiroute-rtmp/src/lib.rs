@@ -1,6 +1,9 @@
 pub const RTMP_VERSION: u8 = 3;
 pub const HANDSHAKE_BLOCK_SIZE: usize = 1536;
 
+#[cfg(test)]
+extern crate self as oxiroute_rtmp;
+
 #[macro_use]
 mod stream;
 
@@ -40,12 +43,12 @@ pub use callback::{
 };
 pub use catalog::{
     CatalogError, MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_QUERY_BYTES, MAX_RTMP_STREAM_NAME_BYTES,
-    MediaSnapshot, OperationId, PublisherRegistration, PublisherSnapshot, RecorderDefinition,
-    RecorderErrorCode, RecorderId, RecorderPhase, RecorderSnapshot, RecordingAction, RelayId,
-    RelaySnapshot, RtmpCapabilities, RtmpCatalogSnapshot, RtmpRegistry, RtmpRegistryWorkStats,
-    RtmpStreamPath, RtmpStreamPathError, SessionId, StreamId, StreamKey, StreamSnapshot,
-    SubscriberRegistration, TrackSnapshot,
+    MediaSnapshot, OperationId, PublisherSnapshot, RecorderDefinition, RecorderErrorCode,
+    RecorderId, RecorderPhase, RecorderSnapshot, RecordingAction, RelayId, RelaySnapshot,
+    RtmpCapabilities, RtmpCatalogSnapshot, RtmpRegistryWorkStats, RtmpStreamPath,
+    RtmpStreamPathError, SessionId, StreamId, StreamKey, StreamSnapshot, TrackSnapshot,
 };
+pub(crate) use catalog::{PublisherRegistration, RtmpRegistry, SubscriberRegistration};
 pub use client::{
     DestinationPolicyError, RtmpClientOptions, RtmpCredential, RtmpOutboundPolicy, RtmpRtmpsMode,
     RtmpTransport,
@@ -70,35 +73,38 @@ pub use exec_worker::{
 pub use flv::{
     FlvMuxer, FlvMuxerError, FlvTagType, MAX_CACHED_CODEC_HEADER_SIZE, MAX_FLV_TAG_DATA_SIZE,
 };
+pub(crate) use live::{LiveHub, PlaybackSubscription, PublisherLease};
 pub use live::{
-    LiveHub, LiveHubError, LiveHubLimits, LiveHubStats, MediaEvent, MediaEventError,
-    MediaEventKind, PlaybackSubscription, PublishReport, PublisherIncarnation, PublisherLease,
-    VideoCodec, VideoCodecIdentifier,
+    LiveHubError, LiveHubLimits, LiveHubStats, MediaEvent, MediaEventError, MediaEventKind,
+    PublishReport, PublisherIncarnation, VideoCodec, VideoCodecIdentifier,
 };
 pub use media_segmenter::{
     HlsFragmentNaming, HlsKeyConfig, HlsOutputConfig, HlsValueError, HlsVariant, MediaApplication,
     MediaCatalog, MediaEnqueueResult, MediaObject, MediaOutputError, MediaPublisher,
 };
-pub use media_storage::{
-    MAX_MEDIA_PATH_BYTES, MediaStore, MediaStoreError, MediaStoreLimits, MediaStoreStats,
-    RtmpMediaStoreRegistry,
-};
+pub use media_storage::{MAX_MEDIA_PATH_BYTES, MediaStoreError, MediaStoreLimits, MediaStoreStats};
+pub(crate) use media_storage::{MediaStore, RtmpMediaStoreRegistry};
 pub use recording_path::{
     MAX_RECORDING_FILENAME_BYTES, MAX_RECORDING_SUFFIX_TEMPLATE_BYTES, RecordingDateTime,
     RecordingPathError, RecordingPathPolicy, RecordingSegmentNaming, RecordingTimeBasis,
     RecordingTimezone,
 };
 pub use recording_runtime::{RtmpRecorderPolicy, RtmpRecorderShutdown, RtmpRecorderStart};
-pub use recording_store::{
-    RecorderLease, RecordingCommit, RecordingFile, RecordingQuotaScope, RecordingStore,
-    RecordingStoreError, RecordingStoreLimits, RecordingStoreLimitsError, RecordingStoreStats,
-    RtmpRecorderStoreRegistry,
+pub(crate) use recording_store::{
+    RecorderLease, RecordingCommit, RecordingFile, RecordingStore, RtmpRecorderStoreRegistry,
 };
+pub use recording_store::{
+    RecordingQuotaScope, RecordingStoreError, RecordingStoreLimits, RecordingStoreLimitsError,
+    RecordingStoreStats,
+};
+#[cfg(test)]
+pub(crate) use recording_worker::RecorderShutdown;
 pub use recording_worker::{
     RecorderEnqueueResult, RecorderFailure, RecorderMediaMask, RecorderNotification,
-    RecorderShutdown, RecorderVideoCodec, RecorderWorker, RecorderWorkerConfig,
-    RecorderWorkerPhase, RecorderWorkerStartError, RecorderWorkerStatus, RecorderWorkerSupervisor,
+    RecorderVideoCodec, RecorderWorkerConfig, RecorderWorkerPhase, RecorderWorkerStartError,
+    RecorderWorkerStatus,
 };
+pub(crate) use recording_worker::{RecorderWorker, RecorderWorkerSupervisor};
 pub use relay::{
     RtmpDestination, RtmpDestinationResolver, RtmpDestinationResolverError, RtmpDnsRefreshFailure,
     RtmpDnsResolver, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRelayConfig,
@@ -114,10 +120,10 @@ pub use session::{
     MAX_INBOUND_AMF0_VALUES, MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE,
     MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, MAX_RTMP_MESSAGE_STREAMS,
     RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule,
-    RtmpApplication, RtmpNetwork, RtmpRecorderLifecycle, RtmpServicePreparation,
-    RtmpServiceRuntime, RtmpSession, RtmpSessionCeilings, RtmpSessionError, RtmpSessionLimitError,
-    RtmpSessionLimits, RtmpSessionPolicy, RtmpTokenPolicy,
+    RtmpApplication, RtmpNetwork, RtmpSession, RtmpSessionCeilings, RtmpSessionError,
+    RtmpSessionLimitError, RtmpSessionLimits, RtmpSessionPolicy, RtmpTokenPolicy,
 };
+pub(crate) use session::{RtmpRecorderLifecycle, RtmpServicePreparation, RtmpServiceRuntime};
 pub use session_control::{
     MAX_RTMP_SESSION_CONTROLS, RtmpClientSnapshot, RtmpMessageStreamSnapshot,
     RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome, RtmpSessionRole,
@@ -172,3 +178,43 @@ pub fn simple_handshake_response(
     response.extend_from_slice(&client_hello[1..]);
     Ok(response)
 }
+
+#[cfg(test)]
+#[path = "../tests/amf_hardening.rs"]
+mod amf_hardening_tests;
+#[cfg(test)]
+#[path = "../tests/catalog.rs"]
+mod catalog_tests;
+#[cfg(test)]
+#[path = "../tests/live_fanout.rs"]
+mod live_fanout_tests;
+#[cfg(test)]
+#[path = "../tests/multi_stream_session.rs"]
+mod multi_stream_session_tests;
+#[cfg(test)]
+#[path = "../tests/playback_session.rs"]
+mod playback_session_tests;
+#[cfg(test)]
+#[path = "../tests/publish_session.rs"]
+mod publish_session_tests;
+#[cfg(test)]
+#[path = "../tests/pull_relay.rs"]
+mod pull_relay_tests;
+#[cfg(test)]
+#[path = "../tests/push_relay.rs"]
+mod push_relay_tests;
+#[cfg(test)]
+#[path = "../tests/recorder_session.rs"]
+mod recorder_session_tests;
+#[cfg(test)]
+#[path = "../tests/recording_store.rs"]
+mod recording_store_tests;
+#[cfg(test)]
+#[path = "../tests/recording_worker.rs"]
+mod recording_worker_tests;
+#[cfg(test)]
+#[path = "../tests/service_plans.rs"]
+mod service_plan_tests;
+#[cfg(test)]
+#[path = "../tests/session_policy.rs"]
+mod session_policy_tests;

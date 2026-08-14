@@ -29,11 +29,8 @@ use oxiroute_config::{
     ValidatedConfig,
 };
 use oxiroute_rtmp::{
-    LiveHub, LiveHubLimits, MediaSnapshot, PreparedRtmpRuntimeSet,
-    RtmpApplication as RuntimeRtmpApplication, RtmpCapabilities, RtmpPrepareContext,
-    RtmpPrepareMode, RtmpPushApplication, RtmpPushTarget, RtmpRegistry, RtmpRelayConfig,
-    RtmpRuntimeSet, RtmpServiceHandle, RtmpServiceRuntime, RtmpSession, RtmpSessionControlAction,
-    RtmpSessionPolicy, SessionId, StreamKey, TrackSnapshot, VideoCodecIdentifier,
+    PreparedRtmpRuntimeSet, RtmpControlHandle, RtmpPrepareContext, RtmpPrepareMode, RtmpRuntimeSet,
+    RtmpServiceHandle, RtmpSession, RtmpSessionControlAction,
 };
 use oxiroute_server::{
     GenerationManager, HttpListenerApp, RtmpManagementApi, RuntimeMetrics, RuntimeMode,
@@ -77,13 +74,7 @@ fn reserve_tcp_address() -> SocketAddr {
 
 #[test]
 fn reports_truthful_empty_capabilities_when_ingest_is_disabled() {
-    let api = management_api(
-        Arc::new(RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        })),
-        RuntimeMetrics::new(),
-    );
+    let api = management_api(empty_control(), RuntimeMetrics::new());
 
     let response = api.handle("GET", "/api/v1/rtmp/streams", 100);
     let body: Value = serde_json::from_slice(&response.body).expect("JSON response");
@@ -97,35 +88,14 @@ fn reports_truthful_empty_capabilities_when_ingest_is_disabled() {
 
 #[test]
 fn reports_bounded_rtmp_global_and_live_stats_without_stream_queries() {
-    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
-        live_ingest: true,
-        manual_recording: false,
-    }));
-    let publisher = SessionId::new();
-    let stream_id = registry
-        .attach_publisher(
-            StreamKey::new("edge", "live", "camera"),
-            publisher,
-            Vec::new(),
-            100,
-        )
-        .expect("publisher");
-    registry
-        .update_media_sample(
-            stream_id,
-            publisher,
-            1,
-            MediaSnapshot {
-                audio: TrackSnapshot {
-                    payload_bytes_received: 128,
-                    ..TrackSnapshot::default()
-                },
-                ..MediaSnapshot::default()
-            },
-            200,
-        )
-        .expect("media sample");
-    let api = management_api(registry, RuntimeMetrics::new());
+    let runtime = basic_runtime();
+    let service = runtime.service("live").expect("live service");
+    let mut publisher = RtmpSessionClient::connect_handle(&service, "broadcast");
+    publisher.publish("camera", 100);
+    let mut audio = vec![0; 128];
+    audio[..2].copy_from_slice(&[0xaf, 0x01]);
+    publisher.publish_audio(1, &audio, 200);
+    let api = management_api(runtime.control(), RuntimeMetrics::new());
 
     let global = api.handle("GET", "/api/v1/rtmp/stats/global", 300);
     let global: Value = serde_json::from_slice(&global.body).expect("global stats JSON");
@@ -136,7 +106,7 @@ fn reports_bounded_rtmp_global_and_live_stats_without_stream_queries() {
     let live = api.handle("GET", "/api/v1/rtmp/stats/live", 300);
     let live: Value = serde_json::from_slice(&live.body).expect("live stats JSON");
     assert_eq!(live["live"].as_array().map(Vec::len), Some(1));
-    assert_eq!(live["live"][0]["application"], "live");
+    assert_eq!(live["live"][0]["application"], "broadcast");
     assert_eq!(live["live"][0]["name"], "camera");
     assert!(!live.to_string().contains('?'));
 }
@@ -274,7 +244,7 @@ fn reports_http3_only_when_a_listener_is_active() {
         .register_listener("reverse-h3", "http3", "127.0.0.1:9443", Some(64))
         .expect("HTTP/3 listener metrics");
     listener.mark_listening();
-    let api = management_api(empty_registry(), metrics);
+    let api = management_api(empty_control(), metrics);
 
     let response = api.handle("GET", "/api/v1/capabilities", 100);
     let body: Value = serde_json::from_slice(&response.body).expect("JSON response");
@@ -292,7 +262,7 @@ fn reports_http3_only_when_a_listener_is_active() {
 #[test]
 fn status_reports_component_health_generation_age_and_certificate_sections() {
     let metrics = RuntimeMetrics::new();
-    let api = management_api(empty_registry(), metrics);
+    let api = management_api(empty_control(), metrics);
 
     let response = api.handle("GET", "/api/v1/status", 100);
     let body: Value = serde_json::from_slice(&response.body).expect("status JSON");
@@ -465,36 +435,14 @@ async fn serves_authenticated_dash_manifests_segments_and_single_ranges() {
 
 #[test]
 fn exposes_enhanced_video_codec_identity_with_recording_support() {
-    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
-        live_ingest: true,
-        manual_recording: false,
-    }));
-    let publisher = SessionId::new();
-    let stream_id = registry
-        .attach_publisher(
-            StreamKey::new("edge", "live", "hevc-camera"),
-            publisher,
-            Vec::new(),
-            100,
-        )
-        .expect("publisher");
-    registry
-        .update_media_sample(
-            stream_id,
-            publisher,
-            1,
-            MediaSnapshot {
-                video: TrackSnapshot {
-                    video_codec: Some(VideoCodecIdentifier::FourCc(*b"hvc1")),
-                    payload_bytes_received: 4_096,
-                    ..TrackSnapshot::default()
-                },
-                ..MediaSnapshot::default()
-            },
-            200,
-        )
-        .expect("media sample");
-    let api = management_api(registry, RuntimeMetrics::new());
+    let runtime = basic_runtime();
+    let service = runtime.service("live").expect("live service");
+    let mut publisher = RtmpSessionClient::connect_handle(&service, "broadcast");
+    publisher.publish("hevc-camera", 100);
+    let mut payload = vec![0x91, b'h', b'v', b'c', b'1'];
+    payload.resize(4_096, 0x55);
+    publisher.publish_video(1, &payload, 200);
+    let api = management_api(runtime.control(), RuntimeMetrics::new());
 
     let response = api.handle("GET", "/api/v1/rtmp/streams", 300);
     let body: Value = serde_json::from_slice(&response.body).expect("JSON response");
@@ -507,8 +455,8 @@ fn exposes_enhanced_video_codec_identity_with_recording_support() {
             "codec_name": "hevc",
             "recording_supported": true,
             "payload_bytes": "4096",
-            "last_rtmp_timestamp_ms": null,
-            "last_observed_at_unix_ms": null,
+            "last_rtmp_timestamp_ms": 1,
+            "last_observed_at_unix_ms": 200,
         })
     );
 }
@@ -524,7 +472,7 @@ fn serves_prebuilt_ui_assets_without_request_time_filesystem_paths() {
     .expect("index asset");
     fs::write(directory.path().join("assets/app.css"), "body{color:white}").expect("CSS asset");
     let api = RtmpManagementApi::with_ui_dir(
-        empty_registry(),
+        empty_control(),
         RuntimeMetrics::new(),
         empty_topology(),
         directory.path(),
@@ -553,39 +501,17 @@ fn exposes_runtime_listener_and_rtmp_monitoring() {
         .record_bytes_received(4_096)
         .expect("received traffic");
     connection.record_bytes_sent(3_073).expect("sent traffic");
-    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
-        live_ingest: true,
-        manual_recording: false,
-    }));
-    let publisher = SessionId::new();
-    let stream_id = registry
-        .attach_publisher(
-            StreamKey::new("live", "broadcast", "camera"),
-            publisher,
-            Vec::new(),
-            100,
-        )
-        .expect("publisher");
-    registry
-        .update_media_sample(
-            stream_id,
-            publisher,
-            1,
-            MediaSnapshot {
-                audio: TrackSnapshot {
-                    payload_bytes_received: 1_024,
-                    ..TrackSnapshot::default()
-                },
-                video: TrackSnapshot {
-                    payload_bytes_received: 8_192,
-                    ..TrackSnapshot::default()
-                },
-                fanout_payload_bytes_queued: 0,
-            },
-            200,
-        )
-        .expect("media sample");
-    let api = management_api(registry, metrics);
+    let runtime = basic_runtime();
+    let service = runtime.service("live").expect("live service");
+    let mut publisher = RtmpSessionClient::connect_handle(&service, "broadcast");
+    publisher.publish("camera", 100);
+    let mut audio = vec![0; 1_024];
+    audio[..2].copy_from_slice(&[0xaf, 0x01]);
+    publisher.publish_audio(1, &audio, 200);
+    let mut video = vec![0; 8_192];
+    video[..5].copy_from_slice(&[0x17, 0x01, 0x00, 0x00, 0x00]);
+    publisher.publish_video(2, &video, 201);
+    let api = management_api(runtime.control(), metrics);
 
     let response = api.handle("GET", "/api/v1/monitoring", 300);
     let body: Value = serde_json::from_slice(&response.body).expect("JSON response");
@@ -613,7 +539,7 @@ fn exposes_runtime_listener_and_rtmp_monitoring() {
 
 #[test]
 fn monitoring_exposes_fixed_rtmp_access_log_metrics_without_sink_identity() {
-    let api = management_api(empty_registry(), RuntimeMetrics::new());
+    let api = management_api(empty_control(), RuntimeMetrics::new());
     let response = api.handle("GET", "/api/v1/monitoring", 100);
     let body: Value = serde_json::from_slice(&response.body).expect("JSON response");
 
@@ -630,40 +556,34 @@ fn relay_state_and_counters_are_observable_without_stream_queries() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve absent relay port");
     let destination = listener.local_addr().expect("relay destination");
     drop(listener);
-    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
-        live_ingest: true,
-        manual_recording: false,
-    }));
-    let runtime = RtmpServiceRuntime::new(
-        "live",
-        Arc::clone(&registry),
-        LiveHub::new(LiveHubLimits::default()),
-        RtmpSessionPolicy::new([RuntimeRtmpApplication::with_runtime(
-            "broadcast",
-            true,
-            true,
-            LiveHub::new(LiveHubLimits::default()),
-            [RtmpPushTarget {
-                address: destination,
-                host: destination.ip().to_string(),
-                transport: oxiroute_rtmp::RtmpTransport::Rtmp,
-                application: RtmpPushApplication::StreamName,
-                stream_name: None,
-                options: oxiroute_rtmp::RtmpClientOptions::default(),
-                config: RtmpRelayConfig {
-                    connect_timeout: Duration::from_millis(10),
-                    reconnect_interval: Duration::from_millis(20),
-                    ..RtmpRelayConfig::default()
-                },
-            }],
-            [],
-        )]),
-    );
-    let mut publisher = RtmpSessionClient::connect(&runtime, "broadcast");
+    let mut config = candidate_config(&editable_config(), "live");
+    config.rtmp_services[0].outbound_policy.deny_private = false;
+    config.rtmp_services[0].applications[0]
+        .relay
+        .push_reconnect_ms = 20;
+    config.rtmp_services[0].applications[0]
+        .relay
+        .connect_timeout_ms = 10;
+    config.rtmp_services[0].applications[0]
+        .push_targets
+        .push(oxiroute_config::RtmpPushTarget {
+            host: destination.ip().to_string(),
+            port: destination.port(),
+            application: "$name".into(),
+            scheme: oxiroute_config::RtmpTransport::Rtmp,
+            stream_name: None,
+            tc_url: None,
+            flash_version: None,
+            credentials: None,
+        });
+    let runtime = runtime_for_config(config);
+    let service = runtime.service("live").expect("live service");
+    let mut publisher = RtmpSessionClient::connect_handle(&service, "broadcast");
     publisher.publish("camera?token=relay-wire-secret", 100);
     publisher.publish_audio(1, &[0xaf, 0x01, 0x44], 101);
     let deadline = Instant::now() + Duration::from_secs(1);
-    while registry.snapshot().streams[0].relays[0]
+    let control = runtime.control();
+    while control.catalog_snapshot().streams[0].relays[0]
         .status
         .connection_attempts
         < 2
@@ -671,7 +591,7 @@ fn relay_state_and_counters_are_observable_without_stream_queries() {
         assert!(Instant::now() < deadline, "relay retry timeout");
         thread::sleep(Duration::from_millis(5));
     }
-    let api = management_api(Arc::clone(&registry), RuntimeMetrics::new());
+    let api = management_api(control, RuntimeMetrics::new());
 
     let catalog = api.handle("GET", "/api/v1/rtmp/streams", 200);
     let monitoring = api.handle("GET", "/api/v1/monitoring", 200);
@@ -711,45 +631,19 @@ fn relay_state_and_counters_are_observable_without_stream_queries() {
 }
 
 #[test]
-fn monitoring_response_preserves_large_rtmp_cumulative_totals() {
-    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
-        live_ingest: true,
-        manual_recording: false,
-    }));
-    let publisher = SessionId::new();
-    let stream_id = registry
-        .attach_publisher(
-            StreamKey::new("live", "broadcast", "large-counter"),
-            publisher,
-            Vec::new(),
-            100,
-        )
-        .expect("publisher");
-    registry
-        .update_media_sample(
-            stream_id,
-            publisher,
-            1,
-            MediaSnapshot {
-                audio: TrackSnapshot {
-                    payload_bytes_received: u64::MAX,
-                    ..TrackSnapshot::default()
-                },
-                ..MediaSnapshot::default()
-            },
-            200,
-        )
-        .expect("media sample");
-    let api = management_api(registry, RuntimeMetrics::new());
+fn monitoring_response_serializes_rtmp_cumulative_totals_as_decimal_strings() {
+    let runtime = basic_runtime();
+    let service = runtime.service("live").expect("live service");
+    let mut publisher = RtmpSessionClient::connect_handle(&service, "broadcast");
+    publisher.publish("counter", 100);
+    publisher.publish_audio(1, &[0xaf, 0x01, 0x44], 200);
+    let api = management_api(runtime.control(), RuntimeMetrics::new());
 
     let response = api.handle("GET", "/api/v1/monitoring", 300);
     let body: Value = serde_json::from_slice(&response.body).expect("JSON response");
 
     assert_eq!(response.status, 200);
-    assert_eq!(
-        body["rtmp"]["mediaPayloadBytesReceived"],
-        u64::MAX.to_string()
-    );
+    assert_eq!(body["rtmp"]["mediaPayloadBytesReceived"], "3");
 }
 
 #[tokio::test]
@@ -1006,7 +900,7 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
     );
 
     assert!(
-        RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
+        RtmpManagementApi::new(empty_control(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator.clone(),
                 document.effective_revision.clone(),
@@ -1018,7 +912,7 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
 
     fs::set_permissions(&token_path, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(
-        RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
+        RtmpManagementApi::new(empty_control(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator.clone(),
                 document.effective_revision.clone(),
@@ -1032,7 +926,7 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
     let token_link = directory.path().join("management-token-link");
     symlink(&token_path, &token_link).unwrap();
     assert!(
-        RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
+        RtmpManagementApi::new(empty_control(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator.clone(),
                 document.effective_revision.clone(),
@@ -1044,7 +938,7 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
 
     fs::write(&token_path, format!("{TEST_TOKEN}\n\n")).unwrap();
     assert!(
-        RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
+        RtmpManagementApi::new(empty_control(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator,
                 document.effective_revision,
@@ -1331,6 +1225,26 @@ async fn config_api_preserves_rtmp_token_secrets_across_redacted_round_trip() {
     );
     assert!(!String::from_utf8_lossy(&after_save.body).contains("super-secret-token"));
     assert!(!String::from_utf8_lossy(&after_save.body).contains("play-secret-token"));
+
+    let before_unresolved = fs::read(&harness.config_path).expect("saved configuration");
+    round_trip.rtmp_services[0].name = "renamed".into();
+    let unresolved = harness
+        .request(
+            "PUT",
+            "/api/v1/config",
+            after_save.json()["diskRevision"].as_str(),
+            Some(&serde_json::json!({ "config": round_trip })),
+        )
+        .await;
+    assert_eq!(unresolved.status, 422);
+    assert_eq!(
+        unresolved.json()["error"]["code"],
+        "redacted_rtmp_token_unresolved"
+    );
+    assert_eq!(
+        fs::read(&harness.config_path).expect("configuration after rejected save"),
+        before_unresolved
+    );
 }
 
 #[tokio::test]
@@ -1960,15 +1874,41 @@ fn send_raw_command(
         .expect("raw command");
 }
 
-fn empty_registry() -> Arc<RtmpRegistry> {
-    Arc::new(RtmpRegistry::new(RtmpCapabilities {
-        live_ingest: false,
-        manual_recording: false,
-    }))
+fn empty_control() -> RtmpControlHandle {
+    PreparedRtmpRuntimeSet::prepare(
+        [],
+        &RtmpPrepareContext::new(RtmpPrepareMode::Activation, []),
+        Instant::now() + Duration::from_secs(1),
+    )
+    .expect("empty RTMP preparation")
+    .start(Instant::now() + Duration::from_secs(1))
+    .expect("empty RTMP runtime")
+    .control()
 }
 
-fn management_api(registry: Arc<RtmpRegistry>, metrics: RuntimeMetrics) -> RtmpManagementApi {
-    RtmpManagementApi::new(registry, metrics, empty_topology())
+fn management_api(control: RtmpControlHandle, metrics: RuntimeMetrics) -> RtmpManagementApi {
+    RtmpManagementApi::new(control, metrics, empty_topology())
+}
+
+fn runtime_for_config(config: ConfigDraft) -> RtmpRuntimeSet {
+    let config = config.validate().expect("valid RTMP test config");
+    let services = oxiroute_server::service_specs(&config).expect("RTMP test services");
+    let plans = services.iter().filter_map(|service| match &service.kind {
+        ServiceKind::Rtmp(service) => Some(service.value_plan()),
+        _ => None,
+    });
+    PreparedRtmpRuntimeSet::prepare(
+        plans,
+        &RtmpPrepareContext::new(RtmpPrepareMode::Activation, []),
+        Instant::now() + Duration::from_secs(1),
+    )
+    .expect("RTMP test preparation")
+    .start(Instant::now() + Duration::from_secs(1))
+    .expect("RTMP test runtime")
+}
+
+fn basic_runtime() -> RtmpRuntimeSet {
+    runtime_for_config(candidate_config(&editable_config(), "live"))
 }
 
 fn empty_topology() -> Arc<TopologySnapshot> {
@@ -2126,11 +2066,9 @@ impl ManagementHarness {
         let control = rtmp_runtime.control();
         let metrics = RuntimeMetrics::new();
         metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
-        let mut api = RtmpManagementApi::new(control.clone(), metrics, Arc::clone(&plan.topology))
+        let mut api = RtmpManagementApi::new(control, metrics, Arc::clone(&plan.topology))
             .with_config_coordinator(coordinator, active_revision.clone(), TEST_TOKEN, mode)
-            .expect("injected management token")
-            .with_vod_catalog(control.vod_catalog())
-            .with_media_catalog(control.media_catalog());
+            .expect("injected management token");
         if enable_generation_manager {
             let manager = match mode {
                 RuntimeMode::Direct => GenerationManager::new(),

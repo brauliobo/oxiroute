@@ -138,10 +138,9 @@ deferred to canonical validation and runtime preparation.
 `TlsProfilePlan::policy()` remains available for public compatibility. Its canonical policy copy is
 created only in acquired runtime state; generation blueprints make TLS decisions from compiled fields
 and do not retain or consult that copy. `RtmpCallbackEndpointBlueprint` and
-`VodApplicationBlueprint` remain classified 0.5 additions temporarily because the server currently
-acquires callback DNS and VOD filesystem/network resources across the crate boundary. Phase3B will
-replace or narrow those APIs behind the RTMP composition root rather than removing them in this
-release slice.
+`VodApplicationBlueprint` remain classified 0.5 value additions, but their resource-acquisition
+methods are crate-private. Callback DNS and VOD filesystem/network acquisition now run behind the
+RTMP composition root rather than through server-owned raw runtime construction.
 
 The compiler path has a repository-owned call-graph purity gate and an authenticated archive-based
 `2d9c5fe` behavior fixture. `scripts/verify-generation-blueprint-baseline.sh` verifies the exact
@@ -220,9 +219,9 @@ resolver, worker, hub, or session state. Relay destinations and callbacks remain
 credential references remain paths rather than loaded secrets, and callback URLs plus all public
 plan filesystem roots, credential paths, auto-push paths, VOD sources, tokens, and exec inputs are
 redacted from debug output. `RtmpPrepareContext` retains configured candidate listener addresses in
-sorted, deduplicated order; it does not reserve or bind them. Existing raw runtime values remain
-source-compatible in this phase; runtime acquisition, server migration, and their later visibility
-narrowing remain later work.
+sorted, deduplicated order; it does not reserve or bind them. Runtime acquisition is now owned by
+`PreparedRtmpRuntimeSet` and `RtmpRuntimeSet`; server integrations use `RtmpControlHandle` and
+`RtmpServiceHandle` rather than raw runtime ownership values.
 
 Callers that intentionally mutate a validated value must use `to_draft()`, perform the mutation, and
 complete a new owned `validate()` transition before rendering. Read-only callers can retain the proof
@@ -260,10 +259,11 @@ hardcodes and authenticates that digest before executing an isolated copy.
   `CandidateEvidence`, `evidence::CandidateEvidence`, `CanonicalCandidate`,
   `nginx::ImportReport`, `nginx::RtmpImportReport`, and `nginx::StreamImportReport` to retain
   validated success evidence while withholding blocked canonical drafts.
-- `oxiroute-server` (4 removed, 6 added, 28 changed): removed
+- `oxiroute-server` (5 removed, 9 added, 32 changed): removed `render_prometheus` and
   `config_coordinator::{CanonicalConfigDocument, ConfigRevision, ConfigRevisionParseError,
   ValidatedConfigDraft}`; added `config_coordinator::{AuthoredRevision, EffectiveRevision,
-  PersistableConfigCandidate, ResolvedConfigDocument, RevisionParseError}`; changed
+  PersistableConfigCandidate, ResolvedConfigDocument, RevisionParseError}` plus the listener
+  admission types and validated runtime-plan entry point; changed
   `GenerationError`, `HealthBuildError`, `ServicePlanError`, `ConfigWatcher`, `GenerationManager`,
   `GenerationRevision`, `GenerationStatus`, `ListenerMetrics`, `ListenerReservations`,
   `RtmpManagementApi`, `RuntimeGeneration`, `RuntimeMetrics`, `runtime_plan`,
@@ -277,11 +277,14 @@ hardcodes and authenticates that digest before executing an isolated copy.
   In particular, `runtime_plan`, `runtime_plan_with_passive_failure_policy`, and `service_specs`
   now require `&ValidatedConfig` instead of `&ConfigDraft`. This is the intentional coordinated
   `0.5` planning signature break; no draft overload or compatibility facade is retained.
-- `oxiroute-rtmp` (16 removed, 36 added, 22 changed): removed
+- `oxiroute-rtmp` (32 removed, 41 added, 29 changed): removed
   `DirectiveCompatibilityReport`, `DirectiveContext`, `DirectiveError`, `DirectiveForm`,
   `DirectiveSpec`, `DirectiveStatus`, `DirectiveStatusCounts`, `NginxDirective`, `NginxParseError`,
   `RelayKind`, `RuntimeSupport`, `ValueKind`, `directive_compatibility_report`, `directive_specs`,
-  `parse_nginx_config`, and `validate_directive`; added `RtmpPrepareMode`, `RtmpPrepareCategory`,
+  `parse_nginx_config`, and `validate_directive`, plus raw runtime ownership types including
+  `RtmpRegistry`, publisher/subscriber registrations and live leases, `LiveHub`, media and recording
+  stores, recorder leases/workers/lifecycle, and `RtmpServiceRuntime`; added `RtmpPrepareMode`,
+  `RtmpPrepareCategory`,
   `RtmpPrepareError`, `RtmpPrepareSource`, `RtmpPrepareContext`, `RtmpCallbackEventPlan`,
   `RtmpCallbackEndpointBlueprint`, `VodApplicationBlueprint`, the 20 opaque `Rtmp*Plan` value types
   for access rules and tokens, service, application, media, HLS/DASH,
@@ -293,13 +296,13 @@ hardcodes and authenticates that digest before executing an isolated copy.
   `RtmpAccessRule`, `RtmpAutoPushConfig`, `RtmpNetwork`, `RtmpOutboundPolicy`, `RtmpSessionCeilings`,
   `RtmpSessionLimits`, `RtmpTokenPolicy`, `VodApplication`, `VodLimits`, `VodSourceDefinition`, and
   `RtmpCallbackEndpoint` with additive error sources, equality, accessors, intrinsic validators, or
-  explicit blueprint acquisition used by opaque plans. The directive registry
-  APIs moved to
+  explicit blueprint acquisition used by opaque plans. The prepared/runtime set and opaque control
+  and service handles replace direct raw ownership. The directive registry APIs moved to
   `oxiroute_import::nginx`; the standalone parser has no replacement facade.
 
 The machine-readable before/after records are checked in as
-`docs/developer/fixtures/*-public-api-0.5.delta`. The ledger counts sum to 152 classified items:
-29 removals, 62 additions, and 61 changed exports.
+`docs/developer/fixtures/*-public-api-0.5.delta`. The ledger counts sum to 188 classified items:
+46 removals, 70 additions, and 72 changed exports.
 
 Standalone import report schema v1 is unchanged: finalized candidates still serialize their
 canonical `config`; blocked candidates serialize `config: null`; and the existing `candidate.draft`

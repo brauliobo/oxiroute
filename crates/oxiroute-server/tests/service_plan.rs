@@ -23,7 +23,7 @@ use oxiroute_config::{
     UpstreamServer, UpstreamTls,
 };
 use oxiroute_rtmp::{
-    PreparedRtmpRuntimeSet, RtmpCapabilities, RtmpPrepareContext, RtmpPrepareMode, RtmpRegistry,
+    PreparedRtmpRuntimeSet, RtmpControlHandle, RtmpPrepareContext, RtmpPrepareMode,
 };
 use oxiroute_server::{
     CertbotWatcherConfig, CertbotWatcherSupervisor, FileWatcherConfig, FileWatcherSupervisor,
@@ -39,6 +39,18 @@ use config_support::{
 use fixture_support::{
     create_secure_root, write_file_with_mode, write_secure_token, write_test_identity,
 };
+
+fn empty_rtmp_control() -> RtmpControlHandle {
+    PreparedRtmpRuntimeSet::prepare(
+        [],
+        &RtmpPrepareContext::new(RtmpPrepareMode::Activation, []),
+        Instant::now() + Duration::from_secs(1),
+    )
+    .expect("empty RTMP preparation")
+    .start(Instant::now() + Duration::from_secs(1))
+    .expect("empty RTMP runtime")
+    .control()
+}
 
 #[test]
 fn startup_dns_cannot_resolve_to_a_statistics_listener() {
@@ -1135,14 +1147,7 @@ fn direct_file_status_reports_rotation_failures_without_secret_material() {
         failed.direct_file_certificates[0].active_content_revision,
         initial_revision
     );
-    let api = RtmpManagementApi::new(
-        Arc::new(RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        })),
-        metrics,
-        Arc::clone(&plan.topology),
-    );
+    let api = RtmpManagementApi::new(empty_rtmp_control(), metrics, Arc::clone(&plan.topology));
     let response = api.handle("GET", "/api/v1/monitoring", 100);
     let serialized = String::from_utf8(response.body).expect("monitoring JSON");
     assert!(!serialized.contains("proxy.example.test"));
@@ -1222,10 +1227,7 @@ fn prepares_certbot_reconcilers_with_the_profile_active_generation() {
     assert!(!Arc::ptr_eq(&active.snapshot(), &initial));
 
     let api = RtmpManagementApi::new(
-        Arc::new(RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        })),
+        empty_rtmp_control(),
         metrics.clone(),
         Arc::clone(&plan.topology),
     );

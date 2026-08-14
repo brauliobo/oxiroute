@@ -28,9 +28,9 @@ use log::{debug, error, info, warn};
 use oxiroute_acme::{AcmeOperation, Dns01Cancellation};
 use oxiroute_config::ListenerBind;
 use oxiroute_rtmp::{
-    MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, MediaCatalog, RecorderErrorCode, RecorderPhase,
-    RtmpClientSnapshot, RtmpControlHandle, RtmpRelayFailure, RtmpServiceHandle, RtmpSessionError,
-    RtmpSessionRole, RtmpShutdown, VodCatalog,
+    MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RecorderErrorCode, RecorderPhase, RtmpClientSnapshot,
+    RtmpControlHandle, RtmpRelayFailure, RtmpServiceHandle, RtmpSessionError, RtmpSessionRole,
+    RtmpShutdown,
 };
 use oxiroute_server::{
     AcmeManagedReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher,
@@ -305,7 +305,7 @@ fn add_http_listener<A>(
 struct ProcessAdmissionApp<A> {
     generation: Arc<RuntimeGeneration>,
     inner: Arc<A>,
-    metrics: ListenerMetrics,
+    listener: ListenerRuntime,
 }
 
 impl<A> ProcessAdmissionApp<A> {
@@ -313,7 +313,7 @@ impl<A> ProcessAdmissionApp<A> {
         Self {
             generation,
             inner: Arc::new(inner),
-            metrics,
+            listener: ListenerRuntime::new(metrics),
         }
     }
 }
@@ -328,43 +328,38 @@ where
     }
 
     fn accepting(&self) -> bool {
+        // Control listeners intentionally stay reachable during process administrative drain.
         self.generation.accepting() && self.inner.accepting()
     }
 
     fn admit_connection(&self) -> Option<ConnectionAdmission> {
-        let generation_admission = self.generation.begin_admission()?;
-        let generation_reference = self
-            .generation
-            .begin_reference(RuntimeReferenceKind::Http1)?;
-        let connection = match self.metrics.begin_control_connection() {
-            Ok(connection) => connection,
+        let lease = match self
+            .listener
+            .admit_control(&self.generation, RuntimeReferenceKind::Http1)
+        {
+            Ok(lease) => lease,
             Err(error) => {
                 warn!("rejected management connection: {error}");
                 return None;
             }
         };
         let inner = self.inner.admit_connection()?;
-        Some(Box::new((
-            generation_admission,
-            generation_reference,
-            connection,
-            inner,
-        )))
+        Some(Box::new((lease, inner)))
     }
 
     fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
-        let generation_reference = self
-            .generation
-            .begin_owned_reference(RuntimeReferenceKind::Http1);
-        let connection = match self.metrics.begin_control_connection() {
-            Ok(connection) => connection,
+        let lease = match self
+            .listener
+            .admit_owned_control(&self.generation, RuntimeReferenceKind::Http1)
+        {
+            Ok(lease) => lease,
             Err(error) => {
                 warn!("rejected management connection: {error}");
                 return None;
             }
         };
         let inner = self.inner.admit_owned_connection()?;
-        Some(Box::new((generation_reference, connection, inner)))
+        Some(Box::new((lease, inner)))
     }
 
     async fn process_new(
@@ -551,7 +546,7 @@ impl ForwardHttp1RuntimeApp {
     ) -> Self {
         let handshake_timeout = inner.handshake_timeout();
         Self {
-            inner: Arc::new(MonitoredHttpApp::new(inner, metrics).with_generation(generation)),
+            inner: Arc::new(MonitoredHttpApp::new(inner, metrics, generation)),
             handshake_timeout,
         }
     }
@@ -1534,8 +1529,6 @@ async fn write_rtmp_packets(
 #[allow(clippy::too_many_arguments)]
 fn build_management_api(
     control: RtmpControlHandle,
-    vod_catalog: Arc<VodCatalog>,
-    media_catalog: Arc<MediaCatalog>,
     metrics: RuntimeMetrics,
     topology: Arc<TopologySnapshot>,
     coordinator: CanonicalConfigCoordinator,
@@ -1549,9 +1542,7 @@ fn build_management_api(
     } else {
         Ok(RtmpManagementApi::new(control, metrics, topology))
     }?;
-    api.with_vod_catalog(vod_catalog)
-        .with_media_catalog(media_catalog)
-        .with_config_coordinator_from_token_file(coordinator, active_revision, token_file, mode)
+    api.with_config_coordinator_from_token_file(coordinator, active_revision, token_file, mode)
 }
 
 fn main() -> ExitCode {
@@ -2498,8 +2489,6 @@ fn serve_generation(
         let metrics = generation.management_listener_metrics()?;
         let management_api = build_management_api(
             rtmp_control.clone(),
-            generation.rtmp_vod_catalog(),
-            generation.rtmp_media_catalog(),
             runtime_metrics.clone(),
             Arc::clone(&topology),
             config_coordinator.clone(),
@@ -2572,8 +2561,8 @@ fn serve_generation(
                 )
                 .with_generation(Arc::clone(generation)),
                 metrics.clone(),
-            )
-            .with_generation(Arc::clone(generation));
+                Arc::clone(generation),
+            );
             let mut service = Service::new(format!("OxiRoute stats page {index}"), stats_app);
             service.add_tcp(&page.bind.to_string());
             let reservation = generation
@@ -2669,8 +2658,8 @@ fn serve_generation(
                     )
                     .with_generation(Arc::clone(generation)),
                     metrics.clone(),
-                )
-                .with_generation(Arc::clone(generation));
+                    Arc::clone(generation),
+                );
                 let mut service = Service::new(service_name, app);
                 add_http_listener(
                     &mut service,
@@ -3247,19 +3236,28 @@ mod tests {
 
         assert!(elapsed >= Duration::from_millis(50));
         assert!(elapsed < Duration::from_millis(250));
-        let retry = oxiroute_rtmp::RecordingStore::open(
-            &recording_root,
-            oxiroute_rtmp::RecordingStoreLimits {
-                max_bytes: None,
-                max_files: None,
-                max_active_recorders: usize::try_from(
-                    config.rtmp_services[0].applications[0].recorders[0].max_active_recorders,
-                )
-                .expect("validated recorder limit"),
-            },
-        )
-        .expect("detached candidate released recording root");
-        drop(retry);
+        let validated = config.clone().validate().expect("retry config");
+        let service = oxiroute_server::service_specs(&validated)
+            .expect("retry service plans")
+            .into_iter()
+            .find_map(|service| match service.kind {
+                ServiceKind::Rtmp(service) if service.service_id() == "live" => {
+                    Some(service.value_plan())
+                }
+                _ => None,
+            })
+            .expect("live retry plan");
+        drop(
+            oxiroute_rtmp::PreparedRtmpRuntimeSet::prepare(
+                [service],
+                &oxiroute_rtmp::RtmpPrepareContext::new(
+                    oxiroute_rtmp::RtmpPrepareMode::Activation,
+                    [],
+                ),
+                std::time::Instant::now() + Duration::from_secs(1),
+            )
+            .expect("detached candidate released recording root"),
+        );
         release.send(()).expect("release detached candidate");
         completion
             .recv_timeout(Duration::from_secs(1))
@@ -3348,7 +3346,7 @@ mod tests {
             &retry_path,
             oxiroute_config_source::render_config(
                 oxiroute_config_source::ConfigFormat::Kdl,
-                &retry_config.validate().expect("retry config"),
+                &retry_config.clone().validate().expect("retry config"),
             )
             .expect("render retry config"),
         )
@@ -3375,14 +3373,29 @@ mod tests {
         }
         assert!(retry_status.status().quarantined_revision.is_none());
 
-        let limits = oxiroute_rtmp::RecordingStoreLimits {
-            max_bytes: Some(1024 * 1024),
-            max_files: Some(32),
-            max_active_recorders: 4,
-        };
+        let retry_plans = oxiroute_server::service_specs(
+            &retry_config.clone().validate().expect("retry plans config"),
+        )
+        .expect("retry service plans");
+        let second_plan = retry_plans
+            .iter()
+            .find_map(|service| match &service.kind {
+                ServiceKind::Rtmp(service) if service.service_id() == "second" => {
+                    Some(service.value_plan())
+                }
+                _ => None,
+            })
+            .expect("second retry plan");
         drop(
-            oxiroute_rtmp::RecordingStore::open(&second_root, limits)
-                .expect("later retired service recording retry"),
+            oxiroute_rtmp::PreparedRtmpRuntimeSet::prepare(
+                [second_plan],
+                &oxiroute_rtmp::RtmpPrepareContext::new(
+                    oxiroute_rtmp::RtmpPrepareMode::Activation,
+                    [],
+                ),
+                std::time::Instant::now() + Duration::from_secs(1),
+            )
+            .expect("later retired service recording retry"),
         );
         flock(&ownership, FlockOperation::Unlock).expect("release first recording root");
         assert!(matches!(
@@ -3405,12 +3418,23 @@ mod tests {
                 )
                 .is_ok()
         );
-        let reopen_deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let first_plan = retry_plans
+            .iter()
+            .find_map(|service| match &service.kind {
+                ServiceKind::Rtmp(service) if service.service_id() == "live" => {
+                    Some(service.value_plan())
+                }
+                _ => None,
+            })
+            .expect("first retry plan");
         drop(
-            oxiroute_rtmp::RecordingStore::open_with_deadline(
-                &first_root,
-                limits,
-                Some(reopen_deadline),
+            oxiroute_rtmp::PreparedRtmpRuntimeSet::prepare(
+                [first_plan],
+                &oxiroute_rtmp::RtmpPrepareContext::new(
+                    oxiroute_rtmp::RtmpPrepareMode::Activation,
+                    [],
+                ),
+                std::time::Instant::now() + Duration::from_secs(1),
             )
             .expect("first retired service recording retry after worker exit"),
         );

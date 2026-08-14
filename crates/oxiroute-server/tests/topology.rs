@@ -12,7 +12,9 @@ use oxiroute_config::{
     Stats, StatsPage, StatsPageAdminPolicy, TlsClientAuthMode, TlsClientAuthPolicy, TlsProfile,
     TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
-use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry};
+use oxiroute_rtmp::{
+    PreparedRtmpRuntimeSet, RtmpControlHandle, RtmpPrepareContext, RtmpPrepareMode,
+};
 use oxiroute_server::{
     RtmpManagementApi, RuntimeGeneration, RuntimeMetrics, RuntimePlan, TopologyEdgeKind,
     TopologyNode, TopologyNodeKind,
@@ -25,6 +27,18 @@ use config_support::{
     runtime_plan,
 };
 use fixture_support::{create_secure_root, write_file_with_mode, write_test_identity};
+
+fn empty_rtmp_control() -> RtmpControlHandle {
+    PreparedRtmpRuntimeSet::prepare(
+        [],
+        &RtmpPrepareContext::new(RtmpPrepareMode::Activation, []),
+        std::time::Instant::now() + std::time::Duration::from_secs(1),
+    )
+    .expect("empty RTMP preparation")
+    .start(std::time::Instant::now() + std::time::Duration::from_secs(1))
+    .expect("empty RTMP runtime")
+    .control()
+}
 
 #[test]
 fn compiles_stable_redacted_nodes_and_typed_reference_edges() {
@@ -293,14 +307,7 @@ fn serves_active_topology_with_name_joined_runtime_overlays() {
     let _connection = web.begin_connection().expect("active connection");
     let endpoint_lease = generation.pools()[0].select().expect("API endpoint lease");
     assert_eq!(endpoint_lease.endpoint().to_string(), "127.0.0.1:3000");
-    let api = RtmpManagementApi::new(
-        Arc::new(RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: true,
-            manual_recording: false,
-        })),
-        metrics,
-        Arc::clone(&plan.topology),
-    );
+    let api = RtmpManagementApi::new(empty_rtmp_control(), metrics, Arc::clone(&plan.topology));
 
     let response = api.handle("GET", "/api/v1/topology", 100);
     let body: Value = serde_json::from_slice(&response.body).expect("topology JSON");
@@ -449,14 +456,7 @@ fn serves_topology_with_a_stats_page_runtime_overlay() {
         )
         .expect("stats page metrics")
         .mark_listening();
-    let api = RtmpManagementApi::new(
-        Arc::new(RtmpRegistry::new(RtmpCapabilities {
-            live_ingest: false,
-            manual_recording: false,
-        })),
-        metrics,
-        Arc::clone(&plan.topology),
-    );
+    let api = RtmpManagementApi::new(empty_rtmp_control(), metrics, Arc::clone(&plan.topology));
 
     let response = api.handle("GET", "/api/v1/topology", 100);
     let body: Value = serde_json::from_slice(&response.body).expect("topology JSON");
