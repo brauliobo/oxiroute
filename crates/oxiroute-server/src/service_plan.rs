@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs,
     net::ToSocketAddrs,
     path::PathBuf,
@@ -36,12 +36,11 @@ use oxiroute_cache::{Cache, DiskCache, DiskCacheConfig};
 use oxiroute_config::{CachePurgeAuthorization, ListenerBind, Protocol, ValidatedConfig};
 use oxiroute_rtmp::{
     DashOutputConfig, ExecProfile, HlsOutputConfig, LiveHub, LiveHubLimits, MediaApplication,
-    MediaCatalog, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore, RecordingStoreLimits,
-    RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig, RtmpCallbackPolicy,
-    RtmpCapabilities, RtmpClientOptions, RtmpCredential, RtmpMediaStoreRegistry,
-    RtmpOutboundPolicy, RtmpPrepareMode, RtmpPullTarget, RtmpPushTarget, RtmpRecorderPolicy,
-    RtmpRecorderStart, RtmpRegistry, RtmpServicePreparation, RtmpServiceRuntime, RtmpSessionLimits,
-    RtmpSessionPolicy, VodApplication, VodCatalog,
+    MediaCatalog, RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig,
+    RtmpCallbackPolicy, RtmpCapabilities, RtmpClientOptions, RtmpCredential,
+    RtmpMediaStoreRegistry, RtmpOutboundPolicy, RtmpPrepareMode, RtmpPullTarget, RtmpPushTarget,
+    RtmpRecorderStart, RtmpRecorderStoreRegistry, RtmpRegistry, RtmpServicePreparation,
+    RtmpServiceRuntime, RtmpSessionLimits, RtmpSessionPolicy, VodApplication, VodCatalog,
 };
 
 enum DiskBackendRegistryEntry {
@@ -229,7 +228,7 @@ impl RtmpServicePlan {
     ) -> Result<PreparedRtmpRuntime, RtmpPreparationError> {
         #[cfg(test)]
         RTMP_PREPARES.with(|count| count.set(count.get() + 1));
-        let mut stores = HashMap::<PathBuf, RecordingStore>::new();
+        let mut stores = RtmpRecorderStoreRegistry::default();
         let applications = self.prepare_applications_with_deadline(deadline, &mut stores)?;
         let mut preparation = RtmpServicePreparation::new(
             self.service_id.clone(),
@@ -265,13 +264,14 @@ impl RtmpServicePlan {
     fn prepare_applications_with_deadline(
         &self,
         deadline: Option<Instant>,
-        stores: &mut HashMap<PathBuf, RecordingStore>,
+        stores: &mut RtmpRecorderStoreRegistry,
     ) -> Result<Vec<RuntimeRtmpApplication>, RtmpPreparationError> {
         self.applications
             .iter()
             .map(|application| {
                 let recorders = application
-                    .recorders
+                    .plan
+                    .recorders()
                     .iter()
                     .map(|recorder| {
                         #[cfg(test)]
@@ -280,19 +280,18 @@ impl RtmpServicePlan {
                                 ServicePlanError::RecorderStartup {
                                     service: self.service_id.clone(),
                                     application: application.plan.name().to_owned(),
-                                    recorder: recorder.name.clone(),
+                                    recorder: recorder.name().to_owned(),
                                 },
                             ));
                         }
-                        let store = if let Some(store) = stores.get(&recorder.root_directory) {
-                            store.clone()
-                        } else {
-                            let opened = RecordingStore::open_with_deadline(
-                                &recorder.root_directory,
-                                recorder.store_limits,
+                        let store = stores
+                            .prepare(
+                                recorder.root_directory(),
+                                recorder.store_limits(),
+                                RtmpPrepareMode::Activation,
                                 deadline,
-                            );
-                            let store = opened.map_err(|error| {
+                            )
+                            .map_err(|error| {
                                 if matches!(
                                     &error,
                                     oxiroute_rtmp::RecordingStoreError::CreationCancelled
@@ -303,21 +302,13 @@ impl RtmpServicePlan {
                                     ServicePlanError::RecorderStartup {
                                         service: self.service_id.clone(),
                                         application: application.plan.name().to_owned(),
-                                        recorder: recorder.name.clone(),
+                                        recorder: recorder.name().to_owned(),
                                     }
                                     .into()
                                 }
-                            })?;
-                            stores.insert(recorder.root_directory.clone(), store.clone());
-                            store
-                        };
-                        Ok(RtmpRecorderPolicy::new(
-                            &recorder.name,
-                            recorder.start,
-                            store,
-                            recorder.path_policy.clone(),
-                            recorder.worker_config,
-                        ))
+                            })?
+                            .expect("activation prepares a recording store");
+                        Ok(recorder.build_policy(store))
                     })
                     .collect::<Result<Vec<_>, RtmpPreparationError>>()?;
                 Ok(application.plan.build_runtime_application(
@@ -491,17 +482,6 @@ struct PreparedRtmpApplication {
     vod: Option<Arc<VodApplication>>,
     media: Option<Arc<MediaApplication>>,
     exec_profiles: Vec<ExecProfile>,
-    recorders: Vec<PreparedRtmpRecorder>,
-}
-
-#[derive(Clone)]
-struct PreparedRtmpRecorder {
-    name: String,
-    start: RtmpRecorderStart,
-    root_directory: PathBuf,
-    path_policy: RecordingPathPolicy,
-    worker_config: RecorderWorkerConfig,
-    store_limits: RecordingStoreLimits,
 }
 
 #[derive(Debug)]
@@ -1529,7 +1509,7 @@ fn compile_rtmp_services(
     listener_addresses: &[std::net::SocketAddr],
     mode: AcquisitionMode,
 ) -> Result<Vec<Arc<RtmpServicePlan>>, ServicePlanError> {
-    let mut preflighted_roots = HashSet::new();
+    let mut recorder_stores = RtmpRecorderStoreRegistry::default();
     let mut media_stores = RtmpMediaStoreRegistry::default();
     let mut services = Vec::with_capacity(specs.len());
     for spec in specs {
@@ -1570,14 +1550,19 @@ fn compile_rtmp_services(
                 .iter()
                 .map(|profile| profile.profile().clone())
                 .collect();
-            let mut prepared_recorders = Vec::with_capacity(application.recorders().len());
             for recorder in application.recorders() {
-                prepared_recorders.push(compile_rtmp_recorder(
-                    plan.service_id(),
-                    application.name(),
-                    recorder,
-                    &mut preflighted_roots,
-                )?);
+                recorder_stores
+                    .prepare(
+                        recorder.root_directory(),
+                        recorder.store_limits(),
+                        RtmpPrepareMode::Validation,
+                        None,
+                    )
+                    .map_err(|_| ServicePlanError::RecorderPreflight {
+                        service: plan.service_id().to_owned(),
+                        application: application.name().to_owned(),
+                        recorder: recorder.name().to_owned(),
+                    })?;
             }
             prepared_applications.push(PreparedRtmpApplication {
                 plan: application.clone(),
@@ -1588,7 +1573,6 @@ fn compile_rtmp_services(
                 vod,
                 media,
                 exec_profiles,
-                recorders: prepared_recorders,
             });
         }
         let service_hub = prepared_applications.first().map_or_else(
@@ -1873,31 +1857,6 @@ fn compile_rtmp_dash(
         return Ok(None);
     };
     Ok(Some(plan.build_output(store)))
-}
-
-fn compile_rtmp_recorder(
-    service: &str,
-    application: &str,
-    recorder: &oxiroute_rtmp::RtmpRecorderPlan,
-    preflighted_roots: &mut HashSet<PathBuf>,
-) -> Result<PreparedRtmpRecorder, ServicePlanError> {
-    if preflighted_roots.insert(recorder.root_directory().to_owned()) {
-        RecordingStore::preflight(recorder.root_directory(), recorder.store_limits()).map_err(
-            |_| ServicePlanError::RecorderPreflight {
-                service: service.to_owned(),
-                application: application.to_owned(),
-                recorder: recorder.name().to_owned(),
-            },
-        )?;
-    }
-    Ok(PreparedRtmpRecorder {
-        name: recorder.name().to_owned(),
-        start: recorder.start(),
-        root_directory: recorder.root_directory().to_owned(),
-        path_policy: recorder.path_policy().clone(),
-        worker_config: recorder.worker(),
-        store_limits: recorder.store_limits(),
-    })
 }
 
 #[allow(clippy::too_many_lines)]

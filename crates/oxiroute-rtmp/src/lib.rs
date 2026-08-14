@@ -92,6 +92,7 @@ pub use recording_runtime::{RtmpRecorderPolicy, RtmpRecorderShutdown, RtmpRecord
 pub use recording_store::{
     RecorderLease, RecordingCommit, RecordingFile, RecordingQuotaScope, RecordingStore,
     RecordingStoreError, RecordingStoreLimits, RecordingStoreLimitsError, RecordingStoreStats,
+    RtmpRecorderStoreRegistry,
 };
 pub use recording_worker::{
     RecorderEnqueueResult, RecorderFailure, RecorderMediaMask, RecorderNotification,

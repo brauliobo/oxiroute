@@ -10,16 +10,17 @@ use tempfile::tempdir;
 use oxiroute_rtmp::{
     DashSegmentNaming, ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecTrigger,
     HlsFragmentNaming, HlsKeyConfig, HlsVariant, MediaStoreLimits, RecorderMediaMask,
-    RecorderWorkerConfig, RecordingPathPolicy, RecordingStoreLimits, RtmpAccessAction,
-    RtmpAccessPlan, RtmpAccessRulePlan, RtmpApplicationPlan, RtmpAutoPushConfig, RtmpAutoPushPlan,
-    RtmpCallbackError, RtmpCallbackEventPlan, RtmpCallbackMethod, RtmpCallbackPlan,
-    RtmpCallbackPolicy, RtmpClientOptions, RtmpClientPlan, RtmpCredentialPlan, RtmpDashPlan,
-    RtmpDestinationResolver, RtmpDestinationResolverError, RtmpExecEnvironmentPlan, RtmpExecPlan,
-    RtmpFanoutPlan, RtmpHlsPlan, RtmpMediaPlan, RtmpMediaStoreRegistry, RtmpNetwork,
+    RecorderWorkerConfig, RecordingPathPolicy, RecordingStoreError, RecordingStoreLimits,
+    RtmpAccessAction, RtmpAccessPlan, RtmpAccessRulePlan, RtmpApplicationPlan, RtmpAutoPushConfig,
+    RtmpAutoPushPlan, RtmpCallbackError, RtmpCallbackEventPlan, RtmpCallbackMethod,
+    RtmpCallbackPlan, RtmpCallbackPolicy, RtmpClientOptions, RtmpClientPlan, RtmpCredentialPlan,
+    RtmpDashPlan, RtmpDestinationResolver, RtmpDestinationResolverError, RtmpExecEnvironmentPlan,
+    RtmpExecPlan, RtmpFanoutPlan, RtmpHlsPlan, RtmpMediaPlan, RtmpMediaStoreRegistry, RtmpNetwork,
     RtmpOutboundPolicy, RtmpPrepareCategory, RtmpPrepareContext, RtmpPrepareMode,
     RtmpPrepareSource, RtmpPullPlan, RtmpPushApplication, RtmpPushPlan, RtmpRecorderPlan,
-    RtmpRecorderStart, RtmpRelayPlan, RtmpServicePlan, RtmpSessionCeilings, RtmpSessionLimits,
-    RtmpTransport, RtmpVodPlan, VodLimits, VodSourceDefinition,
+    RtmpRecorderStart, RtmpRecorderStoreRegistry, RtmpRelayPlan, RtmpServicePlan,
+    RtmpSessionCeilings, RtmpSessionLimits, RtmpTransport, RtmpVodPlan, VodLimits,
+    VodSourceDefinition,
 };
 
 fn relay() -> RtmpRelayPlan {
@@ -289,6 +290,116 @@ fn media_store_registry_validates_without_opening_and_shares_activation_roots() 
         .expect("opened store");
 
     assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn recorder_store_registry_preserves_staged_preparation_and_root_compatibility() {
+    let root = tempdir().expect("recording root");
+    let limits = RecordingStoreLimits {
+        max_bytes: Some(1_024),
+        max_files: Some(4),
+        max_active_recorders: 1,
+    };
+    let recorder = |name, limits| {
+        RtmpRecorderPlan::new(
+            name,
+            RtmpRecorderStart::Continuous,
+            root.path().to_owned(),
+            RecordingPathPolicy::new(".flv", false).expect("recording path policy"),
+            RecorderWorkerConfig::default(),
+            limits,
+        )
+        .expect("recorder plan")
+    };
+    let first = recorder("archive", limits);
+    let second = recorder("backup", limits);
+    let incompatible = recorder(
+        "incompatible",
+        RecordingStoreLimits {
+            max_bytes: Some(512),
+            ..limits
+        },
+    );
+    let mut registry = RtmpRecorderStoreRegistry::default();
+
+    assert!(
+        registry
+            .prepare(
+                first.root_directory(),
+                first.store_limits(),
+                RtmpPrepareMode::Validation,
+                None,
+            )
+            .expect("recording preflight")
+            .is_none()
+    );
+    assert!(
+        registry
+            .prepare(
+                second.root_directory(),
+                second.store_limits(),
+                RtmpPrepareMode::Validation,
+                None,
+            )
+            .expect("shared recording preflight")
+            .is_none()
+    );
+    assert!(
+        registry
+            .prepare(
+                incompatible.root_directory(),
+                incompatible.store_limits(),
+                RtmpPrepareMode::Validation,
+                None,
+            )
+            .expect("same-root preflight remains deduplicated")
+            .is_none()
+    );
+    assert!(
+        std::fs::read_dir(root.path())
+            .expect("recording root entries")
+            .next()
+            .is_none()
+    );
+
+    let first_store = registry
+        .prepare(
+            first.root_directory(),
+            first.store_limits(),
+            RtmpPrepareMode::Activation,
+            None,
+        )
+        .expect("first activation")
+        .expect("first recording store");
+    let second_store = registry
+        .prepare(
+            second.root_directory(),
+            second.store_limits(),
+            RtmpPrepareMode::Activation,
+            None,
+        )
+        .expect("shared activation")
+        .expect("shared recording store");
+    let first = first.build_policy(first_store);
+    let second = second.build_policy(second_store);
+    let _lease = first
+        .store()
+        .acquire_recorder()
+        .expect("shared recorder slot");
+    assert!(matches!(
+        second.store().acquire_recorder(),
+        Err(RecordingStoreError::ActiveRecorderLimit { maximum: 1 })
+    ));
+    assert!(matches!(
+        registry.prepare(
+            incompatible.root_directory(),
+            incompatible.store_limits(),
+            RtmpPrepareMode::Activation,
+            None,
+        ),
+        Err(RecordingStoreError::LimitsMismatch)
+    ));
 }
 
 #[test]

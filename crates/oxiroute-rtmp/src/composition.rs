@@ -1041,6 +1041,18 @@ impl RtmpRecorderPlan {
     pub const fn store_limits(&self) -> RecordingStoreLimits {
         self.store_limits
     }
+
+    /// Builds this recorder's runtime policy from an already-open shared store.
+    #[must_use]
+    pub fn build_policy(&self, store: crate::RecordingStore) -> RtmpRecorderPolicy {
+        RtmpRecorderPolicy::new(
+            &self.name,
+            self.start,
+            store,
+            self.path_policy.clone(),
+            self.worker,
+        )
+    }
 }
 
 impl fmt::Debug for RtmpRecorderPlan {
