@@ -302,19 +302,6 @@ fn add_http_listener<A>(
     }
 }
 
-fn admit_connection(metrics: &ListenerMetrics) -> Option<ConnectionAdmission> {
-    match metrics.begin_connection() {
-        Ok(connection) => Some(Box::new(connection)),
-        Err(error) => {
-            warn!(
-                "rejected connection on listener `{}`: {error}",
-                metrics.name()
-            );
-            None
-        }
-    }
-}
-
 struct ProcessAdmissionApp<A> {
     generation: Arc<RuntimeGeneration>,
     inner: Arc<A>,
@@ -904,6 +891,7 @@ impl ServerApp for TcpRelay {
 
 struct RtmpIngest {
     listener: String,
+    admission: ListenerRuntime,
     generation: Arc<RuntimeGeneration>,
     metrics: ListenerMetrics,
     runtime: RtmpServiceRuntime,
@@ -920,6 +908,7 @@ impl RtmpIngest {
     ) -> Self {
         Self {
             listener,
+            admission: ListenerRuntime::new(metrics.clone()),
             generation,
             metrics,
             runtime,
@@ -985,23 +974,35 @@ impl ServerApp for RtmpIngest {
     }
 
     fn accepting(&self) -> bool {
-        self.metrics.accepting() && self.generation.accepting()
+        self.admission.accepting() && self.generation.accepting()
     }
 
     fn admit_connection(&self) -> Option<ConnectionAdmission> {
-        let generation = self
-            .generation
-            .begin_reference(RuntimeReferenceKind::Rtmp)?;
-        let connection = admit_connection(&self.metrics)?;
-        Some(Box::new((generation, connection)))
+        let lease = match self
+            .admission
+            .admit(&self.generation, RuntimeReferenceKind::Rtmp)
+        {
+            Ok(lease) => lease,
+            Err(error) => {
+                warn!("rejected RTMP connection: {error}");
+                return None;
+            }
+        };
+        Some(Box::new(lease))
     }
 
     fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
-        let generation = self
-            .generation
-            .begin_owned_reference(RuntimeReferenceKind::Rtmp);
-        let connection = admit_connection(&self.metrics)?;
-        Some(Box::new((generation, connection)))
+        let lease = match self
+            .admission
+            .admit_owned(&self.generation, RuntimeReferenceKind::Rtmp)
+        {
+            Ok(lease) => lease,
+            Err(error) => {
+                warn!("rejected RTMP connection: {error}");
+                return None;
+            }
+        };
+        Some(Box::new(lease))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -3770,6 +3771,82 @@ mod tests {
         let snapshot = metrics.snapshot().expect("runtime snapshot");
         assert_eq!(snapshot.traffic.accepted_connections, 2);
         assert_eq!(snapshot.traffic.active_connections, 0);
+    }
+
+    #[test]
+    fn rtmp_listener_admission_rolls_back_limits_and_retains_owned_drain_lifetime() {
+        let directory = tempfile::tempdir().expect("RTMP generation directory");
+        let recording_root = directory.path().join("recordings");
+        fs::create_dir(&recording_root).expect("RTMP recording root");
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").expect("RTMP listener address");
+        let listener_address = socket.local_addr().expect("RTMP listener address");
+        drop(socket);
+        let mut config = recorder_runtime_config(listener_address, &recording_root);
+        config.max_connections = Some(1);
+        config.listeners[0].max_connections = Some(1);
+        let (_, _, generation) = activate_test_generation(
+            &directory.path().join("oxiroute.kdl"),
+            &config,
+        );
+        let ServiceKind::Rtmp(service) = generation.services()[0].kind.clone() else {
+            panic!("listener must compile as RTMP");
+        };
+        let metrics = generation
+            .traffic_listener_metrics("live")
+            .expect("RTMP listener metrics");
+        let app = RtmpIngest::new(
+            "live".into(),
+            generation
+                .rtmp_runtime(service.service_id())
+                .expect("RTMP service runtime")
+                .clone(),
+            service,
+            metrics,
+            Arc::clone(&generation),
+        );
+
+        assert!(app.accept_gate().is_some());
+        let admission = app.admit_connection().expect("RTMP admission");
+        assert_eq!(generation.active_references(RuntimeReferenceKind::Rtmp), 1);
+        assert!(app.admit_connection().is_none(), "listener limit was bypassed");
+        assert_eq!(generation.active_references(RuntimeReferenceKind::Rtmp), 1);
+        drop(admission);
+
+        generation
+            .metrics()
+            .set_listener_administrative_state("live", oxiroute_server::AdministrativeState::Drain)
+            .expect("drain RTMP listener");
+        assert!(app.admit_connection().is_none());
+        assert_eq!(generation.active_references(RuntimeReferenceKind::Rtmp), 0);
+        generation
+            .metrics()
+            .set_listener_administrative_state("live", oxiroute_server::AdministrativeState::Ready)
+            .expect("ready RTMP listener");
+
+        generation.stop_accepting();
+        assert!(!app.accepting());
+        assert!(app.admit_connection().is_none());
+        let owned = app
+            .admit_owned_connection()
+            .expect("accept-gate-owned RTMP admission");
+        assert_eq!(generation.active_references(RuntimeReferenceKind::Rtmp), 1);
+        assert!(!generation.drain(Duration::ZERO));
+        let snapshot = generation.metrics().snapshot().expect("RTMP snapshot");
+        assert_eq!(snapshot.traffic.accepted_connections, 3);
+        assert_eq!(snapshot.traffic.active_connections, 1);
+        assert!(snapshot.access_records.is_empty());
+
+        drop(owned);
+        assert!(generation.drain(Duration::from_millis(100)));
+        assert_eq!(
+            generation
+                .metrics()
+                .snapshot()
+                .expect("released RTMP snapshot")
+                .traffic
+                .active_connections,
+            0
+        );
     }
 
     #[tokio::test]
