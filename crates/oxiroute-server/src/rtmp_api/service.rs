@@ -8,6 +8,7 @@ use std::{
 
 use super::{
     ApiResponse,
+    auth::ManagementAuth,
     config::{self, ConfigApiState, Route as ConfigRoute},
     endpoint_registry::{self, EndpointId},
     management::{self, ManagementState},
@@ -58,6 +59,7 @@ enum ApiRoute<'a> {
 }
 
 pub struct RtmpManagementApi {
+    auth: Option<ManagementAuth>,
     config: Option<ConfigApiState>,
     coordinator: Option<CanonicalConfigCoordinator>,
     generations: Option<GenerationManager>,
@@ -82,6 +84,7 @@ impl RtmpManagementApi {
         topology: Arc<TopologySnapshot>,
     ) -> Self {
         Self {
+            auth: None,
             config: None,
             coordinator: None,
             generations: None,
@@ -107,6 +110,7 @@ impl RtmpManagementApi {
         directory: impl AsRef<Path>,
     ) -> io::Result<Self> {
         Ok(Self {
+            auth: None,
             config: None,
             coordinator: None,
             generations: None,
@@ -173,7 +177,9 @@ impl RtmpManagementApi {
         mode: crate::RuntimeMode,
     ) -> io::Result<Self> {
         self.audit = operational_event::configure_audit_store(None);
-        let config = ConfigApiState::new(coordinator.clone(), active_revision, token, mode)?;
+        let auth = ManagementAuth::new(token)?;
+        let config = ConfigApiState::new(coordinator.clone(), active_revision, mode);
+        self.auth = Some(auth);
         self.coordinator = Some(coordinator);
         self.config = Some(config);
         self.rebuild_management();
@@ -193,12 +199,9 @@ impl RtmpManagementApi {
         mode: crate::RuntimeMode,
     ) -> io::Result<Self> {
         self.audit = operational_event::configure_audit_store(Some(token_file));
-        let config = ConfigApiState::from_token_file(
-            coordinator.clone(),
-            active_revision,
-            token_file,
-            mode,
-        )?;
+        let auth = ManagementAuth::from_token_file(token_file)?;
+        let config = ConfigApiState::new(coordinator.clone(), active_revision, mode);
+        self.auth = Some(auth);
         self.coordinator = Some(coordinator);
         self.config = Some(config);
         self.rebuild_management();
@@ -404,9 +407,9 @@ impl RtmpManagementApi {
             ));
         }
         if !self
-            .config
+            .auth
             .as_ref()
-            .is_some_and(|config| config.authorized(session))
+            .is_some_and(|auth| auth.authorized(session))
         {
             return Some(ApiResponse::unauthorized());
         }
@@ -456,7 +459,11 @@ impl RtmpManagementApi {
         }
         if let Some(route) = config::match_route(&path) {
             if let Some(config) = &self.config {
-                let response = config.handle_http(route, &method, session).await;
+                let auth = self
+                    .auth
+                    .as_ref()
+                    .expect("configuration routes require management authentication");
+                let response = config.handle_http(auth, route, &method, session).await;
                 Self::audit_api_operation(&method, &path, &context, &response);
                 return response.with_correlation(context.correlation_id);
             }

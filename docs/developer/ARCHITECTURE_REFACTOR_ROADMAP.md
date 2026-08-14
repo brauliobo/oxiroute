@@ -734,8 +734,8 @@ request/success/error schemas, body/content policy, audit category
   The initial registry now centralizes metadata and recognition/dispatch for the protected status,
   listener, pool, server, and generation GET projections; the shared auth owner and generated
   artifact remain separate work.
-- [ ] Separate `ManagementAuth` from configuration state; it owns the secure bearer for every
-  protected control-plane surface.
+- [x] Separate `ManagementAuth` from configuration state; it owns the secure bearer for every
+  protected control-plane surface while configuration state retains only configuration concerns.
 - [ ] Preserve the current order: correlation validation, exact route recognition, duplicate-header
   and bearer checks, method policy, body decoding, dispatch, audit result, correlation response.
 - [ ] Model JSON, SSE, Prometheus, ranged bytes, media/VOD, readiness, and UI assets as explicit
