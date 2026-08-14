@@ -28,8 +28,8 @@ use crate::{
     generation_compiler::GenerationCompiler,
     planning_types::{
         CachePolicyBlueprint, CacheStoreBlueprint, HttpActionBlueprint, HttpRouteBlueprint,
-        HttpServiceBlueprint, L4ServiceBlueprint, ListenerBlueprint, PoolBlueprint,
-        RtmpCallbackBlueprint, RtmpSpec, ServiceReference,
+        HttpServiceBlueprint, L4ServiceBlueprint, ListenerBlueprint, PoolBlueprint, RtmpSpec,
+        ServiceReference,
     },
 };
 use http::{Method, Uri, uri::Authority};
@@ -39,12 +39,12 @@ use oxiroute_rtmp::{
     DashOutputConfig, ExecProfile, HlsOutputConfig, LiveHub, LiveHubLimits, MediaApplication,
     MediaCatalog, MediaStore, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore,
     RecordingStoreLimits, RtmpAccessPolicy as RuntimeRtmpAccessPolicy,
-    RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig, RtmpCallbackEndpoint,
-    RtmpCallbackPolicy, RtmpCapabilities, RtmpClientOptions, RtmpCredential,
-    RtmpDestinationResolver, RtmpDestinationResolverError, RtmpOutboundPolicy, RtmpPullTarget,
-    RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig,
-    RtmpServicePreparation, RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionLimits,
-    RtmpSessionPolicy, VodApplication, VodCatalog,
+    RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig, RtmpCallbackPolicy,
+    RtmpCapabilities, RtmpClientOptions, RtmpCredential, RtmpDestinationResolver,
+    RtmpDestinationResolverError, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushTarget,
+    RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig, RtmpServicePreparation,
+    RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionLimits, RtmpSessionPolicy, VodApplication,
+    VodCatalog,
 };
 
 enum DiskBackendRegistryEntry {
@@ -1544,7 +1544,8 @@ fn compile_rtmp_services(
         let plan = &spec.plan;
         let outbound_policy = plan.outbound_policy().clone();
         let auto_push = plan.auto_push().map(|plan| plan.config().clone());
-        let callbacks = acquire_rtmp_callbacks(&spec.callbacks, &outbound_policy)?;
+        let callbacks =
+            acquire_rtmp_callbacks(plan.callbacks(), &outbound_policy, plan.service_id(), None)?;
         let mut prepared_applications = Vec::with_capacity(plan.applications().len());
         for (application, decisions) in plan.applications().iter().zip(&spec.applications) {
             let hub = LiveHub::new(decisions.fanout_limits);
@@ -1554,11 +1555,16 @@ fn compile_rtmp_services(
                 compile_rtmp_push_targets(plan.service_id(), application, listener_addresses)?;
             let pull_targets =
                 compile_rtmp_pull_targets(plan.service_id(), application, listener_addresses)?;
-            let callbacks = acquire_rtmp_callbacks(&decisions.callbacks, &outbound_policy)?;
-            let vod = decisions
-                .vod
+            let callbacks = acquire_rtmp_callbacks(
+                application.callbacks(),
+                &outbound_policy,
+                plan.service_id(),
+                Some(application.name()),
+            )?;
+            let vod = application
+                .vod()
                 .as_ref()
-                .map(oxiroute_rtmp::VodApplication::acquire)
+                .map(|vod| vod.acquire(plan.service_id(), application.name()))
                 .transpose()
                 .map_err(|_| ServicePlanError::RtmpVodPreflight {
                     service: plan.service_id().to_owned(),
@@ -1802,25 +1808,59 @@ fn compile_rtmp_pull_targets(
 }
 
 fn acquire_rtmp_callbacks(
-    callbacks: &RtmpCallbackBlueprint,
+    callbacks: &oxiroute_rtmp::RtmpCallbackPlan,
     outbound_policy: &RtmpOutboundPolicy,
+    service: &str,
+    application: Option<&str>,
 ) -> Result<RtmpCallbackPolicy, ServicePlanError> {
-    let mut endpoints = callbacks
-        .endpoints
-        .iter()
-        .map(|endpoint| {
-            endpoint
-                .as_ref()
-                .map(|endpoint| {
-                    RtmpCallbackEndpoint::acquire(&endpoint.endpoint, outbound_policy).map_err(
-                        |_| ServicePlanError::RtmpCallbackPreflight {
-                            service: endpoint.service.clone(),
-                            scope: endpoint.scope.clone(),
-                            field: endpoint.field,
-                        },
-                    )
+    let scope = application.map_or_else(
+        || "service".to_owned(),
+        |name| format!("application `{name}`"),
+    );
+    let fields = [
+        (
+            "callbacks.on_connect",
+            oxiroute_rtmp::RtmpCallbackEventPlan::Connect,
+        ),
+        (
+            "callbacks.on_disconnect",
+            oxiroute_rtmp::RtmpCallbackEventPlan::Disconnect,
+        ),
+        (
+            "callbacks.on_publish",
+            oxiroute_rtmp::RtmpCallbackEventPlan::Publish,
+        ),
+        (
+            "callbacks.on_publish_done",
+            oxiroute_rtmp::RtmpCallbackEventPlan::PublishDone,
+        ),
+        (
+            "callbacks.on_play",
+            oxiroute_rtmp::RtmpCallbackEventPlan::Play,
+        ),
+        (
+            "callbacks.on_play_done",
+            oxiroute_rtmp::RtmpCallbackEventPlan::PlayDone,
+        ),
+        (
+            "callbacks.on_done",
+            oxiroute_rtmp::RtmpCallbackEventPlan::Done,
+        ),
+        (
+            "callbacks.on_update",
+            oxiroute_rtmp::RtmpCallbackEventPlan::Update,
+        ),
+    ];
+    let mut endpoints = fields
+        .into_iter()
+        .map(|(field, event)| {
+            callbacks
+                .acquire_endpoint(event, outbound_policy)
+                .map_err(|_| ServicePlanError::RtmpCallbackPreflight {
+                    service: service.to_owned(),
+                    scope: scope.clone(),
+                    field,
                 })
-                .transpose()
         })
         .collect::<Result<Vec<_>, _>>()?
         .into_iter();
@@ -1833,11 +1873,11 @@ fn acquire_rtmp_callbacks(
         on_play_done: endpoints.next().expect("callback slot"),
         on_done: endpoints.next().expect("callback slot"),
         on_update: endpoints.next().expect("callback slot"),
-        method: callbacks.method,
-        timeout: callbacks.timeout,
-        update_timeout: callbacks.update_timeout,
-        update_strict: callbacks.update_strict,
-        relay_redirect: callbacks.relay_redirect,
+        method: callbacks.method(),
+        timeout: callbacks.timeout(),
+        update_timeout: callbacks.update_timeout(),
+        update_strict: callbacks.update_strict(),
+        relay_redirect: callbacks.relay_redirect(),
     })
 }
 

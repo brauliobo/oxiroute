@@ -21,8 +21,7 @@ use crate::{
     planning_types::{
         CachePolicyBlueprint, CacheStoreBlueprint, EndpointBlueprint, HttpActionBlueprint,
         HttpRouteBlueprint, HttpServiceBlueprint, L4ServiceBlueprint, ListenerBlueprint,
-        PoolBlueprint, RtmpApplicationBlueprint, RtmpCallbackBlueprint,
-        RtmpCallbackEndpointBlueprint, RtmpSpec, ServiceReference,
+        PoolBlueprint, RtmpApplicationBlueprint, RtmpSpec, ServiceReference,
     },
     rtmp_value_plan::compile_rtmp_value_plans_from_draft,
     runtime_policy::reject_unimplemented_runtime_policies,
@@ -703,7 +702,6 @@ fn compile_rtmp_blueprint(
     plan: RtmpServicePlan,
     service: &oxiroute_config::RtmpService,
 ) -> Result<RtmpSpec, ServicePlanError> {
-    let callbacks = compile_rtmp_callback_blueprint(plan.service_id(), None, plan.callbacks())?;
     let applications = plan
         .applications()
         .iter()
@@ -731,117 +729,16 @@ fn compile_rtmp_blueprint(
                     * fanout.max_queue_bytes_per_subscriber(),
                 ..oxiroute_rtmp::LiveHubLimits::default()
             };
-            let callbacks = compile_rtmp_callback_blueprint(
-                plan.service_id(),
-                Some(application.name()),
-                application.callbacks(),
-            )?;
-            let vod = application
-                .vod()
-                .map(|vod| {
-                    oxiroute_rtmp::VodApplicationBlueprint::compile(
-                        plan.service_id(),
-                        application.name(),
-                        vod.limits(),
-                        vod.sources().iter().cloned(),
-                        vod.outbound_policy(),
-                    )
-                    .map_err(|_| ServicePlanError::RtmpVodPreflight {
-                        service: plan.service_id().to_owned(),
-                        application: application.name().to_owned(),
-                        source_name: vod
-                            .sources()
-                            .first()
-                            .map_or_else(|| "unknown".into(), |source| source.name().to_owned()),
-                    })
-                })
-                .transpose()?;
             Ok(RtmpApplicationBlueprint {
                 publish_policy: access(application.publish()),
                 play_policy: access(application.play()),
                 fanout_limits,
-                callbacks,
-                vod,
             })
         })
         .collect::<Result<Box<[_]>, ServicePlanError>>()?;
     Ok(RtmpSpec {
         plan,
         access_log: service.access_log.clone(),
-        callbacks,
         applications,
-    })
-}
-
-fn compile_rtmp_callback_blueprint(
-    service: &str,
-    application: Option<&str>,
-    callbacks: &oxiroute_rtmp::RtmpCallbackPlan,
-) -> Result<RtmpCallbackBlueprint, ServicePlanError> {
-    let scope = application.map_or_else(
-        || "service".to_owned(),
-        |name| format!("application `{name}`"),
-    );
-    let fields = [
-        (
-            "callbacks.on_connect",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Connect,
-        ),
-        (
-            "callbacks.on_disconnect",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Disconnect,
-        ),
-        (
-            "callbacks.on_publish",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Publish,
-        ),
-        (
-            "callbacks.on_publish_done",
-            oxiroute_rtmp::RtmpCallbackEventPlan::PublishDone,
-        ),
-        (
-            "callbacks.on_play",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Play,
-        ),
-        (
-            "callbacks.on_play_done",
-            oxiroute_rtmp::RtmpCallbackEventPlan::PlayDone,
-        ),
-        (
-            "callbacks.on_done",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Done,
-        ),
-        (
-            "callbacks.on_update",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Update,
-        ),
-    ];
-    let mut endpoints: [Option<RtmpCallbackEndpointBlueprint>; 8] = Default::default();
-    for (index, (field, event)) in fields.into_iter().enumerate() {
-        endpoints[index] = callbacks
-            .endpoint(event)
-            .map(|value| {
-                oxiroute_rtmp::RtmpCallbackEndpointBlueprint::parse(value)
-                    .map(|endpoint| RtmpCallbackEndpointBlueprint {
-                        endpoint,
-                        service: service.to_owned(),
-                        scope: scope.clone(),
-                        field,
-                    })
-                    .map_err(|_| ServicePlanError::RtmpCallbackPreflight {
-                        service: service.to_owned(),
-                        scope: scope.clone(),
-                        field,
-                    })
-            })
-            .transpose()?;
-    }
-    Ok(RtmpCallbackBlueprint {
-        endpoints,
-        method: callbacks.method(),
-        timeout: callbacks.timeout(),
-        update_timeout: callbacks.update_timeout(),
-        update_strict: callbacks.update_strict(),
-        relay_redirect: callbacks.relay_redirect(),
     })
 }

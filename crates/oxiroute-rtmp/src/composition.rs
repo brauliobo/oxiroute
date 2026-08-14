@@ -1355,6 +1355,25 @@ impl RtmpVodPlan {
     pub const fn outbound_policy(&self) -> &RtmpOutboundPolicy {
         &self.outbound_policy
     }
+    /// Opens local roots and acquires HTTP origins for one VOD application.
+    ///
+    /// # Errors
+    ///
+    /// Returns an acquisition error when a source root or origin cannot be prepared.
+    pub fn acquire(
+        &self,
+        service: impl Into<String>,
+        application: impl Into<String>,
+    ) -> Result<crate::VodApplication, crate::VodError> {
+        let blueprint = crate::VodApplicationBlueprint::compile(
+            service,
+            application,
+            self.limits,
+            self.sources.clone(),
+            &self.outbound_policy,
+        )?;
+        crate::VodApplication::acquire(&blueprint)
+    }
 }
 impl fmt::Debug for RtmpVodPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1426,6 +1445,21 @@ impl RtmpCallbackPlan {
     #[must_use]
     pub fn endpoint(&self, event: RtmpCallbackEventPlan) -> Option<&str> {
         self.endpoints[event as usize].as_deref()
+    }
+    /// Parses, resolves, and policy-checks one configured callback endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted callback error when the endpoint is malformed, cannot be resolved, or
+    /// fails the configured outbound destination policy.
+    pub fn acquire_endpoint(
+        &self,
+        event: RtmpCallbackEventPlan,
+        outbound_policy: &RtmpOutboundPolicy,
+    ) -> Result<Option<crate::RtmpCallbackEndpoint>, crate::RtmpCallbackError> {
+        self.endpoint(event)
+            .map(|value| crate::RtmpCallbackEndpoint::parse(value, outbound_policy))
+            .transpose()
     }
     #[must_use]
     pub const fn method(&self) -> RtmpCallbackMethod {
