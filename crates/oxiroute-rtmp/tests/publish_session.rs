@@ -4,9 +4,9 @@ use bytes::Bytes;
 use oxiroute_rtmp::{
     CatalogError, LiveHub, LiveHubError, LiveHubLimits, MAX_RTMP_QUERY_BYTES,
     MAX_RTMP_STREAM_NAME_BYTES, MediaSnapshot, RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpAccessAction,
-    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpCapabilities, RtmpNetwork, RtmpRegistry,
-    RtmpServiceRuntime, RtmpSession, RtmpSessionCeilings, RtmpSessionError, RtmpSessionPolicy,
-    RtmpTokenPolicy, StreamKey, VideoCodecIdentifier,
+    RtmpAccessPlan, RtmpAccessPolicy, RtmpAccessRulePlan, RtmpApplication, RtmpCapabilities,
+    RtmpNetwork, RtmpRegistry, RtmpServiceRuntime, RtmpSession, RtmpSessionCeilings,
+    RtmpSessionError, RtmpSessionPolicy, RtmpTokenPlan, StreamKey, VideoCodecIdentifier,
 };
 use rml_rtmp::{
     handshake::{Handshake, HandshakeProcessResult, PeerType},
@@ -365,16 +365,19 @@ fn treats_publish_query_arguments_as_non_identity_protocol_data() {
 #[test]
 fn enforces_ordered_publish_acl_and_stream_query_token() {
     let registry = registry();
-    let publish = RtmpAccessPolicy::new(
+    let publish = RtmpAccessPlan::new(
         [
-            RtmpAccessRule::new(
+            RtmpAccessRulePlan::new(
                 RtmpAccessAction::Deny,
                 RtmpNetwork::parse("192.0.2.0/24").expect("valid network"),
-            ),
-            RtmpAccessRule::new(RtmpAccessAction::Allow, RtmpNetwork::All),
+            )
+            .expect("valid deny rule"),
+            RtmpAccessRulePlan::new(RtmpAccessAction::Allow, RtmpNetwork::All)
+                .expect("valid allow rule"),
         ],
-        Some(RtmpTokenPolicy::stream_query("token", "secret").expect("valid token policy")),
-    );
+        Some(RtmpTokenPlan::new("token", "secret").expect("valid token plan")),
+    )
+    .runtime_policy();
     let application = RtmpApplication::new("broadcast", true, true).with_authorization(
         publish,
         RtmpAccessPolicy::default(),

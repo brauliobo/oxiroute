@@ -89,7 +89,7 @@ const reviewedValueMethods = new Map([
   'rules', 'token', 'policy', 'action', 'network', 'fanout', 'max_subscribers',
   'max_queue_messages_per_subscriber', 'max_queue_bytes_per_subscriber', 'vod', 'limits', 'sources',
   'endpoint', 'method', 'timeout', 'update_timeout', 'update_strict', 'relay_redirect', 'path_value',
-  'publish', 'play',
+  'publish', 'play', 'runtime_policy',
   'contextualize_profile', 'contextualize_application', 'contextualize_service', 'with_endpoint',
   'with_update_policy', 'with_outbound_policy', 'with_max_inbound_message_size',
   'with_window_ack_size', 'profile', 'config', 'transport', 'application', 'stream_name',

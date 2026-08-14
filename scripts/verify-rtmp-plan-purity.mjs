@@ -19,7 +19,7 @@ const allowedCrateSymbols = new Set([
   'ExecLimits', 'ExecMode', 'ExecNetworkPolicy', 'ExecProfile', 'ExecProfileError', 'ExecTrigger',
   'HlsFragmentNaming', 'HlsKeyConfig', 'HlsValueError', 'HlsVariant', 'RecorderWorkerConfig',
   'RecorderWorkerStartError', 'RecordingPathPolicy', 'RecordingStoreLimits',
-  'RecordingStoreLimitsError', 'RtmpAccessAction', 'RtmpAccessRule', 'RtmpAutoPushConfig',
+  'RecordingStoreLimitsError', 'RtmpAccessAction', 'RtmpAccessPolicy', 'RtmpAccessRule', 'RtmpAutoPushConfig',
   'RtmpAutoPushConfigError', 'RtmpCallbackMethod', 'RtmpCallbackValueError', 'RtmpNetwork',
   'RtmpOutboundPolicy', 'RtmpPushApplication', 'RtmpRecorderStart', 'RtmpSessionCeilings',
   'RtmpSessionLimitError', 'RtmpSessionLimits', 'RtmpStreamPath', 'RtmpTokenPolicy',

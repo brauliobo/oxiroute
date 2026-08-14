@@ -12,11 +12,11 @@ use crate::{
     ExecMode, ExecNetworkPolicy, ExecProfile, ExecProfileError, ExecTrigger, HlsFragmentNaming,
     HlsKeyConfig, HlsValueError, HlsVariant, RecorderWorkerConfig, RecorderWorkerStartError,
     RecordingPathPolicy, RecordingStoreLimits, RecordingStoreLimitsError, RtmpAccessAction,
-    RtmpAccessRule, RtmpAutoPushConfig, RtmpAutoPushConfigError, RtmpCallbackMethod,
-    RtmpCallbackValueError, RtmpNetwork, RtmpOutboundPolicy, RtmpPushApplication,
-    RtmpRecorderStart, RtmpSessionCeilings, RtmpSessionLimitError, RtmpSessionLimits,
-    RtmpStreamPath, RtmpTokenPolicy, RtmpTransport, VodLimits, VodSourceDefinition, VodValueError,
-    validate_callback_url_intrinsic,
+    RtmpAccessPolicy, RtmpAccessRule, RtmpAutoPushConfig, RtmpAutoPushConfigError,
+    RtmpCallbackMethod, RtmpCallbackValueError, RtmpNetwork, RtmpOutboundPolicy,
+    RtmpPushApplication, RtmpRecorderStart, RtmpSessionCeilings, RtmpSessionLimitError,
+    RtmpSessionLimits, RtmpStreamPath, RtmpTokenPolicy, RtmpTransport, VodLimits,
+    VodSourceDefinition, VodValueError, validate_callback_url_intrinsic,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -438,6 +438,16 @@ impl RtmpAccessPlan {
     #[must_use]
     pub const fn token(&self) -> Option<&RtmpTokenPlan> {
         self.token.as_ref()
+    }
+
+    #[must_use]
+    pub fn runtime_policy(&self) -> RtmpAccessPolicy {
+        RtmpAccessPolicy::new(
+            self.rules
+                .iter()
+                .map(|rule| RtmpAccessRule::new(rule.action(), rule.network().clone())),
+            self.token.as_ref().map(|token| token.policy().clone()),
+        )
     }
 }
 
