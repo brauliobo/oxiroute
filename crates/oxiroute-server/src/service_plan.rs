@@ -1559,14 +1559,7 @@ fn compile_rtmp_services(
                 .map(Arc::new);
             let hls = compile_rtmp_hls(plan.service_id(), application, &mut media_stores, mode)?;
             let dash = compile_rtmp_dash(plan.service_id(), application, &mut media_stores, mode)?;
-            let media = match (hls, dash) {
-                (None, None) => None,
-                (Some(hls), None) => Some(hls),
-                (None, Some(dash)) => {
-                    Some(Arc::new(MediaApplication::new(None).with_dash(Some(dash))))
-                }
-                (Some(hls), Some(dash)) => Some(Arc::new((*hls).clone().with_dash(Some(dash)))),
-            };
+            let media = oxiroute_rtmp::RtmpMediaPlan::combine_outputs(hls, dash);
             let exec_profiles = application
                 .exec()
                 .iter()

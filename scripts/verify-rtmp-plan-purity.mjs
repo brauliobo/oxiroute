@@ -15,7 +15,7 @@ const checked = new Map([
   }],
 ])
 const allowedCrateSymbols = new Set([
-  'DashSegmentNaming', 'DestinationPolicyError', 'ExecEnvironment', 'ExecFilesystemPolicy',
+  'DashOutputConfig', 'DashSegmentNaming', 'DestinationPolicyError', 'ExecEnvironment', 'ExecFilesystemPolicy',
   'ExecLimits', 'ExecMode', 'ExecNetworkPolicy', 'ExecProfile', 'ExecProfileError', 'ExecTrigger',
   'HlsFragmentNaming', 'HlsKeyConfig', 'HlsValueError', 'HlsVariant', 'LiveHub', 'LiveHubLimits',
   'MediaApplication',
