@@ -13,8 +13,9 @@ use oxiroute_rtmp::{
     RecorderWorkerConfig, RecordingPathPolicy, RecordingStoreLimits, RtmpAccessAction,
     RtmpAccessPlan, RtmpAccessRulePlan, RtmpApplicationPlan, RtmpAutoPushConfig, RtmpAutoPushPlan,
     RtmpCallbackError, RtmpCallbackEventPlan, RtmpCallbackMethod, RtmpCallbackPlan,
-    RtmpCallbackPolicy, RtmpClientPlan, RtmpCredentialPlan, RtmpDashPlan, RtmpExecEnvironmentPlan,
-    RtmpExecPlan, RtmpFanoutPlan, RtmpHlsPlan, RtmpMediaPlan, RtmpMediaStoreRegistry, RtmpNetwork,
+    RtmpCallbackPolicy, RtmpClientOptions, RtmpClientPlan, RtmpCredentialPlan, RtmpDashPlan,
+    RtmpDestinationResolver, RtmpDestinationResolverError, RtmpExecEnvironmentPlan, RtmpExecPlan,
+    RtmpFanoutPlan, RtmpHlsPlan, RtmpMediaPlan, RtmpMediaStoreRegistry, RtmpNetwork,
     RtmpOutboundPolicy, RtmpPrepareCategory, RtmpPrepareContext, RtmpPrepareMode,
     RtmpPrepareSource, RtmpPullPlan, RtmpPushApplication, RtmpPushPlan, RtmpRecorderPlan,
     RtmpRecorderStart, RtmpRelayPlan, RtmpServicePlan, RtmpSessionCeilings, RtmpSessionLimits,
@@ -159,6 +160,104 @@ fn runtime_application_construction_stays_inside_the_rtmp_plan_owner() {
     assert_eq!(
         runtime.session_limits(),
         RtmpSessionCeilings::new(16, 4, 12)
+    );
+}
+
+#[test]
+fn relay_target_acquisition_stays_inside_the_rtmp_plan_owner() {
+    let policy = RtmpOutboundPolicy {
+        deny_private: false,
+        ..RtmpOutboundPolicy::default()
+    };
+    let relay = RtmpRelayPlan::new(
+        policy,
+        8,
+        4_096,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+        Duration::from_secs(3),
+        Duration::from_secs(30),
+        Duration::from_secs(4),
+        Duration::from_secs(5),
+        [],
+        [],
+    )
+    .expect("relay plan");
+    let client = RtmpClientPlan::new("client", 0, None, None).expect("client plan");
+    let push = RtmpPushPlan::new(
+        "127.0.0.1",
+        1_936,
+        RtmpTransport::Rtmp,
+        RtmpPushApplication::StreamName,
+        None,
+        client.clone(),
+    )
+    .expect("push plan");
+    let pull = RtmpPullPlan::new(
+        "127.0.0.1",
+        1_936,
+        RtmpTransport::Rtmp,
+        "origin",
+        "source",
+        "live",
+        "local",
+        client,
+    )
+    .expect("pull plan");
+
+    let error = relay
+        .acquire_push_target(
+            &push,
+            ["127.0.0.1:1936".parse().unwrap()],
+            || -> Result<RtmpClientOptions, RtmpDestinationResolverError> {
+                panic!("direct-loop validation must precede client acquisition")
+            },
+            std::convert::identity,
+        )
+        .expect_err("direct listener loop");
+    assert_eq!(error, RtmpDestinationResolverError::DirectLoop);
+
+    let push = relay
+        .acquire_push_target(
+            &push,
+            ["127.0.0.1:1935".parse().unwrap()],
+            || Ok::<_, RtmpDestinationResolverError>(RtmpClientOptions::default()),
+            std::convert::identity,
+        )
+        .expect("push target");
+    let pull = relay
+        .acquire_pull_target(
+            &pull,
+            ["127.0.0.1:1935".parse().unwrap()],
+            || Ok::<_, RtmpDestinationResolverError>(RtmpClientOptions::default()),
+            std::convert::identity,
+        )
+        .expect("pull target");
+
+    assert_eq!(push.address, "127.0.0.1:1936".parse().unwrap());
+    assert_eq!(push.config.reconnect_interval, Duration::from_secs(2));
+    assert_eq!(pull.address, "127.0.0.1:1936".parse().unwrap());
+    assert_eq!(pull.config.reconnect_interval, Duration::from_secs(3));
+    assert!(push.config.dns_resolver.is_some());
+    assert!(pull.config.dns_resolver.is_some());
+}
+
+#[test]
+fn destination_resolver_rejects_the_thirty_third_collected_address() {
+    let addresses = (1..=33).map(|last| SocketAddr::from(([192, 0, 2, last], 1_935)));
+
+    assert_eq!(
+        RtmpDestinationResolver::from_startup(
+            "origin.example",
+            1_935,
+            RtmpTransport::Rtmp,
+            addresses,
+            RtmpOutboundPolicy::default(),
+            [],
+            Duration::from_secs(30),
+        )
+        .expect_err("33 collected addresses exceed the limit"),
+        RtmpDestinationResolverError::TooManyAddresses
     );
 }
 

@@ -1158,6 +1158,111 @@ impl RtmpRelayPlan {
     pub const fn handshake_timeout(&self) -> Duration {
         self.handshake_timeout
     }
+
+    /// Resolves and assembles one push target without connecting to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a destination error when startup resolution, policy, family selection, or direct
+    /// listener-loop validation fails.
+    pub fn acquire_push_target<E>(
+        &self,
+        target: &RtmpPushPlan,
+        listener_addresses: impl IntoIterator<Item = SocketAddr>,
+        acquire_options: impl FnOnce() -> Result<crate::RtmpClientOptions, E>,
+        map_destination_error: impl FnOnce(crate::RtmpDestinationResolverError) -> E,
+    ) -> Result<RtmpPushTarget, E> {
+        let resolver = self
+            .acquire_resolver(
+                target.host(),
+                target.port(),
+                target.transport(),
+                listener_addresses,
+            )
+            .map_err(map_destination_error)?;
+        let options = acquire_options()?;
+        Ok(RtmpPushTarget {
+            address: resolver.address(),
+            host: target.host().to_owned(),
+            transport: target.transport(),
+            application: target.application().clone(),
+            stream_name: target.stream_name().map(str::to_owned),
+            options,
+            config: self.runtime_config(self.push_reconnect_interval, resolver),
+        })
+    }
+
+    /// Resolves and assembles one pull target without connecting to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a destination error when startup resolution, policy, family selection, or direct
+    /// listener-loop validation fails.
+    pub fn acquire_pull_target<E>(
+        &self,
+        target: &RtmpPullPlan,
+        listener_addresses: impl IntoIterator<Item = SocketAddr>,
+        acquire_options: impl FnOnce() -> Result<crate::RtmpClientOptions, E>,
+        map_destination_error: impl FnOnce(crate::RtmpDestinationResolverError) -> E,
+    ) -> Result<RtmpPullTarget, E> {
+        let resolver = self
+            .acquire_resolver(
+                target.host(),
+                target.port(),
+                target.transport(),
+                listener_addresses,
+            )
+            .map_err(map_destination_error)?;
+        let options = acquire_options()?;
+        Ok(RtmpPullTarget {
+            address: resolver.address(),
+            host: target.host().to_owned(),
+            transport: target.transport(),
+            source_application: target.source_application().to_owned(),
+            source_stream_name: target.source_stream_name().to_owned(),
+            local_application: target.local_application().to_owned(),
+            local_stream_name: target.local_stream_name().to_owned(),
+            options,
+            config: self.runtime_config(self.pull_reconnect_interval, resolver),
+        })
+    }
+
+    fn acquire_resolver(
+        &self,
+        host: &str,
+        port: u16,
+        transport: RtmpTransport,
+        listener_addresses: impl IntoIterator<Item = SocketAddr>,
+    ) -> Result<crate::RtmpDestinationResolver, crate::RtmpDestinationResolverError> {
+        let addresses = crate::RtmpDestinationResolver::resolve_startup_addresses(host, port)
+            .map_err(|_| crate::RtmpDestinationResolverError::EmptyAnswer)?;
+        crate::RtmpDestinationResolver::from_startup(
+            host.to_owned(),
+            port,
+            transport,
+            addresses,
+            self.policy.clone(),
+            listener_addresses,
+            self.dns_refresh_interval,
+        )
+    }
+
+    fn runtime_config(
+        &self,
+        reconnect_interval: Duration,
+        resolver: crate::RtmpDestinationResolver,
+    ) -> crate::RtmpRelayConfig {
+        crate::RtmpRelayConfig {
+            max_queue_messages: self.max_queue_messages,
+            max_queue_bytes: self.max_queue_bytes,
+            buffer_duration: self.buffer_duration,
+            connect_timeout: self.connect_timeout,
+            handshake_timeout: self.handshake_timeout,
+            reconnect_interval,
+            max_chain_depth: self.policy.max_chain_depth,
+            dns_resolver: Some(Arc::new(resolver)),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

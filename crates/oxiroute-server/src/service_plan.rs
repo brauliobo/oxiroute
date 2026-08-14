@@ -38,10 +38,9 @@ use oxiroute_rtmp::{
     DashOutputConfig, ExecProfile, HlsOutputConfig, LiveHub, LiveHubLimits, MediaApplication,
     MediaCatalog, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore, RecordingStoreLimits,
     RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig, RtmpCallbackPolicy,
-    RtmpCapabilities, RtmpClientOptions, RtmpCredential, RtmpDestinationResolver,
-    RtmpDestinationResolverError, RtmpMediaStoreRegistry, RtmpOutboundPolicy, RtmpPrepareMode,
-    RtmpPullTarget, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry,
-    RtmpRelayConfig, RtmpServicePreparation, RtmpServiceRuntime, RtmpSessionLimits,
+    RtmpCapabilities, RtmpClientOptions, RtmpCredential, RtmpMediaStoreRegistry,
+    RtmpOutboundPolicy, RtmpPrepareMode, RtmpPullTarget, RtmpPushTarget, RtmpRecorderPolicy,
+    RtmpRecorderStart, RtmpRegistry, RtmpServicePreparation, RtmpServiceRuntime, RtmpSessionLimits,
     RtmpSessionPolicy, VodApplication, VodCatalog,
 };
 
@@ -1672,50 +1671,28 @@ fn compile_rtmp_push_targets(
                 application: application.name().to_owned(),
                 target: target_index,
             };
-            let addresses =
-                RtmpDestinationResolver::resolve_startup_addresses(target.host(), target.port())
-                    .map_err(|_| resolution())?;
-            let transport = target.transport();
-            let resolver = RtmpDestinationResolver::from_startup(
-                target.host().to_owned(),
-                target.port(),
-                transport,
-                addresses,
-                application.relay().policy().clone(),
+            application.relay().acquire_push_target(
+                target,
                 listener_addresses.iter().copied(),
-                application.relay().dns_refresh_interval(),
+                || compile_rtmp_client_options(target.client(), resolution),
+                |error| match error {
+                    oxiroute_rtmp::RtmpDestinationResolverError::DirectLoop => {
+                        ServicePlanError::RtmpPushDirectLoop {
+                            service: service.to_owned(),
+                            application: application.name().to_owned(),
+                            target: target_index,
+                        }
+                    }
+                    oxiroute_rtmp::RtmpDestinationResolverError::EmptyAnswer
+                    | oxiroute_rtmp::RtmpDestinationResolverError::TooManyAddresses
+                    | oxiroute_rtmp::RtmpDestinationResolverError::InvalidAddress
+                    | oxiroute_rtmp::RtmpDestinationResolverError::Policy
+                    | oxiroute_rtmp::RtmpDestinationResolverError::FamilyMismatch
+                    | oxiroute_rtmp::RtmpDestinationResolverError::InvalidRefreshInterval => {
+                        resolution()
+                    }
+                },
             )
-            .map_err(|error| match error {
-                RtmpDestinationResolverError::DirectLoop => ServicePlanError::RtmpPushDirectLoop {
-                    service: service.to_owned(),
-                    application: application.name().to_owned(),
-                    target: target_index,
-                },
-                RtmpDestinationResolverError::EmptyAnswer
-                | RtmpDestinationResolverError::TooManyAddresses
-                | RtmpDestinationResolverError::InvalidAddress
-                | RtmpDestinationResolverError::Policy
-                | RtmpDestinationResolverError::FamilyMismatch
-                | RtmpDestinationResolverError::InvalidRefreshInterval => resolution(),
-            })?;
-            Ok(RtmpPushTarget {
-                address: resolver.address(),
-                host: target.host().to_owned(),
-                transport,
-                application: target.application().clone(),
-                stream_name: target.stream_name().map(str::to_owned),
-                options: compile_rtmp_client_options(target.client(), resolution)?,
-                config: RtmpRelayConfig {
-                    max_queue_messages: application.relay().max_queue_messages(),
-                    max_queue_bytes: application.relay().max_queue_bytes(),
-                    buffer_duration: application.relay().buffer_duration(),
-                    connect_timeout: application.relay().connect_timeout(),
-                    handshake_timeout: application.relay().handshake_timeout(),
-                    reconnect_interval: application.relay().push_reconnect_interval(),
-                    max_chain_depth: application.relay().policy().max_chain_depth,
-                    dns_resolver: Some(Arc::new(resolver)),
-                },
-            })
         })
         .collect()
 }
@@ -1736,48 +1713,12 @@ fn compile_rtmp_pull_targets(
                 application: application.name().to_owned(),
                 target: target_index,
             };
-            let addresses =
-                RtmpDestinationResolver::resolve_startup_addresses(target.host(), target.port())
-                    .map_err(|_| resolution())?;
-            let transport = target.transport();
-            let resolver = RtmpDestinationResolver::from_startup(
-                target.host().to_owned(),
-                target.port(),
-                transport,
-                addresses,
-                application.relay().policy().clone(),
+            application.relay().acquire_pull_target(
+                target,
                 listener_addresses.iter().copied(),
-                application.relay().dns_refresh_interval(),
+                || compile_rtmp_client_options(target.client(), resolution),
+                |_| resolution(),
             )
-            .map_err(|error| match error {
-                RtmpDestinationResolverError::DirectLoop
-                | RtmpDestinationResolverError::EmptyAnswer
-                | RtmpDestinationResolverError::TooManyAddresses
-                | RtmpDestinationResolverError::InvalidAddress
-                | RtmpDestinationResolverError::Policy
-                | RtmpDestinationResolverError::FamilyMismatch
-                | RtmpDestinationResolverError::InvalidRefreshInterval => resolution(),
-            })?;
-            Ok(RtmpPullTarget {
-                address: resolver.address(),
-                host: target.host().to_owned(),
-                transport,
-                source_application: target.source_application().to_owned(),
-                source_stream_name: target.source_stream_name().to_owned(),
-                local_application: target.local_application().to_owned(),
-                local_stream_name: target.local_stream_name().to_owned(),
-                options: compile_rtmp_client_options(target.client(), resolution)?,
-                config: RtmpRelayConfig {
-                    max_queue_messages: application.relay().max_queue_messages(),
-                    max_queue_bytes: application.relay().max_queue_bytes(),
-                    buffer_duration: application.relay().buffer_duration(),
-                    connect_timeout: application.relay().connect_timeout(),
-                    handshake_timeout: application.relay().handshake_timeout(),
-                    reconnect_interval: application.relay().pull_reconnect_interval(),
-                    max_chain_depth: application.relay().policy().max_chain_depth,
-                    dns_resolver: Some(Arc::new(resolver)),
-                },
-            })
         })
         .collect()
 }
