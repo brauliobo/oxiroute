@@ -1,5 +1,6 @@
 #![allow(clippy::result_large_err)]
 
+mod auth;
 mod config;
 pub(crate) use config::read_config_body;
 pub(crate) mod dto;
@@ -16,7 +17,7 @@ mod ui;
 mod vod;
 mod wire;
 
-pub(crate) use self::{config::preflight_management_token, ui::UiAssets};
+pub(crate) use self::{auth::preflight_management_token, ui::UiAssets};
 pub use self::{
     response::ApiResponse,
     service::{RtmpManagementApi, RtmpManagementHttpApp},
