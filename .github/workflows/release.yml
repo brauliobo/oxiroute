@@ -53,6 +53,9 @@ jobs:
       - name: Verify locked workspace metadata at MSRV
         run: cargo +1.97.1 metadata --format-version 1 --no-deps --locked
 
+      - name: Verify control-plane OpenAPI artifact
+        run: ./scripts/verify-control-plane-contract.sh
+
       - name: Verify all committed lockfiles are current
         run: ./scripts/verify-lockfiles.sh
 

@@ -1,0 +1,1961 @@
+{
+  "components": {
+    "schemas": {
+      "AcmeManagedCertificateDto": {
+        "properties": {
+          "activeRevision": {
+            "type": "string"
+          },
+          "directoryUrl": {
+            "type": "string"
+          },
+          "diskRevision": {
+            "type": "string"
+          },
+          "dnsCleanupStatus": {
+            "type": "string"
+          },
+          "dnsProvider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dnsProviderDeployment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dnsProviderHealth": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "lastErrorCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastOutcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "nextActionUnixSeconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "notAfterUnixSeconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "notBeforeUnixSeconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "renewalInformationStatus": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "directoryUrl",
+          "diskRevision",
+          "activeRevision",
+          "expiresAt",
+          "notBeforeUnixSeconds",
+          "notAfterUnixSeconds",
+          "nextActionUnixSeconds",
+          "lastOutcome",
+          "lastErrorCode",
+          "renewalInformationStatus",
+          "dnsProvider",
+          "dnsProviderDeployment",
+          "dnsProviderHealth",
+          "dnsCleanupStatus"
+        ],
+        "type": "object"
+      },
+      "AdministrativeStateDto": {
+        "enum": [
+          "ready",
+          "drain",
+          "maintenance"
+        ],
+        "type": "string"
+      },
+      "AuditComponentStateDto": {
+        "enum": [
+          "healthy",
+          "degraded",
+          "memory"
+        ],
+        "type": "string"
+      },
+      "AuditStatusDto": {
+        "properties": {
+          "bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "corruptRecords": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "degraded": {
+            "type": "boolean"
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "maxFileBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxRecordBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxRecords": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxRotatedFiles": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxTotalBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "persistent": {
+            "type": "boolean"
+          },
+          "recordCount": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rotatedFiles": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/AuditComponentStateDto"
+          },
+          "writeFailures": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state",
+          "persistent",
+          "degraded",
+          "recordCount",
+          "bytes",
+          "rotatedFiles",
+          "maxRecords",
+          "maxRecordBytes",
+          "maxFileBytes",
+          "maxTotalBytes",
+          "maxRotatedFiles",
+          "writeFailures",
+          "corruptRecords"
+        ],
+        "type": "object"
+      },
+      "BlockedReasonDto": {
+        "enum": [
+          "listener_runtime_failed",
+          "listener_stopped",
+          "listener_not_listening"
+        ],
+        "type": "string"
+      },
+      "CacheDto": {
+        "properties": {
+          "admissions": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "evictions": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "hits": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "misses": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "hits",
+          "misses",
+          "admissions",
+          "evictions"
+        ],
+        "type": "object"
+      },
+      "CapabilitiesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "http3": {
+            "$ref": "#/components/schemas/Http3CapabilitiesDto"
+          },
+          "schemaVersion": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "supervision": {
+            "$ref": "#/components/schemas/SupervisionCapabilityDto"
+          },
+          "udp": {
+            "$ref": "#/components/schemas/UdpCapabilityDto"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "supervision",
+          "udp",
+          "http3"
+        ],
+        "type": "object"
+      },
+      "CapabilityStatusDto": {
+        "enum": [
+          "active",
+          "unconfigured",
+          "blocked"
+        ],
+        "type": "string"
+      },
+      "CertbotCertificateDto": {
+        "properties": {
+          "activeArchiveRevision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "activeContentRevision": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "lastErrorCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastOutcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "activeArchiveRevision",
+          "activeContentRevision",
+          "expiresAt",
+          "lastOutcome",
+          "lastErrorCode"
+        ],
+        "type": "object"
+      },
+      "ComponentStateDto": {
+        "enum": [
+          "healthy",
+          "degraded",
+          "unsupported"
+        ],
+        "type": "string"
+      },
+      "ComponentStatusDto": {
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/ComponentStateDto"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
+      "DecimalCounter": {
+        "pattern": "^[0-9]+$",
+        "type": "string"
+      },
+      "DescriptorAdoptionDto": {
+        "additionalProperties": false,
+        "properties": {
+          "datagram": {
+            "type": "boolean"
+          },
+          "manifestVersion": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "quic": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DescriptorAdoptionStatusDto"
+          }
+        },
+        "required": [
+          "status",
+          "manifestVersion",
+          "datagram",
+          "quic"
+        ],
+        "type": "object"
+      },
+      "DescriptorAdoptionStatusDto": {
+        "enum": [
+          "negotiated",
+          "not_used"
+        ],
+        "type": "string"
+      },
+      "DirectFileCertificateDto": {
+        "properties": {
+          "activeContentRevision": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "lastErrorCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastOutcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "activeContentRevision",
+          "expiresAt",
+          "lastOutcome",
+          "lastErrorCode"
+        ],
+        "type": "object"
+      },
+      "DisabledDto": {
+        "enum": [
+          "disabled"
+        ],
+        "type": "string"
+      },
+      "EndpointDto": {
+        "properties": {
+          "activeConnections": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "address": {
+            "type": "string"
+          },
+          "administrativeState": {
+            "$ref": "#/components/schemas/AdministrativeStateDto"
+          },
+          "checksEnabled": {
+            "type": "boolean"
+          },
+          "checksRunning": {
+            "type": "boolean"
+          },
+          "configuredMaxConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "consecutiveFailures": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "consecutiveSuccesses": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "failedChecks": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "healthOverride": {
+            "$ref": "#/components/schemas/HealthOverrideDto"
+          },
+          "lastCheckedAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lastFailure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HealthFailureDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastTransitionAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "maxConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "passiveConsecutiveFailures": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "passiveEjected": {
+            "type": "boolean"
+          },
+          "passiveEjectedAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "passiveEjectionCount": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "passiveEjectionReason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HealthFailureDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "passiveEjectionUntilUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "passiveFailureCount": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "passiveLastRecoveryAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "passiveRecoveryCount": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "state": {
+            "$ref": "#/components/schemas/EndpointHealthStateDto"
+          },
+          "successfulChecks": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "weight": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "activeConnections",
+          "administrativeState",
+          "address",
+          "checksEnabled",
+          "checksRunning",
+          "configuredMaxConnections",
+          "healthOverride",
+          "maxConnections",
+          "name",
+          "state",
+          "weight",
+          "lastCheckedAtUnixMs",
+          "lastTransitionAtUnixMs",
+          "successfulChecks",
+          "failedChecks",
+          "consecutiveSuccesses",
+          "consecutiveFailures",
+          "lastFailure",
+          "passiveEjected",
+          "passiveFailureCount",
+          "passiveConsecutiveFailures",
+          "passiveEjectionCount",
+          "passiveEjectionReason",
+          "passiveEjectedAtUnixMs",
+          "passiveEjectionUntilUnixMs",
+          "passiveRecoveryCount",
+          "passiveLastRecoveryAtUnixMs"
+        ],
+        "type": "object"
+      },
+      "EndpointHealthStateDto": {
+        "enum": [
+          "unchecked",
+          "unknown",
+          "healthy",
+          "unhealthy"
+        ],
+        "type": "string"
+      },
+      "ErrorBody": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "GenerationResponse": {
+        "properties": {
+          "generation": {
+            "$ref": "#/components/schemas/GenerationStatusDto"
+          }
+        },
+        "required": [
+          "generation"
+        ],
+        "type": "object"
+      },
+      "GenerationStatusDto": {
+        "properties": {
+          "activations": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "activeAccepting": {
+            "type": "boolean"
+          },
+          "activeRevision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "buildVersion": {
+            "type": "string"
+          },
+          "candidateRevision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "degraded": {
+            "type": "boolean"
+          },
+          "diskRevision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failures": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lastFailure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prepares": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "previousRevision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quarantinedRevision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rollbacks": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "buildVersion",
+          "diskRevision",
+          "candidateRevision",
+          "activeRevision",
+          "previousRevision",
+          "quarantinedRevision",
+          "activeAccepting",
+          "degraded",
+          "lastFailure",
+          "prepares",
+          "activations",
+          "failures",
+          "rollbacks"
+        ],
+        "type": "object"
+      },
+      "GracefulDto": {
+        "enum": [
+          "graceful"
+        ],
+        "type": "string"
+      },
+      "H3CapabilityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "alpn": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "blockedReason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlockedReasonDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "configuredListeners": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "fallback": {
+            "$ref": "#/components/schemas/NoneDto"
+          },
+          "goAway": {
+            "$ref": "#/components/schemas/GracefulDto"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/H3LimitsDto"
+          },
+          "listeners": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "migration": {
+            "$ref": "#/components/schemas/DisabledDto"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CapabilityStatusDto"
+          },
+          "supported": {
+            "type": "boolean"
+          },
+          "tlsMinVersion": {
+            "type": "string"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/QuicTransportDto"
+          },
+          "unsupported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "zeroRtt": {
+            "$ref": "#/components/schemas/DisabledDto"
+          }
+        },
+        "required": [
+          "status",
+          "supported",
+          "listeners",
+          "configuredListeners",
+          "transport",
+          "alpn",
+          "tlsMinVersion",
+          "zeroRtt",
+          "migration",
+          "goAway",
+          "fallback",
+          "unsupported",
+          "limits",
+          "blockedReason"
+        ],
+        "type": "object"
+      },
+      "H3LimitsDto": {
+        "additionalProperties": false,
+        "properties": {
+          "maxBidirectionalStreams": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxFieldSectionBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxHandshakesAndConnections": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxRequestBodyBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxResponseBodyBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxUnidirectionalStreams": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "maxHandshakesAndConnections",
+          "maxBidirectionalStreams",
+          "maxUnidirectionalStreams",
+          "maxFieldSectionBytes",
+          "maxRequestBodyBytes",
+          "maxResponseBodyBytes"
+        ],
+        "type": "object"
+      },
+      "HealthFailureDto": {
+        "enum": [
+          "timeout",
+          "connect_failed",
+          "unexpected_status",
+          "protocol_error"
+        ],
+        "type": "string"
+      },
+      "HealthOverrideDto": {
+        "enum": [
+          "auto",
+          "up",
+          "down"
+        ],
+        "type": "string"
+      },
+      "Http3CapabilitiesDto": {
+        "additionalProperties": false,
+        "properties": {
+          "forward": {
+            "$ref": "#/components/schemas/H3CapabilityDto"
+          },
+          "reverse": {
+            "$ref": "#/components/schemas/H3CapabilityDto"
+          }
+        },
+        "required": [
+          "reverse",
+          "forward"
+        ],
+        "type": "object"
+      },
+      "HttpOperationCountDto": {
+        "properties": {
+          "count": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "result": {
+            "$ref": "#/components/schemas/HttpOperationResultDto"
+          }
+        },
+        "required": [
+          "result",
+          "count"
+        ],
+        "type": "object"
+      },
+      "HttpOperationDto": {
+        "properties": {
+          "latency": {
+            "$ref": "#/components/schemas/LatencyDto"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/HttpOperationCountDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "outcomes",
+          "latency"
+        ],
+        "type": "object"
+      },
+      "HttpOperationResultDto": {
+        "enum": [
+          "success",
+          "client_error",
+          "server_error",
+          "upstream_error",
+          "timeout",
+          "cancelled",
+          "internal_error"
+        ],
+        "type": "string"
+      },
+      "LatencyBucketDto": {
+        "properties": {
+          "count": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "upperBoundMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "upperBoundMs",
+          "count"
+        ],
+        "type": "object"
+      },
+      "LatencyDto": {
+        "properties": {
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/LatencyBucketDto"
+            },
+            "type": "array"
+          },
+          "count": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "sumMs": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "buckets",
+          "count",
+          "sumMs"
+        ],
+        "type": "object"
+      },
+      "ListenerDto": {
+        "properties": {
+          "acceptedConnections": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "activeConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "administrativeState": {
+            "$ref": "#/components/schemas/AdministrativeStateDto"
+          },
+          "bind": {
+            "type": "string"
+          },
+          "bytesReceived": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "bytesSent": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CacheDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "httpOperations": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HttpOperationDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "proxyProtocol": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProxyProtocolDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rejectedConnections": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ListenerRuntimeStateDto"
+          },
+          "tcpRelays": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TcpRelayDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "administrativeState",
+          "name",
+          "protocol",
+          "bind",
+          "maxConnections",
+          "state",
+          "acceptedConnections",
+          "rejectedConnections",
+          "activeConnections",
+          "bytesReceived",
+          "bytesSent",
+          "httpOperations",
+          "tcpRelays",
+          "proxyProtocol",
+          "cache"
+        ],
+        "type": "object"
+      },
+      "ListenerInventoryResponse": {
+        "properties": {
+          "listeners": {
+            "items": {
+              "$ref": "#/components/schemas/ListenerDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "listeners"
+        ],
+        "type": "object"
+      },
+      "ListenerRuntimeStateDto": {
+        "enum": [
+          "configured",
+          "listening",
+          "stopped",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "NoneDto": {
+        "enum": [
+          "none"
+        ],
+        "type": "string"
+      },
+      "PoolDto": {
+        "properties": {
+          "algorithm": {
+            "type": "string"
+          },
+          "availableEndpoints": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "endpoints": {
+            "items": {
+              "$ref": "#/components/schemas/EndpointDto"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "queueCancellations": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "queueTimeouts": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "queued": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "queuedTotal": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "totalEndpoints": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unavailableSelections": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "name",
+          "algorithm",
+          "availableEndpoints",
+          "totalEndpoints",
+          "unavailableSelections",
+          "queued",
+          "queuedTotal",
+          "queueTimeouts",
+          "queueCancellations",
+          "endpoints"
+        ],
+        "type": "object"
+      },
+      "PoolInventoryResponse": {
+        "properties": {
+          "pools": {
+            "items": {
+              "$ref": "#/components/schemas/PoolDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "pools"
+        ],
+        "type": "object"
+      },
+      "ProxyProtocolCountDto": {
+        "properties": {
+          "count": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ProxyProtocolResultDto"
+          }
+        },
+        "required": [
+          "result",
+          "count"
+        ],
+        "type": "object"
+      },
+      "ProxyProtocolDto": {
+        "properties": {
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/ProxyProtocolCountDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "outcomes"
+        ],
+        "type": "object"
+      },
+      "ProxyProtocolResultDto": {
+        "enum": [
+          "accepted",
+          "sent",
+          "timeout",
+          "cancelled",
+          "malformed",
+          "unsupported",
+          "mismatch",
+          "io_error"
+        ],
+        "type": "string"
+      },
+      "QuicTransportDto": {
+        "enum": [
+          "quic"
+        ],
+        "type": "string"
+      },
+      "RuntimeModeDto": {
+        "enum": [
+          "direct",
+          "supervised"
+        ],
+        "type": "string"
+      },
+      "ServerInventoryEntry": {
+        "properties": {
+          "pool": {
+            "type": "string"
+          },
+          "server": {
+            "$ref": "#/components/schemas/EndpointDto"
+          }
+        },
+        "required": [
+          "pool",
+          "server"
+        ],
+        "type": "object"
+      },
+      "ServerInventoryResponse": {
+        "properties": {
+          "servers": {
+            "items": {
+              "$ref": "#/components/schemas/ServerInventoryEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "servers"
+        ],
+        "type": "object"
+      },
+      "StatusCertificatesDto": {
+        "properties": {
+          "acmeManaged": {
+            "items": {
+              "$ref": "#/components/schemas/AcmeManagedCertificateDto"
+            },
+            "type": "array"
+          },
+          "certbot": {
+            "items": {
+              "$ref": "#/components/schemas/CertbotCertificateDto"
+            },
+            "type": "array"
+          },
+          "directFiles": {
+            "items": {
+              "$ref": "#/components/schemas/DirectFileCertificateDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "certbot",
+          "acmeManaged",
+          "directFiles"
+        ],
+        "type": "object"
+      },
+      "StatusComponentsDto": {
+        "properties": {
+          "audit": {
+            "$ref": "#/components/schemas/AuditStatusDto"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/ComponentStatusDto"
+          },
+          "host": {
+            "$ref": "#/components/schemas/ComponentStatusDto"
+          },
+          "process": {
+            "$ref": "#/components/schemas/ComponentStatusDto"
+          }
+        },
+        "required": [
+          "process",
+          "host",
+          "generation",
+          "audit"
+        ],
+        "type": "object"
+      },
+      "StatusResponse": {
+        "properties": {
+          "activeGenerationAgeMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "activeRevision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "audit": {
+            "$ref": "#/components/schemas/AuditStatusDto"
+          },
+          "buildVersion": {
+            "type": "string"
+          },
+          "candidateRevision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/CapabilitiesResponse"
+          },
+          "certificates": {
+            "$ref": "#/components/schemas/StatusCertificatesDto"
+          },
+          "components": {
+            "$ref": "#/components/schemas/StatusComponentsDto"
+          },
+          "degraded": {
+            "type": "boolean"
+          },
+          "diskRevision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "listeners": {
+            "items": {
+              "$ref": "#/components/schemas/ListenerDto"
+            },
+            "type": "array"
+          },
+          "previousRevision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schemaVersion": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tlsProfiles": {
+            "items": {
+              "$ref": "#/components/schemas/TlsProfileDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "buildVersion",
+          "diskRevision",
+          "candidateRevision",
+          "activeRevision",
+          "previousRevision",
+          "degraded",
+          "activeGenerationAgeMs",
+          "components",
+          "certificates",
+          "audit",
+          "capabilities",
+          "listeners",
+          "tlsProfiles"
+        ],
+        "type": "object"
+      },
+      "SupervisionCapabilityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "descriptorAdoption": {
+            "$ref": "#/components/schemas/DescriptorAdoptionDto"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/RuntimeModeDto"
+          }
+        },
+        "required": [
+          "mode",
+          "descriptorAdoption"
+        ],
+        "type": "object"
+      },
+      "TcpRelayCountDto": {
+        "properties": {
+          "count": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "result": {
+            "$ref": "#/components/schemas/TcpRelayResultDto"
+          }
+        },
+        "required": [
+          "result",
+          "count"
+        ],
+        "type": "object"
+      },
+      "TcpRelayDto": {
+        "properties": {
+          "latency": {
+            "$ref": "#/components/schemas/LatencyDto"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/TcpRelayCountDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "outcomes",
+          "latency"
+        ],
+        "type": "object"
+      },
+      "TcpRelayResultDto": {
+        "enum": [
+          "success",
+          "connect_error",
+          "connect_timeout",
+          "idle_timeout",
+          "lifetime_timeout",
+          "cancelled",
+          "io_error",
+          "accounting_error",
+          "proxy_protocol_error"
+        ],
+        "type": "string"
+      },
+      "TlsClientAuthDto": {
+        "properties": {
+          "allowedDnsNameCount": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "caConfigured": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "caConfigured",
+          "allowedDnsNameCount"
+        ],
+        "type": "object"
+      },
+      "TlsProfileDto": {
+        "properties": {
+          "clientAuth": {
+            "$ref": "#/components/schemas/TlsClientAuthDto"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "clientAuth"
+        ],
+        "type": "object"
+      },
+      "UdpCapabilityDto": {
+        "additionalProperties": false,
+        "properties": {
+          "blockedReason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlockedReasonDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "configuredListeners": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "drain": {
+            "$ref": "#/components/schemas/GracefulDto"
+          },
+          "fallback": {
+            "$ref": "#/components/schemas/NoneDto"
+          },
+          "listeners": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CapabilityStatusDto"
+          },
+          "supported": {
+            "type": "boolean"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/UdpTransportDto"
+          }
+        },
+        "required": [
+          "status",
+          "supported",
+          "listeners",
+          "configuredListeners",
+          "transport",
+          "drain",
+          "fallback",
+          "blockedReason"
+        ],
+        "type": "object"
+      },
+      "UdpTransportDto": {
+        "enum": [
+          "udp"
+        ],
+        "type": "string"
+      }
+    },
+    "securitySchemes": {
+      "managementBearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Checked contract for the registry-owned protected read-only management endpoints.",
+    "title": "OxiRoute Control Plane API",
+    "version": "0.5.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/generations": {
+      "get": {
+        "operationId": "getGenerations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationResponse"
+                }
+              }
+            },
+            "description": "Successful response",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication is required.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Bearer authentication challenge.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The HTTP method is not allowed.",
+            "headers": {
+              "Allow": {
+                "description": "Allowed HTTP methods.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "managementBearer": []
+          }
+        ],
+        "tags": [
+          "Management"
+        ]
+      }
+    },
+    "/api/v1/listeners": {
+      "get": {
+        "operationId": "getListeners",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListenerInventoryResponse"
+                }
+              }
+            },
+            "description": "Successful response",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication is required.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Bearer authentication challenge.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The HTTP method is not allowed.",
+            "headers": {
+              "Allow": {
+                "description": "Allowed HTTP methods.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "managementBearer": []
+          }
+        ],
+        "tags": [
+          "Management"
+        ]
+      }
+    },
+    "/api/v1/pools": {
+      "get": {
+        "operationId": "getPools",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolInventoryResponse"
+                }
+              }
+            },
+            "description": "Successful response",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication is required.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Bearer authentication challenge.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The HTTP method is not allowed.",
+            "headers": {
+              "Allow": {
+                "description": "Allowed HTTP methods.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "managementBearer": []
+          }
+        ],
+        "tags": [
+          "Management"
+        ]
+      }
+    },
+    "/api/v1/servers": {
+      "get": {
+        "operationId": "getServers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerInventoryResponse"
+                }
+              }
+            },
+            "description": "Successful response",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication is required.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Bearer authentication challenge.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The HTTP method is not allowed.",
+            "headers": {
+              "Allow": {
+                "description": "Allowed HTTP methods.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "managementBearer": []
+          }
+        ],
+        "tags": [
+          "Management"
+        ]
+      }
+    },
+    "/api/v1/status": {
+      "get": {
+        "operationId": "getStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            },
+            "description": "Successful response",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication is required.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Bearer authentication challenge.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The HTTP method is not allowed.",
+            "headers": {
+              "Allow": {
+                "description": "Allowed HTTP methods.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "managementBearer": []
+          }
+        ],
+        "tags": [
+          "Management"
+        ]
+      }
+    }
+  }
+}

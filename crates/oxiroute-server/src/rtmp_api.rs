@@ -2,6 +2,8 @@
 
 mod auth;
 mod config;
+#[cfg(test)]
+mod contract;
 pub(crate) use config::read_config_body;
 pub(crate) mod dto;
 mod endpoint_registry;

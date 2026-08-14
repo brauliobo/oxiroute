@@ -44,6 +44,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Verify control-plane OpenAPI artifact
+        run: ./scripts/verify-control-plane-contract.sh
+
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
 

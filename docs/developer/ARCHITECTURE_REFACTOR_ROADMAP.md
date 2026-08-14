@@ -746,6 +746,10 @@ request/success/error schemas, body/content policy, audit category
 The target checked artifact is `contracts/control-plane.openapi.json`, generated from API DTO schemas
 and the endpoint registry, not handwritten YAML and not domain snapshots.
 
+The first checked artifact covers the five registry-owned protected JSON GET operations and uses the
+existing schemars 2020-12 serialize contracts inside a deterministic OpenAPI 3.1 envelope. Broader
+route families and compatibility comparison remain future migrations.
+
 - [ ] Evaluate `utoipa::ToSchema` for Rust DTO schema generation and an `xtask` for deterministic
   endpoint document generation.
 - [ ] Generate TypeScript operation/types with `openapi-typescript` and AJV 2020 standalone ESM
