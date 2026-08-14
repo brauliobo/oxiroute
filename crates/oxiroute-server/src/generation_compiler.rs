@@ -5,8 +5,7 @@ use oxiroute_cache::{CacheConfig, CacheTimeline, DiskCacheConfig};
 
 use oxiroute_config::{
     CacheAuthorizationPolicy, CacheKeyComponent, CacheSetCookiePolicy, CacheStore, CacheVaryPolicy,
-    DnsResolutionPolicy, HttpProxyPolicy, HttpRouteAction, HttpVersion, ListenerBind, Protocol,
-    ValidatedConfig,
+    DnsResolutionPolicy, HttpProxyPolicy, HttpRouteAction, HttpVersion, Protocol, ValidatedConfig,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpServicePlan};
 
@@ -40,7 +39,6 @@ pub(crate) struct GenerationBlueprint {
     pub(crate) l4_service_specs: Result<Box<[L4ServiceBlueprint]>, ServicePlanError>,
     pub(crate) tls: crate::tls::TlsBlueprint,
     pub(crate) rtmp_specs: Result<Box<[RtmpSpec]>, ServicePlanError>,
-    pub(crate) rtmp_listener_addresses: Box<[std::net::SocketAddr]>,
     pub(crate) rtmp_capabilities: RtmpCapabilities,
     pub(crate) rtmp_recording_supported: bool,
     pub(crate) topology: Arc<TopologySnapshot>,
@@ -118,15 +116,6 @@ impl GenerationCompiler {
             tls: crate::tls::TlsBlueprint::compile(config)
                 .map_err(|source| ServicePlanError::Tls(Box::new(source)))?,
             rtmp_specs: rtmp_value_plans,
-            rtmp_listener_addresses: config
-                .listeners
-                .iter()
-                .filter(|listener| listener.protocol == Protocol::Rtmp)
-                .filter_map(|listener| match listener.bind {
-                    ListenerBind::Socket { address } => Some(address),
-                    ListenerBind::Udp { .. } | ListenerBind::Unix { .. } => None,
-                })
-                .collect(),
             rtmp_capabilities,
             rtmp_recording_supported,
             topology,

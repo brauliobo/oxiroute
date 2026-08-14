@@ -12,7 +12,10 @@ use std::{
 use oxiroute_config::{
     ConfigDraft, Listener, Protocol, RtmpApplication, RtmpRecorderStart, RtmpService,
 };
-use oxiroute_rtmp::{RecorderPhase, RtmpRegistry};
+use oxiroute_rtmp::{
+    PreparedRtmpRuntimeSet, RecorderPhase, RtmpControlHandle, RtmpPrepareContext, RtmpPrepareMode,
+    RtmpRuntimeSet, RtmpServiceHandle,
+};
 use oxiroute_server::{RtmpManagementApi, RuntimeMetrics, ServiceKind};
 use serde_json::Value;
 use tempfile::TempDir;
@@ -27,27 +30,26 @@ fn continuous_recording_finalizes_on_disconnect_and_is_fully_observable() {
     let validated = config.clone().validate().unwrap();
     let plan = runtime_plan(&validated).expect("continuous runtime plan");
     let services = config_support::service_specs(&validated).expect("continuous services");
-    let registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
-    let runtime = rtmp_runtime(&services, Arc::clone(&registry));
+    let (runtime, control) = rtmp_runtime(&services);
     let metrics = RuntimeMetrics::new();
     metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
     register_active_listeners(&config, &services, &metrics);
-    let api = RtmpManagementApi::new(Arc::clone(&registry), metrics, Arc::clone(&plan.topology));
+    let api = RtmpManagementApi::new(control.clone(), metrics, Arc::clone(&plan.topology));
     let mut publisher = publisher(&runtime, "camera?token=private");
 
     publish_audio(&mut publisher, 10, 0x11, 1_721_657_969_100);
-    wait_for_phase(&registry, |phase| {
+    wait_for_phase(&control, |phase| {
         matches!(phase, RecorderPhase::Recording { .. })
     });
     wait_until(Duration::from_secs(2), || {
-        registry
-            .snapshot()
+        control
+            .catalog_snapshot()
             .streams
             .first()
             .and_then(|stream| stream.recorders.first())
             .is_some_and(|recorder| recorder.bytes_written > 0)
     });
-    let stream = registry.snapshot().streams[0].clone();
+    let stream = control.catalog_snapshot().streams[0].clone();
     let unsupported_manual_path = format!(
         "/api/v1/rtmp/streams/{}/recorders/{}/start",
         stream.id, stream.recorders[0].id
@@ -120,7 +122,7 @@ fn continuous_recording_finalizes_on_disconnect_and_is_fully_observable() {
         .server
         .close(1_721_657_969_300)
         .expect("publisher disconnect");
-    assert!(registry.snapshot().streams.is_empty());
+    assert!(control.catalog_snapshot().streams.is_empty());
     wait_until(Duration::from_secs(2), || {
         root.path().join("camera.flv").is_file()
     });
@@ -136,14 +138,13 @@ fn manual_api_start_and_stop_control_the_exact_runtime_recorder() {
     let plan = runtime_plan(&validated).expect("manual runtime plan");
     let services = config_support::service_specs(&validated).expect("manual services");
     assert!(plan.rtmp_capabilities.manual_recording);
-    let registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
-    let runtime = rtmp_runtime(&services, Arc::clone(&registry));
+    let (runtime, control) = rtmp_runtime(&services);
     let metrics = RuntimeMetrics::new();
     metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
     register_active_listeners(&config, &services, &metrics);
-    let api = RtmpManagementApi::new(Arc::clone(&registry), metrics, Arc::clone(&plan.topology));
+    let api = RtmpManagementApi::new(control.clone(), metrics, Arc::clone(&plan.topology));
     let mut publisher = publisher(&runtime, "manual-camera");
-    let stream = registry.snapshot().streams[0].clone();
+    let stream = control.catalog_snapshot().streams[0].clone();
     let recorder_id = stream.recorders[0].id;
 
     let start_path = format!(
@@ -156,7 +157,7 @@ fn manual_api_start_and_stop_control_the_exact_runtime_recorder() {
     assert_eq!(started_json["phase"]["state"], "recording");
 
     publish_audio(&mut publisher, 10, 0x22, 1_721_657_969_200);
-    wait_for_phase(&registry, |phase| {
+    wait_for_phase(&control, |phase| {
         matches!(phase, RecorderPhase::Recording { .. })
     });
     let stop_path = format!(
@@ -167,7 +168,7 @@ fn manual_api_start_and_stop_control_the_exact_runtime_recorder() {
     assert_eq!(stopped.status, 202);
     let stopped_json: Value = serde_json::from_slice(&stopped.body).expect("stop JSON");
     assert_eq!(stopped_json["phase"]["state"], "stopping");
-    wait_for_phase(&registry, |phase| phase == RecorderPhase::Idle);
+    wait_for_phase(&control, |phase| phase == RecorderPhase::Idle);
     wait_until(Duration::from_secs(2), || {
         root.path().join("manual-camera.flv").is_file()
     });
@@ -223,12 +224,23 @@ fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) 
 
 fn rtmp_runtime(
     services: &[oxiroute_server::ServiceSpec],
-    registry: Arc<RtmpRegistry>,
-) -> oxiroute_rtmp::RtmpServiceRuntime {
+) -> (RtmpServiceHandle, RtmpControlHandle) {
     let ServiceKind::Rtmp(service) = &services[0].kind else {
         panic!("RTMP service plan");
     };
-    service.runtime(registry).expect("RTMP service runtime")
+    let context = RtmpPrepareContext::new(RtmpPrepareMode::Activation, [loopback_address(1935)]);
+    let runtimes: RtmpRuntimeSet = PreparedRtmpRuntimeSet::prepare(
+        [service.value_plan()],
+        &context,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .expect("prepared RTMP runtime")
+    .start(Instant::now() + Duration::from_secs(1))
+    .expect("RTMP service runtime");
+    (
+        runtimes.service("live").expect("RTMP service"),
+        runtimes.control(),
+    )
 }
 
 fn register_active_listeners(
@@ -249,8 +261,8 @@ fn register_active_listeners(
     }
 }
 
-fn publisher(runtime: &oxiroute_rtmp::RtmpServiceRuntime, stream_name: &str) -> RtmpSessionClient {
-    let mut publisher = RtmpSessionClient::connect(runtime, "broadcast");
+fn publisher(runtime: &RtmpServiceHandle, stream_name: &str) -> RtmpSessionClient {
+    let mut publisher = RtmpSessionClient::connect_handle(runtime, "broadcast");
     publisher.publish(stream_name, 1_721_657_969_000);
     publisher
 }
@@ -259,10 +271,10 @@ fn publish_audio(publisher: &mut RtmpSessionClient, timestamp: u32, marker: u8, 
     publisher.publish_audio(timestamp, &[0xaf, 0x01, marker], at_unix_ms);
 }
 
-fn wait_for_phase(registry: &RtmpRegistry, predicate: impl Fn(RecorderPhase) -> bool) {
+fn wait_for_phase(control: &RtmpControlHandle, predicate: impl Fn(RecorderPhase) -> bool) {
     wait_until(Duration::from_secs(2), || {
-        registry
-            .snapshot()
+        control
+            .catalog_snapshot()
             .streams
             .first()
             .and_then(|stream| stream.recorders.first())

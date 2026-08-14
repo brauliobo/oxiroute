@@ -862,6 +862,10 @@ pub struct RtmpRecorderLifecycle {
 }
 
 impl RtmpRecorderLifecycle {
+    pub(crate) fn shutdown_handle(&self) -> RtmpRecorderShutdown {
+        self.shutdown.clone()
+    }
+
     #[must_use]
     pub fn is_same_lifecycle(&self, other: &Self) -> bool {
         self.shutdown.is_same_lifecycle(&other.shutdown)

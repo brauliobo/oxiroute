@@ -1085,15 +1085,13 @@ pub(crate) const fn v1_sse_event_name(event: EventName) -> &'static str {
 }
 
 pub(crate) fn v1_event_value(event: &OperationalEvent) -> serde_json::Value {
-    let mut value = serde_json::to_value(event).expect("typed operational event serializes");
-    value["event"] = v1_serialized_event_name(event.event).into();
-    value
+    serde_json::to_value(crate::rtmp_api::dto::OperationalEventDto::v1(event))
+        .expect("v1 operational event DTO serializes")
 }
 
 pub(crate) fn v2_event_value(event: &OperationalEvent) -> serde_json::Value {
-    let mut value = serde_json::to_value(event).expect("typed operational event serializes");
-    value["event"] = event.event.as_str().into();
-    value
+    serde_json::to_value(crate::rtmp_api::dto::OperationalEventDto::v2(event))
+        .expect("v2 operational event DTO serializes")
 }
 
 #[derive(Clone, Debug)]

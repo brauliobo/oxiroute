@@ -1528,7 +1528,7 @@ fn built_process_fails_before_runtime_when_a_tcp_listener_cannot_bind() {
     assert!(!failure.status.success());
     let output = output_text(&failure);
     assert!(
-        output.contains("listener `live` could not bind socket"),
+        output.contains("candidate listener reservation failed"),
         "unexpected listener failure: {output}"
     );
 }

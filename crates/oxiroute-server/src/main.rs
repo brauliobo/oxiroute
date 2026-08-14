@@ -29,8 +29,8 @@ use oxiroute_acme::{AcmeOperation, Dns01Cancellation};
 use oxiroute_config::ListenerBind;
 use oxiroute_rtmp::{
     MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, MediaCatalog, RecorderErrorCode, RecorderPhase,
-    RtmpClientSnapshot, RtmpControlHandle, RtmpRecorderLifecycle, RtmpRecorderShutdown,
-    RtmpRelayFailure, RtmpServiceHandle, RtmpSessionError, RtmpSessionRole, VodCatalog,
+    RtmpClientSnapshot, RtmpControlHandle, RtmpRelayFailure, RtmpServiceHandle, RtmpSessionError,
+    RtmpSessionRole, RtmpShutdown, VodCatalog,
 };
 use oxiroute_server::{
     AcmeManagedReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher,
@@ -1618,25 +1618,23 @@ struct GenerationProcess {
 
 #[derive(Clone)]
 struct CandidateRtmpRetirementHandle {
-    lifecycles: Arc<Mutex<Option<Vec<RtmpRecorderLifecycle>>>>,
+    shutdown: Arc<Mutex<Option<RtmpShutdown>>>,
 }
 
 impl CandidateRtmpRetirementHandle {
     fn capture(generation: &RuntimeGeneration) -> Self {
-        let lifecycles = generation.rtmp_recorder_lifecycles();
         Self {
-            lifecycles: Arc::new(Mutex::new(Some(lifecycles))),
+            shutdown: Arc::new(Mutex::new(Some(generation.rtmp_shutdown()))),
         }
     }
 
-    fn initiate(&self, deadline: std::time::Instant) -> Vec<RtmpRecorderShutdown> {
-        self.lifecycles
+    fn initiate(&self, deadline: std::time::Instant) -> Vec<RtmpShutdown> {
+        self.shutdown
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
-            .unwrap_or_default()
             .into_iter()
-            .map(|lifecycle| lifecycle.initiate_shutdown(deadline))
+            .inspect(|shutdown| shutdown.initiate(deadline))
             .collect()
     }
 }
@@ -2027,10 +2025,8 @@ fn finish_candidate_generation(
     {
         return;
     }
-    let recorder_shutdowns = generation.initiate_recorder_shutdown(deadline);
-    for shutdown in &recorder_shutdowns {
-        let _ = shutdown.wait_until(deadline);
-    }
+    let shutdown = generation.initiate_rtmp_shutdown(deadline);
+    let _ = shutdown.wait_until(deadline);
     manager.prune_completed();
 }
 
@@ -3183,11 +3179,10 @@ mod tests {
             thread::yield_now();
         }
         let (shutdown, _receiver) = tokio::sync::watch::channel(false);
+        let generation = manager.active().expect("active generation");
         let completed = GenerationProcess {
-            generation: manager.active().expect("active generation"),
-            retirement: CandidateRtmpRetirementHandle {
-                lifecycles: Arc::new(Mutex::new(Some(Vec::new()))),
-            },
+            retirement: CandidateRtmpRetirementHandle::capture(&generation),
+            generation,
             shutdown,
             thread,
         };

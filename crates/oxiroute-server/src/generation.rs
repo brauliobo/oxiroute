@@ -11,7 +11,7 @@ use oxiroute_config::ValidatedConfig;
 use oxiroute_config_source::ConfigFormat;
 use oxiroute_rtmp::{
     PreparedRtmpRuntimeSet, RtmpAutoPushStatus, RtmpControlHandle, RtmpPrepareContext,
-    RtmpPrepareMode, RtmpRecorderShutdown, RtmpRegistry, RtmpRuntimeSetError, RtmpServiceHandle,
+    RtmpPrepareMode, RtmpRuntimeSetError, RtmpServiceHandle, RtmpShutdown,
 };
 #[cfg(target_os = "linux")]
 use oxiroute_supervision_unix::DescriptorSet;
@@ -110,7 +110,7 @@ struct PreparedGenerationTransaction {
     reservations_precede_plan: bool,
     #[cfg(target_os = "linux")]
     descriptors: Option<DescriptorSet>,
-    rtmp: Option<(Arc<RtmpRegistry>, PreparedRtmpRuntimeSet)>,
+    rtmp: Option<PreparedRtmpRuntimeSet>,
     listener_registration: Option<crate::monitoring::ListenerRegistrationTransaction>,
     reservations: Option<ListenerReservations>,
     acquired: Option<crate::service_plan::GenerationAcquisition>,
@@ -208,7 +208,6 @@ impl Drop for PreparedGenerationTransaction {
         #[cfg(test)]
         drop_prepared_transaction_probe(&mut self.drop_probes, "rtmp_prepared");
         #[cfg(test)]
-        drop_prepared_transaction_probe(&mut self.drop_probes, "rtmp_registry");
         self.listener_registration.take();
         #[cfg(test)]
         drop_prepared_transaction_probe(&mut self.drop_probes, "listener_registration");
@@ -273,22 +272,16 @@ fn drop_prepared_transaction_probe(
 impl PreparedGeneration {
     #[cfg(test)]
     fn prepare_rtmp(
-        capabilities: oxiroute_rtmp::RtmpCapabilities,
         services: &[crate::ServiceSpec],
-        vod_catalog: Arc<oxiroute_rtmp::VodCatalog>,
-        media_catalog: Arc<oxiroute_rtmp::MediaCatalog>,
-    ) -> Result<(Arc<RtmpRegistry>, PreparedRtmpRuntimeSet), GenerationError> {
-        let _ = (vod_catalog, media_catalog);
-        Self::prepare_rtmp_with_deadline(capabilities, services, RtmpPrepareMode::Activation, None)
+    ) -> Result<PreparedRtmpRuntimeSet, GenerationError> {
+        Self::prepare_rtmp_with_deadline(services, RtmpPrepareMode::Activation, None)
     }
 
     fn prepare_rtmp_with_deadline(
-        capabilities: oxiroute_rtmp::RtmpCapabilities,
         services: &[crate::ServiceSpec],
         mode: RtmpPrepareMode,
         deadline: Option<Instant>,
-    ) -> Result<(Arc<RtmpRegistry>, PreparedRtmpRuntimeSet), GenerationError> {
-        let registry = Arc::new(RtmpRegistry::new(capabilities));
+    ) -> Result<PreparedRtmpRuntimeSet, GenerationError> {
         let mut plans = Vec::new();
         for service in services {
             let ServiceKind::Rtmp(service) = &service.kind else {
@@ -315,7 +308,7 @@ impl PreparedGeneration {
         let deadline = deadline.unwrap_or_else(|| Instant::now() + GENERATION_PREPARATION_TIMEOUT);
         let prepared = PreparedRtmpRuntimeSet::prepare(plans, &context, deadline)
             .map_err(map_rtmp_runtime_set_error)?;
-        Ok((registry, prepared))
+        Ok(prepared)
     }
 
     fn check_generation_inputs(
@@ -496,11 +489,6 @@ impl PreparedGeneration {
             None
         };
         transaction.rtmp = Some(Self::prepare_rtmp_with_deadline(
-            transaction
-                .plan
-                .as_ref()
-                .expect("provisional runtime plan")
-                .rtmp_capabilities,
             transaction.acquired().services(),
             if metrics.is_some() {
                 RtmpPrepareMode::Activation
@@ -509,10 +497,6 @@ impl PreparedGeneration {
             },
             deadline,
         )?);
-        #[cfg(test)]
-        transaction
-            .drop_probes
-            .push(PreparedTransactionDropProbe::new("rtmp_registry"));
         #[cfg(test)]
         transaction
             .drop_probes
@@ -721,22 +705,16 @@ impl RuntimeGeneration {
         self.resources.rtmp_auto_push_status()
     }
 
-    fn close_runtime_admission(&self) {
-        self.resources.close_runtime_admission();
-    }
-
-    pub fn initiate_recorder_shutdown(&self, deadline: Instant) -> Vec<RtmpRecorderShutdown> {
-        self.close_runtime_admission();
-        self.resources.initiate_recorder_shutdown(deadline)
+    pub fn initiate_rtmp_shutdown(&self, deadline: Instant) -> RtmpShutdown {
+        self.resources.initiate_rtmp_shutdown(deadline)
     }
 
     fn rtmp_retirement(&self) -> RtmpRetirement {
         self.resources.rtmp_retirement()
     }
 
-    #[doc(hidden)]
-    pub fn rtmp_recorder_lifecycles(&self) -> Vec<oxiroute_rtmp::RtmpRecorderLifecycle> {
-        self.resources.rtmp_recorder_lifecycles()
+    pub fn rtmp_shutdown(&self) -> RtmpShutdown {
+        self.resources.rtmp_shutdown()
     }
 
     fn claim_runtime_start(&self) -> bool {
@@ -2034,7 +2012,7 @@ impl GenerationManager {
     pub fn shutdown(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         let generations = self.reserve_shutdown();
-        let mut recorder_shutdowns = Self::initiate_recorder_shutdown(&generations, deadline);
+        let mut recorder_shutdowns = Self::initiate_rtmp_shutdown(&generations, deadline);
         self.collect_recorder_cleanups(deadline, &mut recorder_shutdowns);
         let mut drained = true;
         for generation in &generations {
@@ -2050,18 +2028,14 @@ impl GenerationManager {
 
     /// Establishes terminal admission and returns recorder completion handles without waiting.
     #[must_use]
-    pub fn begin_shutdown(&self, deadline: Instant) -> Vec<RtmpRecorderShutdown> {
+    pub fn begin_shutdown(&self, deadline: Instant) -> Vec<RtmpShutdown> {
         let generations = self.reserve_shutdown();
-        let mut shutdowns = Self::initiate_recorder_shutdown(&generations, deadline);
+        let mut shutdowns = Self::initiate_rtmp_shutdown(&generations, deadline);
         self.collect_recorder_cleanups(deadline, &mut shutdowns);
         shutdowns
     }
 
-    fn collect_recorder_cleanups(
-        &self,
-        deadline: Instant,
-        shutdowns: &mut Vec<RtmpRecorderShutdown>,
-    ) {
+    fn collect_recorder_cleanups(&self, deadline: Instant, shutdowns: &mut Vec<RtmpShutdown>) {
         let retirement_work = {
             let mut retirements = self
                 .rtmp_retirements
@@ -2071,11 +2045,7 @@ impl GenerationManager {
             retirements.take_shutdown_work()
         };
         for work in retirement_work {
-            let (identity, shutdown) = work.initiate(deadline);
-            self.rtmp_retirements
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .store_shutdown(&identity, shutdown.clone());
+            let shutdown = work.initiate(deadline);
             push_unique_shutdown(shutdowns, &shutdown);
         }
     }
@@ -2119,13 +2089,13 @@ impl GenerationManager {
         state.shutdown_generations.clone()
     }
 
-    fn initiate_recorder_shutdown(
+    fn initiate_rtmp_shutdown(
         generations: &[Arc<RuntimeGeneration>],
         deadline: Instant,
-    ) -> Vec<RtmpRecorderShutdown> {
+    ) -> Vec<RtmpShutdown> {
         generations
             .iter()
-            .flat_map(|generation| generation.initiate_recorder_shutdown(deadline))
+            .map(|generation| generation.initiate_rtmp_shutdown(deadline))
             .collect()
     }
 
@@ -2218,10 +2188,7 @@ fn push_unique_generation(
     }
 }
 
-fn push_unique_shutdown(
-    shutdowns: &mut Vec<RtmpRecorderShutdown>,
-    shutdown: &RtmpRecorderShutdown,
-) {
+fn push_unique_shutdown(shutdowns: &mut Vec<RtmpShutdown>, shutdown: &RtmpShutdown) {
     if !shutdowns
         .iter()
         .any(|existing| existing.is_same_lifecycle(shutdown))
@@ -2280,17 +2247,6 @@ pub enum GenerationError {
     NoPrevious,
     #[error("the previous generation revision is quarantined")]
     QuarantinedRevision,
-}
-
-impl From<crate::service_plan::RtmpPreparationError> for GenerationError {
-    fn from(error: crate::service_plan::RtmpPreparationError) -> Self {
-        match error {
-            crate::service_plan::RtmpPreparationError::ServicePlan(error) => Self::Rtmp(error),
-            crate::service_plan::RtmpPreparationError::PreparationTimedOut => {
-                Self::PreparationTimedOut
-            }
-        }
-    }
 }
 
 impl From<RuntimeAcquisitionError> for GenerationError {
@@ -2413,20 +2369,13 @@ return {{
         let config = Arc::new(document().validated_config);
         let inventory = ListenerInventory::compile(&config);
         let plan = runtime_plan(&config).expect("runtime plan");
-        let mut acquired = acquire_runtime_services(&plan).expect("runtime acquisition");
+        let acquired = acquire_runtime_services(&plan).expect("runtime acquisition");
         let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
         let metrics = RuntimeMetrics::new();
         let registration = metrics
             .register_inventory(inventory.entries())
             .expect("listener registration");
-        let (vod_catalog, media_catalog) = acquired.take_rtmp_catalogs();
-        let rtmp = PreparedGeneration::prepare_rtmp(
-            plan.rtmp_capabilities,
-            acquired.services(),
-            vod_catalog,
-            media_catalog,
-        )
-        .expect("RTMP preparation");
+        let rtmp = PreparedGeneration::prepare_rtmp(acquired.services()).expect("RTMP preparation");
         PREPARED_TRANSACTION_ROLLBACK_TRACE.with(|trace| trace.borrow_mut().clear());
         let transaction = PreparedGenerationTransaction {
             drop_probes: vec![
@@ -2434,7 +2383,6 @@ return {{
                 PreparedTransactionDropProbe::new("acquisition"),
                 PreparedTransactionDropProbe::new("reservations"),
                 PreparedTransactionDropProbe::new("listener_registration"),
-                PreparedTransactionDropProbe::new("rtmp_registry"),
                 PreparedTransactionDropProbe::new("rtmp_prepared"),
             ],
             reservations_precede_plan: false,
@@ -2453,7 +2401,6 @@ return {{
             PREPARED_TRANSACTION_ROLLBACK_TRACE.with(|trace| trace.borrow().clone()),
             [
                 "rtmp_prepared",
-                "rtmp_registry",
                 "listener_registration",
                 "reservations",
                 "acquisition",
@@ -2482,7 +2429,6 @@ return {{
                 PreparedTransactionFault::RtmpPreparation,
                 vec![
                     "rtmp_prepared",
-                    "rtmp_registry",
                     "listener_registration",
                     "reservations",
                     "acquisition",
@@ -2569,7 +2515,6 @@ return {{
                 PreparedTransactionFault::RtmpPreparation,
                 vec![
                     "rtmp_prepared",
-                    "rtmp_registry",
                     "listener_registration",
                     "acquisition",
                     "plan",
@@ -2976,13 +2921,11 @@ return {{
             .expect("runtime start reservation");
         let generation = startup.claim_runtime_start().expect("runtime start");
         let later = Instant::now() + Duration::from_secs(1);
-        let first = generation.initiate_recorder_shutdown(later);
-        let second = generation.initiate_recorder_shutdown(later + Duration::from_secs(1));
+        let first = generation.initiate_rtmp_shutdown(later);
+        let second = generation.initiate_rtmp_shutdown(later + Duration::from_secs(1));
 
-        assert_eq!(first.len(), 1);
-        assert_eq!(second.len(), 1);
-        assert!(first[0].is_same_lifecycle(&second[0]));
-        assert!(first[0].wait_until(later));
+        assert!(first.is_same_lifecycle(&second));
+        assert!(first.wait_until(later));
         drop(startup);
         manager.quarantine(&candidate, "runtime_start");
         drop(generation);
@@ -3032,11 +2975,10 @@ return {{
         let deadline = Instant::now() + Duration::from_secs(1);
         let mut work = registry.take_shutdown_work();
         assert_eq!(work.len(), 1);
-        let (identity, shutdown) = work.pop().expect("retirement work").initiate(deadline);
-        registry.store_shutdown(&identity, shutdown.clone());
+        let shutdown = work.pop().expect("retirement work").initiate(deadline);
         let mut repeated_work = registry.take_shutdown_work();
         assert_eq!(repeated_work.len(), 1);
-        let (_, repeated_shutdown) = repeated_work
+        let repeated_shutdown = repeated_work
             .pop()
             .expect("repeated retirement work")
             .initiate(deadline);
@@ -3578,16 +3520,9 @@ return {{
         let config = Arc::new(document.validated_config);
         let inventory = ListenerInventory::compile(&config);
         let plan = runtime_plan(&config).expect("collision runtime plan");
-        let mut acquired = acquire_runtime_services(&plan).expect("collision runtime acquisition");
-        let rtmp_capabilities = plan.rtmp_capabilities;
-        let (vod_catalog, media_catalog) = acquired.take_rtmp_catalogs();
-        let rtmp = PreparedGeneration::prepare_rtmp(
-            rtmp_capabilities,
-            acquired.services(),
-            vod_catalog,
-            media_catalog,
-        )
-        .expect("collision RTMP preparation");
+        let acquired = acquire_runtime_services(&plan).expect("collision runtime acquisition");
+        let rtmp = PreparedGeneration::prepare_rtmp(acquired.services())
+            .expect("collision RTMP preparation");
         let reservations =
             ListenerReservations::prepare(&config, None).expect("collision listener reservations");
         let process = ProcessRuntime::new(None);

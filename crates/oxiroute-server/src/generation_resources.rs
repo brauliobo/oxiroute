@@ -1,8 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use oxiroute_rtmp::{
-    PreparedRtmpRuntimeSet, RtmpAutoPushStatus, RtmpControlHandle, RtmpRecorderShutdown,
-    RtmpRegistry, RtmpServiceHandle,
+    PreparedRtmpRuntimeSet, RtmpAutoPushStatus, RtmpControlHandle, RtmpServiceHandle, RtmpShutdown,
 };
 
 use crate::{
@@ -33,12 +32,11 @@ impl GenerationResources {
         mut acquired: GenerationAcquisition,
         reservations: ListenerReservations,
         listener_registration: ListenerRegistrationTransaction,
-        rtmp: (Arc<RtmpRegistry>, PreparedRtmpRuntimeSet),
+        rtmp: PreparedRtmpRuntimeSet,
     ) -> Self {
         let (services, health_supervisor, pools, tls) = acquired.commit();
-        let (registry, prepared) = rtmp;
         Self {
-            rtmp: RtmpGenerationRuntime::new(registry, prepared),
+            rtmp: RtmpGenerationRuntime::new(rtmp),
             listeners: PreparedListenerResources {
                 registration: Mutex::new(Some(listener_registration)),
                 reservations,
@@ -75,11 +73,11 @@ impl GenerationResources {
     }
 
     pub(crate) fn rtmp_vod_catalog(&self) -> Arc<oxiroute_rtmp::VodCatalog> {
-        self.rtmp.vod_catalog()
+        self.rtmp.control().vod_catalog()
     }
 
     pub(crate) fn rtmp_media_catalog(&self) -> Arc<oxiroute_rtmp::MediaCatalog> {
-        self.rtmp.media_catalog()
+        self.rtmp.control().media_catalog()
     }
 
     pub(crate) const fn tls(&self) -> &PreparedTls {
@@ -102,23 +100,16 @@ impl GenerationResources {
         self.rtmp.auto_push_status()
     }
 
-    pub(crate) fn close_runtime_admission(&self) {
-        self.rtmp.close_admission();
-    }
-
-    pub(crate) fn initiate_recorder_shutdown(
-        &self,
-        deadline: std::time::Instant,
-    ) -> Vec<RtmpRecorderShutdown> {
-        self.rtmp.initiate_recorder_shutdown(deadline)
+    pub(crate) fn initiate_rtmp_shutdown(&self, deadline: std::time::Instant) -> RtmpShutdown {
+        self.rtmp.initiate_shutdown(deadline)
     }
 
     pub(crate) fn rtmp_retirement(&self) -> RtmpRetirement {
         self.rtmp.retirement()
     }
 
-    pub(crate) fn rtmp_recorder_lifecycles(&self) -> Vec<oxiroute_rtmp::RtmpRecorderLifecycle> {
-        self.rtmp.recorder_lifecycles()
+    pub(crate) fn rtmp_shutdown(&self) -> RtmpShutdown {
+        self.rtmp.shutdown()
     }
 
     pub(crate) fn start_rtmp(&self) -> Result<(), GenerationError> {

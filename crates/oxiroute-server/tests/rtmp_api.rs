@@ -29,10 +29,11 @@ use oxiroute_config::{
     ValidatedConfig,
 };
 use oxiroute_rtmp::{
-    LiveHub, LiveHubLimits, MediaSnapshot, RtmpApplication as RuntimeRtmpApplication,
-    RtmpCapabilities, RtmpPushApplication, RtmpPushTarget, RtmpRegistry, RtmpRelayConfig,
-    RtmpServiceRuntime, RtmpSession, RtmpSessionControlAction, RtmpSessionPolicy, SessionId,
-    StreamKey, TrackSnapshot, VideoCodecIdentifier,
+    LiveHub, LiveHubLimits, MediaSnapshot, PreparedRtmpRuntimeSet,
+    RtmpApplication as RuntimeRtmpApplication, RtmpCapabilities, RtmpPrepareContext,
+    RtmpPrepareMode, RtmpPushApplication, RtmpPushTarget, RtmpRegistry, RtmpRelayConfig,
+    RtmpRuntimeSet, RtmpServiceHandle, RtmpServiceRuntime, RtmpSession, RtmpSessionControlAction,
+    RtmpSessionPolicy, SessionId, StreamKey, TrackSnapshot, VideoCodecIdentifier,
 };
 use oxiroute_server::{
     GenerationManager, HttpListenerApp, RtmpManagementApi, RuntimeMetrics, RuntimeMode,
@@ -149,7 +150,7 @@ async fn queues_target_checked_publisher_disconnects_through_the_management_api(
             .expect("valid management fixture"),
     )
     .await;
-    let mut client = RtmpSessionClient::connect(harness.rtmp_runtime(), "broadcast");
+    let mut client = RtmpSessionClient::connect_handle(&harness.rtmp_runtime(), "broadcast");
     client.publish("camera", 100);
     let snapshot = client.server.client_snapshot().expect("client snapshot");
     assert_eq!(snapshot.role, oxiroute_rtmp::RtmpSessionRole::Publisher);
@@ -225,7 +226,7 @@ async fn exposes_each_message_stream_in_client_stats() {
             .expect("valid management fixture"),
     )
     .await;
-    let mut client = RtmpSessionClient::connect(harness.rtmp_runtime(), "broadcast");
+    let mut client = RtmpSessionClient::connect_handle(&harness.rtmp_runtime(), "broadcast");
     client.publish("camera-a", 100);
 
     let mut serializer = ChunkSerializer::new();
@@ -398,7 +399,7 @@ async fn serves_authenticated_dash_manifests_segments_and_single_ranges() {
             .expect("valid management fixture"),
     )
     .await;
-    let mut publisher = RtmpSessionClient::connect(harness.rtmp_runtime(), "broadcast");
+    let mut publisher = RtmpSessionClient::connect_handle(&harness.rtmp_runtime(), "broadcast");
     publisher.publish("camera", 1_000);
     publisher.publish_audio(0, &[0xaf, 0, 0x12, 0x10], 1_001);
     publisher.publish_video(
@@ -2040,7 +2041,7 @@ struct ManagementHarness {
     config_path: PathBuf,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<()>,
-    rtmp_runtime: Option<RtmpServiceRuntime>,
+    rtmp_runtime: RtmpRuntimeSet,
     _directory: TempDir,
 }
 
@@ -2091,7 +2092,6 @@ impl ManagementHarness {
         let disk_revision = document.authored_revision.clone();
         let plan = oxiroute_server::runtime_plan(config).expect("active runtime plan");
         let services = oxiroute_server::service_specs(config).expect("active runtime services");
-        let registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
         let rtmp_services = services
             .iter()
             .filter_map(|service| match &service.kind {
@@ -2099,27 +2099,38 @@ impl ManagementHarness {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let rtmp_runtime = rtmp_services.first().map(|service| {
-            service
-                .runtime(Arc::clone(&registry))
-                .expect("RTMP test runtime")
-        });
-        let vod_catalog = oxiroute_rtmp::VodCatalog::from_applications(
-            rtmp_services
-                .iter()
-                .flat_map(|service| service.vod_applications()),
+        let context = RtmpPrepareContext::new(
+            RtmpPrepareMode::Activation,
+            services.iter().filter_map(|service| match service.bind {
+                oxiroute_config::ListenerBind::Socket { address }
+                | oxiroute_config::ListenerBind::Udp { address } => Some(address),
+                oxiroute_config::ListenerBind::Unix { .. } => None,
+            }),
         );
-        let media_catalog = oxiroute_rtmp::MediaCatalog::merge(
-            rtmp_services.iter().map(|service| service.media_catalog()),
-        );
+        let mut plans = Vec::new();
+        for service in rtmp_services {
+            if !plans.iter().any(|plan: &oxiroute_rtmp::RtmpServicePlan| {
+                plan.service_id() == service.service_id()
+            }) {
+                plans.push(service.value_plan());
+            }
+        }
+        let rtmp_runtime = PreparedRtmpRuntimeSet::prepare(
+            plans,
+            &context,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect("prepared RTMP test runtime")
+        .start(Instant::now() + Duration::from_secs(1))
+        .expect("RTMP test runtime");
+        let control = rtmp_runtime.control();
         let metrics = RuntimeMetrics::new();
         metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
-        let mut api =
-            RtmpManagementApi::new(Arc::clone(&registry), metrics, Arc::clone(&plan.topology))
-                .with_config_coordinator(coordinator, active_revision.clone(), TEST_TOKEN, mode)
-                .expect("injected management token")
-                .with_vod_catalog(vod_catalog)
-                .with_media_catalog(Arc::new(media_catalog));
+        let mut api = RtmpManagementApi::new(control.clone(), metrics, Arc::clone(&plan.topology))
+            .with_config_coordinator(coordinator, active_revision.clone(), TEST_TOKEN, mode)
+            .expect("injected management token")
+            .with_vod_catalog(control.vod_catalog())
+            .with_media_catalog(control.media_catalog());
         if enable_generation_manager {
             let manager = match mode {
                 RuntimeMode::Direct => GenerationManager::new(),
@@ -2169,9 +2180,9 @@ impl ManagementHarness {
         }
     }
 
-    fn rtmp_runtime(&self) -> &RtmpServiceRuntime {
+    fn rtmp_runtime(&self) -> RtmpServiceHandle {
         self.rtmp_runtime
-            .as_ref()
+            .service("live")
             .expect("RTMP service runtime in test configuration")
     }
 

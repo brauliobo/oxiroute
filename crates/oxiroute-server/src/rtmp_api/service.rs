@@ -765,7 +765,9 @@ fn last_event_id(session: &ServerSession) -> Result<Option<String>, ApiResponse>
 }
 
 fn ready_frame(cursor: u64) -> Vec<u8> {
-    format!("event: ready\ndata: {{\"cursor\":{cursor}}}\n\n").into_bytes()
+    let data = serde_json::to_string(&super::dto::SseReadyDto::new(cursor))
+        .expect("SSE ready DTO serializes");
+    format!("event: ready\ndata: {data}\n\n").into_bytes()
 }
 
 fn operational_frame(event: &crate::operational_event::OperationalEvent) -> Vec<u8> {
@@ -791,11 +793,9 @@ fn operational_frame_v2(event: &crate::operational_event::OperationalEvent) -> V
 }
 
 fn resync_frame(requested: u64, oldest: Option<u64>, latest: u64) -> Vec<u8> {
-    format!(
-        "event: resync_required\ndata: {{\"cursor\":{requested},\"oldestCursor\":{},\"latestCursor\":{latest}}}\n\n",
-        oldest.map_or_else(|| "null".to_owned(), |cursor| cursor.to_string())
-    )
-    .into_bytes()
+    let data = serde_json::to_string(&super::dto::SseResyncDto::new(requested, oldest, latest))
+        .expect("SSE resync DTO serializes");
+    format!("event: resync_required\ndata: {data}\n\n").into_bytes()
 }
 
 fn heartbeat_frame() -> Vec<u8> {
@@ -803,7 +803,9 @@ fn heartbeat_frame() -> Vec<u8> {
 }
 
 fn shutdown_frame() -> Vec<u8> {
-    b"event: shutdown\ndata: {\"reason\":\"server_shutdown\"}\n\n".to_vec()
+    let data = serde_json::to_string(&super::dto::SseShutdownDto::server_shutdown())
+        .expect("SSE shutdown DTO serializes");
+    format!("event: shutdown\ndata: {data}\n\n").into_bytes()
 }
 
 fn accepts_event_stream(session: &ServerSession) -> bool {
