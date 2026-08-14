@@ -106,7 +106,8 @@ pub use relay::{
 };
 pub use rml_rtmp::sessions::StreamMetadata;
 pub use runtime_handles::{
-    RtmpControlHandle, RtmpRuntimeSet, RtmpRuntimeSetError, RtmpServiceHandle, RtmpShutdown,
+    PreparedRtmpRuntimeSet, RtmpControlHandle, RtmpRuntimeSet, RtmpRuntimeSetError,
+    RtmpServiceHandle, RtmpShutdown,
 };
 pub use session::{
     MAX_INBOUND_AMF0_CONTAINER_ENTRIES, MAX_INBOUND_AMF0_DEPTH, MAX_INBOUND_AMF0_STRING_BYTES,
