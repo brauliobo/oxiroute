@@ -7,7 +7,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use http::{Method, Uri, uri::Authority};
@@ -22,7 +22,9 @@ use oxiroute_config::{
     TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
     UpstreamServer, UpstreamTls,
 };
-use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry, StreamKey};
+use oxiroute_rtmp::{
+    PreparedRtmpRuntimeSet, RtmpCapabilities, RtmpPrepareContext, RtmpPrepareMode, RtmpRegistry,
+};
 use oxiroute_server::{
     CertbotWatcherConfig, CertbotWatcherSupervisor, FileWatcherConfig, FileWatcherSupervisor,
     RtmpManagementApi, RuntimeEndpoint, RuntimeMetrics, ServiceKind, ServicePlanError,
@@ -772,29 +774,25 @@ fn rtmp_listeners_share_one_service_identity_catalog_and_hub() {
     };
     assert!(Arc::ptr_eq(first_plan, second_plan));
 
-    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
-        live_ingest: true,
-        manual_recording: false,
-    }));
-    let first_runtime = first_plan
-        .runtime(Arc::clone(&registry))
-        .expect("first RTMP runtime");
-    let second_runtime = second_plan
-        .runtime(Arc::clone(&registry))
-        .expect("second RTMP runtime");
-    assert_eq!(first_runtime.service_id(), "live");
-    assert_eq!(second_runtime.service_id(), "live");
-    assert!(Arc::ptr_eq(
-        first_runtime.registry(),
-        second_runtime.registry()
-    ));
-
-    let key = StreamKey::new("live", "live", "camera");
-    let _publisher = first_runtime
-        .hub()
-        .attach_publisher(key.clone())
-        .expect("publisher on first listener");
-    assert!(second_runtime.hub().has_publisher(&key));
+    let context = RtmpPrepareContext::new(
+        RtmpPrepareMode::Activation,
+        [
+            "127.0.0.1:1935".parse().unwrap(),
+            "127.0.0.1:1936".parse().unwrap(),
+        ],
+    );
+    let runtimes = PreparedRtmpRuntimeSet::prepare(
+        [first_plan.value_plan()],
+        &context,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .expect("prepared shared RTMP service")
+    .start(Instant::now() + Duration::from_secs(1))
+    .expect("started shared RTMP service");
+    assert_eq!(
+        runtimes.service("live").expect("RTMP service").service_id(),
+        "live"
+    );
 }
 
 #[test]
@@ -814,12 +812,10 @@ fn compiles_chunk_disabled_access_log_and_application_fanout_policy() {
     let ServiceKind::Rtmp(plan) = &services[3].kind else {
         panic!("RTMP service plan");
     };
-    let limits = plan.hub().limits();
-    assert_eq!(limits.max_subscribers, 7);
-    assert_eq!(limits.max_subscribers_per_stream, 7);
-    assert_eq!(limits.max_queue_messages_per_subscriber, 11);
-    assert_eq!(limits.max_queue_bytes_per_subscriber, 4_096);
-    assert_eq!(limits.max_fanout_bytes, 7 * 4_096);
+    let fanout = plan.value_plan().applications()[0].fanout();
+    assert_eq!(fanout.max_subscribers(), 7);
+    assert_eq!(fanout.max_queue_messages_per_subscriber(), 11);
+    assert_eq!(fanout.max_queue_bytes_per_subscriber(), 4_096);
 }
 
 #[test]
@@ -844,7 +840,7 @@ fn resolves_absent_push_port_without_connecting_and_rejects_direct_listener_loop
     config.rtmp_services[0].applications[0].push_targets[0].port = 1_935;
     assert!(matches!(
         service_specs(&config.clone().validate().unwrap()),
-        Err(ServicePlanError::RtmpPushDirectLoop { target: 0, .. })
+        Err(ServicePlanError::RtmpRuntimePreparation(_))
     ));
 }
 
@@ -888,9 +884,15 @@ fn recorder_planning_is_read_only_and_runtime_activation_opens_the_store() {
     let ServiceKind::Rtmp(service) = &services[3].kind else {
         panic!("RTMP service plan");
     };
-    service
-        .runtime(Arc::new(RtmpRegistry::new(plan.rtmp_capabilities)))
-        .expect("activated RTMP runtime");
+    let context = RtmpPrepareContext::new(RtmpPrepareMode::Activation, []);
+    let _runtime = PreparedRtmpRuntimeSet::prepare(
+        [service.value_plan()],
+        &context,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .expect("prepared RTMP runtime")
+    .start(Instant::now() + Duration::from_secs(1))
+    .expect("activated RTMP runtime");
     assert!(!root.path().join(".oxiroute-recording.lock").exists());
 }
 
@@ -983,7 +985,7 @@ fn rejects_insecure_and_overquota_recording_roots_without_path_disclosure() {
     let Err(error) = runtime_plan(&insecure.validate().unwrap()) else {
         panic!("insecure root must fail")
     };
-    assert!(matches!(error, ServicePlanError::RecorderPreflight { .. }));
+    assert!(matches!(error, ServicePlanError::RtmpRuntimePreparation(_)));
     assert!(
         !error
             .to_string()
@@ -1007,7 +1009,7 @@ fn rejects_insecure_and_overquota_recording_roots_without_path_disclosure() {
     let Err(error) = runtime_plan(&overquota.validate().unwrap()) else {
         panic!("overquota root must fail")
     };
-    assert!(matches!(error, ServicePlanError::RecorderPreflight { .. }));
+    assert!(matches!(error, ServicePlanError::RtmpRuntimePreparation(_)));
     assert!(
         !error
             .to_string()

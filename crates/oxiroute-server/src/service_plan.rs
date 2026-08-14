@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    fs,
     net::ToSocketAddrs,
     path::PathBuf,
     sync::{
@@ -35,12 +34,7 @@ use http::{Method, Uri, uri::Authority};
 use oxiroute_cache::{Cache, DiskCache, DiskCacheConfig};
 use oxiroute_config::{CachePurgeAuthorization, ListenerBind, Protocol, ValidatedConfig};
 use oxiroute_rtmp::{
-    DashOutputConfig, ExecProfile, HlsOutputConfig, LiveHub, LiveHubLimits, MediaApplication,
-    MediaCatalog, RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig,
-    RtmpCallbackPolicy, RtmpCapabilities, RtmpClientOptions, RtmpCredential,
-    RtmpMediaStoreRegistry, RtmpOutboundPolicy, RtmpPrepareMode, RtmpPullTarget, RtmpPushTarget,
-    RtmpRecorderStart, RtmpRecorderStoreRegistry, RtmpRegistry, RtmpServicePreparation,
-    RtmpServiceRuntime, RtmpSessionLimits, RtmpSessionPolicy, VodApplication, VodCatalog,
+    PreparedRtmpRuntimeSet, RtmpCapabilities, RtmpPrepareContext, RtmpPrepareMode,
 };
 
 enum DiskBackendRegistryEntry {
@@ -146,40 +140,14 @@ impl ServiceKind {
 
 pub struct RtmpServicePlan {
     value_plan: oxiroute_rtmp::RtmpServicePlan,
-    service_id: String,
-    outbound_chunk_size: u32,
-    inbound_limits: RtmpSessionLimits,
-    hub: LiveHub,
-    callbacks: RtmpCallbackPolicy,
     access_log: Option<Arc<AccessLog>>,
-    applications: Vec<PreparedRtmpApplication>,
-    vod_catalog: Arc<VodCatalog>,
-    media_catalog: Arc<MediaCatalog>,
-    auto_push: Option<RtmpAutoPushConfig>,
-}
-
-pub(crate) struct PreparedRtmpRuntime {
-    service_id: String,
-    preparation: RtmpServicePreparation,
-}
-
-#[derive(Debug)]
-pub(crate) enum RtmpPreparationError {
-    ServicePlan(ServicePlanError),
-    PreparationTimedOut,
-}
-
-impl From<ServicePlanError> for RtmpPreparationError {
-    fn from(error: ServicePlanError) -> Self {
-        Self::ServicePlan(error)
-    }
 }
 
 impl std::fmt::Debug for RtmpServicePlan {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("RtmpServicePlan")
-            .field("service_id", &self.service_id)
+            .field("service_id", &self.service_id())
             .finish_non_exhaustive()
     }
 }
@@ -187,10 +155,11 @@ impl std::fmt::Debug for RtmpServicePlan {
 impl RtmpServicePlan {
     #[must_use]
     pub fn service_id(&self) -> &str {
-        &self.service_id
+        self.value_plan.service_id()
     }
 
-    pub(crate) fn value_plan(&self) -> oxiroute_rtmp::RtmpServicePlan {
+    #[must_use]
+    pub fn value_plan(&self) -> oxiroute_rtmp::RtmpServicePlan {
         self.value_plan.clone()
     }
 
@@ -214,213 +183,6 @@ impl RtmpServicePlan {
         self.access_log
             .as_ref()
             .map_or(Ok(()), |access_log| access_log.write_rtmp(event))
-    }
-
-    /// Acquires recording stores and starts this service runtime immediately.
-    ///
-    /// Generation preparation uses the staged `prepare`/`start` path instead.
-    ///
-    /// # Errors
-    ///
-    /// Returns a redacted preparation or runtime-start error.
-    pub fn runtime(
-        &self,
-        registry: Arc<RtmpRegistry>,
-    ) -> Result<RtmpServiceRuntime, ServicePlanError> {
-        self.prepare()?.start(registry)
-    }
-
-    /// Opens this service's preflighted recording stores and creates its process runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns a redacted error when a recording root cannot be opened and pinned at startup.
-    pub(crate) fn prepare(&self) -> Result<PreparedRtmpRuntime, ServicePlanError> {
-        self.prepare_with_deadline(None)
-            .map_err(|error| match error {
-                RtmpPreparationError::ServicePlan(error) => error,
-                RtmpPreparationError::PreparationTimedOut => {
-                    unreachable!("unbounded RTMP preparation cannot time out")
-                }
-            })
-    }
-
-    pub(crate) fn prepare_with_deadline(
-        &self,
-        deadline: Option<Instant>,
-    ) -> Result<PreparedRtmpRuntime, RtmpPreparationError> {
-        #[cfg(test)]
-        RTMP_PREPARES.with(|count| count.set(count.get() + 1));
-        let mut stores = RtmpRecorderStoreRegistry::default();
-        let applications = self.prepare_applications_with_deadline(deadline, &mut stores)?;
-        let mut preparation = RtmpServicePreparation::new(
-            self.service_id.clone(),
-            self.hub.clone(),
-            RtmpSessionPolicy::with_session_limits(
-                applications,
-                self.outbound_chunk_size,
-                self.inbound_limits,
-            ),
-        )
-        .with_callbacks(self.callbacks.clone());
-        if let Some(auto_push) = self.auto_push.clone() {
-            #[cfg(test)]
-            if rtmp_runtime_fault() == RtmpRuntimeFault::AutoPush {
-                return Err(RtmpPreparationError::ServicePlan(
-                    ServicePlanError::AutoPushUnavailable {
-                        service: self.service_id.clone(),
-                    },
-                ));
-            }
-            preparation = preparation.with_auto_push(auto_push).map_err(|_| {
-                ServicePlanError::AutoPushUnavailable {
-                    service: self.service_id.clone(),
-                }
-            })?;
-        }
-        Ok(PreparedRtmpRuntime {
-            service_id: self.service_id.clone(),
-            preparation,
-        })
-    }
-
-    fn prepare_applications_with_deadline(
-        &self,
-        deadline: Option<Instant>,
-        stores: &mut RtmpRecorderStoreRegistry,
-    ) -> Result<Vec<RuntimeRtmpApplication>, RtmpPreparationError> {
-        self.applications
-            .iter()
-            .map(|application| {
-                let recorders = application
-                    .plan
-                    .recorders()
-                    .iter()
-                    .map(|recorder| {
-                        #[cfg(test)]
-                        if rtmp_runtime_fault() == RtmpRuntimeFault::RecorderStore {
-                            return Err(RtmpPreparationError::ServicePlan(
-                                ServicePlanError::RecorderStartup {
-                                    service: self.service_id.clone(),
-                                    application: application.plan.name().to_owned(),
-                                    recorder: recorder.name().to_owned(),
-                                },
-                            ));
-                        }
-                        let store = stores
-                            .prepare(
-                                recorder.root_directory(),
-                                recorder.store_limits(),
-                                RtmpPrepareMode::Activation,
-                                deadline,
-                            )
-                            .map_err(|error| {
-                                if matches!(
-                                    &error,
-                                    oxiroute_rtmp::RecordingStoreError::CreationCancelled
-                                ) && deadline.is_some_and(|deadline| Instant::now() >= deadline)
-                                {
-                                    RtmpPreparationError::PreparationTimedOut
-                                } else {
-                                    ServicePlanError::RecorderStartup {
-                                        service: self.service_id.clone(),
-                                        application: application.plan.name().to_owned(),
-                                        recorder: recorder.name().to_owned(),
-                                    }
-                                    .into()
-                                }
-                            })?
-                            .expect("activation prepares a recording store");
-                        Ok(recorder.build_policy(store))
-                    })
-                    .collect::<Result<Vec<_>, RtmpPreparationError>>()?;
-                Ok(application.plan.build_runtime_application(
-                    application.hub.clone(),
-                    application.push_targets.clone(),
-                    application.pull_targets.clone(),
-                    application.callbacks.clone(),
-                    application.vod.clone(),
-                    application.media.clone(),
-                    application.exec_profiles.clone(),
-                    recorders,
-                ))
-            })
-            .collect()
-    }
-
-    #[must_use]
-    pub fn vod_catalog(&self) -> Arc<VodCatalog> {
-        Arc::clone(&self.vod_catalog)
-    }
-
-    #[must_use]
-    pub fn media_catalog(&self) -> Arc<MediaCatalog> {
-        Arc::clone(&self.media_catalog)
-    }
-
-    #[must_use]
-    pub fn vod_applications(&self) -> Vec<Arc<VodApplication>> {
-        self.applications
-            .iter()
-            .filter_map(|application| application.vod.clone())
-            .collect()
-    }
-
-    #[must_use]
-    pub fn hub(&self) -> LiveHub {
-        self.hub.clone()
-    }
-
-    #[must_use]
-    pub fn manual_recording(&self) -> bool {
-        self.applications.iter().any(|application| {
-            application
-                .plan
-                .recorders()
-                .iter()
-                .any(|recorder| recorder.start() == RtmpRecorderStart::Manual)
-        })
-    }
-
-    #[must_use]
-    pub fn recording_supported(&self) -> bool {
-        self.applications
-            .iter()
-            .any(|application| !application.plan.recorders().is_empty())
-    }
-
-    #[must_use]
-    pub fn auto_push_enabled(&self) -> bool {
-        self.auto_push.is_some()
-    }
-}
-
-impl PreparedRtmpRuntime {
-    pub(crate) fn start(
-        self,
-        registry: Arc<RtmpRegistry>,
-    ) -> Result<RtmpServiceRuntime, ServicePlanError> {
-        #[cfg(test)]
-        {
-            RTMP_STARTS.with(|count| count.set(count.get() + 1));
-            RTMP_START_EVENTS.with(|events| {
-                events
-                    .borrow_mut()
-                    .push(format!("start:{}", self.service_id));
-            });
-            if RTMP_START_FAILURE
-                .with(|service| service.borrow().as_deref() == Some(&self.service_id))
-            {
-                return Err(ServicePlanError::AutoPushUnavailable {
-                    service: self.service_id,
-                });
-            }
-        }
-        self.preparation
-            .start(registry)
-            .map_err(|_| ServicePlanError::AutoPushUnavailable {
-                service: self.service_id,
-            })
     }
 }
 
@@ -492,28 +254,11 @@ std::thread_local! {
 }
 
 #[cfg(test)]
-fn rtmp_runtime_fault() -> RtmpRuntimeFault {
-    RTMP_RUNTIME_FAULT.get()
-}
-
-#[cfg(test)]
 pub(crate) fn with_rtmp_runtime_fault<T>(fault: RtmpRuntimeFault, run: impl FnOnce() -> T) -> T {
     RTMP_RUNTIME_FAULT.replace(fault);
     let result = run();
     RTMP_RUNTIME_FAULT.set(RtmpRuntimeFault::None);
     result
-}
-
-#[derive(Clone)]
-struct PreparedRtmpApplication {
-    plan: oxiroute_rtmp::RtmpApplicationPlan,
-    hub: LiveHub,
-    push_targets: Vec<RtmpPushTarget>,
-    pull_targets: Vec<RtmpPullTarget>,
-    callbacks: RtmpCallbackPolicy,
-    vod: Option<Arc<VodApplication>>,
-    media: Option<Arc<MediaApplication>>,
-    exec_profiles: Vec<ExecProfile>,
 }
 
 #[derive(Debug)]
@@ -642,6 +387,7 @@ pub fn service_specs(config: &ValidatedConfig) -> Result<Vec<ServiceSpec>, Servi
     }
     let plan = runtime_plan(config)?;
     let mut acquired = acquire_runtime_services(&plan)?;
+    prepare_rtmp_service_specs(acquired.services(), RtmpPrepareMode::Activation)?;
     Ok(acquired.commit().0)
 }
 
@@ -657,15 +403,12 @@ pub struct RuntimePlan {
 
 pub(crate) struct GenerationAcquisition {
     l4_services: Option<Vec<Arc<L4ServicePlan>>>,
-    rtmp_services: Option<Vec<Arc<RtmpServicePlan>>>,
     forward_services: Option<Vec<Arc<ForwardHttp1ServicePlan>>>,
     http_services: Option<Vec<Arc<HttpServicePlan>>>,
     compiled_pools: Option<CompiledPools>,
     services: Option<Vec<ServiceSpec>>,
     health_supervisor: Option<HealthSupervisor>,
     pools: Option<Vec<Arc<RoundRobinPool>>>,
-    rtmp_vod_catalog: Option<Arc<VodCatalog>>,
-    rtmp_media_catalog: Option<Arc<MediaCatalog>>,
     tls: Option<PreparedTls>,
 }
 
@@ -673,15 +416,12 @@ impl GenerationAcquisition {
     fn empty() -> Self {
         Self {
             l4_services: None,
-            rtmp_services: None,
             forward_services: None,
             http_services: None,
             compiled_pools: None,
             services: None,
             health_supervisor: None,
             pools: None,
-            rtmp_vod_catalog: None,
-            rtmp_media_catalog: None,
             tls: None,
         }
     }
@@ -704,18 +444,6 @@ impl GenerationAcquisition {
         self.tls.as_ref().expect("uncommitted TLS")
     }
 
-    #[cfg(test)]
-    pub(crate) fn take_rtmp_catalogs(&mut self) -> (Arc<VodCatalog>, Arc<MediaCatalog>) {
-        (
-            self.rtmp_vod_catalog
-                .take()
-                .expect("uncommitted VOD catalog"),
-            self.rtmp_media_catalog
-                .take()
-                .expect("uncommitted media catalog"),
-        )
-    }
-
     pub(crate) fn commit(
         &mut self,
     ) -> (
@@ -725,7 +453,6 @@ impl GenerationAcquisition {
         PreparedTls,
     ) {
         self.l4_services.take();
-        self.rtmp_services.take();
         self.forward_services.take();
         self.http_services.take();
         self.compiled_pools.take();
@@ -742,9 +469,6 @@ impl Drop for GenerationAcquisition {
     fn drop(&mut self) {
         self.services.take();
         self.l4_services.take();
-        self.rtmp_services.take();
-        self.rtmp_media_catalog.take();
-        self.rtmp_vod_catalog.take();
         self.forward_services.take();
         self.http_services.take();
         self.health_supervisor.take();
@@ -758,13 +482,6 @@ impl Drop for GenerationAcquisition {
 pub(crate) enum AcquisitionMode {
     Activate,
     Validate,
-}
-
-const fn rtmp_prepare_mode(mode: AcquisitionMode) -> RtmpPrepareMode {
-    match mode {
-        AcquisitionMode::Activate => RtmpPrepareMode::Activation,
-        AcquisitionMode::Validate => RtmpPrepareMode::Validation,
-    }
 }
 
 /// Compiles one immutable runtime generation including traffic and health services.
@@ -790,8 +507,35 @@ pub fn runtime_plan(config: &ValidatedConfig) -> Result<RuntimePlan, ServicePlan
 /// Returns an error when any runtime resource cannot be acquired safely.
 pub fn validate_runtime_plan(config: &ValidatedConfig) -> Result<RuntimePlan, ServicePlanError> {
     let plan = runtime_plan(config)?;
-    validate_runtime_services(&plan)?;
+    let acquired = validate_runtime_services(&plan)?;
+    prepare_rtmp_service_specs(acquired.services(), RtmpPrepareMode::Validation)?;
     Ok(plan)
+}
+
+fn prepare_rtmp_service_specs(
+    services: &[ServiceSpec],
+    mode: RtmpPrepareMode,
+) -> Result<(), ServicePlanError> {
+    let mut plans = Vec::new();
+    for service in services {
+        let ServiceKind::Rtmp(service) = &service.kind else {
+            continue;
+        };
+        if !plans
+            .iter()
+            .any(|plan: &oxiroute_rtmp::RtmpServicePlan| plan.service_id() == service.service_id())
+        {
+            plans.push(service.value_plan());
+        }
+    }
+    let listener_addresses = services.iter().filter_map(|service| match service.bind {
+        ListenerBind::Socket { address } | ListenerBind::Udp { address } => Some(address),
+        ListenerBind::Unix { .. } => None,
+    });
+    let context = RtmpPrepareContext::new(mode, listener_addresses);
+    PreparedRtmpRuntimeSet::prepare(plans, &context, Instant::now() + Duration::from_secs(5))
+        .map(drop)
+        .map_err(ServicePlanError::RtmpRuntimePreparation)
 }
 
 pub(crate) fn validation_plan(config: &ValidatedConfig) -> Result<RuntimePlan, ServicePlanError> {
@@ -901,11 +645,7 @@ fn acquire_runtime_services_with_mode(
         mode,
         deadline,
     )?);
-    acquired.rtmp_services = Some(compile_rtmp_services(
-        &blueprint.rtmp_specs?,
-        &blueprint.rtmp_listener_addresses,
-        mode,
-    )?);
+    let rtmp_services = compile_rtmp_services(&blueprint.rtmp_specs?, mode)?;
     acquired.l4_services = Some(compile_l4_services(
         &blueprint.l4_service_specs?,
         &acquired
@@ -926,7 +666,7 @@ fn acquire_runtime_services_with_mode(
                         .forward_services
                         .as_deref()
                         .expect("acquired forward proxy"),
-                    acquired.rtmp_services.as_deref().expect("acquired RTMP"),
+                    &rtmp_services,
                     acquired.l4_services.as_deref().expect("acquired L4"),
                     acquired.tls().profiles(),
                     &blueprint.tls,
@@ -938,15 +678,6 @@ fn acquire_runtime_services_with_mode(
     acquired.health_supervisor =
         (!pools.health_groups.is_empty()).then(|| HealthSupervisor::new(pools.health_groups));
     acquired.pools = Some(pools.ordered);
-    let rtmp_services = acquired.rtmp_services.as_deref().expect("acquired RTMP");
-    acquired.rtmp_vod_catalog = Some(VodCatalog::from_applications(
-        rtmp_services
-            .iter()
-            .flat_map(|service| service.vod_applications()),
-    ));
-    acquired.rtmp_media_catalog = Some(Arc::new(MediaCatalog::merge(
-        rtmp_services.iter().map(|service| service.media_catalog()),
-    )));
     Ok(acquired)
 }
 
@@ -1677,118 +1408,24 @@ pub(crate) fn compile_rtmp_value_plans(
     crate::rtmp_value_plan::compile_rtmp_value_plans_from_draft(config.as_draft())
 }
 
-#[allow(clippy::too_many_lines)]
 fn compile_rtmp_services(
     specs: &[RtmpSpec],
-    listener_addresses: &[std::net::SocketAddr],
     mode: AcquisitionMode,
 ) -> Result<Vec<Arc<RtmpServicePlan>>, ServicePlanError> {
-    let mut recorder_stores = RtmpRecorderStoreRegistry::default();
-    let mut media_stores = RtmpMediaStoreRegistry::default();
-    let mut services = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let plan = &spec.plan;
-        let outbound_policy = plan.outbound_policy().clone();
-        let auto_push = plan.auto_push().map(|plan| plan.config().clone());
-        let callbacks =
-            acquire_rtmp_callbacks(plan.callbacks(), &outbound_policy, plan.service_id(), None)?;
-        let mut prepared_applications = Vec::with_capacity(plan.applications().len());
-        for application in plan.applications() {
-            let hub = application.fanout().runtime_hub();
-            let push_targets =
-                compile_rtmp_push_targets(plan.service_id(), application, listener_addresses)?;
-            let pull_targets =
-                compile_rtmp_pull_targets(plan.service_id(), application, listener_addresses)?;
-            let callbacks = acquire_rtmp_callbacks(
-                application.callbacks(),
-                &outbound_policy,
-                plan.service_id(),
-                Some(application.name()),
-            )?;
-            let vod = application
-                .vod()
-                .as_ref()
-                .map(|vod| vod.acquire(plan.service_id(), application.name()))
-                .transpose()
-                .map_err(|_| ServicePlanError::RtmpVodPreflight {
-                    service: plan.service_id().to_owned(),
-                    application: application.name().to_owned(),
-                    source_name: "unknown".into(),
-                })?
-                .map(Arc::new);
-            let hls = compile_rtmp_hls(plan.service_id(), application, &mut media_stores, mode)?;
-            let dash = compile_rtmp_dash(plan.service_id(), application, &mut media_stores, mode)?;
-            let media = oxiroute_rtmp::RtmpMediaPlan::combine_outputs(hls, dash);
-            let exec_profiles = application
-                .exec()
-                .iter()
-                .map(|profile| profile.profile().clone())
-                .collect();
-            for recorder in application.recorders() {
-                recorder_stores
-                    .prepare(
-                        recorder.root_directory(),
-                        recorder.store_limits(),
-                        RtmpPrepareMode::Validation,
-                        None,
-                    )
-                    .map_err(|_| ServicePlanError::RecorderPreflight {
-                        service: plan.service_id().to_owned(),
-                        application: application.name().to_owned(),
-                        recorder: recorder.name().to_owned(),
-                    })?;
-            }
-            prepared_applications.push(PreparedRtmpApplication {
-                plan: application.clone(),
-                hub,
-                push_targets,
-                pull_targets,
-                callbacks,
-                vod,
-                media,
-                exec_profiles,
-            });
-        }
-        let service_hub = prepared_applications.first().map_or_else(
-            || LiveHub::new(LiveHubLimits::default()),
-            |application| application.hub.clone(),
-        );
-        let vod_catalog = VodCatalog::from_applications(
-            prepared_applications
-                .iter()
-                .filter_map(|application| application.vod.clone()),
-        );
-        let media_catalog = MediaCatalog::from_applications(
-            prepared_applications.iter().filter_map(|application| {
-                application.media.clone().map(|media| {
-                    (
-                        plan.service_id().to_owned(),
-                        application.plan.name().to_owned(),
-                        media,
-                    )
-                })
-            }),
-        );
-        services.push(Arc::new(RtmpServicePlan {
-            value_plan: plan.clone(),
-            service_id: plan.service_id().to_owned(),
-            outbound_chunk_size: plan.outbound_chunk_size(),
-            inbound_limits: plan.inbound_limits(),
-            hub: service_hub,
-            callbacks,
-            access_log: acquire_access_log(
-                plan.service_id(),
-                spec.access_log.as_ref(),
-                true,
-                mode,
-            )?,
-            applications: prepared_applications,
-            vod_catalog,
-            media_catalog: Arc::new(media_catalog),
-            auto_push,
-        }));
-    }
-    Ok(services)
+    specs
+        .iter()
+        .map(|spec| {
+            Ok(Arc::new(RtmpServicePlan {
+                value_plan: spec.plan.clone(),
+                access_log: acquire_access_log(
+                    spec.plan.service_id(),
+                    spec.access_log.as_ref(),
+                    true,
+                    mode,
+                )?,
+            }))
+        })
+        .collect()
 }
 
 fn acquire_access_log(
@@ -1812,226 +1449,6 @@ fn acquire_access_log(
             .map_err(invalid)
             .map(|log| log.map(Arc::new))
     }
-}
-
-fn compile_rtmp_push_targets(
-    service: &str,
-    application: &oxiroute_rtmp::RtmpApplicationPlan,
-    listener_addresses: &[std::net::SocketAddr],
-) -> Result<Vec<RtmpPushTarget>, ServicePlanError> {
-    application
-        .relay()
-        .push()
-        .iter()
-        .enumerate()
-        .map(|(target_index, target)| {
-            let resolution = || ServicePlanError::RtmpPushResolution {
-                service: service.to_owned(),
-                application: application.name().to_owned(),
-                target: target_index,
-            };
-            application.relay().acquire_push_target(
-                target,
-                listener_addresses.iter().copied(),
-                || compile_rtmp_client_options(target.client(), resolution),
-                |error| match error {
-                    oxiroute_rtmp::RtmpDestinationResolverError::DirectLoop => {
-                        ServicePlanError::RtmpPushDirectLoop {
-                            service: service.to_owned(),
-                            application: application.name().to_owned(),
-                            target: target_index,
-                        }
-                    }
-                    oxiroute_rtmp::RtmpDestinationResolverError::EmptyAnswer
-                    | oxiroute_rtmp::RtmpDestinationResolverError::TooManyAddresses
-                    | oxiroute_rtmp::RtmpDestinationResolverError::InvalidAddress
-                    | oxiroute_rtmp::RtmpDestinationResolverError::Policy
-                    | oxiroute_rtmp::RtmpDestinationResolverError::FamilyMismatch
-                    | oxiroute_rtmp::RtmpDestinationResolverError::InvalidRefreshInterval => {
-                        resolution()
-                    }
-                },
-            )
-        })
-        .collect()
-}
-
-fn compile_rtmp_pull_targets(
-    service: &str,
-    application: &oxiroute_rtmp::RtmpApplicationPlan,
-    listener_addresses: &[std::net::SocketAddr],
-) -> Result<Vec<RtmpPullTarget>, ServicePlanError> {
-    application
-        .relay()
-        .pull()
-        .iter()
-        .enumerate()
-        .map(|(target_index, target)| {
-            let resolution = || ServicePlanError::RtmpPullResolution {
-                service: service.to_owned(),
-                application: application.name().to_owned(),
-                target: target_index,
-            };
-            application.relay().acquire_pull_target(
-                target,
-                listener_addresses.iter().copied(),
-                || compile_rtmp_client_options(target.client(), resolution),
-                |_| resolution(),
-            )
-        })
-        .collect()
-}
-
-fn acquire_rtmp_callbacks(
-    callbacks: &oxiroute_rtmp::RtmpCallbackPlan,
-    outbound_policy: &RtmpOutboundPolicy,
-    service: &str,
-    application: Option<&str>,
-) -> Result<RtmpCallbackPolicy, ServicePlanError> {
-    let scope = application.map_or_else(
-        || "service".to_owned(),
-        |name| format!("application `{name}`"),
-    );
-    let fields = [
-        (
-            "callbacks.on_connect",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Connect,
-        ),
-        (
-            "callbacks.on_disconnect",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Disconnect,
-        ),
-        (
-            "callbacks.on_publish",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Publish,
-        ),
-        (
-            "callbacks.on_publish_done",
-            oxiroute_rtmp::RtmpCallbackEventPlan::PublishDone,
-        ),
-        (
-            "callbacks.on_play",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Play,
-        ),
-        (
-            "callbacks.on_play_done",
-            oxiroute_rtmp::RtmpCallbackEventPlan::PlayDone,
-        ),
-        (
-            "callbacks.on_done",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Done,
-        ),
-        (
-            "callbacks.on_update",
-            oxiroute_rtmp::RtmpCallbackEventPlan::Update,
-        ),
-    ];
-    let mut endpoints = fields
-        .into_iter()
-        .map(|(field, event)| {
-            callbacks
-                .acquire_endpoint(event, outbound_policy)
-                .map_err(|_| ServicePlanError::RtmpCallbackPreflight {
-                    service: service.to_owned(),
-                    scope: scope.clone(),
-                    field,
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter();
-    Ok(RtmpCallbackPolicy {
-        on_connect: endpoints.next().expect("callback slot"),
-        on_disconnect: endpoints.next().expect("callback slot"),
-        on_publish: endpoints.next().expect("callback slot"),
-        on_publish_done: endpoints.next().expect("callback slot"),
-        on_play: endpoints.next().expect("callback slot"),
-        on_play_done: endpoints.next().expect("callback slot"),
-        on_done: endpoints.next().expect("callback slot"),
-        on_update: endpoints.next().expect("callback slot"),
-        method: callbacks.method(),
-        timeout: callbacks.timeout(),
-        update_timeout: callbacks.update_timeout(),
-        update_strict: callbacks.update_strict(),
-        relay_redirect: callbacks.relay_redirect(),
-    })
-}
-
-fn compile_rtmp_client_options(
-    plan: &oxiroute_rtmp::RtmpClientPlan,
-    resolution: impl Fn() -> ServicePlanError,
-) -> Result<RtmpClientOptions, ServicePlanError> {
-    let credential = plan
-        .credential()
-        .map(|reference| {
-            let secret = fs::read(reference.secret_file()).map_err(|_| resolution())?;
-            if secret.is_empty()
-                || secret.len() > 4 * 1_024
-                || secret.iter().any(u8::is_ascii_control)
-                || std::str::from_utf8(&secret).is_err()
-            {
-                return Err(resolution());
-            }
-            Ok(RtmpCredential::new(reference.username().to_owned(), secret))
-        })
-        .transpose()?;
-    Ok(RtmpClientOptions {
-        flash_version: plan.flash_version().to_owned(),
-        playback_buffer_ms: plan.playback_buffer_ms(),
-        tc_url: plan.tc_url().map(str::to_owned),
-        credential,
-    })
-}
-
-fn compile_rtmp_hls(
-    service: &str,
-    application: &oxiroute_rtmp::RtmpApplicationPlan,
-    stores: &mut RtmpMediaStoreRegistry,
-    mode: AcquisitionMode,
-) -> Result<Option<Arc<HlsOutputConfig>>, ServicePlanError> {
-    let Some(plan) = application
-        .media()
-        .and_then(oxiroute_rtmp::RtmpMediaPlan::hls)
-    else {
-        return Ok(None);
-    };
-    let invalid = || ServicePlanError::HlsPreflight {
-        service: service.to_owned(),
-        application: application.name().to_owned(),
-    };
-    let limits = plan.media_store_limits();
-    let Some(store) = stores
-        .prepare(plan.root_directory(), limits, rtmp_prepare_mode(mode))
-        .map_err(|_| invalid())?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(plan.build_output(store)))
-}
-
-fn compile_rtmp_dash(
-    service: &str,
-    application: &oxiroute_rtmp::RtmpApplicationPlan,
-    stores: &mut RtmpMediaStoreRegistry,
-    mode: AcquisitionMode,
-) -> Result<Option<Arc<DashOutputConfig>>, ServicePlanError> {
-    let Some(plan) = application
-        .media()
-        .and_then(oxiroute_rtmp::RtmpMediaPlan::dash)
-    else {
-        return Ok(None);
-    };
-    let invalid = || ServicePlanError::DashPreflight {
-        service: service.to_owned(),
-        application: application.name().to_owned(),
-    };
-    let limits = plan.media_store_limits();
-    let Some(store) = stores
-        .prepare(plan.root_directory(), limits, rtmp_prepare_mode(mode))
-        .map_err(|_| invalid())?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(plan.build_output(store)))
 }
 
 #[allow(clippy::too_many_lines)]

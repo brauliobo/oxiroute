@@ -1,25 +1,23 @@
 use std::{
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
 use oxiroute_rtmp::{
-    MediaCatalog, PreparedRtmpRuntimeSet, RtmpAutoPushStatus, RtmpControlHandle,
-    RtmpRecorderLifecycle, RtmpRecorderShutdown, RtmpRegistry, RtmpRuntimeSet, RtmpRuntimeSetError,
-    RtmpServiceHandle, VodCatalog,
+    PreparedRtmpRuntimeSet, RtmpAutoPushStatus, RtmpControlHandle, RtmpRuntimeSet,
+    RtmpRuntimeSetError, RtmpServiceHandle, RtmpShutdown,
 };
 
 use crate::GenerationError;
 
 pub(crate) struct RtmpGenerationRuntime {
     prepared: Mutex<Option<PreparedRtmpRuntimeSet>>,
-    registry: Arc<RtmpRegistry>,
     runtimes: OnceLock<RtmpRuntimeSet>,
 }
 
 #[derive(Clone)]
 pub(crate) struct RtmpRetirement {
-    lifecycles: Vec<RtmpRecorderLifecycle>,
+    shutdown: RtmpShutdown,
 }
 
 #[derive(Default)]
@@ -28,27 +26,17 @@ pub(crate) struct RtmpRetirementRegistry {
 }
 
 struct RetiredRtmpLifecycle {
-    identity: RtmpRecorderLifecycle,
-    authority: RtmpRetirementAuthority,
-    initiating: bool,
-}
-
-#[derive(Clone)]
-enum RtmpRetirementAuthority {
-    Lifecycle(RtmpRecorderLifecycle),
-    Shutdown(RtmpRecorderShutdown),
+    shutdown: RtmpShutdown,
 }
 
 pub(crate) struct RtmpRetirementWork {
-    identity: RtmpRecorderLifecycle,
-    authority: RtmpRetirementAuthority,
+    shutdown: RtmpShutdown,
 }
 
 impl RtmpGenerationRuntime {
-    pub(crate) fn new(registry: Arc<RtmpRegistry>, prepared: PreparedRtmpRuntimeSet) -> Self {
+    pub(crate) fn new(prepared: PreparedRtmpRuntimeSet) -> Self {
         Self {
             prepared: Mutex::new(Some(prepared)),
-            registry,
             runtimes: OnceLock::new(),
         }
     }
@@ -58,14 +46,6 @@ impl RtmpGenerationRuntime {
             .get()
             .expect("started RTMP runtime set")
             .control()
-    }
-
-    pub(crate) fn vod_catalog(&self) -> Arc<VodCatalog> {
-        self.control().vod_catalog()
-    }
-
-    pub(crate) fn media_catalog(&self) -> Arc<MediaCatalog> {
-        self.control().media_catalog()
     }
 
     pub(crate) fn service(&self, service: &str) -> Option<RtmpServiceHandle> {
@@ -86,32 +66,24 @@ impl RtmpGenerationRuntime {
         }
     }
 
-    pub(crate) fn initiate_recorder_shutdown(
-        &self,
-        deadline: Instant,
-    ) -> Vec<RtmpRecorderShutdown> {
-        self.runtimes.get().map_or_else(Vec::new, |runtimes| {
-            runtimes
-                .recorder_lifecycles()
-                .into_iter()
-                .map(|lifecycle| lifecycle.initiate_shutdown(deadline))
-                .collect()
-        })
+    pub(crate) fn initiate_shutdown(&self, deadline: Instant) -> RtmpShutdown {
+        let shutdown = self.shutdown();
+        self.close_admission();
+        shutdown.initiate(deadline);
+        shutdown
     }
 
     pub(crate) fn retirement(&self) -> RtmpRetirement {
         self.close_admission();
-        let lifecycles = self
-            .runtimes
-            .get()
-            .map_or_else(Vec::new, RtmpRuntimeSet::recorder_lifecycles);
-        RtmpRetirement { lifecycles }
+        RtmpRetirement {
+            shutdown: self.shutdown(),
+        }
     }
 
-    pub(crate) fn recorder_lifecycles(&self) -> Vec<RtmpRecorderLifecycle> {
+    pub(crate) fn shutdown(&self) -> RtmpShutdown {
         self.runtimes
             .get()
-            .map_or_else(Vec::new, RtmpRuntimeSet::recorder_lifecycles)
+            .map_or_else(RtmpShutdown::default, RtmpRuntimeSet::shutdown_handle)
     }
 
     pub(crate) fn start_prepared(&self) -> Result<RtmpRuntimeSet, GenerationError> {
@@ -122,10 +94,7 @@ impl RtmpGenerationRuntime {
             .take()
             .ok_or(GenerationError::RuntimePrepare)?;
         prepared
-            .start(
-                Arc::clone(&self.registry),
-                Instant::now() + Duration::from_secs(5),
-            )
+            .start(Instant::now() + Duration::from_secs(5))
             .map_err(map_runtime_set_error)
     }
 
@@ -152,67 +121,30 @@ fn map_runtime_set_error(error: RtmpRuntimeSetError) -> GenerationError {
 impl RtmpRetirementRegistry {
     pub(crate) fn retire(&mut self, retirement: RtmpRetirement) {
         self.prune_completed();
-        for lifecycle in retirement.lifecycles {
-            if self
+        if !retirement.shutdown.is_complete()
+            && !self
                 .retirements
                 .iter()
-                .any(|retirement| retirement.identity.is_same_lifecycle(&lifecycle))
-            {
-                continue;
-            }
+                .any(|existing| existing.shutdown.is_same_lifecycle(&retirement.shutdown))
+        {
             self.retirements.push(RetiredRtmpLifecycle {
-                identity: lifecycle.clone(),
-                authority: RtmpRetirementAuthority::Lifecycle(lifecycle),
-                initiating: false,
+                shutdown: retirement.shutdown,
             });
         }
     }
 
     pub(crate) fn take_shutdown_work(&mut self) -> Vec<RtmpRetirementWork> {
-        let mut work = Vec::with_capacity(self.retirements.len());
-        for retirement in &mut self.retirements {
-            let identity = retirement.identity.clone();
-            let authority = match &retirement.authority {
-                RtmpRetirementAuthority::Lifecycle(lifecycle) if !retirement.initiating => {
-                    retirement.initiating = true;
-                    Some(RtmpRetirementAuthority::Lifecycle(lifecycle.clone()))
-                }
-                RtmpRetirementAuthority::Shutdown(shutdown) => {
-                    Some(RtmpRetirementAuthority::Shutdown(shutdown.clone()))
-                }
-                RtmpRetirementAuthority::Lifecycle(_) => None,
-            };
-            if let Some(authority) = authority {
-                work.push(RtmpRetirementWork {
-                    identity,
-                    authority,
-                });
-            }
-        }
-        work
-    }
-
-    pub(crate) fn store_shutdown(
-        &mut self,
-        identity: &RtmpRecorderLifecycle,
-        shutdown: RtmpRecorderShutdown,
-    ) {
-        if let Some(retirement) = self
-            .retirements
-            .iter_mut()
-            .find(|retirement| retirement.identity.is_same_lifecycle(identity))
-        {
-            retirement.authority = RtmpRetirementAuthority::Shutdown(shutdown);
-            retirement.initiating = false;
-        }
+        self.retirements
+            .iter()
+            .map(|retirement| RtmpRetirementWork {
+                shutdown: retirement.shutdown.clone(),
+            })
+            .collect()
     }
 
     pub(crate) fn prune_completed(&mut self) {
         self.retirements
-            .retain(|retirement| match &retirement.authority {
-                RtmpRetirementAuthority::Shutdown(shutdown) => !shutdown.is_complete(),
-                RtmpRetirementAuthority::Lifecycle(lifecycle) => !lifecycle.is_complete(),
-            });
+            .retain(|retirement| !retirement.shutdown.is_complete());
     }
 
     #[cfg(test)]
@@ -222,14 +154,8 @@ impl RtmpRetirementRegistry {
 }
 
 impl RtmpRetirementWork {
-    pub(crate) fn initiate(
-        self,
-        deadline: Instant,
-    ) -> (RtmpRecorderLifecycle, RtmpRecorderShutdown) {
-        let shutdown = match self.authority {
-            RtmpRetirementAuthority::Lifecycle(lifecycle) => lifecycle.initiate_shutdown(deadline),
-            RtmpRetirementAuthority::Shutdown(shutdown) => shutdown,
-        };
-        (self.identity, shutdown)
+    pub(crate) fn initiate(self, deadline: Instant) -> RtmpShutdown {
+        self.shutdown.initiate(deadline);
+        self.shutdown
     }
 }

@@ -6,19 +6,24 @@ use std::time::{Duration, Instant};
 
 use oxiroute_config::CertificateSource;
 use pingora::protocols::http::ServerSession;
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 
 use super::{
     ApiResponse,
     config::read_config_body,
     dto::{
-        GenerationResponse, ListenerInventoryResponse, PoolInventoryResponse,
-        ServerInventoryResponse,
+        AuditPageResponse, AuditStatusResponse, ConfigRejectedResponse, DnsRefreshResponse,
+        DnsRefreshServer, DrainRequest, DrainResponse, EventPageV1Response, EventPageV2Response,
+        GenerationActionResponse, GenerationResponse, ListenerInventoryResponse,
+        ListenerStateRequest, MutationResponse, PoolInventoryResponse, PoolStateRequest,
+        ProcessMutationResponse, RevisionRequest, ServerCapacityRequest, ServerChange,
+        ServerChecksRequest, ServerHealthRequest, ServerInventoryResponse, ServerStateRequest,
+        TlsActionResponse, TlsCertificateDto, TlsInventoryResponse, TlsJobControlResponse,
+        TlsReconcileOutcome, TlsReconcileResponse, TlsRenewResponse, TlsRequest, TlsRevokeRequest,
     },
 };
 use crate::{
-    AdministrativeState, GenerationManager, HealthOverride, RuntimeGeneration, RuntimeMetrics,
+    AdministrativeState, GenerationManager, RuntimeGeneration, RuntimeMetrics,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
     generation::GENERATION_PREPARATION_TIMEOUT,
     operational_event::{AuditCategory, AuditContext, AuditResult, AuditStore},
@@ -410,22 +415,16 @@ impl ManagementState {
         for (pool, server) in &selected {
             let pool_name = pool.health_snapshot().name;
             if let Ok(addresses) = pool.resolve_server_dns(server).await {
-                refreshed.push(json!({
-                    "pool": pool_name,
-                    "server": server,
-                    "outcome": "refreshed",
-                    "addresses": &addresses,
-                }));
+                refreshed.push(DnsRefreshServer::refreshed(
+                    pool_name,
+                    server.clone(),
+                    &addresses,
+                ));
                 resolutions.push(Some(addresses));
             } else {
                 failed = true;
                 resolutions.push(None);
-                refreshed.push(json!({
-                    "pool": pool_name,
-                    "server": server,
-                    "outcome": "failed",
-                    "error": { "code": "dns_refresh_failed" },
-                }));
+                refreshed.push(DnsRefreshServer::failed(pool_name, server.clone()));
             }
         }
         let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
@@ -451,13 +450,9 @@ impl ManagementState {
                 );
             }
         }
-        ApiResponse::json(
+        dto_response(
             if failed { 207 } else { 200 },
-            &json!({
-                "outcome": if failed { "partially_refreshed" } else { "refreshed" },
-                "atomic": false,
-                "servers": refreshed,
-            }),
+            &DnsRefreshResponse::new(failed, refreshed),
         )
     }
 
@@ -517,17 +512,13 @@ impl ManagementState {
         let document = match self.coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => document,
             ConfigLoadOutcome::Rejected(rejection) => {
-                return ApiResponse::json(
+                return dto_response(
                     422,
-                    &json!({
-                        "error": {
-                            "code": "config_rejected",
-                            "message": "persisted configuration is invalid",
-                        },
-                        "diskRevision": rejection.disk_revision,
-                        "activeRevision": self.generations.status().active_revision,
-                        "diagnostics": rejection.diagnostics,
-                    }),
+                    &ConfigRejectedResponse::new(
+                        rejection.disk_revision,
+                        self.generations.status().active_revision,
+                        rejection.diagnostics,
+                    ),
                 );
             }
         };
@@ -535,12 +526,9 @@ impl ManagementState {
             .generations
             .prepare_with_deadline(*document, Instant::now() + GENERATION_PREPARATION_TIMEOUT)
         {
-            Ok(candidate) => ApiResponse::json(
+            Ok(candidate) => dto_response(
                 202,
-                &json!({
-                    "outcome": "startup_requested",
-                    "candidateRevision": candidate.revision().candidate,
-                }),
+                &GenerationActionResponse::startup(&candidate.revision().candidate),
             ),
             Err(error) => ApiResponse::error(
                 422,
@@ -563,12 +551,9 @@ impl ManagementState {
             .generations
             .rollback_with_deadline(Instant::now() + GENERATION_PREPARATION_TIMEOUT)
         {
-            Ok(candidate) => ApiResponse::json(
+            Ok(candidate) => dto_response(
                 202,
-                &json!({
-                    "outcome": "rollback_startup_requested",
-                    "candidateRevision": candidate.revision().candidate,
-                }),
+                &GenerationActionResponse::rollback(&candidate.revision().candidate),
             ),
             Err(error) => {
                 ApiResponse::error(409, error.code(), "no previous generation can be activated")
@@ -595,12 +580,9 @@ impl ManagementState {
             );
         }
         active.stop_accepting();
-        ApiResponse::json(
+        dto_response(
             202,
-            &json!({
-                "outcome": if active.drained() { "drained" } else { "draining" },
-                "activeReferences": active_reference_count(active),
-            }),
+            &DrainResponse::new(active.drained(), active_reference_count(active)),
         )
     }
 
@@ -617,7 +599,7 @@ impl ManagementState {
             .generation()
             .metrics()
             .set_process_administrative_state(AdministrativeState::Drain);
-        ApiResponse::json(202, &json!({ "outcome": "draining" }))
+        dto_response(202, &ProcessMutationResponse::draining())
     }
 
     async fn process_shutdown(&self, session: &mut ServerSession) -> ApiResponse {
@@ -646,7 +628,7 @@ impl ManagementState {
             .set_process_administrative_state(AdministrativeState::Drain);
         shutdown.store(true, Ordering::Release);
         crate::operational_event::emit("process_shutdown", "requested", None);
-        ApiResponse::json(202, &json!({ "outcome": "shutdown_requested" }))
+        dto_response(202, &ProcessMutationResponse::shutdown_requested())
     }
 
     fn tls(&self) -> ApiResponse {
@@ -662,69 +644,62 @@ impl ManagementState {
             .as_draft()
             .certificates
             .iter()
-            .map(|certificate| {
-                let (source, development_only, status) = match &certificate.source {
-                    CertificateSource::Files { .. } => (
-                        "files",
-                        false,
-                        snapshot
-                            .direct_file_certificates
-                            .iter()
-                            .find(|status| status.name == certificate.name)
-                            .map(|status| json!(status)),
-                    ),
-                    CertificateSource::Certbot { .. } => (
-                        "certbot",
-                        false,
-                        snapshot
-                            .certbot_certificates
-                            .iter()
-                            .find(|status| status.name == certificate.name)
-                            .map(|status| json!(status)),
-                    ),
-                    CertificateSource::AcmeManaged { .. } => (
-                        "acme_managed",
-                        false,
-                        active
-                            .tls()
-                            .acme_reconcilers()
-                            .iter()
-                            .find_map(|reconciler| {
-                                (reconciler.status().certificate == certificate.name)
-                                    .then(|| json!(reconciler.status()))
-                            }),
-                    ),
-                    CertificateSource::SelfSignedDevelopment { .. } => (
-                        "self_signed_development",
-                        true,
-                        active
-                            .tls()
-                            .certificates()
-                            .get(&certificate.name)
-                            .map(|active| {
-                                let metadata = active.snapshot();
-                                json!({
-                                    "activeContentRevision": metadata.metadata().revision,
-                                    "expiresAt": metadata.metadata().validity.not_after,
-                                })
-                            }),
-                    ),
-                };
-                json!({
-                    "name": certificate.name,
-                    "dnsNames": certificate.dns_names,
-                    "source": source,
-                    "developmentOnly": development_only,
-                    "status": status,
-                })
+            .map(|certificate| match &certificate.source {
+                CertificateSource::Files { .. } => TlsCertificateDto::files(
+                    certificate.name.clone(),
+                    certificate.dns_names.clone(),
+                    snapshot
+                        .direct_file_certificates
+                        .iter()
+                        .find(|status| status.name == certificate.name)
+                        .cloned(),
+                ),
+                CertificateSource::Certbot { .. } => TlsCertificateDto::certbot(
+                    certificate.name.clone(),
+                    certificate.dns_names.clone(),
+                    snapshot
+                        .certbot_certificates
+                        .iter()
+                        .find(|status| status.name == certificate.name)
+                        .cloned(),
+                ),
+                CertificateSource::AcmeManaged { .. } => TlsCertificateDto::managed(
+                    certificate.name.clone(),
+                    certificate.dns_names.clone(),
+                    active
+                        .tls()
+                        .acme_reconcilers()
+                        .iter()
+                        .find_map(|reconciler| {
+                            (reconciler.status().certificate == certificate.name)
+                                .then(|| reconciler.status())
+                        }),
+                ),
+                CertificateSource::SelfSignedDevelopment { .. } => {
+                    let status = active
+                        .tls()
+                        .certificates()
+                        .get(&certificate.name)
+                        .map(|active| {
+                            let metadata = active.snapshot();
+                            (
+                                metadata.metadata().revision.clone(),
+                                metadata.metadata().validity.not_after.clone(),
+                            )
+                        });
+                    let (revision, expires_at) = status.unzip();
+                    TlsCertificateDto::self_signed(
+                        certificate.name.clone(),
+                        certificate.dns_names.clone(),
+                        revision,
+                        expires_at,
+                    )
+                }
             })
             .collect::<Vec<_>>();
-        ApiResponse::json(
+        dto_response(
             200,
-            &json!({
-                "certificates": certificates,
-                "watcher": snapshot.certbot_watcher,
-            }),
+            &TlsInventoryResponse::new(certificates, snapshot.certbot_watcher),
         )
     }
 
@@ -770,12 +745,12 @@ impl ManagementState {
                                 ..
                             } => (Some(previous_archive_revision), archive_revision),
                         };
-                        outcomes.push(json!({
-                            "certificate": status.certificate,
-                            "outcome": outcome.code(),
-                            "previousArchiveRevision": previous.map(|value| value.to_string()),
-                            "archiveRevision": archive.to_string(),
-                        }));
+                        outcomes.push(TlsReconcileOutcome::certbot(
+                            status,
+                            outcome.code(),
+                            previous.map(|value| value.to_string()),
+                            archive.to_string(),
+                        ));
                     }
                     Err(error) => {
                         return ApiResponse::error(
@@ -795,12 +770,10 @@ impl ManagementState {
                 .is_none_or(|name| name == status.certificate)
             {
                 match reconciler.reconcile() {
-                    Ok(outcome) => outcomes.push(json!({
-                        "certificate": status.certificate,
-                        "outcome": outcome.code(),
-                        "diskRevision": reconciler.status().disk_revision,
-                        "activeRevision": reconciler.status().active_revision,
-                    })),
+                    Ok(outcome) => outcomes.push(TlsReconcileOutcome::managed(
+                        reconciler.status(),
+                        outcome.code(),
+                    )),
                     Err(_) => {
                         return ApiResponse::error(
                             503,
@@ -811,7 +784,7 @@ impl ManagementState {
                 }
             }
         }
-        ApiResponse::json(200, &json!({ "outcomes": outcomes }))
+        dto_response(200, &TlsReconcileResponse::new(outcomes))
     }
 
     async fn tls_renew(&self, session: &mut ServerSession, context: &AuditContext) -> ApiResponse {
@@ -876,15 +849,7 @@ impl ManagementState {
                     &status.certificate,
                     context,
                 );
-                ApiResponse::json(
-                    200,
-                    &json!({
-                        "certificate": status.certificate,
-                        "outcome": outcome.code(),
-                        "diskRevision": status.disk_revision,
-                        "activeRevision": status.active_revision,
-                    }),
-                )
+                dto_response(200, &TlsRenewResponse::new(status, outcome.code()))
             }
             Ok(Err(error)) => {
                 crate::operational_event::emit_certificate_with_context(
@@ -948,13 +913,9 @@ impl ManagementState {
                     &certificate,
                     context,
                 );
-                ApiResponse::json(
+                dto_response(
                     200,
-                    &json!({
-                        "certificate": certificate,
-                        "outcome": outcome.code(),
-                        "jobId": job_id,
-                    }),
+                    &TlsActionResponse::new(certificate, outcome.code(), Some(job_id)),
                 )
             }
             Ok(Err(error)) => {
@@ -1041,13 +1002,9 @@ impl ManagementState {
                     &certificate,
                     context,
                 );
-                ApiResponse::json(
+                dto_response(
                     200,
-                    &json!({
-                        "certificate": certificate,
-                        "outcome": outcome.code(),
-                        "jobId": job_id,
-                    }),
+                    &TlsActionResponse::new(certificate, outcome.code(), Some(job_id)),
                 )
             }
             Ok(Err(error)) => {
@@ -1120,13 +1077,9 @@ impl ManagementState {
                     &certificate,
                     context,
                 );
-                ApiResponse::json(
+                dto_response(
                     200,
-                    &json!({
-                        "certificate": certificate,
-                        "outcome": outcome.code(),
-                        "jobId": job_id,
-                    }),
+                    &TlsActionResponse::new(certificate, outcome.code(), Some(job_id)),
                 )
             }
             Ok(Err(error)) => {
@@ -1191,7 +1144,7 @@ impl ManagementState {
                     &certificate,
                     context,
                 );
-                json!({ "certificate": certificate, "outcome": "cancellation_requested", "jobId": job_id })
+                TlsJobControlResponse::cancellation(certificate.clone(), job_id)
             }),
             JobControl::Pause => reconciler.pause().map(|job_id| {
                 crate::operational_event::emit_certificate_with_context(
@@ -1200,7 +1153,7 @@ impl ManagementState {
                     &certificate,
                     context,
                 );
-                json!({ "certificate": certificate, "outcome": "paused", "jobId": job_id })
+                TlsJobControlResponse::paused(certificate.clone(), job_id)
             }),
             JobControl::Resume => reconciler.resume().map(|()| {
                 crate::operational_event::emit_certificate_with_context(
@@ -1209,17 +1162,17 @@ impl ManagementState {
                     &certificate,
                     context,
                 );
-                json!({ "certificate": certificate, "outcome": "resumed" })
+                TlsJobControlResponse::resumed(certificate.clone())
             }),
         };
         match result {
-            Ok(response) => ApiResponse::json(202, &response),
+            Ok(response) => dto_response(202, &response),
             Err(error) => managed_error_response(error, "managed ACME job control failed"),
         }
     }
 
     fn audit_status(&self) -> ApiResponse {
-        ApiResponse::json(200, &json!({ "audit": self.audit.status() }))
+        dto_response(200, &AuditStatusResponse::from(self.audit.status()))
     }
 
     fn audit(&self, query: Option<&str>) -> ApiResponse {
@@ -1282,16 +1235,7 @@ impl ManagementState {
             }
         }
         let page = self.audit.page(after, limit, category, result);
-        ApiResponse::json(
-            200,
-            &json!({
-                "records": page.records,
-                "cursor": page.cursor,
-                "hasMore": page.has_more,
-                "oldestCursor": page.oldest_cursor,
-                "latestCursor": page.latest_cursor,
-            }),
-        )
+        dto_response(200, &AuditPageResponse::from(page))
     }
 
     fn events(version: EventApiVersion, query: Option<&str>) -> ApiResponse {
@@ -1333,33 +1277,8 @@ impl ManagementState {
         }
         let page = crate::operational_event::page(after, limit);
         match version {
-            EventApiVersion::V1 => ApiResponse::json(
-                200,
-                &json!({
-                    "events": page
-                        .events
-                        .iter()
-                        .map(crate::operational_event::v1_event_value)
-                        .collect::<Vec<_>>(),
-                    "cursor": page.cursor,
-                    "hasMore": page.has_more,
-                    "oldestCursor": page.oldest_cursor,
-                }),
-            ),
-            EventApiVersion::V2 => ApiResponse::json(
-                200,
-                &json!({
-                    "events": page
-                        .events
-                        .iter()
-                        .map(crate::operational_event::v2_event_value)
-                        .collect::<Vec<_>>(),
-                    "cursor": page.cursor,
-                    "latestCursor": page.latest_cursor,
-                    "hasMore": page.has_more,
-                    "oldestCursor": page.oldest_cursor,
-                }),
-            ),
+            EventApiVersion::V1 => dto_response(200, &EventPageV1Response::from(page)),
+            EventApiVersion::V2 => dto_response(200, &EventPageV2Response::from(page)),
         }
     }
 }
@@ -1394,7 +1313,14 @@ fn active_reference_count(active: &RuntimeGeneration) -> u64 {
 
 fn mutation_response(operation: &str, changed: usize) -> ApiResponse {
     crate::operational_event::emit(operation, "applied", None);
-    ApiResponse::json(200, &json!({ "outcome": "applied", "changed": changed }))
+    dto_response(200, &MutationResponse::applied(changed))
+}
+
+fn dto_response<T: schemars::JsonSchema + Serialize>(status: u16, response: &T) -> ApiResponse {
+    ApiResponse::json(
+        status,
+        &serde_json::to_value(response).expect("management response DTO serializes"),
+    )
 }
 
 fn invalid_batch() -> ApiResponse {
@@ -1542,97 +1468,4 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&response.body).expect("error JSON");
         assert_eq!(body["error"]["code"], "dns_cleanup_pending");
     }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ListenerStateRequest {
-    listeners: Vec<String>,
-    state: AdministrativeState,
-    expected_active_revision: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PoolStateRequest {
-    pools: Vec<String>,
-    state: AdministrativeState,
-    expected_active_revision: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ServerTarget {
-    pool: String,
-    server: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ServerChange {
-    targets: Vec<ServerTarget>,
-    expected_active_revision: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ServerStateRequest {
-    #[serde(flatten)]
-    change: ServerChange,
-    state: AdministrativeState,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ServerHealthRequest {
-    #[serde(flatten)]
-    change: ServerChange,
-    health: HealthOverride,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ServerChecksRequest {
-    #[serde(flatten)]
-    change: ServerChange,
-    enabled: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ServerCapacityRequest {
-    #[serde(flatten)]
-    change: ServerChange,
-    max_connections: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RevisionRequest {
-    expected_active_revision: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DrainRequest {
-    expected_active_revision: String,
-    #[serde(default)]
-    timeout_ms: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TlsRequest {
-    expected_active_revision: String,
-    #[serde(default)]
-    certificate: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TlsRevokeRequest {
-    expected_active_revision: String,
-    certificate: String,
-    #[serde(default)]
-    reason: Option<u8>,
 }

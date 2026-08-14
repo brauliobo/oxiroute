@@ -169,6 +169,8 @@ pub enum ServicePlanError {
     RuntimePolicyUnavailable { policy: &'static str },
     #[error("RTMP runtime values cannot be prepared: {0}")]
     RtmpPreparation(#[source] Box<oxiroute_rtmp::RtmpPrepareError>),
+    #[error("RTMP runtime resources cannot be prepared: {0}")]
+    RtmpRuntimePreparation(#[source] oxiroute_rtmp::RtmpRuntimeSetError),
 }
 
 pub(crate) fn rtmp_preparation_error(source: oxiroute_rtmp::RtmpPrepareError) -> ServicePlanError {

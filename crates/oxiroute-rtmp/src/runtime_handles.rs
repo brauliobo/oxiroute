@@ -9,9 +9,9 @@ use std::{
 use crate::{
     CatalogError, LiveHub, LiveHubLimits, MediaApplication, MediaCatalog, RecorderId,
     RecorderSnapshot, RtmpAutoPushStatus, RtmpCallbackEventPlan, RtmpCallbackPlan,
-    RtmpCallbackPolicy, RtmpCatalogSnapshot, RtmpClientOptions, RtmpClientSnapshot, RtmpCredential,
-    RtmpMediaPlan, RtmpMediaStoreRegistry, RtmpPrepareContext, RtmpPrepareMode,
-    RtmpRecorderLifecycle, RtmpRecorderShutdown, RtmpRecorderStoreRegistry, RtmpRegistry,
+    RtmpCallbackPolicy, RtmpCapabilities, RtmpCatalogSnapshot, RtmpClientOptions,
+    RtmpClientSnapshot, RtmpCredential, RtmpMediaPlan, RtmpMediaStoreRegistry, RtmpPrepareContext,
+    RtmpPrepareMode, RtmpRecorderLifecycle, RtmpRecorderStoreRegistry, RtmpRegistry,
     RtmpServicePlan, RtmpServicePreparation, RtmpServiceRuntime, RtmpSession,
     RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome,
     RtmpSessionPolicy, SessionId, StreamId, VodApplication, VodCatalog,
@@ -262,28 +262,49 @@ impl From<Arc<RtmpRegistry>> for RtmpControlHandle {
 /// Bounded completion handle for all recorder lifecycles in one RTMP runtime set.
 #[derive(Clone)]
 pub struct RtmpShutdown {
-    recorders: Arc<Vec<RtmpRecorderShutdown>>,
+    lifecycles: Arc<Vec<RtmpRecorderLifecycle>>,
+}
+
+impl Default for RtmpShutdown {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
 }
 
 impl RtmpShutdown {
-    fn new(recorders: Vec<RtmpRecorderShutdown>) -> Self {
+    fn new(lifecycles: Vec<RtmpRecorderLifecycle>) -> Self {
         Self {
-            recorders: Arc::new(recorders),
+            lifecycles: Arc::new(lifecycles),
+        }
+    }
+
+    /// Returns true when both handles represent the same runtime-set shutdown authority.
+    #[must_use]
+    pub fn is_same_lifecycle(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.lifecycles, &other.lifecycles)
+    }
+
+    /// Closes every recorder lifecycle represented by this handle by the supplied deadline.
+    pub fn initiate(&self, deadline: Instant) {
+        for lifecycle in self.lifecycles.iter() {
+            drop(lifecycle.initiate_shutdown(deadline));
         }
     }
 
     /// Returns true when every recorder lifecycle has completed.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.recorders.iter().all(RtmpRecorderShutdown::is_complete)
+        self.lifecycles
+            .iter()
+            .all(RtmpRecorderLifecycle::is_complete)
     }
 
     /// Waits until every recorder lifecycle completes or the supplied absolute deadline expires.
     #[must_use]
     pub fn wait_until(&self, deadline: Instant) -> bool {
         let mut complete = true;
-        for recorder in self.recorders.iter() {
-            complete &= recorder.wait_until(deadline);
+        for lifecycle in self.lifecycles.iter() {
+            complete &= lifecycle.shutdown_handle().wait_until(deadline);
         }
         complete && self.is_complete()
     }
@@ -295,11 +316,13 @@ pub struct RtmpRuntimeSet {
     services: Vec<RtmpServiceHandle>,
     service_index: BTreeMap<String, usize>,
     control: RtmpControlHandle,
+    shutdown: RtmpShutdown,
 }
 
 /// Linear owner of RTMP service plans that have completed preparation but have not been started.
 pub struct PreparedRtmpRuntimeSet {
     mode: RtmpPrepareMode,
+    registry: Arc<RtmpRegistry>,
     services: Vec<PreparedRtmpService>,
     #[cfg(test)]
     start_failure: Option<String>,
@@ -352,6 +375,17 @@ impl PreparedRtmpRuntimeSet {
         deadline: Instant,
     ) -> Result<Self, RtmpRuntimeSetError> {
         let plans: Vec<_> = plans.into_iter().collect();
+        let capabilities = RtmpCapabilities {
+            live_ingest: !plans.is_empty(),
+            manual_recording: plans.iter().any(|plan| {
+                plan.applications().iter().any(|application| {
+                    application
+                        .recorders()
+                        .iter()
+                        .any(|recorder| recorder.start() == crate::RtmpRecorderStart::Manual)
+                })
+            }),
+        };
         let mut service_ids = BTreeSet::new();
         for plan in &plans {
             let service_id = plan.service_id().to_owned();
@@ -375,6 +409,7 @@ impl PreparedRtmpRuntimeSet {
         }
         Ok(Self {
             mode: context.mode(),
+            registry: Arc::new(RtmpRegistry::new(capabilities)),
             services,
             #[cfg(test)]
             start_failure: None,
@@ -395,7 +430,7 @@ impl PreparedRtmpRuntimeSet {
         self.services.is_empty()
     }
 
-    /// Consumes activation preparation and starts every service against one shared registry.
+    /// Consumes activation preparation and starts every service against its retained registry.
     ///
     /// Services start in canonical plan order. A timeout or start failure closes admission and
     /// rolls already-started services back in reverse order, bounded by `deadline`.
@@ -404,11 +439,7 @@ impl PreparedRtmpRuntimeSet {
     ///
     /// Returns an error for validation-only preparation, an expired start deadline, or a service
     /// start failure.
-    pub fn start(
-        self,
-        registry: Arc<RtmpRegistry>,
-        deadline: Instant,
-    ) -> Result<RtmpRuntimeSet, RtmpRuntimeSetError> {
+    pub fn start(self, deadline: Instant) -> Result<RtmpRuntimeSet, RtmpRuntimeSetError> {
         if self.mode == RtmpPrepareMode::Validation {
             return Err(RtmpRuntimeSetError::ValidationOnly);
         }
@@ -434,7 +465,7 @@ impl PreparedRtmpRuntimeSet {
                 } else {
                     service
                         .preparation
-                        .start(Arc::clone(&registry))
+                        .start(Arc::clone(&self.registry))
                         .map_err(|_| RtmpRuntimeSetError::Start {
                             service_id: service.service_id.clone(),
                         })
@@ -442,7 +473,7 @@ impl PreparedRtmpRuntimeSet {
                 #[cfg(not(test))]
                 service
                     .preparation
-                    .start(Arc::clone(&registry))
+                    .start(Arc::clone(&self.registry))
                     .map_err(|_| RtmpRuntimeSetError::Start {
                         service_id: service.service_id.clone(),
                     })
@@ -467,7 +498,7 @@ impl PreparedRtmpRuntimeSet {
             }
         }
         RtmpRuntimeSet::from_started_with_catalogs(
-            registry,
+            self.registry,
             runtimes,
             VodCatalog::from_applications(vod_applications),
             Arc::new(MediaCatalog::from_applications(media_applications)),
@@ -768,10 +799,12 @@ impl RtmpRuntimeSet {
         }
         let control =
             RtmpControlHandle::new(registry, services.clone(), vod_catalog, media_catalog);
+        let shutdown = RtmpShutdown::new(recorder_lifecycles(&services));
         Ok(Self {
             services,
             service_index,
             control,
+            shutdown,
         })
     }
 
@@ -794,34 +827,30 @@ impl RtmpRuntimeSet {
     #[must_use]
     pub fn begin_shutdown(&self, deadline: Instant) -> RtmpShutdown {
         self.control.close_admission();
-        let mut recorders = Vec::new();
-        for service in &self.services {
-            if let Some(shutdown) = service.runtime.initiate_recorder_shutdown_scoped(deadline)
-                && !recorders
-                    .iter()
-                    .any(|existing: &RtmpRecorderShutdown| existing.is_same_lifecycle(&shutdown))
-            {
-                recorders.push(shutdown);
-            }
-        }
-        RtmpShutdown::new(recorders)
+        let shutdown = self.shutdown_handle();
+        shutdown.initiate(deadline);
+        shutdown
     }
 
-    #[doc(hidden)]
+    /// Returns generation-independent shutdown authority for this runtime set.
     #[must_use]
-    pub fn recorder_lifecycles(&self) -> Vec<RtmpRecorderLifecycle> {
-        let mut lifecycles = Vec::new();
-        for service in &self.services {
-            if let Some(lifecycle) = service.runtime.recorder_lifecycle()
-                && !lifecycles
-                    .iter()
-                    .any(|existing: &RtmpRecorderLifecycle| existing.is_same_lifecycle(&lifecycle))
-            {
-                lifecycles.push(lifecycle);
-            }
-        }
-        lifecycles
+    pub fn shutdown_handle(&self) -> RtmpShutdown {
+        self.shutdown.clone()
     }
+}
+
+fn recorder_lifecycles(services: &[RtmpServiceHandle]) -> Vec<RtmpRecorderLifecycle> {
+    let mut lifecycles = Vec::new();
+    for service in services {
+        if let Some(lifecycle) = service.runtime.recorder_lifecycle()
+            && !lifecycles
+                .iter()
+                .any(|existing: &RtmpRecorderLifecycle| existing.is_same_lifecycle(&lifecycle))
+        {
+            lifecycles.push(lifecycle);
+        }
+    }
+    lifecycles
 }
 
 #[cfg(test)]
@@ -917,7 +946,7 @@ mod tests {
         assert_eq!(prepared.len(), 2);
         assert!(!prepared.is_empty());
         assert!(matches!(
-            prepared.start(registry(), Instant::now() + Duration::from_secs(1)),
+            prepared.start(Instant::now() + Duration::from_secs(1)),
             Err(RtmpRuntimeSetError::ValidationOnly)
         ));
     }
@@ -931,12 +960,8 @@ mod tests {
             Instant::now() + Duration::from_secs(1),
         )
         .expect("prepared runtime set");
-        let registry = registry();
         let set = prepared
-            .start(
-                Arc::clone(&registry),
-                Instant::now() + Duration::from_secs(1),
-            )
+            .start(Instant::now() + Duration::from_secs(1))
             .expect("started runtime set");
 
         assert_eq!(
@@ -949,7 +974,7 @@ mod tests {
         assert!(
             set.services
                 .iter()
-                .all(|service| Arc::ptr_eq(service.runtime.registry(), &registry))
+                .all(|service| Arc::ptr_eq(service.runtime.registry(), &set.control.registry))
         );
     }
 
@@ -987,7 +1012,7 @@ mod tests {
             Instant::now() + Duration::from_secs(1),
         )
         .expect("prepared runtime set");
-        let Err(expired) = prepared.start(registry(), Instant::now()) else {
+        let Err(expired) = prepared.start(Instant::now()) else {
             panic!("expired start was accepted")
         };
         assert_eq!(
@@ -1014,8 +1039,7 @@ mod tests {
         .fail_start_for("charlie");
         let events = prepared.start_events();
 
-        let Err(failure) = prepared.start(registry(), Instant::now() + Duration::from_secs(1))
-        else {
+        let Err(failure) = prepared.start(Instant::now() + Duration::from_secs(1)) else {
             panic!("injected start failure was ignored")
         };
         assert_eq!(
@@ -1047,9 +1071,7 @@ mod tests {
         assert!(prepared.is_empty());
 
         let deadline = Instant::now() + Duration::from_secs(1);
-        let set = prepared
-            .start(registry(), deadline)
-            .expect("empty runtime set");
+        let set = prepared.start(deadline).expect("empty runtime set");
         let shutdown = set.begin_shutdown(deadline);
         assert!(shutdown.is_complete());
         assert!(shutdown.wait_until(deadline));
@@ -1356,12 +1378,12 @@ mod tests {
             .expect("alpha recorder lifecycle");
         let deadline = Instant::now() + Duration::from_secs(1);
         let shutdown = set.begin_shutdown(deadline);
-        let zulu_shutdown = zulu.initiate_shutdown(deadline);
-        let alpha_shutdown = alpha.initiate_shutdown(deadline);
+        drop(zulu.initiate_shutdown(deadline));
+        drop(alpha.initiate_shutdown(deadline));
 
-        assert_eq!(shutdown.recorders.len(), 2);
-        assert!(shutdown.recorders[0].is_same_lifecycle(&zulu_shutdown));
-        assert!(shutdown.recorders[1].is_same_lifecycle(&alpha_shutdown));
+        assert_eq!(shutdown.lifecycles.len(), 2);
+        assert!(shutdown.lifecycles[0].is_same_lifecycle(&zulu));
+        assert!(shutdown.lifecycles[1].is_same_lifecycle(&alpha));
         assert!(shutdown.wait_until(deadline));
     }
 
