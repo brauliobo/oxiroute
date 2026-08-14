@@ -8,9 +8,9 @@ use tempfile::tempdir;
 
 use oxiroute_rtmp::{
     DashSegmentNaming, ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecTrigger,
-    HlsFragmentNaming, HlsKeyConfig, HlsVariant, LiveHub, LiveHubLimits, RecorderMediaMask,
-    RecorderWorkerConfig, RecordingPathPolicy, RecordingStoreLimits, RtmpAccessAction,
-    RtmpAccessPlan, RtmpAccessRulePlan, RtmpApplicationPlan, RtmpAutoPushConfig, RtmpAutoPushPlan,
+    HlsFragmentNaming, HlsKeyConfig, HlsVariant, RecorderMediaMask, RecorderWorkerConfig,
+    RecordingPathPolicy, RecordingStoreLimits, RtmpAccessAction, RtmpAccessPlan,
+    RtmpAccessRulePlan, RtmpApplicationPlan, RtmpAutoPushConfig, RtmpAutoPushPlan,
     RtmpCallbackError, RtmpCallbackEventPlan, RtmpCallbackMethod, RtmpCallbackPlan,
     RtmpCallbackPolicy, RtmpClientPlan, RtmpCredentialPlan, RtmpDashPlan, RtmpExecEnvironmentPlan,
     RtmpExecPlan, RtmpFanoutPlan, RtmpHlsPlan, RtmpMediaPlan, RtmpNetwork, RtmpOutboundPolicy,
@@ -142,7 +142,7 @@ fn vod_acquisition_stays_inside_the_rtmp_plan_owner() {
 #[test]
 fn runtime_application_construction_stays_inside_the_rtmp_plan_owner() {
     let runtime = application(None).build_runtime_application(
-        LiveHub::new(LiveHubLimits::default()),
+        application(None).fanout().runtime_hub(),
         [],
         [],
         RtmpCallbackPolicy::default(),

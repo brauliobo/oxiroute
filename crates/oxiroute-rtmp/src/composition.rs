@@ -11,14 +11,14 @@ use std::{
 use crate::{
     DashSegmentNaming, DestinationPolicyError, ExecEnvironment, ExecFilesystemPolicy, ExecLimits,
     ExecMode, ExecNetworkPolicy, ExecProfile, ExecProfileError, ExecTrigger, HlsFragmentNaming,
-    HlsKeyConfig, HlsValueError, HlsVariant, LiveHub, MediaApplication, RecorderWorkerConfig,
-    RecorderWorkerStartError, RecordingPathPolicy, RecordingStoreLimits, RecordingStoreLimitsError,
-    RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpAutoPushConfig,
-    RtmpAutoPushConfigError, RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCallbackValueError,
-    RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget,
-    RtmpRecorderPolicy, RtmpRecorderStart, RtmpSessionCeilings, RtmpSessionLimitError,
-    RtmpSessionLimits, RtmpStreamPath, RtmpTokenPolicy, RtmpTransport, VodApplication, VodLimits,
-    VodSourceDefinition, VodValueError, validate_callback_url_intrinsic,
+    HlsKeyConfig, HlsValueError, HlsVariant, LiveHub, LiveHubLimits, MediaApplication,
+    RecorderWorkerConfig, RecorderWorkerStartError, RecordingPathPolicy, RecordingStoreLimits,
+    RecordingStoreLimitsError, RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule, RtmpApplication,
+    RtmpAutoPushConfig, RtmpAutoPushConfigError, RtmpCallbackMethod, RtmpCallbackPolicy,
+    RtmpCallbackValueError, RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication,
+    RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpSessionCeilings,
+    RtmpSessionLimitError, RtmpSessionLimits, RtmpStreamPath, RtmpTokenPolicy, RtmpTransport,
+    VodApplication, VodLimits, VodSourceDefinition, VodValueError, validate_callback_url_intrinsic,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -585,6 +585,19 @@ impl RtmpFanoutPlan {
     #[must_use]
     pub const fn max_queue_bytes_per_subscriber(self) -> usize {
         self.max_queue_bytes_per_subscriber
+    }
+
+    /// Builds the live fanout hub represented by this validated plan.
+    #[must_use]
+    pub fn runtime_hub(self) -> LiveHub {
+        LiveHub::new(LiveHubLimits {
+            max_subscribers: self.max_subscribers,
+            max_subscribers_per_stream: self.max_subscribers,
+            max_queue_messages_per_subscriber: self.max_queue_messages_per_subscriber,
+            max_queue_bytes_per_subscriber: self.max_queue_bytes_per_subscriber,
+            max_fanout_bytes: self.max_subscribers * self.max_queue_bytes_per_subscriber,
+            ..LiveHubLimits::default()
+        })
     }
 }
 

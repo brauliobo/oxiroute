@@ -1534,8 +1534,8 @@ fn compile_rtmp_services(
         let callbacks =
             acquire_rtmp_callbacks(plan.callbacks(), &outbound_policy, plan.service_id(), None)?;
         let mut prepared_applications = Vec::with_capacity(plan.applications().len());
-        for (application, decisions) in plan.applications().iter().zip(&spec.applications) {
-            let hub = LiveHub::new(decisions.fanout_limits);
+        for application in plan.applications() {
+            let hub = application.fanout().runtime_hub();
             let push_targets =
                 compile_rtmp_push_targets(plan.service_id(), application, listener_addresses)?;
             let pull_targets =

@@ -21,7 +21,7 @@ use crate::{
     planning_types::{
         CachePolicyBlueprint, CacheStoreBlueprint, EndpointBlueprint, HttpActionBlueprint,
         HttpRouteBlueprint, HttpServiceBlueprint, L4ServiceBlueprint, ListenerBlueprint,
-        PoolBlueprint, RtmpApplicationBlueprint, RtmpSpec, ServiceReference,
+        PoolBlueprint, RtmpSpec, ServiceReference,
     },
     rtmp_value_plan::compile_rtmp_value_plans_from_draft,
     runtime_policy::reject_unimplemented_runtime_policies,
@@ -60,12 +60,12 @@ impl GenerationCompiler {
         let forward_service_specs = compile_forward_blueprints(config);
         let rtmp_value_plans = compile_rtmp_value_plans_from_draft(config)
             .map_err(rtmp_preparation_error)
-            .and_then(|plans| {
+            .map(|plans| {
                 plans
                     .into_iter()
                     .zip(&config.rtmp_services)
                     .map(|(plan, service)| compile_rtmp_blueprint(plan, service))
-                    .collect::<Result<Box<[_]>, _>>()
+                    .collect::<Box<[_]>>()
             });
         let topology = Arc::new(TopologySnapshot::compile(config));
         let active_rtmp_services = config.listeners.iter().filter_map(|listener| {
@@ -701,27 +701,9 @@ fn compile_listener_blueprints(
 fn compile_rtmp_blueprint(
     plan: RtmpServicePlan,
     service: &oxiroute_config::RtmpService,
-) -> Result<RtmpSpec, ServicePlanError> {
-    let applications = plan
-        .applications()
-        .iter()
-        .map(|application| {
-            let fanout = application.fanout();
-            let fanout_limits = oxiroute_rtmp::LiveHubLimits {
-                max_subscribers: fanout.max_subscribers(),
-                max_subscribers_per_stream: fanout.max_subscribers(),
-                max_queue_messages_per_subscriber: fanout.max_queue_messages_per_subscriber(),
-                max_queue_bytes_per_subscriber: fanout.max_queue_bytes_per_subscriber(),
-                max_fanout_bytes: fanout.max_subscribers()
-                    * fanout.max_queue_bytes_per_subscriber(),
-                ..oxiroute_rtmp::LiveHubLimits::default()
-            };
-            Ok(RtmpApplicationBlueprint { fanout_limits })
-        })
-        .collect::<Result<Box<[_]>, ServicePlanError>>()?;
-    Ok(RtmpSpec {
+) -> RtmpSpec {
+    RtmpSpec {
         plan,
         access_log: service.access_log.clone(),
-        applications,
-    })
+    }
 }
