@@ -74,6 +74,7 @@ const AUTH_PREFIX_SIZE: usize = 34;
 const REAP_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const CHILD_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const CHANNEL_CLOSE_EXIT_GRACE: Duration = Duration::from_millis(100);
+const WORKER_METADATA_VERSION: &str = "v1";
 
 /// Maximum worker argument count encoded for the launcher.
 pub const MAX_WORKER_ARGUMENTS: usize = 128;
@@ -226,6 +227,7 @@ impl WorkerCommand {
         let mut command = Command::new(launcher);
         command
             .arg(self.program)
+            .arg(WORKER_METADATA_VERSION)
             .arg(arguments.len().to_string())
             .args(arguments.iter().map(|value| encode_hex(value.as_bytes())))
             .arg(environment.len().to_string());
@@ -1287,5 +1289,41 @@ fn signal_group(pgid: Pid, signal: Signal) -> io::Result<()> {
     match kill_process_group(pgid, signal) {
         Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
         Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_command_encodes_exact_launcher_metadata_version() {
+        let command = WorkerCommand::new("/bin/true")
+            .unwrap()
+            .arg("mode")
+            .env("KEY", "value");
+        let program = command.program.clone();
+        let (_parent_endpoint, child_endpoint) = SeqpacketEndpoint::pair().unwrap();
+        let launcher = command
+            .into_launcher_command(Path::new("/bin/true"), child_endpoint)
+            .unwrap();
+        let encoded = launcher
+            .get_args()
+            .map(|argument| argument.as_bytes().to_vec())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            encoded,
+            [
+                program.as_os_str().as_bytes(),
+                b"v1",
+                b"1",
+                b"6d6f6465",
+                b"1",
+                b"4b4559",
+                b"76616c7565",
+            ]
+            .map(<[u8]>::to_vec)
+        );
     }
 }

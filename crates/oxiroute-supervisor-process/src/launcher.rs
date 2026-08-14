@@ -19,7 +19,8 @@ use rustix::{
 };
 
 use crate::{
-    MAX_WORKER_ARGUMENTS, MAX_WORKER_ENVIRONMENT, MAX_WORKER_METADATA_ITEM_BYTES, WorkerMetadata,
+    MAX_WORKER_ARGUMENTS, MAX_WORKER_ENVIRONMENT, MAX_WORKER_METADATA_ITEM_BYTES,
+    WORKER_METADATA_VERSION, WorkerMetadata,
 };
 
 type LauncherResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -49,9 +50,6 @@ fn launch() -> LauncherResult<()> {
     verify_cloexec_from(3)?;
 
     let metadata = decode_metadata(&mut encoded)?;
-    if encoded.next().is_some() {
-        return Err("trailing launcher metadata".into());
-    }
     let (arguments, environment) = metadata.into_parts();
     let mut child = Command::new(worker)
         .args(arguments)
@@ -70,6 +68,12 @@ fn launch() -> LauncherResult<()> {
 }
 
 fn decode_metadata(encoded: &mut impl Iterator<Item = OsString>) -> LauncherResult<WorkerMetadata> {
+    match encoded.next() {
+        Some(version) if version == WORKER_METADATA_VERSION => {}
+        Some(_) => return Err("unsupported worker metadata version".into()),
+        None => return Err("missing worker metadata version".into()),
+    }
+
     let argument_count = parse_count(encoded.next(), "argument", MAX_WORKER_ARGUMENTS)?;
     let mut arguments = Vec::with_capacity(argument_count);
     for _ in 0..argument_count {
@@ -84,7 +88,11 @@ fn decode_metadata(encoded: &mut impl Iterator<Item = OsString>) -> LauncherResu
         let value = decode_item(encoded.next())?;
         environment.push((key, value));
     }
-    Ok(WorkerMetadata::new(arguments, environment)?)
+    let metadata = WorkerMetadata::new(arguments, environment)?;
+    if encoded.next().is_some() {
+        return Err("trailing launcher metadata".into());
+    }
+    Ok(metadata)
 }
 
 fn parse_count(encoded: Option<OsString>, label: &str, maximum: usize) -> LauncherResult<usize> {
@@ -163,13 +171,13 @@ mod tests {
 
     #[test]
     fn launcher_decoding_uses_shared_argument_validation() {
-        let mut encoded = ["1", "00", "0"].map(OsString::from).into_iter();
+        let mut encoded = ["v1", "1", "00", "0"].map(OsString::from).into_iter();
         assert!(decode_metadata(&mut encoded).is_err());
     }
 
     #[test]
     fn launcher_decoding_preserves_non_utf8_metadata_bytes() {
-        let mut encoded = ["1", "ff", "1", "4b4559", "fe"]
+        let mut encoded = ["v1", "1", "ff", "1", "4b4559", "fe"]
             .map(OsString::from)
             .into_iter();
         let (arguments, environment) = decode_metadata(&mut encoded)
@@ -179,5 +187,41 @@ mod tests {
         assert_eq!(arguments[0].as_bytes(), &[0xff]);
         assert_eq!(environment[0].0.as_bytes(), b"KEY");
         assert_eq!(environment[0].1.as_bytes(), &[0xfe]);
+    }
+
+    #[test]
+    fn launcher_decoding_requires_exact_metadata_version() {
+        let cases = [
+            Vec::new(),
+            ["0", "0"].map(OsString::from).to_vec(),
+            ["v2", "0", "0"].map(OsString::from).to_vec(),
+            ["version-one", "0", "0"].map(OsString::from).to_vec(),
+        ];
+
+        for encoded in cases {
+            assert!(decode_metadata(&mut encoded.into_iter()).is_err());
+        }
+    }
+
+    #[test]
+    fn launcher_decoding_rejects_trailing_metadata() {
+        let mut encoded = ["v1", "0", "0", "00"].map(OsString::from).into_iter();
+        assert!(decode_metadata(&mut encoded).is_err());
+    }
+
+    #[test]
+    fn launcher_decoding_preserves_count_and_item_bounds() {
+        let mut excessive_count = ["v1", "129", "0"].map(OsString::from).into_iter();
+        assert!(decode_metadata(&mut excessive_count).is_err());
+
+        let oversized_item = "00".repeat(MAX_WORKER_METADATA_ITEM_BYTES + 1);
+        let mut oversized = [
+            OsString::from("v1"),
+            OsString::from("1"),
+            OsString::from(oversized_item),
+            OsString::from("0"),
+        ]
+        .into_iter();
+        assert!(decode_metadata(&mut oversized).is_err());
     }
 }
