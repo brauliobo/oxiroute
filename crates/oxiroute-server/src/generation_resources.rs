@@ -1,14 +1,15 @@
 use std::sync::{Arc, Mutex};
 
-use oxiroute_rtmp::{RtmpAutoPushStatus, RtmpRecorderShutdown, RtmpRegistry, RtmpServiceRuntime};
+use oxiroute_rtmp::{
+    PreparedRtmpRuntimeSet, RtmpAutoPushStatus, RtmpControlHandle, RtmpRecorderShutdown,
+    RtmpRegistry, RtmpServiceHandle,
+};
 
 use crate::{
     GenerationError, HealthSupervisor, ListenerReservations, PreparedTls, RoundRobinPool,
     RuntimePlan, ServiceSpec,
     monitoring::ListenerRegistrationTransaction,
-    rtmp_generation_runtime::{
-        PreparedRtmpGenerationRuntime, RtmpGenerationRuntime, RtmpRetirement,
-    },
+    rtmp_generation_runtime::{RtmpGenerationRuntime, RtmpRetirement},
     service_plan::GenerationAcquisition,
 };
 
@@ -32,11 +33,12 @@ impl GenerationResources {
         mut acquired: GenerationAcquisition,
         reservations: ListenerReservations,
         listener_registration: ListenerRegistrationTransaction,
-        rtmp: PreparedRtmpGenerationRuntime,
+        rtmp: (Arc<RtmpRegistry>, PreparedRtmpRuntimeSet),
     ) -> Self {
         let (services, health_supervisor, pools, tls) = acquired.commit();
+        let (registry, prepared) = rtmp;
         Self {
-            rtmp: rtmp.commit(),
+            rtmp: RtmpGenerationRuntime::new(registry, prepared),
             listeners: PreparedListenerResources {
                 registration: Mutex::new(Some(listener_registration)),
                 reservations,
@@ -72,11 +74,11 @@ impl GenerationResources {
         &self.pools
     }
 
-    pub(crate) const fn rtmp_vod_catalog(&self) -> &Arc<oxiroute_rtmp::VodCatalog> {
+    pub(crate) fn rtmp_vod_catalog(&self) -> Arc<oxiroute_rtmp::VodCatalog> {
         self.rtmp.vod_catalog()
     }
 
-    pub(crate) const fn rtmp_media_catalog(&self) -> &Arc<oxiroute_rtmp::MediaCatalog> {
+    pub(crate) fn rtmp_media_catalog(&self) -> Arc<oxiroute_rtmp::MediaCatalog> {
         self.rtmp.media_catalog()
     }
 
@@ -88,12 +90,12 @@ impl GenerationResources {
         &self.listeners.reservations
     }
 
-    pub(crate) const fn registry(&self) -> &Arc<RtmpRegistry> {
-        self.rtmp.registry()
+    pub(crate) fn rtmp_control(&self) -> RtmpControlHandle {
+        self.rtmp.control()
     }
 
-    pub(crate) fn rtmp_runtime(&self, service: &str) -> Option<&RtmpServiceRuntime> {
-        self.rtmp.runtime(service)
+    pub(crate) fn rtmp_service(&self, service: &str) -> Option<RtmpServiceHandle> {
+        self.rtmp.service(service)
     }
 
     pub(crate) fn rtmp_auto_push_status(&self) -> RtmpAutoPushStatus {
@@ -115,10 +117,36 @@ impl GenerationResources {
         self.rtmp.retirement()
     }
 
+    pub(crate) fn rtmp_recorder_lifecycles(&self) -> Vec<oxiroute_rtmp::RtmpRecorderLifecycle> {
+        self.rtmp.recorder_lifecycles()
+    }
+
     pub(crate) fn start_rtmp(&self) -> Result<(), GenerationError> {
         // Preserve the existing rollback guard order: claim listener registration before consuming
         // prepared RTMP stores, start every runtime, then commit process listener state.
         let listener_registration = self.listeners.take_registration()?;
+        #[cfg(test)]
+        {
+            let mut started = Vec::new();
+            for service in &self.services {
+                let crate::ServiceKind::Rtmp(service) = &service.kind else {
+                    continue;
+                };
+                if started
+                    .iter()
+                    .any(|started| *started == service.service_id())
+                {
+                    continue;
+                }
+                if crate::service_plan::trace_staged_rtmp_start(service.service_id()) {
+                    for service in started.into_iter().rev() {
+                        crate::service_plan::trace_rtmp_rollback(service);
+                    }
+                    return Err(GenerationError::RuntimePrepare);
+                }
+                started.push(service.service_id());
+            }
+        }
         let runtimes = self.rtmp.start_prepared()?;
         listener_registration.commit()?;
         self.rtmp.install(runtimes)

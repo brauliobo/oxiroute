@@ -7,13 +7,14 @@ use std::{
 };
 
 use crate::{
-    CatalogError, LiveHub, LiveHubLimits, RecorderId, RecorderSnapshot, RtmpAutoPushStatus,
-    RtmpCallbackEventPlan, RtmpCallbackPlan, RtmpCallbackPolicy, RtmpCatalogSnapshot,
-    RtmpClientOptions, RtmpClientSnapshot, RtmpCredential, RtmpMediaPlan, RtmpMediaStoreRegistry,
-    RtmpPrepareContext, RtmpPrepareMode, RtmpRecorderShutdown, RtmpRecorderStoreRegistry,
-    RtmpRegistry, RtmpServicePlan, RtmpServicePreparation, RtmpServiceRuntime, RtmpSession,
+    CatalogError, LiveHub, LiveHubLimits, MediaApplication, MediaCatalog, RecorderId,
+    RecorderSnapshot, RtmpAutoPushStatus, RtmpCallbackEventPlan, RtmpCallbackPlan,
+    RtmpCallbackPolicy, RtmpCatalogSnapshot, RtmpClientOptions, RtmpClientSnapshot, RtmpCredential,
+    RtmpMediaPlan, RtmpMediaStoreRegistry, RtmpPrepareContext, RtmpPrepareMode,
+    RtmpRecorderLifecycle, RtmpRecorderShutdown, RtmpRecorderStoreRegistry, RtmpRegistry,
+    RtmpServicePlan, RtmpServicePreparation, RtmpServiceRuntime, RtmpSession,
     RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome,
-    RtmpSessionPolicy, SessionId, StreamId,
+    RtmpSessionPolicy, SessionId, StreamId, VodApplication, VodCatalog,
 };
 
 #[cfg(test)]
@@ -60,22 +61,70 @@ impl RtmpServiceHandle {
 /// Opaque control-plane access to the catalogs and session controls of one RTMP runtime set.
 #[derive(Clone)]
 pub struct RtmpControlHandle {
+    media_catalog: Arc<MediaCatalog>,
     registry: Arc<RtmpRegistry>,
     services: Arc<Vec<RtmpServiceHandle>>,
-    service_ids: Arc<BTreeSet<String>>,
+    service_ids: Option<Arc<BTreeSet<String>>>,
+    vod_catalog: Arc<VodCatalog>,
 }
 
 impl RtmpControlHandle {
-    fn new(registry: Arc<RtmpRegistry>, services: Vec<RtmpServiceHandle>) -> Self {
+    fn new(
+        registry: Arc<RtmpRegistry>,
+        services: Vec<RtmpServiceHandle>,
+        vod_catalog: Arc<VodCatalog>,
+        media_catalog: Arc<MediaCatalog>,
+    ) -> Self {
         let service_ids = services
             .iter()
             .map(|service| service.service_id().to_owned())
             .collect();
         Self {
+            media_catalog,
             registry,
             services: Arc::new(services),
-            service_ids: Arc::new(service_ids),
+            service_ids: Some(Arc::new(service_ids)),
+            vod_catalog,
         }
+    }
+
+    /// Returns the VOD catalog built from this runtime set's prepared applications.
+    #[must_use]
+    pub fn vod_catalog(&self) -> Arc<VodCatalog> {
+        Arc::clone(&self.vod_catalog)
+    }
+
+    /// Returns the media catalog built from this runtime set's prepared applications.
+    #[must_use]
+    pub fn media_catalog(&self) -> Arc<MediaCatalog> {
+        Arc::clone(&self.media_catalog)
+    }
+
+    /// Returns the aggregate auto-push status for this runtime set.
+    #[must_use]
+    pub fn auto_push_status(&self) -> RtmpAutoPushStatus {
+        self.services
+            .iter()
+            .fold(RtmpAutoPushStatus::default(), |mut total, service| {
+                let status = service.auto_push_status();
+                total.enabled |= status.enabled;
+                total.started |= status.started;
+                total.peers = total.peers.saturating_add(status.peers);
+                total.source_streams = total.source_streams.saturating_add(status.source_streams);
+                total.remote_streams = total.remote_streams.saturating_add(status.remote_streams);
+                total.frames_sent = total.frames_sent.saturating_add(status.frames_sent);
+                total.frames_received =
+                    total.frames_received.saturating_add(status.frames_received);
+                total.frames_dropped = total.frames_dropped.saturating_add(status.frames_dropped);
+                total.authentication_failures = total
+                    .authentication_failures
+                    .saturating_add(status.authentication_failures);
+                total.reconnects = total.reconnects.saturating_add(status.reconnects);
+                total.queue_messages = total.queue_messages.saturating_add(status.queue_messages);
+                total.queue_bytes = total.queue_bytes.saturating_add(status.queue_bytes);
+                total.last_failure = total.last_failure.or(status.last_failure);
+                total
+            })
     }
 
     /// Returns the current immutable stream catalog snapshot.
@@ -83,9 +132,11 @@ impl RtmpControlHandle {
     pub fn catalog_snapshot(&self) -> Arc<RtmpCatalogSnapshot> {
         let registry_snapshot = self.registry.snapshot();
         let mut snapshot = (*registry_snapshot).clone();
-        snapshot
-            .streams
-            .retain(|stream| self.service_ids.contains(&stream.key.server_id));
+        if let Some(service_ids) = &self.service_ids {
+            snapshot
+                .streams
+                .retain(|stream| service_ids.contains(&stream.key.server_id));
+        }
         Arc::new(snapshot)
     }
 
@@ -95,7 +146,11 @@ impl RtmpControlHandle {
         self.registry
             .session_snapshots()
             .into_iter()
-            .filter(|session| self.service_ids.contains(&session.service_id))
+            .filter(|session| {
+                self.service_ids
+                    .as_ref()
+                    .is_none_or(|service_ids| service_ids.contains(&session.service_id))
+            })
             .collect()
     }
 
@@ -111,13 +166,18 @@ impl RtmpControlHandle {
         action: RtmpSessionControlAction,
         expected_revision: u64,
     ) -> Result<RtmpSessionControlOutcome, RtmpSessionControlError> {
-        if !self
-            .registry
-            .session_snapshots()
-            .into_iter()
-            .any(|session| {
-                session.session_id == session_id && self.service_ids.contains(&session.service_id)
-            })
+        if self.service_ids.is_some()
+            && !self
+                .registry
+                .session_snapshots()
+                .into_iter()
+                .any(|session| {
+                    session.session_id == session_id
+                        && self
+                            .service_ids
+                            .as_ref()
+                            .is_some_and(|service_ids| service_ids.contains(&session.service_id))
+                })
         {
             return Err(RtmpSessionControlError::NotFound);
         }
@@ -136,11 +196,13 @@ impl RtmpControlHandle {
         recorder_id: RecorderId,
         at_unix_ms: u64,
     ) -> Result<RecorderSnapshot, CatalogError> {
-        let Some(service) = self.service_for_stream(stream_id) else {
-            return Err(CatalogError::StreamNotFound(stream_id));
-        };
-        if !service.runtime.admission_is_open() {
-            return Err(CatalogError::AdmissionClosed);
+        if self.service_ids.is_some() {
+            let Some(service) = self.service_for_stream(stream_id) else {
+                return Err(CatalogError::StreamNotFound(stream_id));
+            };
+            if !service.runtime.admission_is_open() {
+                return Err(CatalogError::AdmissionClosed);
+            }
         }
         self.registry
             .start_recording(stream_id, recorder_id, at_unix_ms)
@@ -157,7 +219,7 @@ impl RtmpControlHandle {
         recorder_id: RecorderId,
         at_unix_ms: u64,
     ) -> Result<RecorderSnapshot, CatalogError> {
-        if self.service_for_stream(stream_id).is_none() {
+        if self.service_ids.is_some() && self.service_for_stream(stream_id).is_none() {
             return Err(CatalogError::StreamNotFound(stream_id));
         }
         self.registry
@@ -181,6 +243,18 @@ impl RtmpControlHandle {
     pub fn close_admission(&self) {
         for service in self.services.iter() {
             service.runtime.close_service_admission();
+        }
+    }
+}
+
+impl From<Arc<RtmpRegistry>> for RtmpControlHandle {
+    fn from(registry: Arc<RtmpRegistry>) -> Self {
+        Self {
+            media_catalog: Arc::new(MediaCatalog::default()),
+            registry,
+            services: Arc::new(Vec::new()),
+            service_ids: None,
+            vod_catalog: Arc::new(VodCatalog::default()),
         }
     }
 }
@@ -234,8 +308,10 @@ pub struct PreparedRtmpRuntimeSet {
 }
 
 struct PreparedRtmpService {
+    media_applications: Vec<(String, String, Arc<MediaApplication>)>,
     service_id: String,
     preparation: RtmpServicePreparation,
+    vod_applications: Vec<Arc<VodApplication>>,
 }
 
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
@@ -337,6 +413,8 @@ impl PreparedRtmpRuntimeSet {
             return Err(RtmpRuntimeSetError::ValidationOnly);
         }
         let mut runtimes = Vec::with_capacity(self.services.len());
+        let mut media_applications = Vec::new();
+        let mut vod_applications = Vec::new();
         for service in self.services {
             #[cfg(test)]
             self.start_events
@@ -370,7 +448,11 @@ impl PreparedRtmpRuntimeSet {
                     })
             };
             match start {
-                Ok(runtime) => runtimes.push(runtime),
+                Ok(runtime) => {
+                    media_applications.extend(service.media_applications);
+                    vod_applications.extend(service.vod_applications);
+                    runtimes.push(runtime);
+                }
                 Err(error) => {
                     while let Some(runtime) = runtimes.pop() {
                         #[cfg(test)]
@@ -384,7 +466,12 @@ impl PreparedRtmpRuntimeSet {
                 }
             }
         }
-        RtmpRuntimeSet::from_started(registry, runtimes)
+        RtmpRuntimeSet::from_started_with_catalogs(
+            registry,
+            runtimes,
+            VodCatalog::from_applications(vod_applications),
+            Arc::new(MediaCatalog::from_applications(media_applications)),
+        )
     }
 
     #[cfg(test)]
@@ -410,7 +497,9 @@ fn prepare_service(
     let service_id = plan.service_id();
     let callbacks = prepare_callbacks(plan.callbacks(), plan.outbound_policy(), service_id)?;
     let mut applications = Vec::with_capacity(plan.applications().len());
+    let mut media_applications = Vec::new();
     let mut service_hub = None;
+    let mut vod_applications = Vec::new();
     for application in plan.applications() {
         ensure_preparation_deadline(service_id, deadline)?;
         let hub = application.fanout().runtime_hub();
@@ -450,6 +539,7 @@ fn prepare_service(
             .transpose()
             .map_err(|_| preparation_error(service_id, "VOD application"))?
             .map(Arc::new);
+        vod_applications.extend(vod.iter().cloned());
         let hls = if let Some(hls) = application.media().and_then(RtmpMediaPlan::hls) {
             media_stores
                 .prepare(
@@ -475,6 +565,13 @@ fn prepare_service(
             None
         };
         let media = RtmpMediaPlan::combine_outputs(hls, dash);
+        if let Some(media) = &media {
+            media_applications.push((
+                service_id.to_owned(),
+                application.name().to_owned(),
+                media.clone(),
+            ));
+        }
         let recorders = application
             .recorders()
             .iter()
@@ -528,8 +625,10 @@ fn prepare_service(
             .map_err(|_| preparation_error(service_id, "auto-push policy"))?;
     }
     Ok(PreparedRtmpService {
+        media_applications,
         service_id: service_id.to_owned(),
         preparation,
+        vod_applications,
     })
 }
 
@@ -640,6 +739,20 @@ impl RtmpRuntimeSet {
         registry: Arc<RtmpRegistry>,
         runtimes: impl IntoIterator<Item = RtmpServiceRuntime>,
     ) -> Result<Self, RtmpRuntimeSetError> {
+        Self::from_started_with_catalogs(
+            registry,
+            runtimes,
+            Arc::new(VodCatalog::default()),
+            Arc::new(MediaCatalog::default()),
+        )
+    }
+
+    fn from_started_with_catalogs(
+        registry: Arc<RtmpRegistry>,
+        runtimes: impl IntoIterator<Item = RtmpServiceRuntime>,
+        vod_catalog: Arc<VodCatalog>,
+        media_catalog: Arc<MediaCatalog>,
+    ) -> Result<Self, RtmpRuntimeSetError> {
         let mut services = Vec::new();
         let mut service_index = BTreeMap::new();
         for runtime in runtimes {
@@ -653,7 +766,8 @@ impl RtmpRuntimeSet {
             service_index.insert(service_id, services.len());
             services.push(RtmpServiceHandle::new(runtime));
         }
-        let control = RtmpControlHandle::new(registry, services.clone());
+        let control =
+            RtmpControlHandle::new(registry, services.clone(), vod_catalog, media_catalog);
         Ok(Self {
             services,
             service_index,
@@ -691,6 +805,22 @@ impl RtmpRuntimeSet {
             }
         }
         RtmpShutdown::new(recorders)
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn recorder_lifecycles(&self) -> Vec<RtmpRecorderLifecycle> {
+        let mut lifecycles = Vec::new();
+        for service in &self.services {
+            if let Some(lifecycle) = service.runtime.recorder_lifecycle()
+                && !lifecycles
+                    .iter()
+                    .any(|existing: &RtmpRecorderLifecycle| existing.is_same_lifecycle(&lifecycle))
+            {
+                lifecycles.push(lifecycle);
+            }
+        }
+        lifecycles
     }
 }
 

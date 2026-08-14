@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use http::header::HeaderName;
 use oxiroute_rtmp::{
-    RtmpCatalogSnapshot, RtmpRegistry, RtmpSessionControlAction, RtmpSessionControlError,
+    RtmpCatalogSnapshot, RtmpControlHandle, RtmpSessionControlAction, RtmpSessionControlError,
     SessionId, StreamSnapshot,
 };
 use pingora::protocols::http::ServerSession;
@@ -63,23 +63,23 @@ pub(super) fn match_route(path: &str) -> Option<Route<'_>> {
 pub(super) fn handle(
     route: Route<'_>,
     method: &str,
-    registry: &RtmpRegistry,
+    control: &RtmpControlHandle,
     session: Option<&ServerSession>,
 ) -> ApiResponse {
     match route {
-        Route::Stats(view) if method == "GET" => stats_response(view, registry),
+        Route::Stats(view) if method == "GET" => stats_response(view, control),
         Route::Stats(_) => ApiResponse::method_not_allowed("GET"),
         Route::Drop { .. } if method == "POST" => session
             .map_or_else(ApiResponse::unauthorized, |session| {
-                drop_response(route, registry, session)
+                drop_response(route, control, session)
             }),
         Route::Drop { .. } => ApiResponse::method_not_allowed("POST"),
     }
 }
 
-fn stats_response(view: StatsView, registry: &RtmpRegistry) -> ApiResponse {
-    let snapshot = registry.snapshot();
-    let clients = registry
+fn stats_response(view: StatsView, control: &RtmpControlHandle) -> ApiResponse {
+    let snapshot = control.catalog_snapshot();
+    let clients = control
         .session_snapshots()
         .into_iter()
         .filter(|client| client.connected)
@@ -197,7 +197,7 @@ fn client_json(client: &oxiroute_rtmp::RtmpClientSnapshot) -> Value {
 
 fn drop_response(
     route: Route<'_>,
-    registry: &RtmpRegistry,
+    control: &RtmpControlHandle,
     session: &ServerSession,
 ) -> ApiResponse {
     let Route::Drop {
@@ -239,7 +239,7 @@ fn drop_response(
                 }
             }
         };
-    match registry.request_session_control(session_id, action, expected_revision) {
+    match control.request_session_control(session_id, action, expected_revision) {
         Ok(outcome) => ApiResponse::json(
             202,
             &json!({

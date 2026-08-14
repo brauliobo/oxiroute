@@ -29,8 +29,8 @@ use oxiroute_acme::{AcmeOperation, Dns01Cancellation};
 use oxiroute_config::ListenerBind;
 use oxiroute_rtmp::{
     MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, MediaCatalog, RecorderErrorCode, RecorderPhase,
-    RtmpClientSnapshot, RtmpRecorderLifecycle, RtmpRecorderShutdown, RtmpRegistry,
-    RtmpRelayFailure, RtmpServiceRuntime, RtmpSessionError, RtmpSessionRole, VodCatalog,
+    RtmpClientSnapshot, RtmpControlHandle, RtmpRecorderLifecycle, RtmpRecorderShutdown,
+    RtmpRelayFailure, RtmpServiceHandle, RtmpSessionError, RtmpSessionRole, VodCatalog,
 };
 use oxiroute_server::{
     AcmeManagedReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher,
@@ -894,14 +894,16 @@ struct RtmpIngest {
     admission: ListenerRuntime,
     generation: Arc<RuntimeGeneration>,
     metrics: ListenerMetrics,
-    runtime: RtmpServiceRuntime,
+    control: RtmpControlHandle,
+    runtime: RtmpServiceHandle,
     service: Arc<RtmpServicePlan>,
 }
 
 impl RtmpIngest {
     fn new(
         listener: String,
-        runtime: RtmpServiceRuntime,
+        runtime: RtmpServiceHandle,
+        control: RtmpControlHandle,
         service: Arc<RtmpServicePlan>,
         metrics: ListenerMetrics,
         generation: Arc<RuntimeGeneration>,
@@ -911,6 +913,7 @@ impl RtmpIngest {
             admission: ListenerRuntime::new(metrics.clone()),
             generation,
             metrics,
+            control,
             runtime,
             service,
         }
@@ -1143,7 +1146,7 @@ impl ServerApp for RtmpIngest {
                 log_rtmp_state_transition(
                     &self.service,
                     &self.listener,
-                    self.generation.registry(),
+                    &self.control,
                     previous_snapshot.as_ref(),
                     &current_snapshot,
                     &access_counters,
@@ -1192,7 +1195,7 @@ impl ServerApp for RtmpIngest {
             log_rtmp_auxiliary_failures(
                 &self.service,
                 &self.listener,
-                self.generation.registry(),
+                &self.control,
                 snapshot,
                 &access_counters,
                 session_started_at,
@@ -1245,7 +1248,7 @@ impl ServerApp for RtmpIngest {
 fn log_rtmp_state_transition(
     service: &RtmpServicePlan,
     listener: &str,
-    registry: &RtmpRegistry,
+    control: &RtmpControlHandle,
     previous: Option<&RtmpClientSnapshot>,
     current: &RtmpClientSnapshot,
     counters: &RtmpAccessCounters,
@@ -1282,7 +1285,7 @@ fn log_rtmp_state_transition(
                 at_unix_ms,
                 None,
             );
-            let catalog = registry.snapshot();
+            let catalog = control.catalog_snapshot();
             if let Some(stream) = catalog.streams.iter().find(|stream| {
                 stream
                     .publisher
@@ -1341,13 +1344,13 @@ fn log_rtmp_state_transition(
 fn log_rtmp_auxiliary_failures(
     service: &RtmpServicePlan,
     listener: &str,
-    registry: &RtmpRegistry,
+    control: &RtmpControlHandle,
     snapshot: &RtmpClientSnapshot,
     counters: &RtmpAccessCounters,
     session_started_at: Instant,
     at_unix_ms: u64,
 ) {
-    let catalog = registry.snapshot();
+    let catalog = control.catalog_snapshot();
     let Some(stream) = catalog.streams.iter().find(|stream| {
         stream
             .publisher
@@ -1530,7 +1533,7 @@ async fn write_rtmp_packets(
 
 #[allow(clippy::too_many_arguments)]
 fn build_management_api(
-    registry: Arc<RtmpRegistry>,
+    control: RtmpControlHandle,
     vod_catalog: Arc<VodCatalog>,
     media_catalog: Arc<MediaCatalog>,
     metrics: RuntimeMetrics,
@@ -1542,9 +1545,9 @@ fn build_management_api(
     mode: oxiroute_server::RuntimeMode,
 ) -> io::Result<RtmpManagementApi> {
     let api = if let Some(ui_dir) = ui_dir {
-        RtmpManagementApi::with_ui_dir(registry, metrics, topology, ui_dir)
+        RtmpManagementApi::with_ui_dir(control, metrics, topology, ui_dir)
     } else {
-        Ok(RtmpManagementApi::new(registry, metrics, topology))
+        Ok(RtmpManagementApi::new(control, metrics, topology))
     }?;
     api.with_vod_catalog(vod_catalog)
         .with_media_catalog(media_catalog)
@@ -1620,24 +1623,7 @@ struct CandidateRtmpRetirementHandle {
 
 impl CandidateRtmpRetirementHandle {
     fn capture(generation: &RuntimeGeneration) -> Self {
-        let mut lifecycles = Vec::new();
-        for runtime in generation.services() {
-            let ServiceKind::Rtmp(plan) = &runtime.kind else {
-                continue;
-            };
-            let Some(runtime) = generation.rtmp_runtime(plan.service_id()) else {
-                continue;
-            };
-            let Some(lifecycle) = runtime.recorder_lifecycle() else {
-                continue;
-            };
-            if !lifecycles
-                .iter()
-                .any(|existing: &RtmpRecorderLifecycle| existing.is_same_lifecycle(&lifecycle))
-            {
-                lifecycles.push(lifecycle);
-            }
-        }
+        let lifecycles = generation.rtmp_recorder_lifecycles();
         Self {
             lifecycles: Arc::new(Mutex::new(Some(lifecycles))),
         }
@@ -2511,13 +2497,13 @@ fn serve_generation(
                 .ok_or_else(|| io::Error::other("management listener was not reserved"))
         })
         .transpose()?;
-    let rtmp_registry = Arc::clone(generation.registry());
+    let rtmp_control = generation.rtmp_control();
     if let Some(management) = &config.management {
         let metrics = generation.management_listener_metrics()?;
         let management_api = build_management_api(
-            Arc::clone(&rtmp_registry),
-            Arc::clone(generation.rtmp_vod_catalog()),
-            Arc::clone(generation.rtmp_media_catalog()),
+            rtmp_control.clone(),
+            generation.rtmp_vod_catalog(),
+            generation.rtmp_media_catalog(),
             runtime_metrics.clone(),
             Arc::clone(&topology),
             config_coordinator.clone(),
@@ -2554,7 +2540,7 @@ fn serve_generation(
             let api = HaproxyStatsApi::new(
                 runtime_metrics.clone(),
                 pools.clone(),
-                Arc::clone(&rtmp_registry),
+                rtmp_control.clone(),
                 generation_manager.clone(),
                 stats.admin_token_file.as_deref(),
             )?;
@@ -2703,14 +2689,14 @@ fn serve_generation(
             }
             ServiceKind::Rtmp(rtmp_service) => {
                 let runtime = generation
-                    .rtmp_runtime(rtmp_service.service_id())
-                    .expect("RTMP runtimes were prepared before listener registration")
-                    .clone();
+                    .rtmp_service(rtmp_service.service_id())
+                    .expect("RTMP runtimes were prepared before listener registration");
                 let mut service = Service::new(
                     service_name,
                     RtmpIngest::new(
                         listener_name.clone(),
                         runtime,
+                        rtmp_control.clone(),
                         rtmp_service,
                         metrics.clone(),
                         Arc::clone(generation),
@@ -3240,10 +3226,7 @@ mod tests {
             .begin_candidate_start(&candidate)
             .expect("startup reservation");
         let generation = startup.claim_runtime_start().expect("runtime start claim");
-        let detached_runtime = generation
-            .rtmp_runtime("live")
-            .expect("RTMP runtime")
-            .clone();
+        let detached_runtime = generation.rtmp_service("live").expect("RTMP runtime");
         let (release, released) = mpsc::sync_channel(0);
         let (finished, completion) = mpsc::sync_channel(1);
         let thread = thread::spawn(move || {
@@ -3472,7 +3455,7 @@ mod tests {
 
     fn publish_stalled_recorder(generation: &RuntimeGeneration, service: &str) {
         let mut server = generation
-            .rtmp_runtime(service)
+            .rtmp_service(service)
             .expect("RTMP runtime")
             .session();
         let mut client = connect_rtmp_session(&mut server, "live");
@@ -3784,10 +3767,8 @@ mod tests {
         let mut config = recorder_runtime_config(listener_address, &recording_root);
         config.max_connections = Some(1);
         config.listeners[0].max_connections = Some(1);
-        let (_, _, generation) = activate_test_generation(
-            &directory.path().join("oxiroute.kdl"),
-            &config,
-        );
+        let (_, _, generation) =
+            activate_test_generation(&directory.path().join("oxiroute.kdl"), &config);
         let ServiceKind::Rtmp(service) = generation.services()[0].kind.clone() else {
             panic!("listener must compile as RTMP");
         };
@@ -3797,9 +3778,9 @@ mod tests {
         let app = RtmpIngest::new(
             "live".into(),
             generation
-                .rtmp_runtime(service.service_id())
-                .expect("RTMP service runtime")
-                .clone(),
+                .rtmp_service(service.service_id())
+                .expect("RTMP service runtime"),
+            generation.rtmp_control(),
             service,
             metrics,
             Arc::clone(&generation),
@@ -3808,7 +3789,10 @@ mod tests {
         assert!(app.accept_gate().is_some());
         let admission = app.admit_connection().expect("RTMP admission");
         assert_eq!(generation.active_references(RuntimeReferenceKind::Rtmp), 1);
-        assert!(app.admit_connection().is_none(), "listener limit was bypassed");
+        assert!(
+            app.admit_connection().is_none(),
+            "listener limit was bypassed"
+        );
         assert_eq!(generation.active_references(RuntimeReferenceKind::Rtmp), 1);
         drop(admission);
 

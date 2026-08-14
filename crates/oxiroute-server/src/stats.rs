@@ -16,11 +16,11 @@ use crate::html::escape_html;
 use crate::{
     ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics,
     config_coordinator::EffectiveRevision,
-    prometheus::render_prometheus,
+    prometheus::render_prometheus_control,
     rtmp_api::response::to_http_response,
     secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
 };
-use oxiroute_rtmp::RtmpRegistry;
+use oxiroute_rtmp::RtmpControlHandle;
 
 const MAX_STATS_FORM_BYTES: usize = 8 * 1024;
 
@@ -29,7 +29,7 @@ pub struct HaproxyStatsApi {
     generations: GenerationManager,
     metrics: RuntimeMetrics,
     pools: Vec<Arc<RoundRobinPool>>,
-    registry: Arc<RtmpRegistry>,
+    control: RtmpControlHandle,
 }
 
 impl HaproxyStatsApi {
@@ -41,7 +41,7 @@ impl HaproxyStatsApi {
     pub fn new(
         metrics: RuntimeMetrics,
         pools: Vec<Arc<RoundRobinPool>>,
-        registry: Arc<RtmpRegistry>,
+        control: impl Into<RtmpControlHandle>,
         generations: GenerationManager,
         admin_token_file: Option<&Path>,
     ) -> io::Result<Self> {
@@ -53,7 +53,7 @@ impl HaproxyStatsApi {
             generations,
             metrics,
             pools,
-            registry,
+            control: control.into(),
         })
     }
 
@@ -138,7 +138,7 @@ impl HaproxyStatsApi {
     }
 
     fn metrics_response(&self) -> ApiResponse {
-        match render_prometheus(&self.metrics, &self.registry, &self.generations) {
+        match render_prometheus_control(&self.metrics, &self.control, &self.generations) {
             Ok(body) => ApiResponse::bytes(
                 200,
                 body.into_bytes(),
@@ -865,10 +865,17 @@ mod tests {
         ConfigDraft, DnsResolutionPolicy, HttpVersionPolicy, UpstreamAlgorithm,
         UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
     };
-    use oxiroute_rtmp::RtmpCapabilities;
+    use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry, RtmpRuntimeSet};
     use tempfile::TempDir;
 
     use super::*;
+
+    fn rtmp_control(capabilities: RtmpCapabilities) -> RtmpControlHandle {
+        let registry = Arc::new(RtmpRegistry::new(capabilities));
+        RtmpRuntimeSet::from_started(registry, [])
+            .expect("empty RTMP runtime set")
+            .control()
+    }
 
     fn api() -> (
         HaproxyStatsApi,
@@ -942,7 +949,7 @@ mod tests {
         let api = HaproxyStatsApi::new(
             active.metrics().clone(),
             vec![Arc::clone(&pool)],
-            Arc::clone(active.registry()),
+            rtmp_control(active.plan().rtmp_capabilities),
             generations,
             Some(&token_path),
         )
@@ -1011,14 +1018,14 @@ mod tests {
 
     #[test]
     fn absent_admin_token_keeps_restricted_stats_routes_closed() {
-        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+        let control = rtmp_control(RtmpCapabilities {
             live_ingest: false,
             manual_recording: false,
-        }));
+        });
         let api = HaproxyStatsApi::new(
             RuntimeMetrics::new(),
             Vec::new(),
-            registry,
+            control,
             GenerationManager::new(),
             None,
         )

@@ -30,7 +30,9 @@ use http::{
     Response,
     header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, HeaderName, TRANSFER_ENCODING},
 };
-use oxiroute_rtmp::{MediaCatalog, MediaStoreError, RtmpRegistry, VodCatalog, VodError, VodRange};
+use oxiroute_rtmp::{
+    MediaCatalog, MediaStoreError, RtmpControlHandle, VodCatalog, VodError, VodRange,
+};
 use pingora::{
     apps::{HttpPersistentSettings, HttpServerApp, ReusedHttpStream, http_app::ServeHttp},
     http::ResponseHeader,
@@ -61,7 +63,7 @@ pub struct RtmpManagementApi {
     generations: Option<GenerationManager>,
     management: Option<ManagementState>,
     metrics: RuntimeMetrics,
-    registry: Arc<RtmpRegistry>,
+    control: RtmpControlHandle,
     topology: Arc<TopologySnapshot>,
     ui: Option<UiAssets>,
     audit: Arc<AuditStore>,
@@ -76,7 +78,7 @@ pub struct RtmpManagementHttpApp {
 impl RtmpManagementApi {
     #[must_use]
     pub fn new(
-        registry: Arc<RtmpRegistry>,
+        control: impl Into<RtmpControlHandle>,
         metrics: RuntimeMetrics,
         topology: Arc<TopologySnapshot>,
     ) -> Self {
@@ -86,7 +88,7 @@ impl RtmpManagementApi {
             generations: None,
             management: None,
             metrics,
-            registry,
+            control: control.into(),
             topology,
             ui: None,
             audit: Arc::new(AuditStore::memory(AuditLimits::default())),
@@ -101,7 +103,7 @@ impl RtmpManagementApi {
     ///
     /// Returns an I/O error when `index.html` or an asset cannot be read at startup.
     pub fn with_ui_dir(
-        registry: Arc<RtmpRegistry>,
+        control: impl Into<RtmpControlHandle>,
         metrics: RuntimeMetrics,
         topology: Arc<TopologySnapshot>,
         directory: impl AsRef<Path>,
@@ -112,7 +114,7 @@ impl RtmpManagementApi {
             generations: None,
             management: None,
             metrics,
-            registry,
+            control: control.into(),
             topology,
             ui: Some(UiAssets::load(directory.as_ref())?),
             audit: Arc::new(AuditStore::memory(AuditLimits::default())),
@@ -251,14 +253,12 @@ impl RtmpManagementApi {
                 route,
                 method,
                 &self.metrics,
-                self.registry.as_ref(),
+                &self.control,
                 self.topology.as_ref(),
                 self.generations.as_ref(),
             ),
-            ApiRoute::Rtmp(route) => rtmp::handle(route, method, self.registry.as_ref(), None),
-            ApiRoute::Stream(route) => {
-                streams::handle(route, method, self.registry.as_ref(), now_unix_ms)
-            }
+            ApiRoute::Rtmp(route) => rtmp::handle(route, method, &self.control, None),
+            ApiRoute::Stream(route) => streams::handle(route, method, &self.control, now_unix_ms),
             ApiRoute::Vod | ApiRoute::Media => ApiResponse::method_not_allowed("GET"),
         };
         response.with_correlation(context.correlation_id)
@@ -281,7 +281,7 @@ impl RtmpManagementApi {
             .and_then(GenerationManager::active);
         let catalog = active
             .as_ref()
-            .map(|generation| Arc::clone(generation.rtmp_vod_catalog()))
+            .map(|generation| generation.rtmp_vod_catalog())
             .or_else(|| self.vod_catalog.clone());
         let Some(catalog) = catalog else {
             return ApiResponse::error(503, "vod_unavailable", "VOD is not active");
@@ -349,7 +349,7 @@ impl RtmpManagementApi {
             .and_then(GenerationManager::active);
         let catalog = active
             .as_ref()
-            .map(|generation| Arc::clone(generation.rtmp_media_catalog()))
+            .map(|generation| generation.rtmp_media_catalog())
             .or_else(|| self.media_catalog.clone());
         let Some(catalog) = catalog else {
             return ApiResponse::error(503, "media_unavailable", "RTMP media output is not active");
@@ -485,7 +485,7 @@ impl RtmpManagementApi {
                 .with_correlation(context.correlation_id);
         }
         if let Some(route) = rtmp::match_route(&path) {
-            let response = rtmp::handle(route, &method, self.registry.as_ref(), Some(session));
+            let response = rtmp::handle(route, &method, &self.control, Some(session));
             Self::audit_api_operation(&method, &path, &context, &response);
             return response.with_correlation(context.correlation_id);
         }
@@ -540,7 +540,7 @@ impl RtmpManagementApi {
                     let response = streams::handle(
                         route,
                         &method,
-                        mutation.generation().registry(),
+                        &mutation.generation().rtmp_control(),
                         now_unix_ms,
                     );
                     Self::audit_api_operation(&method, &path, &context, &response);

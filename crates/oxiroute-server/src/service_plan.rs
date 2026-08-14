@@ -145,6 +145,7 @@ impl ServiceKind {
 }
 
 pub struct RtmpServicePlan {
+    value_plan: oxiroute_rtmp::RtmpServicePlan,
     service_id: String,
     outbound_chunk_size: u32,
     inbound_limits: RtmpSessionLimits,
@@ -187,6 +188,10 @@ impl RtmpServicePlan {
     #[must_use]
     pub fn service_id(&self) -> &str {
         &self.service_id
+    }
+
+    pub(crate) fn value_plan(&self) -> oxiroute_rtmp::RtmpServicePlan {
+        self.value_plan.clone()
     }
 
     /// Writes one bounded RTMP access event when service access logging is enabled.
@@ -391,10 +396,6 @@ impl RtmpServicePlan {
 }
 
 impl PreparedRtmpRuntime {
-    pub(crate) fn service_id(&self) -> &str {
-        &self.service_id
-    }
-
     pub(crate) fn start(
         self,
         registry: Arc<RtmpRegistry>,
@@ -441,6 +442,19 @@ pub(crate) fn reset_rtmp_stage_counts() {
 #[cfg(test)]
 pub(crate) fn rtmp_stage_counts() -> (usize, usize) {
     (RTMP_PREPARES.get(), RTMP_STARTS.get())
+}
+
+#[cfg(test)]
+pub(crate) fn trace_staged_rtmp_prepare() -> RtmpRuntimeFault {
+    RTMP_PREPARES.set(RTMP_PREPARES.get() + 1);
+    RTMP_RUNTIME_FAULT.get()
+}
+
+#[cfg(test)]
+pub(crate) fn trace_staged_rtmp_start(service: &str) -> bool {
+    RTMP_STARTS.set(RTMP_STARTS.get() + 1);
+    RTMP_START_EVENTS.with(|events| events.borrow_mut().push(format!("start:{service}")));
+    RTMP_START_FAILURE.with(|failure| failure.borrow().as_deref() == Some(service))
 }
 
 #[cfg(test)]
@@ -690,6 +704,7 @@ impl GenerationAcquisition {
         self.tls.as_ref().expect("uncommitted TLS")
     }
 
+    #[cfg(test)]
     pub(crate) fn take_rtmp_catalogs(&mut self) -> (Arc<VodCatalog>, Arc<MediaCatalog>) {
         (
             self.rtmp_vod_catalog
@@ -1755,6 +1770,7 @@ fn compile_rtmp_services(
             }),
         );
         services.push(Arc::new(RtmpServicePlan {
+            value_plan: plan.clone(),
             service_id: plan.service_id().to_owned(),
             outbound_chunk_size: plan.outbound_chunk_size(),
             inbound_limits: plan.inbound_limits(),

@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use oxiroute_rtmp::RtmpRegistry;
+use oxiroute_rtmp::{RtmpCatalogSnapshot, RtmpControlHandle, RtmpRegistry};
 
 use crate::{GenerationManager, RuntimeMetrics};
 
@@ -25,18 +25,50 @@ pub fn render_prometheus(
     registry: &RtmpRegistry,
     generations: &GenerationManager,
 ) -> Result<String, PrometheusError> {
-    let runtime = metrics.snapshot()?;
     let rtmp = registry.snapshot();
+    render_prometheus_snapshot(
+        metrics,
+        &rtmp,
+        registry
+            .session_snapshots()
+            .into_iter()
+            .filter(|client| client.connected)
+            .count(),
+        generations,
+    )
+}
+
+pub(crate) fn render_prometheus_control(
+    metrics: &RuntimeMetrics,
+    control: &RtmpControlHandle,
+    generations: &GenerationManager,
+) -> Result<String, PrometheusError> {
+    let rtmp = control.catalog_snapshot();
+    render_prometheus_snapshot(
+        metrics,
+        &rtmp,
+        control
+            .session_snapshots()
+            .into_iter()
+            .filter(|client| client.connected)
+            .count(),
+        generations,
+    )
+}
+
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+fn render_prometheus_snapshot(
+    metrics: &RuntimeMetrics,
+    rtmp: &RtmpCatalogSnapshot,
+    rtmp_clients: usize,
+    generations: &GenerationManager,
+) -> Result<String, PrometheusError> {
+    let runtime = metrics.snapshot()?;
     let auto_push = generations
         .active()
         .map_or_else(oxiroute_rtmp::RtmpAutoPushStatus::default, |generation| {
             generation.rtmp_auto_push_status()
         });
-    let rtmp_clients = registry
-        .session_snapshots()
-        .into_iter()
-        .filter(|client| client.connected)
-        .count();
     let generation = generations.status();
     let audit = crate::operational_event::audit_metrics();
     let transport_events = crate::monitoring::transport_event_snapshots();
