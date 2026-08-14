@@ -5,6 +5,8 @@ They intentionally link to the longer normative specifications rather than repla
 
 - [CLI](CLI.md): command families, output modes, auth, and stable exit categories.
 - [API](API.md): management/statistics routes and revision behavior.
+- [OpenAPI control-plane artifact](../../contracts/control-plane.openapi.json): checked JSON contract for
+  the initial protected read-only management operations.
 - [Configuration](CONFIGURATION.md): source formats, examples, and save rules.
 - [Management CLI](../MANAGEMENT_CLI.md): complete operation matrix and HAProxy mapping.
 - [API/UI specification](../API_UI_SPEC.md): response fields, errors, and browser contract.

@@ -6,6 +6,8 @@ the test strategy.
 ## Before A Release
 
 - Run the full Rust and UI gates in [TESTING.md](TESTING.md).
+- Run `./scripts/verify-control-plane-contract.sh` to verify the checked OpenAPI artifact is generated
+  from the registry and DTO schemas without drift.
 - Run `./scripts/verify-lockfiles.sh` so every Cargo and pnpm manifest is checked against its
   committed lockfile.
 - Re-check [COMPATIBILITY.md](../COMPATIBILITY.md) against the active runtime, not just crate code.

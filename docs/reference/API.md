@@ -4,6 +4,12 @@ The current control plane is JSON over loopback HTTP. Management routes remain u
 the corrected event-only contract under `/api/v2/events`. Exact errors, response fields, and security caveats are normative in
 [API_UI_SPEC.md](../API_UI_SPEC.md).
 
+The checked [OpenAPI 3.1 control-plane artifact](../../contracts/control-plane.openapi.json) currently
+covers the five protected read-only status, listener, pool, server, and generation operations. Its
+freshness gate is `scripts/verify-control-plane-contract.sh`; routes outside that registry remain
+documented by this page and the normative API/UI specification until their DTO and endpoint metadata
+are migrated.
+
 ## Route Groups
 
 | Group | Routes | Auth/current role |

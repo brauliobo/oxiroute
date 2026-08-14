@@ -18,6 +18,15 @@ pub(super) enum ResponseMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SuccessSchema {
+    Status,
+    Listeners,
+    Pools,
+    Servers,
+    Generations,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct EndpointSpec {
     pub(super) id: EndpointId,
     pub(super) operation_id: &'static str,
@@ -25,6 +34,7 @@ pub(super) struct EndpointSpec {
     pub(super) method: &'static str,
     pub(super) auth: AuthPolicy,
     pub(super) response: ResponseMode,
+    pub(super) success_schema: SuccessSchema,
 }
 
 const ENDPOINTS: [EndpointSpec; 5] = [
@@ -35,6 +45,7 @@ const ENDPOINTS: [EndpointSpec; 5] = [
         method: "GET",
         auth: AuthPolicy::ManagementBearer,
         response: ResponseMode::Json,
+        success_schema: SuccessSchema::Status,
     },
     EndpointSpec {
         id: EndpointId::Listeners,
@@ -43,6 +54,7 @@ const ENDPOINTS: [EndpointSpec; 5] = [
         method: "GET",
         auth: AuthPolicy::ManagementBearer,
         response: ResponseMode::Json,
+        success_schema: SuccessSchema::Listeners,
     },
     EndpointSpec {
         id: EndpointId::Pools,
@@ -51,6 +63,7 @@ const ENDPOINTS: [EndpointSpec; 5] = [
         method: "GET",
         auth: AuthPolicy::ManagementBearer,
         response: ResponseMode::Json,
+        success_schema: SuccessSchema::Pools,
     },
     EndpointSpec {
         id: EndpointId::Servers,
@@ -59,6 +72,7 @@ const ENDPOINTS: [EndpointSpec; 5] = [
         method: "GET",
         auth: AuthPolicy::ManagementBearer,
         response: ResponseMode::Json,
+        success_schema: SuccessSchema::Servers,
     },
     EndpointSpec {
         id: EndpointId::Generations,
@@ -67,6 +81,7 @@ const ENDPOINTS: [EndpointSpec; 5] = [
         method: "GET",
         auth: AuthPolicy::ManagementBearer,
         response: ResponseMode::Json,
+        success_schema: SuccessSchema::Generations,
     },
 ];
 
@@ -96,23 +111,45 @@ mod tests {
     fn registry_owns_the_protected_read_only_management_endpoints() {
         assert_eq!(all().len(), 5);
         for (endpoint, expected) in all().iter().zip([
-            (EndpointId::Status, "getStatus", "/api/v1/status"),
-            (EndpointId::Listeners, "getListeners", "/api/v1/listeners"),
-            (EndpointId::Pools, "getPools", "/api/v1/pools"),
-            (EndpointId::Servers, "getServers", "/api/v1/servers"),
+            (
+                EndpointId::Status,
+                "getStatus",
+                "/api/v1/status",
+                SuccessSchema::Status,
+            ),
+            (
+                EndpointId::Listeners,
+                "getListeners",
+                "/api/v1/listeners",
+                SuccessSchema::Listeners,
+            ),
+            (
+                EndpointId::Pools,
+                "getPools",
+                "/api/v1/pools",
+                SuccessSchema::Pools,
+            ),
+            (
+                EndpointId::Servers,
+                "getServers",
+                "/api/v1/servers",
+                SuccessSchema::Servers,
+            ),
             (
                 EndpointId::Generations,
                 "getGenerations",
                 "/api/v1/generations",
+                SuccessSchema::Generations,
             ),
         ]) {
             assert_eq!(
                 (endpoint.id, endpoint.operation_id, endpoint.path),
-                expected
+                (expected.0, expected.1, expected.2)
             );
             assert_eq!(endpoint.method, "GET");
             assert_eq!(endpoint.auth, AuthPolicy::ManagementBearer);
             assert_eq!(endpoint.response, ResponseMode::Json);
+            assert_eq!(endpoint.success_schema, expected.3);
             assert_eq!(match_path(endpoint.path), Some(endpoint.id));
         }
     }
