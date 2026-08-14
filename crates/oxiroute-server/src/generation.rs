@@ -975,6 +975,72 @@ struct GenerationCounters {
     rollbacks: AtomicU64,
 }
 
+#[derive(Default)]
+struct OperationGate {
+    available: Condvar,
+    held: Mutex<bool>,
+}
+
+impl OperationGate {
+    fn acquire(self: &Arc<Self>) -> OperationAuthority {
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *held {
+            held = self
+                .available
+                .wait(held)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *held = true;
+        OperationAuthority {
+            gate: Arc::clone(self),
+        }
+    }
+
+    fn acquire_until(self: &Arc<Self>, deadline: Instant) -> Option<OperationAuthority> {
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if !*held {
+                *held = true;
+                return Some(OperationAuthority {
+                    gate: Arc::clone(self),
+                });
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let (next, _) = self
+                .available
+                .wait_timeout(held, deadline.saturating_duration_since(now))
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            held = next;
+        }
+    }
+}
+
+struct OperationAuthority {
+    gate: Arc<OperationGate>,
+}
+
+impl Drop for OperationAuthority {
+    fn drop(&mut self) {
+        let mut held = self
+            .gate
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *held = false;
+        drop(held);
+        self.gate.available.notify_one();
+    }
+}
+
 #[derive(Clone)]
 pub struct GenerationManager {
     #[cfg(test)]
@@ -983,7 +1049,7 @@ pub struct GenerationManager {
     rtmp_retirements: Arc<Mutex<RtmpRetirementRegistry>>,
     next_candidate_id: Arc<AtomicU64>,
     next_reservation_token: Arc<AtomicU64>,
-    operations: Arc<Mutex<()>>,
+    operations: Arc<OperationGate>,
     process: ProcessRuntime,
     state: Arc<Mutex<GenerationState>>,
 }
@@ -1059,7 +1125,7 @@ impl GenerationManager {
             rtmp_retirements: Arc::new(Mutex::new(RtmpRetirementRegistry::default())),
             next_candidate_id: Arc::new(AtomicU64::new(0)),
             next_reservation_token: Arc::new(AtomicU64::new(0)),
-            operations: Arc::new(Mutex::new(())),
+            operations: Arc::new(OperationGate::default()),
             process: ProcessRuntime::new(None),
             state: Arc::new(Mutex::new(GenerationState::default())),
         }
@@ -1071,6 +1137,35 @@ impl GenerationManager {
         let mut manager = Self::new();
         manager.process = ProcessRuntime::supervised(None);
         manager
+    }
+
+    fn acquire_preparation_operation(
+        &self,
+        deadline: Option<Instant>,
+        disk_revision: &AuthoredRevision,
+        candidate_revision: &EffectiveRevision,
+    ) -> Result<OperationAuthority, GenerationError> {
+        let operation = match deadline {
+            Some(deadline) => self.operations.acquire_until(deadline),
+            None => Some(self.operations.acquire()),
+        };
+        let Some(operation) = operation else {
+            let error = GenerationError::PreparationTimedOut;
+            crate::operational_event::emit(
+                "generation_prepare",
+                "rejected",
+                Some(candidate_revision),
+            );
+            self.counters.failures.fetch_add(1, Ordering::Relaxed);
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.disk_revision = Some(disk_revision.clone());
+            state.last_failure = Some(error.code());
+            return Err(error);
+        };
+        Ok(operation)
     }
 
     /// Fully prepares a candidate without writing the canonical configuration or publishing it.
@@ -1092,9 +1187,6 @@ impl GenerationManager {
         document: ResolvedConfigDocument,
         deadline: Instant,
     ) -> Result<GenerationCandidate, GenerationError> {
-        // The absolute deadline does not bound operation-mutex acquisition; contention here,
-        // disk-cache registry waits, and other synchronous acquisition remain unbounded startup
-        // residuals until their owning abstractions gain timed boundaries.
         self.prepare_with_deadline_internal(document, Some(deadline))
     }
 
@@ -1103,10 +1195,10 @@ impl GenerationManager {
         document: ResolvedConfigDocument,
         deadline: Option<Instant>,
     ) -> Result<GenerationCandidate, GenerationError> {
-        let _operation = self
-            .operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let disk_revision = document.authored_revision.clone();
+        let candidate_revision = document.effective_revision.clone();
+        let _operation =
+            self.acquire_preparation_operation(deadline, &disk_revision, &candidate_revision)?;
         if self
             .state
             .lock()
@@ -1122,8 +1214,6 @@ impl GenerationManager {
             .active
             .as_ref()
             .map(|generation| generation.reservations().clone());
-        let disk_revision = document.authored_revision.clone();
-        let candidate_revision = document.effective_revision.clone();
         let prepared = PreparedGeneration::prepare_from_with_deadline(
             document,
             ListenerSource::BindOrReuse {
@@ -1228,10 +1318,10 @@ impl GenerationManager {
         descriptors: DescriptorSet,
         deadline: Option<Instant>,
     ) -> Result<GenerationCandidate, GenerationError> {
-        let _operation = self
-            .operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let disk_revision = document.authored_revision.clone();
+        let candidate_revision = document.effective_revision.clone();
+        let _operation =
+            self.acquire_preparation_operation(deadline, &disk_revision, &candidate_revision)?;
         if self
             .state
             .lock()
@@ -1240,8 +1330,6 @@ impl GenerationManager {
         {
             return Err(GenerationError::MutationInProgress);
         }
-        let disk_revision = document.authored_revision.clone();
-        let candidate_revision = document.effective_revision.clone();
         let prepared = PreparedGeneration::prepare_from_with_deadline(
             document,
             ListenerSource::Adopt {
@@ -1383,10 +1471,7 @@ impl GenerationManager {
         candidate: &GenerationCandidate,
         startup_token: Option<u64>,
     ) -> Result<ActivationReservation, GenerationError> {
-        let _operation = self
-            .operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _operation = self.operations.acquire();
         let mut state = self
             .state
             .lock()
@@ -1471,10 +1556,7 @@ impl GenerationManager {
         previous_close: Option<AcceptGateClose>,
         quiesced: bool,
     ) -> Result<Arc<RuntimeGeneration>, GenerationError> {
-        let operation = self
-            .operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let operation = self.operations.acquire();
         let mut state = self
             .state
             .lock()
@@ -1588,10 +1670,7 @@ impl GenerationManager {
         candidate: &GenerationCandidate,
         reservation_token: u64,
     ) -> Result<Arc<RuntimeGeneration>, GenerationError> {
-        let _operation = self
-            .operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _operation = self.operations.acquire();
         let mut state = self
             .state
             .lock()
@@ -1644,10 +1723,7 @@ impl GenerationManager {
         &self,
         candidate: &GenerationCandidate,
     ) -> Result<GenerationStartup, GenerationError> {
-        let _operation = self
-            .operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _operation = self.operations.acquire();
         let mut state = self
             .state
             .lock()
@@ -1738,10 +1814,7 @@ impl GenerationManager {
         &self,
         deadline: Option<Instant>,
     ) -> Result<GenerationCandidate, GenerationError> {
-        let _operation = self
-            .operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _operation = self.operations.acquire();
         let previous_config = {
             let state = self
                 .state
@@ -1826,10 +1899,7 @@ impl GenerationManager {
     }
 
     pub fn quarantine(&self, candidate: &GenerationCandidate, failure: &'static str) {
-        let _operation = self
-            .operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _operation = self.operations.acquire();
         let mut state = self
             .state
             .lock()
@@ -2000,10 +2070,7 @@ impl GenerationManager {
     }
 
     fn reserve_shutdown(&self) -> Vec<Arc<RuntimeGeneration>> {
-        let _operation = self
-            .operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _operation = self.operations.acquire();
         let mut state = self
             .state
             .lock()
@@ -3199,6 +3266,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn contended_preparation_deadline_expires_without_candidate_or_quarantine_and_retries() {
+        let manager = GenerationManager::new();
+        let authority = manager.operations.acquire();
+        let deadline = Instant::now() + Duration::from_millis(25);
+
+        let Err(error) = manager.prepare_with_deadline(document(), deadline) else {
+            panic!("contended preparation succeeded")
+        };
+
+        assert!(Instant::now() >= deadline);
+        assert!(matches!(error, GenerationError::PreparationTimedOut));
+        let status = manager.status();
+        assert_eq!(status.candidate_revision, None);
+        assert_eq!(status.quarantined_revision, None);
+        assert_eq!(status.last_failure, Some("generation_prepare_timeout"));
+        assert_eq!(status.failures, 1);
+        drop(authority);
+        assert!(manager.prepare(document()).is_ok());
+    }
+
+    #[test]
     fn ordinary_preparation_failure_quarantines_even_after_deadline() {
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupied listener");
         let address = occupied.local_addr().expect("occupied address");
@@ -3256,6 +3344,50 @@ pub(crate) mod tests {
         assert_eq!(manager.process.listener_count(), 0);
         assert!(manager.status().quarantined_revision.is_none());
         std::net::TcpListener::bind(address).expect("adopted descriptor was released");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn contended_adopted_preparation_deadline_releases_descriptors_and_retries() {
+        let root = TempDir::new().expect("adopted contention root");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("adopted listener");
+        let address = listener.local_addr().expect("adopted address");
+        let (mut document, descriptors) =
+            adopted_rtmp_fixture(root.path(), address, listener, false);
+        let mut config = document.validated_config.to_draft();
+        config.rtmp_services[0].applications[0].recorders.clear();
+        document.validated_config = config.validate().expect("recording-free adopted config");
+        let manager = GenerationManager::new_supervised();
+        let authority = manager.operations.acquire();
+
+        let Err(error) = manager.prepare_adopted_with_deadline(
+            document,
+            descriptors,
+            Instant::now() + Duration::from_millis(25),
+        ) else {
+            panic!("contended adopted preparation succeeded")
+        };
+
+        assert!(matches!(error, GenerationError::PreparationTimedOut));
+        assert!(manager.candidate().is_none());
+        assert!(manager.status().quarantined_revision.is_none());
+        let retry_listener =
+            std::net::TcpListener::bind(address).expect("timed-out adoption released descriptor");
+        let (mut retry_document, retry_descriptors) =
+            adopted_rtmp_fixture(root.path(), address, retry_listener, false);
+        let mut retry_config = retry_document.validated_config.to_draft();
+        retry_config.rtmp_services[0].applications[0]
+            .recorders
+            .clear();
+        retry_document.validated_config = retry_config
+            .validate()
+            .expect("recording-free retry config");
+        drop(authority);
+        assert!(
+            manager
+                .prepare_adopted(retry_document, retry_descriptors)
+                .is_ok()
+        );
     }
 
     #[test]
