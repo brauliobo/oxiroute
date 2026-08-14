@@ -66,7 +66,7 @@ impl RecordingStoreLimits {
     }
 }
 
-/// Current use under one [`RecordingStore`].
+/// Current use under one recording store.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RecordingStoreStats {
     pub bytes_used: u64,
@@ -745,6 +745,7 @@ impl RecordingStore {
     }
 
     #[must_use]
+    #[allow(clippy::unused_self)]
     pub const fn quota_scope(&self) -> RecordingQuotaScope {
         RecordingQuotaScope::Process
     }

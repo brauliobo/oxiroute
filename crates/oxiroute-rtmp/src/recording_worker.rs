@@ -144,13 +144,16 @@ impl RecorderWorkerConfig {
 
 /// One independent disk worker with a bounded try-enqueue media queue.
 pub struct RecorderWorker {
+    #[cfg(test)]
     default_arrival_origin: Instant,
+    #[cfg(test)]
     default_arrival_unix_ms: u64,
     shared: Arc<WorkerShared>,
     thread: Option<JoinHandle<()>>,
 }
 
 #[must_use]
+#[cfg(test)]
 pub enum RecorderShutdown {
     Joined(RecorderWorkerStatus),
     TimedOut(RecorderWorkerSupervisor),
@@ -344,7 +347,9 @@ impl RecorderWorker {
             .map_err(RecorderWorkerStartError::ThreadSpawn)?;
 
         Ok(Self {
+            #[cfg(test)]
             default_arrival_origin: Instant::now(),
+            #[cfg(test)]
             default_arrival_unix_ms: opened_at_unix_seconds.saturating_mul(1_000),
             shared,
             thread: Some(thread),
@@ -353,6 +358,7 @@ impl RecorderWorker {
 
     /// Attempts to enqueue one immutable media event without waiting for capacity or disk I/O.
     #[must_use]
+    #[cfg(test)]
     pub fn try_enqueue(&self, event: MediaEvent) -> RecorderEnqueueResult {
         let elapsed = Duration::from_millis(u64::from(event.timestamp_ms()));
         self.try_enqueue_at(
@@ -442,6 +448,7 @@ impl RecorderWorker {
     ///
     /// A timeout returns a supervisor that still owns the active thread. Dropping the supervisor
     /// joins the thread rather than detaching it.
+    #[cfg(test)]
     pub fn shutdown(mut self) -> RecorderShutdown {
         self.request_stop();
         if !self

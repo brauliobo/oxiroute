@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 /// A side-effect-free lifecycle operation requested from a runtime owner.
@@ -52,9 +54,24 @@ pub trait LifecycleControl {
     type Revision: Clone;
     /// Read-only status projection returned by the runtime owner.
     type Status;
+    /// Successful mutation projection returned by the runtime owner.
+    type Outcome;
+    /// Mutation failure projection returned by the runtime owner.
+    type Error;
 
     /// Returns the current lifecycle status without requesting a mutation.
     fn status(&self) -> Self::Status;
+
+    /// Executes one lifecycle request against the runtime owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns the runtime owner's operation-specific failure projection.
+    fn execute(
+        &self,
+        request: LifecycleRequest<Self::Revision>,
+        timeout: Option<Duration>,
+    ) -> Result<Self::Outcome, Self::Error>;
 
     /// Creates a reload request for `expected` without performing I/O.
     fn request_reload(&self, expected: &Self::Revision) -> LifecycleRequest<Self::Revision> {

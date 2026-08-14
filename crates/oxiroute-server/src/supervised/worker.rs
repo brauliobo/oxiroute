@@ -673,7 +673,6 @@ mod tests {
 
     use oxiroute_config::{ConfigDraft, Protocol, Stats};
     use oxiroute_config_source::{ConfigFormat, render_config};
-    use oxiroute_rtmp::{RecordingStore, RecordingStoreLimits};
     use serde_json::json;
 
     use super::*;
@@ -822,19 +821,26 @@ mod tests {
 
         assert!(started.elapsed() < Duration::from_millis(250), "{branch}");
         assert_eq!(manager.status().failures, 1, "{branch}");
-        let retry = RecordingStore::open(
-            &root,
-            RecordingStoreLimits {
-                max_bytes: None,
-                max_files: None,
-                max_active_recorders: usize::try_from(
-                    config.rtmp_services[0].applications[0].recorders[0].max_active_recorders,
-                )
-                .expect("validated recorder limit"),
-            },
-        )
-        .unwrap_or_else(|error| panic!("{branch} recording retry failed: {error}"));
-        drop(retry);
+        let validated = config.clone().validate().expect("retry config");
+        let service = oxiroute_server::service_specs(&validated)
+            .expect("retry service plans")
+            .into_iter()
+            .find_map(|service| match service.kind {
+                oxiroute_server::ServiceKind::Rtmp(service) => Some(service.value_plan()),
+                _ => None,
+            })
+            .expect("RTMP retry plan");
+        drop(
+            oxiroute_rtmp::PreparedRtmpRuntimeSet::prepare(
+                [service],
+                &oxiroute_rtmp::RtmpPrepareContext::new(
+                    oxiroute_rtmp::RtmpPrepareMode::Activation,
+                    [],
+                ),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .unwrap_or_else(|error| panic!("{branch} recording retry failed: {error}")),
+        );
         release.send(()).expect("release detached worker");
         completion
             .recv_timeout(Duration::from_secs(1))

@@ -41,7 +41,7 @@ impl HaproxyStatsApi {
     pub fn new(
         metrics: RuntimeMetrics,
         pools: Vec<Arc<RoundRobinPool>>,
-        control: impl Into<RtmpControlHandle>,
+        control: RtmpControlHandle,
         generations: GenerationManager,
         admin_token_file: Option<&Path>,
     ) -> io::Result<Self> {
@@ -53,7 +53,7 @@ impl HaproxyStatsApi {
             generations,
             metrics,
             pools,
-            control: control.into(),
+            control,
         })
     }
 
@@ -865,16 +865,23 @@ mod tests {
         ConfigDraft, DnsResolutionPolicy, HttpVersionPolicy, UpstreamAlgorithm,
         UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
     };
-    use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry, RtmpRuntimeSet};
+    use oxiroute_rtmp::{
+        PreparedRtmpRuntimeSet, RtmpCapabilities, RtmpPrepareContext, RtmpPrepareMode,
+    };
     use tempfile::TempDir;
 
     use super::*;
 
-    fn rtmp_control(capabilities: RtmpCapabilities) -> RtmpControlHandle {
-        let registry = Arc::new(RtmpRegistry::new(capabilities));
-        RtmpRuntimeSet::from_started(registry, [])
-            .expect("empty RTMP runtime set")
-            .control()
+    fn rtmp_control(_capabilities: RtmpCapabilities) -> RtmpControlHandle {
+        PreparedRtmpRuntimeSet::prepare(
+            [],
+            &RtmpPrepareContext::new(RtmpPrepareMode::Activation, []),
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .expect("empty RTMP preparation")
+        .start(std::time::Instant::now() + std::time::Duration::from_secs(1))
+        .expect("empty RTMP runtime set")
+        .control()
     }
 
     fn api() -> (

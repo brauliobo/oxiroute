@@ -209,12 +209,14 @@ impl ProxyHarness {
         let app = HttpListenerApp::new(
             http_proxy(
                 &server_configuration,
-                HttpReverseProxy::new(Arc::clone(http_service), listener_metrics.clone()),
+                HttpReverseProxy::new(Arc::clone(http_service), listener_metrics.clone())
+                    .with_generation(Arc::clone(&generation)),
             ),
             spec.tls.as_deref(),
-        );
+        )
+        .with_generation(Arc::clone(&generation));
         let tls = spec.tls.as_ref().expect("downstream TLS profile");
-        let app = MonitoredHttpApp::new(app, listener_metrics);
+        let app = MonitoredHttpApp::new(app, listener_metrics, Arc::clone(&generation));
         let mut service = ListeningService::new("OxiRoute wire test".into(), app);
         service.add_tls_with_settings(
             &bind,

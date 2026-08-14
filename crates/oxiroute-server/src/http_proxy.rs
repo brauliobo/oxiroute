@@ -331,6 +331,8 @@ impl ProxyHttp for HttpReverseProxy {
         };
 
         if upgrade && self.generation.is_some() {
+            // The upgraded stream outlives its HTTP request admission, so retain a distinct
+            // WebSocket protocol reference until Pingora drops the request context.
             let Some(reference) = self
                 .generation
                 .as_ref()

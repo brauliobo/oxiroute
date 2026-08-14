@@ -1,8 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-use std::time::{Duration, Instant};
+use std::{sync::Arc, time::Duration};
 
 use oxiroute_config::CertificateSource;
 use pingora::protocols::http::ServerSession;
@@ -24,8 +20,7 @@ use super::{
 };
 use crate::{
     AdministrativeState, GenerationManager, RuntimeGeneration, RuntimeMetrics,
-    config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
-    generation::GENERATION_PREPARATION_TIMEOUT,
+    lifecycle_control::{LifecycleError, LifecycleOutcome, LifecyclePort},
     operational_event::{AuditCategory, AuditContext, AuditResult, AuditStore},
 };
 
@@ -38,11 +33,10 @@ type SelectedServers = (
 );
 
 pub(super) struct ManagementState {
-    coordinator: CanonicalConfigCoordinator,
     generations: GenerationManager,
+    lifecycle: Arc<LifecyclePort>,
     metrics: RuntimeMetrics,
     audit: Arc<AuditStore>,
-    process_shutdown: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone, Copy)]
@@ -144,22 +138,17 @@ pub(super) fn event_stream_route(
 
 impl ManagementState {
     pub(super) fn new(
-        coordinator: CanonicalConfigCoordinator,
         generations: GenerationManager,
+        lifecycle: Arc<LifecyclePort>,
         metrics: RuntimeMetrics,
         audit: Arc<AuditStore>,
     ) -> Self {
         Self {
-            coordinator,
             generations,
+            lifecycle,
             metrics,
             audit,
-            process_shutdown: None,
         }
-    }
-
-    pub(super) fn set_process_shutdown(&mut self, shutdown: Arc<AtomicBool>) {
-        self.process_shutdown = Some(shutdown);
     }
 
     pub(super) async fn handle(
@@ -182,7 +171,7 @@ impl ManagementState {
             (Route::ServerRefreshDns, "POST") => self.server_refresh_dns(session).await,
             (Route::Generations, "GET") => ApiResponse::json(
                 200,
-                &serde_json::to_value(GenerationResponse::from(self.generations.status()))
+                &serde_json::to_value(GenerationResponse::from(self.lifecycle.status()))
                     .expect("generation response DTO serializes"),
             ),
             (Route::GenerationReload, "POST") => self.generation_reload(session).await,
@@ -505,36 +494,32 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let _mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
-            Ok(mutation) => mutation,
-            Err(response) => return response,
-        };
-        let document = match self.coordinator.load() {
-            ConfigLoadOutcome::Loaded(document) => document,
-            ConfigLoadOutcome::Rejected(rejection) => {
-                return dto_response(
-                    422,
-                    &ConfigRejectedResponse::new(
-                        rejection.disk_revision,
-                        self.generations.status().active_revision,
-                        rejection.diagnostics,
-                    ),
-                );
+        match self.lifecycle.execute(
+            self.lifecycle
+                .request_reload(&request.expected_active_revision),
+            None,
+        ) {
+            Ok(LifecycleOutcome::Prepared(candidate_revision)) => {
+                dto_response(202, &GenerationActionResponse::startup(&candidate_revision))
             }
-        };
-        match self
-            .generations
-            .prepare_with_deadline(*document, Instant::now() + GENERATION_PREPARATION_TIMEOUT)
-        {
-            Ok(candidate) => dto_response(
-                202,
-                &GenerationActionResponse::startup(&candidate.revision().candidate),
+            Err(LifecycleError::ConfigRejected {
+                rejection,
+                active_revision,
+            }) => dto_response(
+                422,
+                &ConfigRejectedResponse::new(
+                    rejection.disk_revision,
+                    active_revision,
+                    rejection.diagnostics,
+                ),
             ),
-            Err(error) => ApiResponse::error(
+            Err(LifecycleError::Preparation(error)) => ApiResponse::error(
                 422,
                 error.code(),
                 "configuration generation could not be prepared",
             ),
+            Err(LifecycleError::Mutation(error)) => mutation_error(&error),
+            Ok(_) | Err(_) => unreachable!("reload lifecycle outcome"),
         }
     }
 
@@ -543,21 +528,20 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let _mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
-            Ok(mutation) => mutation,
-            Err(response) => return response,
-        };
-        match self
-            .generations
-            .rollback_with_deadline(Instant::now() + GENERATION_PREPARATION_TIMEOUT)
-        {
-            Ok(candidate) => dto_response(
+        match self.lifecycle.execute(
+            self.lifecycle
+                .request_rollback(&request.expected_active_revision),
+            None,
+        ) {
+            Ok(LifecycleOutcome::Prepared(candidate_revision)) => dto_response(
                 202,
-                &GenerationActionResponse::rollback(&candidate.revision().candidate),
+                &GenerationActionResponse::rollback(&candidate_revision),
             ),
-            Err(error) => {
+            Err(LifecycleError::Rollback(error)) => {
                 ApiResponse::error(409, error.code(), "no previous generation can be activated")
             }
+            Err(LifecycleError::Mutation(error)) => mutation_error(&error),
+            Ok(_) | Err(_) => unreachable!("rollback lifecycle outcome"),
         }
     }
 
@@ -566,24 +550,24 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
-            Ok(mutation) => mutation,
-            Err(response) => return response,
-        };
-        let active = mutation.generation();
         let timeout_ms = request.timeout_ms.unwrap_or(0);
-        if timeout_ms > 300_000 {
-            return ApiResponse::error(
+        match self.lifecycle.execute(
+            self.lifecycle
+                .request_drain(&request.expected_active_revision),
+            Some(Duration::from_millis(timeout_ms)),
+        ) {
+            Ok(LifecycleOutcome::Drained {
+                drained,
+                active_references,
+            }) => dto_response(202, &DrainResponse::new(drained, active_references)),
+            Err(LifecycleError::InvalidDrainTimeout) => ApiResponse::error(
                 400,
                 "invalid_timeout",
                 "drain timeout must not exceed 300000 milliseconds",
-            );
+            ),
+            Err(LifecycleError::Mutation(error)) => mutation_error(&error),
+            Ok(_) | Err(_) => unreachable!("drain lifecycle outcome"),
         }
-        active.stop_accepting();
-        dto_response(
-            202,
-            &DrainResponse::new(active.drained(), active_reference_count(active)),
-        )
     }
 
     async fn process_drain(&self, session: &mut ServerSession) -> ApiResponse {
@@ -607,28 +591,22 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let Some(shutdown) = &self.process_shutdown else {
-            return ApiResponse::error(
+        match self.lifecycle.execute(
+            self.lifecycle
+                .request_shutdown(&request.expected_active_revision),
+            None,
+        ) {
+            Ok(LifecycleOutcome::ShutdownRequested) => {
+                dto_response(202, &ProcessMutationResponse::shutdown_requested())
+            }
+            Err(LifecycleError::ShutdownUnavailable) => ApiResponse::error(
                 503,
                 "shutdown_unavailable",
                 "process shutdown control is unavailable",
-            );
-        };
-        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
-            Ok(mutation) => mutation,
-            Err(response) => return response,
-        };
-        drop(
-            self.generations
-                .begin_shutdown(Instant::now() + Duration::from_secs(5)),
-        );
-        mutation
-            .generation()
-            .metrics()
-            .set_process_administrative_state(AdministrativeState::Drain);
-        shutdown.store(true, Ordering::Release);
-        crate::operational_event::emit("process_shutdown", "requested", None);
-        dto_response(202, &ProcessMutationResponse::shutdown_requested())
+            ),
+            Err(LifecycleError::Mutation(error)) => mutation_error(&error),
+            Ok(_) | Err(_) => unreachable!("shutdown lifecycle outcome"),
+        }
     }
 
     fn tls(&self) -> ApiResponse {
@@ -1291,26 +1269,6 @@ fn find_pool(active: &RuntimeGeneration, name: &str) -> Option<Arc<crate::RoundR
         .cloned()
 }
 
-fn active_reference_count(active: &RuntimeGeneration) -> u64 {
-    use crate::RuntimeReferenceKind::{
-        ForwardHttp1, ForwardHttp3, Http1, Http2, Http3, Rtmp, Tcp, Udp, WebSocket,
-    };
-    [
-        ForwardHttp1,
-        ForwardHttp3,
-        Http1,
-        Http2,
-        Http3,
-        WebSocket,
-        Tcp,
-        Rtmp,
-        Udp,
-    ]
-    .into_iter()
-    .map(|kind| active.active_references(kind))
-    .sum()
-}
-
 fn mutation_response(operation: &str, changed: usize) -> ApiResponse {
     crate::operational_event::emit(operation, "applied", None);
     dto_response(200, &MutationResponse::applied(changed))
@@ -1383,7 +1341,50 @@ async fn body<T: for<'de> Deserialize<'de>>(session: &mut ServerSession) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::{EventApiVersion, Route, match_route};
+    use std::{sync::Arc, time::Duration};
+
+    use oxiroute_supervision::{LifecycleControl, LifecycleRequest};
+
+    use super::{EventApiVersion, ManagementState, Route, match_route};
+    use crate::{
+        GenerationManager, RuntimeMetrics,
+        lifecycle_control::{LifecycleError, LifecycleOutcome, LifecyclePort},
+        operational_event::{AuditLimits, AuditStore},
+    };
+
+    struct ContractLifecycleControl(GenerationManager);
+
+    impl LifecycleControl for ContractLifecycleControl {
+        type Revision = String;
+        type Status = crate::GenerationStatus;
+        type Outcome = LifecycleOutcome;
+        type Error = LifecycleError;
+
+        fn status(&self) -> Self::Status {
+            self.0.status()
+        }
+
+        fn execute(
+            &self,
+            _request: LifecycleRequest<Self::Revision>,
+            _timeout: Option<Duration>,
+        ) -> Result<Self::Outcome, Self::Error> {
+            Err(LifecycleError::ShutdownUnavailable)
+        }
+    }
+
+    #[test]
+    fn management_state_compiles_against_lifecycle_port_without_direct_adapter() {
+        let generations = GenerationManager::new();
+        let lifecycle: Arc<LifecyclePort> = Arc::new(ContractLifecycleControl(generations.clone()));
+
+        let _state = ManagementState::new(
+            generations,
+            lifecycle,
+            RuntimeMetrics::new(),
+            Arc::new(AuditStore::memory(AuditLimits::default())),
+        );
+    }
 
     #[test]
     fn audit_routes_preserve_query_filters_and_status_is_distinct() {

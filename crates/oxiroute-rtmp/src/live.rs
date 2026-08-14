@@ -418,7 +418,7 @@ fn decode_metadata(payload: &[u8]) -> Option<StreamMetadata> {
     Some(metadata)
 }
 
-/// Explicit service and per-viewer bounds for a [`LiveHub`].
+/// Explicit service and per-viewer live fanout bounds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LiveHubLimits {
     pub max_streams: usize,
@@ -446,7 +446,7 @@ impl Default for LiveHubLimits {
     }
 }
 
-/// Current resource use by a [`LiveHub`].
+/// Current live fanout resource use.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LiveHubStats {
     pub streams: usize,

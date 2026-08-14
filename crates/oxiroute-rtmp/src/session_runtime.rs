@@ -751,6 +751,7 @@ impl RtmpSessionPolicy {
         self.inbound_limits
     }
 
+    #[cfg(test)]
     fn first_hub(&self) -> Option<LiveHub> {
         self.applications.values().find_map(RtmpApplication::hub)
     }
@@ -1007,12 +1008,13 @@ impl RtmpServiceRuntime {
     }
 
     #[must_use]
-    pub fn registry(&self) -> &Arc<RtmpRegistry> {
+    pub(crate) fn registry(&self) -> &Arc<RtmpRegistry> {
         &self.registry
     }
 
     #[must_use]
-    pub fn hub(&self) -> LiveHub {
+    #[cfg(test)]
+    pub(crate) fn hub(&self) -> LiveHub {
         self.policy.first_hub().unwrap_or_else(|| self.hub.clone())
     }
 
@@ -1026,7 +1028,8 @@ impl RtmpServiceRuntime {
         RtmpSession::from_runtime(self.for_session(), peer_addr)
     }
 
-    pub fn close_admission(&self) {
+    #[cfg(test)]
+    pub(crate) fn close_admission(&self) {
         self.close_service_admission();
         self.registry.close_admission();
     }
@@ -1056,7 +1059,7 @@ impl RtmpServiceRuntime {
     }
 
     #[must_use]
-    pub fn recorder_lifecycle(&self) -> Option<RtmpRecorderLifecycle> {
+    pub(crate) fn recorder_lifecycle(&self) -> Option<RtmpRecorderLifecycle> {
         let (Some(owner), Some(reaper)) = (&self.recorder_reaper_owner, &self.recorder_reaper)
         else {
             return None;
@@ -1070,12 +1073,6 @@ impl RtmpServiceRuntime {
             shutdown: owner.shutdown_handle(),
         };
         Some(lifecycle)
-    }
-
-    #[must_use]
-    pub fn initiate_recorder_shutdown(&self, deadline: Instant) -> Option<RtmpRecorderShutdown> {
-        self.close_admission();
-        self.initiate_recorder_shutdown_after_admission_close(deadline)
     }
 
     pub(crate) fn initiate_recorder_shutdown_scoped(

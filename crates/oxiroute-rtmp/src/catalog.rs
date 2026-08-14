@@ -707,6 +707,7 @@ impl RtmpRegistry {
         RecorderReaper::start(capacity, Arc::downgrade(self))
     }
 
+    #[cfg(test)]
     pub(crate) fn close_admission(&self) {
         self.lock().admission_open = false;
     }

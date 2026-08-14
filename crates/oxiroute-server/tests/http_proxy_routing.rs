@@ -5518,11 +5518,13 @@ impl ProxyHarness {
             HttpDownstreamPolicyApp::new(
                 http_proxy(
                     &configuration,
-                    HttpReverseProxy::new(service, listener_metrics.clone()),
+                    HttpReverseProxy::new(service, listener_metrics.clone())
+                        .with_generation(Arc::clone(&generation)),
                 ),
                 downstream_timeouts,
             ),
             listener_metrics,
+            Arc::clone(&generation),
         ));
         let (shutdown_tx, shutdown) = watch::channel(false);
         let task = tokio::spawn(async move {
