@@ -394,7 +394,8 @@ where
 }
 
 struct TcpRelay {
-    generation: Option<Arc<RuntimeGeneration>>,
+    generation: Arc<RuntimeGeneration>,
+    listener: ListenerRuntime,
     service: Arc<oxiroute_server::L4ServicePlan>,
     metrics: ListenerMetrics,
     proxy_protocol: Option<oxiroute_config::ProxyProtocolPolicy>,
@@ -784,54 +785,54 @@ impl TcpRelay {
         service: Arc<oxiroute_server::L4ServicePlan>,
         metrics: ListenerMetrics,
         proxy_protocol: Option<oxiroute_config::ProxyProtocolPolicy>,
+        generation: Arc<RuntimeGeneration>,
     ) -> Self {
         Self {
-            generation: None,
+            generation,
+            listener: ListenerRuntime::new(metrics.clone()),
             service,
             metrics,
             proxy_protocol,
         }
-    }
-
-    fn with_generation(mut self, generation: Arc<RuntimeGeneration>) -> Self {
-        self.generation = Some(generation);
-        self
     }
 }
 
 #[async_trait]
 impl ServerApp for TcpRelay {
     fn accept_gate(&self) -> Option<AcceptGate> {
-        self.generation
-            .as_ref()
-            .map(|generation| generation.accept_gate())
+        Some(self.generation.accept_gate())
     }
 
     fn accepting(&self) -> bool {
-        self.metrics.accepting()
-            && self
-                .generation
-                .as_ref()
-                .is_none_or(|generation| generation.accepting())
+        self.listener.accepting() && self.generation.accepting()
     }
 
     fn admit_connection(&self) -> Option<ConnectionAdmission> {
-        let generation = if let Some(generation) = &self.generation {
-            Some(generation.begin_reference(RuntimeReferenceKind::Tcp)?)
-        } else {
-            None
+        let lease = match self
+            .listener
+            .admit(&self.generation, RuntimeReferenceKind::Tcp)
+        {
+            Ok(lease) => lease,
+            Err(error) => {
+                warn!("rejected TCP connection: {error}");
+                return None;
+            }
         };
-        let connection = admit_connection(&self.metrics)?;
-        Some(Box::new((generation, connection)))
+        Some(Box::new(lease))
     }
 
     fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
-        let generation = self
-            .generation
-            .as_ref()
-            .map(|generation| generation.begin_owned_reference(RuntimeReferenceKind::Tcp));
-        let connection = admit_connection(&self.metrics)?;
-        Some(Box::new((generation, connection)))
+        let lease = match self
+            .listener
+            .admit_owned(&self.generation, RuntimeReferenceKind::Tcp)
+        {
+            Ok(lease) => lease,
+            Err(error) => {
+                warn!("rejected TCP connection: {error}");
+                return None;
+            }
+        };
+        Some(Box::new(lease))
     }
 
     async fn process_new(
@@ -2723,8 +2724,12 @@ fn serve_generation(
             ServiceKind::Tcp(l4_service) => {
                 let mut service = Service::new(
                     service_name,
-                    TcpRelay::new(l4_service, metrics.clone(), listener_proxy_protocol)
-                        .with_generation(Arc::clone(generation)),
+                    TcpRelay::new(
+                        l4_service,
+                        metrics.clone(),
+                        listener_proxy_protocol,
+                        Arc::clone(generation),
+                    ),
                 );
                 add_plain_listener(&mut service, &listener_name, &listener_bind)?;
                 server.add_service(
@@ -3659,6 +3664,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn tcp_handler_closes_connections_when_its_pool_is_unavailable() {
         let ingress = TcpListener::bind("127.0.0.1:0")
             .await
@@ -3713,6 +3719,11 @@ mod tests {
                 udp: None,
             }],
         };
+        let directory = tempfile::tempdir().expect("TCP generation directory");
+        let mut generation_config = config.clone();
+        generation_config.listeners.clear();
+        let (_, _, generation) =
+            activate_test_generation(&directory.path().join("oxiroute.kdl"), &generation_config);
         let config = config.validate().expect("valid TCP config");
         let mut acquired = oxiroute_server::service_specs(&config).expect("TCP runtime services");
         let spec = acquired.remove(0);
@@ -3728,22 +3739,36 @@ mod tests {
         let ServiceKind::Tcp(service) = spec.kind else {
             panic!("listener must compile as TCP");
         };
-        let app = Arc::new(TcpRelay::new(service, listener_metrics, None));
+        let app = Arc::new(TcpRelay::new(
+            service,
+            listener_metrics,
+            None,
+            Arc::clone(&generation),
+        ));
         let mut client = tokio::net::TcpStream::connect(ingress_address)
             .await
             .expect("client connect");
         let (downstream, _) = ingress.accept().await.expect("ingress accept");
         let downstream: Stream = Box::new(pingora::protocols::l4::stream::Stream::from(downstream));
         let (_shutdown_tx, shutdown) = watch::channel(false);
+        assert!(app.accept_gate().is_some());
         let admission = app.admit_connection().expect("connection admission");
+        assert_eq!(generation.active_references(RuntimeReferenceKind::Tcp), 1);
+        drop(admission);
+        let admission = app
+            .admit_owned_connection()
+            .expect("owned connection admission");
+        generation.stop_accepting();
+        assert!(!generation.drain(Duration::ZERO));
 
         assert!(app.process_new(downstream, &shutdown).await.is_none());
         drop(admission);
+        assert!(generation.drain(Duration::from_millis(100)));
         let mut response = Vec::new();
         client.read_to_end(&mut response).await.expect("client EOF");
         assert!(response.is_empty());
         let snapshot = metrics.snapshot().expect("runtime snapshot");
-        assert_eq!(snapshot.traffic.accepted_connections, 1);
+        assert_eq!(snapshot.traffic.accepted_connections, 2);
         assert_eq!(snapshot.traffic.active_connections, 0);
     }
 
