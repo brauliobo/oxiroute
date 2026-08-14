@@ -140,6 +140,15 @@ impl PartialEq for RtmpDestinationResolver {
 impl Eq for RtmpDestinationResolver {}
 
 impl RtmpDestinationResolver {
+    /// Resolves one bounded startup answer with the system DNS resolver.
+    ///
+    /// # Errors
+    ///
+    /// Returns the resolver I/O error when the host cannot be resolved.
+    pub fn resolve_startup_addresses(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+        RtmpDnsResolver::resolve(&SystemRtmpDnsResolver, host, port)
+    }
+
     /// Compiles a destination from its already resolved startup answer.
     ///
     /// The complete startup answer is checked before the selected address is retained. Refreshes
