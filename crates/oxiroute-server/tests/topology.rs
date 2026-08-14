@@ -312,6 +312,14 @@ fn serves_active_topology_with_name_joined_runtime_overlays() {
     assert!(body["state"]["sampledAtUnixMs"].as_u64().is_some());
     assert_eq!(body["nodes"].as_array().map(Vec::len), Some(14));
     assert_eq!(body["edges"].as_array().map(Vec::len), Some(11));
+    assert_eq!(
+        body["nodes"],
+        serde_json::to_value(plan.topology.nodes()).expect("domain topology nodes JSON")
+    );
+    assert_eq!(
+        body["edges"],
+        serde_json::to_value(plan.topology.edges()).expect("domain topology edges JSON")
+    );
 
     let overlays = body["overlays"].as_array().expect("runtime overlays");
     assert_eq!(overlays.len(), 9);

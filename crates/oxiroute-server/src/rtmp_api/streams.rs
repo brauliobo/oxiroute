@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use oxiroute_rtmp::{
     CatalogError, RecorderId, RecorderPhase, RecorderSnapshot, RecordingAction, RelaySnapshot,
-    RtmpCatalogSnapshot, RtmpRegistry, StreamId, StreamSnapshot, TrackSnapshot,
+    RtmpCatalogSnapshot, RtmpControlHandle, StreamId, StreamSnapshot, TrackSnapshot,
     VideoCodecIdentifier,
 };
 use serde_json::{Value, json};
@@ -51,7 +51,7 @@ pub(super) fn match_route(path: &str) -> Option<Route<'_>> {
 pub(super) fn handle(
     route: Route<'_>,
     method: &str,
-    registry: &RtmpRegistry,
+    control: &RtmpControlHandle,
     now_unix_ms: u64,
 ) -> ApiResponse {
     match route {
@@ -59,32 +59,25 @@ pub(super) fn handle(
             if method != "GET" {
                 return ApiResponse::method_not_allowed("GET");
             }
-            ApiResponse::json(200, &catalog_json(&registry.snapshot()))
+            ApiResponse::json(200, &catalog_json(&control.catalog_snapshot()))
         }
-        Route::Stream(stream_id) => stream_response(method, registry, stream_id),
+        Route::Stream(stream_id) => stream_response(method, control, stream_id),
         Route::Recording {
             stream_id,
             recorder_id,
             action,
-        } => recording_response(
-            method,
-            registry,
-            stream_id,
-            recorder_id,
-            action,
-            now_unix_ms,
-        ),
+        } => recording_response(method, control, stream_id, recorder_id, action, now_unix_ms),
     }
 }
 
-fn stream_response(method: &str, registry: &RtmpRegistry, stream_id: &str) -> ApiResponse {
+fn stream_response(method: &str, control: &RtmpControlHandle, stream_id: &str) -> ApiResponse {
     if method != "GET" {
         return ApiResponse::method_not_allowed("GET");
     }
     let Ok(stream_id) = StreamId::from_str(stream_id) else {
         return ApiResponse::error(400, "invalid_stream_id", "stream ID is invalid");
     };
-    let snapshot = registry.snapshot();
+    let snapshot = control.catalog_snapshot();
     snapshot
         .streams
         .iter()
@@ -97,7 +90,7 @@ fn stream_response(method: &str, registry: &RtmpRegistry, stream_id: &str) -> Ap
 
 fn recording_response(
     method: &str,
-    registry: &RtmpRegistry,
+    control: &RtmpControlHandle,
     stream_id: &str,
     recorder_id: &str,
     action: &str,
@@ -119,8 +112,8 @@ fn recording_response(
     };
 
     let result = match action {
-        RecordingAction::Start => registry.start_recording(stream_id, recorder_id, now_unix_ms),
-        RecordingAction::Stop => registry.stop_recording(stream_id, recorder_id, now_unix_ms),
+        RecordingAction::Start => control.start_recording(stream_id, recorder_id, now_unix_ms),
+        RecordingAction::Stop => control.stop_recording(stream_id, recorder_id, now_unix_ms),
     };
     match result {
         Ok(recorder) => {
@@ -136,7 +129,7 @@ fn recording_response(
         }
         Err(error) => catalog_error(
             &error,
-            registry.snapshot().capabilities.manual_recording,
+            control.catalog_snapshot().capabilities.manual_recording,
             action,
         ),
     }

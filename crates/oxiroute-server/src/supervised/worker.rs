@@ -795,10 +795,7 @@ mod tests {
             .expect("startup")
             .claim_runtime_start()
             .expect("runtime start");
-        let detached_runtime = generation
-            .rtmp_runtime("live")
-            .expect("RTMP runtime")
-            .clone();
+        let detached_runtime = generation.rtmp_service("live").expect("RTMP runtime");
         let (release, released) = mpsc::sync_channel(0);
         let (finished, completion) = mpsc::sync_channel(1);
         let thread = thread::spawn(move || {

@@ -1,5 +1,5 @@
 use schemars::JsonSchema;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 #[derive(JsonSchema, Serialize)]
 pub(crate) struct ErrorResponse {
@@ -32,6 +32,18 @@ struct ErrorBody {
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq)]
 #[schemars(transparent)]
 pub(crate) struct DecimalCounter(#[schemars(with = "String", regex(pattern = "^[0-9]+$"))] u64);
+
+impl<'de> Deserialize<'de> for DecimalCounter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map(Self)
+            .map_err(D::Error::custom)
+    }
+}
 
 impl From<u64> for DecimalCounter {
     fn from(value: u64) -> Self {

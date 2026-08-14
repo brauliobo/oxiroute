@@ -9,7 +9,10 @@ use std::{
 
 use oxiroute_config::ValidatedConfig;
 use oxiroute_config_source::ConfigFormat;
-use oxiroute_rtmp::{RtmpAutoPushStatus, RtmpRecorderShutdown, RtmpRegistry, RtmpServiceRuntime};
+use oxiroute_rtmp::{
+    PreparedRtmpRuntimeSet, RtmpAutoPushStatus, RtmpControlHandle, RtmpPrepareContext,
+    RtmpPrepareMode, RtmpRecorderShutdown, RtmpRegistry, RtmpRuntimeSetError, RtmpServiceHandle,
+};
 #[cfg(target_os = "linux")]
 use oxiroute_supervision_unix::DescriptorSet;
 use pingora::apps::{AcceptGate, AcceptGateClose, AcceptOwnership};
@@ -17,9 +20,7 @@ use serde::Serialize;
 
 use crate::generation_resources::GenerationResources;
 use crate::listener_inventory::{ListenerId, ListenerInventory};
-use crate::rtmp_generation_runtime::{
-    PreparedRtmpGenerationRuntime, RtmpRetirement, RtmpRetirementRegistry,
-};
+use crate::rtmp_generation_runtime::{RtmpRetirement, RtmpRetirementRegistry};
 #[cfg(test)]
 use crate::service_plan::acquire_runtime_services;
 use crate::{
@@ -27,7 +28,6 @@ use crate::{
     RuntimePlan, ServiceKind,
     config_coordinator::{AuthoredRevision, EffectiveRevision, ResolvedConfigDocument},
     runtime_plan,
-    service_plan::PreparedRtmpRuntime,
     service_plan::validation_plan,
     service_plan::{
         RuntimeAcquisitionError, acquire_runtime_services_with_deadline, validate_runtime_services,
@@ -110,7 +110,7 @@ struct PreparedGenerationTransaction {
     reservations_precede_plan: bool,
     #[cfg(target_os = "linux")]
     descriptors: Option<DescriptorSet>,
-    rtmp: Option<PreparedRtmpGenerationRuntime>,
+    rtmp: Option<(Arc<RtmpRegistry>, PreparedRtmpRuntimeSet)>,
     listener_registration: Option<crate::monitoring::ListenerRegistrationTransaction>,
     reservations: Option<ListenerReservations>,
     acquired: Option<crate::service_plan::GenerationAcquisition>,
@@ -277,36 +277,45 @@ impl PreparedGeneration {
         services: &[crate::ServiceSpec],
         vod_catalog: Arc<oxiroute_rtmp::VodCatalog>,
         media_catalog: Arc<oxiroute_rtmp::MediaCatalog>,
-    ) -> Result<PreparedRtmpGenerationRuntime, GenerationError> {
-        Self::prepare_rtmp_with_deadline(capabilities, services, vod_catalog, media_catalog, None)
+    ) -> Result<(Arc<RtmpRegistry>, PreparedRtmpRuntimeSet), GenerationError> {
+        let _ = (vod_catalog, media_catalog);
+        Self::prepare_rtmp_with_deadline(capabilities, services, RtmpPrepareMode::Activation, None)
     }
 
     fn prepare_rtmp_with_deadline(
         capabilities: oxiroute_rtmp::RtmpCapabilities,
         services: &[crate::ServiceSpec],
-        vod_catalog: Arc<oxiroute_rtmp::VodCatalog>,
-        media_catalog: Arc<oxiroute_rtmp::MediaCatalog>,
+        mode: RtmpPrepareMode,
         deadline: Option<Instant>,
-    ) -> Result<PreparedRtmpGenerationRuntime, GenerationError> {
+    ) -> Result<(Arc<RtmpRegistry>, PreparedRtmpRuntimeSet), GenerationError> {
         let registry = Arc::new(RtmpRegistry::new(capabilities));
-        let mut prepared = Vec::new();
+        let mut plans = Vec::new();
         for service in services {
             let ServiceKind::Rtmp(service) = &service.kind else {
                 continue;
             };
-            if !prepared
-                .iter()
-                .any(|prepared: &PreparedRtmpRuntime| prepared.service_id() == service.service_id())
-            {
-                prepared.push(service.prepare_with_deadline(deadline)?);
+            if !plans.iter().any(|plan: &oxiroute_rtmp::RtmpServicePlan| {
+                plan.service_id() == service.service_id()
+            }) {
+                #[cfg(test)]
+                if crate::service_plan::trace_staged_rtmp_prepare()
+                    != crate::service_plan::RtmpRuntimeFault::None
+                {
+                    return Err(GenerationError::RuntimePrepare);
+                }
+                plans.push(service.value_plan());
             }
         }
-        Ok(PreparedRtmpGenerationRuntime::new(
-            registry,
-            prepared,
-            vod_catalog,
-            media_catalog,
-        ))
+        let listener_addresses = services.iter().filter_map(|service| match service.bind {
+            oxiroute_config::ListenerBind::Socket { address }
+            | oxiroute_config::ListenerBind::Udp { address } => Some(address),
+            oxiroute_config::ListenerBind::Unix { .. } => None,
+        });
+        let context = RtmpPrepareContext::new(mode, listener_addresses);
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + GENERATION_PREPARATION_TIMEOUT);
+        let prepared = PreparedRtmpRuntimeSet::prepare(plans, &context, deadline)
+            .map_err(map_rtmp_runtime_set_error)?;
+        Ok((registry, prepared))
     }
 
     fn check_generation_inputs(
@@ -486,11 +495,6 @@ impl PreparedGeneration {
         } else {
             None
         };
-        let (rtmp_vod_catalog, rtmp_media_catalog) = transaction
-            .acquired
-            .as_mut()
-            .expect("provisional acquisition")
-            .take_rtmp_catalogs();
         transaction.rtmp = Some(Self::prepare_rtmp_with_deadline(
             transaction
                 .plan
@@ -498,8 +502,11 @@ impl PreparedGeneration {
                 .expect("provisional runtime plan")
                 .rtmp_capabilities,
             transaction.acquired().services(),
-            rtmp_vod_catalog,
-            rtmp_media_catalog,
+            if metrics.is_some() {
+                RtmpPrepareMode::Activation
+            } else {
+                RtmpPrepareMode::Validation
+            },
             deadline,
         )?);
         #[cfg(test)]
@@ -606,12 +613,12 @@ impl RuntimeGeneration {
     }
 
     #[must_use]
-    pub const fn rtmp_vod_catalog(&self) -> &Arc<oxiroute_rtmp::VodCatalog> {
+    pub fn rtmp_vod_catalog(&self) -> Arc<oxiroute_rtmp::VodCatalog> {
         self.resources.rtmp_vod_catalog()
     }
 
     #[must_use]
-    pub const fn rtmp_media_catalog(&self) -> &Arc<oxiroute_rtmp::MediaCatalog> {
+    pub fn rtmp_media_catalog(&self) -> Arc<oxiroute_rtmp::MediaCatalog> {
         self.resources.rtmp_media_catalog()
     }
 
@@ -700,13 +707,13 @@ impl RuntimeGeneration {
     }
 
     #[must_use]
-    pub fn registry(&self) -> &Arc<RtmpRegistry> {
-        self.resources.registry()
+    pub fn rtmp_control(&self) -> RtmpControlHandle {
+        self.resources.rtmp_control()
     }
 
     #[must_use]
-    pub fn rtmp_runtime(&self, service: &str) -> Option<&RtmpServiceRuntime> {
-        self.resources.rtmp_runtime(service)
+    pub fn rtmp_service(&self, service: &str) -> Option<RtmpServiceHandle> {
+        self.resources.rtmp_service(service)
     }
 
     #[must_use]
@@ -725,6 +732,11 @@ impl RuntimeGeneration {
 
     fn rtmp_retirement(&self) -> RtmpRetirement {
         self.resources.rtmp_retirement()
+    }
+
+    #[doc(hidden)]
+    pub fn rtmp_recorder_lifecycles(&self) -> Vec<oxiroute_rtmp::RtmpRecorderLifecycle> {
+        self.resources.rtmp_recorder_lifecycles()
     }
 
     fn claim_runtime_start(&self) -> bool {
@@ -2290,6 +2302,19 @@ impl From<RuntimeAcquisitionError> for GenerationError {
     }
 }
 
+fn map_rtmp_runtime_set_error(error: RtmpRuntimeSetError) -> GenerationError {
+    let timed_out = matches!(
+        &error,
+        RtmpRuntimeSetError::PreparationTimedOut { .. } | RtmpRuntimeSetError::StartTimedOut { .. }
+    );
+    drop(error);
+    if timed_out {
+        GenerationError::PreparationTimedOut
+    } else {
+        GenerationError::RuntimePrepare
+    }
+}
+
 impl GenerationError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -2930,7 +2955,7 @@ return {{
             .expect("runtime start reservation");
         let generation = startup.claim_runtime_start().expect("RTMP start");
         assert_eq!(rtmp_stage_counts(), (2, 1));
-        assert!(generation.rtmp_runtime("live").is_some());
+        assert!(generation.rtmp_service("live").is_some());
         assert!(!generation.rtmp_auto_push_status().started);
         assert!(matches!(
             startup.claim_runtime_start(),

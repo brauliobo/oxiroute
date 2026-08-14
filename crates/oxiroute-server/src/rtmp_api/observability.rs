@@ -1,11 +1,13 @@
-use oxiroute_rtmp::RtmpRegistry;
+use oxiroute_rtmp::RtmpControlHandle;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::ApiResponse;
-use super::dto::{CapabilitiesResponse, MonitoringResponse, ReadinessResponse, StatusResponse};
+use super::dto::{
+    CapabilitiesResponse, MonitoringResponse, ReadinessResponse, StatusResponse, TopologyResponse,
+};
 use crate::{
-    GenerationManager, RuntimeMetrics, TOPOLOGY_SCHEMA_VERSION, TopologySnapshot, render_prometheus,
+    GenerationManager, RuntimeMetrics, TopologySnapshot, prometheus::render_prometheus_control,
 };
 
 #[derive(Clone, Copy)]
@@ -34,7 +36,7 @@ pub(super) fn handle(
     route: Route,
     method: &str,
     metrics: &RuntimeMetrics,
-    registry: &RtmpRegistry,
+    control: &RtmpControlHandle,
     topology: &TopologySnapshot,
     generations: Option<&GenerationManager>,
 ) -> ApiResponse {
@@ -43,8 +45,8 @@ pub(super) fn handle(
     }
     match route {
         Route::Topology => topology_response(metrics, topology),
-        Route::Monitoring => monitoring_response(metrics, registry),
-        Route::Metrics => metrics_response(metrics, registry, generations),
+        Route::Monitoring => monitoring_response(metrics, control),
+        Route::Metrics => metrics_response(metrics, control, generations),
         Route::Readiness => readiness_response(metrics, generations),
         Route::Status => status_response(metrics, generations, topology),
         Route::Capabilities => capabilities_response(metrics),
@@ -149,7 +151,7 @@ fn serialized_response<T: Serialize>(
 
 fn metrics_response(
     metrics: &RuntimeMetrics,
-    registry: &RtmpRegistry,
+    control: &RtmpControlHandle,
     generations: Option<&GenerationManager>,
 ) -> ApiResponse {
     let Some(generations) = generations else {
@@ -159,7 +161,7 @@ fn metrics_response(
             "generation state is unavailable",
         );
     };
-    match render_prometheus(metrics, registry, generations) {
+    match render_prometheus_control(metrics, control, generations) {
         Ok(body) => ApiResponse::bytes(
             200,
             body.into_bytes(),
@@ -170,20 +172,12 @@ fn metrics_response(
 }
 
 pub(super) fn candidate_topology(topology: &TopologySnapshot, now_unix_ms: u64) -> Value {
-    json!({
-        "schemaVersion": TOPOLOGY_SCHEMA_VERSION,
-        "state": {
-            "config": "candidate",
-            "runtime": "not_active",
-            "sampledAtUnixMs": now_unix_ms,
-        },
-        "nodes": topology.nodes(),
-        "edges": topology.edges(),
-        "overlays": [],
-    })
+    let response = TopologyResponse::candidate(topology, now_unix_ms)
+        .expect("compiled candidate topology has valid API attributes");
+    serde_json::to_value(response).expect("topology DTO serialization cannot fail")
 }
 
-fn monitoring_response(metrics: &RuntimeMetrics, registry: &RtmpRegistry) -> ApiResponse {
+fn monitoring_response(metrics: &RuntimeMetrics, control: &RtmpControlHandle) -> ApiResponse {
     let runtime = match metrics.snapshot() {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -196,7 +190,7 @@ fn monitoring_response(metrics: &RuntimeMetrics, registry: &RtmpRegistry) -> Api
     };
     let recording_supported = metrics.rtmp_recording_supported();
     let Some(response) =
-        MonitoringResponse::project(runtime, &registry.snapshot(), recording_supported)
+        MonitoringResponse::project(runtime, &control.catalog_snapshot(), recording_supported)
     else {
         return ApiResponse::error(
             500,
@@ -225,8 +219,13 @@ fn topology_response(metrics: &RuntimeMetrics, topology: &TopologySnapshot) -> A
             );
         }
     };
-    match topology.response_value(&runtime) {
-        Ok(value) => ApiResponse::json(200, &value),
+    match TopologyResponse::active(topology, &runtime) {
+        Ok(response) => serialized_response(
+            200,
+            &response,
+            "topology_serialization_failed",
+            "could not serialize active runtime topology",
+        ),
         Err(error) => ApiResponse::error(
             500,
             "topology_serialization_failed",
