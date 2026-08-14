@@ -706,19 +706,6 @@ fn compile_rtmp_blueprint(
         .applications()
         .iter()
         .map(|application| {
-            let access = |plan: &oxiroute_rtmp::RtmpAccessPlan| {
-                let rules: Vec<_> = plan
-                    .rules()
-                    .iter()
-                    .map(|rule| {
-                        oxiroute_rtmp::RtmpAccessRule::new(rule.action(), rule.network().clone())
-                    })
-                    .collect();
-                oxiroute_rtmp::RtmpAccessPolicy::new(
-                    rules,
-                    plan.token().map(|token| token.policy().clone()),
-                )
-            };
             let fanout = application.fanout();
             let fanout_limits = oxiroute_rtmp::LiveHubLimits {
                 max_subscribers: fanout.max_subscribers(),
@@ -730,8 +717,8 @@ fn compile_rtmp_blueprint(
                 ..oxiroute_rtmp::LiveHubLimits::default()
             };
             Ok(RtmpApplicationBlueprint {
-                publish_policy: access(application.publish()),
-                play_policy: access(application.play()),
+                publish_policy: application.publish().runtime_policy(),
+                play_policy: application.play().runtime_policy(),
                 fanout_limits,
             })
         })
