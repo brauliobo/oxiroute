@@ -134,24 +134,49 @@ fn supervised_catalog_preserves_roles_and_monotonic_generation_identity() {
     assert_eq!(catalog.allocate_generation().unwrap(), GenerationId(2));
 
     catalog
-        .begin_candidate(launch_document("candidate-3", 3, 30, "candidate"))
+        .begin_candidate(launch_document("candidate-2", 2, 20, "candidate"))
         .unwrap();
     assert_eq!(
         catalog.get(GenerationRole::Candidate).unwrap().payload(),
         "candidate"
     );
     assert_eq!(
-        catalog.begin_candidate(launch_document("candidate-4", 4, 40, "second")),
+        catalog.begin_candidate(launch_document("candidate-3", 3, 30, "second")),
         Err(CatalogError::CandidateInProgress)
     );
 
     assert_eq!(catalog.commit_candidate().unwrap(), None);
-    assert_eq!(catalog.active().instance_id().as_str(), "candidate-3");
+    assert_eq!(catalog.active().instance_id().as_str(), "candidate-2");
     assert_eq!(
         catalog.previous().unwrap().instance_id().as_str(),
         "active-1"
     );
-    assert_eq!(catalog.allocate_generation().unwrap(), GenerationId(4));
+    assert_eq!(catalog.allocate_generation().unwrap(), GenerationId(3));
+}
+
+#[test]
+fn supervised_catalog_consumes_multiple_reservations_once_in_monotonic_order() {
+    let mut catalog =
+        SupervisedGenerationCatalog::new(launch_document("active-1", 1, 10, "active"));
+    assert_eq!(catalog.allocate_generation(), Ok(GenerationId(2)));
+    assert_eq!(catalog.allocate_generation(), Ok(GenerationId(3)));
+
+    catalog
+        .begin_candidate(launch_document("candidate-2", 2, 20, "first"))
+        .unwrap();
+    catalog.quarantine_candidate().unwrap();
+    catalog
+        .begin_candidate(launch_document("candidate-3", 3, 30, "second"))
+        .unwrap();
+    catalog.quarantine_candidate().unwrap();
+
+    assert_eq!(
+        catalog.begin_candidate(launch_document("candidate-2-reuse", 2, 40, "reuse")),
+        Err(CatalogError::StaleGeneration {
+            current: GenerationId(3),
+            candidate: GenerationId(2),
+        })
+    );
 }
 
 #[test]
@@ -287,8 +312,12 @@ fn supervised_catalog_allocator_exhausts_without_reusing_u64_max() {
         catalog.allocate_generation(),
         Err(CatalogError::GenerationExhausted)
     );
+    catalog
+        .begin_candidate(launch_document("active-max", maximum, 20, "candidate"))
+        .unwrap();
+    catalog.quarantine_candidate().unwrap();
     assert!(matches!(
-        catalog.begin_candidate(launch_document("maximum-reuse", maximum, 20, "reuse")),
+        catalog.begin_candidate(launch_document("maximum-reuse", maximum, 30, "reuse")),
         Err(CatalogError::StaleGeneration {
             current: GenerationId(value),
             candidate: GenerationId(candidate),

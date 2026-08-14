@@ -83,14 +83,19 @@ pub struct SupervisedGenerationCatalog<R, T> {
     quarantined: Option<GenerationLaunchDocument<R, T>>,
     restart_required: Option<GenerationLaunchDocument<R, T>>,
     next_generation: Option<GenerationId>,
+    generation_high_watermark: GenerationId,
+    consumed_generation_high_watermark: GenerationId,
 }
 
 impl<R, T> SupervisedGenerationCatalog<R, T> {
     /// Creates a catalog with one already-active launch document.
     #[must_use]
     pub fn new(active: GenerationLaunchDocument<R, T>) -> Self {
+        let generation_high_watermark = active.generation_id;
         Self {
             next_generation: active.generation_id.0.checked_add(1).map(GenerationId),
+            generation_high_watermark,
+            consumed_generation_high_watermark: generation_high_watermark,
             active,
             candidate: None,
             previous: None,
@@ -151,6 +156,7 @@ impl<R, T> SupervisedGenerationCatalog<R, T> {
             .next_generation
             .ok_or(CatalogError::GenerationExhausted)?;
         self.next_generation = generation.0.checked_add(1).map(GenerationId);
+        self.generation_high_watermark = generation;
         Ok(generation)
     }
 
@@ -172,13 +178,8 @@ impl<R, T> SupervisedGenerationCatalog<R, T> {
                 instance_id: candidate.instance_id.clone(),
             });
         }
-        let current = self.latest_generation();
-        if candidate.generation_id <= current {
-            return Err(CatalogError::StaleGeneration {
-                current,
-                candidate: candidate.generation_id,
-            });
-        }
+        self.validate_generation(candidate.generation_id)?;
+        self.consume_generation(candidate.generation_id);
         self.advance_generation_allocator(candidate.generation_id);
         self.candidate = Some(candidate);
         Ok(())
@@ -233,13 +234,8 @@ impl<R, T> SupervisedGenerationCatalog<R, T> {
                 instance_id: document.instance_id.clone(),
             });
         }
-        let current = self.latest_generation();
-        if document.generation_id <= current {
-            return Err(CatalogError::StaleGeneration {
-                current,
-                candidate: document.generation_id,
-            });
-        }
+        self.validate_generation(document.generation_id)?;
+        self.consume_generation(document.generation_id);
         self.advance_generation_allocator(document.generation_id);
         Ok(self.restart_required.replace(document))
     }
@@ -273,22 +269,34 @@ impl<R, T> SupervisedGenerationCatalog<R, T> {
                 .any(|document| document.instance_id() == instance_id)
     }
 
-    fn latest_generation(&self) -> GenerationId {
-        let retained = self
-            .candidate
+    fn latest_retained_generation(&self) -> GenerationId {
+        self.candidate
             .iter()
             .chain(self.previous.iter())
             .chain(self.quarantined.iter())
             .chain(self.restart_required.iter())
             .map(GenerationLaunchDocument::generation_id)
-            .fold(self.active.generation_id(), GenerationId::max);
-        let allocated = self
-            .next_generation
-            .map_or(GenerationId(u64::MAX), |next| GenerationId(next.0 - 1));
-        retained.max(allocated)
+            .fold(self.active.generation_id(), GenerationId::max)
+    }
+
+    fn validate_generation(&self, candidate: GenerationId) -> Result<(), CatalogError> {
+        if candidate <= self.latest_retained_generation()
+            || candidate <= self.consumed_generation_high_watermark
+        {
+            return Err(CatalogError::StaleGeneration {
+                current: self.generation_high_watermark,
+                candidate,
+            });
+        }
+        Ok(())
+    }
+
+    fn consume_generation(&mut self, generation: GenerationId) {
+        self.consumed_generation_high_watermark = generation;
     }
 
     fn advance_generation_allocator(&mut self, generation: GenerationId) {
+        self.generation_high_watermark = self.generation_high_watermark.max(generation);
         if self.next_generation.is_some_and(|next| generation >= next) {
             self.next_generation = generation.0.checked_add(1).map(GenerationId);
         }
