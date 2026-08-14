@@ -10,26 +10,28 @@ use std::{
 };
 
 use oxiroute_config::{
-    Config, Listener, Protocol, RtmpApplication, RtmpRecorderStart, RtmpService,
+    ConfigDraft, Listener, Protocol, RtmpApplication, RtmpRecorderStart, RtmpService,
 };
 use oxiroute_rtmp::{RecorderPhase, RtmpRegistry};
-use oxiroute_server::{RtmpManagementApi, RuntimeMetrics, ServiceKind, runtime_plan};
+use oxiroute_server::{RtmpManagementApi, RuntimeMetrics, ServiceKind};
 use serde_json::Value;
 use tempfile::TempDir;
 
-use config_support::{empty_config, loopback_address, rtmp_recorder, socket_bind};
+use config_support::{empty_config, loopback_address, rtmp_recorder, runtime_plan, socket_bind};
 use rtmp_support::RtmpSessionClient;
 
 #[test]
 fn continuous_recording_finalizes_on_disconnect_and_is_fully_observable() {
     let root = TempDir::new().expect("recording root");
     let config = recording_config(root.path(), RtmpRecorderStart::Continuous);
-    let plan = runtime_plan(&config).expect("continuous runtime plan");
+    let validated = config.clone().validate().unwrap();
+    let plan = runtime_plan(&validated).expect("continuous runtime plan");
+    let services = config_support::service_specs(&validated).expect("continuous services");
     let registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
-    let runtime = rtmp_runtime(&plan, Arc::clone(&registry));
+    let runtime = rtmp_runtime(&services, Arc::clone(&registry));
     let metrics = RuntimeMetrics::new();
     metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
-    register_active_listeners(&config, &plan, &metrics);
+    register_active_listeners(&config, &services, &metrics);
     let api = RtmpManagementApi::new(Arc::clone(&registry), metrics, Arc::clone(&plan.topology));
     let mut publisher = publisher(&runtime, "camera?token=private");
 
@@ -130,13 +132,15 @@ fn continuous_recording_finalizes_on_disconnect_and_is_fully_observable() {
 fn manual_api_start_and_stop_control_the_exact_runtime_recorder() {
     let root = TempDir::new().expect("recording root");
     let config = recording_config(root.path(), RtmpRecorderStart::Manual);
-    let plan = runtime_plan(&config).expect("manual runtime plan");
+    let validated = config.clone().validate().unwrap();
+    let plan = runtime_plan(&validated).expect("manual runtime plan");
+    let services = config_support::service_specs(&validated).expect("manual services");
     assert!(plan.rtmp_capabilities.manual_recording);
     let registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
-    let runtime = rtmp_runtime(&plan, Arc::clone(&registry));
+    let runtime = rtmp_runtime(&services, Arc::clone(&registry));
     let metrics = RuntimeMetrics::new();
     metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
-    register_active_listeners(&config, &plan, &metrics);
+    register_active_listeners(&config, &services, &metrics);
     let api = RtmpManagementApi::new(Arc::clone(&registry), metrics, Arc::clone(&plan.topology));
     let mut publisher = publisher(&runtime, "manual-camera");
     let stream = registry.snapshot().streams[0].clone();
@@ -173,8 +177,8 @@ fn manual_api_start_and_stop_control_the_exact_runtime_recorder() {
         .expect("publisher close");
 }
 
-fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) -> Config {
-    Config {
+fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) -> ConfigDraft {
+    ConfigDraft {
         listeners: vec![Listener {
             name: "live".into(),
             bind: socket_bind(loopback_address(1935)),
@@ -218,21 +222,21 @@ fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) 
 }
 
 fn rtmp_runtime(
-    plan: &oxiroute_server::RuntimePlan,
+    services: &[oxiroute_server::ServiceSpec],
     registry: Arc<RtmpRegistry>,
 ) -> oxiroute_rtmp::RtmpServiceRuntime {
-    let ServiceKind::Rtmp(service) = &plan.services[0].kind else {
+    let ServiceKind::Rtmp(service) = &services[0].kind else {
         panic!("RTMP service plan");
     };
     service.runtime(registry).expect("RTMP service runtime")
 }
 
 fn register_active_listeners(
-    config: &Config,
-    plan: &oxiroute_server::RuntimePlan,
+    config: &ConfigDraft,
+    services: &[oxiroute_server::ServiceSpec],
     metrics: &RuntimeMetrics,
 ) {
-    for (listener, service) in config.listeners.iter().zip(&plan.services) {
+    for (listener, service) in config.listeners.iter().zip(services) {
         let listener_metrics = metrics
             .register_configured_listener(
                 &listener.name,

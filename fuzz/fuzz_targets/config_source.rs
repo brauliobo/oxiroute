@@ -3,8 +3,7 @@
 mod support;
 
 use libfuzzer_sys::fuzz_target;
-use oxiroute_config::load_lua;
-use oxiroute_config_source::{ConfigFormat, decode_value, expand_templates, render_value};
+use oxiroute_config_source::{ConfigFormat, decode_value, expand_templates, load_lua};
 
 const MAX_INPUT_BYTES: usize = 131_072;
 
@@ -24,7 +23,6 @@ fuzz_target!(|data: &[u8]| {
         format => {
             if let Ok(value) = decode_value(format, source) {
                 let _ = expand_templates(&value);
-                let _ = render_value(format, &value);
             }
         }
     }

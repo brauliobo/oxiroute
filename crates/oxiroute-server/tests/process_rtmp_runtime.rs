@@ -20,7 +20,7 @@ use std::{
 };
 
 use oxiroute_config::{
-    AccessLogPolicy, Config, HttpPathSelector, HttpRoute, HttpRouteAction, HttpService,
+    AccessLogPolicy, ConfigDraft, HttpPathSelector, HttpRoute, HttpRouteAction, HttpService,
     HttpVersionPolicy, L4Service, Listener, Management, Protocol, RtmpApplication,
     RtmpRecorderStart, RtmpService, Stats, UpstreamAlgorithm, UpstreamConnectionReuse,
     UpstreamEndpoint, UpstreamPool,
@@ -52,7 +52,7 @@ async fn idle_and_publisher_connections_survive_initial_playback_timer_ticks() {
     let management_address = reserve_tcp_address();
     let rtmp_address = reserve_tcp_address();
     let mut config = idle_runtime_config(management_address, rtmp_address);
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(rtmp_address).await;
 
@@ -84,7 +84,7 @@ async fn idle_and_publisher_connections_survive_initial_playback_timer_ticks() {
         .expect("active revision")
         .to_owned();
     config.max_connections = Some(100);
-    write_config(&server.config_path, &config);
+    write_config(&server.config_path, &config.clone().validate().unwrap());
     timeout(WIRE_TIMEOUT, async {
         loop {
             let status = http_request(
@@ -146,7 +146,7 @@ async fn queued_connections_survive_generation_handoff_on_every_listener_kind() 
         rtmp_address,
         upstream_address,
     );
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
     for address in [
         management_address,
         stats_addresses[0],
@@ -181,7 +181,7 @@ async fn queued_connections_survive_generation_handoff_on_every_listener_kind() 
         .expect("active revision")
         .to_owned();
     config.max_connections = Some(1_024);
-    write_config(&server.config_path, &config);
+    write_config(&server.config_path, &config.clone().validate().unwrap());
     wait_for_new_revision(management_address, &authorization, &original_revision).await;
 
     let ready_request = b"GET /ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
@@ -213,7 +213,7 @@ async fn built_runtime_publishes_plays_and_records_continuous_and_manual_streams
         &continuous_root,
         &manual_root,
     );
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(rtmp_address).await;
     let authorization = format!("Bearer {TOKEN}");
@@ -374,7 +374,7 @@ async fn rtmp_file_access_log_emits_fixed_lifecycle_records_and_flushes_on_shutd
         path: access_log_path.clone(),
     });
 
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(rtmp_address).await;
 
@@ -443,7 +443,7 @@ async fn phoenix_continuous_recording_resumes_after_process_restart_and_publishe
     recorder.segment_naming = oxiroute_config::RtmpRecorderSegmentNaming::NginxCompatible;
     recorder.rotation_interval_ms = Some(3_600_000);
 
-    let mut first_server = ServerProcess::start(&config, Some(TOKEN));
+    let mut first_server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
     first_server.wait_for_tcp(management_address).await;
     first_server.wait_for_tcp(rtmp_address).await;
     let mut first_publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
@@ -469,7 +469,7 @@ async fn phoenix_continuous_recording_resumes_after_process_restart_and_publishe
     let first_bytes = fs::read(&first_path).expect("first Phoenix-shaped segment");
     assert!(first_bytes.starts_with(b"FLV"));
 
-    let mut second_server = ServerProcess::start(&config, Some(TOKEN));
+    let mut second_server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
     second_server.wait_for_tcp(management_address).await;
     second_server.wait_for_tcp(rtmp_address).await;
     let mut second_publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
@@ -507,7 +507,7 @@ async fn process_shutdown_waits_for_stalled_recorder_cleanup_without_exceeding_t
         &continuous_root,
         &manual_root,
     );
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(rtmp_address).await;
     let ownership = fs::File::open(&continuous_root).expect("recording root ownership");
@@ -551,7 +551,7 @@ async fn evicted_generation_keeps_recording_live_connections_until_final_shutdow
     config.rtmp_services[0].applications[0].recorders[0].shutdown_timeout_ms = 3_000;
     config.rtmp_services[0].applications[1].recorders[0].start = RtmpRecorderStart::Continuous;
     config.rtmp_services[0].applications[1].recorders[0].shutdown_timeout_ms = 30_000;
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(rtmp_address).await;
     let authorization = format!("Bearer {TOKEN}");
@@ -568,13 +568,13 @@ async fn evicted_generation_keeps_recording_live_connections_until_final_shutdow
     let initial_size = wait_for_recording_growth(&continuous_root, 0).await;
 
     config.max_connections = Some(64);
-    write_config(&server.config_path, &config);
+    write_config(&server.config_path, &config.clone().validate().unwrap());
     wait_for_new_revision(management_address, &authorization, &original_revision).await;
     publisher.publish_audio(3, &[0xaf, 0x01, 0x55]).await;
     let second_size = wait_for_recording_growth(&continuous_root, initial_size).await;
     let second_revision = active_revision(management_address, &authorization).await;
     config.max_connections = Some(65);
-    write_config(&server.config_path, &config);
+    write_config(&server.config_path, &config.validate().unwrap());
     wait_for_new_revision(management_address, &authorization, &second_revision).await;
     publisher.publish_audio(4, &[0xaf, 0x01, 0x66]).await;
     wait_for_recording_growth(&continuous_root, second_size).await;
@@ -639,8 +639,8 @@ fn runtime_config(
     rtmp_address: SocketAddr,
     continuous_root: &Path,
     manual_root: &Path,
-) -> Config {
-    Config {
+) -> ConfigDraft {
+    ConfigDraft {
         management: Some(Management {
             bind: management_address,
             ui_dir: None,
@@ -675,8 +675,8 @@ fn runtime_config(
     }
 }
 
-fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr) -> Config {
-    Config {
+fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr) -> ConfigDraft {
+    ConfigDraft {
         management: Some(Management {
             bind: management_address,
             ui_dir: None,
@@ -732,7 +732,7 @@ fn handoff_runtime_config(
     tcp_address: SocketAddr,
     rtmp_address: SocketAddr,
     upstream_address: SocketAddr,
-) -> Config {
+) -> ConfigDraft {
     let listener = |name: &str, address, protocol, service: &str| Listener {
         name: name.into(),
         bind: socket_bind(address),
@@ -743,7 +743,7 @@ fn handoff_runtime_config(
         max_connections: Some(512),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     };
-    Config {
+    ConfigDraft {
         management: Some(Management {
             bind: management_address,
             ui_dir: None,

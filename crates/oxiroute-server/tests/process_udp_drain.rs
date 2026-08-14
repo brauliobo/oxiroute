@@ -18,7 +18,7 @@ use std::{
 };
 
 use oxiroute_config::{
-    Config, DownstreamTimeoutPolicy, L4Service, Listener, ListenerBind, Management, Protocol,
+    ConfigDraft, DownstreamTimeoutPolicy, L4Service, Listener, ListenerBind, Management, Protocol,
     UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool,
 };
 use serde_json::{Value, json};
@@ -52,7 +52,7 @@ async fn udp_reload_and_drain_retain_sessions_reject_new_work_and_cancel_at_dead
     let new_upstream_address = new_upstream.local_addr().expect("new UDP upstream address");
 
     let initial = udp_config(management_address, listener_address, old_upstream_address);
-    let mut server = ServerProcess::start(&initial, Some(TOKEN));
+    let mut server = ServerProcess::start(&initial.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     let authorization = format!("Bearer {TOKEN}");
     wait_for_udp_listener(management_address, &authorization).await;
@@ -69,7 +69,7 @@ async fn udp_reload_and_drain_retain_sessions_reject_new_work_and_cancel_at_dead
     let original_revision = active_revision(management_address, &authorization).await;
     let mut candidate = initial.clone();
     candidate.upstream_pools[0].endpoints = vec![socket_endpoint(new_upstream_address)];
-    write_config(&server.config_path, &candidate);
+    write_config(&server.config_path, &candidate.validate().unwrap());
     wait_for_new_revision(management_address, &authorization, &original_revision).await;
 
     let (new_client, new_peer) =
@@ -148,8 +148,8 @@ fn udp_config(
     management_address: SocketAddr,
     listener_address: SocketAddr,
     upstream_address: SocketAddr,
-) -> Config {
-    Config {
+) -> ConfigDraft {
+    ConfigDraft {
         management: Some(Management {
             bind: management_address,
             ui_dir: None,

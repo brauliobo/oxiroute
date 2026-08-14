@@ -99,21 +99,23 @@ describe('local management workspaces', () => {
     let streams = 0
     const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
-      if (url.startsWith('/api/v1/events?')) {
+      if (url.startsWith('/api/v2/events?')) {
         eventPages += 1
         return Promise.resolve(jsonResponse(eventPages === 1 ? {
           events: [{ cursor: 1, timestampUnixMs: null, event: 'generation_prepare', outcome: 'prepared', revision: null }],
           cursor: 1,
+          latestCursor: 1,
           hasMore: false,
           oldestCursor: 1,
         } : {
           events: [{ cursor: 9, timestampUnixMs: null, event: 'generation_activate', outcome: 'activated', revision: 'active-revision' }],
           cursor: 9,
+          latestCursor: 9,
           hasMore: false,
           oldestCursor: 9,
         }))
       }
-      if (url === '/api/v1/events/stream') {
+      if (url === '/api/v2/events/stream') {
         streams += 1
         return Promise.resolve(new Response(streams === 1
           ? 'event: resync_required\ndata: {"cursor":1,"oldestCursor":9,"latestCursor":9}\n\n'
@@ -135,13 +137,58 @@ describe('local management workspaces', () => {
     wrapper.unmount()
   })
 
+  it('renders bounded structured endpoint outcomes without object coercion', async () => {
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/v2/events?')) {
+        return Promise.resolve(jsonResponse({
+          events: [{
+            cursor: 12,
+            timestampUnixMs: null,
+            event: 'upstream_endpoint_ejection',
+            outcome: {
+              type: 'ejected',
+              pool: 'backend',
+              server: 'primary',
+              reason: 'connect_failed',
+              failureCount: 3,
+              ejectionCount: 2,
+              ejectedAtUnixMs: 100,
+              ejectionUntilUnixMs: 200,
+            },
+            revision: null,
+          }],
+          cursor: 12,
+          latestCursor: 12,
+          hasMore: false,
+          oldestCursor: 12,
+        }))
+      }
+      if (url === '/api/v2/events/stream') {
+        return Promise.resolve(new Response('event: shutdown\ndata: {"reason":"server_shutdown"}\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' },
+        }))
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetch)
+
+    const wrapper = mount(EventsWorkspace, { props: { token } })
+    await flushPromises()
+
+    expect(wrapper.get('.outcome-chip').text()).toBe('ejected')
+    expect(wrapper.text()).toContain('backend / primary / connect failed')
+    expect(wrapper.text()).not.toContain('[object Object]')
+    wrapper.unmount()
+  })
+
   it('renders certificate jobs without exposing private or account material', async () => {
     const fetch = vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
       if (url === '/api/v1/tls') return Promise.resolve(jsonResponse(managementTlsInventory()))
       if (url === '/api/v1/generations') return Promise.resolve(jsonResponse(managementGeneration()))
-      if (url.startsWith('/api/v1/events?')) return Promise.resolve(jsonResponse({ events: [], cursor: 0, hasMore: false, oldestCursor: null }))
-      if (url === '/api/v1/events/stream') return Promise.resolve(new Response('event: shutdown\ndata: {"reason":"server_shutdown"}\n\n', { headers: { 'Content-Type': 'text/event-stream' } }))
+      if (url.startsWith('/api/v2/events?')) return Promise.resolve(jsonResponse({ events: [], cursor: 0, latestCursor: 0, hasMore: false, oldestCursor: null }))
+      if (url === '/api/v2/events/stream') return Promise.resolve(new Response('event: shutdown\ndata: {"reason":"server_shutdown"}\n\n', { headers: { 'Content-Type': 'text/event-stream' } }))
       throw new Error(`Unexpected request: ${url}`)
     })
     vi.stubGlobal('fetch', fetch)
@@ -220,10 +267,10 @@ describe('local management workspaces', () => {
       requests.push({ url, init })
       if (url === '/api/v1/tls') return Promise.resolve(jsonResponse(managementTlsInventory()))
       if (url === '/api/v1/generations') return Promise.resolve(jsonResponse(managementGeneration()))
-      if (url.startsWith('/api/v1/events?')) {
-        return Promise.resolve(jsonResponse({ events: [], cursor: 0, hasMore: false, oldestCursor: null }))
+      if (url.startsWith('/api/v2/events?')) {
+        return Promise.resolve(jsonResponse({ events: [], cursor: 0, latestCursor: 0, hasMore: false, oldestCursor: null }))
       }
-      if (url === '/api/v1/events/stream') {
+      if (url === '/api/v2/events/stream') {
         return Promise.resolve(new Response('event: shutdown\ndata: {"reason":"server_shutdown"}\n\n', {
           headers: { 'Content-Type': 'text/event-stream' },
         }))

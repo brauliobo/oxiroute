@@ -21,11 +21,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use config_support::render_lua;
 use oxiroute_config::{
-    Certificate, CertificateSource, Config, Listener, Management, Protocol, RtmpAccessPolicy,
+    Certificate, CertificateSource, ConfigDraft, Listener, Management, Protocol, RtmpAccessPolicy,
     RtmpApplication, RtmpDashPolicy, RtmpDashSegmentNaming, RtmpRecorderStart, RtmpService,
     RtmpSessionCeilings, RtmpTokenPolicy, RtmpTokenSource, RtmpVodPolicy, RtmpVodSource,
-    render_lua,
+    ValidatedConfig,
 };
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, MediaSnapshot, RtmpApplication as RuntimeRtmpApplication,
@@ -34,11 +35,13 @@ use oxiroute_rtmp::{
     StreamKey, TrackSnapshot, VideoCodecIdentifier,
 };
 use oxiroute_server::{
-    HttpListenerApp, RtmpManagementApi, RuntimeMetrics, ServiceKind, TopologySnapshot,
+    GenerationManager, HttpListenerApp, RtmpManagementApi, RuntimeMetrics, RuntimeMode,
+    ServiceKind, TopologySnapshot,
     config_coordinator::{
-        CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision, MAX_CANONICAL_CONFIG_BYTES,
+        AuthoredRevision, CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision,
+        MAX_CANONICAL_CONFIG_BYTES,
     },
-    runtime_plan,
+    emit_certificate,
 };
 use pingora::{
     server::Fds,
@@ -58,11 +61,18 @@ use tokio::{
     task::JoinHandle,
 };
 
-use config_support::{empty_config, loopback_address, rtmp_recorder, socket_bind};
+use config_support::{empty_config, loopback_address, rtmp_recorder, runtime_plan, socket_bind};
 use fixture_support::{fixture, write_file_with_mode};
 use http_support::{HttpResponse, http_request, raw_http_request};
 
 const TEST_TOKEN: &str = "cdb85a91948758cfcb895216a3603c8fcd8aaf691f39f5fd82b5df15af14628e";
+
+fn reserve_tcp_address() -> SocketAddr {
+    std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("reserve TCP address")
+        .local_addr()
+        .expect("reserved TCP address")
+}
 
 #[test]
 fn reports_truthful_empty_capabilities_when_ingest_is_disabled() {
@@ -133,7 +143,12 @@ fn reports_bounded_rtmp_global_and_live_stats_without_stream_queries() {
 #[tokio::test]
 async fn queues_target_checked_publisher_disconnects_through_the_management_api() {
     let active = editable_config();
-    let harness = ManagementHarness::start(&candidate_config(&active, "live")).await;
+    let harness = ManagementHarness::start(
+        &(candidate_config(&active, "live"))
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let mut client = RtmpSessionClient::connect(harness.rtmp_runtime(), "broadcast");
     client.publish("camera", 100);
     let snapshot = client.server.client_snapshot().expect("client snapshot");
@@ -204,7 +219,12 @@ async fn queues_target_checked_publisher_disconnects_through_the_management_api(
 #[tokio::test]
 async fn exposes_each_message_stream_in_client_stats() {
     let active = editable_config();
-    let harness = ManagementHarness::start(&candidate_config(&active, "live")).await;
+    let harness = ManagementHarness::start(
+        &(candidate_config(&active, "live"))
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let mut client = RtmpSessionClient::connect(harness.rtmp_runtime(), "broadcast");
     client.publish("camera-a", 100);
 
@@ -303,7 +323,12 @@ async fn serves_authenticated_vod_objects_and_single_ranges() {
         max_file_bytes: 1_024,
         max_duration_ms: 60_000,
     });
-    let harness = ManagementHarness::start(&config).await;
+    let harness = ManagementHarness::start(
+        &(config.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let path = "/api/v1/rtmp/vod/live/broadcast/archive/movie.flv";
 
     let unauthorized = harness
@@ -367,7 +392,12 @@ async fn serves_authenticated_dash_manifests_segments_and_single_ranges() {
         max_storage_files: 64,
         max_active_streams: 2,
     });
-    let harness = ManagementHarness::start(&config).await;
+    let harness = ManagementHarness::start(
+        &(config.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let mut publisher = RtmpSessionClient::connect(harness.rtmp_runtime(), "broadcast");
     publisher.publish("camera", 1_000);
     publisher.publish_audio(0, &[0xaf, 0, 0x12, 0x10], 1_001);
@@ -723,7 +753,12 @@ fn monitoring_response_preserves_large_rtmp_cumulative_totals() {
 
 #[tokio::test]
 async fn config_routes_require_the_injected_bearer_token() {
-    let harness = ManagementHarness::start(&editable_config()).await;
+    let harness = ManagementHarness::start(
+        &(editable_config())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
 
     for (method, path) in [
         ("GET", "/api/v1/config"),
@@ -778,7 +813,12 @@ async fn config_routes_require_the_injected_bearer_token() {
 
 #[tokio::test]
 async fn event_stream_requires_the_management_bearer_token() {
-    let harness = ManagementHarness::start(&editable_config()).await;
+    let harness = ManagementHarness::start(
+        &(editable_config())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
 
     let missing = harness
         .request_with("GET", "/api/v1/events/stream", None, None, None, None)
@@ -801,8 +841,88 @@ async fn event_stream_requires_the_management_bearer_token() {
 }
 
 #[tokio::test]
+async fn version_two_event_routes_require_the_management_bearer_token() {
+    let harness = ManagementHarness::start(
+        &(editable_config())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
+
+    for path in ["/api/v2/events", "/api/v2/events/stream"] {
+        let missing = harness
+            .request_with("GET", path, None, None, None, None)
+            .await;
+        assert_eq!(missing.status, 401);
+        assert_eq!(missing.json()["error"]["code"], "unauthorized");
+        assert_eq!(missing.header("www-authenticate"), Some("Bearer"));
+    }
+}
+
+#[tokio::test]
+async fn real_tcp_certificate_activation_preserves_v1_and_corrects_v2_event_names() {
+    // The UI process fixture has no external ACME CA. This uses the production certificate emitter
+    // with the real TCP management service instead of adding a test-only runtime hook.
+    let harness = ManagementHarness::start_event_api(
+        &(editable_config())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
+    let certificate = "event-boundary-edge";
+
+    let (mut cursor_stream, _) = harness
+        .open_versioned_event_stream("/api/v1/events/stream")
+        .await;
+    let baseline = read_ready_cursor(&mut cursor_stream).await;
+    drop(cursor_stream);
+    emit_certificate("certificate_activated", "activated", certificate);
+
+    let v1_path = format!("/api/v1/events?after={baseline}&limit=100");
+    let v2_path = format!("/api/v2/events?after={baseline}&limit=100");
+    let v1_page = harness.request("GET", &v1_path, None, None).await;
+    let v2_page = harness.request("GET", &v2_path, None, None).await;
+    assert_eq!(v1_page.status, 200);
+    assert_eq!(v2_page.status, 200);
+    let v1_page = v1_page.json();
+    let v2_page = v2_page.json();
+    let v1_event = certificate_event(&v1_page, certificate);
+    let v2_event = certificate_event(&v2_page, certificate);
+    assert_eq!(v1_event["event"], "certificate_activation");
+    assert_eq!(v2_event["event"], "certificate_activated");
+    assert_eq!(v1_event["outcome"], "activated");
+    assert_eq!(v2_event["outcome"], "activated");
+    let event_cursor = v2_event["cursor"]
+        .as_u64()
+        .expect("certificate event cursor");
+    assert_eq!(v1_event["cursor"], event_cursor);
+    let replay_after = event_cursor.saturating_sub(1);
+
+    let v1_stream_path = format!("/api/v1/events/stream?after={replay_after}");
+    let (mut v1_stream, _) = harness.open_versioned_event_stream(&v1_stream_path).await;
+    assert_eq!(read_ready_cursor(&mut v1_stream).await, replay_after);
+    let v1_frame = String::from_utf8(read_chunk(&mut v1_stream).await).expect("v1 event frame");
+    assert!(v1_frame.contains("event: certificate_activated"));
+    assert!(v1_frame.contains(r#""event":"certificate_activation""#));
+    assert!(v1_frame.contains(r#""certificate":"event-boundary-edge""#));
+
+    let v2_stream_path = format!("/api/v2/events/stream?after={replay_after}");
+    let (mut v2_stream, _) = harness.open_versioned_event_stream(&v2_stream_path).await;
+    assert_eq!(read_ready_cursor(&mut v2_stream).await, replay_after);
+    let v2_frame = String::from_utf8(read_chunk(&mut v2_stream).await).expect("v2 event frame");
+    assert!(v2_frame.contains("event: certificate_activated"));
+    assert!(v2_frame.contains(r#""event":"certificate_activated""#));
+    assert!(v2_frame.contains(r#""certificate":"event-boundary-edge""#));
+}
+
+#[tokio::test]
 async fn event_stream_sends_an_initial_cursor_without_replaying_old_events() {
-    let harness = ManagementHarness::start(&editable_config()).await;
+    let harness = ManagementHarness::start(
+        &(editable_config())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let (mut stream, head) = harness.open_event_stream(None).await;
 
     let head = String::from_utf8(head).expect("SSE response headers");
@@ -827,7 +947,12 @@ async fn event_stream_sends_an_initial_cursor_without_replaying_old_events() {
 
 #[tokio::test]
 async fn event_stream_reconnects_from_last_event_id() {
-    let harness = ManagementHarness::start(&editable_config()).await;
+    let harness = ManagementHarness::start(
+        &(editable_config())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let (mut stream, _) = harness.open_event_stream(Some(42)).await;
 
     let frame = String::from_utf8(read_chunk(&mut stream).await).expect("reconnect SSE frame");
@@ -838,7 +963,12 @@ async fn event_stream_reconnects_from_last_event_id() {
 
 #[tokio::test]
 async fn event_stream_client_cancellation_does_not_block_following_requests() {
-    let harness = ManagementHarness::start(&editable_config()).await;
+    let harness = ManagementHarness::start(
+        &(editable_config())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let (mut stream, _) = harness.open_event_stream(None).await;
     let _ = read_chunk(&mut stream).await;
     drop(stream);
@@ -858,7 +988,11 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
     let directory = TempDir::new().expect("token directory");
     let config_path = directory.path().join("oxiroute.lua");
     let config = editable_config();
-    fs::write(&config_path, render_lua(&config).unwrap()).unwrap();
+    fs::write(
+        &config_path,
+        render_lua(&config.validate().unwrap()).unwrap(),
+    )
+    .unwrap();
     let coordinator = CanonicalConfigCoordinator::new(&config_path).unwrap();
     let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
         panic!("config must load")
@@ -874,8 +1008,9 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
         RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator.clone(),
-                document.candidate_revision.clone(),
+                document.effective_revision.clone(),
                 &token_path,
+                RuntimeMode::Direct,
             )
             .is_ok()
     );
@@ -885,8 +1020,9 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
         RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator.clone(),
-                document.candidate_revision.clone(),
+                document.effective_revision.clone(),
                 &token_path,
+                RuntimeMode::Direct,
             )
             .is_err()
     );
@@ -898,8 +1034,9 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
         RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator.clone(),
-                document.candidate_revision.clone(),
+                document.effective_revision.clone(),
                 &token_link,
+                RuntimeMode::Direct,
             )
             .is_err()
     );
@@ -909,8 +1046,9 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
         RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator,
-                document.candidate_revision,
+                document.effective_revision,
                 &token_path,
+                RuntimeMode::Direct,
             )
             .is_err()
     );
@@ -919,7 +1057,12 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
 #[tokio::test]
 async fn config_writes_require_a_current_revision_and_return_authoritative_conflicts() {
     let active = editable_config();
-    let harness = ManagementHarness::start(&active).await;
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let candidate = candidate_config(&active, "submitted-ingest");
     let request = serde_json::json!({ "config": candidate });
 
@@ -930,13 +1073,16 @@ async fn config_writes_require_a_current_revision_and_return_authoritative_confl
     assert_eq!(missing.json()["error"]["code"], "precondition_required");
     assert_eq!(
         fs::read(&harness.config_path).unwrap(),
-        render_lua(&active).unwrap().as_bytes()
+        render_lua(&active.clone().validate().unwrap())
+            .unwrap()
+            .as_bytes()
     );
 
     let authoritative = candidate_config(&active, "external-ingest");
     fs::write(
         &harness.config_path,
-        render_lua(&authoritative).expect("authoritative config renders"),
+        render_lua(&authoritative.clone().validate().unwrap())
+            .expect("authoritative config renders"),
     )
     .expect("replace canonical config externally");
     let conflict = harness
@@ -965,7 +1111,9 @@ async fn config_writes_require_a_current_revision_and_return_authoritative_confl
     );
     assert_eq!(
         fs::read(&harness.config_path).unwrap(),
-        render_lua(&authoritative).unwrap().as_bytes()
+        render_lua(&authoritative.validate().unwrap())
+            .unwrap()
+            .as_bytes()
     );
 }
 
@@ -979,8 +1127,14 @@ async fn serves_authenticated_bounded_native_import_reports_without_exposing_pat
     )
     .expect("Apache source");
     let source = format!("apache_server {apache_root:?}\n");
-    let harness =
-        ManagementHarness::start_source(&editable_config(), "kdl", source.as_bytes()).await;
+    let harness = ManagementHarness::start_source(
+        &(editable_config())
+            .validate()
+            .expect("valid management fixture"),
+        "kdl",
+        source.as_bytes(),
+    )
+    .await;
 
     let unauthorized = harness
         .request_with("GET", "/api/v1/import-reports", None, None, None, None)
@@ -1023,7 +1177,12 @@ async fn serves_authenticated_bounded_native_import_reports_without_exposing_pat
 #[tokio::test]
 async fn config_api_reports_source_format_composition_and_native_preview_name() {
     let active = editable_config();
-    let harness = ManagementHarness::start(&active).await;
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
 
     let get = harness.request("GET", "/api/v1/config", None, None).await;
     assert_eq!(get.status, 200);
@@ -1091,7 +1250,12 @@ async fn config_api_preserves_rtmp_token_secrets_across_redacted_round_trip() {
             recorders: Vec::new(),
         }],
     }];
-    let harness = ManagementHarness::start(&active).await;
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
 
     let get = harness.request("GET", "/api/v1/config", None, None).await;
     assert_eq!(get.status, 200);
@@ -1112,7 +1276,7 @@ async fn config_api_preserves_rtmp_token_secrets_across_redacted_round_trip() {
     assert!(!String::from_utf8_lossy(&get.body).contains("super-secret-token"));
     assert!(!String::from_utf8_lossy(&get.body).contains("play-secret-token"));
 
-    let mut round_trip: Config = serde_json::from_value(get_json["config"].clone())
+    let mut round_trip: ConfigDraft = serde_json::from_value(get_json["config"].clone())
         .expect("redacted config remains a typed request");
     round_trip.rtmp_services[0].outbound_chunk_size = 8_192;
     let request = serde_json::json!({ "config": round_trip });
@@ -1176,7 +1340,14 @@ async fn config_api_rejects_typed_save_over_a_compositional_root() {
         "use": "base",
     });
     let source = serde_json::to_vec_pretty(&rendered).unwrap();
-    let harness = ManagementHarness::start_source(&config, "hocon", &source).await;
+    let harness = ManagementHarness::start_source(
+        &(config.clone())
+            .validate()
+            .expect("valid management fixture"),
+        "hocon",
+        &source,
+    )
+    .await;
     let before = fs::read(&harness.config_path).unwrap();
     let get = harness.request("GET", "/api/v1/config", None, None).await;
     let snapshot = get.json();
@@ -1203,7 +1374,12 @@ async fn config_api_rejects_typed_save_over_a_compositional_root() {
 #[tokio::test]
 async fn rejects_invalid_malformed_and_oversized_config_requests() {
     let active = editable_config();
-    let harness = ManagementHarness::start(&active).await;
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let mut invalid = active.clone();
     invalid.version = 2;
     let invalid_request = serde_json::json!({ "config": invalid });
@@ -1230,7 +1406,9 @@ async fn rejects_invalid_malformed_and_oversized_config_requests() {
     assert_eq!(save.status, 422);
     assert_eq!(
         fs::read(&harness.config_path).unwrap(),
-        render_lua(&active).unwrap().as_bytes()
+        render_lua(&active.clone().validate().unwrap())
+            .unwrap()
+            .as_bytes()
     );
 
     let malformed = harness
@@ -1259,7 +1437,12 @@ async fn rejects_invalid_malformed_and_oversized_config_requests() {
 
 #[tokio::test]
 async fn config_routes_reject_wrong_methods_and_paths() {
-    let harness = ManagementHarness::start(&editable_config()).await;
+    let harness = ManagementHarness::start(
+        &(editable_config())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
 
     let config_method = harness.request("POST", "/api/v1/config", None, None).await;
     assert_eq!(config_method.status, 405);
@@ -1287,7 +1470,12 @@ async fn config_routes_reject_wrong_methods_and_paths() {
 #[tokio::test]
 async fn config_routes_require_exact_paths_json_media_and_raw_revision_headers() {
     let active = editable_config();
-    let harness = ManagementHarness::start(&active).await;
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let request = serde_json::json!({ "config": candidate_config(&active, "candidate") });
 
     for path in [
@@ -1345,6 +1533,15 @@ async fn config_routes_require_exact_paths_json_media_and_raw_revision_headers()
         malformed_revision.json()["error"]["code"],
         "invalid_config_revision"
     );
+    let uppercase_revision = harness
+        .request(
+            "PUT",
+            "/api/v1/config",
+            Some(&harness.disk_revision.as_str().to_ascii_uppercase()),
+            Some(&request),
+        )
+        .await;
+    assert_eq!(uppercase_revision.status, 200);
 
     let legacy_header = harness
         .raw_request(
@@ -1363,7 +1560,12 @@ async fn config_routes_require_exact_paths_json_media_and_raw_revision_headers()
 #[tokio::test]
 async fn direct_put_preflight_failure_does_not_mutate_disk() {
     let active = editable_config();
-    let harness = ManagementHarness::start(&active).await;
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let mut candidate = active.clone();
     let CertificateSource::Files {
         private_key_path, ..
@@ -1389,7 +1591,9 @@ async fn direct_put_preflight_failure_does_not_mutate_disk() {
     );
     assert_eq!(
         fs::read(&harness.config_path).unwrap(),
-        render_lua(&active).unwrap().as_bytes()
+        render_lua(&active.clone().validate().unwrap())
+            .unwrap()
+            .as_bytes()
     );
 }
 
@@ -1397,7 +1601,12 @@ async fn direct_put_preflight_failure_does_not_mutate_disk() {
 #[tokio::test]
 async fn candidate_recorder_preflight_never_mutates_the_recording_root() {
     let active = editable_config();
-    let harness = ManagementHarness::start(&active).await;
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let root = TempDir::new().expect("recording root");
     let mut candidate = candidate_config(&active, "candidate-recorder");
     let mut recorder = rtmp_recorder("archive", RtmpRecorderStart::Continuous, root.path());
@@ -1455,7 +1664,12 @@ async fn candidate_recorder_preflight_never_mutates_the_recording_root() {
 #[tokio::test]
 async fn missing_candidate_ui_assets_are_rejected_without_mutating_disk() {
     let active = editable_config();
-    let harness = ManagementHarness::start(&active).await;
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let mut candidate = active.clone();
     candidate.management = Some(Management {
         bind: "127.0.0.1:9090".parse().unwrap(),
@@ -1475,14 +1689,21 @@ async fn missing_candidate_ui_assets_are_rejected_without_mutating_disk() {
     assert_eq!(response.json()["diagnostics"][0]["code"], "E_UI_ASSETS");
     assert_eq!(
         fs::read(&harness.config_path).unwrap(),
-        render_lua(&active).unwrap().as_bytes()
+        render_lua(&active.clone().validate().unwrap())
+            .unwrap()
+            .as_bytes()
     );
 }
 
 #[tokio::test]
 async fn saving_the_active_generation_is_truthfully_idempotent() {
     let active = editable_config();
-    let harness = ManagementHarness::start(&active).await;
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let request = serde_json::json!({ "config": active });
 
     let response = harness
@@ -1509,9 +1730,164 @@ async fn saving_the_active_generation_is_truthfully_idempotent() {
 }
 
 #[tokio::test]
+async fn config_api_projects_exact_mode_aware_restart_outcomes() {
+    for (mode, restart_required, outcome, activation_state, diagnostic) in [
+        (
+            RuntimeMode::Direct,
+            false,
+            "saved_pending_activation",
+            "pending",
+            "I_ACTIVATION_PENDING",
+        ),
+        (
+            RuntimeMode::Supervised,
+            true,
+            "saved_restart_required",
+            "restart_required",
+            "I_RESTART_REQUIRED",
+        ),
+    ] {
+        let active = editable_config();
+        let validated = active.clone().validate().expect("valid active config");
+        let source = render_lua(&validated).expect("active config renders");
+        let harness = ManagementHarness::start_source_with_generation_manager(
+            &validated,
+            "lua",
+            source.as_bytes(),
+            true,
+            mode,
+        )
+        .await;
+        let candidate = candidate_config(&active, "candidate");
+        let request = serde_json::json!({ "config": candidate });
+
+        let preview = harness
+            .request("POST", "/api/v1/config/validate", None, Some(&request))
+            .await;
+        assert_eq!(preview.status, 200);
+        assert_eq!(preview.json()["restartRequired"], restart_required);
+        if restart_required {
+            assert_eq!(
+                preview.json()["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .last()
+                    .unwrap()["code"],
+                diagnostic
+            );
+        }
+
+        let saved = harness
+            .request(
+                "PUT",
+                "/api/v1/config",
+                Some(harness.disk_revision.as_str()),
+                Some(&request),
+            )
+            .await;
+        assert_eq!(saved.status, 200);
+        assert_eq!(saved.json()["outcome"], outcome);
+        assert_eq!(saved.json()["activationState"], activation_state);
+        assert_eq!(saved.json()["restartRequired"], restart_required);
+        assert_eq!(
+            saved.json()["diagnostics"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()["code"],
+            diagnostic,
+        );
+    }
+}
+
+#[tokio::test]
+async fn supervised_config_api_uses_topology_neutral_diagnostics_for_descriptor_changes() {
+    for change in ["bind", "protocol", "control"] {
+        let mut active = candidate_config(&editable_config(), "active");
+        let active_address = reserve_tcp_address();
+        active.listeners[0].bind = socket_bind(active_address);
+        let validated = active.clone().validate().expect("valid active config");
+        let source = render_lua(&validated).expect("active config renders");
+        let harness = ManagementHarness::start_source_with_generation_manager(
+            &validated,
+            "lua",
+            source.as_bytes(),
+            true,
+            RuntimeMode::Supervised,
+        )
+        .await;
+        let mut candidate = active.clone();
+        match change {
+            "bind" => {
+                candidate.listeners[0].bind = socket_bind(reserve_tcp_address());
+            }
+            "protocol" => {
+                candidate.listeners[0].protocol = Protocol::Http;
+                candidate.listeners[0].service = Some("web".into());
+                candidate.http_services.push(
+                    serde_json::from_value(serde_json::json!({
+                        "name": "web",
+                        "routes": [{
+                            "path": {"kind": "segment_prefix", "value": "/"},
+                            "action": {"type": "fixed_response", "status": 200}
+                        }]
+                    }))
+                    .expect("HTTP service fixture"),
+                );
+            }
+            "control" => {
+                candidate.stats = Some(oxiroute_config::Stats {
+                    binds: vec![reserve_tcp_address()],
+                    admin_token_file: None,
+                    pages: Vec::new(),
+                });
+            }
+            _ => unreachable!(),
+        }
+        candidate
+            .clone()
+            .validate()
+            .unwrap_or_else(|error| panic!("valid {change} candidate: {error}"));
+        let request = serde_json::json!({ "config": candidate });
+
+        for (method, path, revision) in [
+            ("POST", "/api/v1/config/validate", None),
+            (
+                "PUT",
+                "/api/v1/config",
+                Some(harness.disk_revision.as_str()),
+            ),
+        ] {
+            let response = harness
+                .request(method, path, revision, Some(&request))
+                .await;
+            assert_eq!(response.status, 200, "{change}: {}", response.text());
+            let response = response.json();
+            assert_eq!(response["restartRequired"], true);
+            let diagnostic = response["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|diagnostic| diagnostic["code"] == "I_RESTART_REQUIRED")
+                .expect("supervised restart diagnostic");
+            assert_eq!(diagnostic["path"], "/config/listeners");
+            assert_eq!(
+                diagnostic["message"],
+                "the supervised listener or control-listener topology changed; the saved configuration takes effect after a process restart"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn conflict_reload_failure_returns_no_fabricated_revision() {
     let active = editable_config();
-    let harness = ManagementHarness::start(&active).await;
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let request = serde_json::json!({ "config": candidate_config(&active, "candidate") });
     fs::write(&harness.config_path, "not valid canonical Lua").unwrap();
 
@@ -1535,7 +1911,12 @@ async fn conflict_reload_failure_returns_no_fabricated_revision() {
 
 #[tokio::test]
 async fn chunked_config_body_is_bounded_while_streaming() {
-    let harness = ManagementHarness::start(&editable_config()).await;
+    let harness = ManagementHarness::start(
+        &(editable_config())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
     let mut request = format!(
         "POST /api/v1/config/validate HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TEST_TOKEN}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
     )
@@ -1590,13 +1971,13 @@ fn management_api(registry: Arc<RtmpRegistry>, metrics: RuntimeMetrics) -> RtmpM
 }
 
 fn empty_topology() -> Arc<TopologySnapshot> {
-    runtime_plan(&empty_config())
+    runtime_plan(&empty_config().validate().unwrap())
         .expect("empty runtime plan")
         .topology
 }
 
-fn editable_config() -> Config {
-    Config {
+fn editable_config() -> ConfigDraft {
+    ConfigDraft {
         certificates: vec![Certificate {
             name: "test-certificate".into(),
             dns_names: vec!["proxy.example.test".into()],
@@ -1609,7 +1990,7 @@ fn editable_config() -> Config {
     }
 }
 
-fn candidate_config(active: &Config, listener_name: &str) -> Config {
+fn candidate_config(active: &ConfigDraft, listener_name: &str) -> ConfigDraft {
     let mut candidate = active.clone();
     candidate.listeners.push(Listener {
         name: listener_name.into(),
@@ -1653,8 +2034,8 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
 }
 
 struct ManagementHarness {
-    active_revision: ConfigRevision,
-    disk_revision: ConfigRevision,
+    active_revision: EffectiveRevision,
+    disk_revision: AuthoredRevision,
     address: SocketAddr,
     config_path: PathBuf,
     shutdown: watch::Sender<bool>,
@@ -1664,12 +2045,41 @@ struct ManagementHarness {
 }
 
 impl ManagementHarness {
-    async fn start(config: &Config) -> Self {
+    async fn start(config: &ValidatedConfig) -> Self {
         let source = render_lua(config).expect("active config renders");
         Self::start_source(config, "lua", source.as_bytes()).await
     }
 
-    async fn start_source(config: &Config, extension: &str, source: &[u8]) -> Self {
+    async fn start_source(config: &ValidatedConfig, extension: &str, source: &[u8]) -> Self {
+        Self::start_source_with_generation_manager(
+            config,
+            extension,
+            source,
+            false,
+            RuntimeMode::Direct,
+        )
+        .await
+    }
+
+    async fn start_event_api(config: &ValidatedConfig) -> Self {
+        let source = render_lua(config).expect("active config renders");
+        Self::start_source_with_generation_manager(
+            config,
+            "lua",
+            source.as_bytes(),
+            true,
+            RuntimeMode::Direct,
+        )
+        .await
+    }
+
+    async fn start_source_with_generation_manager(
+        config: &ValidatedConfig,
+        extension: &str,
+        source: &[u8],
+        enable_generation_manager: bool,
+        mode: RuntimeMode,
+    ) -> Self {
         let directory = TempDir::new().expect("temporary canonical config directory");
         let config_path = directory.path().join(format!("oxiroute.{extension}"));
         fs::write(&config_path, source).expect("write active config");
@@ -1677,29 +2087,57 @@ impl ManagementHarness {
         let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
             panic!("active config must load")
         };
-        let active_revision = document.candidate_revision.clone();
-        let disk_revision = document.disk_revision.clone();
-        let plan = runtime_plan(config).expect("active runtime plan");
+        let active_revision = document.effective_revision.clone();
+        let disk_revision = document.authored_revision.clone();
+        let plan = oxiroute_server::runtime_plan(config).expect("active runtime plan");
+        let services = oxiroute_server::service_specs(config).expect("active runtime services");
         let registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
-        let rtmp_runtime = plan
-            .services
+        let rtmp_services = services
             .iter()
-            .find_map(|service| match &service.kind {
-                ServiceKind::Rtmp(service) => Some(
-                    service
-                        .runtime(Arc::clone(&registry))
-                        .expect("RTMP test runtime"),
-                ),
+            .filter_map(|service| match &service.kind {
+                ServiceKind::Rtmp(service) => Some(service),
                 _ => None,
-            });
+            })
+            .collect::<Vec<_>>();
+        let rtmp_runtime = rtmp_services.first().map(|service| {
+            service
+                .runtime(Arc::clone(&registry))
+                .expect("RTMP test runtime")
+        });
+        let vod_catalog = oxiroute_rtmp::VodCatalog::from_applications(
+            rtmp_services
+                .iter()
+                .flat_map(|service| service.vod_applications()),
+        );
+        let media_catalog = oxiroute_rtmp::MediaCatalog::merge(
+            rtmp_services.iter().map(|service| service.media_catalog()),
+        );
         let metrics = RuntimeMetrics::new();
         metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
-        let api =
+        let mut api =
             RtmpManagementApi::new(Arc::clone(&registry), metrics, Arc::clone(&plan.topology))
-                .with_config_coordinator(coordinator, active_revision.clone(), TEST_TOKEN)
+                .with_config_coordinator(coordinator, active_revision.clone(), TEST_TOKEN, mode)
                 .expect("injected management token")
-                .with_vod_catalog(Arc::clone(&plan.rtmp_vod_catalog))
-                .with_media_catalog(Arc::clone(&plan.rtmp_media_catalog));
+                .with_vod_catalog(vod_catalog)
+                .with_media_catalog(Arc::new(media_catalog));
+        if enable_generation_manager {
+            let manager = match mode {
+                RuntimeMode::Direct => GenerationManager::new(),
+                RuntimeMode::Supervised => GenerationManager::new_supervised(),
+            };
+            let candidate = manager
+                .prepare((*document).clone())
+                .expect("active generation candidate");
+            let mut startup = manager
+                .begin_candidate_start(&candidate)
+                .expect("active generation startup");
+            let generation = startup
+                .claim_runtime_start()
+                .expect("active generation runtime claim");
+            assert!(generation.mark_runtime_started());
+            startup.activate().expect("active generation");
+            api = api.with_generation_manager(manager);
+        }
 
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .expect("reserve management listener");
@@ -1804,6 +2242,22 @@ impl ManagementHarness {
         let head = read_response_head(&mut stream).await;
         (stream, head)
     }
+
+    async fn open_versioned_event_stream(&self, path: &str) -> (TcpStream, Vec<u8>) {
+        let mut stream = TcpStream::connect(self.address)
+            .await
+            .expect("connect versioned event stream");
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TEST_TOKEN}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write versioned event stream request");
+        let head = read_response_head(&mut stream).await;
+        assert!(String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200"));
+        (stream, head)
+    }
 }
 
 impl Drop for ManagementHarness {
@@ -1852,4 +2306,24 @@ async fn read_chunk(stream: &mut TcpStream) -> Vec<u8> {
         .expect("read SSE chunk terminator");
     assert_eq!(terminator, *b"\r\n");
     body
+}
+
+async fn read_ready_cursor(stream: &mut TcpStream) -> u64 {
+    let frame = String::from_utf8(read_chunk(stream).await).expect("ready SSE frame");
+    let data = frame
+        .strip_prefix("event: ready\ndata: ")
+        .and_then(|value| value.strip_suffix("\n\n"))
+        .expect("ready frame shape");
+    serde_json::from_str::<Value>(data).expect("ready frame JSON")["cursor"]
+        .as_u64()
+        .expect("ready cursor")
+}
+
+fn certificate_event<'a>(page: &'a Value, certificate: &str) -> &'a Value {
+    page["events"]
+        .as_array()
+        .expect("event page array")
+        .iter()
+        .find(|event| event["certificate"] == certificate)
+        .expect("certificate activation event")
 }

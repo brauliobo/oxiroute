@@ -32,7 +32,13 @@ pub(super) fn poll_acme<T>(
             return Err(AcmeError::PollTimeout);
         }
         poll_not_cancelled(poll)?;
-        clock.sleep_seconds(effective_delay);
+        if let Some(cancellation) = &poll.cancellation {
+            if clock.sleep_seconds_cancellable(effective_delay, cancellation) {
+                return Err(AcmeError::Cancelled);
+            }
+        } else {
+            clock.sleep_seconds(effective_delay);
+        }
         delay = effective_delay.saturating_mul(2).min(max_delay);
     }
     Err(AcmeError::PollTimeout)

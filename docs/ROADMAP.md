@@ -143,7 +143,9 @@ Release gates:
   and pinned cargo-deny policy pass locally after replacing the affected Pingora dependency paths;
   CI reruns the same fail-closed checks for every committed lockfile.
 - Packaged production supervision with active UDP/H3 replacement, rollback, drain, restart, and
-  crash recovery. The direct `serve` path remains the default until this gate closes.
+  crash recovery. Eligible Linux `serve` configurations use supervision when the fixed packaged
+  launcher is installed; unsupported topologies, unpackaged installs without it, and non-Linux
+  builds use the direct runtime. Production traffic remains an evidence gate, not a default-mode gate.
 
 ## Milestone 2: import and layer-4 breadth
 
@@ -250,11 +252,13 @@ never degrade silently to another HTTP version.
 Status: partial. The master, worker, launcher, authenticated typed descriptor protocol, status
 reporting, drain, rollback, and crash handling are implemented for TCP, Unix, UDP, and QUIC/H3
 listener adoption. Process tests now cover active UDP and H3 replacement, including session/request
-drain, H3 GOAWAY admission closure, rollback, descriptor ownership, and worker reaping. The default
-public `serve` path remains direct, and packaged production deployment evidence is not complete.
+drain, H3 GOAWAY admission closure, rollback, descriptor ownership, and worker reaping. Eligible
+Linux `serve` configurations use supervision when the fixed launcher is installed, including the
+Arch package; unsupported topologies, unpackaged installs without it, and non-Linux builds run direct.
+Packaged production deployment evidence is not complete.
 
-Remaining supervision gates are packaged Linux default deployment and packaged production
-restart/recovery evidence. Generic TCP/Unix replacement, listener-start failure, worker crash
+Remaining supervision gates are packaged production traffic and restart/recovery evidence. Generic
+TCP/Unix replacement, listener-start failure, worker crash
 handling, descriptor ownership, and active UDP/H3 replacement have focused tests; supervision must
 not be treated as broad inherited-file-descriptor compatibility.
 

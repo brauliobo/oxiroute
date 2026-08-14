@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use oxiroute_config::{Config, ListenerBind, Protocol};
+use oxiroute_config::{ListenerBind, ValidatedConfig};
 #[cfg(target_os = "linux")]
 use oxiroute_supervision_unix::{
     BindIdentity, DescriptorKind, DescriptorManifest, DescriptorRole, DescriptorSet,
@@ -13,6 +13,10 @@ use oxiroute_supervision_unix::{
 };
 #[cfg(target_os = "linux")]
 use oxiroute_supervisor_master::StableListeners;
+
+use crate::listener_inventory::{
+    ListenerDescriptorKind, ListenerDescriptorRole, ListenerId, ListenerInventory,
+};
 
 #[derive(Clone)]
 pub struct ListenerReservation {
@@ -450,13 +454,7 @@ impl ListenerReservation {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-enum ReservationKey {
-    Traffic(String),
-    Management,
-    Stats(usize),
-    StatsPage(usize),
-}
+type ReservationKey = ListenerId;
 
 #[derive(Clone, Default)]
 pub struct ListenerReservations {
@@ -469,69 +467,39 @@ impl ListenerReservations {
     /// # Errors
     ///
     /// Returns an error without publishing the set when any new reservation fails.
-    pub fn prepare(config: &Config, previous: Option<&Self>) -> io::Result<Self> {
-        Self::prepare_with_reuse(config, previous, false)
+    ///
+    /// ```compile_fail
+    /// use oxiroute_config::ConfigDraft;
+    /// use oxiroute_server::ListenerReservations;
+    ///
+    /// let draft: ConfigDraft = todo!();
+    /// let _ = ListenerReservations::prepare(&draft, None);
+    /// ```
+    pub fn prepare(config: &ValidatedConfig, previous: Option<&Self>) -> io::Result<Self> {
+        Self::prepare_inventory(&ListenerInventory::compile(config), previous, false)
     }
 
     pub(crate) fn prepare_for_validation(
-        config: &Config,
+        config: &ValidatedConfig,
         previous: Option<&Self>,
     ) -> io::Result<Self> {
-        Self::prepare_with_reuse(config, previous, true)
+        // Validation intentionally performs real, temporary bind probes. Dropping the returned
+        // set closes descriptors and removes any Unix socket namespace entries it created.
+        Self::prepare_inventory(&ListenerInventory::compile(config), previous, true)
     }
 
-    fn prepare_with_reuse(
-        config: &Config,
+    fn prepare_inventory(
+        inventory: &ListenerInventory,
         previous: Option<&Self>,
         reuse_unix_path: bool,
     ) -> io::Result<Self> {
-        let mut by_key = HashMap::with_capacity(
-            config.listeners.len()
-                + usize::from(config.management.is_some())
-                + config
-                    .stats
-                    .as_ref()
-                    .map_or(0, |stats| stats.binds.len() + stats.pages.len()),
-        );
-        for listener in &config.listeners {
+        let mut by_key = HashMap::with_capacity(inventory.len());
+        for entry in inventory.entries() {
             let reservation = previous
-                .and_then(|reservations| reservations.by_bind(&listener.bind, reuse_unix_path))
+                .and_then(|reservations| reservations.by_bind(&entry.bind, reuse_unix_path))
                 .cloned()
-                .map_or_else(
-                    || ListenerReservation::bind(&listener.name, &listener.bind),
-                    Ok,
-                )?;
-            by_key.insert(ReservationKey::Traffic(listener.name.clone()), reservation);
-        }
-        if let Some(management) = &config.management {
-            let bind = ListenerBind::Socket {
-                address: management.bind,
-            };
-            let reservation = previous
-                .and_then(|reservations| reservations.by_bind(&bind, reuse_unix_path))
-                .cloned()
-                .map_or_else(|| ListenerReservation::bind("management", &bind), Ok)?;
-            by_key.insert(ReservationKey::Management, reservation);
-        }
-        if let Some(stats) = &config.stats {
-            for (index, address) in stats.binds.iter().enumerate() {
-                let name = format!("@stats-{index}");
-                let bind = ListenerBind::Socket { address: *address };
-                let reservation = previous
-                    .and_then(|reservations| reservations.by_bind(&bind, reuse_unix_path))
-                    .cloned()
-                    .map_or_else(|| ListenerReservation::bind(&name, &bind), Ok)?;
-                by_key.insert(ReservationKey::Stats(index), reservation);
-            }
-            for (index, page) in stats.pages.iter().enumerate() {
-                let name = format!("@stats-page-{index}");
-                let bind = ListenerBind::Socket { address: page.bind };
-                let reservation = previous
-                    .and_then(|reservations| reservations.by_bind(&bind, reuse_unix_path))
-                    .cloned()
-                    .map_or_else(|| ListenerReservation::bind(&name, &bind), Ok)?;
-                by_key.insert(ReservationKey::StatsPage(index), reservation);
-            }
+                .map_or_else(|| ListenerReservation::bind(&entry.name, &entry.bind), Ok)?;
+            by_key.insert(entry.id.clone(), reservation);
         }
         Ok(Self { by_key })
     }
@@ -568,53 +536,61 @@ impl ListenerReservations {
     ///
     /// Returns an error when the config exceeds the worker descriptor limit, does not match this
     /// reservation set, or listener ownership cannot be established.
+    ///
+    /// ```compile_fail
+    /// use oxiroute_config::ConfigDraft;
+    /// use oxiroute_server::ListenerReservations;
+    ///
+    /// let draft: ConfigDraft = todo!();
+    /// let reservations: ListenerReservations = todo!();
+    /// let _ = reservations.into_stable_listeners(&draft);
+    /// ```
     #[cfg(target_os = "linux")]
-    pub fn into_stable_listeners(self, config: &Config) -> io::Result<StableListeners> {
+    pub fn into_stable_listeners(self, config: &ValidatedConfig) -> io::Result<StableListeners> {
         let owner = Arc::new(self);
-        let (manifest, originals) = owner.export_descriptors(config)?;
+        let (manifest, originals) =
+            owner.export_descriptors(&ListenerInventory::compile(config))?;
         StableListeners::new(manifest, originals, Arc::clone(&owner)).map_err(io::Error::other)
     }
 
     #[cfg(target_os = "linux")]
     fn export_descriptors(
         &self,
-        config: &Config,
+        inventory: &ListenerInventory,
     ) -> io::Result<(DescriptorManifest, Vec<std::os::fd::OwnedFd>)> {
-        let plan = descriptor_plan(config)?;
-        preflight_descriptor_capacity(&plan)?;
-        if self.by_key.len() != plan.len() {
+        let slots = descriptor_slots(inventory)?;
+        preflight_descriptor_capacity(inventory)?;
+        if self.by_key.len() != inventory.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
                     "reservation set contains {} entries, but config requires {}",
                     self.by_key.len(),
-                    plan.len()
+                    inventory.len()
                 ),
             ));
         }
-        let mut ordered = Vec::with_capacity(plan.len());
-        for (key, slot) in &plan {
-            let reservation = self.by_key.get(key).ok_or_else(|| {
+        let mut ordered = Vec::with_capacity(inventory.len());
+        for (entry, slot) in inventory.entries().iter().zip(&slots) {
+            let reservation = self.by_key.get(&entry.id).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("reservation set is missing {key:?}"),
+                    format!("reservation set is missing {:?}", entry.id),
                 )
             })?;
             let expected_bind = listener_bind_from_slot(slot)?;
             if !same_bind_identity(reservation.bind_config(), &expected_bind) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("reservation {key:?} bind or mode does not match config"),
+                    format!(
+                        "reservation {:?} bind or mode does not match config",
+                        entry.id
+                    ),
                 ));
             }
             ordered.push(reservation);
         }
-        let manifest = DescriptorManifest::new(
-            plan.iter()
-                .map(|(_, slot)| slot.clone())
-                .collect::<Vec<_>>(),
-        )
-        .map_err(io::Error::other)?;
+        let manifest = DescriptorManifest::new(slots).map_err(io::Error::other)?;
         let originals = ordered
             .into_iter()
             .map(ListenerReservation::duplicate_owned_fd)
@@ -631,20 +607,28 @@ impl ListenerReservations {
     /// Returns an error for descriptor limits, cardinality, slot, role, kind, bind, mode, or
     /// consume-once mismatches.
     #[cfg(target_os = "linux")]
-    pub(crate) fn adopt(config: &Config, mut descriptors: DescriptorSet) -> io::Result<Self> {
-        let plan = descriptor_plan(config)?;
-        preflight_descriptor_capacity(&plan)?;
-        if descriptors.remaining() != plan.len() {
+    pub(crate) fn adopt(config: &ValidatedConfig, descriptors: DescriptorSet) -> io::Result<Self> {
+        Self::adopt_inventory(&ListenerInventory::compile(config), descriptors)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn adopt_inventory(
+        inventory: &ListenerInventory,
+        mut descriptors: DescriptorSet,
+    ) -> io::Result<Self> {
+        let slots = descriptor_slots(inventory)?;
+        preflight_descriptor_capacity(inventory)?;
+        if descriptors.remaining() != inventory.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
                     "worker config expects {} listener descriptors, but adoption contains {}",
-                    plan.len(),
+                    inventory.len(),
                     descriptors.remaining()
                 ),
             ));
         }
-        for (_, expected) in &plan {
+        for expected in &slots {
             if descriptors.slot(expected.id) != Some(expected) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -656,11 +640,14 @@ impl ListenerReservations {
             }
         }
 
-        let mut by_key = HashMap::with_capacity(plan.len());
-        for (key, slot) in plan {
+        let mut by_key = HashMap::with_capacity(inventory.len());
+        for (entry, slot) in inventory.entries().iter().zip(slots) {
             let descriptor = descriptors.take(slot.id).map_err(io::Error::other)?;
             let bind = listener_bind_from_slot(&slot)?;
-            by_key.insert(key, ListenerReservation::adopt(bind, descriptor));
+            by_key.insert(
+                entry.id.clone(),
+                ListenerReservation::adopt(bind, descriptor),
+            );
         }
         if descriptors.remaining() != 0 {
             return Err(io::Error::new(
@@ -687,6 +674,36 @@ impl ListenerReservations {
     pub fn is_empty(&self) -> bool {
         self.by_key.is_empty()
     }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn listener_restart_required(
+        mode: crate::RuntimeMode,
+        active: &ValidatedConfig,
+        candidate: &ValidatedConfig,
+    ) -> bool {
+        ListenerInventory::compile(active)
+            .restart_required(mode, &ListenerInventory::compile(candidate))
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn same_supervised_listener_topology(
+        active: &ValidatedConfig,
+        candidate: &ValidatedConfig,
+    ) -> bool {
+        !Self::listener_restart_required(crate::RuntimeMode::Supervised, active, candidate)
+    }
+
+    #[doc(hidden)]
+    pub fn validate_supervised_descriptor_limit(
+        config: &ValidatedConfig,
+    ) -> Result<(), &'static str> {
+        if ListenerInventory::compile(config).len() > MAX_DESCRIPTOR_COUNT {
+            return Err("Stage 2 worker listener descriptor limit is 64");
+        }
+        Ok(())
+    }
 }
 
 fn legacy_reservation_key(name: &str) -> Option<ReservationKey> {
@@ -706,89 +723,57 @@ fn legacy_reservation_key(name: &str) -> Option<ReservationKey> {
 }
 
 #[cfg(target_os = "linux")]
-fn descriptor_plan(config: &Config) -> io::Result<Vec<(ReservationKey, DescriptorSlot)>> {
-    let count = config.listeners.len()
-        + usize::from(config.management.is_some())
-        + config
-            .stats
-            .as_ref()
-            .map_or(0, |stats| stats.binds.len() + stats.pages.len());
-    if count > MAX_DESCRIPTOR_COUNT {
+fn descriptor_slots(inventory: &ListenerInventory) -> io::Result<Vec<DescriptorSlot>> {
+    if inventory.len() > MAX_DESCRIPTOR_COUNT {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "worker configuration has {count} listener descriptors; maximum is {MAX_DESCRIPTOR_COUNT}"
+                "worker configuration has {} listener descriptors; maximum is {MAX_DESCRIPTOR_COUNT}",
+                inventory.len()
             ),
         ));
     }
 
-    let mut entries = Vec::with_capacity(count);
-    for listener in &config.listeners {
-        entries.push((
-            ReservationKey::Traffic(listener.name.clone()),
-            DescriptorRole::Traffic(listener.name.clone()),
-            Some(listener.protocol),
-            listener.bind.clone(),
-        ));
-    }
-    if let Some(management) = &config.management {
-        entries.push((
-            ReservationKey::Management,
-            DescriptorRole::Management,
-            None,
-            ListenerBind::Socket {
-                address: management.bind,
-            },
-        ));
-    }
-    if let Some(stats) = &config.stats {
-        for (index, address) in stats.binds.iter().enumerate() {
-            entries.push((
-                ReservationKey::Stats(index),
-                DescriptorRole::Stats(u16::try_from(index).expect("descriptor limit checked")),
-                None,
-                ListenerBind::Socket { address: *address },
-            ));
-        }
-        for (index, page) in stats.pages.iter().enumerate() {
-            entries.push((
-                ReservationKey::StatsPage(index),
-                DescriptorRole::StatsPage(u16::try_from(index).expect("descriptor limit checked")),
-                None,
-                ListenerBind::Socket { address: page.bind },
-            ));
-        }
-    }
-
-    entries
-        .into_iter()
+    Ok(inventory
+        .entries()
+        .iter()
         .enumerate()
-        .map(|(index, (key, role, protocol, bind))| {
-            Ok((
-                key,
-                descriptor_slot(
-                    SlotId(u16::try_from(index).expect("descriptor limit checked")),
-                    role,
-                    protocol,
-                    &bind,
-                )?,
-            ))
+        .map(|(index, entry)| {
+            descriptor_slot(
+                SlotId(u16::try_from(index).expect("descriptor limit checked")),
+                descriptor_role(&entry.descriptor_role),
+                entry.descriptor_kind,
+                &entry.bind,
+            )
         })
-        .collect()
+        .collect())
+}
+
+#[cfg(target_os = "linux")]
+fn descriptor_role(role: &ListenerDescriptorRole) -> DescriptorRole {
+    match role {
+        ListenerDescriptorRole::Traffic(name) => DescriptorRole::Traffic(name.clone()),
+        ListenerDescriptorRole::Management => DescriptorRole::Management,
+        ListenerDescriptorRole::Stats(index) => {
+            DescriptorRole::Stats(u16::try_from(*index).expect("descriptor limit checked"))
+        }
+        ListenerDescriptorRole::StatsPage(index) => {
+            DescriptorRole::StatsPage(u16::try_from(*index).expect("descriptor limit checked"))
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
 const DESCRIPTOR_HEADROOM: u64 = 32;
 
 #[cfg(target_os = "linux")]
-fn descriptor_capacity_required(
-    plan: &[(ReservationKey, DescriptorSlot)],
-    current_open: u64,
-) -> u64 {
-    let listeners = u64::try_from(plan.len()).unwrap_or(u64::MAX);
+fn descriptor_capacity_required(inventory: &ListenerInventory, current_open: u64) -> u64 {
+    let listeners = u64::try_from(inventory.len()).unwrap_or(u64::MAX);
     let unix_leases = u64::try_from(
-        plan.iter()
-            .filter(|(_, slot)| slot.kind == DescriptorKind::UnixListener)
+        inventory
+            .entries()
+            .iter()
+            .filter(|entry| entry.descriptor_kind == ListenerDescriptorKind::Unix)
             .count(),
     )
     .unwrap_or(u64::MAX);
@@ -811,11 +796,11 @@ fn current_open_descriptor_count() -> io::Result<u64> {
 
 #[cfg(target_os = "linux")]
 fn validate_descriptor_capacity(
-    plan: &[(ReservationKey, DescriptorSlot)],
+    inventory: &ListenerInventory,
     current_open: u64,
     soft_limit: Option<u64>,
 ) -> io::Result<()> {
-    let required = descriptor_capacity_required(plan, current_open);
+    let required = descriptor_capacity_required(inventory, current_open);
     if soft_limit.is_none_or(|available| available >= required) {
         return Ok(());
     }
@@ -826,10 +811,10 @@ fn validate_descriptor_capacity(
 }
 
 #[cfg(target_os = "linux")]
-fn preflight_descriptor_capacity(plan: &[(ReservationKey, DescriptorSlot)]) -> io::Result<()> {
+fn preflight_descriptor_capacity(inventory: &ListenerInventory) -> io::Result<()> {
     let current_open = current_open_descriptor_count()?;
     validate_descriptor_capacity(
-        plan,
+        inventory,
         current_open,
         rustix::process::getrlimit(rustix::process::Resource::Nofile).current,
     )
@@ -839,41 +824,28 @@ fn preflight_descriptor_capacity(plan: &[(ReservationKey, DescriptorSlot)]) -> i
 fn descriptor_slot(
     id: SlotId,
     role: DescriptorRole,
-    protocol: Option<Protocol>,
+    descriptor_kind: ListenerDescriptorKind,
     bind: &ListenerBind,
-) -> io::Result<DescriptorSlot> {
-    let (kind, bind, mode) = match bind {
-        ListenerBind::Socket { address } => (
-            DescriptorKind::TcpListener,
-            Some(BindIdentity::Tcp(*address)),
-            None,
-        ),
-        ListenerBind::Unix { path, mode } => (
-            DescriptorKind::UnixListener,
-            Some(BindIdentity::UnixPath(path.clone())),
-            *mode,
-        ),
-        ListenerBind::Udp { address } => {
-            let kind = match protocol {
-                Some(Protocol::Udp) => DescriptorKind::DatagramListener,
-                Some(Protocol::ForwardHttp3 | Protocol::Http3) => DescriptorKind::QuicListener,
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("UDP listener `{address}` has an unsupported protocol"),
-                    ));
-                }
-            };
-            (kind, Some(BindIdentity::Tcp(*address)), None)
-        }
+) -> DescriptorSlot {
+    let kind = match descriptor_kind {
+        ListenerDescriptorKind::Tcp => DescriptorKind::TcpListener,
+        ListenerDescriptorKind::Unix => DescriptorKind::UnixListener,
+        ListenerDescriptorKind::Datagram => DescriptorKind::DatagramListener,
+        ListenerDescriptorKind::Quic => DescriptorKind::QuicListener,
     };
-    Ok(DescriptorSlot {
+    let (bind, mode) = match bind {
+        ListenerBind::Socket { address } | ListenerBind::Udp { address } => {
+            (Some(BindIdentity::Tcp(*address)), None)
+        }
+        ListenerBind::Unix { path, mode } => (Some(BindIdentity::UnixPath(path.clone())), *mode),
+    };
+    DescriptorSlot {
         id,
         role,
         kind,
         bind,
         mode,
-    })
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -932,38 +904,24 @@ fn same_unix_path(left: &ListenerBind, right: &ListenerBind) -> bool {
     )
 }
 
-pub(crate) fn unix_listener_mode_change_requires_restart(
-    active: &Config,
-    candidate: &Config,
-) -> bool {
-    candidate.listeners.iter().any(|candidate_listener| {
-        let ListenerBind::Unix {
-            path: candidate_path,
-            mode: candidate_mode,
-        } = &candidate_listener.bind
-        else {
-            return false;
-        };
-        active.listeners.iter().any(|active_listener| {
-            matches!(
-                &active_listener.bind,
-                ListenerBind::Unix { path, mode }
-                    if path == candidate_path && mode != candidate_mode
-            )
-        })
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddr};
+    use std::{
+        net::{Ipv4Addr, SocketAddr},
+        path::PathBuf,
+    };
 
-    use oxiroute_config::Config;
+    use oxiroute_config::{ConfigDraft, Protocol, ValidatedConfig};
+    use serde_json::json;
 
     use super::*;
+    use crate::listener_inventory::{
+        ListenerDescriptorKind, ListenerDescriptorRole, ListenerId, ListenerInventory,
+        ListenerMetricPolicy, ListenerPlane,
+    };
 
-    fn config(name: &str, address: SocketAddr) -> Config {
-        Config {
+    fn config(name: &str, address: SocketAddr) -> ConfigDraft {
+        ConfigDraft {
             listeners: vec![oxiroute_config::Listener {
                 name: name.into(),
                 bind: ListenerBind::Socket { address },
@@ -978,8 +936,8 @@ mod tests {
         }
     }
 
-    fn empty_config() -> Config {
-        Config {
+    fn empty_config() -> ConfigDraft {
+        ConfigDraft {
             version: 1,
             max_connections: None,
             management: None,
@@ -996,15 +954,751 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixture keeps the complete listener inventory order visible"
+    )]
+    fn differential_config() -> ValidatedConfig {
+        serde_json::from_value::<ConfigDraft>(json!({
+            "version": 1,
+            "management": { "bind": "127.0.0.1:9900" },
+            "stats": {
+                "binds": ["127.0.0.1:8404", "127.0.0.1:8405"],
+                "pages": [{
+                    "bind": "127.0.0.1:8406",
+                    "uri_prefix": "/stats",
+                    "refresh_ms": 1000,
+                    "admin": "disabled",
+                    "max_connections": 17
+                }]
+            },
+            "certificates": [{
+                "name": "downstream",
+                "dns_names": ["proxy.example.test"],
+                "source": {
+                    "type": "files",
+                    "certificate_chain_path": "/tmp/oxiroute-listener-inventory-chain.pem",
+                    "private_key_path": "/tmp/oxiroute-listener-inventory-key.pem"
+                }
+            }],
+            "tls_profiles": [{
+                "name": "h3",
+                "certificates": ["downstream"],
+                "default_certificate": "downstream",
+                "min_version": "1.3",
+                "alpn": ["h3"]
+            }],
+            "listeners": [
+                {
+                    "name": "http",
+                    "bind": { "type": "socket", "address": "127.0.0.1:7996" },
+                    "protocol": "http",
+                    "service": "web",
+                    "max_connections": 7
+                },
+                {
+                    "name": "rtmp",
+                    "bind": { "type": "socket", "address": "127.0.0.1:7997" },
+                    "protocol": "rtmp",
+                    "service": "live",
+                    "max_connections": 8
+                },
+                {
+                    "name": "forward-h1",
+                    "bind": { "type": "socket", "address": "127.0.0.1:7998" },
+                    "protocol": "forward_http1",
+                    "service": "forward",
+                    "max_connections": 9
+                },
+                {
+                    "name": "forward-h2",
+                    "bind": { "type": "socket", "address": "127.0.0.1:7999" },
+                    "protocol": "forward_http2",
+                    "service": "forward",
+                    "max_connections": 10
+                },
+                {
+                    "name": "tcp",
+                    "bind": { "type": "socket", "address": "127.0.0.1:8000" },
+                    "protocol": "tcp",
+                    "service": "relay",
+                    "max_connections": 11
+                },
+                {
+                    "name": "unix",
+                    "bind": { "type": "unix", "path": "/tmp/inventory.sock", "mode": 384 },
+                    "protocol": "tcp",
+                    "service": "relay"
+                },
+                {
+                    "name": "udp",
+                    "bind": { "type": "udp", "address": "127.0.0.1:8001" },
+                    "protocol": "udp",
+                    "service": "relay"
+                },
+                {
+                    "name": "h3",
+                    "bind": { "type": "udp", "address": "127.0.0.1:8002" },
+                    "protocol": "http3",
+                    "service": "web",
+                    "tls_profile": "h3"
+                },
+                {
+                    "name": "forward-h3",
+                    "bind": { "type": "udp", "address": "127.0.0.1:8003" },
+                    "protocol": "forward_http3",
+                    "service": "forward",
+                    "tls_profile": "h3"
+                }
+            ],
+            "http_services": [{
+                "name": "web",
+                "routes": [{
+                    "path": { "kind": "segment_prefix", "value": "/" },
+                    "policy": { "request_buffering": true },
+                    "action": { "type": "fixed_response", "status": 200, "body": "ok" }
+                }],
+                "max_request_body_bytes": 65536
+            }],
+            "forward_proxy_services": [{
+                "name": "forward",
+                "enabled_versions": ["h1", "h2", "h3"],
+                "tls_required": false
+            }],
+            "rtmp_services": [{
+                "name": "live",
+                "applications": [{ "name": "broadcast", "live": true }]
+            }],
+            "upstream_pools": [{
+                "name": "origin",
+                "endpoints": [{ "type": "socket", "address": "127.0.0.1:9000" }],
+                "algorithm": "round_robin"
+            }],
+            "l4_services": [{
+                "name": "relay",
+                "upstream_pool": "origin",
+                "udp": {}
+            }]
+        }))
+        .expect("inventory draft")
+        .validate()
+        .expect("valid inventory config")
+    }
+
+    fn many_listener_config(count: usize) -> ValidatedConfig {
+        let mut config = empty_config();
+        config.upstream_pools.push(oxiroute_config::UpstreamPool {
+            name: "origin".into(),
+            servers: Vec::new(),
+            endpoints: vec![oxiroute_config::UpstreamEndpoint::Socket {
+                address: "127.0.0.1:9000".parse().expect("upstream address"),
+            }],
+            algorithm: oxiroute_config::UpstreamAlgorithm::RoundRobin,
+            health_check: None,
+            passive_health: None,
+            tls: None,
+            http_versions: oxiroute_config::HttpVersionPolicy::default(),
+            queue_timeout_ms: None,
+            connect_timeout_ms: None,
+            server_timeout_ms: None,
+            connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        });
+        config.l4_services.push(oxiroute_config::L4Service {
+            name: "relay".into(),
+            upstream_pool: "origin".into(),
+            connect_timeout_ms: 1_000,
+            idle_timeout_ms: 1_000,
+            lifetime_timeout_ms: None,
+            proxy_protocol: None,
+            udp: None,
+        });
+        config.listeners = (0..count)
+            .map(|index| oxiroute_config::Listener {
+                name: format!("listener-{index}"),
+                bind: ListenerBind::Socket {
+                    address: SocketAddr::from((
+                        [127, 0, 0, 1],
+                        10_000 + u16::try_from(index).expect("bounded listener index"),
+                    )),
+                },
+                protocol: Protocol::Tcp,
+                service: Some("relay".into()),
+                tls_profile: None,
+                proxy_protocol: None,
+                max_connections: None,
+                downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            })
+            .collect();
+        config.validate().expect("valid many-listener config")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[derive(Debug, PartialEq)]
+    struct ExpectedInventoryEntry {
+        id: ListenerId,
+        name: &'static str,
+        protocol: Protocol,
+        bind: ListenerBind,
+        descriptor_role: ListenerDescriptorRole,
+        descriptor_kind: ListenerDescriptorKind,
+        descriptor_protocol: Option<Protocol>,
+        policy: (ListenerPlane, ListenerMetricPolicy, Option<u64>),
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_inventory_and_slots(
+        config: &ValidatedConfig,
+        expected_inventory: &[ExpectedInventoryEntry],
+        expected_slots: &[DescriptorSlot],
+    ) {
+        let inventory = ListenerInventory::compile(config);
+        let slots = descriptor_slots(&inventory).expect("descriptor slots");
+        assert_eq!(slots, expected_slots);
+        assert_eq!(inventory.entries().len(), expected_inventory.len());
+        for (actual, expected) in inventory.entries().iter().zip(expected_inventory) {
+            assert_eq!(actual.id, expected.id);
+            assert_eq!(actual.name, expected.name);
+            assert_eq!(actual.protocol, expected.protocol);
+            assert_eq!(actual.bind, expected.bind);
+            assert_eq!(actual.descriptor_role, expected.descriptor_role);
+            assert_eq!(actual.descriptor_kind, expected.descriptor_kind);
+            assert_eq!(actual.descriptor_protocol(), expected.descriptor_protocol);
+            assert_eq!(
+                (actual.plane, actual.metric_policy, actual.max_connections),
+                expected.policy
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn expected_traffic(
+        name: &'static str,
+        port: u16,
+        protocol: Protocol,
+        descriptor_kind: ListenerDescriptorKind,
+        max_connections: Option<u64>,
+    ) -> ExpectedInventoryEntry {
+        ExpectedInventoryEntry {
+            id: ListenerId::Traffic(name.into()),
+            name,
+            protocol,
+            bind: ListenerBind::Socket {
+                address: SocketAddr::from(([127, 0, 0, 1], port)),
+            },
+            descriptor_role: ListenerDescriptorRole::Traffic(name.into()),
+            descriptor_kind,
+            descriptor_protocol: Some(protocol),
+            policy: (
+                ListenerPlane::Data,
+                ListenerMetricPolicy::Public,
+                max_connections,
+            ),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn expected_udp_traffic(
+        name: &'static str,
+        port: u16,
+        protocol: Protocol,
+        descriptor_kind: ListenerDescriptorKind,
+    ) -> ExpectedInventoryEntry {
+        ExpectedInventoryEntry {
+            id: ListenerId::Traffic(name.into()),
+            name,
+            protocol,
+            bind: ListenerBind::Udp {
+                address: SocketAddr::from(([127, 0, 0, 1], port)),
+            },
+            descriptor_role: ListenerDescriptorRole::Traffic(name.into()),
+            descriptor_kind,
+            descriptor_protocol: Some(protocol),
+            policy: (ListenerPlane::Data, ListenerMetricPolicy::Public, None),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn expected_stats(index: usize, port: u16) -> ExpectedInventoryEntry {
+        ExpectedInventoryEntry {
+            id: ListenerId::Stats(index),
+            name: if index == 0 { "@stats-0" } else { "@stats-1" },
+            protocol: Protocol::Http,
+            bind: ListenerBind::Socket {
+                address: SocketAddr::from(([127, 0, 0, 1], port)),
+            },
+            descriptor_role: ListenerDescriptorRole::Stats(index),
+            descriptor_kind: ListenerDescriptorKind::Tcp,
+            descriptor_protocol: None,
+            policy: (
+                ListenerPlane::Control,
+                ListenerMetricPolicy::InternalOnly,
+                None,
+            ),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn expected_tcp_slot(id: u16, role: DescriptorRole, port: u16) -> DescriptorSlot {
+        DescriptorSlot {
+            id: SlotId(id),
+            role,
+            kind: DescriptorKind::TcpListener,
+            bind: Some(BindIdentity::Tcp(SocketAddr::from(([127, 0, 0, 1], port)))),
+            mode: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn expected_datagram_slot(
+        id: u16,
+        name: &str,
+        port: u16,
+        kind: DescriptorKind,
+    ) -> DescriptorSlot {
+        DescriptorSlot {
+            id: SlotId(id),
+            role: DescriptorRole::Traffic(name.into()),
+            kind,
+            bind: Some(BindIdentity::Tcp(SocketAddr::from(([127, 0, 0, 1], port)))),
+            mode: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one differential assertion pins every inventory field in canonical order"
+    )]
+    fn inventory_and_descriptor_slots_match_independent_mixed_expectations() {
+        let config = differential_config();
+        let expected_inventory = vec![
+            expected_traffic(
+                "http",
+                7_996,
+                Protocol::Http,
+                ListenerDescriptorKind::Tcp,
+                Some(7),
+            ),
+            expected_traffic(
+                "rtmp",
+                7_997,
+                Protocol::Rtmp,
+                ListenerDescriptorKind::Tcp,
+                Some(8),
+            ),
+            expected_traffic(
+                "forward-h1",
+                7_998,
+                Protocol::ForwardHttp1,
+                ListenerDescriptorKind::Tcp,
+                Some(9),
+            ),
+            expected_traffic(
+                "forward-h2",
+                7_999,
+                Protocol::ForwardHttp2,
+                ListenerDescriptorKind::Tcp,
+                Some(10),
+            ),
+            expected_traffic(
+                "tcp",
+                8_000,
+                Protocol::Tcp,
+                ListenerDescriptorKind::Tcp,
+                Some(11),
+            ),
+            ExpectedInventoryEntry {
+                id: ListenerId::Traffic("unix".into()),
+                name: "unix",
+                protocol: Protocol::Tcp,
+                bind: ListenerBind::Unix {
+                    path: PathBuf::from("/tmp/inventory.sock"),
+                    mode: Some(0o600),
+                },
+                descriptor_role: ListenerDescriptorRole::Traffic("unix".into()),
+                descriptor_kind: ListenerDescriptorKind::Unix,
+                descriptor_protocol: Some(Protocol::Tcp),
+                policy: (ListenerPlane::Data, ListenerMetricPolicy::Public, None),
+            },
+            expected_udp_traffic(
+                "udp",
+                8_001,
+                Protocol::Udp,
+                ListenerDescriptorKind::Datagram,
+            ),
+            expected_udp_traffic("h3", 8_002, Protocol::Http3, ListenerDescriptorKind::Quic),
+            expected_udp_traffic(
+                "forward-h3",
+                8_003,
+                Protocol::ForwardHttp3,
+                ListenerDescriptorKind::Quic,
+            ),
+            ExpectedInventoryEntry {
+                id: ListenerId::Management,
+                name: "@management",
+                protocol: Protocol::Http,
+                bind: ListenerBind::Socket {
+                    address: "127.0.0.1:9900".parse().expect("management bind"),
+                },
+                descriptor_role: ListenerDescriptorRole::Management,
+                descriptor_kind: ListenerDescriptorKind::Tcp,
+                descriptor_protocol: None,
+                policy: (
+                    ListenerPlane::Control,
+                    ListenerMetricPolicy::InternalOnly,
+                    None,
+                ),
+            },
+            expected_stats(0, 8_404),
+            expected_stats(1, 8_405),
+            ExpectedInventoryEntry {
+                id: ListenerId::StatsPage(0),
+                name: "@stats-page-0",
+                protocol: Protocol::Http,
+                bind: ListenerBind::Socket {
+                    address: "127.0.0.1:8406".parse().expect("stats page bind"),
+                },
+                descriptor_role: ListenerDescriptorRole::StatsPage(0),
+                descriptor_kind: ListenerDescriptorKind::Tcp,
+                descriptor_protocol: None,
+                policy: (
+                    ListenerPlane::Control,
+                    ListenerMetricPolicy::Public,
+                    Some(17),
+                ),
+            },
+        ];
+        let expected_slots = vec![
+            expected_tcp_slot(0, DescriptorRole::Traffic("http".into()), 7_996),
+            expected_tcp_slot(1, DescriptorRole::Traffic("rtmp".into()), 7_997),
+            expected_tcp_slot(2, DescriptorRole::Traffic("forward-h1".into()), 7_998),
+            expected_tcp_slot(3, DescriptorRole::Traffic("forward-h2".into()), 7_999),
+            expected_tcp_slot(4, DescriptorRole::Traffic("tcp".into()), 8_000),
+            DescriptorSlot {
+                id: SlotId(5),
+                role: DescriptorRole::Traffic("unix".into()),
+                kind: DescriptorKind::UnixListener,
+                bind: Some(BindIdentity::UnixPath(PathBuf::from("/tmp/inventory.sock"))),
+                mode: Some(0o600),
+            },
+            expected_datagram_slot(6, "udp", 8_001, DescriptorKind::DatagramListener),
+            expected_datagram_slot(7, "h3", 8_002, DescriptorKind::QuicListener),
+            expected_datagram_slot(8, "forward-h3", 8_003, DescriptorKind::QuicListener),
+            expected_tcp_slot(9, DescriptorRole::Management, 9_900),
+            expected_tcp_slot(10, DescriptorRole::Stats(0), 8_404),
+            expected_tcp_slot(11, DescriptorRole::Stats(1), 8_405),
+            expected_tcp_slot(12, DescriptorRole::StatsPage(0), 8_406),
+        ];
+        assert_inventory_and_slots(&config, &expected_inventory, &expected_slots);
+
+        let mut changed = config.to_draft();
+        changed.listeners.swap(0, 8);
+        changed.listeners[0].name = "renamed-forward-h3".into();
+        let changed = changed
+            .validate()
+            .expect("valid reordered and renamed config");
+        let renamed_reordered_inventory = vec![
+            expected_udp_traffic(
+                "renamed-forward-h3",
+                8_003,
+                Protocol::ForwardHttp3,
+                ListenerDescriptorKind::Quic,
+            ),
+            expected_traffic(
+                "rtmp",
+                7_997,
+                Protocol::Rtmp,
+                ListenerDescriptorKind::Tcp,
+                Some(8),
+            ),
+            expected_traffic(
+                "forward-h1",
+                7_998,
+                Protocol::ForwardHttp1,
+                ListenerDescriptorKind::Tcp,
+                Some(9),
+            ),
+            expected_traffic(
+                "forward-h2",
+                7_999,
+                Protocol::ForwardHttp2,
+                ListenerDescriptorKind::Tcp,
+                Some(10),
+            ),
+            expected_traffic(
+                "tcp",
+                8_000,
+                Protocol::Tcp,
+                ListenerDescriptorKind::Tcp,
+                Some(11),
+            ),
+            ExpectedInventoryEntry {
+                id: ListenerId::Traffic("unix".into()),
+                name: "unix",
+                protocol: Protocol::Tcp,
+                bind: ListenerBind::Unix {
+                    path: PathBuf::from("/tmp/inventory.sock"),
+                    mode: Some(0o600),
+                },
+                descriptor_role: ListenerDescriptorRole::Traffic("unix".into()),
+                descriptor_kind: ListenerDescriptorKind::Unix,
+                descriptor_protocol: Some(Protocol::Tcp),
+                policy: (ListenerPlane::Data, ListenerMetricPolicy::Public, None),
+            },
+            expected_udp_traffic(
+                "udp",
+                8_001,
+                Protocol::Udp,
+                ListenerDescriptorKind::Datagram,
+            ),
+            expected_udp_traffic("h3", 8_002, Protocol::Http3, ListenerDescriptorKind::Quic),
+            expected_traffic(
+                "http",
+                7_996,
+                Protocol::Http,
+                ListenerDescriptorKind::Tcp,
+                Some(7),
+            ),
+            ExpectedInventoryEntry {
+                id: ListenerId::Management,
+                name: "@management",
+                protocol: Protocol::Http,
+                bind: ListenerBind::Socket {
+                    address: "127.0.0.1:9900".parse().expect("management bind"),
+                },
+                descriptor_role: ListenerDescriptorRole::Management,
+                descriptor_kind: ListenerDescriptorKind::Tcp,
+                descriptor_protocol: None,
+                policy: (
+                    ListenerPlane::Control,
+                    ListenerMetricPolicy::InternalOnly,
+                    None,
+                ),
+            },
+            expected_stats(0, 8_404),
+            expected_stats(1, 8_405),
+            ExpectedInventoryEntry {
+                id: ListenerId::StatsPage(0),
+                name: "@stats-page-0",
+                protocol: Protocol::Http,
+                bind: ListenerBind::Socket {
+                    address: "127.0.0.1:8406".parse().expect("stats page bind"),
+                },
+                descriptor_role: ListenerDescriptorRole::StatsPage(0),
+                descriptor_kind: ListenerDescriptorKind::Tcp,
+                descriptor_protocol: None,
+                policy: (
+                    ListenerPlane::Control,
+                    ListenerMetricPolicy::Public,
+                    Some(17),
+                ),
+            },
+        ];
+        let renamed_reordered_slots = vec![
+            expected_datagram_slot(0, "renamed-forward-h3", 8_003, DescriptorKind::QuicListener),
+            expected_tcp_slot(1, DescriptorRole::Traffic("rtmp".into()), 7_997),
+            expected_tcp_slot(2, DescriptorRole::Traffic("forward-h1".into()), 7_998),
+            expected_tcp_slot(3, DescriptorRole::Traffic("forward-h2".into()), 7_999),
+            expected_tcp_slot(4, DescriptorRole::Traffic("tcp".into()), 8_000),
+            DescriptorSlot {
+                id: SlotId(5),
+                role: DescriptorRole::Traffic("unix".into()),
+                kind: DescriptorKind::UnixListener,
+                bind: Some(BindIdentity::UnixPath(PathBuf::from("/tmp/inventory.sock"))),
+                mode: Some(0o600),
+            },
+            expected_datagram_slot(6, "udp", 8_001, DescriptorKind::DatagramListener),
+            expected_datagram_slot(7, "h3", 8_002, DescriptorKind::QuicListener),
+            expected_tcp_slot(8, DescriptorRole::Traffic("http".into()), 7_996),
+            expected_tcp_slot(9, DescriptorRole::Management, 9_900),
+            expected_tcp_slot(10, DescriptorRole::Stats(0), 8_404),
+            expected_tcp_slot(11, DescriptorRole::Stats(1), 8_405),
+            expected_tcp_slot(12, DescriptorRole::StatsPage(0), 8_406),
+        ];
+        assert_inventory_and_slots(
+            &changed,
+            &renamed_reordered_inventory,
+            &renamed_reordered_slots,
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn inventory_has_no_supervised_descriptor_limit() {
+        let sixty_four = many_listener_config(MAX_DESCRIPTOR_COUNT);
+        assert_eq!(ListenerInventory::compile(&sixty_four).entries().len(), 64);
+        assert_eq!(
+            descriptor_slots(&ListenerInventory::compile(&sixty_four))
+                .expect("64 descriptors are accepted")
+                .len(),
+            64
+        );
+
+        let sixty_five = many_listener_config(MAX_DESCRIPTOR_COUNT + 1);
+        assert_eq!(ListenerInventory::compile(&sixty_five).entries().len(), 65);
+        let error = descriptor_slots(&ListenerInventory::compile(&sixty_five))
+            .expect_err("existing supervised oracle rejects 65 descriptors");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("maximum is 64"));
+    }
+
+    #[test]
+    fn validation_tcp_probe_holds_then_releases_the_ephemeral_address() {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral TCP probe");
+        let address = probe.local_addr().expect("ephemeral TCP address");
+        drop(probe);
+        let mut config = many_listener_config(1).to_draft();
+        config.listeners[0].bind = ListenerBind::Socket { address };
+        let config = config.validate().expect("valid TCP probe config");
+
+        let reservations = ListenerReservations::prepare_for_validation(&config, None)
+            .expect("validation TCP reservation");
+        assert!(
+            std::net::TcpListener::bind(address).is_err(),
+            "validation did not hold the TCP probe"
+        );
+        drop(reservations);
+        std::net::TcpListener::bind(address).expect("validation released the TCP probe");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validation_unix_probe_removes_its_temporary_namespace_entries() {
+        let directory = tempfile::tempdir().expect("Unix validation directory");
+        let path = directory.path().join("validation.sock");
+        let mut config = many_listener_config(1).to_draft();
+        config.listeners[0].bind = ListenerBind::Unix {
+            path: path.clone(),
+            mode: Some(0o600),
+        };
+        let config = config.validate().expect("valid Unix probe config");
+
+        let reservations = ListenerReservations::prepare_for_validation(&config, None)
+            .expect("validation Unix reservation");
+        assert!(path.exists(), "validation did not create the Unix probe");
+        drop(reservations);
+        assert!(!path.exists(), "validation retained the Unix probe");
+        assert!(
+            !unix_socket_marker_path(&path)
+                .expect("Unix marker path")
+                .exists(),
+            "validation retained the Unix lease marker"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validation_source_preserves_direct_capacity_and_unix_path_only_reuse_semantics() {
+        let direct = many_listener_config(MAX_DESCRIPTOR_COUNT + 1);
+        assert_eq!(
+            ListenerReservations::prepare_for_validation(&direct, None)
+                .expect("direct validation accepts 65 listeners")
+                .len(),
+            65
+        );
+
+        let directory = tempfile::tempdir().expect("validation source directory");
+        let path = directory.path().join("validation-source.sock");
+        let mut active_config = empty_config();
+        active_config.listeners.push(oxiroute_config::Listener {
+            name: "unix".into(),
+            bind: ListenerBind::Unix {
+                path: path.clone(),
+                mode: Some(0o600),
+            },
+            protocol: oxiroute_config::Protocol::Http,
+            service: Some("http".into()),
+            tls_profile: None,
+            proxy_protocol: None,
+            max_connections: None,
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        });
+        let active = prepare_reservations(&active_config, None).expect("active Unix reservation");
+        let mut changed = active_config.clone();
+        changed.listeners[0].bind = ListenerBind::Unix {
+            path: path.clone(),
+            mode: Some(0o660),
+        };
+        let changed = validated_test_config(&changed).expect("changed Unix validation config");
+
+        let validation = ListenerReservations::prepare_for_validation(&changed, Some(&active))
+            .expect("validation reuses active Unix path");
+        assert!(Arc::ptr_eq(
+            &active.get("unix").expect("active Unix reservation").inner,
+            &validation
+                .get("unix")
+                .expect("validation Unix reservation")
+                .inner,
+        ));
+        assert!(ListenerReservations::prepare(&changed, Some(&active)).is_err());
+        drop(validation);
+        assert!(path.exists(), "validation unlinked the active Unix socket");
+        drop(active);
+        assert!(!path.exists(), "active owner retained the Unix socket");
+    }
+
+    fn prepare_reservations(
+        config: &ConfigDraft,
+        previous: Option<&ListenerReservations>,
+    ) -> io::Result<ListenerReservations> {
+        let config = validated_test_config(config)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        ListenerReservations::prepare(&config, previous)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn adopt_reservations(
+        config: &ConfigDraft,
+        descriptors: DescriptorSet,
+    ) -> io::Result<ListenerReservations> {
+        let config = validated_test_config(config)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        ListenerReservations::adopt(&config, descriptors)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn export_reservations(
+        reservations: &ListenerReservations,
+        config: &ConfigDraft,
+    ) -> io::Result<(DescriptorManifest, Vec<std::os::fd::OwnedFd>)> {
+        let config = validated_test_config(config)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        reservations.export_descriptors(&ListenerInventory::compile(&config))
+    }
+
+    fn validated_test_config(
+        config: &ConfigDraft,
+    ) -> Result<ValidatedConfig, oxiroute_config::ConfigError> {
+        let mut complete = differential_config().to_draft();
+        complete.listeners = config.listeners.clone();
+        complete.management.clone_from(&config.management);
+        complete.stats.clone_from(&config.stats);
+        for listener in &mut complete.listeners {
+            match listener.protocol {
+                Protocol::Http | Protocol::Http3 => listener.service = Some("web".into()),
+                Protocol::Rtmp => listener.service = Some("live".into()),
+                Protocol::Tcp | Protocol::Udp => listener.service = Some("relay".into()),
+                Protocol::ForwardHttp1 | Protocol::ForwardHttp2 | Protocol::ForwardHttp3 => {
+                    listener.service = Some("forward".into());
+                }
+            }
+            if matches!(listener.protocol, Protocol::Http3 | Protocol::ForwardHttp3) {
+                listener.tls_profile = Some("h3".into());
+            }
+        }
+        complete.validate()
+    }
+
     #[test]
     fn matching_listener_reservations_are_reused_without_rebinding() {
         let address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .expect("temporary bind")
             .local_addr()
             .expect("address");
-        let first = ListenerReservations::prepare(&config("edge", address), None)
-            .expect("first reservation");
-        let second = ListenerReservations::prepare(&config("edge", address), Some(&first))
+        let first =
+            prepare_reservations(&config("edge", address), None).expect("first reservation");
+        let second = prepare_reservations(&config("edge", address), Some(&first))
             .expect("reused reservation");
 
         assert!(Arc::ptr_eq(
@@ -1044,9 +1738,9 @@ mod tests {
             .expect("temporary bind")
             .local_addr()
             .expect("address");
-        let first = ListenerReservations::prepare(&config("old-name", address), None)
-            .expect("first reservation");
-        let second = ListenerReservations::prepare(&config("new-name", address), Some(&first))
+        let first =
+            prepare_reservations(&config("old-name", address), None).expect("first reservation");
+        let second = prepare_reservations(&config("new-name", address), Some(&first))
             .expect("renamed reservation");
 
         assert!(Arc::ptr_eq(
@@ -1071,11 +1765,11 @@ mod tests {
             admin_token_file: None,
             pages: Vec::new(),
         });
-        let first = ListenerReservations::prepare(&first_config, None).expect("first reservations");
+        let first = prepare_reservations(&first_config, None).expect("first reservations");
         let mut second_config = first_config;
         second_config.stats.as_mut().expect("stats").binds.reverse();
-        let second = ListenerReservations::prepare(&second_config, Some(&first))
-            .expect("reordered reservations");
+        let second =
+            prepare_reservations(&second_config, Some(&first)).expect("reordered reservations");
 
         assert!(Arc::ptr_eq(
             &first.stats(0).expect("first original").inner,
@@ -1111,9 +1805,8 @@ mod tests {
             }],
         });
 
-        let first = ListenerReservations::prepare(&config, None).expect("first reservations");
-        let second =
-            ListenerReservations::prepare(&config, Some(&first)).expect("reused page reservation");
+        let first = prepare_reservations(&config, None).expect("first reservations");
+        let second = prepare_reservations(&config, Some(&first)).expect("reused page reservation");
 
         assert_eq!(first.len(), 1);
         assert!(Arc::ptr_eq(
@@ -1142,7 +1835,7 @@ mod tests {
             ui_dir: None,
         });
 
-        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+        let reservations = prepare_reservations(&config, None).expect("reservations");
 
         assert_eq!(reservations.len(), 2);
         assert_eq!(
@@ -1201,11 +1894,10 @@ mod tests {
                 downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
             }],
         });
-        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+        let reservations = prepare_reservations(&config, None).expect("reservations");
 
-        let (manifest, originals) = reservations
-            .export_descriptors(&config)
-            .expect("descriptor export");
+        let (manifest, originals) =
+            export_reservations(&reservations, &config).expect("descriptor export");
 
         assert_eq!(originals.len(), 4);
         assert_eq!(
@@ -1241,15 +1933,14 @@ mod tests {
         let mut config = config("udp", address);
         config.listeners[0].bind = ListenerBind::Udp { address };
         config.listeners[0].protocol = oxiroute_config::Protocol::Udp;
-        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
-        let (manifest, originals) = reservations
-            .export_descriptors(&config)
-            .expect("UDP descriptor export");
+        let reservations = prepare_reservations(&config, None).expect("reservations");
+        let (manifest, originals) =
+            export_reservations(&reservations, &config).expect("UDP descriptor export");
 
         assert_eq!(manifest.slots()[0].kind, DescriptorKind::DatagramListener);
         assert_eq!(manifest.slots()[0].bind, Some(BindIdentity::Tcp(address)));
         let descriptors = DescriptorSet::new(&manifest, originals).expect("UDP descriptor set");
-        let adopted = ListenerReservations::adopt(&config, descriptors).expect("UDP adoption");
+        let adopted = adopt_reservations(&config, descriptors).expect("UDP adoption");
         let duplicate = adopted
             .get("udp")
             .expect("adopted UDP reservation")
@@ -1271,15 +1962,14 @@ mod tests {
         let mut config = config("h3", address);
         config.listeners[0].bind = ListenerBind::Udp { address };
         config.listeners[0].protocol = oxiroute_config::Protocol::Http3;
-        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
-        let (manifest, originals) = reservations
-            .export_descriptors(&config)
-            .expect("QUIC descriptor export");
+        let reservations = prepare_reservations(&config, None).expect("reservations");
+        let (manifest, originals) =
+            export_reservations(&reservations, &config).expect("QUIC descriptor export");
 
         assert_eq!(manifest.slots()[0].kind, DescriptorKind::QuicListener);
         assert_eq!(manifest.slots()[0].bind, Some(BindIdentity::Tcp(address)));
         let descriptors = DescriptorSet::new(&manifest, originals).expect("QUIC descriptor set");
-        let adopted = ListenerReservations::adopt(&config, descriptors).expect("QUIC adoption");
+        let adopted = adopt_reservations(&config, descriptors).expect("QUIC adoption");
         let duplicate = adopted
             .get("h3")
             .expect("adopted QUIC reservation")
@@ -1296,16 +1986,15 @@ mod tests {
             .local_addr()
             .expect("address");
         let config = config("traffic", address);
-        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
-        let (manifest, originals) = reservations
-            .export_descriptors(&config)
-            .expect("descriptor export");
+        let reservations = prepare_reservations(&config, None).expect("reservations");
+        let (manifest, originals) =
+            export_reservations(&reservations, &config).expect("descriptor export");
         let mut wrong_slots = manifest.slots().to_vec();
         wrong_slots[0].role = DescriptorRole::Management;
         let wrong = DescriptorManifest::new(wrong_slots).expect("wrong typed manifest");
         let set = DescriptorSet::new(&wrong, originals).expect("kernel-valid descriptor set");
 
-        let error = ListenerReservations::adopt(&config, set)
+        let error = adopt_reservations(&config, set)
             .err()
             .expect("typed slot mismatch");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
@@ -1319,37 +2008,38 @@ mod tests {
             .local_addr()
             .expect("address");
         let config = config("traffic", address);
-        let mut reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+        let mut reservations = prepare_reservations(&config, None).expect("reservations");
         let traffic = reservations.get("traffic").expect("traffic").clone();
         reservations
             .by_key
             .insert(ReservationKey::Management, traffic);
-        let error = reservations
-            .export_descriptors(&config)
-            .expect_err("extra key must fail");
+        let error = export_reservations(&reservations, &config).expect_err("extra key must fail");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         drop(reservations);
 
-        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+        let reservations = prepare_reservations(&config, None).expect("reservations");
         let mut changed = config;
         changed.listeners[0].bind = ListenerBind::Socket {
             address: "127.0.0.1:1".parse().expect("changed address"),
         };
-        let error = reservations
-            .export_descriptors(&changed)
-            .expect_err("bind mismatch must fail");
+        let error =
+            export_reservations(&reservations, &changed).expect_err("bind mismatch must fail");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn worker_descriptor_limit_is_explicitly_sixty_four() {
-        let address = "127.0.0.1:8080".parse().expect("address");
         let mut config = empty_config();
         config.listeners = (0..=MAX_DESCRIPTOR_COUNT)
             .map(|index| oxiroute_config::Listener {
                 name: format!("listener-{index}"),
-                bind: ListenerBind::Socket { address },
+                bind: ListenerBind::Socket {
+                    address: SocketAddr::from((
+                        [127, 0, 0, 1],
+                        10_000 + u16::try_from(index).expect("bounded listener index"),
+                    )),
+                },
                 protocol: oxiroute_config::Protocol::Http,
                 service: Some("http".into()),
                 tls_profile: None,
@@ -1359,7 +2049,9 @@ mod tests {
             })
             .collect();
 
-        let error = descriptor_plan(&config).expect_err("65 descriptors must be rejected");
+        let config = validated_test_config(&config).expect("valid oversized config");
+        let error = descriptor_slots(&ListenerInventory::compile(&config))
+            .expect_err("65 descriptors must be rejected");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("maximum is 64"));
     }
@@ -1381,12 +2073,13 @@ mod tests {
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         });
-        let plan = descriptor_plan(&config).expect("descriptor plan");
+        let config = validated_test_config(&config).expect("valid capacity config");
+        let inventory = ListenerInventory::compile(&config);
 
-        assert_eq!(descriptor_capacity_required(&plan, 11), 50);
-        assert!(validate_descriptor_capacity(&plan, 11, Some(50)).is_ok());
-        assert!(validate_descriptor_capacity(&plan, 11, None).is_ok());
-        let error = validate_descriptor_capacity(&plan, 11, Some(49))
+        assert_eq!(descriptor_capacity_required(&inventory, 11), 50);
+        assert!(validate_descriptor_capacity(&inventory, 11, Some(50)).is_ok());
+        assert!(validate_descriptor_capacity(&inventory, 11, None).is_ok());
+        let error = validate_descriptor_capacity(&inventory, 11, Some(49))
             .expect_err("low descriptor limit must fail");
         assert!(error.to_string().contains("at least 50"));
         assert!(error.to_string().contains("11 currently open"));
@@ -1412,12 +2105,11 @@ mod tests {
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         });
-        let master = ListenerReservations::prepare(&config, None).expect("master reservation");
-        let (manifest, originals) = master
-            .export_descriptors(&config)
-            .expect("descriptor export");
+        let master = prepare_reservations(&config, None).expect("master reservation");
+        let (manifest, originals) =
+            export_reservations(&master, &config).expect("descriptor export");
         let set = DescriptorSet::new(&manifest, originals).expect("descriptor set");
-        let worker = ListenerReservations::adopt(&config, set).expect("worker adoption");
+        let worker = adopt_reservations(&config, set).expect("worker adoption");
         let marker = unix_socket_marker_path(&path).expect("marker path");
 
         drop(worker);
@@ -1450,9 +2142,9 @@ mod tests {
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         });
-        let first = ListenerReservations::prepare(&first_config, None).expect("first Unix bind");
-        let unchanged = ListenerReservations::prepare(&first_config, Some(&first))
-            .expect("identical Unix bind reuse");
+        let first = prepare_reservations(&first_config, None).expect("first Unix bind");
+        let unchanged =
+            prepare_reservations(&first_config, Some(&first)).expect("identical Unix bind reuse");
         assert!(Arc::ptr_eq(
             &first.get("unix").expect("first").inner,
             &unchanged.get("unix").expect("unchanged").inner,
@@ -1463,22 +2155,27 @@ mod tests {
             path: path.clone(),
             mode: Some(0o660),
         };
-        let validated = ListenerReservations::prepare_for_validation(&changed_config, Some(&first))
-            .expect("validation reuses the active Unix path");
+        let validated_config =
+            validated_test_config(&changed_config).expect("valid changed Unix config");
+        let validated =
+            ListenerReservations::prepare_for_validation(&validated_config, Some(&first))
+                .expect("validation reuses the active Unix path");
         assert!(Arc::ptr_eq(
             &first.get("unix").expect("first").inner,
             &validated.get("unix").expect("validated").inner,
         ));
-        assert!(unix_listener_mode_change_requires_restart(
-            &first_config,
-            &changed_config,
+        assert!(ListenerReservations::listener_restart_required(
+            crate::RuntimeMode::Direct,
+            &validated_test_config(&first_config).expect("valid first config"),
+            &validated_config,
         ));
         changed_config.listeners[0].max_connections = Some(7);
-        assert!(unix_listener_mode_change_requires_restart(
-            &first_config,
-            &changed_config,
+        assert!(ListenerReservations::listener_restart_required(
+            crate::RuntimeMode::Direct,
+            &validated_test_config(&first_config).expect("valid first config"),
+            &validated_test_config(&changed_config).expect("valid changed config"),
         ));
-        assert!(ListenerReservations::prepare(&changed_config, Some(&first)).is_err());
+        assert!(prepare_reservations(&changed_config, Some(&first)).is_err());
         assert_eq!(
             std::fs::metadata(path)
                 .expect("reserved socket metadata")

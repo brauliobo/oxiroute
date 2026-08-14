@@ -14,26 +14,25 @@ use http::{Method, Uri, uri::Authority};
 use openssl::x509::X509;
 use oxiroute_config::{
     AccessLogPolicy, AlpnProtocol, CacheAuthorizationPolicy, CachePurgeAuthorization, CacheStore,
-    CacheSurrogateTags, Certificate, CertificateSource, Config, ConfigError, DnsResolutionPolicy,
-    HealthCheck, HealthCheckType, HealthHttpVersion, HttpAccessPolicy, HttpHostSelector,
-    HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
-    L4Service, Listener, ListenerBind, Protocol, RtmpApplication, RtmpPushTarget,
-    RtmpRecorderStart, RtmpService, Stats, StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion,
-    UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
-    load_lua,
+    CacheSurrogateTags, Certificate, CertificateSource, ConfigDraft, ConfigError,
+    DnsResolutionPolicy, HealthCheck, HealthCheckType, HealthHttpVersion, HttpAccessPolicy,
+    HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService,
+    HttpVersionPolicy, L4Service, Listener, ListenerBind, Protocol, RtmpApplication,
+    RtmpPushTarget, RtmpRecorderStart, RtmpService, Stats, StatsPage, StatsPageAdminPolicy,
+    TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
+    UpstreamServer, UpstreamTls,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry, StreamKey};
 use oxiroute_server::{
     CertbotWatcherConfig, CertbotWatcherSupervisor, FileWatcherConfig, FileWatcherSupervisor,
     RtmpManagementApi, RuntimeEndpoint, RuntimeMetrics, ServiceKind, ServicePlanError,
-    runtime_plan, service_specs,
 };
 use serde_json::Value;
 use tempfile::TempDir;
 
 use config_support::{
-    empty_config, loopback_address as address, loopback_bind as socket_bind,
-    loopback_endpoint as socket_endpoint, rtmp_recorder as recorder,
+    empty_config, load_lua, loopback_address as address, loopback_bind as socket_bind,
+    loopback_endpoint as socket_endpoint, rtmp_recorder as recorder, runtime_plan, service_specs,
 };
 use fixture_support::{
     create_secure_root, write_file_with_mode, write_secure_token, write_test_identity,
@@ -70,6 +69,7 @@ fn startup_dns_cannot_resolve_to_a_statistics_listener() {
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
     });
 
+    let config = config.validate().expect("valid runtime config");
     let Err(error) = runtime_plan(&config) else {
         panic!("protected startup DNS must fail")
     };
@@ -116,6 +116,7 @@ fn upstream_socket_cannot_target_a_statistics_page_listener() {
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
     });
 
+    let config = config.validate().expect("valid runtime config");
     let Err(error) = runtime_plan(&config) else {
         panic!("protected statistics page destination must fail")
     };
@@ -131,10 +132,21 @@ fn distributed_example_compiles_into_an_active_runtime_plan() {
     let config = load_lua(include_str!("../../../oxiroute.example.lua"))
         .expect("distributed example configuration");
 
-    let plan = runtime_plan(&config).expect("distributed example runtime plan");
+    runtime_plan(&config).expect("distributed example runtime plan");
+    let mut draft = config.to_draft();
+    draft.management = None;
+    draft.stats = None;
+    for listener in &mut draft.listeners {
+        if let ListenerBind::Socket { address } = &mut listener.bind {
+            let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            *address = reservation.local_addr().unwrap();
+        }
+    }
+    let generation =
+        config_support::runtime_generation(&draft.validate().unwrap()).expect("runtime generation");
 
-    assert_eq!(plan.services.len(), 3);
-    assert!(plan.health_supervisor.is_some());
+    assert_eq!(generation.services().len(), 3);
+    assert!(generation.health_supervisor().is_some());
 }
 
 #[test]
@@ -183,7 +195,7 @@ fn whitebeast_hostrouter_and_phoenix_pool_shapes_compile_with_named_policy() {
         server_timeout_ms: Some(50_000),
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
     };
-    let config = Config {
+    let config = ConfigDraft {
         max_connections: Some(4_096),
         upstream_pools: vec![
             pool(
@@ -216,11 +228,15 @@ fn whitebeast_hostrouter_and_phoenix_pool_shapes_compile_with_named_policy() {
         ..empty_config()
     };
 
-    let plan = runtime_plan(&config).expect("host-shaped runtime plan");
+    let validated = config.clone().validate().unwrap();
+    let plan = runtime_plan(&validated).expect("host-shaped runtime plan");
+    let generation =
+        config_support::runtime_generation(&validated).expect("host-shaped runtime generation");
     assert_eq!(plan.max_connections, Some(4_096));
-    assert!(plan.health_supervisor.is_some());
+    assert!(generation.health_supervisor().is_some());
     assert_eq!(
-        plan.pools
+        generation
+            .pools()
             .iter()
             .map(|pool| {
                 let snapshot = pool.health_snapshot();
@@ -260,7 +276,7 @@ fn whitebeast_hostrouter_and_phoenix_pool_shapes_compile_with_named_policy() {
 #[test]
 fn compiles_an_active_memory_cache_policy() {
     let config = active_memory_cache_config();
-    runtime_plan(&config).expect("active memory cache runtime");
+    runtime_plan(&config.clone().validate().unwrap()).expect("active memory cache runtime");
 }
 
 #[test]
@@ -281,8 +297,10 @@ fn compiles_an_active_persistent_cache_policy() {
         max_followers_per_fill: 16,
     };
 
-    let first = runtime_plan(&config).expect("active disk cache runtime");
-    runtime_plan(&config).expect("disk cache survives overlapping generation preparation");
+    let first =
+        runtime_plan(&config.clone().validate().unwrap()).expect("active disk cache runtime");
+    runtime_plan(&config.clone().validate().unwrap())
+        .expect("disk cache survives overlapping generation preparation");
     drop(first);
 }
 
@@ -306,7 +324,7 @@ fn compiles_surrogate_tag_and_authenticated_purge_cache_policy() {
         token_file_path: token_file,
     });
 
-    runtime_plan(&config).expect("tagged purge cache runtime");
+    runtime_plan(&config.clone().validate().unwrap()).expect("tagged purge cache runtime");
 }
 
 #[test]
@@ -323,14 +341,14 @@ fn rejects_advanced_authorized_cache_reuse_at_runtime() {
         .authorization_policy = CacheAuthorizationPolicy::Cache;
 
     assert!(matches!(
-        runtime_plan(&config),
+        runtime_plan(&config.clone().validate().unwrap()),
         Err(ServicePlanError::RuntimePolicyUnavailable {
             policy: "http_services[].routes[].action.policy.cache.authorization_policy"
         })
     ));
 }
 
-fn active_memory_cache_config() -> Config {
+fn active_memory_cache_config() -> ConfigDraft {
     load_lua(
         r#"
 return {
@@ -378,6 +396,7 @@ return {
 "#,
     )
     .expect("canonical cache configuration")
+    .to_draft()
 }
 
 #[test]
@@ -385,25 +404,25 @@ fn bounded_buffering_policies_compile_and_unbounded_buffering_fails_closed() {
     let mut config = canonical_config();
     config.http_services[0].routes[0].policy.request_buffering = true;
 
-    runtime_plan(&config).expect("request buffering has an active runtime");
+    runtime_plan(&config.clone().validate().unwrap())
+        .expect("request buffering has an active runtime");
 
     config.http_services[0].routes[0].policy.response_buffering = true;
 
-    runtime_plan(&config).expect("bounded response buffering has an active runtime");
+    runtime_plan(&config.clone().validate().unwrap())
+        .expect("bounded response buffering has an active runtime");
 
     config.http_services[0].routes[0]
         .policy
         .max_request_body_bytes = None;
     assert!(matches!(
-        runtime_plan(&config),
-        Err(ServicePlanError::RuntimePolicyUnavailable {
-            policy: "http_services[].routes[].policy.unbounded_response_buffering"
-        })
+        config.clone().validate(),
+        Err(ConfigError::InvalidHttpRoute { .. })
     ));
 
     config.http_services[0].routes[0].policy.response_buffering = false;
     assert!(matches!(
-        runtime_plan(&config),
+        runtime_plan(&config.clone().validate().unwrap()),
         Err(ServicePlanError::RuntimePolicyUnavailable {
             policy: "http_services[].routes[].policy.unbounded_request_buffering"
         })
@@ -417,13 +436,12 @@ fn runtime_rejects_duplicate_routes_until_importer_first_wins_has_resolved_them(
     config.http_services[0].routes.push(duplicate);
 
     assert!(matches!(
-        runtime_plan(&config),
-        Err(ServicePlanError::InvalidConfig(error))
-            if matches!(*error, ConfigError::DuplicateHttpRoute { .. })
+        config.clone().validate(),
+        Err(ConfigError::DuplicateHttpRoute { .. })
     ));
 
     config.http_services[0].routes.pop();
-    runtime_plan(&config).expect("importer-resolved first route only");
+    runtime_plan(&config.clone().validate().unwrap()).expect("importer-resolved first route only");
 }
 
 #[cfg(unix)]
@@ -442,7 +460,7 @@ fn basic_auth_rejects_unsupported_htpasswd_hashes() {
         realm: "private".into(),
     });
     assert!(matches!(
-        runtime_plan(&config),
+        runtime_plan(&config.clone().validate().unwrap()),
         Err(ServicePlanError::AccessPreflight { .. })
     ));
 }
@@ -461,16 +479,16 @@ fn basic_auth_preflights_apr1_and_mixed_scheme_files() {
         htpasswd_file_path: apr1.clone(),
         realm: "private".into(),
     });
-    runtime_plan(&config).expect("valid APR1 htpasswd");
+    runtime_plan(&config.clone().validate().unwrap()).expect("valid APR1 htpasswd");
 
     fs::set_permissions(&apr1, fs::Permissions::from_mode(0o640))
         .expect("group-readable APR1 mode");
-    runtime_plan(&config).expect("group-readable APR1 htpasswd");
+    runtime_plan(&config.clone().validate().unwrap()).expect("group-readable APR1 htpasswd");
 
     fs::set_permissions(&apr1, fs::Permissions::from_mode(0o644))
         .expect("world-readable APR1 mode");
     assert!(matches!(
-        runtime_plan(&config),
+        runtime_plan(&config.clone().validate().unwrap()),
         Err(ServicePlanError::AccessPreflight { .. })
     ));
 
@@ -493,7 +511,7 @@ fn basic_auth_preflights_apr1_and_mixed_scheme_files() {
                 realm: "private".into(),
             });
         assert!(matches!(
-            runtime_plan(&config),
+            runtime_plan(&config.clone().validate().unwrap()),
             Err(ServicePlanError::AccessPreflight { .. })
         ));
     }
@@ -514,7 +532,7 @@ fn basic_auth_preflights_apr1_and_mixed_scheme_files() {
         realm: "private".into(),
     });
     assert!(matches!(
-        runtime_plan(&config),
+        runtime_plan(&config.clone().validate().unwrap()),
         Err(ServicePlanError::AccessPreflight { .. })
     ));
 
@@ -533,7 +551,7 @@ fn basic_auth_preflights_apr1_and_mixed_scheme_files() {
         htpasswd_file_path: mixed_schemes,
         realm: "private".into(),
     });
-    runtime_plan(&config).expect("mixed-scheme htpasswd");
+    runtime_plan(&config.clone().validate().unwrap()).expect("mixed-scheme htpasswd");
 }
 
 #[cfg(unix)]
@@ -560,7 +578,7 @@ fn basic_auth_preflights_a_large_multi_user_htpasswd_file() {
         htpasswd_file_path: path,
         realm: "private".into(),
     });
-    runtime_plan(&config).expect("large htpasswd preflight");
+    runtime_plan(&config.clone().validate().unwrap()).expect("large htpasswd preflight");
 }
 
 #[cfg(unix)]
@@ -584,7 +602,7 @@ fn basic_auth_rejects_symlinks_and_excessive_bcrypt_work() {
         realm: "private".into(),
     });
     assert!(matches!(
-        runtime_plan(&config),
+        runtime_plan(&config.clone().validate().unwrap()),
         Err(ServicePlanError::AccessPreflight { .. })
     ));
 
@@ -600,7 +618,7 @@ fn basic_auth_rejects_symlinks_and_excessive_bcrypt_work() {
         realm: "private".into(),
     });
     assert!(matches!(
-        runtime_plan(&config),
+        runtime_plan(&config.clone().validate().unwrap()),
         Err(ServicePlanError::AccessPreflight { .. })
     ));
 
@@ -618,14 +636,14 @@ fn basic_auth_rejects_symlinks_and_excessive_bcrypt_work() {
         htpasswd_file_path: mixed,
         realm: "private".into(),
     });
-    runtime_plan(&config).expect("mixed-cost bcrypt htpasswd");
+    runtime_plan(&config.clone().validate().unwrap()).expect("mixed-cost bcrypt htpasswd");
 }
 
 #[test]
 fn compiles_shared_http_and_l4_service_plans() {
     let config = canonical_config();
 
-    let services = service_specs(&config).expect("valid service plan");
+    let services = service_specs(&config.clone().validate().unwrap()).expect("valid service plan");
 
     assert_eq!(services.len(), 4);
     assert_eq!(services[0].name, "web");
@@ -715,7 +733,8 @@ fn compiles_a_bounded_udp_service_plan() {
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
 
-    let services = service_specs(&config).expect("bounded UDP service plan");
+    let services =
+        service_specs(&config.clone().validate().unwrap()).expect("bounded UDP service plan");
     let ServiceKind::Udp(udp) = &services[4].kind else {
         panic!("fifth service must be UDP");
     };
@@ -743,7 +762,8 @@ fn rtmp_listeners_share_one_service_identity_catalog_and_hub() {
     second_listener.bind = socket_bind(1936);
     config.listeners.push(second_listener);
 
-    let services = service_specs(&config).expect("valid shared RTMP service plan");
+    let services =
+        service_specs(&config.clone().validate().unwrap()).expect("valid shared RTMP service plan");
     let ServiceKind::Rtmp(first_plan) = &services[3].kind else {
         panic!("first RTMP listener must use the RTMP service");
     };
@@ -789,7 +809,8 @@ fn compiles_chunk_disabled_access_log_and_application_fanout_policy() {
         max_queue_bytes_per_subscriber: 4_096,
     };
 
-    let services = service_specs(&config).expect("lowered RTMP runtime policy");
+    let services =
+        service_specs(&config.clone().validate().unwrap()).expect("lowered RTMP runtime policy");
     let ServiceKind::Rtmp(plan) = &services[3].kind else {
         panic!("RTMP service plan");
     };
@@ -817,11 +838,12 @@ fn resolves_absent_push_port_without_connecting_and_rejects_direct_listener_loop
             flash_version: None,
             credentials: None,
         });
-    service_specs(&config).expect("absent push destination is a runtime concern");
+    service_specs(&config.clone().validate().unwrap())
+        .expect("absent push destination is a runtime concern");
 
     config.rtmp_services[0].applications[0].push_targets[0].port = 1_935;
     assert!(matches!(
-        service_specs(&config),
+        service_specs(&config.clone().validate().unwrap()),
         Err(ServicePlanError::RtmpPushDirectLoop { target: 0, .. })
     ));
 }
@@ -842,7 +864,8 @@ fn recorder_planning_is_read_only_and_runtime_activation_opens_the_store() {
         .recorders
         .push(recorder("clips", RtmpRecorderStart::Manual, root.path()));
 
-    let plan = runtime_plan(&config).expect("recorder runtime plan");
+    let plan = runtime_plan(&config.clone().validate().unwrap()).expect("recorder runtime plan");
+    let services = service_specs(&config.clone().validate().unwrap()).expect("recorder services");
 
     let listener = plan
         .topology
@@ -862,7 +885,7 @@ fn recorder_planning_is_read_only_and_runtime_activation_opens_the_store() {
             .is_none()
     );
     assert!(!root.path().join(".oxiroute-recording.lock").exists());
-    let ServiceKind::Rtmp(service) = &plan.services[3].kind else {
+    let ServiceKind::Rtmp(service) = &services[3].kind else {
         panic!("RTMP service plan");
     };
     service
@@ -883,13 +906,14 @@ fn derives_manual_capability_from_canonical_recorder_policies() {
             RtmpRecorderStart::Continuous,
             root.path(),
         ));
-    let continuous_plan = runtime_plan(&continuous).expect("continuous recorder plan");
+    let continuous_plan =
+        runtime_plan(&continuous.clone().validate().unwrap()).expect("continuous recorder plan");
     assert!(continuous_plan.rtmp_capabilities.live_ingest);
     assert!(!continuous_plan.rtmp_capabilities.manual_recording);
 
     let mut manual = continuous;
     manual.rtmp_services[0].applications[0].recorders[0].start = RtmpRecorderStart::Manual;
-    let manual_plan = runtime_plan(&manual).expect("manual recorder plan");
+    let manual_plan = runtime_plan(&manual.validate().unwrap()).expect("manual recorder plan");
     assert!(manual_plan.rtmp_capabilities.live_ingest);
     assert!(manual_plan.rtmp_capabilities.manual_recording);
 }
@@ -932,7 +956,8 @@ fn excludes_unreferenced_rtmp_services_from_active_capabilities() {
         }],
     });
 
-    let plan = runtime_plan(&config).expect("runtime plan with orphan RTMP service");
+    let plan =
+        runtime_plan(&config.validate().unwrap()).expect("runtime plan with orphan RTMP service");
 
     assert!(plan.rtmp_capabilities.live_ingest);
     assert!(!plan.rtmp_capabilities.manual_recording);
@@ -955,7 +980,7 @@ fn rejects_insecure_and_overquota_recording_roots_without_path_disclosure() {
             RtmpRecorderStart::Continuous,
             insecure_root.path(),
         ));
-    let Err(error) = runtime_plan(&insecure) else {
+    let Err(error) = runtime_plan(&insecure.validate().unwrap()) else {
         panic!("insecure root must fail")
     };
     assert!(matches!(error, ServicePlanError::RecorderPreflight { .. }));
@@ -979,7 +1004,7 @@ fn rejects_insecure_and_overquota_recording_roots_without_path_disclosure() {
     overquota.rtmp_services[0].applications[0]
         .recorders
         .push(policy);
-    let Err(error) = runtime_plan(&overquota) else {
+    let Err(error) = runtime_plan(&overquota.validate().unwrap()) else {
         panic!("overquota root must fail")
     };
     assert!(matches!(error, ServicePlanError::RecorderPreflight { .. }));
@@ -1015,18 +1040,20 @@ fn compiles_and_retains_one_shared_listener_tls_profile() {
     config.listeners[0].tls_profile = Some("public".into());
     config.listeners[1].tls_profile = Some("public".into());
 
-    let plan = runtime_plan(&config).expect("TLS runtime plan");
-    let first = plan.services[0].tls.as_ref().expect("first TLS profile");
-    let second = plan.services[1].tls.as_ref().expect("second TLS profile");
-    let prepared = plan.tls.profiles().get("public").expect("prepared profile");
+    let validated = config.validate().unwrap();
+    let services = service_specs(&validated).expect("TLS services");
+    let tls = oxiroute_server::tls::prepare_tls(&validated).expect("prepared TLS");
+    let first = services[0].tls.as_ref().expect("first TLS profile");
+    let second = services[1].tls.as_ref().expect("second TLS profile");
+    let prepared = tls.profiles().get("public").expect("prepared profile");
 
     assert!(Arc::ptr_eq(first, second));
-    assert!(Arc::ptr_eq(first, prepared));
     assert_eq!(first.name(), "public");
+    assert_eq!(first.name(), prepared.name());
     assert_eq!(first.min_version(), TlsVersion::Tls12);
     assert!(first.tls_settings().is_ok());
-    assert_eq!(plan.tls.certificates().len(), 1);
-    assert_eq!(plan.tls.profiles().len(), 1);
+    assert_eq!(tls.certificates().len(), 1);
+    assert_eq!(tls.profiles().len(), 1);
 }
 
 #[cfg(target_os = "linux")]
@@ -1052,8 +1079,10 @@ fn direct_file_status_reports_rotation_failures_without_secret_material() {
         policy: oxiroute_config::TlsPolicy::default(),
     });
 
-    let plan = runtime_plan(&config).expect("direct-file runtime plan");
-    let [reconciler] = plan.tls.file_reconcilers() else {
+    let validated = config.validate().unwrap();
+    let plan = runtime_plan(&validated).expect("direct-file runtime plan");
+    let tls = oxiroute_server::tls::prepare_tls(&validated).expect("direct-file TLS");
+    let [reconciler] = tls.file_reconcilers() else {
         panic!("one direct-file reconciler must be retained");
     };
     let initial_revision = reconciler.status().active_content_revision.clone();
@@ -1147,12 +1176,13 @@ fn prepares_certbot_reconcilers_with_the_profile_active_generation() {
     });
     config.listeners[0].tls_profile = Some("public".into());
 
-    let plan = runtime_plan(&config).expect("Certbot runtime plan");
-    let [reconciler] = plan.certbot_reconcilers() else {
+    let validated = config.validate().unwrap();
+    let plan = runtime_plan(&validated).expect("Certbot runtime plan");
+    let tls = oxiroute_server::tls::prepare_tls(&validated).expect("Certbot TLS");
+    let [reconciler] = tls.certbot_reconcilers() else {
         panic!("one Certbot reconciler must be retained");
     };
-    let active = plan
-        .tls
+    let active = tls
         .certificates()
         .get("public")
         .expect("active Certbot identity");
@@ -1279,13 +1309,9 @@ fn rejects_an_unknown_programmatic_listener_tls_profile() {
     config.listeners[0].tls_profile = Some("missing".into());
 
     assert!(matches!(
-        runtime_plan(&config),
-        Err(ServicePlanError::InvalidConfig(source))
-            if matches!(
-                source.as_ref(),
-                ConfigError::UnknownListenerTlsProfile { listener, profile }
-                    if listener == "web" && profile == "missing"
-            )
+        config.validate(),
+        Err(ConfigError::UnknownListenerTlsProfile { listener, profile })
+            if listener == "web" && profile == "missing"
     ));
 }
 
@@ -1296,13 +1322,9 @@ fn rejects_tls_profiles_on_programmatic_tcp_and_rtmp_listeners() {
         config.listeners[listener_index].tls_profile = Some("not-allowed".into());
 
         assert!(matches!(
-            runtime_plan(&config),
-            Err(ServicePlanError::InvalidConfig(source))
-                if matches!(
-                    source.as_ref(),
-                    ConfigError::UnexpectedListenerTlsProfile { protocol, .. }
-                        if *protocol == expected_protocol
-                )
+            config.validate(),
+            Err(ConfigError::UnexpectedListenerTlsProfile { protocol, .. })
+                if protocol == expected_protocol
         ));
     }
 }
@@ -1316,13 +1338,9 @@ fn rejects_a_tls_upstream_pool_for_a_programmatic_l4_service() {
     });
 
     assert!(matches!(
-        runtime_plan(&config),
-        Err(ServicePlanError::InvalidConfig(source))
-            if matches!(
-                source.as_ref(),
-                ConfigError::TlsUpstreamPoolForL4Service { service, pool }
-                    if service == "database" && pool == "database"
-            )
+        config.validate(),
+        Err(ConfigError::TlsUpstreamPoolForL4Service { service, pool })
+            if service == "database" && pool == "database"
     ));
 }
 
@@ -1332,12 +1350,8 @@ fn rejects_an_invalid_programmatic_listener_without_panicking() {
     config.listeners[0].service = None;
 
     assert!(matches!(
-        service_specs(&config),
-        Err(ServicePlanError::InvalidConfig(source))
-            if matches!(
-                source.as_ref(),
-                ConfigError::MissingListenerService { listener, .. } if listener == "web"
-            )
+        config.validate(),
+        Err(ConfigError::MissingListenerService { listener, .. }) if listener == "web"
     ));
 }
 
@@ -1352,13 +1366,9 @@ fn rejects_an_invalid_programmatic_route_pool_reference() {
     *upstream_pool = "missing".into();
 
     assert!(matches!(
-        service_specs(&config),
-        Err(ServicePlanError::InvalidConfig(source))
-            if matches!(
-                source.as_ref(),
-                ConfigError::UnknownRouteUpstreamPool { service, route: 0, pool }
-                    if service == "api" && pool == "missing"
-            )
+        config.validate(),
+        Err(ConfigError::UnknownRouteUpstreamPool { service, route: 0, pool })
+            if service == "api" && pool == "missing"
     ));
 }
 
@@ -1375,17 +1385,13 @@ fn rejects_unvalidated_programmatic_certificate_paths() {
     });
 
     assert!(matches!(
-        runtime_plan(&config),
-        Err(ServicePlanError::InvalidConfig(source))
-            if matches!(
-                source.as_ref(),
-                ConfigError::InvalidFilePath {
-                    kind: "certificate",
-                    name,
-                    field: "source.certificate_chain_path",
-                    ..
-                } if name == "public"
-            )
+        config.validate(),
+        Err(ConfigError::InvalidFilePath {
+            kind: "certificate",
+            name,
+            field: "source.certificate_chain_path",
+            ..
+        }) if name == "public"
     ));
 }
 
@@ -1408,7 +1414,7 @@ fn refuses_to_discard_a_required_health_supervisor() {
     });
 
     assert!(matches!(
-        service_specs(&config),
+        service_specs(&config.clone().validate().unwrap()),
         Err(ServicePlanError::HealthSupervisorRequired)
     ));
 }
@@ -1418,32 +1424,23 @@ fn rejects_invalid_programmatic_pool_definitions() {
     let mut duplicate_name = canonical_config();
     duplicate_name.upstream_pools[1].name = "api".into();
     assert!(matches!(
-        service_specs(&duplicate_name),
-        Err(ServicePlanError::InvalidConfig(source))
-            if matches!(
-                source.as_ref(),
-                ConfigError::DuplicateName { namespace: "upstream pool", name } if name == "api"
-            )
+        duplicate_name.validate(),
+        Err(ConfigError::DuplicateName { namespace: "upstream pool", name }) if name == "api"
     ));
 
     let mut duplicate_endpoint = canonical_config();
     duplicate_endpoint.upstream_pools[0].endpoints[1] = socket_endpoint(3000);
     assert!(matches!(
-        service_specs(&duplicate_endpoint),
-        Err(ServicePlanError::InvalidConfig(source))
-            if matches!(source.as_ref(), ConfigError::DuplicateUpstreamEndpoint { pool, .. } if pool == "api")
+        duplicate_endpoint.validate(),
+        Err(ConfigError::DuplicateUpstreamEndpoint { pool, .. }) if pool == "api"
     ));
 
     let mut zero_port = canonical_config();
     zero_port.upstream_pools[0].endpoints[0] = socket_endpoint(0);
     assert!(matches!(
-        service_specs(&zero_port),
-        Err(ServicePlanError::InvalidConfig(source))
-            if matches!(
-                source.as_ref(),
-                ConfigError::ZeroPort { kind: "upstream pool", name, field: "endpoints" }
-                    if name == "api"
-            )
+        zero_port.validate(),
+        Err(ConfigError::ZeroPort { kind: "upstream pool", name, field: "endpoints" })
+            if name == "api"
     ));
 }
 
@@ -1453,7 +1450,7 @@ fn preserves_unbounded_listener_and_request_body_limits() {
     config.listeners[0].max_connections = None;
     config.http_services[0].max_request_body_bytes = None;
 
-    let services = service_specs(&config).expect("unbounded service plan");
+    let services = service_specs(&config.validate().unwrap()).expect("unbounded service plan");
     assert_eq!(services[0].max_connections, None);
     let ServiceKind::Http(service) = &services[0].kind else {
         panic!("first service must be HTTP");
@@ -1480,15 +1477,23 @@ fn runtime_preflight_preserves_every_endpoint_identity_without_connecting() {
         },
     ];
 
-    let plan = runtime_plan(&config).expect("typed endpoint preflight");
+    let validated = config.validate().unwrap();
+    let services = service_specs(&validated).expect("typed endpoint services");
     assert_eq!(
-        plan.services[2].bind,
+        services[2].bind,
         ListenerBind::Unix {
             path: "/tmp/oxiroute-listener-preflight-does-not-exist.sock".into(),
             mode: None,
         }
     );
-    let endpoints = &plan.pools[0].health_snapshot().endpoints;
+    let pool = services
+        .iter()
+        .find_map(|service| match &service.kind {
+            ServiceKind::Http(service) => service.upstream_pools().next(),
+            _ => None,
+        })
+        .expect("typed endpoint pool");
+    let endpoints = &pool.health_snapshot().endpoints;
     assert_eq!(endpoints[0].address.to_string(), "127.0.0.1:3000");
     assert_eq!(
         endpoints[1].address.to_string(),
@@ -1539,7 +1544,7 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
         error_responses: Vec::new(),
     };
 
-    runtime_plan(&config).expect("secure read-only HTTP preflight");
+    runtime_plan(&config.clone().validate().unwrap()).expect("secure read-only HTTP preflight");
     let after_entries = fs::read_dir(&root)
         .expect("root entries after preflight")
         .map(|entry| entry.expect("root entry").file_name())
@@ -1552,7 +1557,7 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
 
     fs::set_permissions(&token_path, fs::Permissions::from_mode(0o644))
         .expect("insecure token mode");
-    let Err(error) = runtime_plan(&config) else {
+    let Err(error) = runtime_plan(&config.clone().validate().unwrap()) else {
         panic!("insecure token mode must fail")
     };
     assert!(matches!(error, ServicePlanError::AccessPreflight { .. }));
@@ -1564,7 +1569,7 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
     fs::remove_file(&token_path).expect("remove insecure token");
     symlink(&real_token, &token_path).expect("token symlink");
     assert!(matches!(
-        runtime_plan(&config),
+        runtime_plan(&config.clone().validate().unwrap()),
         Err(ServicePlanError::AccessPreflight { .. })
     ));
 
@@ -1572,7 +1577,7 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
     let moved_root = directory.path().join("real-public");
     fs::rename(&root, &moved_root).expect("move static root");
     symlink(&moved_root, &root).expect("static root symlink");
-    let Err(error) = runtime_plan(&config) else {
+    let Err(error) = runtime_plan(&config.validate().unwrap()) else {
         panic!("symlink static root must fail")
     };
     assert!(matches!(error, ServicePlanError::StaticPreflight { .. }));
@@ -1580,8 +1585,8 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
 }
 
 #[allow(clippy::too_many_lines)]
-fn canonical_config() -> Config {
-    Config {
+fn canonical_config() -> ConfigDraft {
+    ConfigDraft {
         listeners: vec![
             Listener {
                 name: "web".into(),

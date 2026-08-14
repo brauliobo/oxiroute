@@ -8,8 +8,8 @@ use std::{
 
 use oxiroute_config::{
     HttpHostSelector, HttpPathSelector, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-    HttpRetryTarget, HttpRouteAction, ListenerBind, RtmpRecorderStart, StatsPageAdminPolicy,
-    UpstreamAlgorithm, UpstreamEndpoint, UpstreamTls,
+    HttpRetryTarget, HttpRouteAction, ListenerBind, StatsPageAdminPolicy, UpstreamAlgorithm,
+    UpstreamEndpoint, UpstreamTls,
 };
 use oxiroute_import::{
     DiagnosticStage, OperationalOverlayKind,
@@ -827,8 +827,9 @@ fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
         );
         let config = report
             .value()
-            .config()
-            .unwrap_or_else(|| panic!("{host} HAProxy fixture did not finalize"));
+            .validated()
+            .unwrap_or_else(|| panic!("{host} HAProxy fixture did not finalize"))
+            .as_draft();
         assert_eq!(config.listeners.len(), 3);
         assert_eq!(config.upstream_pools.len(), 3);
         let expected_servers = if host == "phoenix" { 1 } else { 2 };
@@ -849,7 +850,7 @@ fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
     ));
     let report = import_root_with_options(Path::new("nginx.conf"), &root, &live_options(host));
     if host == "whitebeast" {
-        assert!(report.candidate.config().is_none());
+        assert!(report.candidate.validated().is_none());
         match case {
             "HN-17" => assert!(
                 report
@@ -863,7 +864,7 @@ fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
         return;
     }
     if host == "hostrouter" {
-        assert!(report.candidate.config().is_none());
+        assert!(report.candidate.validated().is_none());
         match case {
             "HN-11" => assert!(
                 report
@@ -889,8 +890,13 @@ fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
         }
         return;
     }
-    assert!(report.candidate.config().is_some());
-    let rtmp = &report.candidate.draft.rtmp_services[0];
+    assert!(report.candidate.validated().is_some());
+    let rtmp = &report
+        .candidate
+        .validated()
+        .expect("live root candidate")
+        .as_draft()
+        .rtmp_services[0];
     match case {
         "PR-03" => assert!(rtmp.applications[0].live),
         "PR-05" => assert!(!rtmp.applications[0].recorders.is_empty()),
@@ -947,40 +953,42 @@ fn live_tls_overlay(
 fn assert_phoenix_rtmp_case(case: &str) {
     let report = import_rtmp_fixture("phoenix-audited-partial.conf");
     assert_rtmp_import_report_invariants(&report);
-    assert!(report.config().is_none());
-    assert_eq!(report.blocked_services.len(), 1);
-    assert_eq!(report.draft.rtmp_services.len(), 1);
-    let safe = &report.draft.rtmp_services[0].applications[0];
-    assert_eq!(safe.name, "safe");
-    assert!(safe.live);
     assert!(
         report
-            .draft
-            .rtmp_services
-            .iter()
-            .flat_map(|service| &service.applications)
-            .all(|application| application.name != "phoenix")
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_none()
     );
+    assert_eq!(report.blocked_services.len(), 1);
+    assert_eq!(report.summary().rtmp_services, 1);
+    assert!(report.provenance.iter().any(|entry| {
+        entry.path == "/rtmp_services/0/applications/0" && !entry.origins.is_empty()
+    }));
 
     match case {
         "PR-03" => assert!(report.occurrence_ledger.iter().any(|decision| {
             decision.name.value == b"live"
                 && decision.disposition == OccurrenceDisposition::Resolved
         })),
-        "PR-05" => {
-            assert_eq!(safe.recorders.len(), 1);
-            assert_eq!(safe.recorders[0].start, RtmpRecorderStart::Continuous);
-        }
+        "PR-05" => assert!(report.occurrence_ledger.iter().any(|decision| {
+            decision.name.value == b"record"
+                && decision.disposition == OccurrenceDisposition::Resolved
+        })),
         "PR-06" => {
-            let recorder = &safe.recorders[0];
-            assert_eq!(
-                recorder.root_directory,
-                Path::new("/var/lib/oxiroute/safe-recordings")
-            );
-            assert_eq!(recorder.suffix_template, ".flv");
-            assert!(!recorder.append_unix_seconds);
+            assert!(report.occurrence_ledger.iter().any(|decision| {
+                decision.name.value == b"record_path"
+                    && decision
+                        .arguments
+                        .iter()
+                        .any(|argument| argument.value == b"/var/lib/oxiroute/safe-recordings")
+                    && decision.disposition == OccurrenceDisposition::Resolved
+            }));
             assert!(report.occurrence_ledger.iter().any(|decision| {
                 decision.name.value == b"record_suffix"
+                    && decision
+                        .arguments
+                        .iter()
+                        .any(|argument| argument.value == b".flv")
                     && decision.disposition == OccurrenceDisposition::Resolved
             }));
             assert!(report.occurrence_ledger.iter().any(|decision| {
@@ -1006,7 +1014,12 @@ fn assert_nginx_host_case(case: &str) {
         })),
         "HN-09" => {
             assert!(report.blocked_services.is_empty());
-            assert!(report.config().is_some());
+            assert!(
+                report
+                    .validated()
+                    .map(oxiroute_config::ValidatedConfig::as_draft)
+                    .is_some()
+            );
             assert!(report.occurrence_ledger.iter().any(|decision| {
                 decision.name.value == b"server"
                     && decision
@@ -1021,7 +1034,12 @@ fn assert_nginx_host_case(case: &str) {
             }));
         }
         "HN-19" => {
-            assert!(report.config().is_some());
+            assert!(
+                report
+                    .validated()
+                    .map(oxiroute_config::ValidatedConfig::as_draft)
+                    .is_some()
+            );
             assert!(!report.diagnostics.iter().any(|diagnostic| {
                 diagnostic.stage() == DiagnosticStage::Lower
                     && diagnostic.message().contains("proxy defaults")
@@ -1048,8 +1066,9 @@ fn assert_haproxy_host_case(case: &str) {
     let diagnostics = lowered.diagnostics();
     let config = lowered
         .value()
-        .config()
-        .unwrap_or_else(|| panic!("live hostrouter HAProxy config: {diagnostics:#?}"));
+        .validated()
+        .unwrap_or_else(|| panic!("live hostrouter HAProxy config: {diagnostics:#?}"))
+        .as_draft();
     let listener = &config.listeners[0];
     let service = &config.http_services[0];
     let pool = &config.upstream_pools[0];
@@ -1211,7 +1230,8 @@ fn assert_haproxy_conjunction_host_case(case: &str) {
     assert!(!lowered.has_errors(), "{:?}", lowered.diagnostics());
     let config = lowered
         .value()
-        .config()
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
         .expect("ACL conjunction fixture config");
     let route = &config.http_services[0].routes[0];
     assert!(matches!(

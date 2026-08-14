@@ -72,6 +72,7 @@ async fn daemon_rejects_h3_extended_connect_without_tcp_or_h1_fallback() {
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });
 
+    let config = config.validate().expect("valid forward H3 config");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint(&fixture_support::fixture("ca-a.pem"), H3_ALPN)
         .expect("H3 client endpoint");

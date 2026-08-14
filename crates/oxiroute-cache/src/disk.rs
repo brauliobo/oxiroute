@@ -187,6 +187,21 @@ enum FaultPoint {
 }
 
 impl DiskCache {
+    /// Validates persistent cache limits and root access without creating files, acquiring the
+    /// ownership lease, cleaning records, or retaining descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid limits, unsafe path components, inaccessible parents, or an
+    /// existing root that is not a writable mode-0700 directory.
+    pub fn validate(
+        root: impl AsRef<Path>,
+        config: &DiskCacheConfig,
+    ) -> Result<(), DiskCacheError> {
+        validate_disk_config(config)?;
+        validate_root_access(root.as_ref())
+    }
+
     /// Opens or creates a mode-0700 cache root, acquires its exclusive lifetime lease, removes stale
     /// owned temps, validates all records, and recovers the memory cache and tag index.
     ///
@@ -910,6 +925,61 @@ fn open_or_create_root(path: &Path) -> Result<OwnedFd, DiskCacheError> {
     Ok(directory)
 }
 
+fn validate_root_access(path: &Path) -> Result<(), DiskCacheError> {
+    let components = path.components().collect::<Vec<_>>();
+    if components.is_empty()
+        || components
+            .iter()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(DiskCacheError::RootOpen(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid cache root",
+        )));
+    }
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let anchor = if path.is_absolute() {
+        Path::new("/")
+    } else {
+        Path::new(".")
+    };
+    let mut directory = rustix_fs::open(anchor, flags, Mode::empty())
+        .map_err(|source| DiskCacheError::RootOpen(source.into()))?;
+    let normals = components
+        .iter()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(*name),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for (index, name) in normals.iter().enumerate() {
+        match rustix_fs::openat(&directory, *name, flags, Mode::empty()) {
+            Ok(next) => directory = next,
+            Err(Errno::NOENT) if index + 1 == normals.len() => {
+                return rustix_fs::accessat(
+                    &directory,
+                    ".",
+                    rustix_fs::Access::WRITE_OK,
+                    AtFlags::EACCESS,
+                )
+                .map_err(|source| DiskCacheError::RootOpen(source.into()));
+            }
+            Err(source) => return Err(DiskCacheError::RootOpen(source.into())),
+        }
+    }
+    verify_root_access(&directory)
+}
+
+fn verify_root_access(root: &OwnedFd) -> Result<(), DiskCacheError> {
+    let metadata = rustix_fs::fstat(root).map_err(|_| DiskCacheError::RootControl)?;
+    if !FileType::from_raw_mode(metadata.st_mode).is_dir() || metadata.st_mode & 0o777 != ROOT_MODE
+    {
+        return Err(DiskCacheError::RootControl);
+    }
+    rustix_fs::accessat(root, ".", rustix_fs::Access::WRITE_OK, AtFlags::EACCESS)
+        .map_err(|_| DiskCacheError::RootControl)
+}
+
 fn verify_root_control(root: &OwnedFd) -> Result<u32, DiskCacheError> {
     let metadata = rustix_fs::fstat(root).map_err(|_| DiskCacheError::RootControl)?;
     if !FileType::from_raw_mode(metadata.st_mode).is_dir() || metadata.st_mode & 0o777 != ROOT_MODE
@@ -1558,6 +1628,23 @@ mod tests {
             DiskFillJoin::Leader(leader) => leader.store(entry),
             DiskFillJoin::Follower(_) | DiskFillJoin::AtCapacity => panic!("expected leader"),
         }
+    }
+
+    #[test]
+    fn validation_does_not_create_or_lease_the_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("cache");
+
+        DiskCache::validate(&root, &test_config()).expect("absent root validation");
+        assert!(!root.exists());
+
+        let cache = DiskCache::open(&root, test_config()).expect("active cache");
+        DiskCache::validate(&root, &test_config()).expect("active root validation");
+        assert!(matches!(
+            DiskCache::open(&root, test_config()),
+            Err(DiskCacheError::AlreadyOwned)
+        ));
+        drop(cache);
     }
 
     #[test]

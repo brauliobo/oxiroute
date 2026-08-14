@@ -144,7 +144,7 @@ async function expectProvenanceReplacement(staleUnauthorized: boolean): Promise<
 function controlledFetch(requests: PendingRequest[]) {
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
-    if (url === '/api/v1/events/stream') {
+    if (url === '/api/v2/events/stream') {
       return Promise.resolve(new Response('event: shutdown\ndata: {"reason":"server_shutdown"}\n\n', {
         headers: { 'Content-Type': 'text/event-stream' },
       }))
@@ -179,6 +179,7 @@ function eventResponse(_url: string, marker: string): Response {
       revision: marker,
     }],
     cursor: marker.startsWith('stale') ? 1 : 2,
+    latestCursor: marker.startsWith('stale') ? 1 : 2,
     hasMore: false,
     oldestCursor: 1,
   })
@@ -191,8 +192,8 @@ function certificateResponse(url: string, marker: string): Response {
     return jsonResponse(inventory)
   }
   if (url === '/api/v1/generations') return jsonResponse(managementGeneration())
-  if (url.startsWith('/api/v1/events?')) {
-    return jsonResponse({ events: [], cursor: 0, hasMore: false, oldestCursor: null })
+  if (url.startsWith('/api/v2/events?')) {
+    return jsonResponse({ events: [], cursor: 0, latestCursor: 0, hasMore: false, oldestCursor: null })
   }
   throw new Error(`Unexpected certificate request: ${url}`)
 }

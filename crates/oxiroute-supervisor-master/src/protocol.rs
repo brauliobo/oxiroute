@@ -623,6 +623,26 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_manifest_version_one_payload_stays_byte_exact() {
+        let manifest = DescriptorManifest::new(vec![DescriptorSlot {
+            id: SlotId(7),
+            role: DescriptorRole::Management,
+            kind: DescriptorKind::TcpListener,
+            bind: Some(BindIdentity::Tcp("127.0.0.1:9900".parse().unwrap())),
+            mode: None,
+        }])
+        .unwrap();
+
+        assert_eq!(
+            encode_adopt_request(1, &manifest).unwrap(),
+            [
+                0, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 7, 2, 1, 1, 127, 0, 0, 1, 38,
+                172, 0,
+            ]
+        );
+    }
+
+    #[test]
     fn binary_manifest_rejects_oversize_before_append() {
         let manifest = DescriptorManifest::new(vec![DescriptorSlot {
             id: SlotId(1),

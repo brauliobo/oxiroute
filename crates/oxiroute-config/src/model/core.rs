@@ -3,7 +3,7 @@ use super::*;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
+pub struct ConfigDraft {
     pub version: u32,
     /// Aggregate process admission cap. Omitted or explicit null means unbounded.
     #[serde(default)]

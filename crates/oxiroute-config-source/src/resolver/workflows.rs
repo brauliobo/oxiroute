@@ -1,5 +1,5 @@
 struct ImportedNative {
-    config: Config,
+    config: ValidatedConfig,
     metadata: NativeReferenceMetadata,
 }
 #[cfg(unix)]
@@ -35,7 +35,11 @@ fn import_squid(
                 .map(|diagnostic| diagnostic.code().as_str()),
         ));
     }
-    let config = report.candidate.config().cloned().ok_or_else(|| {
+    let config = report
+        .candidate
+        .validated()
+        .cloned()
+        .ok_or_else(|| {
         failed_native_import(
             "squid",
             report
@@ -62,7 +66,11 @@ fn import_apache(
 ) -> Result<ImportedNative, ConfigSourceError> {
     let path = resolve_path(parent, &source.path);
     let report = oxiroute_import::apache::import_root(&path);
-    let config = report.candidate.config().cloned().ok_or_else(|| {
+    let config = report
+        .candidate
+        .validated()
+        .cloned()
+        .ok_or_else(|| {
         failed_native_import(
             "Apache",
             report
@@ -90,7 +98,11 @@ fn import_varnish(
     let path = resolve_path(parent, &source.path);
     let invocation = oxiroute_import::varnish::VarnishdInvocation::new(source.arguments.clone());
     let report = oxiroute_import::varnish::import(&path, &invocation);
-    let config = report.candidate.config().cloned().ok_or_else(|| {
+    let config = report
+        .candidate
+        .validated()
+        .cloned()
+        .ok_or_else(|| {
         let lowering_code = match report.lowering {
             oxiroute_import::varnish::LoweringStatus::Lowered => None,
             oxiroute_import::varnish::LoweringStatus::Blocked(
@@ -179,7 +191,11 @@ fn import_nginx(
         ..NginxImportOptions::default()
     };
     let report = import_root_with_options(&path, &root_prefix, &options);
-    let config = report.candidate.config().cloned().ok_or_else(|| {
+    let config = report
+        .candidate
+        .validated()
+        .cloned()
+        .ok_or_else(|| {
         failed_native_import(
             "nginx",
             report
@@ -226,7 +242,10 @@ fn import_haproxy(
         },
     );
     let candidate = report.value();
-    let config = candidate.config().cloned().ok_or_else(|| {
+    let config = candidate
+        .validated()
+        .cloned()
+        .ok_or_else(|| {
         failed_native_import(
             "HAProxy",
             report

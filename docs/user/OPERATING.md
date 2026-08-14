@@ -70,8 +70,17 @@ The file watcher observes rename-based replacements through the parent directory
 reconciles effective revisions, including strict native references. Use generation status as the
 authority for completion; a durable configuration save may first report `saved_pending_activation`.
 
-Changing the mode of an active Unix listener is valid but `restartRequired` and is not published as a
-live rebind.
+Restart compatibility depends on the runtime mode. In direct mode, changing the filesystem mode of
+an active Unix listener at the same path is valid but `restartRequired` and is not published as a
+live rebind. Other ordinary listener topology changes remain eligible for in-process activation.
+
+In supervised mode, an incompatible change to the complete listener or control-listener descriptor
+topology is `restartRequired`. This includes descriptor identity, order, role, kind, bind, Unix mode,
+protocol, or count. Policy and service-only changes remain eligible for in-process activation.
+
+Validation exposes the backend `I_RESTART_REQUIRED` diagnostic before the write. A successful save
+returns `saved_restart_required`: the canonical file is durable, the active generation remains
+unchanged, and the saved configuration takes effect after the next process restart.
 
 ## Manage Pool State
 

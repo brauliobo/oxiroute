@@ -99,11 +99,98 @@ pub trait AcmeTransport: Send + Sync {
     ///
     /// Returns a transport error when the injected transport cannot produce a response.
     fn request(&self, request: HttpRequest) -> Result<HttpResponse, TransportError>;
+
+    /// Sends one request under a caller-owned cancellation operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AcmeError::Cancelled`] when cancellation or the operation deadline wins, or the
+    /// same redacted transport error as [`Self::request`] otherwise.
+    fn request_with_operation(
+        &self,
+        request: HttpRequest,
+        operation: &AcmeOperation,
+    ) -> Result<HttpResponse, AcmeError> {
+        operation.check()?;
+        let response = self.request(request).map_err(AcmeError::Transport)?;
+        operation.check()?;
+        Ok(response)
+    }
 }
 
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
 #[error("ACME transport request failed")]
 pub struct TransportError;
+
+#[derive(Clone, Debug)]
+pub struct AcmeOperation {
+    cancellation: Dns01Cancellation,
+    deadline: Option<std::time::Instant>,
+}
+
+impl Default for AcmeOperation {
+    fn default() -> Self {
+        Self {
+            cancellation: Dns01Cancellation::new(),
+            deadline: None,
+        }
+    }
+}
+
+impl AcmeOperation {
+    #[must_use]
+    pub fn with_deadline(cancellation: Dns01Cancellation, deadline: std::time::Instant) -> Self {
+        Self {
+            cancellation,
+            deadline: Some(deadline),
+        }
+    }
+
+    #[must_use]
+    pub const fn cancellation(&self) -> &Dns01Cancellation {
+        &self.cancellation
+    }
+
+    /// Checks cancellation and the operation deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AcmeError::Cancelled`] after cancellation or deadline expiry.
+    pub fn check(&self) -> Result<(), AcmeError> {
+        if self.cancellation.is_cancelled()
+            || self
+                .deadline
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            Err(AcmeError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    #[must_use]
+    pub fn remaining(&self, maximum: std::time::Duration) -> std::time::Duration {
+        self.deadline.map_or(maximum, |deadline| {
+            deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .min(maximum)
+        })
+    }
+
+    /// Waits interruptibly for at most the requested duration and operation deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AcmeError::Cancelled`] when cancellation or the deadline interrupts the wait.
+    pub fn wait(&self, duration: std::time::Duration) -> Result<(), AcmeError> {
+        self.check()?;
+        let wait = self.remaining(duration);
+        if wait.is_zero() || self.cancellation.wait_timeout(wait) {
+            return Err(AcmeError::Cancelled);
+        }
+        self.check()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AcmeFailureClass {
@@ -306,9 +393,24 @@ impl Directory {
         url: &str,
         policy: &OriginPolicy,
     ) -> Result<Self, AcmeError> {
+        Self::fetch_with_operation(transport, url, policy, &AcmeOperation::default())
+    }
+
+    /// Fetches a directory under a caller-owned cancellation operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation and transport errors as [`Self::fetch`], plus
+    /// [`AcmeError::Cancelled`] when cancellation or the operation deadline wins.
+    pub fn fetch_with_operation<T: AcmeTransport>(
+        transport: &T,
+        url: &str,
+        policy: &OriginPolicy,
+        operation: &AcmeOperation,
+    ) -> Result<Self, AcmeError> {
         policy.permits(url)?;
         let request = HttpRequest::new("GET", url, Vec::new());
-        let response = transport.request(request).map_err(AcmeError::Transport)?;
+        let response = transport.request_with_operation(request, operation)?;
         validate_response_url(url, &response, policy)?;
         if response.status / 100 == 3 {
             return Err(AcmeError::UntrustedRedirect);
@@ -612,6 +714,7 @@ pub struct AcmeClient<T> {
     clock: Arc<dyn Clock>,
     nonces: VecDeque<String>,
     account: Option<Account>,
+    operation: AcmeOperation,
 }
 
 impl<T> fmt::Debug for AcmeClient<T> {
@@ -639,7 +742,32 @@ impl<T: AcmeTransport> AcmeClient<T> {
         key: AccountKey,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, AcmeError> {
-        let directory = Directory::fetch(&transport, directory_url, &policy)?;
+        Self::new_with_operation(
+            transport,
+            directory_url,
+            policy,
+            key,
+            clock,
+            AcmeOperation::default(),
+        )
+    }
+
+    /// Constructs a client while applying cancellation to the initial directory request.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same setup errors as [`Self::new`], plus [`AcmeError::Cancelled`] when
+    /// cancellation or the operation deadline wins.
+    pub fn new_with_operation(
+        transport: T,
+        directory_url: &str,
+        policy: OriginPolicy,
+        key: AccountKey,
+        clock: Arc<dyn Clock>,
+        operation: AcmeOperation,
+    ) -> Result<Self, AcmeError> {
+        let directory =
+            Directory::fetch_with_operation(&transport, directory_url, &policy, &operation)?;
         Ok(Self {
             transport,
             directory,
@@ -648,6 +776,7 @@ impl<T: AcmeTransport> AcmeClient<T> {
             clock,
             nonces: VecDeque::new(),
             account: None,
+            operation,
         })
     }
 
@@ -1171,8 +1300,7 @@ impl<T: AcmeTransport> AcmeClient<T> {
                 .insert("content-type".into(), "application/jose+json".into());
             let response = self
                 .transport
-                .request(request)
-                .map_err(AcmeError::Transport)?;
+                .request_with_operation(request, &self.operation)?;
             validate_response_url(url, &response, &self.policy)?;
             self.record_nonce(&response)?;
             if is_bad_nonce(&response) {
@@ -2308,6 +2436,111 @@ mod tests {
         assert!(matches!(result, Err(AcmeError::Cancelled)));
         assert_eq!(attempts, 1);
         assert_eq!(clock.now_unix_seconds(), 100);
+    }
+
+    struct BlockingClock {
+        reached: Arc<std::sync::Barrier>,
+    }
+
+    impl Clock for BlockingClock {
+        fn now_unix_seconds(&self) -> u64 {
+            100
+        }
+
+        fn sleep_seconds_cancellable(
+            &self,
+            seconds: u64,
+            cancellation: &Dns01Cancellation,
+        ) -> bool {
+            self.reached.wait();
+            cancellation.wait_timeout(std::time::Duration::from_secs(seconds))
+        }
+    }
+
+    #[test]
+    fn polling_cancellation_interrupts_an_active_sleep() {
+        let clock = Arc::new(BlockingClock {
+            reached: Arc::new(std::sync::Barrier::new(2)),
+        });
+        let cancellation = Dns01Cancellation::new();
+        let worker_clock = Arc::clone(&clock);
+        let worker_cancellation = cancellation.clone();
+        let worker = std::thread::spawn(move || {
+            poll_acme(
+                worker_clock.as_ref(),
+                "https://acme.test/acme/order/1",
+                &PollPolicy {
+                    max_attempts: 2,
+                    deadline_unix_seconds: 200,
+                    initial_delay_seconds: 60,
+                    max_delay_seconds: 60,
+                    cancellation: Some(worker_cancellation),
+                },
+                || {
+                    Ok::<_, AcmeError>(PollAttempt::<()>::Pending(HttpResponse::new(
+                        200,
+                        "https://acme.test/acme/order/1",
+                        Vec::new(),
+                    )))
+                },
+            )
+        });
+        clock.reached.wait();
+        let started = std::time::Instant::now();
+
+        cancellation.cancel();
+
+        assert!(matches!(worker.join(), Ok(Err(AcmeError::Cancelled))));
+        assert!(started.elapsed() < std::time::Duration::from_millis(250));
+    }
+
+    #[test]
+    fn polling_cancellation_bound_is_stable_under_parallel_load() {
+        const POLLERS: usize = 64;
+
+        let entered = Arc::new(std::sync::Barrier::new(POLLERS + 1));
+        let cancellations = (0..POLLERS)
+            .map(|_| Dns01Cancellation::new())
+            .collect::<Vec<_>>();
+        let workers = cancellations
+            .iter()
+            .cloned()
+            .map(|cancellation| {
+                let entered = Arc::clone(&entered);
+                std::thread::spawn(move || {
+                    let clock = BlockingClock { reached: entered };
+                    poll_acme(
+                        &clock,
+                        "https://acme.test/acme/order/1",
+                        &PollPolicy {
+                            max_attempts: 2,
+                            deadline_unix_seconds: 200,
+                            initial_delay_seconds: 60,
+                            max_delay_seconds: 60,
+                            cancellation: Some(cancellation),
+                        },
+                        || {
+                            Ok::<_, AcmeError>(PollAttempt::<()>::Pending(HttpResponse::new(
+                                200,
+                                "https://acme.test/acme/order/1",
+                                Vec::new(),
+                            )))
+                        },
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        entered.wait();
+        let started = std::time::Instant::now();
+
+        for cancellation in &cancellations {
+            cancellation.cancel();
+        }
+        for worker in workers {
+            assert!(matches!(worker.join(), Ok(Err(AcmeError::Cancelled))));
+        }
+
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
     }
 
     #[test]

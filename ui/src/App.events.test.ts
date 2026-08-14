@@ -26,7 +26,7 @@ describe('application event-driven refresh', () => {
         monitoringRequests += 1
         return Promise.resolve(jsonResponse(contractMonitoring()))
       }
-      if (url === '/api/v1/events/stream') return Promise.resolve(stream!.response)
+      if (url === '/api/v2/events/stream') return Promise.resolve(stream!.response)
       throw new Error(`Unexpected request: ${url}`)
     })
     vi.stubGlobal('fetch', fetch)
@@ -51,7 +51,7 @@ describe('application event-driven refresh', () => {
     await flushPromises()
 
     expect(monitoringRequests).toBe(3)
-    expect(fetch.mock.calls.some(([url]) => String(url) === '/api/v1/events/stream')).toBe(true)
+    expect(fetch.mock.calls.some(([url]) => String(url) === '/api/v2/events/stream')).toBe(true)
   })
 })
 

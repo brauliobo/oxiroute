@@ -249,5 +249,7 @@ required before the affected partial or foundation paths can become a broader su
   injection for media workers, exec workers, reload activation, and listener supervision.
 - Production supervision: packaged Linux master/worker replacement and rollback with active UDP and
   H3 traffic, descriptor ownership across restart, drain, restart, and crash recovery. Initial
-  supervised UDP/H3 serving and generic replacement/error paths are tested; direct `serve` remains
-  the default until active-traffic production evidence exists.
+  supervised UDP/H3 serving and generic replacement/error paths are tested. On Linux, eligible
+  `serve` configurations use supervision when the fixed launcher is installed, including the Arch
+  package; unsupported topologies, unpackaged installs without it, and non-Linux builds run direct.
+  Active-traffic production evidence remains a broader-support gate, not a default-mode gate.

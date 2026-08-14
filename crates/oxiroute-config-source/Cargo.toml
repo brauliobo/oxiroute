@@ -10,6 +10,7 @@ version.workspace = true
 [dependencies]
 hocon-parser.workspace = true
 kdl.workspace = true
+mlua.workspace = true
 oxiroute-config = { path = "../oxiroute-config" }
 oxiroute-import = { path = "../oxiroute-import" }
 serde.workspace = true

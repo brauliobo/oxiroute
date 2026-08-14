@@ -34,8 +34,8 @@ use oxiroute_config::{
     AccessLogPolicy, HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
     HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpProxyPathRewrite,
     HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-    HttpResponseHeaderMutation, HttpRetryTarget, HttpRetryTrigger, HttpRouteAction,
-    HttpRoutePolicy, HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
+    HttpResponseHeaderMutation, HttpRetryTarget, HttpRetryTrigger, HttpRoutePolicy,
+    HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
 };
 use rustix::{
     fd::OwnedFd,
@@ -76,7 +76,7 @@ pub(crate) struct HttpRoutePlan {
     pub(crate) route_id: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct HttpGzipPlan {
     pub(crate) level: u32,
     pub(crate) content_types: Box<[String]>,
@@ -117,6 +117,34 @@ impl std::fmt::Debug for AccessLog {
 }
 
 impl AccessLog {
+    pub(crate) fn validate(policy: Option<&AccessLogPolicy>) -> Result<(), AccessPreflightError> {
+        let Some(AccessLogPolicy::File { path }) = policy else {
+            return Ok(());
+        };
+        let parent = path.parent().ok_or(AccessPreflightError)?;
+        let name = path.file_name().ok_or(AccessPreflightError)?;
+        let parent = open_pinned_directory(parent).map_err(|_| AccessPreflightError)?;
+        match rustix_fs::openat(
+            &parent,
+            name,
+            OFlags::WRONLY | OFlags::APPEND | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        ) {
+            Ok(descriptor) => {
+                let metadata = rustix_fs::fstat(&descriptor).map_err(|_| AccessPreflightError)?;
+                FileType::from_raw_mode(metadata.st_mode)
+                    .is_file()
+                    .then_some(())
+                    .ok_or(AccessPreflightError)
+            }
+            Err(Errno::NOENT) => {
+                rustix_fs::accessat(&parent, ".", rustix_fs::Access::WRITE_OK, AtFlags::EACCESS)
+                    .map_err(|_| AccessPreflightError)
+            }
+            Err(_) => Err(AccessPreflightError),
+        }
+    }
+
     pub(crate) fn open(
         service: &str,
         policy: Option<&AccessLogPolicy>,
@@ -325,9 +353,31 @@ pub(crate) struct ProxyPolicyPlan {
 }
 
 impl ProxyPolicyPlan {
-    #[cfg(test)]
     pub(crate) fn compile(policy: &HttpProxyPolicy) -> Self {
         Self::compile_with_cache(policy, None)
+    }
+
+    pub(crate) fn clone_with_cache(&self, cache: Option<Arc<HttpCachePlan>>) -> Self {
+        Self {
+            upstream_host: self.upstream_host.clone(),
+            upstream_path_rewrite: self.upstream_path_rewrite.clone(),
+            request_headers: self
+                .request_headers
+                .iter()
+                .map(RequestHeaderMutationPlan::duplicate)
+                .collect(),
+            response_headers: self.response_headers.clone(),
+            cookie_path_rewrites: self.cookie_path_rewrites.clone(),
+            cookie_attributes: self.cookie_attributes.clone(),
+            max_retries: self.max_retries,
+            retry_triggers: self.retry_triggers.clone(),
+            retry_response_statuses: self.retry_response_statuses.clone(),
+            retry_target: self.retry_target,
+            retry_delay: self.retry_delay,
+            final_redispatch: self.final_redispatch,
+            cache,
+            nginx_error_server: self.nginx_error_server.clone(),
+        }
     }
 
     pub(crate) fn compile_with_cache(
@@ -426,7 +476,16 @@ pub(crate) enum RequestHeaderMutationPlan {
 }
 
 impl RequestHeaderMutationPlan {
-    fn compile(mutation: &HttpRequestHeaderMutation) -> Self {
+    fn duplicate(&self) -> Self {
+        match self {
+            Self::Set { name, value } => Self::Set {
+                name: name.clone(),
+                value: value.duplicate(),
+            },
+            Self::Remove { name } => Self::Remove { name: name.clone() },
+        }
+    }
+    pub(crate) fn compile(mutation: &HttpRequestHeaderMutation) -> Self {
         match mutation {
             HttpRequestHeaderMutation::Set { name, value } => Self::Set {
                 name: HeaderName::from_bytes(name.as_bytes())
@@ -480,6 +539,30 @@ pub(crate) enum RequestHeaderValuePlan {
 }
 
 impl RequestHeaderValuePlan {
+    fn duplicate(&self) -> Self {
+        match self {
+            Self::Literal(value) => Self::Literal(value.clone()),
+            Self::IncomingAuthority => Self::IncomingAuthority,
+            Self::NormalizedHost => Self::NormalizedHost,
+            Self::NginxHost { fallback } => Self::NginxHost {
+                fallback: fallback.clone(),
+            },
+            Self::ClientIp => Self::ClientIp,
+            Self::AppendedXForwardedFor {
+                max_bytes,
+                except_source_cidrs,
+            } => Self::AppendedXForwardedFor {
+                max_bytes: *max_bytes,
+                except_source_cidrs: except_source_cidrs.clone(),
+            },
+            Self::DownstreamScheme => Self::DownstreamScheme,
+            Self::IncomingHeader { name, max_bytes } => Self::IncomingHeader {
+                name: name.clone(),
+                max_bytes: *max_bytes,
+            },
+            Self::SelectedUpstreamHost => Self::SelectedUpstreamHost,
+        }
+    }
     fn compile(value: &HttpRequestHeaderValue) -> Self {
         match value {
             HttpRequestHeaderValue::Literal { value } => {
@@ -511,7 +594,7 @@ impl RequestHeaderValuePlan {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct SourceCidr {
     network: std::net::IpAddr,
     prefix: u8,
@@ -549,7 +632,7 @@ impl SourceCidr {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum ResponseHeaderMutationPlan {
     Set {
         name: HeaderName,
@@ -567,7 +650,7 @@ pub(crate) enum ResponseHeaderMutationPlan {
 }
 
 impl ResponseHeaderMutationPlan {
-    fn compile(mutation: &HttpResponseHeaderMutation) -> Self {
+    pub(crate) fn compile(mutation: &HttpResponseHeaderMutation) -> Self {
         match mutation {
             HttpResponseHeaderMutation::Set {
                 name,
@@ -597,7 +680,7 @@ impl ResponseHeaderMutationPlan {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct FixedResponsePlan {
     pub(crate) status: u16,
     pub(crate) body: Bytes,
@@ -625,7 +708,7 @@ impl FixedResponsePlan {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct RedirectPlan {
     pub(crate) status: u16,
     pub(crate) location: RedirectLocationPlan,
@@ -658,7 +741,7 @@ impl RedirectPlan {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum RedirectLocationPlan {
     Literal(HeaderValue),
     RequestTemplate {
@@ -685,7 +768,7 @@ impl RedirectLocationPlan {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RedirectTemplateSegment {
     Literal(Box<str>),
     Scheme,
@@ -923,10 +1006,6 @@ impl BasicHtpasswdAccess {
         .ok()
         .is_some_and(|verified| known_user && verified);
         verified.then(|| Arc::clone(&self.users[selected_index].1))
-    }
-
-    pub(crate) fn challenge(&self) -> &HeaderValue {
-        &self.challenge
     }
 }
 
@@ -1196,6 +1275,22 @@ pub(crate) struct StaticFilesPlan {
     error_responses: HashMap<u16, StaticErrorResponsePlan>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct StaticFilesBlueprint {
+    pub(crate) root_directory: std::path::PathBuf,
+    directory_policy: StaticDirectoryPolicy,
+    fallback: Option<Box<[OsString]>>,
+    mapping: HttpStaticPathMapping,
+    mount_path: String,
+    directory_redirects: bool,
+    try_files: Box<[StaticTryFilePlan]>,
+    etag: bool,
+    mime: HashMap<String, HeaderValue>,
+    default_type: Option<HeaderValue>,
+    headers: Box<[(HeaderName, HeaderValue, bool)]>,
+    error_responses: HashMap<u16, StaticErrorResponsePlan>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StaticRequestDecision {
     NotModified,
@@ -1209,7 +1304,7 @@ pub(crate) enum StaticRequestDecision {
     clippy::struct_excessive_bools,
     reason = "directory listing, timestamp, size, and nginx index behavior are independent policies"
 )]
-struct StaticDirectoryPolicy {
+pub(crate) struct StaticDirectoryPolicy {
     indexes: Box<[OsString]>,
     autoindex: bool,
     exact_size: bool,
@@ -1230,7 +1325,7 @@ impl StaticDirectoryPolicy {
 }
 
 #[derive(Clone, Debug)]
-enum StaticTryFilePlan {
+pub(crate) enum StaticTryFilePlan {
     RequestPath,
     RequestPathDirectory,
     Relative(Box<[OsString]>),
@@ -1238,7 +1333,7 @@ enum StaticTryFilePlan {
 }
 
 #[derive(Clone, Debug)]
-enum StaticErrorResponsePlan {
+pub(crate) enum StaticErrorResponsePlan {
     File {
         components: Box<[OsString]>,
         headers: Box<[(HeaderName, HeaderValue)]>,
@@ -1254,15 +1349,37 @@ enum StaticErrorResponsePlan {
 }
 
 impl StaticFilesPlan {
+    pub(crate) fn acquire(blueprint: &StaticFilesBlueprint) -> Result<Self, StaticPreflightError> {
+        Ok(Self {
+            root: Arc::new(
+                open_pinned_directory(&blueprint.root_directory)
+                    .map_err(|_| StaticPreflightError)?,
+            ),
+            directory_policy: blueprint.directory_policy.clone(),
+            fallback: blueprint.fallback.clone(),
+            mapping: blueprint.mapping,
+            mount_path: blueprint.mount_path.clone(),
+            directory_redirects: blueprint.directory_redirects,
+            try_files: blueprint.try_files.clone(),
+            etag: blueprint.etag,
+            mime: blueprint.mime.clone(),
+            default_type: blueprint.default_type.clone(),
+            headers: blueprint.headers.clone(),
+            error_responses: blueprint.error_responses.clone(),
+        })
+    }
+}
+
+impl StaticFilesBlueprint {
     #[expect(
         clippy::too_many_lines,
-        reason = "one secure preflight compiles and pins the complete static action"
+        reason = "the static action is normalized as one immutable policy"
     )]
-    pub(crate) fn open(
+    pub(crate) fn compile(
         mount_path: &str,
-        action: &HttpRouteAction,
+        action: &oxiroute_config::HttpRouteAction,
     ) -> Result<Self, StaticPreflightError> {
-        let HttpRouteAction::StaticFiles {
+        let oxiroute_config::HttpRouteAction::StaticFiles {
             root_directory,
             path_mapping,
             index_files,
@@ -1364,9 +1481,7 @@ impl StaticFilesPlan {
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
         Ok(Self {
-            root: Arc::new(
-                open_pinned_directory(root_directory).map_err(|_| StaticPreflightError)?,
-            ),
+            root_directory: root_directory.clone(),
             directory_policy: StaticDirectoryPolicy {
                 indexes: index_files.iter().map(OsString::from).collect(),
                 autoindex: *autoindex,
@@ -1401,7 +1516,9 @@ impl StaticFilesPlan {
             error_responses,
         })
     }
+}
 
+impl StaticFilesPlan {
     pub(crate) async fn serve(&self, request_path: &str) -> Result<StaticTarget, StaticServeError> {
         let components = self.request_components(request_path)?;
         let root = Arc::clone(&self.root);
@@ -2658,6 +2775,17 @@ mod access_log_tests {
         };
         assert!(AccessLog::open("test", Some(&policy)).is_err());
         assert!(!real.join("access.jsonl").exists());
+    }
+
+    #[test]
+    fn access_log_validation_does_not_create_the_target() {
+        let directory = tempfile::tempdir().expect("access log fixture directory");
+        let path = directory.path().join("access.jsonl");
+        let policy = AccessLogPolicy::File { path: path.clone() };
+
+        AccessLog::validate(Some(&policy)).expect("access log validation");
+
+        assert!(!path.exists());
     }
 
     #[test]

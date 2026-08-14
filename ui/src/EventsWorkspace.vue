@@ -42,9 +42,10 @@ section.events-workspace(aria-labelledby="events-heading" :aria-busy="loading ||
         .event-content
           .event-heading
             strong {{ eventLabel(event.event) }}
-            span.outcome-chip(:class="`outcome-${event.outcome}`") {{ event.outcome }}
+            span.outcome-chip(:class="`outcome-${eventOutcomeType(event.outcome)}`") {{ eventOutcomeType(event.outcome) }}
           p.event-meta(v-if="event.revision") Revision {{ shortRevision(event.revision) }}
           p.event-meta(v-if="event.certificate") Certificate {{ event.certificate }}
+          p.event-meta(v-if="eventOutcomeDetail(event.outcome)") {{ eventOutcomeDetail(event.outcome) }}
     .history-actions(v-if="hasMore")
       button.secondary-button(type="button" :disabled="loading" @click="loadNextPage") Load more events
 </template>
@@ -60,6 +61,7 @@ import {
   type EventStreamClient,
   type OperationalEvent,
   type OperationalEventName,
+  type OperationalEventOutcome,
 } from './api'
 import { formatTime, presentApiError, shortRevision } from './formatters'
 import { useLatestAbortableTask } from './useLatestAbortableTask'
@@ -175,6 +177,16 @@ function mergeEvents(current: OperationalEvent[], incoming: OperationalEvent[]):
 
 function eventLabel(event: OperationalEventName): string {
   return event.replaceAll('_', ' ')
+}
+
+function eventOutcomeType(outcome: OperationalEventOutcome): string {
+  return typeof outcome === 'string' ? outcome : outcome.type
+}
+
+function eventOutcomeDetail(outcome: OperationalEventOutcome): string | null {
+  if (typeof outcome === 'string') return null
+  const reason = outcome.reason === null ? '' : ` / ${outcome.reason.replaceAll('_', ' ')}`
+  return `${outcome.pool} / ${outcome.server}${reason}`
 }
 
 watch(() => props.token, async (token) => {
@@ -318,7 +330,8 @@ h3 {
 .stream-reconnecting,
 .stream-offline,
 .outcome-failed,
-.outcome-rejected {
+.outcome-rejected,
+.outcome-ejected {
   border-color: #81483f;
   color: #ff9b88;
 }

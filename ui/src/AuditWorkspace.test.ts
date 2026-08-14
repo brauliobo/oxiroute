@@ -69,7 +69,7 @@ describe('durable audit workspace', () => {
 
     expect(wrapper.get('.warning-notice').text()).toContain('Durable audit is degraded')
     expect(wrapper.get('.empty-list').text()).toContain('No durable audit records')
-    expect(fetch.mock.calls.some(([input]) => String(input).includes('/api/v1/events'))).toBe(false)
+    expect(fetch.mock.calls.some(([input]) => String(input).includes('/api/v2/events'))).toBe(false)
   })
 
   it('relocks on unauthorized durable responses', async () => {

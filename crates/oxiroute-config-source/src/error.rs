@@ -2,6 +2,18 @@ use crate::{
     MAX_EXPANSION_DEPTH, MAX_NODES, MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES, MAX_STRING_BYTES,
     MAX_STRUCTURAL_DEPTH, MAX_SUBSTITUTIONS,
 };
+use oxiroute_config::ConfigError;
+
+/// Errors produced while loading or rendering restricted Lua configuration.
+#[derive(Debug, thiserror::Error)]
+pub enum LuaConfigError {
+    #[error("Lua configuration failed: {0}")]
+    Lua(#[source] mlua::Error),
+    #[error("configuration exceeds the {MAX_SOURCE_BYTES}-byte source limit")]
+    SourceTooLarge,
+    #[error("{0}")]
+    Config(#[from] ConfigError),
+}
 
 /// Count of native-import diagnostics carrying one stable machine-readable code.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +76,8 @@ pub enum ConfigSourceError {
     Render {
         format: &'static str,
         message: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error>>,
     },
     #[error("invalid template expansion: {0}")]
     Template(String),
@@ -71,8 +85,8 @@ pub enum ConfigSourceError {
     TypedConfig(String),
     #[error("configuration fragments cannot be composed: {0}")]
     Composition(String),
-    #[error("restricted Lua configuration failed: {0}")]
-    Lua(String),
+    #[error(transparent)]
+    Lua(#[from] LuaConfigError),
     #[error("{importer} import did not produce a final candidate ({diagnostics})")]
     NativeImport {
         importer: &'static str,
@@ -96,6 +110,18 @@ impl ConfigSourceError {
         Self::Render {
             format,
             message: message.into(),
+            source: None,
+        }
+    }
+
+    pub(crate) fn render_source(
+        format: &'static str,
+        source: impl std::error::Error + 'static,
+    ) -> Self {
+        Self::Render {
+            format,
+            message: source.to_string(),
+            source: Some(Box::new(source)),
         }
     }
 }

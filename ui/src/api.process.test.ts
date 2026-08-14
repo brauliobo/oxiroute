@@ -8,11 +8,17 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import {
   ApiError,
+  fetchAudit,
+  fetchAuditStatus,
   fetchConfig,
+  fetchEvents,
+  fetchGenerations,
   fetchMonitoring,
   fetchRtmpCatalog,
+  fetchTlsInventory,
   fetchTopology,
   saveConfig,
+  setListenerAdministrativeState,
   validateConfig,
 } from './api'
 
@@ -45,6 +51,7 @@ beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), 'oxiroute-ui-process-'))
   const configPath = join(directory, 'oxiroute.lua')
   const tokenPath = join(directory, 'management.token')
+  const auditPath = join(directory, 'audit')
   listenerPath = join(directory, 'live.sock')
   await writeFile(configPath, managementConfig(port, listenerPath), 'utf8')
   await writeFile(tokenPath, `${token}\n`, 'utf8')
@@ -54,6 +61,12 @@ beforeAll(async () => {
     cwd: workspaceRoot,
     env: {
       ...process.env,
+      OXIROUTE_AUDIT_DIR: auditPath,
+      OXIROUTE_AUDIT_MAX_FILE_BYTES: '1048576',
+      OXIROUTE_AUDIT_MAX_RECORD_BYTES: '16384',
+      OXIROUTE_AUDIT_MAX_RECORDS: '10000',
+      OXIROUTE_AUDIT_MAX_ROTATED_FILES: '7',
+      OXIROUTE_AUDIT_MAX_TOTAL_BYTES: '8388608',
       OXIROUTE_MANAGEMENT_TOKEN_FILE: tokenPath,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -352,6 +365,83 @@ describe('production API client against the built management process', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(ApiError)
       expect(error).toMatchObject({ name: 'ApiError', status: 401 })
+    }
+  })
+
+  it('parses events, audit, TLS, and management mutations from the real process', async () => {
+    const generation = await fetchGenerations(token)
+    const activeRevision = generation.generation.activeRevision
+    if (activeRevision === null) throw new Error('real process has no active revision')
+
+    const maintenance = await setListenerAdministrativeState(
+      ['process-live'], 'maintenance', activeRevision, token,
+    )
+    const ready = await setListenerAdministrativeState(
+      ['process-live'], 'ready', activeRevision, token,
+    )
+    expect(maintenance).toEqual({ outcome: 'applied', changed: 1 })
+    expect(ready).toEqual({ outcome: 'applied', changed: 1 })
+
+    const [events, audit, auditStatus, tls] = await Promise.all([
+      fetchEvents(0, 100, token),
+      fetchAudit({ after: 0, limit: 100 }, token),
+      fetchAuditStatus(token),
+      fetchTlsInventory(token),
+    ])
+    expect(events.hasMore).toBe(false)
+    expect(events.latestCursor).toBe(events.cursor)
+    expect(events.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: 'listener_administrative_state', outcome: 'applied' }),
+    ]))
+    expect(audit.latestCursor).toBeGreaterThanOrEqual(audit.cursor)
+    expect(audit.records).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: 'listener_control', result: 'succeeded' }),
+    ]))
+    expect(auditStatus.audit.recordCount).toBeGreaterThanOrEqual(audit.records.length)
+    expect(auditStatus.audit.writeFailures).toBe(0)
+    expect(tls).toEqual({ certificates: [], watcher: null })
+  })
+
+  it('preserves the v1 event page and exposes the corrected v2 page', async () => {
+    const headers = { Authorization: `Bearer ${token}` }
+    for (const path of [
+      '/api/v1/events',
+      '/api/v1/events/stream',
+      '/api/v2/events',
+      '/api/v2/events/stream',
+    ]) {
+      const unauthorized = await fetch(path, { method: 'POST' })
+      expect(unauthorized.status, path).toBe(401)
+      expect(await unauthorized.json(), path).toMatchObject({ error: { code: 'unauthorized' } })
+
+      const wrongMethod = await fetch(path, { method: 'POST', headers })
+      expect(wrongMethod.status, path).toBe(405)
+      expect(wrongMethod.headers.get('allow'), path).toBe('GET')
+      expect(await wrongMethod.json(), path).toMatchObject({ error: { code: 'method_not_allowed' } })
+    }
+
+    const v1 = await fetch('/api/v1/events?after=0&limit=100', { headers })
+    const v2 = await fetch('/api/v2/events?after=0&limit=100', { headers })
+    const v1Page = await v1.json() as Record<string, unknown>
+    const v2Page = await v2.json() as Record<string, unknown>
+
+    expect(v1.status).toBe(200)
+    expect(v1Page).not.toHaveProperty('latestCursor')
+    expect(v2.status).toBe(200)
+    expect(v2Page.latestCursor).toEqual(v2Page.cursor)
+
+    for (const path of ['/api/v1/events/stream', '/api/v2/events/stream']) {
+      const controller = new AbortController()
+      const response = await fetch(path, {
+        headers: { ...headers, Accept: 'text/event-stream' },
+        signal: controller.signal,
+      })
+      const first = await response.body?.getReader().read()
+      controller.abort()
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toContain('text/event-stream')
+      expect(new TextDecoder().decode(first?.value)).toContain('event: ready')
     }
   })
 })

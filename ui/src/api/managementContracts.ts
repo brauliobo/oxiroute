@@ -1,4 +1,4 @@
-import type { ListenerProtocol, UpstreamAlgorithm } from '../config'
+import type { UpstreamAlgorithm } from '../config'
 
 export interface MonitoringTraffic {
   acceptedConnections: string
@@ -10,14 +10,81 @@ export interface MonitoringTraffic {
 
 export type ListenerRuntimeState = 'configured' | 'listening' | 'stopped' | 'failed'
 export type AdministrativeState = 'ready' | 'drain' | 'maintenance'
+export type MonitoringListenerProtocol =
+  | 'http'
+  | 'tcp'
+  | 'rtmp'
+  | 'http3'
+  | 'udp'
+  | 'forward_http1'
+  | 'forward_http2'
+  | 'forward_http3'
+export type MonitoringHttpOperationResult =
+  | 'success'
+  | 'client_error'
+  | 'server_error'
+  | 'upstream_error'
+  | 'timeout'
+  | 'cancelled'
+  | 'internal_error'
+export type MonitoringTcpRelayResult =
+  | 'success'
+  | 'connect_error'
+  | 'connect_timeout'
+  | 'idle_timeout'
+  | 'lifetime_timeout'
+  | 'cancelled'
+  | 'io_error'
+  | 'accounting_error'
+  | 'proxy_protocol_error'
+export type MonitoringProxyProtocolResult =
+  | 'accepted'
+  | 'sent'
+  | 'timeout'
+  | 'cancelled'
+  | 'malformed'
+  | 'unsupported'
+  | 'mismatch'
+  | 'io_error'
+
+export interface MonitoringLatency {
+  buckets: Array<{ upperBoundMs: number | null; count: string }>
+  count: string
+  sumMs: string
+}
+
+export interface MonitoringHttpOperations {
+  outcomes: Array<{ result: MonitoringHttpOperationResult; count: string }>
+  latency: MonitoringLatency
+}
+
+export interface MonitoringTcpRelays {
+  outcomes: Array<{ result: MonitoringTcpRelayResult; count: string }>
+  latency: MonitoringLatency
+}
+
+export interface MonitoringProxyProtocol {
+  outcomes: Array<{ result: MonitoringProxyProtocolResult; count: string }>
+}
+
+export interface MonitoringCache {
+  hits: string
+  misses: string
+  admissions: string
+  evictions: string
+}
 
 export interface MonitoringListener extends MonitoringTraffic {
   administrativeState: AdministrativeState
   name: string
-  protocol: ListenerProtocol
+  protocol: MonitoringListenerProtocol
   bind: string
   maxConnections: number | null
   state: ListenerRuntimeState
+  httpOperations: MonitoringHttpOperations | null
+  tcpRelays: MonitoringTcpRelays | null
+  proxyProtocol: MonitoringProxyProtocol | null
+  cache: MonitoringCache | null
 }
 
 export type EndpointHealthState = 'unchecked' | 'unknown' | 'healthy' | 'unhealthy'
@@ -43,6 +110,16 @@ export interface MonitoringPoolEndpoint {
   consecutiveSuccesses: string
   consecutiveFailures: string
   lastFailure: HealthFailure | null
+  weight: number
+  passiveEjected: boolean
+  passiveFailureCount: string
+  passiveConsecutiveFailures: string
+  passiveEjectionCount: string
+  passiveEjectionReason: HealthFailure | null
+  passiveEjectedAtUnixMs: number | null
+  passiveEjectionUntilUnixMs: number | null
+  passiveRecoveryCount: string
+  passiveLastRecoveryAtUnixMs: number | null
 }
 
 export interface MonitoringPool {

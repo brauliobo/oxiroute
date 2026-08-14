@@ -12,6 +12,14 @@ pub trait Clock: Send + Sync {
     fn sleep_seconds(&self, seconds: u64) {
         std::thread::sleep(std::time::Duration::from_secs(seconds));
     }
+
+    fn sleep_seconds_cancellable(
+        &self,
+        seconds: u64,
+        cancellation: &crate::Dns01Cancellation,
+    ) -> bool {
+        cancellation.wait_timeout(std::time::Duration::from_secs(seconds))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -55,6 +63,19 @@ impl Clock for FakeClock {
 
     fn sleep_seconds(&self, seconds: u64) {
         self.advance(seconds);
+    }
+
+    fn sleep_seconds_cancellable(
+        &self,
+        seconds: u64,
+        cancellation: &crate::Dns01Cancellation,
+    ) -> bool {
+        if cancellation.is_cancelled() {
+            true
+        } else {
+            self.advance(seconds);
+            false
+        }
     }
 }
 

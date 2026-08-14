@@ -56,6 +56,13 @@ use zeroize::Zeroizing;
 
 mod reaper;
 
+pub mod cgroup;
+
+pub use cgroup::{
+    CgroupV2DelegationStatus, CgroupV2Probe, CgroupV2ProbeStatus, DEFAULT_CGROUP_V2_ROOT,
+    probe_cgroup_v2, probe_cgroup_v2_at, probe_cgroup_v2_at_with_controllers,
+};
+
 use reaper::{ensure_reaper, submit_to_reaper};
 
 #[cfg(target_os = "linux")]

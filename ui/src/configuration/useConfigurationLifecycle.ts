@@ -273,7 +273,8 @@ export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions
         ? {
             kind: 'pending',
             title: 'Configuration saved; restart required.',
-            detail: 'An active Unix listener mode changed. Restart OxiRoute to apply the saved mode.',
+            detail: result.diagnostics.find((diagnostic) => diagnostic.code === 'I_RESTART_REQUIRED')
+              ?.message ?? 'Restart OxiRoute to apply the saved configuration.',
           }
         : {
             kind: 'pending',

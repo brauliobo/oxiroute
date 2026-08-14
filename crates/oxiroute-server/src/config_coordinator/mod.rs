@@ -6,27 +6,38 @@ use std::{
 };
 
 use openssl::sha::sha256;
-use oxiroute_config::{Config, compose_configs};
+use oxiroute_config::{ConfigDraft, ValidatedConfig, compose_validated_configs};
 use oxiroute_config_source::{
     ConfigFormat, ConfigSourceError, NativeReferenceMetadata, ResolvedSource, render_config,
     resolve_source,
 };
 use serde::Serialize;
 
+mod candidate;
 mod storage;
 
 use crate::encoding::lower_hex;
+pub use candidate::PersistableConfigCandidate;
 use storage::{CanonicalStorage, ReplaceControl, ReplaceResult};
 
 /// The canonical file is bounded to the same one-MiB limit as the restricted Lua loader.
 pub const MAX_CANONICAL_CONFIG_BYTES: usize = 1024 * 1024;
 
-/// A SHA-256 revision of the exact bytes stored in, or proposed for, the canonical file.
+/// A SHA-256 revision of exact authored bytes stored in the canonical file.
+///
+/// ```compile_fail
+/// use oxiroute_server::config_coordinator::{AuthoredRevision, EffectiveRevision};
+///
+/// let authored = "0000000000000000000000000000000000000000000000000000000000000000"
+///     .parse::<AuthoredRevision>()
+///     .unwrap();
+/// let _: EffectiveRevision = authored;
+/// ```
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
-pub struct ConfigRevision(String);
+pub struct AuthoredRevision(String);
 
-impl ConfigRevision {
+impl AuthoredRevision {
     pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
         Self(lower_hex(&sha256(bytes)))
     }
@@ -37,35 +48,93 @@ impl ConfigRevision {
     }
 }
 
-impl fmt::Debug for ConfigRevision {
+impl fmt::Debug for AuthoredRevision {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_tuple("ConfigRevision")
+            .debug_tuple("AuthoredRevision")
             .field(&self.0)
             .finish()
     }
 }
 
-impl fmt::Display for ConfigRevision {
+impl fmt::Display for AuthoredRevision {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
 }
 
-impl FromStr for ConfigRevision {
-    type Err = ConfigRevisionParseError;
+impl FromStr for AuthoredRevision {
+    type Err = RevisionParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(ConfigRevisionParseError);
+        if !is_lower_sha256(value) {
+            return Err(RevisionParseError);
         }
-        Ok(Self(value.to_ascii_lowercase()))
+        Ok(Self(value.to_owned()))
     }
 }
 
+/// A SHA-256 revision of the normalized canonical KDL representation.
+///
+/// ```compile_fail
+/// use oxiroute_server::config_coordinator::{AuthoredRevision, EffectiveRevision};
+///
+/// let effective = "0000000000000000000000000000000000000000000000000000000000000000"
+///     .parse::<EffectiveRevision>()
+///     .unwrap();
+/// let _: AuthoredRevision = effective;
+/// ```
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct EffectiveRevision(String);
+
+impl EffectiveRevision {
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
+        Self(lower_hex(&sha256(bytes)))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for EffectiveRevision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("EffectiveRevision")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl fmt::Display for EffectiveRevision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for EffectiveRevision {
+    type Err = RevisionParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if !is_lower_sha256(value) {
+            return Err(RevisionParseError);
+        }
+        Ok(Self(value.to_owned()))
+    }
+}
+
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("configuration revision must be a 64-character SHA-256 hexadecimal value")]
-pub struct ConfigRevisionParseError;
+#[error("configuration revision must be a lowercase 64-character SHA-256 hexadecimal value")]
+pub struct RevisionParseError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -98,13 +167,16 @@ pub struct ConfigDiagnostic {
     pub message: &'static str,
 }
 
-/// A valid canonical-file view. `disk_revision` hashes the bytes read from disk, while
-/// `candidate_revision` hashes the normalized deterministic preview.
+/// A valid resolved source. The authored revision hashes exact disk bytes, while the effective
+/// revision hashes the normalized deterministic KDL representation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct CanonicalConfigDocument {
-    pub disk_revision: ConfigRevision,
-    pub candidate_revision: ConfigRevision,
-    pub normalized_config: Config,
+pub struct ResolvedConfigDocument {
+    #[serde(rename = "disk_revision")]
+    pub authored_revision: AuthoredRevision,
+    #[serde(rename = "candidate_revision")]
+    pub effective_revision: EffectiveRevision,
+    #[serde(rename = "normalized_config")]
+    pub validated_config: ValidatedConfig,
     pub format: ConfigFormat,
     pub compositional: bool,
     #[serde(skip)]
@@ -116,8 +188,8 @@ pub struct CanonicalConfigDocument {
 /// The native evidence retained by a resolved canonical source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeImportSourceDocument {
-    pub disk_revision: ConfigRevision,
-    pub candidate_revision: ConfigRevision,
+    pub disk_revision: AuthoredRevision,
+    pub candidate_revision: EffectiveRevision,
     pub format: ConfigFormat,
     pub compositional: bool,
     pub native_references: Vec<NativeReferenceMetadata>,
@@ -132,33 +204,20 @@ pub enum NativeImportSourceOutcome {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigLoadOutcome {
-    Loaded(Box<CanonicalConfigDocument>),
+    Loaded(Box<ResolvedConfigDocument>),
     Rejected(ConfigLoadRejection),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConfigLoadRejection {
-    pub disk_revision: Option<ConfigRevision>,
-    pub diagnostics: Vec<ConfigDiagnostic>,
-}
-
-/// A normalized typed draft and the exact format-appropriate bytes that would be saved.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ValidatedConfigDraft {
-    pub candidate_revision: ConfigRevision,
-    pub normalized_config: Config,
-    pub format: ConfigFormat,
-    pub compositional: bool,
-    #[serde(skip)]
-    pub dependencies: Vec<PathBuf>,
-    pub config_preview: String,
+    pub disk_revision: Option<AuthoredRevision>,
     pub diagnostics: Vec<ConfigDiagnostic>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigValidationOutcome {
-    Valid(Box<ValidatedConfigDraft>),
+    Valid(Box<PersistableConfigCandidate>),
     Invalid(ConfigDraftRejection),
 }
 
@@ -171,7 +230,7 @@ pub struct ConfigDraftRejection {
 #[serde(rename_all = "snake_case")]
 pub enum ConfigSaveOutcome {
     /// The candidate revision is committed. Diagnostics may contain redacted cleanup warnings.
-    Saved(CanonicalConfigDocument),
+    Saved(ResolvedConfigDocument),
     Conflict(ConfigConflict),
     InvalidDraft(ConfigDraftRejection),
     Failed(ConfigSaveFailure),
@@ -179,10 +238,10 @@ pub enum ConfigSaveOutcome {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConfigConflict {
-    pub expected_revision: ConfigRevision,
-    pub disk_revision: ConfigRevision,
-    pub candidate_revision: ConfigRevision,
-    pub normalized_config: Config,
+    pub expected_revision: AuthoredRevision,
+    pub disk_revision: AuthoredRevision,
+    pub candidate_revision: EffectiveRevision,
+    pub normalized_config: ValidatedConfig,
     pub format: ConfigFormat,
     pub compositional: bool,
     #[serde(skip)]
@@ -193,9 +252,9 @@ pub struct ConfigConflict {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConfigSaveFailure {
-    pub disk_revision: Option<ConfigRevision>,
-    pub candidate_revision: ConfigRevision,
-    pub normalized_config: Config,
+    pub disk_revision: Option<AuthoredRevision>,
+    pub candidate_revision: EffectiveRevision,
+    pub normalized_config: ValidatedConfig,
     pub format: ConfigFormat,
     pub compositional: bool,
     #[serde(skip)]
@@ -266,10 +325,10 @@ impl CanonicalConfigCoordinator {
             }
         };
 
-        ConfigLoadOutcome::Loaded(Box::new(CanonicalConfigDocument {
-            disk_revision,
-            candidate_revision: ConfigRevision::from_bytes(resolved.canonical_kdl.as_bytes()),
-            normalized_config: resolved.config,
+        ConfigLoadOutcome::Loaded(Box::new(ResolvedConfigDocument {
+            authored_revision: disk_revision,
+            effective_revision: EffectiveRevision::from_bytes(resolved.canonical_kdl.as_bytes()),
+            validated_config: resolved.config,
             format: resolved.format,
             compositional: resolved.compositional,
             dependencies: resolved.dependencies,
@@ -287,7 +346,7 @@ impl CanonicalConfigCoordinator {
         };
         NativeImportSourceOutcome::Loaded(Box::new(NativeImportSourceDocument {
             disk_revision,
-            candidate_revision: ConfigRevision::from_bytes(resolved.canonical_kdl.as_bytes()),
+            candidate_revision: EffectiveRevision::from_bytes(resolved.canonical_kdl.as_bytes()),
             format: resolved.format,
             compositional: resolved.compositional,
             native_references: resolved.native_references,
@@ -296,7 +355,7 @@ impl CanonicalConfigCoordinator {
 
     fn read_resolved_source(
         &self,
-    ) -> Result<(ConfigRevision, ResolvedSource), ConfigLoadRejection> {
+    ) -> Result<(AuthoredRevision, ResolvedSource), ConfigLoadRejection> {
         let _operation = self
             .operation_lock
             .lock()
@@ -310,7 +369,7 @@ impl CanonicalConfigCoordinator {
             disk_revision: None,
             diagnostics: vec![error.diagnostic()],
         })?;
-        let disk_revision = ConfigRevision::from_bytes(&disk);
+        let disk_revision = AuthoredRevision::from_bytes(&disk);
         let resolved =
             resolve_source(&self.canonical_path, &disk).map_err(|error| ConfigLoadRejection {
                 disk_revision: Some(disk_revision.clone()),
@@ -321,8 +380,8 @@ impl CanonicalConfigCoordinator {
 
     /// Validates and normalizes a typed draft without reading or writing the canonical file.
     #[must_use]
-    pub fn validate(&self, draft: &Config) -> ConfigValidationOutcome {
-        validate_draft(self.format, draft)
+    pub fn prepare(&self, draft: ConfigDraft) -> ConfigValidationOutcome {
+        prepare_candidate(self.format, draft)
     }
 
     /// Saves a valid typed draft only when the exact on-disk bytes still match `expected_revision`.
@@ -334,10 +393,14 @@ impl CanonicalConfigCoordinator {
     /// warning in the saved document rather than as an unwritten failure. This method does not
     /// activate or publish a runtime generation.
     #[must_use]
-    pub fn save(&self, expected_revision: &ConfigRevision, draft: &Config) -> ConfigSaveOutcome {
+    pub fn save(
+        &self,
+        expected_revision: &AuthoredRevision,
+        candidate: PersistableConfigCandidate,
+    ) -> ConfigSaveOutcome {
         self.save_inner(
             expected_revision,
-            draft,
+            candidate,
             || Ok(()),
             || {},
             ReplaceControl::default(),
@@ -346,8 +409,8 @@ impl CanonicalConfigCoordinator {
 
     fn save_inner<F, G>(
         &self,
-        expected_revision: &ConfigRevision,
-        draft: &Config,
+        expected_revision: &AuthoredRevision,
+        candidate: PersistableConfigCandidate,
         before_exchange: F,
         after_exchange: G,
         control: ReplaceControl,
@@ -356,12 +419,6 @@ impl CanonicalConfigCoordinator {
         F: FnOnce() -> Result<(), ()>,
         G: FnOnce(),
     {
-        let candidate = match validate_draft(self.format, draft) {
-            ConfigValidationOutcome::Valid(candidate) => *candidate,
-            ConfigValidationOutcome::Invalid(rejection) => {
-                return ConfigSaveOutcome::InvalidDraft(rejection);
-            }
-        };
         let _operation = self
             .operation_lock
             .lock()
@@ -378,7 +435,7 @@ impl CanonicalConfigCoordinator {
             Ok(disk) => disk,
             Err(error) => return failed_save(None, candidate, error.diagnostic()),
         };
-        let initial_revision = ConfigRevision::from_bytes(&initial_disk);
+        let initial_revision = AuthoredRevision::from_bytes(&initial_disk);
         if initial_revision != *expected_revision {
             return conflict(expected_revision, initial_revision, candidate);
         }
@@ -401,25 +458,24 @@ impl CanonicalConfigCoordinator {
         match storage.replace(
             &transaction,
             expected_revision,
-            candidate.config_preview.as_bytes(),
+            candidate.config_preview().as_bytes(),
             before_exchange,
             after_exchange,
             control,
         ) {
             Ok(ReplaceResult::Saved { cleanup_degraded }) => {
-                let ValidatedConfigDraft {
-                    candidate_revision,
-                    normalized_config,
+                let (
+                    effective_revision,
+                    validated_config,
                     format,
                     compositional,
                     dependencies,
                     config_preview,
-                    ..
-                } = candidate;
-                ConfigSaveOutcome::Saved(CanonicalConfigDocument {
-                    disk_revision: ConfigRevision::from_bytes(config_preview.as_bytes()),
-                    candidate_revision,
-                    normalized_config,
+                ) = candidate.into_parts();
+                ConfigSaveOutcome::Saved(ResolvedConfigDocument {
+                    authored_revision: AuthoredRevision::from_bytes(config_preview.as_bytes()),
+                    effective_revision,
+                    validated_config,
                     format,
                     compositional,
                     dependencies,
@@ -438,7 +494,7 @@ impl CanonicalConfigCoordinator {
                 let disk_revision = storage
                     .read()
                     .ok()
-                    .map(|disk| ConfigRevision::from_bytes(&disk));
+                    .map(|disk| AuthoredRevision::from_bytes(&disk));
                 failed_save(disk_revision, candidate, error.diagnostic())
             }
         }
@@ -454,8 +510,8 @@ impl fmt::Debug for CanonicalConfigCoordinator {
     }
 }
 
-fn validate_draft(format: ConfigFormat, draft: &Config) -> ConfigValidationOutcome {
-    let Ok(normalized_config) = compose_configs(std::slice::from_ref(draft)) else {
+fn prepare_candidate(format: ConfigFormat, draft: ConfigDraft) -> ConfigValidationOutcome {
+    let Ok(validated_config) = compose_validated_configs(vec![draft]) else {
         return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
             diagnostics: vec![diagnostic(
                 "E_INVALID_VALUE",
@@ -464,7 +520,7 @@ fn validate_draft(format: ConfigFormat, draft: &Config) -> ConfigValidationOutco
             )],
         });
     };
-    let canonical_kdl = match render_config(ConfigFormat::Kdl, &normalized_config) {
+    let canonical_kdl = match render_config(ConfigFormat::Kdl, &validated_config) {
         Ok(preview) => preview,
         Err(error) => {
             return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
@@ -472,7 +528,7 @@ fn validate_draft(format: ConfigFormat, draft: &Config) -> ConfigValidationOutco
             });
         }
     };
-    let config_preview = match render_config(format, &normalized_config) {
+    let config_preview = match render_config(format, &validated_config) {
         Ok(preview) => preview,
         Err(error) => {
             return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
@@ -481,15 +537,15 @@ fn validate_draft(format: ConfigFormat, draft: &Config) -> ConfigValidationOutco
         }
     };
 
-    ConfigValidationOutcome::Valid(Box::new(ValidatedConfigDraft {
-        candidate_revision: ConfigRevision::from_bytes(canonical_kdl.as_bytes()),
-        normalized_config,
+    ConfigValidationOutcome::Valid(Box::new(PersistableConfigCandidate::new(
+        EffectiveRevision::from_bytes(canonical_kdl.as_bytes()),
+        validated_config,
         format,
-        compositional: false,
-        dependencies: Vec::new(),
+        false,
+        Vec::new(),
         config_preview,
-        diagnostics: Vec::new(),
-    }))
+        Vec::new(),
+    )))
 }
 
 fn source_error_diagnostic(error: &ConfigSourceError) -> ConfigDiagnostic {
@@ -533,24 +589,17 @@ const fn compositional_root_diagnostic() -> ConfigDiagnostic {
 }
 
 fn conflict(
-    expected_revision: &ConfigRevision,
-    disk_revision: ConfigRevision,
-    candidate: ValidatedConfigDraft,
+    expected_revision: &AuthoredRevision,
+    disk_revision: AuthoredRevision,
+    candidate: PersistableConfigCandidate,
 ) -> ConfigSaveOutcome {
-    let ValidatedConfigDraft {
-        candidate_revision,
-        normalized_config,
-        format,
-        compositional,
-        dependencies,
-        config_preview,
-        ..
-    } = candidate;
+    let (effective_revision, validated_config, format, compositional, dependencies, config_preview) =
+        candidate.into_parts();
     ConfigSaveOutcome::Conflict(ConfigConflict {
         expected_revision: expected_revision.clone(),
         disk_revision,
-        candidate_revision,
-        normalized_config,
+        candidate_revision: effective_revision,
+        normalized_config: validated_config,
         format,
         compositional,
         dependencies,
@@ -564,23 +613,16 @@ fn conflict(
 }
 
 fn failed_save(
-    disk_revision: Option<ConfigRevision>,
-    candidate: ValidatedConfigDraft,
+    disk_revision: Option<AuthoredRevision>,
+    candidate: PersistableConfigCandidate,
     diagnostic: ConfigDiagnostic,
 ) -> ConfigSaveOutcome {
-    let ValidatedConfigDraft {
-        candidate_revision,
-        normalized_config,
-        format,
-        compositional,
-        dependencies,
-        config_preview,
-        ..
-    } = candidate;
+    let (effective_revision, validated_config, format, compositional, dependencies, config_preview) =
+        candidate.into_parts();
     ConfigSaveOutcome::Failed(ConfigSaveFailure {
         disk_revision,
-        candidate_revision,
-        normalized_config,
+        candidate_revision: effective_revision,
+        normalized_config: validated_config,
         format,
         compositional,
         dependencies,

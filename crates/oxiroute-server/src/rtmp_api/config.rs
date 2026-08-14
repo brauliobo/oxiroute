@@ -1,7 +1,7 @@
 use std::{io, path::Path, str::FromStr};
 
 use http::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
-use oxiroute_config::{Config, RtmpAccessPolicy};
+use oxiroute_config::{ConfigDraft, RtmpAccessPolicy, ValidatedConfig};
 use oxiroute_config_source::{ConfigFormat, render_config};
 use oxiroute_import::ImportReportEnvelope;
 use pingora::protocols::http::ServerSession;
@@ -13,15 +13,15 @@ use super::{
     response::system_time_ms, ui::UiAssets,
 };
 use crate::{
-    CertbotWatcherConfig, FileWatcherConfig, GenerationManager, RuntimePlan,
+    CertbotWatcherConfig, FileWatcherConfig, GenerationManager, RuntimeMode, RuntimePlan,
     config_coordinator::{
-        CanonicalConfigCoordinator, ConfigConflict, ConfigDiagnostic, ConfigLoadOutcome,
-        ConfigRevision, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
-        NativeImportSourceOutcome, ValidatedConfigDraft,
+        AuthoredRevision, CanonicalConfigCoordinator, ConfigConflict, ConfigDiagnostic,
+        ConfigLoadOutcome, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
+        EffectiveRevision, NativeImportSourceOutcome, PersistableConfigCandidate,
     },
-    listener_reservation::unix_listener_mode_change_requires_restart,
-    runtime_plan,
+    listener_inventory::ListenerRestartReason,
     secure_bearer::{HeaderCardinality, SecureBearerToken, SecureBearerTokenError, single_header},
+    service_plan::validation_plan,
 };
 
 const IF_CONFIG_REVISION: &str = "if-config-revision";
@@ -38,35 +38,40 @@ pub(super) enum Route {
 }
 
 pub(super) struct ConfigApiState {
-    active_revision: ConfigRevision,
+    active_revision: EffectiveRevision,
     coordinator: CanonicalConfigCoordinator,
     generations: Option<GenerationManager>,
+    mode: RuntimeMode,
     token: SecureBearerToken,
 }
 
 impl ConfigApiState {
     pub(super) fn new(
         coordinator: CanonicalConfigCoordinator,
-        active_revision: ConfigRevision,
+        active_revision: EffectiveRevision,
         token: &str,
+        mode: RuntimeMode,
     ) -> io::Result<Self> {
         Ok(Self {
             active_revision,
             coordinator,
             generations: None,
+            mode,
             token: SecureBearerToken::new(token.as_bytes()).map_err(management_token_error)?,
         })
     }
 
     pub(super) fn from_token_file(
         coordinator: CanonicalConfigCoordinator,
-        active_revision: ConfigRevision,
+        active_revision: EffectiveRevision,
         token_file: &Path,
+        mode: RuntimeMode,
     ) -> io::Result<Self> {
         Ok(Self {
             active_revision,
             coordinator,
             generations: None,
+            mode,
             token: SecureBearerToken::load(token_file).map_err(management_token_error)?,
         })
     }
@@ -75,7 +80,7 @@ impl ConfigApiState {
         self.generations = Some(generations);
     }
 
-    fn active_revision(&self) -> ConfigRevision {
+    fn active_revision(&self) -> EffectiveRevision {
         self.generations
             .as_ref()
             .and_then(|generations| generations.status().active_revision)
@@ -150,12 +155,15 @@ impl ConfigApiState {
         )
     }
 
-    fn merge_redacted_rtmp_token_secrets(&self, draft: &mut Config) -> Result<(), ApiResponse> {
+    fn merge_redacted_rtmp_token_secrets(
+        &self,
+        draft: &mut ConfigDraft,
+    ) -> Result<(), ApiResponse> {
         if !contains_redacted_rtmp_token_secret(draft) {
             return Ok(());
         }
         let authoritative = match self.coordinator.load() {
-            ConfigLoadOutcome::Loaded(document) => document.normalized_config,
+            ConfigLoadOutcome::Loaded(document) => document.validated_config.to_draft(),
             ConfigLoadOutcome::Rejected(rejection) => {
                 return Err(ApiResponse::json(
                     503,
@@ -180,11 +188,11 @@ impl ConfigApiState {
         match self.coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => {
                 let (config, config_preview) =
-                    redacted_config_view(document.normalized_config, document.format);
+                    redacted_config_view(&document.validated_config, document.format);
                 let mut response = json!({
                     "schemaVersion": 1,
-                    "diskRevision": document.disk_revision,
-                    "candidateRevision": document.candidate_revision,
+                    "diskRevision": document.authored_revision,
+                    "candidateRevision": document.effective_revision,
                     "activeRevision": self.active_revision(),
                     "config": config,
                     "configFormat": document.format,
@@ -290,39 +298,37 @@ impl ConfigApiState {
         if let Err(response) = self.merge_redacted_rtmp_token_secrets(&mut draft) {
             return response;
         }
-        let candidate = match self.prepare_candidate(&draft, now_unix_ms, None) {
+        let candidate = match self.prepare_candidate(draft, now_unix_ms, None) {
             Ok(candidate) => candidate,
             Err(response) => return response,
         };
-        let (normalized_config, config_preview) = redacted_config_view(
-            candidate.draft.normalized_config.clone(),
-            candidate.draft.format,
-        );
+        let (normalized_config, config_preview) =
+            redacted_config_view(candidate.draft.validated_config(), candidate.draft.format());
 
         let mut response = json!({
-            "candidateRevision": candidate.draft.candidate_revision,
+            "candidateRevision": candidate.draft.effective_revision(),
             "normalizedConfig": normalized_config,
-            "configFormat": candidate.draft.format,
-            "compositional": candidate.draft.compositional,
-            "dependencyCount": candidate.draft.dependencies.len(),
+            "configFormat": candidate.draft.format(),
+            "compositional": candidate.draft.compositional(),
+            "dependencyCount": candidate.draft.dependencies().len(),
             "configPreview": config_preview,
-            "diagnostics": candidate.draft.diagnostics,
+            "diagnostics": candidate.draft.diagnostics(),
             "topology": candidate.topology,
-            "restartRequired": candidate.restart_required,
+            "restartRequired": candidate.restart_reason.is_some(),
         });
-        if candidate.restart_required {
+        if let Some(reason) = candidate.restart_reason {
             response["diagnostics"]
                 .as_array_mut()
                 .expect("candidate diagnostics are an array")
-                .push(restart_required_diagnostic());
+                .push(restart_required_diagnostic(reason));
         }
-        add_legacy_lua_preview(&mut response, candidate.draft.format, &config_preview);
+        add_legacy_lua_preview(&mut response, candidate.draft.format(), &config_preview);
         ApiResponse::json(200, &response)
     }
 
     fn save_config_response(
         &self,
-        expected: &ConfigRevision,
+        expected: &AuthoredRevision,
         body: &[u8],
         now_unix_ms: u64,
     ) -> ApiResponse {
@@ -347,40 +353,40 @@ impl ConfigApiState {
         } else {
             None
         };
-        let active_config = mutation
-            .as_ref()
-            .map(|mutation| mutation.generation().config().as_ref());
-        let candidate = match self.prepare_candidate(&draft, now_unix_ms, active_config) {
+        let candidate = match self.prepare_candidate(draft, now_unix_ms, mutation.as_ref()) {
             Ok(candidate) => candidate,
             Err(response) => return response,
         };
-        let normalized_config = candidate.draft.normalized_config;
-        let restart_required = candidate.restart_required;
+        let PreparedCandidate {
+            draft: candidate,
+            restart_reason,
+            ..
+        } = candidate;
 
-        match self.coordinator.save(expected, &normalized_config) {
+        match self.coordinator.save(expected, *candidate) {
             ConfigSaveOutcome::Saved(document) => self.saved_response(
-                &document.disk_revision,
-                &document.candidate_revision,
+                &document.authored_revision,
+                &document.effective_revision,
                 diagnostics_json(&document.diagnostics, false),
-                restart_required,
+                restart_reason,
             ),
             ConfigSaveOutcome::Conflict(conflict) => self.conflict_response(&conflict),
             ConfigSaveOutcome::InvalidDraft(rejection) => {
                 ApiResponse::json(422, &json!({ "diagnostics": rejection.diagnostics }))
             }
             ConfigSaveOutcome::Failed(failure) => {
-                self.failed_save_response(&failure, restart_required)
+                self.failed_save_response(&failure, restart_reason)
             }
         }
     }
 
     fn prepare_candidate(
         &self,
-        draft: &Config,
+        draft: ConfigDraft,
         now_unix_ms: u64,
-        active_config: Option<&Config>,
+        mutation: Option<&crate::GenerationMutation>,
     ) -> Result<PreparedCandidate, ApiResponse> {
-        let candidate = match self.coordinator.validate(draft) {
+        let candidate = match self.coordinator.prepare(draft) {
             ConfigValidationOutcome::Valid(candidate) => candidate,
             ConfigValidationOutcome::Invalid(rejection) => {
                 return Err(ApiResponse::json(
@@ -389,30 +395,29 @@ impl ConfigApiState {
                 ));
             }
         };
-        let plan = prepare_config(&candidate.normalized_config).map_err(|error| {
+        let plan = prepare_config(candidate.validated_config()).map_err(|error| {
             ApiResponse::json(
                 422,
                 &json!({ "diagnostics": [preparation_diagnostic(error)] }),
             )
         })?;
-        let restart_required = active_config.map_or_else(
+        let restart_reason = mutation.map_or_else(
             || {
-                self.generations.as_ref().is_some_and(|generations| {
-                    generations.active().is_some_and(|active| {
-                        unix_listener_mode_change_requires_restart(
-                            active.config(),
-                            &candidate.normalized_config,
-                        )
+                self.generations.as_ref().and_then(|generations| {
+                    generations.active().and_then(|active| {
+                        active.listener_restart_reason(self.mode, candidate.validated_config())
                     })
                 })
             },
-            |active| {
-                unix_listener_mode_change_requires_restart(active, &candidate.normalized_config)
+            |mutation| {
+                mutation
+                    .generation()
+                    .listener_restart_reason(self.mode, candidate.validated_config())
             },
         );
         if let Some(generations) = &self.generations {
             let disk_revision = match self.coordinator.load() {
-                ConfigLoadOutcome::Loaded(document) => document.disk_revision.clone(),
+                ConfigLoadOutcome::Loaded(document) => document.authored_revision.clone(),
                 ConfigLoadOutcome::Rejected(_) => {
                     return Err(ApiResponse::error(
                         503,
@@ -422,15 +427,15 @@ impl ConfigApiState {
                 }
             };
             generations
-                .validate_candidate(crate::config_coordinator::CanonicalConfigDocument {
-                    disk_revision,
-                    candidate_revision: candidate.candidate_revision.clone(),
-                    normalized_config: candidate.normalized_config.clone(),
-                    format: candidate.format,
-                    compositional: candidate.compositional,
-                    dependencies: candidate.dependencies.clone(),
-                    config_preview: candidate.config_preview.clone(),
-                    diagnostics: candidate.diagnostics.clone(),
+                .validate_candidate(crate::config_coordinator::ResolvedConfigDocument {
+                    authored_revision: disk_revision,
+                    effective_revision: candidate.effective_revision().clone(),
+                    validated_config: candidate.validated_config().clone(),
+                    format: candidate.format(),
+                    compositional: candidate.compositional(),
+                    dependencies: candidate.dependencies().to_vec(),
+                    config_preview: candidate.config_preview().to_owned(),
+                    diagnostics: candidate.diagnostics().to_vec(),
                 })
                 .map_err(|_| {
                     ApiResponse::json(
@@ -444,22 +449,22 @@ impl ConfigApiState {
         Ok(PreparedCandidate {
             topology: candidate_topology(&plan.topology, now_unix_ms),
             draft: candidate,
-            restart_required,
+            restart_reason,
         })
     }
 
     fn saved_response(
         &self,
-        disk_revision: &ConfigRevision,
-        candidate_revision: &ConfigRevision,
+        disk_revision: &AuthoredRevision,
+        candidate_revision: &EffectiveRevision,
         mut diagnostics: Vec<Value>,
-        restart_required: bool,
+        restart_reason: Option<ListenerRestartReason>,
     ) -> ApiResponse {
         let active_revision = self.active_revision();
         let unchanged_active = *candidate_revision == active_revision;
         if !unchanged_active {
-            diagnostics.push(if restart_required {
-                restart_required_diagnostic()
+            diagnostics.push(if let Some(reason) = restart_reason {
+                restart_required_diagnostic(reason)
             } else {
                 activation_pending_diagnostic()
             });
@@ -472,19 +477,19 @@ impl ConfigApiState {
                 "activeRevision": active_revision,
                 "outcome": if unchanged_active {
                     "unchanged_active"
-                } else if restart_required {
+                } else if restart_reason.is_some() {
                     "saved_restart_required"
                 } else {
                     "saved_pending_activation"
                 },
                 "activationState": if unchanged_active {
                     "active"
-                } else if restart_required {
+                } else if restart_reason.is_some() {
                     "restart_required"
                 } else {
                     "pending"
                 },
-                "restartRequired": !unchanged_active && restart_required,
+                "restartRequired": !unchanged_active && restart_reason.is_some(),
                 "diagnostics": diagnostics,
             }),
         )
@@ -493,15 +498,15 @@ impl ConfigApiState {
     fn failed_save_response(
         &self,
         failure: &ConfigSaveFailure,
-        restart_required: bool,
+        restart_reason: Option<ListenerRestartReason>,
     ) -> ApiResponse {
-        let preview_disk_revision = ConfigRevision::from_bytes(failure.config_preview.as_bytes());
+        let preview_disk_revision = AuthoredRevision::from_bytes(failure.config_preview.as_bytes());
         if failure.disk_revision.as_ref() == Some(&preview_disk_revision) {
             return self.saved_response(
                 &preview_disk_revision,
                 &failure.candidate_revision,
                 diagnostics_json(&failure.diagnostics, true),
-                restart_required,
+                restart_reason,
             );
         }
         ApiResponse::json(
@@ -519,11 +524,11 @@ impl ConfigApiState {
         match self.coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => {
                 let (config, config_preview) =
-                    redacted_config_view(document.normalized_config, document.format);
+                    redacted_config_view(&document.validated_config, document.format);
                 let mut response = json!({
                     "schemaVersion": 1,
-                    "diskRevision": document.disk_revision,
-                    "candidateRevision": document.candidate_revision,
+                    "diskRevision": document.authored_revision,
+                    "candidateRevision": document.effective_revision,
                     "activeRevision": self.active_revision(),
                     "expectedRevision": conflict.expected_revision,
                     "outcome": "conflict",
@@ -558,7 +563,11 @@ impl ConfigApiState {
 
 const REDACTED_RTMP_TOKEN: &str = "<redacted>";
 
-fn redacted_config_view(mut config: Config, format: ConfigFormat) -> (Config, String) {
+fn redacted_config_view(
+    config: &ValidatedConfig,
+    format: ConfigFormat,
+) -> (ValidatedConfig, String) {
+    let mut config = config.to_draft();
     for service in &mut config.rtmp_services {
         for application in &mut service.applications {
             for policy in [&mut application.publish, &mut application.play] {
@@ -568,12 +577,15 @@ fn redacted_config_view(mut config: Config, format: ConfigFormat) -> (Config, St
             }
         }
     }
+    let config = config
+        .validate()
+        .expect("normalized configuration remains valid after token redaction");
     let preview = render_config(format, &config)
         .expect("normalized configuration remains renderable after token redaction");
     (config, preview)
 }
 
-fn contains_redacted_rtmp_token_secret(config: &Config) -> bool {
+fn contains_redacted_rtmp_token_secret(config: &ConfigDraft) -> bool {
     config.rtmp_services.iter().any(|service| {
         service.applications.iter().any(|application| {
             [&application.publish, &application.play]
@@ -588,7 +600,7 @@ fn contains_redacted_rtmp_token_secret(config: &Config) -> bool {
     })
 }
 
-fn restore_redacted_rtmp_token_secrets(draft: &mut Config, authoritative: &Config) {
+fn restore_redacted_rtmp_token_secrets(draft: &mut ConfigDraft, authoritative: &ConfigDraft) {
     for service in &mut draft.rtmp_services {
         let Some(authoritative_service) = authoritative
             .rtmp_services
@@ -689,7 +701,7 @@ fn import_report_preview(report: &ImportReportEnvelope) -> Option<Value> {
         return None;
     }
     let config = report.candidate.config.as_ref()?;
-    let (_, text) = redacted_config_view(config.clone(), ConfigFormat::Kdl);
+    let (_, text) = redacted_config_view(config, ConfigFormat::Kdl);
     Some(json!({ "format": "kdl", "text": text }))
 }
 
@@ -760,7 +772,7 @@ fn redacted_import_report(mut report: ImportReportEnvelope) -> ImportReportEnvel
             .map(|_| REDACTED_IMPORT_VALUE.to_owned());
     }
     if let Some(config) = report.candidate.config.take() {
-        let (config, _) = redacted_config_view(config, ConfigFormat::Kdl);
+        let (config, _) = redacted_config_view(&config, ConfigFormat::Kdl);
         report.candidate.config = Some(config);
     }
     report
@@ -817,18 +829,18 @@ enum ConfigPreparationError {
 }
 
 struct PreparedCandidate {
-    draft: Box<ValidatedConfigDraft>,
-    restart_required: bool,
+    draft: Box<PersistableConfigCandidate>,
+    restart_reason: Option<ListenerRestartReason>,
     topology: Value,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigRequest {
-    config: Config,
+    config: ConfigDraft,
 }
 
-fn parse_config_request(body: &[u8]) -> Result<Config, ApiResponse> {
+fn parse_config_request(body: &[u8]) -> Result<ConfigDraft, ApiResponse> {
     let value: Value = serde_json::from_slice(body).map_err(|_| {
         ApiResponse::error(
             400,
@@ -854,19 +866,24 @@ fn parse_config_request(body: &[u8]) -> Result<Config, ApiResponse> {
         })
 }
 
-fn prepare_config(config: &Config) -> Result<RuntimePlan, ConfigPreparationError> {
-    let plan = runtime_plan(config).map_err(|_| ConfigPreparationError::Runtime)?;
+fn prepare_config(config: &ValidatedConfig) -> Result<RuntimePlan, ConfigPreparationError> {
+    let plan = validation_plan(config).map_err(|_| ConfigPreparationError::Runtime)?;
+    let acquired = crate::service_plan::validate_runtime_services(&plan)
+        .map_err(|_| ConfigPreparationError::Runtime)?;
     if let Some(ui_dir) = config
+        .as_draft()
         .management
         .as_ref()
         .and_then(|management| management.ui_dir.as_deref())
     {
         UiAssets::load(ui_dir).map_err(|_| ConfigPreparationError::UiAssets)?;
     }
-    plan.tls
+    acquired
+        .tls()
         .check_certbot_watcher(CertbotWatcherConfig::default())
         .map_err(|_| ConfigPreparationError::CertbotWatcher)?;
-    plan.tls
+    acquired
+        .tls()
         .check_file_watcher(FileWatcherConfig::default())
         .map_err(|_| ConfigPreparationError::DirectFileWatcher)?;
     Ok(plan)
@@ -914,13 +931,23 @@ fn activation_pending_diagnostic() -> Value {
     })
 }
 
-fn restart_required_diagnostic() -> Value {
+fn restart_required_diagnostic(reason: ListenerRestartReason) -> Value {
+    let (path, message) = match reason {
+        ListenerRestartReason::DirectUnixModeChange => (
+            "/config/listeners",
+            "an active Unix listener mode changed; the saved configuration takes effect after a process restart",
+        ),
+        ListenerRestartReason::SupervisedDescriptorTopology => (
+            "/config/listeners",
+            "the supervised listener or control-listener topology changed; the saved configuration takes effect after a process restart",
+        ),
+    };
     json!({
         "code": "I_RESTART_REQUIRED",
         "severity": "warning",
         "stage": "activation",
-        "path": "/config/listeners",
-        "message": "an active Unix listener mode changed; the saved configuration takes effect after a process restart",
+        "path": path,
+        "message": message,
     })
 }
 
@@ -943,7 +970,7 @@ fn diagnostics_json(diagnostics: &[ConfigDiagnostic], as_warnings: bool) -> Vec<
         .collect()
 }
 
-fn config_revision_header(session: &ServerSession) -> Result<ConfigRevision, ApiResponse> {
+fn config_revision_header(session: &ServerSession) -> Result<AuthoredRevision, ApiResponse> {
     let mut values = session
         .req_header()
         .headers
@@ -966,7 +993,7 @@ fn config_revision_header(session: &ServerSession) -> Result<ConfigRevision, Api
     value
         .to_str()
         .ok()
-        .and_then(|value| ConfigRevision::from_str(value).ok())
+        .and_then(|value| AuthoredRevision::from_str(&value.to_ascii_lowercase()).ok())
         .ok_or_else(|| {
             ApiResponse::error(
                 400,
@@ -1054,4 +1081,30 @@ fn config_body_too_large() -> ApiResponse {
         "config_body_too_large",
         format!("configuration request body exceeds the {MAX_CONFIG_REQUEST_BYTES}-byte limit"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_preparation_diagnostic_contract_is_fixed_and_redacted() {
+        let diagnostic = preparation_diagnostic(ConfigPreparationError::Runtime);
+
+        assert_eq!(diagnostic["code"], "E_RUNTIME_PREPARE");
+        assert_eq!(diagnostic["severity"], "error");
+        assert_eq!(diagnostic["stage"], "validation");
+        assert_eq!(diagnostic["path"], "/config");
+        let wire = diagnostic.to_string();
+        for secret in [
+            "/secret/tenant/key.pem",
+            "token=super-secret",
+            "https://user:password@example.test/private",
+        ] {
+            assert!(!wire.contains(secret));
+        }
+
+        let response = ApiResponse::json(422, &json!({ "diagnostics": [diagnostic] }));
+        assert_eq!(response.status, 422);
+    }
 }

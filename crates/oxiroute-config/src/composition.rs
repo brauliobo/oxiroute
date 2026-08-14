@@ -1,4 +1,4 @@
-use crate::{Config, ConfigError, Stats, validate_config};
+use crate::{ConfigDraft, ConfigError, Stats, ValidatedConfig};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigCompositionError {
@@ -10,23 +10,31 @@ pub enum ConfigCompositionError {
     Invalid(#[from] ConfigError),
 }
 
-/// Composes independently finalized canonical configurations in input order.
+/// Composes complete configuration drafts in input order and returns validated state.
 ///
-/// Process-wide settings must agree when more than one input specifies them. Named runtime
-/// objects remain distinct and the normal canonical validator rejects collisions or dangling
-/// references after composition.
+/// Process-wide settings must agree when more than one input specifies them. Draft fragments are
+/// merged before canonical validation, allowing references to be completed by another draft.
 ///
 /// # Errors
 ///
 /// Returns an error when no input is supplied, process-wide fields conflict, or the resulting
 /// canonical configuration is invalid.
-pub fn compose_configs(configs: &[Config]) -> Result<Config, ConfigCompositionError> {
-    let Some((first, remainder)) = configs.split_first() else {
+pub fn compose_validated_configs(
+    configs: Vec<ConfigDraft>,
+) -> Result<ValidatedConfig, ConfigCompositionError> {
+    compose_drafts(configs.into_iter())?
+        .validate()
+        .map_err(ConfigCompositionError::from)
+}
+
+fn compose_drafts(
+    mut configs: impl Iterator<Item = ConfigDraft>,
+) -> Result<ConfigDraft, ConfigCompositionError> {
+    let Some(mut composed) = configs.next() else {
         return Err(ConfigCompositionError::Empty);
     };
-    let mut composed = first.clone();
 
-    for config in remainder {
+    for config in configs {
         if composed.version != config.version {
             return Err(ConfigCompositionError::ProcessFieldConflict { field: "version" });
         }
@@ -41,22 +49,19 @@ pub fn compose_configs(configs: &[Config]) -> Result<Config, ConfigCompositionEr
             config.management.as_ref(),
         )?;
         merge_stats(&mut composed.stats, config.stats.as_ref())?;
-        composed.certificates.extend(config.certificates.clone());
-        composed.tls_profiles.extend(config.tls_profiles.clone());
-        composed.listeners.extend(config.listeners.clone());
-        composed.cache_stores.extend(config.cache_stores.clone());
-        composed
-            .upstream_pools
-            .extend(config.upstream_pools.clone());
-        composed.http_services.extend(config.http_services.clone());
+        composed.certificates.extend(config.certificates);
+        composed.tls_profiles.extend(config.tls_profiles);
+        composed.listeners.extend(config.listeners);
+        composed.cache_stores.extend(config.cache_stores);
+        composed.upstream_pools.extend(config.upstream_pools);
+        composed.http_services.extend(config.http_services);
         composed
             .forward_proxy_services
-            .extend(config.forward_proxy_services.clone());
-        composed.rtmp_services.extend(config.rtmp_services.clone());
-        composed.l4_services.extend(config.l4_services.clone());
+            .extend(config.forward_proxy_services);
+        composed.rtmp_services.extend(config.rtmp_services);
+        composed.l4_services.extend(config.l4_services);
     }
 
-    validate_config(&mut composed)?;
     Ok(composed)
 }
 
@@ -129,7 +134,8 @@ mod tests {
         let mut second = tcp_config("haproxy", 8080, 9081);
         second.max_connections = Some(4096);
 
-        let composed = compose_configs(&[first, second]).expect("composed config");
+        let composed = compose_validated_configs(vec![first, second]).expect("composed config");
+        let composed = composed.as_draft();
 
         assert_eq!(composed.max_connections, Some(4096));
         assert_eq!(composed.listeners[0].name, "nginx");
@@ -158,8 +164,9 @@ mod tests {
             }],
         });
 
-        let composed = compose_configs(&[first, second]).expect("composed stats");
-        let stats = composed.stats.expect("stats process");
+        let composed = compose_validated_configs(vec![first, second]).expect("composed stats");
+        let composed = composed.as_draft();
+        let stats = composed.stats.as_ref().expect("stats process");
         assert_eq!(stats.binds.len(), 1);
         assert_eq!(stats.pages.len(), 1);
     }
@@ -172,7 +179,7 @@ mod tests {
         second.max_connections = Some(4096);
 
         assert!(matches!(
-            compose_configs(&[first, second]),
+            compose_validated_configs(vec![first, second]),
             Err(ConfigCompositionError::ProcessFieldConflict {
                 field: "max_connections"
             })
@@ -185,7 +192,7 @@ mod tests {
         let second = tcp_config("shared", 8080, 9081);
 
         assert!(matches!(
-            compose_configs(&[first, second]),
+            compose_validated_configs(vec![first, second]),
             Err(ConfigCompositionError::Invalid(ConfigError::DuplicateName {
                 namespace: "listener",
                 name
@@ -193,8 +200,26 @@ mod tests {
         ));
     }
 
-    fn empty_config() -> Config {
-        Config {
+    #[test]
+    fn validates_only_after_complete_drafts_are_composed() {
+        let mut listener = tcp_config("edge", 80, 9080);
+        let mut services = empty_config();
+        services.upstream_pools = std::mem::take(&mut listener.upstream_pools);
+        services.l4_services = std::mem::take(&mut listener.l4_services);
+
+        assert!(listener.clone().validate().is_err());
+        assert!(services.clone().validate().is_ok());
+
+        let composed =
+            compose_validated_configs(vec![listener, services]).expect("complete composition");
+        let composed = composed.as_draft();
+        assert_eq!(composed.listeners.len(), 1);
+        assert_eq!(composed.upstream_pools.len(), 1);
+        assert_eq!(composed.l4_services.len(), 1);
+    }
+
+    fn empty_config() -> ConfigDraft {
+        ConfigDraft {
             version: 1,
             max_connections: None,
             management: None,
@@ -211,7 +236,7 @@ mod tests {
         }
     }
 
-    fn tcp_config(name: &str, port: u16, upstream_port: u16) -> Config {
+    fn tcp_config(name: &str, port: u16, upstream_port: u16) -> ConfigDraft {
         let mut config = empty_config();
         let pool = format!("{name}-pool");
         let service = format!("{name}-service");

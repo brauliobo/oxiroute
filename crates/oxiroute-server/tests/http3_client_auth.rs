@@ -84,13 +84,15 @@ async fn run_reverse_mode(mode: TlsClientAuthMode) {
     let ca_bundle = client_ca_bundle(&valid_client, &disallowed_san);
     let key = private_key_fixture("proxy-a-key.pem");
     let listener_address = reserve_udp_address();
-    let mut config = reverse_config(
+    let config = reverse_config(
         listener_address,
         key.path(),
         mode,
         (mode != TlsClientAuthMode::Disabled).then_some(ca_bundle.as_path()),
     );
-    oxiroute_config::validate_config(&mut config).expect("valid reverse H3 client-auth config");
+    let config = config
+        .validate()
+        .expect("valid reverse H3 client-auth config");
     let server = process_support::ServerProcess::start(&config, None);
 
     let successful_clients = if mode == TlsClientAuthMode::Required {
@@ -163,7 +165,9 @@ async fn run_forward_mode(mode: TlsClientAuthMode) {
     config.forward_proxy_services[0]
         .destination_policy
         .deny_private = false;
-    oxiroute_config::validate_config(&mut config).expect("valid forward H3 client-auth config");
+    let config = config
+        .validate()
+        .expect("valid forward H3 client-auth config");
     let server = process_support::ServerProcess::start(&config, None);
 
     let successful_clients = if mode == TlsClientAuthMode::Required {
@@ -225,7 +229,7 @@ fn reverse_config(
     key_path: &Path,
     mode: TlsClientAuthMode,
     ca_bundle: Option<&Path>,
-) -> oxiroute_config::Config {
+) -> oxiroute_config::ConfigDraft {
     let mut config = support::empty_config();
     config.certificates.push(Certificate {
         name: "downstream".into(),
@@ -287,7 +291,7 @@ fn forward_config(
     key_path: &Path,
     mode: TlsClientAuthMode,
     ca_bundle: Option<&Path>,
-) -> oxiroute_config::Config {
+) -> oxiroute_config::ConfigDraft {
     let mut config = support::empty_config();
     config.certificates.push(Certificate {
         name: "downstream".into(),

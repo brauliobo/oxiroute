@@ -14,10 +14,11 @@ pub mod squid;
 pub mod varnish;
 
 pub use candidate::{
-    ActivationRequirement, ActivationRequirementKind, CanonicalCandidate, CanonicalDraft,
-    CanonicalFinalization, CanonicalProvenance, DeploymentRequirement, DeploymentRequirementKind,
-    InactiveSource, OperationalOverlayKind, OperationalOverlayRequirement, ProvenanceRole,
-    ProvenanceSpan, SourceImportMetadata, SourceMapSegment, SourceSpanMap,
+    ActivationRequirement, ActivationRequirementKind, CanonicalCandidate,
+    CanonicalCandidateSummary, CanonicalProvenance, DeploymentRequirement,
+    DeploymentRequirementKind, InactiveSource, OperationalOverlayKind,
+    OperationalOverlayRequirement, ProvenanceRole, ProvenanceSpan, SourceImportMetadata,
+    SourceMapSegment, SourceSpanMap,
 };
 pub use diagnostic::{
     Diagnostic, DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INVALID_VALUE,

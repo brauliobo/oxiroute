@@ -14,7 +14,7 @@ use rustix::{
 };
 
 use super::{
-    ConfigCoordinatorPathError, ConfigDiagnostic, ConfigDiagnosticStage, ConfigRevision,
+    AuthoredRevision, ConfigCoordinatorPathError, ConfigDiagnostic, ConfigDiagnosticStage,
     MAX_CANONICAL_CONFIG_BYTES, diagnostic,
 };
 
@@ -44,16 +44,16 @@ pub(super) struct ReplaceControl {
 
 pub(super) enum ReplaceResult {
     Saved { cleanup_degraded: bool },
-    Conflict(ConfigRevision),
+    Conflict(AuthoredRevision),
 }
 
 enum RollbackResult {
     Restored,
-    Conflict(ConfigRevision),
+    Conflict(AuthoredRevision),
 }
 
 enum PrepareResult {
-    Conflict(ConfigRevision),
+    Conflict(AuthoredRevision),
     Exchanged(PreparedExchange),
 }
 
@@ -219,7 +219,7 @@ impl CanonicalStorage {
     pub(super) fn replace<F, G>(
         &self,
         transaction: &TransactionLock<'_>,
-        expected_revision: &ConfigRevision,
+        expected_revision: &AuthoredRevision,
         candidate: &[u8],
         before_exchange: F,
         after_exchange: G,
@@ -326,7 +326,7 @@ impl CanonicalStorage {
     fn prepare_exchange<F, G>(
         &self,
         transaction: &TransactionLock<'_>,
-        expected_revision: &ConfigRevision,
+        expected_revision: &AuthoredRevision,
         candidate: &[u8],
         before_exchange: F,
         after_exchange: G,
@@ -694,7 +694,7 @@ impl CanonicalStorage {
 fn transaction_lock_name(file_name: &OsStr) -> OsString {
     OsString::from(format!(
         ".oxiroute-config.{}.lock",
-        ConfigRevision::from_bytes(file_name.as_bytes())
+        AuthoredRevision::from_bytes(file_name.as_bytes())
     ))
 }
 
@@ -869,8 +869,8 @@ impl FileSnapshot {
         self.identity == identity && self.bytes == bytes
     }
 
-    fn revision(&self) -> ConfigRevision {
-        ConfigRevision::from_bytes(&self.bytes)
+    fn revision(&self) -> AuthoredRevision {
+        AuthoredRevision::from_bytes(&self.bytes)
     }
 }
 

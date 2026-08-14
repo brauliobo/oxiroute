@@ -2,7 +2,7 @@
 
 OxiRoute accepts KDL 2.0, restricted Lua, OpenWrt UCI, and HOCON source documents. KDL 2.0 is the
 default authoring, `serve`, `config compose`, and effective-revision format. Every source resolves to
-the same strict `oxiroute_config::Config` model before runtime preparation. Lua remains supported for
+the same strict `oxiroute_config::ConfigDraft` model before runtime preparation. Lua remains supported for
 existing deployments, but generic templates and native-server references are available only in the
 declarative KDL/HOCON/UCI pipeline.
 
@@ -24,7 +24,7 @@ The source pipeline has one semantics regardless of syntax:
    ambiguous constructs. Extract strict top-level native-server declarations.
 4. Expand generic root `templates` and exact object `use` markers. Objects merge recursively, arrays
    and scalars replace, local fields override templates, and cycles are rejected.
-5. Deserialize any inline fragment into `oxiroute_config::Config` and resolve each `nginx_server`,
+5. Deserialize any inline fragment into `oxiroute_config::ConfigDraft` and resolve each `nginx_server`,
    `haproxy_server`, `squid_server`, `apache_server`, and `varnish_server` through the existing
    complete native import pipeline.
 6. Compose the inline fragment first and imported fragments in declaration order. Reject conflicting
@@ -33,7 +33,8 @@ The source pipeline has one semantics regardless of syntax:
    bytes is the candidate/runtime revision.
 
 Lua takes the legacy direct path: the bounded evaluator returns one table, which is immediately
-decoded and validated as `Config`, then rendered to deterministic KDL for its candidate revision.
+decoded as `ConfigDraft`, validated into `ValidatedConfig`, then rendered to deterministic KDL for
+its candidate revision.
 Lua does not pass through generic templates or native reference extraction.
 
 `diskRevision` remains the SHA-256 of the exact authored root bytes and is used for revision-checked

@@ -35,9 +35,14 @@ import type {
   HealthOverride,
   ListenerInventoryResponse,
   ListenerRuntimeState,
+  MonitoringCache,
+  MonitoringHttpOperations,
   MonitoringListener,
+  MonitoringListenerProtocol,
   MonitoringPool,
   MonitoringPoolEndpoint,
+  MonitoringProxyProtocol,
+  MonitoringTcpRelays,
   MonitoringTraffic,
   MonitoringUpstreamAlgorithm,
   PoolInventoryResponse,
@@ -54,9 +59,14 @@ export type {
   HealthOverride,
   ListenerInventoryResponse,
   ListenerRuntimeState,
+  MonitoringCache,
+  MonitoringHttpOperations,
   MonitoringListener,
+  MonitoringListenerProtocol,
   MonitoringPool,
   MonitoringPoolEndpoint,
+  MonitoringProxyProtocol,
+  MonitoringTcpRelays,
   MonitoringTraffic,
   MonitoringUpstreamAlgorithm,
   PoolInventoryResponse,
@@ -81,12 +91,26 @@ export interface TrackSnapshot {
   last_observed_at_unix_ms: number | null
 }
 
-export interface RecorderPhase {
-  state: 'idle' | 'starting' | 'recording' | 'stopping' | 'failed'
-  operation_id?: string
-  started_at_unix_ms?: number
-  code?: string
-}
+export type RecorderErrorCode =
+  | 'open_failed'
+  | 'write_failed'
+  | 'close_failed'
+  | 'backend_unavailable'
+  | 'file_sync_failed'
+  | 'publish_failed'
+  | 'directory_sync_failed'
+  | 'queue_discontinuity'
+  | 'unsupported_codec'
+  | 'shutdown_timed_out'
+  | 'worker_panicked'
+  | 'stale_publisher'
+export type RecorderNotification = 'started' | 'stopped' | 'failed'
+export type RecorderPhase =
+  | { state: 'idle' }
+  | { state: 'starting'; operation_id: string }
+  | { state: 'recording'; operation_id: string; started_at_unix_ms: number }
+  | { state: 'stopping'; operation_id: string }
+  | { state: 'failed'; operation_id: string; code: RecorderErrorCode }
 
 export interface RecorderSnapshot {
   id: string
@@ -102,18 +126,33 @@ export interface RecorderSnapshot {
   discontinuities: string
   last_completed_relative_name: string | null
   recoverable_partial_name: string | null
+  last_notification: RecorderNotification | null
 }
+
+export type RtmpRelayPhase = 'connecting' | 'publishing' | 'pulling' | 'backoff' | 'stopped'
+export type RtmpRelayFailure = 'policy' | 'connect' | 'handshake' | 'session' | 'transport' | 'source' | 'thread'
+export type RtmpRelayDnsRefreshFailure = 'resolution' | 'address_set' | 'policy' | 'direct_loop' | 'family_mismatch'
+
+const RTMP_RELAY_PHASES: readonly RtmpRelayPhase[] = ['connecting', 'publishing', 'pulling', 'backoff', 'stopped']
+const RTMP_RELAY_FAILURES: readonly RtmpRelayFailure[] = ['policy', 'connect', 'handshake', 'session', 'transport', 'source', 'thread']
+const RTMP_RELAY_DNS_REFRESH_FAILURES: readonly RtmpRelayDnsRefreshFailure[] = [
+  'resolution', 'address_set', 'policy', 'direct_loop', 'family_mismatch',
+]
 
 export interface RelaySnapshot {
   id: string
   destination: { address: string; application: string; stream_name: string }
-  phase: 'connecting' | 'publishing' | 'backoff' | 'stopped'
-  last_failure: 'connect' | 'handshake' | 'session' | 'transport' | 'thread' | null
+  phase: RtmpRelayPhase
+  last_failure: RtmpRelayFailure | null
   queue_messages: number
   queue_bytes: string
   connection_attempts: string
   connections: string
   reconnects: string
+  dns_refresh_attempts: string
+  dns_refresh_successes: string
+  dns_refresh_failures: string
+  last_dns_refresh_failure: RtmpRelayDnsRefreshFailure | null
   events_enqueued: string
   events_sent: string
   events_dropped: string
@@ -206,22 +245,31 @@ export interface RtmpControlResponse {
 export interface MonitoringProcess {
   activeConnections: number
   administrativeState: AdministrativeState
+  status: MonitoringComponentStatus
   cpuPercent: number | null
   maxConnections: number | null
   rejectedConnections: string
   retryAttempts: string
-  residentMemoryBytes: number
-  virtualMemoryBytes: number
-  threadCount: number
-  openFileDescriptors: number
+  residentMemoryBytes: number | null
+  virtualMemoryBytes: number | null
+  threadCount: number | null
+  openFileDescriptors: number | null
 }
 
 export interface MonitoringHost {
-  loadAverage1m: number
-  loadAverage5m: number
-  loadAverage15m: number
-  totalMemoryBytes: number
-  availableMemoryBytes: number
+  status: MonitoringComponentStatus
+  loadAverage1m: number | null
+  loadAverage5m: number | null
+  loadAverage15m: number | null
+  totalMemoryBytes: number | null
+  availableMemoryBytes: number | null
+}
+
+export type MonitoringComponentState = 'healthy' | 'degraded' | 'unsupported'
+
+export interface MonitoringComponentStatus {
+  state: MonitoringComponentState
+  reason?: string
 }
 
 export interface MonitoringRtmp {
@@ -238,11 +286,25 @@ export interface MonitoringRtmp {
   relayConnectionAttempts: string
   relayConnections: string
   relayReconnects: string
+  relayDnsRefreshAttempts: string
+  relayDnsRefreshSuccesses: string
+  relayDnsRefreshFailures: string
   relayEventsSent: string
   relayEventsDropped: string
   relayPayloadBytesSent: string
+  accessLog: MonitoringRtmpAccessLog
   relays: MonitoringRelay[]
   recorders: MonitoringRecorder[]
+}
+
+export interface MonitoringRtmpAccessLog {
+  queueCapacity: number
+  queueDepth: string
+  enqueued: string
+  written: string
+  dropped: string
+  queueSaturated: string
+  writeFailures: string
 }
 
 export interface MonitoringRelay {
@@ -258,6 +320,10 @@ export interface MonitoringRelay {
   connectionAttempts: string
   connections: string
   reconnects: string
+  dnsRefreshAttempts: string
+  dnsRefreshSuccesses: string
+  dnsRefreshFailures: string
+  lastDnsRefreshFailure: RtmpRelayDnsRefreshFailure | null
   eventsSent: string
   eventsDropped: string
   payloadBytesSent: string
@@ -288,6 +354,14 @@ export interface CertbotCertificateSnapshot {
   lastErrorCode: string | null
 }
 
+export interface DirectFileCertificateSnapshot {
+  name: string
+  activeContentRevision: string
+  expiresAt: string
+  lastOutcome: string | null
+  lastErrorCode: string | null
+}
+
 export interface AcmeManagedCertificateSnapshot {
   name: string
   directoryUrl: string
@@ -299,6 +373,11 @@ export interface AcmeManagedCertificateSnapshot {
   nextActionUnixSeconds: number | null
   lastOutcome: string | null
   lastErrorCode: string | null
+  renewalInformationStatus: string
+  dnsProvider: string | null
+  dnsProviderDeployment: string | null
+  dnsProviderHealth: string | null
+  dnsCleanupStatus: string
 }
 
 export interface CertbotWatcherSnapshot {
@@ -313,17 +392,57 @@ export interface CertbotWatcherSnapshot {
   reconciliationFailures: string
 }
 
+export type DirectFileWatcherSnapshot = CertbotWatcherSnapshot
+
+export type MonitoringTransport = 'http' | 'rtmp' | 'forward' | 'cache' | 'tcp' | 'udp' | 'h3' | 'acme'
+export type MonitoringTransportOutcome =
+  | 'success'
+  | 'client_error'
+  | 'server_error'
+  | 'upstream_error'
+  | 'timeout'
+  | 'rejected'
+  | 'cancelled'
+  | 'internal_error'
+  | 'degraded'
+
+export interface MonitoringTransportOperation {
+  transport: MonitoringTransport
+  outcomes: Array<{ outcome: MonitoringTransportOutcome; count: string }>
+  latency: {
+    buckets: Array<{ upperBoundMs: number | null; count: string }>
+    count: string
+    sumMs: string
+  }
+}
+
+export interface MonitoringAccessRecord {
+  timestampUnixMs: number
+  correlationId: string
+  listener: string
+  transport: MonitoringTransport
+  outcome: MonitoringTransportOutcome
+  durationMs: string
+  bytesReceived: string
+  bytesSent: string
+}
+
 export interface MonitoringSnapshot {
   sampledAtUnixMs: number
   uptimeMs: number
+  generationAgeMs: number
   process: MonitoringProcess
   host: MonitoringHost
   traffic: MonitoringTraffic
   listeners: MonitoringListener[]
   upstreamPools: MonitoringPool[]
+  transportOperations: MonitoringTransportOperation[]
+  accessRecords: MonitoringAccessRecord[]
   certbotCertificates: CertbotCertificateSnapshot[]
   certbotWatcher: CertbotWatcherSnapshot | null
   acmeManagedCertificates: AcmeManagedCertificateSnapshot[]
+  directFileCertificates: DirectFileCertificateSnapshot[]
+  directFileWatcher: DirectFileWatcherSnapshot | null
   rtmp: MonitoringRtmp
 }
 
@@ -485,41 +604,89 @@ export interface ConfigValidationResponse {
   topology: CandidateTopologySnapshot
 }
 
+export interface OperationalEventSimpleOutcomes {
+  generation_prepare: 'prepared' | 'rejected' | 'requested' | 'failed'
+  generation_activate: 'activated'
+  generation_rollback: 'prepared' | 'rejected' | 'requested' | 'failed'
+  generation_drain: 'rejected' | 'requested' | 'failed'
+  generation_start: 'quarantined'
+  configuration_reload: 'rejected' | 'applied' | 'failed'
+  import_completed: 'applied'
+  control_operation: 'rejected' | 'requested' | 'failed'
+  process_shutdown: 'rejected' | 'requested' | 'failed'
+  listener_administrative_state: 'rejected' | 'applied' | 'failed'
+  pool_administrative_state: 'rejected' | 'applied' | 'failed'
+  server_update: 'rejected' | 'applied' | 'failed'
+  rtmp_connect: 'rejected' | 'applied' | 'failed'
+  rtmp_publish: 'rejected' | 'applied' | 'failed'
+  rtmp_play: 'rejected' | 'applied' | 'failed'
+  rtmp_disconnect: 'rejected' | 'applied' | 'failed'
+  rtmp_access: 'rejected' | 'applied' | 'failed'
+  certificate_renewal: 'rejected' | 'requested' | 'applied' | 'failed'
+  certificate_activated: 'activated'
+  certificate_revocation: 'rejected' | 'requested' | 'applied' | 'failed'
+  certificate_deletion: 'rejected' | 'requested' | 'applied' | 'failed'
+  certificate_account_rollover: 'rejected' | 'requested' | 'applied' | 'failed'
+  certificate_job_control: 'rejected' | 'requested' | 'applied' | 'failed'
+  unknown: 'unknown'
+}
+
+export type OperationalEventSimpleName = keyof OperationalEventSimpleOutcomes
+
 export type OperationalEventName =
-  | 'generation_prepare'
-  | 'generation_activate'
-  | 'generation_rollback'
-  | 'generation_start'
-  | 'process_shutdown'
-  | 'listener_administrative_state'
-  | 'pool_administrative_state'
-  | 'server_update'
-  | 'certificate_renewal'
-  | 'certificate_activated'
-  | 'certificate_revocation'
-  | 'certificate_deletion'
-  | 'certificate_account_rollover'
-  | 'certificate_job_control'
-  | 'unknown'
+  | OperationalEventSimpleName
+  | 'upstream_endpoint_ejection'
+  | 'upstream_endpoint_recovery'
+
+export type OperationalEventSimpleOutcome = OperationalEventSimpleOutcomes[OperationalEventSimpleName]
+
+export interface OperationalEndpointEjectionOutcome {
+  type: 'ejected'
+  pool: string
+  server: string
+  reason: HealthFailure
+  failureCount: number
+  ejectionCount: number
+  ejectedAtUnixMs: number
+  ejectionUntilUnixMs: number
+}
+
+export interface OperationalEndpointRecoveryOutcome {
+  type: 'recovered'
+  pool: string
+  server: string
+  reason: HealthFailure | null
+  recoveryCount: number
+  recoveredAtUnixMs: number
+}
 
 export type OperationalEventOutcome =
-  | 'prepared'
-  | 'rejected'
-  | 'activated'
-  | 'quarantined'
-  | 'requested'
-  | 'applied'
-  | 'failed'
-  | 'unknown'
+  | OperationalEventSimpleOutcome
+  | OperationalEndpointEjectionOutcome
+  | OperationalEndpointRecoveryOutcome
 
-export interface OperationalEvent {
+interface OperationalEventBase {
   cursor: number
   timestampUnixMs: number | null
-  event: OperationalEventName
-  outcome: OperationalEventOutcome
   revision: string | null
   certificate?: string
 }
+
+export type OperationalEvent =
+  | OperationalEventBase & {
+    event: 'upstream_endpoint_ejection'
+    outcome: OperationalEndpointEjectionOutcome
+  }
+  | OperationalEventBase & {
+    event: 'upstream_endpoint_recovery'
+    outcome: OperationalEndpointRecoveryOutcome
+  }
+  | {
+    [Event in OperationalEventSimpleName]: OperationalEventBase & {
+      event: Event
+      outcome: OperationalEventSimpleOutcomes[Event]
+    }
+  }[OperationalEventSimpleName]
 
 export interface EventStreamResyncRequired {
   cursor: number
@@ -931,7 +1098,10 @@ export interface TlsActionResponse extends TlsOperationOutcome {
   jobId: string | null
 }
 
-const EVENT_STREAM_PATH = '/api/v1/events/stream'
+const EVENT_PAGE_PATH_V1 = '/api/v1/events'
+const EVENT_PAGE_PATH_V2 = '/api/v2/events'
+const EVENT_STREAM_PATH_V1 = '/api/v1/events/stream'
+const EVENT_STREAM_PATH_V2 = '/api/v2/events/stream'
 const DEFAULT_EVENT_STREAM_MAX_RETRIES = 5
 const DEFAULT_EVENT_STREAM_RETRY_DELAY_MS = 250
 const DEFAULT_EVENT_STREAM_MAX_RETRY_DELAY_MS = 5_000
@@ -939,29 +1109,58 @@ const OPERATIONAL_EVENT_NAMES: readonly OperationalEventName[] = [
   'generation_prepare',
   'generation_activate',
   'generation_rollback',
+  'generation_drain',
   'generation_start',
+  'configuration_reload',
+  'import_completed',
+  'control_operation',
   'process_shutdown',
   'listener_administrative_state',
   'pool_administrative_state',
   'server_update',
+  'rtmp_connect',
+  'rtmp_publish',
+  'rtmp_play',
+  'rtmp_disconnect',
+  'rtmp_access',
   'certificate_renewal',
   'certificate_activated',
   'certificate_revocation',
   'certificate_deletion',
   'certificate_account_rollover',
   'certificate_job_control',
+  'upstream_endpoint_ejection',
+  'upstream_endpoint_recovery',
   'unknown',
 ]
-const OPERATIONAL_EVENT_OUTCOMES: readonly OperationalEventOutcome[] = [
-  'prepared',
-  'rejected',
-  'activated',
-  'quarantined',
-  'requested',
-  'applied',
-  'failed',
-  'unknown',
-]
+const OPERATIONAL_EVENT_OUTCOMES: {
+  [Event in OperationalEventSimpleName]: readonly OperationalEventSimpleOutcomes[Event][]
+} = {
+  generation_prepare: ['prepared', 'rejected', 'requested', 'failed'],
+  generation_activate: ['activated'],
+  generation_rollback: ['prepared', 'rejected', 'requested', 'failed'],
+  generation_drain: ['rejected', 'requested', 'failed'],
+  generation_start: ['quarantined'],
+  configuration_reload: ['rejected', 'applied', 'failed'],
+  import_completed: ['applied'],
+  control_operation: ['rejected', 'requested', 'failed'],
+  process_shutdown: ['rejected', 'requested', 'failed'],
+  listener_administrative_state: ['rejected', 'applied', 'failed'],
+  pool_administrative_state: ['rejected', 'applied', 'failed'],
+  server_update: ['rejected', 'applied', 'failed'],
+  rtmp_connect: ['rejected', 'applied', 'failed'],
+  rtmp_publish: ['rejected', 'applied', 'failed'],
+  rtmp_play: ['rejected', 'applied', 'failed'],
+  rtmp_disconnect: ['rejected', 'applied', 'failed'],
+  rtmp_access: ['rejected', 'applied', 'failed'],
+  certificate_renewal: ['rejected', 'requested', 'applied', 'failed'],
+  certificate_activated: ['activated'],
+  certificate_revocation: ['rejected', 'requested', 'applied', 'failed'],
+  certificate_deletion: ['rejected', 'requested', 'applied', 'failed'],
+  certificate_account_rollover: ['rejected', 'requested', 'applied', 'failed'],
+  certificate_job_control: ['rejected', 'requested', 'applied', 'failed'],
+  unknown: ['unknown'],
+}
 
 export function parseEventStreamFrame(frame: string): EventStreamMessage | null {
   let eventName = 'message'
@@ -1032,8 +1231,11 @@ function parseOperationalEvent(
     : safeInteger(value.timestampUnixMs)
       ? value.timestampUnixMs
       : undefined
-  const event = isOperationalEventName(value.event) ? value.event : null
-  const outcome = isOperationalEventOutcome(value.outcome) ? value.outcome : null
+  const eventName = value.event === 'certificate_activation'
+    ? 'certificate_activated'
+    : value.event
+  const event = isOperationalEventName(eventName) ? eventName : null
+  const outcome = event === null ? null : parseOperationalEventOutcome(event, value.outcome)
   const revision = value.revision === null
     ? null
     : typeof value.revision === 'string'
@@ -1048,14 +1250,23 @@ function parseOperationalEvent(
     (expectedId !== undefined && expectedId !== cursor) || timestampUnixMs === undefined ||
     event === null || (expectedName !== undefined && event !== expectedName) || outcome === null ||
     revision === undefined || certificate === null) return null
-  return {
+  const common = {
     cursor,
     timestampUnixMs,
-    event,
-    outcome,
     revision,
     ...(certificate === undefined ? {} : { certificate }),
   }
+  if (event === 'upstream_endpoint_ejection') {
+    return typeof outcome !== 'string' && outcome.type === 'ejected'
+      ? { ...common, event, outcome }
+      : null
+  }
+  if (event === 'upstream_endpoint_recovery') {
+    return typeof outcome !== 'string' && outcome.type === 'recovered'
+      ? { ...common, event, outcome }
+      : null
+  }
+  return typeof outcome === 'string' ? { ...common, event, outcome } as OperationalEvent : null
 }
 
 export function connectEventStream(
@@ -1066,6 +1277,7 @@ export function connectEventStream(
   const controller = new AbortController()
   let retryTimer: ReturnType<typeof setTimeout> | undefined
   let lastEventId: number | null = options.after ?? null
+  let streamPath = EVENT_STREAM_PATH_V2
   let closed = false
   let resolveClosed!: () => void
   const closedPromise = new Promise<void>((resolve) => {
@@ -1096,11 +1308,15 @@ export function connectEventStream(
           'Cache-Control': 'no-cache',
         }
         if (lastEventId !== null) headers['Last-Event-ID'] = String(lastEventId)
-        const response = await fetch(EVENT_STREAM_PATH, {
+        const response = await fetch(streamPath, {
           cache: 'no-store',
           headers,
           signal: controller.signal,
         })
+        if (response.status === 404 && streamPath === EVENT_STREAM_PATH_V2) {
+          streamPath = EVENT_STREAM_PATH_V1
+          continue
+        }
         if (!response.ok) {
           throw await eventStreamResponseError(response)
         }
@@ -1282,8 +1498,52 @@ function isOperationalEventName(value: unknown): value is OperationalEventName {
   return typeof value === 'string' && OPERATIONAL_EVENT_NAMES.includes(value as OperationalEventName)
 }
 
-function isOperationalEventOutcome(value: unknown): value is OperationalEventOutcome {
-  return typeof value === 'string' && OPERATIONAL_EVENT_OUTCOMES.includes(value as OperationalEventOutcome)
+function parseOperationalEventOutcome(
+  event: OperationalEventName,
+  value: unknown,
+): OperationalEventOutcome | null {
+  if (event === 'upstream_endpoint_ejection' && isRecord(value) &&
+    typeof value.pool === 'string' && typeof value.server === 'string' &&
+    value.type === 'ejected' && isHealthFailure(value.reason) && safeInteger(value.failureCount) &&
+    safeInteger(value.ejectionCount) && safeInteger(value.ejectedAtUnixMs) &&
+    safeInteger(value.ejectionUntilUnixMs)
+  ) {
+    return {
+      type: 'ejected',
+      pool: value.pool,
+      server: value.server,
+      reason: value.reason,
+      failureCount: value.failureCount,
+      ejectionCount: value.ejectionCount,
+      ejectedAtUnixMs: value.ejectedAtUnixMs,
+      ejectionUntilUnixMs: value.ejectionUntilUnixMs,
+    }
+  }
+  if (event === 'upstream_endpoint_recovery' && isRecord(value) &&
+    typeof value.pool === 'string' && typeof value.server === 'string' &&
+    value.type === 'recovered' && (value.reason === null || isHealthFailure(value.reason)) &&
+    safeInteger(value.recoveryCount) && safeInteger(value.recoveredAtUnixMs)
+  ) {
+    return {
+      type: 'recovered',
+      pool: value.pool,
+      server: value.server,
+      reason: value.reason,
+      recoveryCount: value.recoveryCount,
+      recoveredAtUnixMs: value.recoveredAtUnixMs,
+    }
+  }
+  if (event === 'upstream_endpoint_ejection' || event === 'upstream_endpoint_recovery' ||
+    typeof value !== 'string'
+  ) return null
+  return (OPERATIONAL_EVENT_OUTCOMES[event] as readonly string[]).includes(value)
+    ? value as OperationalEventSimpleOutcome
+    : null
+}
+
+function isHealthFailure(value: unknown): value is HealthFailure {
+  return typeof value === 'string' &&
+    ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error'].includes(value)
 }
 
 function payloadIsReason(value: unknown, reason: string): boolean {
@@ -1375,14 +1635,23 @@ export async function fetchEvents(
   token: string,
   signal?: AbortSignal,
 ): Promise<EventPage> {
-  return parseEventPage(await request(
-    `/api/v1/events?after=${after}&limit=${limit}`,
-    {
-      cache: 'no-store',
-      headers: authorizationHeader(token),
-      signal,
-    },
-  ))
+  const options = {
+    cache: 'no-store' as const,
+    headers: authorizationHeader(token),
+    signal,
+  }
+  try {
+    return parseEventPage(
+      await request(`${EVENT_PAGE_PATH_V2}?after=${after}&limit=${limit}`, options),
+      true,
+    )
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 404) throw error
+    return parseEventPage(
+      await request(`${EVENT_PAGE_PATH_V1}?after=${after}&limit=${limit}`, options),
+      false,
+    )
+  }
 }
 
 export interface AuditQuery {
@@ -1700,10 +1969,15 @@ function parseGenerationResponse(value: unknown): GenerationResponse {
   return { generation: value.generation }
 }
 
-function parseEventPage(value: unknown): EventPage {
+function parseEventPage(value: unknown, requireLatestCursor: boolean): EventPage {
+  const latestCursor = isRecord(value) && value.latestCursor === undefined && !requireLatestCursor
+    ? value.cursor
+    : isRecord(value)
+      ? value.latestCursor
+      : undefined
   if (!isRecord(value) || !Array.isArray(value.events) ||
     !value.events.every((event) => isRecord(event) && parseOperationalEvent(event) !== null) ||
-    !safeInteger(value.cursor) || typeof value.hasMore !== 'boolean' ||
+    !safeInteger(value.cursor) || !safeInteger(latestCursor) || typeof value.hasMore !== 'boolean' ||
     !(value.oldestCursor === null || safeInteger(value.oldestCursor))
   ) return invalidPayload('event history')
   const events = value.events.map((event) => parseOperationalEvent(event as Record<string, unknown>))
@@ -1711,9 +1985,7 @@ function parseEventPage(value: unknown): EventPage {
   return {
     events: events as OperationalEvent[],
     cursor: value.cursor,
-    latestCursor: value.latestCursor === undefined
-      ? value.cursor
-      : parseEventCursor(value.latestCursor) ?? invalidEventPage(),
+    latestCursor,
     hasMore: value.hasMore,
     oldestCursor: value.oldestCursor,
   }
@@ -1999,10 +2271,6 @@ function optionalStringOrNull(value: unknown): boolean {
   return value === undefined || value === null || typeof value === 'string'
 }
 
-function invalidEventPage(): never {
-  return invalidPayload('event history')
-}
-
 function parseRtmpCatalog(value: unknown): RtmpCatalog {
   if (!isRecord(value) || !decimalString(value.revision) || !safeInteger(value.as_of_unix_ms) ||
     !isRecord(value.capabilities) || typeof value.capabilities.live_ingest !== 'boolean' ||
@@ -2015,7 +2283,15 @@ function parseRtmpCatalog(value: unknown): RtmpCatalog {
     stream.manual_recording !== stream.recorders.some((recorder) => recorder.manual) ||
     (stream.manual_recording && !manualRecording)
   )) return invalidPayload('RTMP catalog')
-  return value as unknown as RtmpCatalog
+  return {
+    revision: value.revision,
+    as_of_unix_ms: value.as_of_unix_ms,
+    capabilities: {
+      live_ingest: value.capabilities.live_ingest,
+      manual_recording: value.capabilities.manual_recording,
+    },
+    streams: value.streams.map(projectStreamSnapshot),
+  }
 }
 
 function parseRtmpStats(value: unknown): RtmpStats {
@@ -2061,25 +2337,461 @@ function parseRtmpControlResponse(value: unknown): RtmpControlResponse {
 
 function parseMonitoring(value: unknown): MonitoringSnapshot {
   if (!isRecord(value) || !safeInteger(value.sampledAtUnixMs) || !safeInteger(value.uptimeMs) ||
+    !safeInteger(value.generationAgeMs) ||
     !monitoringProcess(value.process) || !monitoringHost(value.host) || !monitoringTraffic(value.traffic) ||
     !Array.isArray(value.listeners) || !value.listeners.every(monitoringListener) ||
     !Array.isArray(value.upstreamPools) || !value.upstreamPools.every(monitoringPool) ||
+    !Array.isArray(value.transportOperations) ||
+    !value.transportOperations.every(monitoringTransportOperation) ||
+    !Array.isArray(value.accessRecords) || !value.accessRecords.every(monitoringAccessRecord) ||
     !Array.isArray(value.certbotCertificates) || !value.certbotCertificates.every(certbotCertificate) ||
     !(value.certbotWatcher === null || certbotWatcher(value.certbotWatcher)) || !isRecord(value.rtmp) ||
     !Array.isArray(value.acmeManagedCertificates) ||
     !value.acmeManagedCertificates.every(acmeManagedCertificate) ||
+    !Array.isArray(value.directFileCertificates) ||
+    !value.directFileCertificates.every(directFileCertificate) ||
+    !(value.directFileWatcher === null || certbotWatcher(value.directFileWatcher)) ||
     !safeInteger(value.rtmp.activeStreams) || !safeInteger(value.rtmp.publishers) ||
     !safeInteger(value.rtmp.subscribers) || !decimalString(value.rtmp.mediaPayloadBytesReceived) ||
     typeof value.rtmp.recordingSupported !== 'boolean' || typeof value.rtmp.manualRecording !== 'boolean' ||
     !decimalString(value.rtmp.recorderBytesWritten) || !decimalString(value.rtmp.recorderSegmentsStarted) ||
     !decimalString(value.rtmp.recorderSegmentsCompleted) || !decimalString(value.rtmp.recorderDiscontinuities) ||
     !decimalString(value.rtmp.relayConnectionAttempts) || !decimalString(value.rtmp.relayConnections) ||
-    !decimalString(value.rtmp.relayReconnects) || !decimalString(value.rtmp.relayEventsSent) ||
+    !decimalString(value.rtmp.relayReconnects) || !decimalString(value.rtmp.relayDnsRefreshAttempts) ||
+    !decimalString(value.rtmp.relayDnsRefreshSuccesses) || !decimalString(value.rtmp.relayDnsRefreshFailures) ||
+    !decimalString(value.rtmp.relayEventsSent) ||
     !decimalString(value.rtmp.relayEventsDropped) || !decimalString(value.rtmp.relayPayloadBytesSent) ||
+    !monitoringRtmpAccessLog(value.rtmp.accessLog) ||
     !Array.isArray(value.rtmp.relays) || !value.rtmp.relays.every(monitoringRelay) ||
     !Array.isArray(value.rtmp.recorders) || !value.rtmp.recorders.every(monitoringRecorder)
   ) return invalidPayload('monitoring')
-  return value as unknown as MonitoringSnapshot
+  return {
+    sampledAtUnixMs: value.sampledAtUnixMs,
+    uptimeMs: value.uptimeMs,
+    generationAgeMs: value.generationAgeMs,
+    process: projectMonitoringProcess(value.process),
+    host: projectMonitoringHost(value.host),
+    traffic: projectMonitoringTraffic(value.traffic),
+    listeners: value.listeners.map(projectMonitoringListener),
+    upstreamPools: value.upstreamPools.map(projectMonitoringPool),
+    transportOperations: value.transportOperations.map(projectMonitoringTransportOperation),
+    accessRecords: value.accessRecords.map(projectMonitoringAccessRecord),
+    certbotCertificates: value.certbotCertificates.map(projectCertbotCertificate),
+    certbotWatcher: value.certbotWatcher === null ? null : projectCertbotWatcher(value.certbotWatcher),
+    acmeManagedCertificates: value.acmeManagedCertificates.map(projectAcmeManagedCertificate),
+    directFileCertificates: value.directFileCertificates.map(projectDirectFileCertificate),
+    directFileWatcher: value.directFileWatcher === null ? null : projectCertbotWatcher(value.directFileWatcher),
+    rtmp: projectMonitoringRtmp(value.rtmp),
+  }
+}
+
+function projectStreamSnapshot(stream: StreamSnapshot): StreamSnapshot {
+  return {
+    id: stream.id,
+    revision: stream.revision,
+    server_id: stream.server_id,
+    application: stream.application,
+    name: stream.name,
+    created_at_unix_ms: stream.created_at_unix_ms,
+    publisher: stream.publisher === null ? null : {
+      session_id: stream.publisher.session_id,
+      attached_at_unix_ms: stream.publisher.attached_at_unix_ms,
+    },
+    subscriber_count: stream.subscriber_count,
+    media: {
+      audio: projectTrackSnapshot(stream.media.audio),
+      video: projectTrackSnapshot(stream.media.video),
+      fanout_payload_bytes: stream.media.fanout_payload_bytes,
+    },
+    relays: stream.relays.map(projectRelaySnapshot),
+    recording_supported: stream.recording_supported,
+    manual_recording: stream.manual_recording,
+    recorders: stream.recorders.map(projectRecorderSnapshot),
+  }
+}
+
+function projectTrackSnapshot(track: TrackSnapshot): TrackSnapshot {
+  return {
+    codec_id: track.codec_id,
+    codec_fourcc: track.codec_fourcc,
+    codec_name: track.codec_name,
+    recording_supported: track.recording_supported,
+    payload_bytes: track.payload_bytes,
+    last_rtmp_timestamp_ms: track.last_rtmp_timestamp_ms,
+    last_observed_at_unix_ms: track.last_observed_at_unix_ms,
+  }
+}
+
+function projectRelaySnapshot(relay: RelaySnapshot): RelaySnapshot {
+  return {
+    id: relay.id,
+    destination: {
+      address: relay.destination.address,
+      application: relay.destination.application,
+      stream_name: relay.destination.stream_name,
+    },
+    phase: relay.phase,
+    last_failure: relay.last_failure,
+    queue_messages: relay.queue_messages,
+    queue_bytes: relay.queue_bytes,
+    connection_attempts: relay.connection_attempts,
+    connections: relay.connections,
+    reconnects: relay.reconnects,
+    dns_refresh_attempts: relay.dns_refresh_attempts,
+    dns_refresh_successes: relay.dns_refresh_successes,
+    dns_refresh_failures: relay.dns_refresh_failures,
+    last_dns_refresh_failure: relay.last_dns_refresh_failure,
+    events_enqueued: relay.events_enqueued,
+    events_sent: relay.events_sent,
+    events_dropped: relay.events_dropped,
+    payload_bytes_sent: relay.payload_bytes_sent,
+  }
+}
+
+function projectRecorderSnapshot(recorder: RecorderSnapshot): RecorderSnapshot {
+  return {
+    id: recorder.id,
+    name: recorder.name,
+    manual: recorder.manual,
+    phase: projectRecorderPhase(recorder.phase),
+    changed_at_unix_ms: recorder.changed_at_unix_ms,
+    bytes_written: recorder.bytes_written,
+    current_relative_name: recorder.current_relative_name,
+    published_but_not_durable_relative_name: recorder.published_but_not_durable_relative_name,
+    segments_started: recorder.segments_started,
+    segments_completed: recorder.segments_completed,
+    discontinuities: recorder.discontinuities,
+    last_completed_relative_name: recorder.last_completed_relative_name,
+    recoverable_partial_name: recorder.recoverable_partial_name,
+    last_notification: recorder.last_notification,
+  }
+}
+
+function projectRecorderPhase(phase: RecorderPhase): RecorderPhase {
+  switch (phase.state) {
+    case 'idle':
+      return { state: phase.state }
+    case 'starting':
+    case 'stopping':
+      return { state: phase.state, operation_id: phase.operation_id }
+    case 'recording':
+      return {
+        state: phase.state,
+        operation_id: phase.operation_id,
+        started_at_unix_ms: phase.started_at_unix_ms,
+      }
+    case 'failed':
+      return { state: phase.state, operation_id: phase.operation_id, code: phase.code }
+  }
+}
+
+function projectMonitoringProcess(value: MonitoringProcess): MonitoringProcess {
+  return {
+    activeConnections: value.activeConnections,
+    administrativeState: value.administrativeState,
+    status: projectMonitoringComponentStatus(value.status),
+    cpuPercent: value.cpuPercent,
+    maxConnections: value.maxConnections,
+    rejectedConnections: value.rejectedConnections,
+    retryAttempts: value.retryAttempts,
+    residentMemoryBytes: value.residentMemoryBytes,
+    virtualMemoryBytes: value.virtualMemoryBytes,
+    threadCount: value.threadCount,
+    openFileDescriptors: value.openFileDescriptors,
+  }
+}
+
+function projectMonitoringHost(value: MonitoringHost): MonitoringHost {
+  return {
+    status: projectMonitoringComponentStatus(value.status),
+    loadAverage1m: value.loadAverage1m,
+    loadAverage5m: value.loadAverage5m,
+    loadAverage15m: value.loadAverage15m,
+    totalMemoryBytes: value.totalMemoryBytes,
+    availableMemoryBytes: value.availableMemoryBytes,
+  }
+}
+
+function projectMonitoringComponentStatus(value: MonitoringComponentStatus): MonitoringComponentStatus {
+  return {
+    state: value.state,
+    ...(value.reason === undefined ? {} : { reason: value.reason }),
+  }
+}
+
+function projectMonitoringTraffic(value: MonitoringTraffic): MonitoringTraffic {
+  return {
+    acceptedConnections: value.acceptedConnections,
+    rejectedConnections: value.rejectedConnections,
+    activeConnections: value.activeConnections,
+    bytesReceived: value.bytesReceived,
+    bytesSent: value.bytesSent,
+  }
+}
+
+function projectMonitoringListener(value: MonitoringListener): MonitoringListener {
+  return {
+    administrativeState: value.administrativeState,
+    name: value.name,
+    protocol: value.protocol,
+    bind: value.bind,
+    maxConnections: value.maxConnections,
+    state: value.state,
+    ...projectMonitoringTraffic(value),
+    httpOperations: value.httpOperations === null ? null : projectMonitoringHttpOperations(value.httpOperations),
+    tcpRelays: value.tcpRelays === null ? null : projectMonitoringTcpRelays(value.tcpRelays),
+    proxyProtocol: value.proxyProtocol === null ? null : projectMonitoringProxyProtocol(value.proxyProtocol),
+    cache: value.cache === null ? null : projectMonitoringCache(value.cache),
+  }
+}
+
+function projectMonitoringHttpOperations(value: MonitoringHttpOperations): MonitoringHttpOperations {
+  return {
+    outcomes: value.outcomes.map((outcome) => ({ result: outcome.result, count: outcome.count })),
+    latency: projectMonitoringLatency(value.latency),
+  }
+}
+
+function projectMonitoringTcpRelays(value: MonitoringTcpRelays): MonitoringTcpRelays {
+  return {
+    outcomes: value.outcomes.map((outcome) => ({ result: outcome.result, count: outcome.count })),
+    latency: projectMonitoringLatency(value.latency),
+  }
+}
+
+function projectMonitoringLatency(
+  value: MonitoringHttpOperations['latency'],
+): MonitoringHttpOperations['latency'] {
+  return {
+    buckets: value.buckets.map((bucket) => ({
+      upperBoundMs: bucket.upperBoundMs,
+      count: bucket.count,
+    })),
+    count: value.count,
+    sumMs: value.sumMs,
+  }
+}
+
+function projectMonitoringProxyProtocol(value: MonitoringProxyProtocol): MonitoringProxyProtocol {
+  return {
+    outcomes: value.outcomes.map((outcome) => ({ result: outcome.result, count: outcome.count })),
+  }
+}
+
+function projectMonitoringCache(value: MonitoringCache): MonitoringCache {
+  return {
+    hits: value.hits,
+    misses: value.misses,
+    admissions: value.admissions,
+    evictions: value.evictions,
+  }
+}
+
+function projectMonitoringPool(value: MonitoringPool): MonitoringPool {
+  return {
+    name: value.name,
+    algorithm: value.algorithm,
+    availableEndpoints: value.availableEndpoints,
+    totalEndpoints: value.totalEndpoints,
+    unavailableSelections: value.unavailableSelections,
+    queued: value.queued,
+    queuedTotal: value.queuedTotal,
+    queueTimeouts: value.queueTimeouts,
+    queueCancellations: value.queueCancellations,
+    endpoints: value.endpoints.map(projectMonitoringPoolEndpoint),
+  }
+}
+
+function projectMonitoringPoolEndpoint(value: MonitoringPoolEndpoint): MonitoringPoolEndpoint {
+  return {
+    activeConnections: value.activeConnections,
+    administrativeState: value.administrativeState,
+    address: value.address,
+    checksEnabled: value.checksEnabled,
+    checksRunning: value.checksRunning,
+    configuredMaxConnections: value.configuredMaxConnections,
+    healthOverride: value.healthOverride,
+    maxConnections: value.maxConnections,
+    name: value.name,
+    state: value.state,
+    weight: value.weight,
+    lastCheckedAtUnixMs: value.lastCheckedAtUnixMs,
+    lastTransitionAtUnixMs: value.lastTransitionAtUnixMs,
+    successfulChecks: value.successfulChecks,
+    failedChecks: value.failedChecks,
+    consecutiveSuccesses: value.consecutiveSuccesses,
+    consecutiveFailures: value.consecutiveFailures,
+    lastFailure: value.lastFailure,
+    passiveEjected: value.passiveEjected,
+    passiveFailureCount: value.passiveFailureCount,
+    passiveConsecutiveFailures: value.passiveConsecutiveFailures,
+    passiveEjectionCount: value.passiveEjectionCount,
+    passiveEjectionReason: value.passiveEjectionReason,
+    passiveEjectedAtUnixMs: value.passiveEjectedAtUnixMs,
+    passiveEjectionUntilUnixMs: value.passiveEjectionUntilUnixMs,
+    passiveRecoveryCount: value.passiveRecoveryCount,
+    passiveLastRecoveryAtUnixMs: value.passiveLastRecoveryAtUnixMs,
+  }
+}
+
+function projectMonitoringTransportOperation(
+  value: MonitoringTransportOperation,
+): MonitoringTransportOperation {
+  return {
+    transport: value.transport,
+    outcomes: value.outcomes.map((outcome) => ({ outcome: outcome.outcome, count: outcome.count })),
+    latency: projectMonitoringLatency(value.latency),
+  }
+}
+
+function projectMonitoringAccessRecord(value: MonitoringAccessRecord): MonitoringAccessRecord {
+  return {
+    timestampUnixMs: value.timestampUnixMs,
+    correlationId: value.correlationId,
+    listener: value.listener,
+    transport: value.transport,
+    outcome: value.outcome,
+    durationMs: value.durationMs,
+    bytesReceived: value.bytesReceived,
+    bytesSent: value.bytesSent,
+  }
+}
+
+function projectCertbotCertificate(value: CertbotCertificateSnapshot): CertbotCertificateSnapshot {
+  return {
+    name: value.name,
+    activeArchiveRevision: value.activeArchiveRevision,
+    activeContentRevision: value.activeContentRevision,
+    expiresAt: value.expiresAt,
+    lastOutcome: value.lastOutcome,
+    lastErrorCode: value.lastErrorCode,
+  }
+}
+
+function projectAcmeManagedCertificate(
+  value: AcmeManagedCertificateSnapshot,
+): AcmeManagedCertificateSnapshot {
+  return {
+    name: value.name,
+    directoryUrl: value.directoryUrl,
+    diskRevision: value.diskRevision,
+    activeRevision: value.activeRevision,
+    expiresAt: value.expiresAt,
+    notBeforeUnixSeconds: value.notBeforeUnixSeconds,
+    notAfterUnixSeconds: value.notAfterUnixSeconds,
+    nextActionUnixSeconds: value.nextActionUnixSeconds,
+    lastOutcome: value.lastOutcome,
+    lastErrorCode: value.lastErrorCode,
+    renewalInformationStatus: value.renewalInformationStatus,
+    dnsProvider: value.dnsProvider,
+    dnsProviderDeployment: value.dnsProviderDeployment,
+    dnsProviderHealth: value.dnsProviderHealth,
+    dnsCleanupStatus: value.dnsCleanupStatus,
+  }
+}
+
+function projectDirectFileCertificate(
+  value: DirectFileCertificateSnapshot,
+): DirectFileCertificateSnapshot {
+  return {
+    name: value.name,
+    activeContentRevision: value.activeContentRevision,
+    expiresAt: value.expiresAt,
+    lastOutcome: value.lastOutcome,
+    lastErrorCode: value.lastErrorCode,
+  }
+}
+
+function projectCertbotWatcher(value: CertbotWatcherSnapshot): CertbotWatcherSnapshot {
+  return {
+    health: value.health,
+    coalescedEvents: value.coalescedEvents,
+    ignoredAccessEvents: value.ignoredAccessEvents,
+    backendErrors: value.backendErrors,
+    watchRecoveries: value.watchRecoveries,
+    watchRefreshes: value.watchRefreshes,
+    rescans: value.rescans,
+    periodicRescans: value.periodicRescans,
+    reconciliationFailures: value.reconciliationFailures,
+  }
+}
+
+function projectMonitoringRtmp(value: Record<string, unknown>): MonitoringRtmp {
+  const accessLog = value.accessLog as MonitoringRtmpAccessLog
+  return {
+    activeStreams: value.activeStreams as number,
+    publishers: value.publishers as number,
+    subscribers: value.subscribers as number,
+    mediaPayloadBytesReceived: value.mediaPayloadBytesReceived as string,
+    recordingSupported: value.recordingSupported as boolean,
+    manualRecording: value.manualRecording as boolean,
+    recorderBytesWritten: value.recorderBytesWritten as string,
+    recorderSegmentsStarted: value.recorderSegmentsStarted as string,
+    recorderSegmentsCompleted: value.recorderSegmentsCompleted as string,
+    recorderDiscontinuities: value.recorderDiscontinuities as string,
+    relayConnectionAttempts: value.relayConnectionAttempts as string,
+    relayConnections: value.relayConnections as string,
+    relayReconnects: value.relayReconnects as string,
+    relayDnsRefreshAttempts: value.relayDnsRefreshAttempts as string,
+    relayDnsRefreshSuccesses: value.relayDnsRefreshSuccesses as string,
+    relayDnsRefreshFailures: value.relayDnsRefreshFailures as string,
+    relayEventsSent: value.relayEventsSent as string,
+    relayEventsDropped: value.relayEventsDropped as string,
+    relayPayloadBytesSent: value.relayPayloadBytesSent as string,
+    accessLog: {
+      queueCapacity: accessLog.queueCapacity,
+      queueDepth: accessLog.queueDepth,
+      enqueued: accessLog.enqueued,
+      written: accessLog.written,
+      dropped: accessLog.dropped,
+      queueSaturated: accessLog.queueSaturated,
+      writeFailures: accessLog.writeFailures,
+    },
+    relays: (value.relays as MonitoringRelay[]).map(projectMonitoringRelay),
+    recorders: (value.recorders as MonitoringRecorder[]).map(projectMonitoringRecorder),
+  }
+}
+
+function projectMonitoringRelay(relay: MonitoringRelay): MonitoringRelay {
+  return {
+    streamId: relay.streamId,
+    relayId: relay.relayId,
+    address: relay.address,
+    application: relay.application,
+    streamName: relay.streamName,
+    phase: relay.phase,
+    lastFailure: relay.lastFailure,
+    queueMessages: relay.queueMessages,
+    queueBytes: relay.queueBytes,
+    connectionAttempts: relay.connectionAttempts,
+    connections: relay.connections,
+    reconnects: relay.reconnects,
+    dnsRefreshAttempts: relay.dnsRefreshAttempts,
+    dnsRefreshSuccesses: relay.dnsRefreshSuccesses,
+    dnsRefreshFailures: relay.dnsRefreshFailures,
+    lastDnsRefreshFailure: relay.lastDnsRefreshFailure,
+    eventsSent: relay.eventsSent,
+    eventsDropped: relay.eventsDropped,
+    payloadBytesSent: relay.payloadBytesSent,
+  }
+}
+
+function projectMonitoringRecorder(recorder: MonitoringRecorder): MonitoringRecorder {
+  return {
+    streamId: recorder.streamId,
+    recorderId: recorder.recorderId,
+    name: recorder.name,
+    manual: recorder.manual,
+    phase: recorder.phase,
+    bytesWritten: recorder.bytesWritten,
+    segmentsStarted: recorder.segmentsStarted,
+    segmentsCompleted: recorder.segmentsCompleted,
+    discontinuities: recorder.discontinuities,
+    currentRelativeName: recorder.currentRelativeName,
+    lastCompletedRelativeName: recorder.lastCompletedRelativeName,
+    recoverablePartialName: recorder.recoverablePartialName,
+    publishedButNotDurableRelativeName: recorder.publishedButNotDurableRelativeName,
+  }
 }
 
 function parseConfigSnapshot(value: unknown): ConfigSnapshot {
@@ -2356,7 +3068,7 @@ function parseTopology(value: unknown): TopologySnapshot {
 
 function parseRecorder(value: unknown): RecorderSnapshot {
   if (!isRecorder(value)) return invalidPayload('recorder command')
-  return value
+  return projectRecorderSnapshot(value)
 }
 
 function isStream(value: unknown): value is StreamSnapshot {
@@ -2376,11 +3088,12 @@ function isRelay(value: unknown): value is RelaySnapshot {
   return isRecord(value) && typeof value.id === 'string' && isRecord(value.destination) &&
     typeof value.destination.address === 'string' && typeof value.destination.application === 'string' &&
     typeof value.destination.stream_name === 'string' &&
-    ['connecting', 'publishing', 'backoff', 'stopped'].includes(String(value.phase)) &&
-    (value.last_failure === null || ['connect', 'handshake', 'session', 'transport', 'thread']
-      .includes(String(value.last_failure))) && safeInteger(value.queue_messages) &&
-    ['queue_bytes', 'connection_attempts', 'connections', 'reconnects', 'events_enqueued',
-      'events_sent', 'events_dropped', 'payload_bytes_sent'].every((key) => decimalString(value[key]))
+    rtmpRelayPhase(value.phase) && (value.last_failure === null || rtmpRelayFailure(value.last_failure)) &&
+    safeInteger(value.queue_messages) &&
+    ['queue_bytes', 'connection_attempts', 'connections', 'reconnects', 'dns_refresh_attempts',
+      'dns_refresh_successes', 'dns_refresh_failures', 'events_enqueued',
+      'events_sent', 'events_dropped', 'payload_bytes_sent'].every((key) => decimalString(value[key])) &&
+    (value.last_dns_refresh_failure === null || rtmpRelayDnsRefreshFailure(value.last_dns_refresh_failure))
 }
 
 function isTrack(value: unknown): value is TrackSnapshot {
@@ -2400,58 +3113,92 @@ function isRecorder(value: unknown): value is RecorderSnapshot {
     decimalString(value.segments_started) && decimalString(value.segments_completed) &&
     decimalString(value.discontinuities) && nullableString(value.current_relative_name) &&
     nullableString(value.published_but_not_durable_relative_name) &&
-    nullableString(value.last_completed_relative_name) && nullableString(value.recoverable_partial_name)
+    nullableString(value.last_completed_relative_name) && nullableString(value.recoverable_partial_name) &&
+    (value.last_notification === null || (typeof value.last_notification === 'string' &&
+      ['started', 'stopped', 'failed'].includes(value.last_notification)))
 }
 
 function recorderPhase(value: unknown): boolean {
-  if (!isRecord(value) || !['idle', 'starting', 'recording', 'stopping', 'failed'].includes(String(value.state))) {
+  if (!isRecord(value) || typeof value.state !== 'string' ||
+    !['idle', 'starting', 'recording', 'stopping', 'failed'].includes(value.state)
+  ) {
     return false
   }
-  if (value.state === 'idle') return true
+  if (value.state === 'idle') {
+    return value.operation_id === undefined && value.started_at_unix_ms === undefined && value.code === undefined
+  }
   if (typeof value.operation_id !== 'string') return false
-  if (value.state === 'recording') return safeInteger(value.started_at_unix_ms)
-  if (value.state === 'failed') return typeof value.code === 'string'
-  return true
+  if (value.state === 'recording') {
+    return safeInteger(value.started_at_unix_ms) && value.code === undefined
+  }
+  if (value.state === 'failed') {
+    return value.started_at_unix_ms === undefined && typeof value.code === 'string' && [
+      'open_failed', 'write_failed', 'close_failed', 'backend_unavailable', 'file_sync_failed',
+      'publish_failed', 'directory_sync_failed', 'queue_discontinuity', 'unsupported_codec',
+      'shutdown_timed_out', 'worker_panicked', 'stale_publisher',
+    ].includes(value.code)
+  }
+  return value.started_at_unix_ms === undefined && value.code === undefined
 }
 
-function monitoringProcess(value: unknown): boolean {
+function monitoringProcess(value: unknown): value is MonitoringProcess {
   return isRecord(value) && safeInteger(value.activeConnections) &&
-    ['ready', 'drain', 'maintenance'].includes(String(value.administrativeState)) &&
+    typeof value.administrativeState === 'string' &&
+    ['ready', 'drain', 'maintenance'].includes(value.administrativeState) &&
+    monitoringComponentStatus(value.status) &&
     (value.cpuPercent === null || finiteNumber(value.cpuPercent)) &&
     (value.maxConnections === null || safeInteger(value.maxConnections)) &&
     decimalString(value.rejectedConnections) && decimalString(value.retryAttempts) &&
-    safeInteger(value.residentMemoryBytes) && safeInteger(value.virtualMemoryBytes) &&
-    safeInteger(value.threadCount) && safeInteger(value.openFileDescriptors)
+    nullableSafeInteger(value.residentMemoryBytes) && nullableSafeInteger(value.virtualMemoryBytes) &&
+    nullableSafeInteger(value.threadCount) && nullableSafeInteger(value.openFileDescriptors)
 }
 
-function monitoringHost(value: unknown): boolean {
-  return isRecord(value) && finiteNumber(value.loadAverage1m) && finiteNumber(value.loadAverage5m) &&
-    finiteNumber(value.loadAverage15m) && safeInteger(value.totalMemoryBytes) &&
-    safeInteger(value.availableMemoryBytes)
+function monitoringHost(value: unknown): value is MonitoringHost {
+  return isRecord(value) && monitoringComponentStatus(value.status) &&
+    (value.loadAverage1m === null || finiteNumber(value.loadAverage1m)) &&
+    (value.loadAverage5m === null || finiteNumber(value.loadAverage5m)) &&
+    (value.loadAverage15m === null || finiteNumber(value.loadAverage15m)) &&
+    nullableSafeInteger(value.totalMemoryBytes) && nullableSafeInteger(value.availableMemoryBytes)
 }
 
-function monitoringTraffic(value: unknown): boolean {
+function monitoringComponentStatus(value: unknown): value is MonitoringComponentStatus {
+  return isRecord(value) && typeof value.state === 'string' &&
+    ['healthy', 'degraded', 'unsupported'].includes(value.state) &&
+    (value.reason === undefined || typeof value.reason === 'string')
+}
+
+function monitoringTraffic(value: unknown): value is MonitoringTraffic {
   return isRecord(value) && decimalString(value.acceptedConnections) &&
     decimalString(value.rejectedConnections) && safeInteger(value.activeConnections) &&
     decimalString(value.bytesReceived) && decimalString(value.bytesSent)
 }
 
-function certbotCertificate(value: unknown): boolean {
+function certbotCertificate(value: unknown): value is CertbotCertificateSnapshot {
   return isRecord(value) && typeof value.name === 'string' && safeInteger(value.activeArchiveRevision) &&
     typeof value.activeContentRevision === 'string' && typeof value.expiresAt === 'string' &&
     nullableString(value.lastOutcome) && nullableString(value.lastErrorCode)
 }
 
-function acmeManagedCertificate(value: unknown): boolean {
+function acmeManagedCertificate(value: unknown): value is AcmeManagedCertificateSnapshot {
   return isRecord(value) && typeof value.name === 'string' && typeof value.directoryUrl === 'string' &&
     typeof value.diskRevision === 'string' && typeof value.activeRevision === 'string' &&
     typeof value.expiresAt === 'string' && nullableSafeInteger(value.notBeforeUnixSeconds) &&
     nullableSafeInteger(value.notAfterUnixSeconds) && nullableSafeInteger(value.nextActionUnixSeconds) &&
+    nullableString(value.lastOutcome) && nullableString(value.lastErrorCode) &&
+    typeof value.renewalInformationStatus === 'string' && nullableString(value.dnsProvider) &&
+    nullableString(value.dnsProviderDeployment) && nullableString(value.dnsProviderHealth) &&
+    typeof value.dnsCleanupStatus === 'string'
+}
+
+function directFileCertificate(value: unknown): value is DirectFileCertificateSnapshot {
+  return isRecord(value) && typeof value.name === 'string' &&
+    typeof value.activeContentRevision === 'string' && typeof value.expiresAt === 'string' &&
     nullableString(value.lastOutcome) && nullableString(value.lastErrorCode)
 }
 
-function certbotWatcher(value: unknown): boolean {
-  return isRecord(value) && ['healthy', 'degraded', 'stopped'].includes(String(value.health)) &&
+function certbotWatcher(value: unknown): value is CertbotWatcherSnapshot {
+  return isRecord(value) && typeof value.health === 'string' &&
+    ['healthy', 'degraded', 'stopped'].includes(value.health) &&
     ['coalescedEvents', 'ignoredAccessEvents', 'backendErrors', 'watchRecoveries', 'watchRefreshes',
       'rescans', 'periodicRescans', 'reconciliationFailures'].every((key) => decimalString(value[key]))
 }
@@ -2459,7 +3206,8 @@ function certbotWatcher(value: unknown): boolean {
 function monitoringRecorder(value: unknown): boolean {
   return isRecord(value) && typeof value.streamId === 'string' && typeof value.recorderId === 'string' &&
     nullableString(value.name) && typeof value.manual === 'boolean' &&
-    ['idle', 'starting', 'recording', 'stopping', 'failed'].includes(String(value.phase)) &&
+    typeof value.phase === 'string' &&
+    ['idle', 'starting', 'recording', 'stopping', 'failed'].includes(value.phase) &&
     decimalString(value.bytesWritten) && decimalString(value.segmentsStarted) &&
     decimalString(value.segmentsCompleted) && decimalString(value.discontinuities) &&
     nullableString(value.currentRelativeName) && nullableString(value.lastCompletedRelativeName) &&
@@ -2470,11 +3218,61 @@ function monitoringRelay(value: unknown): boolean {
   return isRecord(value) && typeof value.streamId === 'string' && typeof value.relayId === 'string' &&
     typeof value.address === 'string' && typeof value.application === 'string' &&
     typeof value.streamName === 'string' &&
-    ['connecting', 'publishing', 'backoff', 'stopped'].includes(String(value.phase)) &&
-    (value.lastFailure === null || ['connect', 'handshake', 'session', 'transport', 'thread']
-      .includes(String(value.lastFailure))) && safeInteger(value.queueMessages) &&
-    ['queueBytes', 'connectionAttempts', 'connections', 'reconnects', 'eventsSent', 'eventsDropped',
-      'payloadBytesSent'].every((key) => decimalString(value[key]))
+    rtmpRelayPhase(value.phase) && (value.lastFailure === null || rtmpRelayFailure(value.lastFailure)) &&
+    safeInteger(value.queueMessages) &&
+    ['queueBytes', 'connectionAttempts', 'connections', 'reconnects', 'dnsRefreshAttempts',
+      'dnsRefreshSuccesses', 'dnsRefreshFailures', 'eventsSent', 'eventsDropped',
+      'payloadBytesSent'].every((key) => decimalString(value[key])) &&
+    (value.lastDnsRefreshFailure === null || rtmpRelayDnsRefreshFailure(value.lastDnsRefreshFailure))
+}
+
+function monitoringRtmpAccessLog(value: unknown): value is MonitoringRtmpAccessLog {
+  return isRecord(value) && safeInteger(value.queueCapacity) &&
+    ['queueDepth', 'enqueued', 'written', 'dropped', 'queueSaturated', 'writeFailures']
+      .every((key) => decimalString(value[key]))
+}
+
+function monitoringTransportOperation(value: unknown): value is MonitoringTransportOperation {
+  return isRecord(value) && monitoringTransport(value.transport) && Array.isArray(value.outcomes) &&
+    value.outcomes.every((outcome) => isRecord(outcome) && monitoringTransportOutcome(outcome.outcome) &&
+      decimalString(outcome.count)) && monitoringLatency(value.latency)
+}
+
+function monitoringAccessRecord(value: unknown): value is MonitoringAccessRecord {
+  return isRecord(value) && safeInteger(value.timestampUnixMs) && typeof value.correlationId === 'string' &&
+    typeof value.listener === 'string' && monitoringTransport(value.transport) &&
+    monitoringTransportOutcome(value.outcome) && decimalString(value.durationMs) &&
+    decimalString(value.bytesReceived) && decimalString(value.bytesSent)
+}
+
+function monitoringLatency(value: unknown): boolean {
+  return isRecord(value) && Array.isArray(value.buckets) && value.buckets.every((bucket) =>
+    isRecord(bucket) && nullableSafeInteger(bucket.upperBoundMs) && decimalString(bucket.count)) &&
+    decimalString(value.count) && decimalString(value.sumMs)
+}
+
+function monitoringTransport(value: unknown): value is MonitoringTransport {
+  return typeof value === 'string' &&
+    ['http', 'rtmp', 'forward', 'cache', 'tcp', 'udp', 'h3', 'acme'].includes(value)
+}
+
+function monitoringTransportOutcome(value: unknown): value is MonitoringTransportOutcome {
+  return typeof value === 'string' &&
+    ['success', 'client_error', 'server_error', 'upstream_error', 'timeout', 'rejected', 'cancelled',
+      'internal_error', 'degraded'].includes(value)
+}
+
+function rtmpRelayPhase(value: unknown): value is RtmpRelayPhase {
+  return typeof value === 'string' && RTMP_RELAY_PHASES.includes(value as RtmpRelayPhase)
+}
+
+function rtmpRelayFailure(value: unknown): value is RtmpRelayFailure {
+  return typeof value === 'string' && RTMP_RELAY_FAILURES.includes(value as RtmpRelayFailure)
+}
+
+function rtmpRelayDnsRefreshFailure(value: unknown): value is RtmpRelayDnsRefreshFailure {
+  return typeof value === 'string' &&
+    RTMP_RELAY_DNS_REFRESH_FAILURES.includes(value as RtmpRelayDnsRefreshFailure)
 }
 
 function topologyNode(value: unknown): boolean {

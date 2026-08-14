@@ -4,9 +4,9 @@ use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use oxiroute_cache::{
     BaseKey, Cache, CacheConfig, CacheControl, CacheError, CacheKey, CacheResponse, CacheTimeline,
-    CachedResponse, DiskCache, DiskCacheConfig, DiskCacheError, DiskFillGuard, FillGuard, FillJoin,
-    FillOutcome, Lookup, MonoTime, PreparedEntry, PurgeResult, RequestKeyInput, ResponseTiming,
-    StoreOutcome, Validators,
+    CachedResponse, DiskCache, DiskCacheError, DiskFillGuard, FillGuard, FillJoin, FillOutcome,
+    Lookup, MonoTime, PreparedEntry, PurgeResult, RequestKeyInput, ResponseTiming, StoreOutcome,
+    Validators,
 };
 use tokio::sync::Semaphore;
 
@@ -111,18 +111,24 @@ impl std::fmt::Debug for HttpCacheBackend {
 pub(crate) struct DiskBackend {
     cache: Arc<DiskCache>,
     io: Arc<Semaphore>,
+    _registry: crate::service_plan::DiskBackendRegistryLease,
 }
 
 impl DiskBackend {
-    pub(crate) fn new(cache: Arc<DiskCache>) -> Self {
+    pub(crate) fn new(
+        cache: Arc<DiskCache>,
+        registry: crate::service_plan::DiskBackendRegistryLease,
+    ) -> Self {
         let permits = cache.config().memory.max_in_flight;
         Self {
             cache,
             io: Arc::new(Semaphore::new(permits)),
+            _registry: registry,
         }
     }
 
-    pub(crate) fn disk_config(&self) -> &DiskCacheConfig {
+    #[cfg(test)]
+    pub(crate) fn disk_config(&self) -> &oxiroute_cache::DiskCacheConfig {
         self.cache.config()
     }
 

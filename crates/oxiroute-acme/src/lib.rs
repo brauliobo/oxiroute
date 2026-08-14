@@ -19,11 +19,11 @@ pub use dns01::{
     MAX_DNS01_PROVIDER_NAME_BYTES, MAX_DNS01_RECORD_ID_BYTES,
 };
 pub use protocol::{
-    Account, AccountKey, AccountKeyAlgorithm, AccountRequest, AcmeClient, AcmeError, AcmeTransport,
-    Authorization, AuthorizationStatus, CertificateRequest, ChallengeType, Directory,
-    DirectoryDocument, Http01Challenge, HttpRequest, HttpResponse, LeafCsr, LeafKeyAlgorithm,
-    MAX_RENEWAL_INFORMATION_WINDOW_SECONDS, Order, OriginPolicy, PollPolicy, RenewalInformation,
-    TlsAlpn01Challenge, TransportError, generate_leaf_csr,
+    Account, AccountKey, AccountKeyAlgorithm, AccountRequest, AcmeClient, AcmeError, AcmeOperation,
+    AcmeTransport, Authorization, AuthorizationStatus, CertificateRequest, ChallengeType,
+    Directory, DirectoryDocument, Http01Challenge, HttpRequest, HttpResponse, LeafCsr,
+    LeafKeyAlgorithm, MAX_RENEWAL_INFORMATION_WINDOW_SECONDS, Order, OriginPolicy, PollPolicy,
+    RenewalInformation, TlsAlpn01Challenge, TransportError, generate_leaf_csr,
 };
 pub use state::{
     AcmeStateError, CertificateMaterial, JobState, JobStatus, MAX_CERTIFICATE_BYTES, MAX_JOB_BYTES,

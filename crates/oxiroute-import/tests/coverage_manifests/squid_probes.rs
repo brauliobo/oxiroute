@@ -29,8 +29,14 @@ pub(crate) fn assert_hostrouter_squid_inventory() {
     assert_eq!(report.source_graph.expanded_directives.len(), 35);
     assert_eq!(report.decision_ledger.decisions.len(), 35);
     assert_eq!(report.effective.access_rules.len(), 9);
-    assert!(report.candidate.config().is_some());
-    assert_eq!(report.candidate.draft.listeners.len(), 1);
+    assert!(
+        report
+            .candidate
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_some()
+    );
+    assert_eq!(report.candidate.summary().listeners, 1);
     assert!(!report.candidate.provenance.is_empty());
     let paths = report
         .candidate

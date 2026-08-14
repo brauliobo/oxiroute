@@ -4,7 +4,7 @@ use openssl::sha::sha256;
 use serde::Serialize;
 
 use crate::{
-    ActivationRequirement, CanonicalCandidate, CanonicalDraft, CanonicalProvenance,
+    ActivationRequirement, CanonicalCandidate, CanonicalCandidateSummary, CanonicalProvenance,
     DeploymentRequirement, Diagnostic, OperationalOverlayRequirement, Report, Severity, SourceFile,
     SourceId, SourceImportMetadata, Span,
 };
@@ -144,7 +144,7 @@ pub struct SpanEvidence {
 #[serde(rename_all = "camelCase")]
 pub struct CandidateEvidence {
     pub finalized: bool,
-    pub config: Option<oxiroute_config::Config>,
+    pub config: Option<oxiroute_config::ValidatedConfig>,
     pub draft: CandidateDraftEvidence,
     pub provenance: Vec<CanonicalProvenanceEvidence>,
 }
@@ -458,23 +458,23 @@ fn candidate_evidence<O>(
     origin: impl Fn(&O) -> OriginEvidence,
 ) -> CandidateEvidence {
     candidate_evidence_parts(
-        &candidate.draft,
-        candidate.config(),
+        candidate.summary(),
+        candidate.validated(),
         &candidate.provenance,
         origin,
     )
 }
 
 fn candidate_evidence_parts<O>(
-    draft: &CanonicalDraft,
-    config: Option<&oxiroute_config::Config>,
+    summary: CanonicalCandidateSummary,
+    config: Option<&oxiroute_config::ValidatedConfig>,
     provenance: &[CanonicalProvenance<O>],
     origin: impl Fn(&O) -> OriginEvidence,
 ) -> CandidateEvidence {
     CandidateEvidence {
         finalized: config.is_some(),
         config: config.cloned(),
-        draft: draft_evidence(draft),
+        draft: draft_evidence(summary),
         provenance: provenance
             .iter()
             .map(|entry| CanonicalProvenanceEvidence {
@@ -485,21 +485,21 @@ fn candidate_evidence_parts<O>(
     }
 }
 
-fn draft_evidence(draft: &CanonicalDraft) -> CandidateDraftEvidence {
+fn draft_evidence(summary: CanonicalCandidateSummary) -> CandidateDraftEvidence {
     CandidateDraftEvidence {
-        version: draft.version,
-        max_connections: draft.max_connections,
-        management: draft.management.is_some(),
-        stats: draft.stats.is_some(),
-        certificates: draft.certificates.len(),
-        tls_profiles: draft.tls_profiles.len(),
-        listeners: draft.listeners.len(),
-        upstream_pools: draft.upstream_pools.len(),
-        http_services: draft.http_services.len(),
-        cache_stores: draft.cache_stores.len(),
-        forward_proxy_services: draft.forward_proxy_services.len(),
-        rtmp_services: draft.rtmp_services.len(),
-        l4_services: draft.l4_services.len(),
+        version: summary.version,
+        max_connections: summary.max_connections,
+        management: summary.management,
+        stats: summary.stats,
+        certificates: summary.certificates,
+        tls_profiles: summary.tls_profiles,
+        listeners: summary.listeners,
+        upstream_pools: summary.upstream_pools,
+        http_services: summary.http_services,
+        cache_stores: summary.cache_stores,
+        forward_proxy_services: summary.forward_proxy_services,
+        rtmp_services: summary.rtmp_services,
+        l4_services: summary.l4_services,
     }
 }
 

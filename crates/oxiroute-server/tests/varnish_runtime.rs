@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_imports, clippy::duplicate_mod)]
 
+#[path = "support/config.rs"]
+mod config_support;
 #[path = "support/fixtures.rs"]
 mod fixture_support;
 #[path = "support/http.rs"]
@@ -10,13 +12,14 @@ mod process_support;
 use std::{fs, path::Path};
 
 use http_support::raw_http_request;
-use oxiroute_config::{load_lua, render_lua};
 use oxiroute_import::varnish::{LoweringStatus, VarnishdInvocation, import};
 use tempfile::tempdir;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpListener,
 };
+
+use config_support::{load_lua, render_lua};
 
 #[tokio::test]
 async fn imported_varnish_candidate_serves_and_caches_http_on_a_real_listener() {
@@ -72,12 +75,12 @@ async fn imported_varnish_candidate_serves_and_caches_http_on_a_real_listener() 
     assert_eq!(report.lowering, LoweringStatus::Lowered);
     let config = report
         .candidate
-        .into_config()
-        .expect("finalized Varnish candidate");
-    let rendered = render_lua(&config).expect("render finalized Varnish candidate");
+        .validated()
+        .expect("valid finalized Varnish candidate");
+    let rendered = render_lua(config).expect("render finalized Varnish candidate");
     load_lua(&rendered).expect("decode rendered Varnish candidate");
 
-    let mut server = process_support::ServerProcess::start(&config, None);
+    let mut server = process_support::ServerProcess::start(config, None);
     server.wait_for_tcp(proxy_address).await;
     let request =
         b"GET /cache-hit HTTP/1.1\r\nHost: cache.example.test\r\nConnection: close\r\n\r\n";

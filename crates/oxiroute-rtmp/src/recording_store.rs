@@ -5,10 +5,10 @@ use std::{
     path::{Component, Path},
     sync::{
         Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use rustix::{
@@ -40,6 +40,28 @@ pub struct RecordingStoreLimits {
     pub max_bytes: Option<u64>,
     pub max_files: Option<usize>,
     pub max_active_recorders: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("recording store limit `{field}` must be nonzero when configured")]
+pub struct RecordingStoreLimitsError {
+    pub field: &'static str,
+}
+
+impl RecordingStoreLimits {
+    /// Validates quota values without opening or inspecting a recording root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the active-recorder bound cannot initialize the store finalizer.
+    pub fn validate_intrinsic(self) -> Result<(), RecordingStoreLimitsError> {
+        if self.max_active_recorders == 0 {
+            return Err(RecordingStoreLimitsError {
+                field: "max_active_recorders",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Current use under one [`RecordingStore`].
@@ -197,7 +219,12 @@ impl RecordingStoreError {
 /// A recording root opened once and retained by descriptor for its full lifetime.
 #[derive(Clone)]
 pub struct RecordingStore {
-    shared: Arc<StoreShared>,
+    handle: Arc<RecordingStoreHandle>,
+}
+
+struct RecordingStoreHandle {
+    incarnation: u64,
+    shared: Mutex<Option<Arc<StoreShared>>>,
 }
 
 struct StoreShared {
@@ -205,14 +232,51 @@ struct StoreShared {
     root_owner: u32,
     limits: RecordingStoreLimits,
     state: Mutex<StoreState>,
+    incarnation_changed: Condvar,
     finalizer: RecordingFinalizer,
+    #[cfg(test)]
+    operation_gate: Mutex<Option<Arc<RecordingOperationGate>>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+struct IncarnationState {
+    active: bool,
+    claims: usize,
+}
+
+#[derive(Clone, Debug, Default)]
 struct StoreState {
     bytes_used: u64,
     files: usize,
     active_recorders: usize,
+    incarnations: HashMap<u64, IncarnationState>,
+}
+
+struct StoreOperationClaim {
+    incarnation: u64,
+    shared: Arc<StoreShared>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecordingOperationGateKind {
+    CreateBeforeOpen,
+    RegisterBeforeWait,
+    RegisterAfterWake,
+    ResumeAfterSharedCapture,
+}
+
+#[cfg(test)]
+struct RecordingOperationGate {
+    state: Mutex<RecordingOperationGateState>,
+    changed: Condvar,
+}
+
+#[cfg(test)]
+struct RecordingOperationGateState {
+    kind: RecordingOperationGateKind,
+    reached: bool,
+    released: bool,
 }
 
 type FinalizerJob = Box<dyn FnOnce() + Send + 'static>;
@@ -297,6 +361,18 @@ impl RecordingStore {
         root: impl AsRef<Path>,
         limits: RecordingStoreLimits,
     ) -> Result<Self, RecordingStoreError> {
+        Self::open_with_deadline(root, limits, None)
+    }
+
+    /// Opens a store while bounding waits for a retired incarnation to release its claims.
+    ///
+    /// `None` preserves the unbounded startup behavior of [`Self::open`].
+    #[doc(hidden)]
+    pub fn open_with_deadline(
+        root: impl AsRef<Path>,
+        limits: RecordingStoreLimits,
+        deadline: Option<Instant>,
+    ) -> Result<Self, RecordingStoreError> {
         let root = open_pinned_directory(root.as_ref())
             .map_err(|source| RecordingStoreError::RootOpen(source.into()))?;
         let root_metadata = verify_root_control(&root)?;
@@ -305,16 +381,17 @@ impl RecordingStore {
             device: root_metadata.st_dev,
             inode: root_metadata.st_ino,
         };
-        {
+        let existing = {
             let registry = store_registry()
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(shared) = registry.get(&identity).and_then(Weak::upgrade) {
-                if shared.limits != limits {
-                    return Err(RecordingStoreError::LimitsMismatch);
-                }
-                return Ok(Self { shared });
+            registry.get(&identity).and_then(Weak::upgrade)
+        };
+        if let Some(shared) = existing {
+            if shared.limits != limits {
+                return Err(RecordingStoreError::LimitsMismatch);
             }
+            return Self::from_shared(shared, deadline);
         }
         let clean_partials = match rustix_fs::flock(&root, FlockOperation::NonBlockingLockExclusive)
         {
@@ -335,19 +412,26 @@ impl RecordingStore {
             root_owner,
             limits,
             state: Mutex::new(state),
+            incarnation_changed: Condvar::new(),
             finalizer,
+            #[cfg(test)]
+            operation_gate: Mutex::new(None),
         });
-        let mut registry = store_registry()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(existing) = registry.get(&identity).and_then(Weak::upgrade) {
-            if existing.limits != limits {
-                return Err(RecordingStoreError::LimitsMismatch);
+        let shared = {
+            let mut registry = store_registry()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(existing) = registry.get(&identity).and_then(Weak::upgrade) {
+                existing
+            } else {
+                registry.insert(identity, Arc::downgrade(&shared));
+                shared
             }
-            return Ok(Self { shared: existing });
+        };
+        if shared.limits != limits {
+            return Err(RecordingStoreError::LimitsMismatch);
         }
-        registry.insert(identity, Arc::downgrade(&shared));
-        Ok(Self { shared })
+        Self::from_shared(shared, deadline)
     }
 
     /// Creates one exclusive recording path for a validated final relative name.
@@ -366,17 +450,23 @@ impl RecordingStore {
     ///
     /// Returns an error when the root's active-recorder limit has been reached.
     pub fn acquire_recorder(&self) -> Result<RecorderLease, RecordingStoreError> {
-        let mut state = self.shared.lock();
-        if state.active_recorders >= self.shared.limits.max_active_recorders {
+        let shared = self.shared()?;
+        let mut state = shared.lock();
+        if !state
+            .incarnations
+            .get(&self.handle.incarnation)
+            .is_some_and(|incarnation| incarnation.active)
+        {
+            return Err(RecordingStoreError::CreationCancelled);
+        }
+        if state.active_recorders >= shared.limits.max_active_recorders {
             return Err(RecordingStoreError::ActiveRecorderLimit {
-                maximum: self.shared.limits.max_active_recorders,
+                maximum: shared.limits.max_active_recorders,
             });
         }
         state.active_recorders += 1;
         drop(state);
-        Ok(RecorderLease {
-            shared: Arc::clone(&self.shared),
-        })
+        Ok(RecorderLease { shared })
     }
 
     pub(crate) fn create_unless_with_options(
@@ -397,96 +487,76 @@ impl RecordingStore {
         max_bytes: Option<u64>,
     ) -> Result<RecordingFile, RecordingStoreError> {
         validate_relative_name(final_relative_name)?;
-
-        let ownership = acquire_shared_ownership(&self.shared.root, &cancelled)?;
+        let shared = self.shared()?;
+        let ownership = acquire_shared_ownership(&shared.root, &cancelled)?;
         if cancelled() {
             return Err(RecordingStoreError::CreationCancelled);
         }
-        let mut state = self.shared.lock();
-        if self
-            .shared
-            .limits
-            .max_files
-            .is_some_and(|maximum| state.files >= maximum)
+        let claim = shared
+            .claim(self.handle.incarnation)
+            .ok_or(RecordingStoreError::CreationCancelled)?;
+        #[cfg(test)]
+        shared.wait_at_operation_gate(RecordingOperationGateKind::CreateBeforeOpen);
         {
-            return Err(RecordingStoreError::FileLimit {
-                maximum: self.shared.limits.max_files.expect("checked file quota"),
-            });
-        }
-
-        for attempt in 0..MAX_NAME_ATTEMPTS {
-            let Some(relative_name) = (if attempt == 0 {
-                Some(final_relative_name.to_owned())
-            } else {
-                collision_recording_filename(final_relative_name, attempt)
-            }) else {
-                break;
-            };
-            match rustix_fs::openat(
-                &self.shared.root,
-                relative_name.as_str(),
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                Mode::RUSR | Mode::WUSR,
-            ) {
-                Ok(descriptor) => {
-                    if lock
-                        && let Err(source) =
-                            rustix_fs::flock(&descriptor, FlockOperation::NonBlockingLockExclusive)
-                    {
-                        drop(descriptor);
-                        match rustix_fs::unlinkat(
-                            &self.shared.root,
-                            relative_name.as_str(),
-                            AtFlags::empty(),
-                        ) {
-                            Ok(()) | Err(Errno::NOENT) => {}
-                            Err(cleanup) => {
-                                return Err(RecordingStoreError::PartialCleanup(cleanup.into()));
-                            }
-                        }
-                        return Err(RecordingStoreError::PartialCreate(source.into()));
-                    }
-                    state.files += 1;
-                    return Ok(RecordingFile {
-                        shared: Arc::clone(&self.shared),
-                        _ownership: ownership,
-                        file: Some(File::from(descriptor)),
-                        partial_name: relative_name.clone(),
-                        final_relative_name: relative_name,
-                        position: 0,
-                        length: 0,
-                        partial_exists: true,
-                        partial_exists_state: Arc::new(AtomicBool::new(true)),
-                        file_accounted: true,
-                        max_bytes,
-                        preserve_partial: Arc::new(AtomicBool::new(false)),
-                        commit: Arc::new(RecordingCommitState {
-                            state: AtomicU8::new(CommitPhase::Open.encode()),
-                            #[cfg(test)]
-                            gate: Mutex::new(None),
-                            #[cfg(test)]
-                            fail_partial_unlink: AtomicBool::new(false),
-                            #[cfg(test)]
-                            fail_rollback_unlink: AtomicBool::new(false),
-                            #[cfg(test)]
-                            fail_rollback_sync: AtomicBool::new(false),
-                        }),
-                        resumed: false,
-                    });
-                }
-                Err(Errno::EXIST) => {}
-                Err(source) => return Err(RecordingStoreError::PartialCreate(source.into())),
+            let mut state = shared.lock();
+            if shared
+                .limits
+                .max_files
+                .is_some_and(|maximum| state.files >= maximum)
+            {
+                return Err(RecordingStoreError::FileLimit {
+                    maximum: shared.limits.max_files.expect("checked file quota"),
+                });
             }
+            state.files += 1;
         }
 
-        Err(RecordingStoreError::FinalNameCollisions {
-            partial_relative_name: final_relative_name.to_owned(),
+        let (descriptor, relative_name) =
+            match create_recording_entry(&shared, &claim, final_relative_name, lock) {
+                Ok(created) => created,
+                Err(error) => {
+                    if !matches!(error, RecordingStoreError::PartialCleanup(_)) {
+                        shared.lock().files -= 1;
+                    }
+                    return Err(error);
+                }
+            };
+        drop(claim);
+        Ok(RecordingFile {
+            incarnation: self.handle.incarnation,
+            shared,
+            _ownership: ownership,
+            file: Some(File::from(descriptor)),
+            partial_name: relative_name.clone(),
+            final_relative_name: relative_name,
+            position: 0,
+            length: 0,
+            partial_exists: true,
+            partial_exists_state: Arc::new(AtomicBool::new(true)),
+            file_accounted: true,
+            max_bytes,
+            preserve_partial: Arc::new(AtomicBool::new(false)),
+            commit: Arc::new(RecordingCommitState {
+                state: AtomicU8::new(CommitPhase::Open.encode()),
+                #[cfg(test)]
+                gate: Mutex::new(None),
+                #[cfg(test)]
+                fail_partial_unlink: AtomicBool::new(false),
+                #[cfg(test)]
+                fail_rollback_unlink: AtomicBool::new(false),
+                #[cfg(test)]
+                fail_rollback_sync: AtomicBool::new(false),
+            }),
+            resumed: false,
         })
     }
 
     #[must_use]
     pub fn stats(&self) -> RecordingStoreStats {
-        let state = self.shared.lock();
+        let Ok(shared) = self.shared() else {
+            return RecordingStoreStats::default();
+        };
+        let state = shared.lock();
         RecordingStoreStats {
             bytes_used: state.bytes_used,
             files: state.files,
@@ -495,7 +565,8 @@ impl RecordingStore {
     }
 
     pub(crate) fn recording_names(&self) -> Result<Vec<String>, RecordingStoreError> {
-        let mut directory = Dir::read_from(&self.shared.root)
+        let shared = self.shared()?;
+        let mut directory = Dir::read_from(&shared.root)
             .map_err(|source| RecordingStoreError::RootRead(source.into()))?;
         let mut names = Vec::new();
         for entry in &mut directory {
@@ -505,14 +576,13 @@ impl RecordingStore {
             if bytes.starts_with(b".") {
                 continue;
             }
-            let metadata =
-                match rustix_fs::statat(&self.shared.root, name, AtFlags::SYMLINK_NOFOLLOW) {
-                    Ok(metadata) => metadata,
-                    Err(Errno::NOENT) => continue,
-                    Err(source) => {
-                        return Err(RecordingStoreError::RootEntryMetadata(source.into()));
-                    }
-                };
+            let metadata = match rustix_fs::statat(&shared.root, name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(metadata) => metadata,
+                Err(Errno::NOENT) => continue,
+                Err(source) => {
+                    return Err(RecordingStoreError::RootEntryMetadata(source.into()));
+                }
+            };
             if FileType::from_raw_mode(metadata.st_mode).is_file()
                 && let Ok(name) = std::str::from_utf8(bytes)
             {
@@ -522,10 +592,6 @@ impl RecordingStore {
         Ok(names)
     }
 
-    pub(crate) fn submit_finalization(&self, job: FinalizerJob) -> FinalizerTicket {
-        self.shared.finalizer.submit(job)
-    }
-
     pub(crate) fn resume_with_options(
         &self,
         relative_name: &str,
@@ -533,9 +599,15 @@ impl RecordingStore {
         max_bytes: Option<u64>,
     ) -> Result<RecordingResume, RecordingStoreError> {
         validate_relative_name(relative_name)?;
-        let ownership = acquire_shared_ownership(&self.shared.root, &|| false)?;
+        let shared = self.shared()?;
+        #[cfg(test)]
+        shared.wait_at_operation_gate(RecordingOperationGateKind::ResumeAfterSharedCapture);
+        let claim = shared
+            .claim(self.handle.incarnation)
+            .ok_or(RecordingStoreError::CreationCancelled)?;
+        let ownership = acquire_shared_ownership(&shared.root, &|| false)?;
         let descriptor = rustix_fs::openat(
-            &self.shared.root,
+            &shared.root,
             relative_name,
             OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
             Mode::empty(),
@@ -544,10 +616,10 @@ impl RecordingStore {
         let metadata = rustix_fs::fstat(&descriptor)
             .map_err(|source| RecordingStoreError::ResumeOpen(source.into()))?;
         let path_metadata =
-            rustix_fs::statat(&self.shared.root, relative_name, AtFlags::SYMLINK_NOFOLLOW)
+            rustix_fs::statat(&shared.root, relative_name, AtFlags::SYMLINK_NOFOLLOW)
                 .map_err(|source| RecordingStoreError::ResumeOpen(source.into()))?;
         if !FileType::from_raw_mode(metadata.st_mode).is_file()
-            || metadata.st_uid != self.shared.root_owner
+            || metadata.st_uid != shared.root_owner
             || metadata.st_nlink != 1
             || metadata.st_dev != path_metadata.st_dev
             || metadata.st_ino != path_metadata.st_ino
@@ -568,9 +640,14 @@ impl RecordingStore {
         }
         let mut file = File::from(descriptor);
         let (flags, last_timestamp_ms) = inspect_flv_tail(&mut file, length)?;
+        if !claim.incarnation_active() {
+            return Err(RecordingStoreError::CreationCancelled);
+        }
+        drop(claim);
         Ok(RecordingResume {
             file: RecordingFile {
-                shared: Arc::clone(&self.shared),
+                incarnation: self.handle.incarnation,
+                shared,
                 _ownership: ownership,
                 file: Some(file),
                 partial_name: relative_name.to_owned(),
@@ -604,10 +681,48 @@ impl RecordingStore {
     pub const fn quota_scope(&self) -> RecordingQuotaScope {
         RecordingQuotaScope::Process
     }
+
+    pub(crate) fn retire(&self) {
+        if let Some(shared) = self.handle.shared() {
+            shared.retire_incarnation(self.handle.incarnation);
+        }
+        self.handle.retire();
+    }
+
+    fn shared(&self) -> Result<Arc<StoreShared>, RecordingStoreError> {
+        self.handle
+            .shared()
+            .ok_or(RecordingStoreError::CreationCancelled)
+    }
+
+    fn from_shared(
+        shared: Arc<StoreShared>,
+        deadline: Option<Instant>,
+    ) -> Result<Self, RecordingStoreError> {
+        let incarnation = next_store_incarnation();
+        shared.register_incarnation(incarnation, deadline)?;
+        Ok(Self {
+            handle: Arc::new(RecordingStoreHandle {
+                incarnation,
+                shared: Mutex::new(Some(shared)),
+            }),
+        })
+    }
+
+    #[cfg(test)]
+    fn install_operation_gate(
+        &self,
+        kind: RecordingOperationGateKind,
+    ) -> Arc<RecordingOperationGate> {
+        self.shared()
+            .expect("active recording store")
+            .install_operation_gate(kind)
+    }
 }
 
 /// Exclusive writable ownership of one recording path.
 pub struct RecordingFile {
+    incarnation: u64,
     shared: Arc<StoreShared>,
     _ownership: OwnedFd,
     file: Option<File>,
@@ -721,6 +836,13 @@ impl RecordingFile {
         }
     }
 
+    pub(crate) fn finalizer_authority(&self) -> RecordingFinalizerAuthority {
+        RecordingFinalizerAuthority {
+            incarnation: self.incarnation,
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
     pub(crate) fn set_final_relative_name(
         &mut self,
         final_relative_name: String,
@@ -771,6 +893,10 @@ impl RecordingFile {
         if self.commit.cancelled() {
             return Err(self.cancelled_error());
         }
+        let operation = self
+            .shared
+            .claim(self.incarnation)
+            .ok_or_else(|| self.cancelled_error())?;
         if let Some(file) = self.file.as_mut()
             && let Err(source) = file.flush().and_then(|()| file.sync_all())
         {
@@ -783,6 +909,9 @@ impl RecordingFile {
         if self.commit.cancelled() {
             return Err(self.cancelled_error());
         }
+        if !operation.incarnation_active() {
+            return Err(self.cancelled_error());
+        }
         if !self.partial_is_owned() {
             self.partial_exists = false;
             self.partial_exists_state.store(false, Ordering::Release);
@@ -792,8 +921,15 @@ impl RecordingFile {
                 partial_relative_name: self.partial_name.clone(),
             });
         }
+        drop(operation);
         #[cfg(test)]
         self.commit.wait_before_publication();
+        // Lock order: establish the store-state claim before changing the commit atomic. No path
+        // may hold the commit gate/finalizer mutex while acquiring the store-state mutex.
+        let _publication = self
+            .shared
+            .claim(self.incarnation)
+            .ok_or_else(|| self.cancelled_error())?;
         if !self.commit.begin_publication() {
             return Err(self.cancelled_error());
         }
@@ -1197,6 +1333,12 @@ impl RecordingPublicationGate {
 
 impl Write for RecordingFile {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let _claim = self.shared.claim(self.incarnation).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "recording store incarnation retired",
+            )
+        })?;
         let requested = u64::try_from(buffer.len()).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "recording write is too large")
         })?;
@@ -1252,6 +1394,12 @@ impl Write for RecordingFile {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        let _claim = self.shared.claim(self.incarnation).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "recording store incarnation retired",
+            )
+        })?;
         self.file
             .as_mut()
             .expect("recording file is writable until commit")
@@ -1261,6 +1409,12 @@ impl Write for RecordingFile {
 
 impl Seek for RecordingFile {
     fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        let _claim = self.shared.claim(self.incarnation).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "recording store incarnation retired",
+            )
+        })?;
         let position = self
             .file
             .as_mut()
@@ -1276,6 +1430,9 @@ impl Drop for RecordingFile {
         if !self.file_accounted && !self.partial_exists {
             return;
         }
+        let Some(_claim) = self.shared.claim(self.incarnation) else {
+            return;
+        };
         if self.resumed {
             let owned = self.partial_is_owned();
             drop(self.file.take());
@@ -1316,6 +1473,25 @@ impl Drop for RecordingFile {
 impl Drop for RecorderLease {
     fn drop(&mut self) {
         self.shared.lock().active_recorders -= 1;
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct RecordingFinalizerAuthority {
+    incarnation: u64,
+    shared: Arc<StoreShared>,
+}
+
+impl RecordingFinalizerAuthority {
+    pub(crate) fn submit(&self, job: FinalizerJob) -> FinalizerTicket {
+        let shared = Arc::clone(&self.shared);
+        let incarnation = self.incarnation;
+        self.shared.finalizer.submit(Box::new(move || {
+            // The job still runs after retirement so its file can become recoverable. Publication
+            // remains fenced by the same incarnation inside RecordingFile::commit.
+            let _retired = !shared.incarnation_active(incarnation);
+            job();
+        }))
     }
 }
 
@@ -1441,6 +1617,227 @@ impl StoreShared {
     fn lock(&self) -> MutexGuard<'_, StoreState> {
         self.state.lock().expect("recording store mutex poisoned")
     }
+
+    #[cfg(test)]
+    fn install_operation_gate(
+        &self,
+        kind: RecordingOperationGateKind,
+    ) -> Arc<RecordingOperationGate> {
+        let gate = Arc::new(RecordingOperationGate {
+            state: Mutex::new(RecordingOperationGateState {
+                kind,
+                reached: false,
+                released: false,
+            }),
+            changed: Condvar::new(),
+        });
+        *self
+            .operation_gate
+            .lock()
+            .expect("recording operation gate mutex poisoned") = Some(Arc::clone(&gate));
+        gate
+    }
+
+    fn register_incarnation(
+        &self,
+        incarnation: u64,
+        deadline: Option<Instant>,
+    ) -> Result<(), RecordingStoreError> {
+        let mut state = self.lock();
+        while state
+            .incarnations
+            .values()
+            .any(|incarnation| !incarnation.active && incarnation.claims != 0)
+        {
+            let Some(deadline) = deadline else {
+                state = self
+                    .incarnation_changed
+                    .wait(state)
+                    .expect("recording store mutex poisoned while waiting for retirement fencing");
+                continue;
+            };
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(RecordingStoreError::CreationCancelled);
+            }
+            #[cfg(test)]
+            {
+                drop(state);
+                self.wait_at_operation_gate(RecordingOperationGateKind::RegisterBeforeWait);
+                state = self.lock();
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(RecordingStoreError::CreationCancelled);
+            }
+            let (next, wait) = self
+                .incarnation_changed
+                .wait_timeout(state, deadline.saturating_duration_since(now))
+                .expect("recording store mutex poisoned while waiting for retirement fencing");
+            state = next;
+            #[cfg(test)]
+            {
+                drop(state);
+                self.wait_at_operation_gate(RecordingOperationGateKind::RegisterAfterWake);
+                state = self.lock();
+            }
+            if Instant::now() >= deadline {
+                return Err(RecordingStoreError::CreationCancelled);
+            }
+            if wait.timed_out() {
+                return Err(RecordingStoreError::CreationCancelled);
+            }
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(RecordingStoreError::CreationCancelled);
+        }
+        state
+            .incarnations
+            .retain(|_, incarnation| incarnation.active || incarnation.claims != 0);
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(RecordingStoreError::CreationCancelled);
+        }
+        state.incarnations.insert(
+            incarnation,
+            IncarnationState {
+                active: true,
+                claims: 0,
+            },
+        );
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn incarnation_count(&self) -> usize {
+        self.lock().incarnations.len()
+    }
+
+    fn retire_incarnation(&self, incarnation: u64) {
+        let mut state = self.lock();
+        if let Some(incarnation) = state.incarnations.get_mut(&incarnation) {
+            incarnation.active = false;
+        }
+        state
+            .incarnations
+            .retain(|_, incarnation| incarnation.active || incarnation.claims != 0);
+        drop(state);
+        self.incarnation_changed.notify_all();
+    }
+
+    fn incarnation_active(&self, incarnation: u64) -> bool {
+        self.lock()
+            .incarnations
+            .get(&incarnation)
+            .is_some_and(|incarnation| incarnation.active)
+    }
+
+    fn claim(self: &Arc<Self>, incarnation: u64) -> Option<StoreOperationClaim> {
+        let mut state = self.lock();
+        let incarnation_state = state.incarnations.get_mut(&incarnation)?;
+        if !incarnation_state.active {
+            return None;
+        }
+        incarnation_state.claims = incarnation_state
+            .claims
+            .checked_add(1)
+            .expect("recording store operation claim count exhausted");
+        drop(state);
+        Some(StoreOperationClaim {
+            incarnation,
+            shared: Arc::clone(self),
+        })
+    }
+
+    #[cfg(test)]
+    fn wait_at_operation_gate(&self, kind: RecordingOperationGateKind) {
+        let gate = self
+            .operation_gate
+            .lock()
+            .expect("recording operation gate mutex poisoned")
+            .clone();
+        let Some(gate) = gate else {
+            return;
+        };
+        let mut state = gate
+            .state
+            .lock()
+            .expect("recording operation gate state mutex poisoned");
+        if state.kind != kind {
+            return;
+        }
+        state.reached = true;
+        gate.changed.notify_all();
+        while !state.released {
+            state = gate
+                .changed
+                .wait(state)
+                .expect("recording operation gate state mutex poisoned");
+        }
+    }
+}
+
+#[cfg(test)]
+impl RecordingOperationGate {
+    fn wait_reached(&self, timeout: Duration) -> bool {
+        let state = self
+            .state
+            .lock()
+            .expect("recording operation gate state mutex poisoned");
+        self.changed
+            .wait_timeout_while(state, timeout, |state| !state.reached)
+            .expect("recording operation gate state mutex poisoned")
+            .0
+            .reached
+    }
+
+    fn release(&self) {
+        self.state
+            .lock()
+            .expect("recording operation gate state mutex poisoned")
+            .released = true;
+        self.changed.notify_all();
+    }
+}
+
+impl StoreOperationClaim {
+    fn incarnation_active(&self) -> bool {
+        self.shared.incarnation_active(self.incarnation)
+    }
+}
+
+impl Drop for StoreOperationClaim {
+    fn drop(&mut self) {
+        let mut state = self.shared.lock();
+        let incarnation = state
+            .incarnations
+            .get_mut(&self.incarnation)
+            .expect("claimed recording store incarnation remains registered");
+        incarnation.claims -= 1;
+        let remove = !incarnation.active && incarnation.claims == 0;
+        if remove {
+            state.incarnations.remove(&self.incarnation);
+        }
+        drop(state);
+        self.shared.incarnation_changed.notify_all();
+    }
+}
+
+impl RecordingStoreHandle {
+    fn shared(&self) -> Option<Arc<StoreShared>> {
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn retire(&self) {
+        let shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        drop(shared);
+    }
 }
 
 fn scan_root(
@@ -1524,6 +1921,61 @@ fn validate_relative_name(name: &str) -> Result<(), RecordingStoreError> {
         return Err(RecordingStoreError::InvalidRelativeName);
     }
     Ok(())
+}
+
+fn create_recording_entry(
+    shared: &StoreShared,
+    claim: &StoreOperationClaim,
+    final_relative_name: &str,
+    lock: bool,
+) -> Result<(OwnedFd, String), RecordingStoreError> {
+    for attempt in 0..MAX_NAME_ATTEMPTS {
+        let Some(relative_name) = (if attempt == 0 {
+            Some(final_relative_name.to_owned())
+        } else {
+            collision_recording_filename(final_relative_name, attempt)
+        }) else {
+            break;
+        };
+        match rustix_fs::openat(
+            &shared.root,
+            relative_name.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::RUSR | Mode::WUSR,
+        ) {
+            Ok(descriptor) => {
+                if lock
+                    && let Err(source) =
+                        rustix_fs::flock(&descriptor, FlockOperation::NonBlockingLockExclusive)
+                {
+                    drop(descriptor);
+                    unlink_created_entry(shared, &relative_name)?;
+                    return Err(RecordingStoreError::PartialCreate(source.into()));
+                }
+                if !claim.incarnation_active() {
+                    drop(descriptor);
+                    unlink_created_entry(shared, &relative_name)?;
+                    return Err(RecordingStoreError::CreationCancelled);
+                }
+                return Ok((descriptor, relative_name));
+            }
+            Err(Errno::EXIST) => {}
+            Err(source) => return Err(RecordingStoreError::PartialCreate(source.into())),
+        }
+    }
+    Err(RecordingStoreError::FinalNameCollisions {
+        partial_relative_name: final_relative_name.to_owned(),
+    })
+}
+
+fn unlink_created_entry(
+    shared: &StoreShared,
+    relative_name: &str,
+) -> Result<(), RecordingStoreError> {
+    match rustix_fs::unlinkat(&shared.root, relative_name, AtFlags::empty()) {
+        Ok(()) | Err(Errno::NOENT) => Ok(()),
+        Err(cleanup) => Err(RecordingStoreError::PartialCleanup(cleanup.into())),
+    }
 }
 
 fn is_owned_partial(name: &[u8]) -> bool {
@@ -1644,6 +2096,11 @@ fn store_registry() -> &'static Mutex<HashMap<RootIdentity, Weak<StoreShared>>> 
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn next_store_incarnation() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
+}
+
 fn byte_quota_error(maximum: u64) -> io::Error {
     io::Error::new(
         io::ErrorKind::StorageFull,
@@ -1670,16 +2127,28 @@ mod tests {
             },
         )
         .expect("recording store");
-        assert_eq!(store.shared.finalizer.threads.len(), MAX_FINALIZER_THREADS);
+        assert_eq!(
+            store
+                .shared()
+                .expect("active recording store")
+                .finalizer
+                .threads
+                .len(),
+            MAX_FINALIZER_THREADS
+        );
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let (started_tx, started_rx) = mpsc::channel();
         let (completed_tx, completed_rx) = mpsc::channel();
+        let authority = RecordingFinalizerAuthority {
+            incarnation: store.handle.incarnation,
+            shared: store.shared().expect("active recording store"),
+        };
 
         for job in 0..4 {
             let release = Arc::clone(&release);
             let started_tx = started_tx.clone();
             let completed_tx = completed_tx.clone();
-            store.submit_finalization(Box::new(move || {
+            authority.submit(Box::new(move || {
                 started_tx.send(job).expect("report started finalization");
                 let (lock, available) = &*release;
                 drop(
@@ -1715,6 +2184,303 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("finalization completed");
         }
+    }
+
+    #[test]
+    fn bounded_reopen_registration_expires_without_registering_a_new_incarnation() {
+        let root = tempdir().expect("recording root");
+        let store = test_store(root.path());
+        let gate = store.install_operation_gate(RecordingOperationGateKind::CreateBeforeOpen);
+        let creating_store = store.clone();
+        let creator = thread::spawn(move || creating_store.create("blocked.flv"));
+        assert!(gate.wait_reached(Duration::from_secs(1)));
+        let shared = store.shared().expect("shared store");
+        store.retire();
+
+        let started = Instant::now();
+        let result = RecordingStore::open_with_deadline(
+            root.path(),
+            test_limits(),
+            Some(started + Duration::from_millis(50)),
+        );
+
+        assert!(matches!(
+            result,
+            Err(RecordingStoreError::CreationCancelled)
+        ));
+        assert!(started.elapsed() >= Duration::from_millis(35));
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert_eq!(shared.incarnation_count(), 1);
+        gate.release();
+        assert!(matches!(
+            creator.join().expect("creator"),
+            Err(RecordingStoreError::CreationCancelled)
+        ));
+        assert_eq!(shared.incarnation_count(), 0);
+    }
+
+    #[test]
+    fn bounded_reopen_rejects_a_late_claim_release_without_inserting() {
+        let root = tempdir().expect("recording root");
+        let store = test_store(root.path());
+        let shared = store.shared().expect("shared store");
+        let claim = shared
+            .claim(store.handle.incarnation)
+            .expect("inactive claim fixture");
+        let before_wait_gate =
+            store.install_operation_gate(RecordingOperationGateKind::RegisterBeforeWait);
+        store.retire();
+
+        let root_path = root.path().to_owned();
+        let (opened_tx, opened_rx) = mpsc::sync_channel(1);
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let opener = thread::spawn(move || {
+            opened_tx
+                .send(RecordingStore::open_with_deadline(
+                    root_path,
+                    test_limits(),
+                    Some(deadline),
+                ))
+                .expect("bounded opener result receiver");
+        });
+
+        assert!(before_wait_gate.wait_reached(Duration::from_secs(1)));
+        let registration_gate =
+            shared.install_operation_gate(RecordingOperationGateKind::RegisterAfterWake);
+        before_wait_gate.release();
+        drop(claim);
+        assert!(registration_gate.wait_reached(Duration::from_secs(1)));
+        thread::sleep(Duration::from_millis(150));
+        registration_gate.release();
+
+        assert!(matches!(
+            opened_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("late bounded opener"),
+            Err(RecordingStoreError::CreationCancelled)
+        ));
+        opener.join().expect("opener");
+        assert_eq!(shared.incarnation_count(), 0);
+
+        let reopened = test_store(root.path());
+        reopened
+            .create("fresh.flv")
+            .expect("reopen after late wake");
+    }
+
+    #[test]
+    fn retired_incarnation_preserves_late_finalization_as_recoverable_partial() {
+        let root = tempdir().expect("recording root");
+        let store = test_store(root.path());
+        let mut recording = store.create("staging.flv").expect("recording");
+        recording.write_all(b"recoverable").expect("recording data");
+        let partial = recording.partial_relative_name().to_owned();
+        recording
+            .set_final_relative_name("camera.flv".to_owned())
+            .expect("final name");
+        let authority = recording.finalizer_authority();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+
+        store.retire();
+        let reopened = test_store(root.path());
+        let ticket = authority.submit(Box::new(move || {
+            result_tx
+                .send(recording.commit())
+                .expect("late finalization result");
+        }));
+
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("late finalization")
+            .expect_err("retired incarnation cannot publish");
+        assert_eq!(error.recoverable_partial_name(), Some(partial.as_str()));
+        assert!(root.path().join(&partial).is_file());
+        assert!(!root.path().join("camera.flv").exists());
+        assert_eq!(reopened.stats().bytes_used, 11);
+        assert_eq!(reopened.stats().files, 1);
+        assert!(!ticket.cancel_queued());
+        let fresh = reopened
+            .create("camera.flv")
+            .expect("fresh generation recording");
+        drop(fresh);
+        assert!(root.path().join(&partial).is_file());
+    }
+
+    #[test]
+    fn retirement_before_publication_claim_reopens_with_only_the_recoverable_partial() {
+        let root = tempdir().expect("recording root");
+        let store = test_store(root.path());
+        let mut recording = store.create("staging.flv").expect("recording");
+        recording.write_all(b"recoverable").expect("recording data");
+        let partial = recording.partial_relative_name().to_owned();
+        recording
+            .set_final_relative_name("camera.flv".to_owned())
+            .expect("final name");
+        let gate = recording.commit_cancellation().install_publication_gate();
+        let (committed_tx, committed_rx) = mpsc::sync_channel(1);
+        let committer = thread::spawn(move || {
+            committed_tx
+                .send(recording.commit())
+                .expect("commit result receiver");
+        });
+        assert!(gate.wait_before_claim(Duration::from_secs(1)));
+
+        store.retire();
+        let reopened = test_store(root.path());
+        gate.allow_claim();
+
+        let error = committed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("retired commit result")
+            .expect_err("retirement wins before publication claim");
+        assert_eq!(error.recoverable_partial_name(), Some(partial.as_str()));
+        assert!(root.path().join(&partial).is_file());
+        assert!(!root.path().join("camera.flv").exists());
+        assert_eq!(reopened.stats().bytes_used, 11);
+        assert_eq!(reopened.stats().files, 1);
+        committer.join().expect("committer");
+    }
+
+    #[test]
+    fn retirement_fences_create_before_open_and_reopen_waits_for_the_claim() {
+        let root = tempdir().expect("recording root");
+        let store = test_store(root.path());
+        let gate = store.install_operation_gate(RecordingOperationGateKind::CreateBeforeOpen);
+        let creating_store = store.clone();
+        let (created_tx, created_rx) = mpsc::sync_channel(1);
+        let creator = thread::spawn(move || {
+            created_tx
+                .send(creating_store.create("old.flv"))
+                .expect("create result receiver");
+        });
+        assert!(gate.wait_reached(Duration::from_secs(1)));
+
+        store.retire();
+        let root_path = root.path().to_owned();
+        let (reopened_tx, reopened_rx) = mpsc::sync_channel(1);
+        let opener = thread::spawn(move || {
+            reopened_tx
+                .send(test_store(&root_path))
+                .expect("reopened store receiver");
+        });
+        assert!(matches!(
+            reopened_rx.recv_timeout(Duration::from_millis(40)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        gate.release();
+        assert!(matches!(
+            created_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("retired create result"),
+            Err(RecordingStoreError::CreationCancelled)
+        ));
+        let reopened = reopened_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reopen after create claim");
+        assert_eq!(reopened.stats(), RecordingStoreStats::default());
+        assert!(!root.path().join("old.flv").exists());
+        reopened.create("fresh.flv").expect("fresh create");
+        creator.join().expect("creator");
+        opener.join().expect("opener");
+    }
+
+    #[test]
+    fn retirement_fences_resume_after_shared_capture() {
+        let root = tempdir().expect("recording root");
+        let mut flv = Vec::from(&b"FLV\x01\x04\0\0\0\x09\0\0\0\0"[..]);
+        flv.extend_from_slice(&[8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        flv.extend_from_slice(&11_u32.to_be_bytes());
+        fs::write(root.path().join("camera.flv"), &flv).expect("existing FLV");
+        let store = test_store(root.path());
+        let gate =
+            store.install_operation_gate(RecordingOperationGateKind::ResumeAfterSharedCapture);
+        let resuming_store = store.clone();
+        let (resumed_tx, resumed_rx) = mpsc::sync_channel(1);
+        let resumer = thread::spawn(move || {
+            resumed_tx
+                .send(resuming_store.resume_with_options("camera.flv", false, None))
+                .expect("resume result receiver");
+        });
+        assert!(gate.wait_reached(Duration::from_secs(1)));
+
+        store.retire();
+        let reopened = test_store(root.path());
+        gate.release();
+
+        assert!(matches!(
+            resumed_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("retired resume result"),
+            Err(RecordingStoreError::CreationCancelled)
+        ));
+        assert_eq!(
+            reopened.stats().bytes_used,
+            u64::try_from(flv.len()).unwrap()
+        );
+        assert_eq!(reopened.stats().files, 1);
+        assert_eq!(fs::read(root.path().join("camera.flv")).unwrap(), flv);
+        resumer.join().expect("resumer");
+    }
+
+    #[test]
+    fn claimed_publication_finishes_before_reopen_without_overwrite() {
+        let root = tempdir().expect("recording root");
+        let store = test_store(root.path());
+        let mut recording = store.create("staging.flv").expect("recording");
+        recording.write_all(b"old").expect("old data");
+        recording
+            .set_final_relative_name("camera.flv".to_owned())
+            .expect("final name");
+        let cancellation = recording.commit_cancellation();
+        let gate = cancellation.install_publication_gate();
+        let (committed_tx, committed_rx) = mpsc::sync_channel(1);
+        let committer = thread::spawn(move || {
+            committed_tx
+                .send(recording.commit())
+                .expect("commit result receiver");
+        });
+        assert!(gate.wait_before_claim(Duration::from_secs(1)));
+        gate.allow_claim();
+        assert!(gate.wait_after_claim(Duration::from_secs(1)));
+
+        store.retire();
+        let root_path = root.path().to_owned();
+        let (reopened_tx, reopened_rx) = mpsc::sync_channel(1);
+        let opener = thread::spawn(move || {
+            reopened_tx
+                .send(test_store(&root_path))
+                .expect("reopened store receiver");
+        });
+        assert!(matches!(
+            reopened_rx.recv_timeout(Duration::from_millis(40)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        gate.allow_publication();
+        let commit = committed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("claimed publication")
+            .expect("old claim publishes before reopen");
+        assert_eq!(commit.relative_name, "camera.flv");
+        let reopened = reopened_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reopen after publication claim");
+        let mut fresh = reopened
+            .create("camera.flv")
+            .expect("fresh collision create");
+        fresh.write_all(b"fresh").expect("fresh data");
+        let fresh = fresh.commit().expect("fresh commit");
+        assert_eq!(fresh.relative_name, "camera-1.flv");
+        assert_eq!(fs::read(root.path().join("camera.flv")).unwrap(), b"old");
+        assert_eq!(
+            fs::read(root.path().join("camera-1.flv")).unwrap(),
+            b"fresh"
+        );
+        assert_eq!(reopened.stats().bytes_used, 8);
+        assert_eq!(reopened.stats().files, 2);
+        committer.join().expect("committer");
+        opener.join().expect("opener");
     }
 
     #[test]

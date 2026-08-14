@@ -145,25 +145,33 @@ Otherwise the local renewal policy applies.
 - The handler serves only the required key authorization and no files.
 - Requests with malformed or unknown tokens return not found without exposing order state.
 - If another process owns port 80, validation fails with an actionable diagnostic rather than changing firewall rules.
-- All required challenge material is provisioned before the CA is notified; cleanup always runs after a terminal result or timeout.
+- All required challenge material is provisioned before the CA is notified. Cleanup is attempted
+  after a terminal result or timeout when control returns; durable ownership remains pending if
+  cancellation or a blocking provider prevents confirmed cleanup.
 
 ### DNS-01: implemented
 
 - Required for wildcard identifiers and environments without reachable HTTP port 80.
 - Providers implement a narrow in-process contract and must be statically linked and exactly
   allowlisted. Dynamic loading and shell hooks are rejected.
-- Provider calls receive only bounded credentials, the exact record name/value, and a deadline with
-  cooperative cancellation. Provider errors are categorical and redacted.
+- Provider calls receive only bounded credentials, the exact record name/value, and an operation
+  context with a deadline and cooperative cancellation. The orchestrator checks before and after the
+  call, but cannot preempt a provider that blocks without checking the operation. Provider errors are
+  categorical and redacted.
 - Providers return an opaque record identity, verify propagation within the same operation budget, and
   remove only that exact record during cleanup.
 - The orchestrator validates every returned record against the requested challenge before notifying
-  the CA. Cleanup runs after propagation, notification, polling, timeout, or ACME failure.
+  the CA. Cleanup is attempted after propagation, notification, polling, timeout, or ACME failure;
+  unconfirmed cleanup remains in the durable journal for recovery.
 - Provider-specific CNAME/NS delegation and authoritative DNS policy remain provider responsibilities;
   the orchestrator never guesses them.
 - Provider deployment is reported as `registered` or `unsupported`; health is an observed lifecycle
   status (`unknown`, `healthy`, `degraded`, or `unsupported`), not an invented remote health probe.
   A pending or failed cleanup journal keeps the provider degraded and blocks a new DNS-01 issuance
   until exact cleanup recovery succeeds.
+- Cancellation before provider cleanup is confirmed intentionally retains that durable journal and
+  reports no cleanup success. A later recovery removes the journal only after one confirmed exact
+  provider cleanup.
 
 ### TLS-ALPN-01
 

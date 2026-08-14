@@ -28,7 +28,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use http::{Method, Request, StatusCode};
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, Config, DownstreamTimeoutPolicy,
+    AlpnProtocol, Certificate, CertificateSource, ConfigDraft, DownstreamTimeoutPolicy,
     ForwardAuditMode, ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHeaderPolicy,
     ForwardHttpVersion, ForwardPeerPolicy, ForwardProxyService, ForwardResolverPolicy,
     HttpPathSelector, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService, HttpVersionPolicy,
@@ -73,7 +73,7 @@ async fn http_reload_retains_the_old_keepalive_and_drain_rejects_new_admissions(
     let management_address = reserve_tcp_address();
     let listener_address = reserve_tcp_address();
     let initial = http_config(management_address, listener_address, "old-http");
-    let mut server = ServerProcess::start(&initial, Some(TOKEN));
+    let mut server = ServerProcess::start(&initial.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(listener_address).await;
 
@@ -91,7 +91,7 @@ async fn http_reload_retains_the_old_keepalive_and_drain_rejects_new_admissions(
 
     let mut candidate = initial.clone();
     fixed_response_body(&mut candidate, "new-http");
-    write_config(&server.config_path, &candidate);
+    write_config(&server.config_path, &candidate.clone().validate().unwrap());
     wait_for_new_revision(management_address, &authorization, &original_revision).await;
 
     assert_eq!(
@@ -131,6 +131,39 @@ async fn http_reload_retains_the_old_keepalive_and_drain_rejects_new_admissions(
 }
 
 #[tokio::test]
+async fn generation_drain_does_not_leave_process_admission_draining_for_replacement() {
+    let _test_guard = process_drain_test_guard().await;
+    let management_address = reserve_tcp_address();
+    let listener_address = reserve_tcp_address();
+    let mut initial = http_config(management_address, listener_address, "initial");
+    let mut server = ServerProcess::start(&initial.clone().validate().unwrap(), Some(TOKEN));
+    server.wait_for_tcp(management_address).await;
+    server.wait_for_tcp(listener_address).await;
+
+    let authorization = format!("Bearer {TOKEN}");
+    let revision = active_revision(management_address, &authorization).await;
+    let drain = generation_drain(management_address, &authorization, &revision).await;
+    assert_eq!(drain.status, 202, "{}", drain.text());
+
+    fixed_response_body(&mut initial, "replacement");
+    write_config(&server.config_path, &initial.clone().validate().unwrap());
+    wait_for_new_revision(management_address, &authorization, &revision).await;
+
+    let mut connection = TcpStream::connect(listener_address)
+        .await
+        .expect("replacement HTTP connection");
+    assert_eq!(
+        persistent_request(&mut connection, "GET", "/", &[], &[])
+            .await
+            .body(),
+        b"replacement"
+    );
+    drop(connection);
+    server.shutdown();
+    assert_listener_released([management_address, listener_address]);
+}
+
+#[tokio::test]
 async fn h2_reload_sends_goaway_while_the_candidate_serves_new_connections() {
     let _test_guard = process_drain_test_guard().await;
     let management_address = reserve_tcp_address();
@@ -149,7 +182,7 @@ async fn h2_reload_sends_goaway_while_the_candidate_serves_new_connections() {
         headers: Vec::new(),
     };
     fixed_response_body(&mut initial, "old-h2");
-    let mut server = ServerProcess::start(&initial, Some(TOKEN));
+    let mut server = ServerProcess::start(&initial.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(listener_address).await;
 
@@ -169,7 +202,7 @@ async fn h2_reload_sends_goaway_while_the_candidate_serves_new_connections() {
 
     let mut candidate = initial;
     fixed_response_body(&mut candidate, "new-h2");
-    write_config(&server.config_path, &candidate);
+    write_config(&server.config_path, &candidate.clone().validate().unwrap());
     wait_for_new_revision(management_address, &authorization, &original_revision).await;
 
     let old_request = timeout(WIRE_TIMEOUT, old_connection.get())
@@ -211,7 +244,7 @@ async fn forward_h2_reload_sends_goaway_while_the_candidate_serves_new_connectio
         origin_address,
         private_key.path(),
     );
-    let mut server = ServerProcess::start(&initial, Some(TOKEN));
+    let mut server = ServerProcess::start(&initial.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(listener_address).await;
 
@@ -230,7 +263,7 @@ async fn forward_h2_reload_sends_goaway_while_the_candidate_serves_new_connectio
     let original_revision = active_revision(management_address, &authorization).await;
 
     initial.max_connections = Some(17);
-    write_config(&server.config_path, &initial);
+    write_config(&server.config_path, &initial.clone().validate().unwrap());
     wait_for_new_revision(management_address, &authorization, &original_revision).await;
 
     let old_request = timeout(
@@ -271,7 +304,7 @@ async fn tcp_reload_retains_the_old_relay_and_shutdown_cancels_at_the_deadline()
     let listener_address = reserve_tcp_address();
     let (upstream_address, upstream_task) = start_echo_upstream().await;
     let mut initial = tcp_config(management_address, listener_address, upstream_address);
-    let mut server = ServerProcess::start(&initial, Some(TOKEN));
+    let mut server = ServerProcess::start(&initial.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(listener_address).await;
 
@@ -283,7 +316,7 @@ async fn tcp_reload_retains_the_old_relay_and_shutdown_cancels_at_the_deadline()
     let original_revision = active_revision(management_address, &authorization).await;
 
     initial.max_connections = Some(17);
-    write_config(&server.config_path, &initial);
+    write_config(&server.config_path, &initial.clone().validate().unwrap());
     wait_for_new_revision(management_address, &authorization, &original_revision).await;
     assert_echo(&mut old_connection, b"tcp-after-reload").await;
 
@@ -351,7 +384,7 @@ async fn rtmp_reload_and_drain_retain_the_publisher_until_bounded_shutdown() {
     let management_address = reserve_tcp_address();
     let listener_address = reserve_tcp_address();
     let mut initial = rtmp_config(management_address, listener_address);
-    let mut server = ServerProcess::start(&initial, Some(TOKEN));
+    let mut server = ServerProcess::start(&initial.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(listener_address).await;
 
@@ -362,7 +395,7 @@ async fn rtmp_reload_and_drain_retain_the_publisher_until_bounded_shutdown() {
     let original_revision = active_revision(management_address, &authorization).await;
 
     initial.max_connections = Some(19);
-    write_config(&server.config_path, &initial);
+    write_config(&server.config_path, &initial.validate().unwrap());
     wait_for_new_revision(management_address, &authorization, &original_revision).await;
     publisher.publish_audio(2, &[0xaf, 0x01, 0x44]).await;
 
@@ -419,7 +452,7 @@ async fn event_sse_closes_with_a_bounded_shutdown_frame_and_releases_its_listene
     let _test_guard = process_drain_test_guard().await;
     let management_address = reserve_tcp_address();
     let config = management_config_only(management_address);
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(&config.validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
 
     let authorization = format!("Bearer {TOKEN}");
@@ -485,15 +518,19 @@ fn management(address: SocketAddr) -> Management {
     }
 }
 
-fn management_config_only(address: SocketAddr) -> Config {
-    Config {
+fn management_config_only(address: SocketAddr) -> ConfigDraft {
+    ConfigDraft {
         management: Some(management(address)),
         ..empty_config()
     }
 }
 
-fn http_config(management_address: SocketAddr, listener_address: SocketAddr, body: &str) -> Config {
-    Config {
+fn http_config(
+    management_address: SocketAddr,
+    listener_address: SocketAddr,
+    body: &str,
+) -> ConfigDraft {
+    ConfigDraft {
         management: Some(management(management_address)),
         listeners: vec![Listener {
             name: "http".into(),
@@ -534,8 +571,8 @@ fn forward_h2_config(
     listener_address: SocketAddr,
     origin_address: SocketAddr,
     private_key_path: &Path,
-) -> Config {
-    Config {
+) -> ConfigDraft {
+    ConfigDraft {
         management: Some(management(management_address)),
         certificates: vec![Certificate {
             name: "downstream".into(),
@@ -598,8 +635,8 @@ fn tcp_config(
     management_address: SocketAddr,
     listener_address: SocketAddr,
     upstream_address: SocketAddr,
-) -> Config {
-    Config {
+) -> ConfigDraft {
+    ConfigDraft {
         management: Some(management(management_address)),
         listeners: vec![Listener {
             name: "tcp".into(),
@@ -638,8 +675,8 @@ fn tcp_config(
     }
 }
 
-fn rtmp_config(management_address: SocketAddr, listener_address: SocketAddr) -> Config {
-    Config {
+fn rtmp_config(management_address: SocketAddr, listener_address: SocketAddr) -> ConfigDraft {
+    ConfigDraft {
         management: Some(management(management_address)),
         listeners: vec![Listener {
             name: "rtmp".into(),
@@ -683,7 +720,7 @@ fn rtmp_config(management_address: SocketAddr, listener_address: SocketAddr) -> 
     }
 }
 
-fn fixed_response_body(config: &mut Config, body: &str) {
+fn fixed_response_body(config: &mut ConfigDraft, body: &str) {
     let HttpRouteAction::FixedResponse { body: target, .. } =
         &mut config.http_services[0].routes[0].action
     else {

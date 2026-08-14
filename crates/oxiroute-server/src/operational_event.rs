@@ -15,7 +15,7 @@ use rustix::{
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use tokio::sync::Notify;
 
-use crate::config_coordinator::ConfigRevision;
+use crate::config_coordinator::EffectiveRevision;
 use crate::logging::{next_correlation_id, redact_identifier, redact_text, valid_correlation_id};
 use crate::monitoring::{ObservedTransport, TransportOutcome};
 use crate::routing::HealthFailure;
@@ -413,7 +413,7 @@ impl AuditStore {
         category: AuditCategory,
         operation: &str,
         result: AuditResult,
-        revision: Option<&ConfigRevision>,
+        revision: Option<&EffectiveRevision>,
     ) -> Result<u64, AuditStoreError> {
         let mut state = self
             .state
@@ -947,7 +947,7 @@ pub(crate) struct OperationalEvent {
     pub timestamp_unix_ms: Option<u64>,
     pub event: EventName,
     pub outcome: EventOutcome,
-    pub revision: Option<ConfigRevision>,
+    pub revision: Option<EffectiveRevision>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub certificate: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -960,8 +960,7 @@ pub(crate) struct OperationalEvent {
     pub operation: Option<String>,
 }
 
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy)]
 pub(crate) enum EventName {
     GenerationPrepare,
     GenerationActivate,
@@ -982,9 +981,22 @@ pub(crate) enum EventName {
     RtmpAccess,
     CertificateRenewal,
     CertificateActivation,
+    CertificateRevocation,
+    CertificateDeletion,
+    CertificateAccountRollover,
+    CertificateJobControl,
     UpstreamEndpointEjection,
     UpstreamEndpointRecovery,
     Unknown,
+}
+
+impl Serialize for EventName {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(v1_serialized_event_name(*self))
+    }
 }
 
 impl EventName {
@@ -1009,6 +1021,10 @@ impl EventName {
             "rtmp_access" => Self::RtmpAccess,
             "certificate_renewal" => Self::CertificateRenewal,
             "certificate_activated" => Self::CertificateActivation,
+            "certificate_revocation" => Self::CertificateRevocation,
+            "certificate_deletion" => Self::CertificateDeletion,
+            "certificate_account_rollover" => Self::CertificateAccountRollover,
+            "certificate_job_control" => Self::CertificateJobControl,
             "upstream_endpoint_ejection" => Self::UpstreamEndpointEjection,
             "upstream_endpoint_recovery" => Self::UpstreamEndpointRecovery,
             _ => Self::Unknown,
@@ -1036,11 +1052,48 @@ impl EventName {
             Self::RtmpAccess => "rtmp_access",
             Self::CertificateRenewal => "certificate_renewal",
             Self::CertificateActivation => "certificate_activated",
+            Self::CertificateRevocation => "certificate_revocation",
+            Self::CertificateDeletion => "certificate_deletion",
+            Self::CertificateAccountRollover => "certificate_account_rollover",
+            Self::CertificateJobControl => "certificate_job_control",
             Self::UpstreamEndpointEjection => "upstream_endpoint_ejection",
             Self::UpstreamEndpointRecovery => "upstream_endpoint_recovery",
             Self::Unknown => "unknown",
         }
     }
+}
+
+pub(crate) const fn v1_serialized_event_name(event: EventName) -> &'static str {
+    match event {
+        EventName::CertificateActivation => "certificate_activation",
+        EventName::CertificateRevocation
+        | EventName::CertificateDeletion
+        | EventName::CertificateAccountRollover
+        | EventName::CertificateJobControl => "unknown",
+        _ => event.as_str(),
+    }
+}
+
+pub(crate) const fn v1_sse_event_name(event: EventName) -> &'static str {
+    match event {
+        EventName::CertificateRevocation
+        | EventName::CertificateDeletion
+        | EventName::CertificateAccountRollover
+        | EventName::CertificateJobControl => "unknown",
+        _ => event.as_str(),
+    }
+}
+
+pub(crate) fn v1_event_value(event: &OperationalEvent) -> serde_json::Value {
+    let mut value = serde_json::to_value(event).expect("typed operational event serializes");
+    value["event"] = v1_serialized_event_name(event.event).into();
+    value
+}
+
+pub(crate) fn v2_event_value(event: &OperationalEvent) -> serde_json::Value {
+    let mut value = serde_json::to_value(event).expect("typed operational event serializes");
+    value["event"] = event.event.as_str().into();
+    value
 }
 
 #[derive(Clone, Debug)]
@@ -1253,7 +1306,7 @@ pub(crate) fn audit_metrics() -> AuditMetricSnapshot {
     current_audit_store().metric_snapshot()
 }
 
-pub(crate) fn emit(event: &str, outcome: &str, revision: Option<&ConfigRevision>) {
+pub(crate) fn emit(event: &str, outcome: &str, revision: Option<&EffectiveRevision>) {
     emit_with_context(event, outcome, revision, &AuditContext::generated());
 }
 
@@ -1306,7 +1359,7 @@ pub fn emit_certificate(event: &str, outcome: &str, certificate: &str) {
 pub(crate) fn emit_with_context(
     event: &str,
     outcome: &str,
-    revision: Option<&ConfigRevision>,
+    revision: Option<&EffectiveRevision>,
     context: &AuditContext,
 ) {
     emit_inner(event, outcome, revision, None, context, None, None);
@@ -1325,7 +1378,7 @@ pub(crate) fn emit_api_operation(
     operation: &str,
     category: AuditCategory,
     result: AuditResult,
-    revision: Option<&ConfigRevision>,
+    revision: Option<&EffectiveRevision>,
     context: &AuditContext,
 ) {
     let event = match operation {
@@ -1433,7 +1486,7 @@ fn emit_typed(event: EventName, outcome: EventOutcome) {
 fn emit_inner(
     event: &str,
     outcome: &str,
-    revision: Option<&ConfigRevision>,
+    revision: Option<&EffectiveRevision>,
     certificate: Option<&str>,
     context: &AuditContext,
     operation: Option<&str>,
@@ -1520,9 +1573,12 @@ const fn category_for_event(event: EventName) -> AuditCategory {
         | EventName::GenerationStart
         | EventName::ConfigurationReload => AuditCategory::Reload,
         EventName::ImportCompleted => AuditCategory::Import,
-        EventName::CertificateRenewal | EventName::CertificateActivation => {
-            AuditCategory::Certificate
-        }
+        EventName::CertificateRenewal
+        | EventName::CertificateActivation
+        | EventName::CertificateRevocation
+        | EventName::CertificateDeletion
+        | EventName::CertificateAccountRollover
+        | EventName::CertificateJobControl => AuditCategory::Certificate,
         EventName::ControlOperation
         | EventName::ProcessShutdown
         | EventName::ListenerAdministrativeState
@@ -1551,14 +1607,6 @@ const fn result_for_outcome(outcome: &EventOutcome) -> AuditResult {
         }
         EventOutcome::Ejected { .. } | EventOutcome::Recovered { .. } => AuditResult::Succeeded,
     }
-}
-
-pub(crate) fn list(after: u64, limit: usize) -> (Vec<OperationalEvent>, u64, bool, Option<u64>) {
-    let state = log()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let page = state.page(after, limit);
-    (page.events, page.cursor, page.has_more, page.oldest_cursor)
 }
 
 pub(crate) fn page(after: u64, limit: usize) -> EventPage {
@@ -1642,7 +1690,7 @@ impl OperationalEvent {
         timestamp_unix_ms: Option<u64>,
         event: &str,
         outcome: &str,
-        revision: Option<&ConfigRevision>,
+        revision: Option<&EffectiveRevision>,
     ) -> Self {
         Self {
             cursor,
@@ -1903,6 +1951,91 @@ mod tests {
         assert!(json.contains(r#""outcome":"unknown""#));
         assert!(!json.contains("private-key-secret"));
         assert!(!json.contains("session-secret"));
+    }
+
+    #[test]
+    fn certificate_operation_event_names_round_trip_in_the_certificate_category() {
+        for name in [
+            "certificate_revocation",
+            "certificate_deletion",
+            "certificate_account_rollover",
+            "certificate_job_control",
+        ] {
+            let event = OperationalEvent::new(1, None, name, "requested", None);
+
+            assert_eq!(event.event.as_str(), name);
+            assert_eq!(category_for_event(event.event), AuditCategory::Certificate);
+        }
+    }
+
+    #[test]
+    fn default_serialization_preserves_persisted_version_one_event_names() {
+        let mut event = OperationalEvent {
+            cursor: 1,
+            timestamp_unix_ms: None,
+            event: EventName::CertificateActivation,
+            outcome: EventOutcome::Activated,
+            revision: None,
+            certificate: Some("edge".into()),
+            correlation_id: None,
+            actor: None,
+            source: None,
+            operation: None,
+        };
+
+        assert_eq!(
+            serde_json::to_string(&event).expect("event JSON"),
+            r#"{"cursor":1,"timestampUnixMs":null,"event":"certificate_activation","outcome":"activated","revision":null,"certificate":"edge"}"#
+        );
+
+        event.event = EventName::CertificateRevocation;
+        event.outcome = EventOutcome::Requested;
+        assert_eq!(
+            serde_json::to_string(&event).expect("event JSON"),
+            r#"{"cursor":1,"timestampUnixMs":null,"event":"unknown","outcome":"requested","revision":null,"certificate":"edge"}"#
+        );
+    }
+
+    #[test]
+    fn version_one_projection_preserves_shipped_event_names() {
+        let mut event = OperationalEvent {
+            cursor: 1,
+            timestamp_unix_ms: None,
+            event: EventName::CertificateActivation,
+            outcome: EventOutcome::Activated,
+            revision: None,
+            certificate: Some("edge".into()),
+            correlation_id: None,
+            actor: None,
+            source: None,
+            operation: None,
+        };
+
+        assert_eq!(v1_event_value(&event)["event"], "certificate_activation");
+        event.event = EventName::CertificateRevocation;
+        event.outcome = EventOutcome::Requested;
+        assert_eq!(v1_event_value(&event)["event"], "unknown");
+        assert_eq!(v1_event_value(&event)["outcome"], "requested");
+    }
+
+    #[test]
+    fn version_two_projection_uses_the_authoritative_event_names() {
+        let mut event = OperationalEvent {
+            cursor: 1,
+            timestamp_unix_ms: None,
+            event: EventName::CertificateActivation,
+            outcome: EventOutcome::Activated,
+            revision: None,
+            certificate: Some("edge".into()),
+            correlation_id: None,
+            actor: None,
+            source: None,
+            operation: None,
+        };
+
+        assert_eq!(v2_event_value(&event)["event"], "certificate_activated");
+        event.event = EventName::CertificateRevocation;
+        assert_eq!(v2_event_value(&event)["event"], "certificate_revocation");
     }
 
     #[test]

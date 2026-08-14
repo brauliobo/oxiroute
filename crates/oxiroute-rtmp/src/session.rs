@@ -31,8 +31,9 @@ mod vod_playback;
 pub use playback::MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN;
 pub use runtime::{
     RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule,
-    RtmpApplication, RtmpNetwork, RtmpRecorderLifecycle, RtmpServiceRuntime, RtmpSessionCeilings,
-    RtmpSessionLimits, RtmpSessionPolicy, RtmpTokenPolicy,
+    RtmpApplication, RtmpNetwork, RtmpRecorderLifecycle, RtmpServicePreparation,
+    RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionLimitError, RtmpSessionLimits,
+    RtmpSessionPolicy, RtmpTokenPolicy,
 };
 pub use status::RtmpSessionError;
 

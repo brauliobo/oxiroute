@@ -3,7 +3,8 @@
 use std::{fs, net::TcpListener, path::Path};
 
 use oxiroute_config_source::{
-    ConfigFormat, ConfigSourceError, decode_value, resolve_source, resolve_source_with_format,
+    ConfigFormat, ConfigSourceError, decode_value, load_lua, render_config, resolve_source,
+    resolve_source_with_format,
 };
 use tempfile::tempdir;
 
@@ -22,8 +23,8 @@ haproxy_server "frontend.cfg" "backend.cfg" {
     let resolved = resolve_source(&source_path, source).expect("resolved native KDL");
 
     assert_eq!(resolved.format, ConfigFormat::Kdl);
-    assert_eq!(resolved.config.version, 1);
-    assert_eq!(resolved.config.listeners.len(), 2);
+    assert_eq!(resolved.config.as_draft().version, 1);
+    assert_eq!(resolved.config.as_draft().listeners.len(), 2);
     assert!(resolved.compositional);
     assert_eq!(resolved.dependencies.len(), 4);
     assert_eq!(
@@ -39,6 +40,12 @@ haproxy_server "frontend.cfg" "backend.cfg" {
         resolved.dependencies[3],
         directory.path().join("backend.cfg")
     );
+    let lua = render_config(ConfigFormat::Lua, &resolved.config).expect("rendered native config");
+    assert!(lua.contains("automatic_response_headers = true,"));
+    assert_eq!(
+        load_lua(&lua).expect("reloaded native config"),
+        resolved.config
+    );
 }
 
 #[test]
@@ -48,8 +55,8 @@ fn concise_kdl_imports_a_complete_squid_forward_proxy_root() {
     let source_path = root.parent().unwrap().join("host.kdl");
     let source = format!("squid_server {root:?} {{ externalize_cache #true }}\n");
     let resolved = resolve_source(&source_path, source.as_bytes()).expect("resolved Squid KDL");
-    assert_eq!(resolved.config.listeners.len(), 1);
-    assert_eq!(resolved.config.forward_proxy_services.len(), 1);
+    assert_eq!(resolved.config.as_draft().listeners.len(), 1);
+    assert_eq!(resolved.config.as_draft().forward_proxy_services.len(), 1);
     assert!(resolved.compositional);
     assert_eq!(
         resolved.dependencies,
@@ -97,8 +104,12 @@ fn native_apache_imports_from_kdl_hocon_and_uci() {
         let source_path = directory.path().join(format!("host.{extension}"));
         let resolved = resolve_source(&source_path, source.as_bytes())
             .unwrap_or_else(|error| panic!("resolved Apache {extension}: {error}"));
-        assert_eq!(resolved.config.listeners.len(), 1, "{extension}");
-        assert_eq!(resolved.config.http_services.len(), 1, "{extension}");
+        assert_eq!(resolved.config.as_draft().listeners.len(), 1, "{extension}");
+        assert_eq!(
+            resolved.config.as_draft().http_services.len(),
+            1,
+            "{extension}"
+        );
         assert!(resolved.compositional, "{extension}");
         assert_eq!(
             resolved.dependencies,
@@ -160,8 +171,8 @@ fn hocon_and_uci_import_a_complete_squid_forward_proxy_root() {
         let source_path = root.parent().unwrap().join(format!("host.{extension}"));
         let resolved = resolve_source(&source_path, source.as_bytes())
             .unwrap_or_else(|error| panic!("resolved Squid {extension}: {error}"));
-        assert_eq!(resolved.config.listeners.len(), 1);
-        assert_eq!(resolved.config.forward_proxy_services.len(), 1);
+        assert_eq!(resolved.config.as_draft().listeners.len(), 1);
+        assert_eq!(resolved.config.as_draft().forward_proxy_services.len(), 1);
         assert!(resolved.compositional);
         assert_eq!(
             resolved.dependencies,
@@ -327,7 +338,7 @@ haproxy_server = [{
     let resolved = resolve_source(&directory.path().join("host.hocon"), source.as_bytes())
         .expect("resolved native HOCON");
 
-    assert_eq!(resolved.config.listeners.len(), 2);
+    assert_eq!(resolved.config.as_draft().listeners.len(), 2);
     assert_eq!(resolved.dependencies.len(), 4);
     assert!(resolved.compositional);
 }
@@ -361,8 +372,8 @@ config haproxy_server 'database'
     let resolved =
         resolve_source(&directory.path().join("host.uci"), source).expect("resolved friendly UCI");
 
-    assert_eq!(resolved.config.version, 1);
-    assert_eq!(resolved.config.listeners.len(), 2);
+    assert_eq!(resolved.config.as_draft().version, 1);
+    assert_eq!(resolved.config.as_draft().listeners.len(), 2);
     assert_eq!(resolved.dependencies.len(), 4);
     assert!(resolved.compositional);
 }
@@ -420,9 +431,9 @@ haproxy_server "haproxy.cfg" {
 
     let resolved = resolve_source(&fixture.join("host.kdl"), source).expect("Phoenix host");
 
-    assert!(!resolved.config.http_services.is_empty());
-    assert!(!resolved.config.rtmp_services.is_empty());
-    assert!(!resolved.config.upstream_pools.is_empty());
+    assert!(!resolved.config.as_draft().http_services.is_empty());
+    assert!(!resolved.config.as_draft().rtmp_services.is_empty());
+    assert!(!resolved.config.as_draft().upstream_pools.is_empty());
     assert!(resolved.dependencies.len() >= 4);
 }
 
@@ -436,7 +447,7 @@ fn sanitized_back1_and_chicopc_haproxy_sources_use_explicit_environments() {
         let resolved = resolve_source(&fixture.join("host.kdl"), source.as_bytes())
             .unwrap_or_else(|error| panic!("{host} did not resolve: {error}"));
 
-        assert!(!resolved.config.listeners.is_empty());
+        assert!(!resolved.config.as_draft().listeners.is_empty());
         assert_eq!(
             resolved.dependencies,
             vec![fixture.join("haproxy.cfg"), fixture.clone()]
@@ -458,16 +469,22 @@ fn newly_representable_native_candidate_resolves_with_complete_policy() {
         resolved.dependencies,
         [fixture.clone(), fixture.parent().unwrap().to_path_buf()]
     );
-    assert_eq!(resolved.config.listeners.len(), 1);
-    assert_eq!(resolved.config.upstream_pools.len(), 1);
-    assert_eq!(resolved.config.http_services[0].routes.len(), 2);
+    assert_eq!(resolved.config.as_draft().listeners.len(), 1);
+    assert_eq!(resolved.config.as_draft().upstream_pools.len(), 1);
+    assert_eq!(resolved.config.as_draft().http_services[0].routes.len(), 2);
     let oxiroute_config::HttpRouteAction::Proxy { policy, .. } =
-        &resolved.config.http_services[0].routes[0].action
+        &resolved.config.as_draft().http_services[0].routes[0].action
     else {
         panic!("host route must proxy")
     };
     assert_eq!(policy.retry.max_retries, 3);
     assert!(policy.retry.final_redispatch);
+    let lua = render_config(ConfigFormat::Lua, &resolved.config).expect("rendered HAProxy config");
+    assert!(lua.contains("automatic_response_headers = false,"));
+    assert_eq!(
+        load_lua(&lua).expect("reloaded HAProxy config"),
+        resolved.config
+    );
 }
 
 #[test]
@@ -489,10 +506,10 @@ fn native_varnish_reference_resolves_exact_cache_subset_and_retains_evidence() {
     let resolved = resolve_source(Path::new("varnish.hocon"), source.as_bytes())
         .expect("resolved exact Varnish HOCON");
 
-    assert_eq!(resolved.config.listeners.len(), 1);
-    assert_eq!(resolved.config.upstream_pools.len(), 1);
-    assert_eq!(resolved.config.http_services.len(), 1);
-    assert_eq!(resolved.config.cache_stores.len(), 1);
+    assert_eq!(resolved.config.as_draft().listeners.len(), 1);
+    assert_eq!(resolved.config.as_draft().upstream_pools.len(), 1);
+    assert_eq!(resolved.config.as_draft().http_services.len(), 1);
+    assert_eq!(resolved.config.as_draft().cache_stores.len(), 1);
     assert_eq!(
         resolved.dependencies,
         [root.clone(), root.parent().unwrap().to_path_buf()]

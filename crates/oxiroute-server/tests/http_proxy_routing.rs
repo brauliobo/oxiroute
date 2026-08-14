@@ -20,7 +20,7 @@ use std::{
 
 use oxiroute_config::{
     AccessLogPolicy, CacheKeyComponent, CachePurgeAuthorization, CacheStore, CacheSurrogateTags,
-    Config, DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType,
+    ConfigDraft, DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType,
     HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipMinimumVersion,
     HttpGzipPolicy, HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPathRewrite,
     HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
@@ -34,7 +34,7 @@ use oxiroute_import::nginx::{
 };
 use oxiroute_server::{
     HttpDownstreamPolicyApp, HttpOperationResult, HttpReverseProxy, MAX_HTTP_ATTEMPTS,
-    MonitoredHttpApp, RoundRobinPool, RuntimeMetrics, ServiceKind, runtime_plan,
+    MonitoredHttpApp, RoundRobinPool, RuntimeMetrics, ServiceKind,
 };
 use pingora::{
     apps::ServerApp,
@@ -89,7 +89,7 @@ async fn imported_nginx_overlay_preserves_certbot_and_proxy_error_responses_on_w
             overlay.kind == oxiroute_import::OperationalOverlayKind::DefaultErrorPageMigration
                 && overlay.satisfied
         }));
-        let mut config = report.candidate.into_config().expect("imported nginx config");
+        let mut config = report.candidate.validated().expect("imported nginx config").to_draft();
         let service = config.http_services.remove(0);
         let proxy = ProxyHarness::start(
             config.upstream_pools,
@@ -5242,6 +5242,7 @@ async fn listener_keepalive_timeout_closes_an_idle_reusable_connection() {
 
 struct ProxyHarness {
     address: SocketAddr,
+    _generation: Arc<oxiroute_server::RuntimeGeneration>,
     metrics: RuntimeMetrics,
     pools: Vec<Arc<RoundRobinPool>>,
     _shutdown_tx: watch::Sender<bool>,
@@ -5445,7 +5446,8 @@ impl ProxyHarness {
         }
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
         let address = listener.local_addr().expect("proxy address");
-        let config = Config {
+        drop(listener);
+        let config = ConfigDraft {
             listeners: vec![Listener {
                 name: "http-loopback".into(),
                 bind: socket_bind(address),
@@ -5469,16 +5471,30 @@ impl ProxyHarness {
             cache_stores,
             ..empty_config()
         };
-        let plan = runtime_plan(&config).expect("canonical HTTP service plan");
-        let pools = plan.pools.clone();
+        let config = config.validate().expect("valid canonical HTTP config");
+        let generation = config_support::runtime_generation(&config).expect("runtime generation");
+        let listener = std::net::TcpListener::from(
+            generation
+                .reservations()
+                .get("http-loopback")
+                .expect("HTTP listener reservation")
+                .duplicate_owned_fd()
+                .expect("duplicate HTTP listener"),
+        );
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking HTTP listener");
+        let listener = TcpListener::from_std(listener).expect("Tokio HTTP listener");
+        let pools = generation.pools().to_vec();
         if run_health_checks {
-            plan.health_supervisor
+            generation
+                .health_supervisor()
                 .as_ref()
                 .expect("health supervisor")
                 .probe_once()
                 .await;
         }
-        let mut specs = plan.services;
+        let mut specs = generation.services().to_vec();
         let spec = specs.remove(0);
         let metrics = RuntimeMetrics::new();
         let listener_metrics = metrics
@@ -5533,6 +5549,7 @@ impl ProxyHarness {
 
         Self {
             address,
+            _generation: generation,
             metrics,
             pools,
             _shutdown_tx: shutdown_tx,

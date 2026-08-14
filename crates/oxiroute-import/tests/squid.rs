@@ -73,7 +73,11 @@ fn canonical_lowering_fails_closed_for_unrepresented_defaults_and_connect_ranges
         fs::write(&path, source).expect("Squid fixture");
         let report = import(&path);
         assert!(
-            report.candidate.config().is_none(),
+            report
+                .candidate
+                .validated()
+                .map(oxiroute_config::ValidatedConfig::as_draft)
+                .is_none(),
             "{name} unexpectedly finalized"
         );
         assert!(report.has_errors(), "{name} lacks a blocking diagnostic");
@@ -104,7 +108,13 @@ fn canonical_validation_failures_remain_blocking_diagnostics() {
     .expect("Squid fixture");
 
     let report = import(&path);
-    assert!(report.candidate.config().is_none());
+    assert!(
+        report
+            .candidate
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_none()
+    );
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.stage() == DiagnosticStage::Validate
             && diagnostic.code() == oxiroute_import::E_SEMANTICS_NOT_REPRESENTABLE
@@ -265,7 +275,8 @@ fn hostrouter_report_lowers_to_a_complete_forward_proxy_candidate() {
     let report = import(&fixture("hostrouter-sanitized.conf"));
     let config = report
         .candidate
-        .config()
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
         .expect("finalized Squid candidate");
     assert_eq!(config.listeners.len(), 1);
     assert_eq!(config.forward_proxy_services.len(), 1);
@@ -359,7 +370,11 @@ fn canonical_provenance_retains_include_file_and_stack_for_finalized_fields() {
 
     let report = import(&root);
     assert!(
-        report.candidate.config().is_some(),
+        report
+            .candidate
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_some(),
         "{:#?}",
         report.diagnostics
     );
@@ -399,7 +414,11 @@ fn canonical_provenance_retains_glob_file_and_stack_for_finalized_fields() {
 
     let report = import(&root);
     assert!(
-        report.candidate.config().is_some(),
+        report
+            .candidate
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_some(),
         "{:#?}",
         report.diagnostics
     );
@@ -425,7 +444,13 @@ fn unsupported_included_behavior_blocks_with_include_provenance() {
     fs::write(&root, b"include unsupported.conf\n").expect("root source");
 
     let report = import(&root);
-    assert!(report.candidate.config().is_none());
+    assert!(
+        report
+            .candidate
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_none()
+    );
     assert!(
         report
             .blocked_capabilities
@@ -464,7 +489,14 @@ fn selected_native_root_report_retains_canonical_provenance() {
         Path::new("/synthetic/default.conf"),
     );
     assert_eq!(report.selection.active_root, root);
-    assert!(report.import.candidate.config().is_some());
+    assert!(
+        report
+            .import
+            .candidate
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_some()
+    );
     assert_squid_provenance_paths_are_unique(&report.import);
     assert_squid_origin(&report.import, "/listeners/0", &root, 1, 0);
 }
@@ -799,7 +831,13 @@ fn regular_file_include_boundary_rejects_directories_and_missing_paths() {
     );
 
     let imported = import(&root);
-    assert!(imported.candidate.config().is_none());
+    assert!(
+        imported
+            .candidate
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_none()
+    );
     assert!(imported.blocked_capabilities.iter().any(|blocked| {
         blocked.kind == SemanticBlockerKind::IncludeExpansion
             && blocked.occurrences
@@ -924,7 +962,11 @@ fn static_parent_peers_and_global_never_direct_lower_in_source_order() {
     .expect("static peer source");
 
     let report = import(&root);
-    let config = report.candidate.config().expect("static peer candidate");
+    let config = report
+        .candidate
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .expect("static peer candidate");
     let policy = &config.forward_proxy_services[0].peer_policy;
     assert_eq!(policy.peers.len(), 2);
     assert_eq!(policy.peers[0].host, "first.example.test");
@@ -974,7 +1016,11 @@ fn global_always_direct_lowers_to_required_direct_fallback() {
     .expect("direct source");
 
     let report = import(&root);
-    let config = report.candidate.config().expect("direct candidate");
+    let config = report
+        .candidate
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .expect("direct candidate");
     assert_eq!(
         config.forward_proxy_services[0].peer_policy.direct_fallback,
         oxiroute_config::ForwardDirectFallback::Required
@@ -1018,7 +1064,11 @@ fn unsupported_peer_and_direct_forms_keep_stable_blockers() {
         fs::write(&root, format!("{base}{extra}")).expect("unsupported source");
         let report = import(&root);
         assert!(
-            report.candidate.config().is_none(),
+            report
+                .candidate
+                .validated()
+                .map(oxiroute_config::ValidatedConfig::as_draft)
+                .is_none(),
             "{name} unexpectedly lowered"
         );
         assert!(
@@ -1066,8 +1116,14 @@ fn cache_policy_and_storage_are_classified_without_placeholders() {
     let report = import(&root);
     assert_eq!(report.effective.cache_policy.len(), 1);
     assert_eq!(report.effective.storage.len(), 1);
-    assert!(report.candidate.draft.listeners.is_empty());
-    assert!(report.candidate.config().is_none());
+    assert_eq!(report.candidate.summary().listeners, 0);
+    assert!(
+        report
+            .candidate
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_none()
+    );
     for kind in [
         SemanticBlockerKind::ForwardProxyListener,
         SemanticBlockerKind::CachePolicy,

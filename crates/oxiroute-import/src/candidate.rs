@@ -1,12 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt,
     hash::Hash,
 };
 
-use oxiroute_config::{
-    CacheStore, Certificate, Config, ConfigError, ForwardProxyService, HttpService, L4Service,
-    Listener, Management, RtmpService, Stats, TlsProfile, UpstreamPool, validate_config,
-};
+use oxiroute_config::{ConfigDraft, ConfigError, ValidatedConfig};
 
 use crate::{ByteRange, SourceFile, SourceId, Span};
 
@@ -152,101 +150,109 @@ fn translate_segment_offset(segment: SourceMapSegment, offset: usize, end: bool)
     }
 }
 
-/// Canonical objects that were safely lowered, even when another service blocks finalization.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CanonicalDraft {
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) enum CanonicalCandidateState {
+    Blocked(ConfigDraft),
+    Validated(ValidatedConfig),
+}
+
+impl CanonicalCandidateState {
+    #[must_use]
+    pub(crate) const fn draft(&self) -> &ConfigDraft {
+        match self {
+            Self::Blocked(config) => config,
+            Self::Validated(config) => config.as_draft(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn validated(&self) -> Option<&ValidatedConfig> {
+        match self {
+            Self::Blocked(_) => None,
+            Self::Validated(config) => Some(config),
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn summary(&self) -> CanonicalCandidateSummary {
+        CanonicalCandidateSummary::from_config(self.draft())
+    }
+}
+
+impl fmt::Debug for CanonicalCandidateState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CanonicalCandidateState")
+            .field("validated", &self.validated().is_some())
+            .field("summary", &self.summary())
+            .finish()
+    }
+}
+
+/// Report-safe counts and presence flags for a lowered canonical candidate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CanonicalCandidateSummary {
     pub version: u32,
     pub max_connections: Option<u64>,
-    pub management: Option<Management>,
-    pub stats: Option<Stats>,
-    pub certificates: Vec<Certificate>,
-    pub tls_profiles: Vec<TlsProfile>,
-    pub listeners: Vec<Listener>,
-    pub upstream_pools: Vec<UpstreamPool>,
-    pub http_services: Vec<HttpService>,
-    pub cache_stores: Vec<CacheStore>,
-    pub forward_proxy_services: Vec<ForwardProxyService>,
-    pub rtmp_services: Vec<RtmpService>,
-    pub l4_services: Vec<L4Service>,
+    pub management: bool,
+    pub stats: bool,
+    pub certificates: usize,
+    pub tls_profiles: usize,
+    pub listeners: usize,
+    pub upstream_pools: usize,
+    pub http_services: usize,
+    pub cache_stores: usize,
+    pub forward_proxy_services: usize,
+    pub rtmp_services: usize,
+    pub l4_services: usize,
 }
 
-impl Default for CanonicalDraft {
-    fn default() -> Self {
+impl CanonicalCandidateSummary {
+    const fn from_config(config: &ConfigDraft) -> Self {
         Self {
-            version: 1,
-            max_connections: None,
-            management: None,
-            stats: None,
-            certificates: Vec::new(),
-            tls_profiles: Vec::new(),
-            listeners: Vec::new(),
-            upstream_pools: Vec::new(),
-            http_services: Vec::new(),
-            cache_stores: Vec::new(),
-            forward_proxy_services: Vec::new(),
-            rtmp_services: Vec::new(),
-            l4_services: Vec::new(),
+            version: config.version,
+            max_connections: config.max_connections,
+            management: config.management.is_some(),
+            stats: config.stats.is_some(),
+            certificates: config.certificates.len(),
+            tls_profiles: config.tls_profiles.len(),
+            listeners: config.listeners.len(),
+            upstream_pools: config.upstream_pools.len(),
+            http_services: config.http_services.len(),
+            cache_stores: config.cache_stores.len(),
+            forward_proxy_services: config.forward_proxy_services.len(),
+            rtmp_services: config.rtmp_services.len(),
+            l4_services: config.l4_services.len(),
         }
     }
 }
 
-impl CanonicalDraft {
-    #[must_use]
-    fn to_config(&self) -> Config {
-        Config {
-            version: self.version,
-            max_connections: self.max_connections,
-            management: self.management.clone(),
-            stats: self.stats.clone(),
-            certificates: self.certificates.clone(),
-            tls_profiles: self.tls_profiles.clone(),
-            listeners: self.listeners.clone(),
-            upstream_pools: self.upstream_pools.clone(),
-            http_services: self.http_services.clone(),
-            cache_stores: self.cache_stores.clone(),
-            forward_proxy_services: self.forward_proxy_services.clone(),
-            rtmp_services: self.rtmp_services.clone(),
-            l4_services: self.l4_services.clone(),
-        }
-    }
-
-    pub(crate) fn finalize(&self, eligible: bool) -> Result<CanonicalFinalization, ConfigError> {
-        if !eligible {
-            return Ok(CanonicalFinalization::Blocked);
-        }
-        let mut config = self.to_config();
-        validate_config(&mut config)?;
-        Ok(CanonicalFinalization::Finalized(Box::new(config)))
+pub(crate) fn empty_config() -> ConfigDraft {
+    ConfigDraft {
+        version: 1,
+        max_connections: None,
+        management: None,
+        stats: None,
+        certificates: Vec::new(),
+        tls_profiles: Vec::new(),
+        listeners: Vec::new(),
+        upstream_pools: Vec::new(),
+        http_services: Vec::new(),
+        cache_stores: Vec::new(),
+        forward_proxy_services: Vec::new(),
+        rtmp_services: Vec::new(),
+        l4_services: Vec::new(),
     }
 }
 
-/// Policy-neutral result of canonical draft validation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CanonicalFinalization {
-    Blocked,
-    Finalized(Box<Config>),
-}
-
-impl CanonicalFinalization {
-    #[must_use]
-    pub fn config(&self) -> Option<&Config> {
-        match self {
-            Self::Blocked => None,
-            Self::Finalized(config) => Some(config.as_ref()),
-        }
-    }
-
-    #[must_use]
-    pub fn into_config(self) -> Option<Config> {
-        match self {
-            Self::Blocked => None,
-            Self::Finalized(config) => Some(*config),
-        }
-    }
-
-    #[must_use]
-    pub const fn is_finalized(&self) -> bool {
-        matches!(self, Self::Finalized(_))
+pub(crate) fn finalize_candidate(
+    draft: &ConfigDraft,
+    eligible: bool,
+) -> Result<Option<ValidatedConfig>, ConfigError> {
+    if eligible {
+        draft.clone().validate().map(Some)
+    } else {
+        Ok(None)
     }
 }
 
@@ -342,52 +348,71 @@ impl<Origin> CanonicalProvenanceLedger<Origin> {
     }
 }
 
-/// Shared canonical draft/provenance/finalization result used by product import reports.
+/// Shared canonical provenance and validation result used by product import reports.
+///
+/// Downstream crates cannot extract the importer-owned blocked `ConfigDraft` from a candidate:
+///
+/// ```compile_fail
+/// use oxiroute_config::ConfigDraft;
+/// use oxiroute_import::CanonicalCandidate;
+///
+/// fn extract_importer_owned_blocked_config<Origin>(candidate: &CanonicalCandidate<Origin>) -> &ConfigDraft {
+///     candidate.draft()
+/// }
+/// ```
+///
+/// Downstream crates also cannot destructure the internal candidate state to strip blockers:
+///
+/// ```compile_fail
+/// use oxiroute_config::ConfigDraft;
+/// use oxiroute_import::CanonicalCandidateState;
+///
+/// fn destructure_candidate_state(state: CanonicalCandidateState) -> ConfigDraft {
+///     match state {
+///         CanonicalCandidateState::Blocked(config) => config,
+///         CanonicalCandidateState::Validated(config) => config.to_draft(),
+///     }
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CanonicalCandidate<Origin> {
-    pub draft: CanonicalDraft,
     pub provenance: Vec<CanonicalProvenance<Origin>>,
     pub deployment_requirements: Vec<DeploymentRequirement<Origin>>,
     pub activation_requirements: Vec<ActivationRequirement<Origin>>,
     pub operational_overlays: Vec<OperationalOverlayRequirement<Origin>>,
     pub source_metadata: SourceImportMetadata,
-    finalization: CanonicalFinalization,
+    state: CanonicalCandidateState,
 }
 
 impl<Origin> CanonicalCandidate<Origin> {
     pub(crate) fn new(
-        draft: CanonicalDraft,
+        state: CanonicalCandidateState,
         provenance: Vec<CanonicalProvenance<Origin>>,
         deployment_requirements: Vec<DeploymentRequirement<Origin>>,
         activation_requirements: Vec<ActivationRequirement<Origin>>,
         operational_overlays: Vec<OperationalOverlayRequirement<Origin>>,
         source_metadata: SourceImportMetadata,
-        finalization: CanonicalFinalization,
     ) -> Self {
         Self {
-            draft,
             provenance,
             deployment_requirements,
             activation_requirements,
             operational_overlays,
             source_metadata,
-            finalization,
+            state,
         }
     }
 
+    /// Returns the validated configuration capability when finalization succeeded.
     #[must_use]
-    pub fn config(&self) -> Option<&Config> {
-        self.finalization.config()
+    pub const fn validated(&self) -> Option<&ValidatedConfig> {
+        self.state.validated()
     }
 
+    /// Returns report-safe candidate counts and flags without exposing blocked configuration.
     #[must_use]
-    pub fn is_finalized(&self) -> bool {
-        self.finalization.is_finalized()
-    }
-
-    #[must_use]
-    pub fn into_config(self) -> Option<Config> {
-        self.finalization.into_config()
+    pub const fn summary(&self) -> CanonicalCandidateSummary {
+        self.state.summary()
     }
 }
 

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque, hash_map::Entry},
+    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
     error::Error,
     fmt, io,
     sync::{
@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use oxiroute_config::ListenerBind;
 
+use crate::listener_inventory::{ListenerEntry, ListenerId, ListenerMetricPolicy};
 use crate::{
     AcmeManagedReconciler, AdministrativeState, CertbotReconciler, CertbotWatcherMonitor,
     FileReconciler, FileWatcherMonitor, PoolHealthSnapshot, ProxyProtocolResult, RoundRobinPool,
@@ -582,7 +583,7 @@ pub enum RuntimeMode {
 struct RuntimeMetricsInner {
     process_admission: Arc<ProcessAdmissionState>,
     process_runtime: ProcessRuntime,
-    listeners: RwLock<HashMap<String, Arc<ListenerMetricsState>>>,
+    listeners: RwLock<ListenerMetricsRegistry>,
     upstream_pools: RwLock<Vec<Arc<RoundRobinPool>>>,
     certbot: RwLock<CertbotMonitoring>,
     acme_managed: RwLock<AcmeManagedMonitoring>,
@@ -599,7 +600,8 @@ pub struct ProcessRuntime {
 
 struct ProcessRuntimeInner {
     admission: Arc<ProcessAdmissionState>,
-    listeners: Mutex<HashMap<String, Arc<SharedListenerMetricsState>>>,
+    listeners: Mutex<HashMap<ListenerId, ProcessListenerMetricsEntry>>,
+    next_listener_transaction: AtomicU64,
     transport_operations: Arc<TransportOperationsState>,
     access_records: Arc<Mutex<VecDeque<AccessRecord>>>,
     mode: RuntimeMode,
@@ -623,6 +625,7 @@ impl ProcessRuntime {
             inner: Arc::new(ProcessRuntimeInner {
                 admission: Arc::new(ProcessAdmissionState::new(max_connections)),
                 listeners: Mutex::new(HashMap::new()),
+                next_listener_transaction: AtomicU64::new(1),
                 transport_operations: Arc::new(TransportOperationsState::new()),
                 access_records: Arc::new(Mutex::new(VecDeque::with_capacity(
                     ACCESS_RECORD_CAPACITY,
@@ -635,7 +638,7 @@ impl ProcessRuntime {
 
     fn listener(
         &self,
-        bind: &str,
+        id: &ListenerId,
         max_connections: Option<u64>,
     ) -> Result<Arc<SharedListenerMetricsState>, MetricsError> {
         let mut listeners = self
@@ -643,15 +646,20 @@ impl ProcessRuntime {
             .listeners
             .lock()
             .map_err(|_| MetricsError::StatePoisoned("process listeners"))?;
-        Ok(Arc::clone(listeners.entry(bind.to_owned()).or_insert_with(
-            || {
-                Arc::new(SharedListenerMetricsState::new(
-                    max_connections,
-                    self.transport_operations(),
-                    Arc::clone(&self.inner.access_records),
-                ))
-            },
-        )))
+        Ok(Arc::clone(
+            &listeners
+                .entry(id.clone())
+                .or_insert_with(|| ProcessListenerMetricsEntry {
+                    state: Arc::new(SharedListenerMetricsState::new(
+                        max_connections,
+                        self.transport_operations(),
+                        Arc::clone(&self.inner.access_records),
+                    )),
+                    committed: true,
+                    reservations: HashSet::new(),
+                })
+                .state,
+        ))
     }
 
     fn activate_limit(&self, max_connections: Option<u64>) {
@@ -671,6 +679,15 @@ impl ProcessRuntime {
             .iter()
             .cloned()
             .collect())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn listener_count(&self) -> usize {
+        self.inner
+            .listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     #[must_use]
@@ -727,7 +744,7 @@ impl RuntimeMetrics {
             inner: Arc::new(RuntimeMetricsInner {
                 process_admission: Arc::clone(&process_runtime.inner.admission),
                 process_runtime,
-                listeners: RwLock::new(HashMap::new()),
+                listeners: RwLock::new(ListenerMetricsRegistry::default()),
                 upstream_pools: RwLock::new(Vec::new()),
                 certbot: RwLock::new(CertbotMonitoring::default()),
                 acme_managed: RwLock::new(AcmeManagedMonitoring::default()),
@@ -748,7 +765,7 @@ impl RuntimeMetrics {
     pub(crate) fn activate_limits(&self, max_connections: Option<u64>) {
         self.inner.process_runtime.activate_limit(max_connections);
         if let Ok(listeners) = self.inner.listeners.read() {
-            for listener in listeners.values() {
+            for listener in listeners.states.values() {
                 listener.shared.set_limit(listener.max_connections);
             }
         }
@@ -844,42 +861,14 @@ impl RuntimeMetrics {
         max_connections: impl Into<Option<u64>>,
     ) -> Result<ListenerMetrics, MetricsError> {
         let name = name.into();
-        let protocol = protocol.into();
-        let bind = bind.into();
-        let max_connections = max_connections.into();
-        validate_listener_field("name", &name)?;
-        validate_listener_field("protocol", &protocol)?;
-        validate_listener_field("bind", &bind)?;
-        if max_connections == Some(0) {
-            return Err(MetricsError::InvalidListenerField("max_connections"));
-        }
-
-        let mut listeners = self
-            .inner
-            .listeners
-            .write()
-            .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
-        match listeners.entry(name.clone()) {
-            Entry::Vacant(entry) => {
-                let shared = self
-                    .inner
-                    .process_runtime
-                    .listener(&bind, max_connections)?;
-                let state = Arc::new(ListenerMetricsState::new(
-                    name,
-                    protocol,
-                    bind,
-                    max_connections,
-                    shared,
-                ));
-                entry.insert(Arc::clone(&state));
-                Ok(ListenerMetrics {
-                    process: Arc::clone(&self.inner.process_admission),
-                    state,
-                })
-            }
-            Entry::Occupied(_) => Err(MetricsError::DuplicateListener(name)),
-        }
+        self.register_listener_with_policy(
+            ListenerId::Legacy(name.clone()),
+            name,
+            protocol.into(),
+            bind.into(),
+            max_connections.into(),
+            ListenerMetricPolicy::Public,
+        )
     }
 
     /// Registers a canonical listener with a stable, transport-qualified bind identity.
@@ -909,7 +898,140 @@ impl RuntimeMetrics {
                 format!("unix:{path}")
             }
         };
-        self.register_listener(name, protocol, bind, max_connections)
+        self.register_listener_with_policy(
+            ListenerId::Legacy(name.clone()),
+            name,
+            protocol.into(),
+            bind,
+            max_connections,
+            ListenerMetricPolicy::Public,
+        )
+    }
+
+    pub(crate) fn register_inventory(
+        &self,
+        entries: &[ListenerEntry],
+    ) -> Result<ListenerRegistrationTransaction, MetricsError> {
+        let prepared = entries
+            .iter()
+            .map(|entry| {
+                Ok((
+                    entry.id.clone(),
+                    entry.name.clone(),
+                    entry.protocol_name().to_owned(),
+                    configured_bind_identity(&entry.name, &entry.bind)?,
+                    entry.max_connections,
+                    entry.metric_policy,
+                ))
+            })
+            .collect::<Result<Vec<_>, MetricsError>>()?;
+        let mut process_listeners = self
+            .inner
+            .process_runtime
+            .inner
+            .listeners
+            .lock()
+            .map_err(|_| MetricsError::StatePoisoned("process listeners"))?;
+        let mut listeners = self
+            .inner
+            .listeners
+            .write()
+            .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
+        let mut ids = HashSet::with_capacity(prepared.len());
+        for (id, name, ..) in &prepared {
+            if !ids.insert(id) || listeners.states.contains_key(id) {
+                return Err(MetricsError::DuplicateListener(name.clone()));
+            }
+        }
+        let token = self
+            .inner
+            .process_runtime
+            .inner
+            .next_listener_transaction
+            .fetch_add(1, Ordering::Relaxed);
+        for (id, name, protocol, bind, max_connections, metric_policy) in prepared {
+            let process_entry = process_listeners.entry(id.clone()).or_insert_with(|| {
+                ProcessListenerMetricsEntry {
+                    state: Arc::new(SharedListenerMetricsState::new(
+                        max_connections,
+                        self.inner.process_runtime.transport_operations(),
+                        Arc::clone(&self.inner.process_runtime.inner.access_records),
+                    )),
+                    committed: false,
+                    reservations: HashSet::new(),
+                }
+            });
+            process_entry.reservations.insert(token);
+            let shared = Arc::clone(&process_entry.state);
+            listeners.order.push(id.clone());
+            listeners.states.insert(
+                id,
+                Arc::new(ListenerMetricsState::new(
+                    name,
+                    protocol,
+                    bind,
+                    max_connections,
+                    metric_policy,
+                    shared,
+                )),
+            );
+        }
+        Ok(ListenerRegistrationTransaction {
+            process: self.inner.process_runtime.clone(),
+            ids: entries.iter().map(|entry| entry.id.clone()).collect(),
+            token,
+            committed: false,
+        })
+    }
+
+    fn register_listener_with_policy(
+        &self,
+        id: ListenerId,
+        name: String,
+        protocol: String,
+        bind: String,
+        max_connections: Option<u64>,
+        metric_policy: ListenerMetricPolicy,
+    ) -> Result<ListenerMetrics, MetricsError> {
+        validate_listener_field("name", &name)?;
+        validate_listener_field("protocol", &protocol)?;
+        validate_listener_field("bind", &bind)?;
+        if max_connections == Some(0) {
+            return Err(MetricsError::InvalidListenerField("max_connections"));
+        }
+
+        let mut listeners = self
+            .inner
+            .listeners
+            .write()
+            .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
+        match listeners.states.entry(id.clone()) {
+            Entry::Vacant(entry) => {
+                let process_id = match &id {
+                    ListenerId::Legacy(_) => ListenerId::Legacy(bind.clone()),
+                    _ => id.clone(),
+                };
+                let shared = self
+                    .inner
+                    .process_runtime
+                    .listener(&process_id, max_connections)?;
+                let state = Arc::new(ListenerMetricsState::new(
+                    name,
+                    protocol,
+                    bind,
+                    max_connections,
+                    metric_policy,
+                    shared,
+                ));
+                entry.insert(Arc::clone(&state));
+                listeners.order.push(id);
+                Ok(ListenerMetrics {
+                    process: Arc::clone(&self.inner.process_admission),
+                    state,
+                })
+            }
+            Entry::Occupied(_) => Err(MetricsError::DuplicateListener(name)),
+        }
     }
 
     /// Returns the accounting handle for a registered listener.
@@ -918,12 +1040,23 @@ impl RuntimeMetrics {
     ///
     /// Returns an error when the listener registry is poisoned.
     pub fn listener(&self, name: &str) -> Result<Option<ListenerMetrics>, MetricsError> {
+        self.listener_by_id(&ListenerId::Legacy(name.to_owned()))
+    }
+
+    pub(crate) fn inventory_listener(
+        &self,
+        id: &ListenerId,
+    ) -> Result<Option<ListenerMetrics>, MetricsError> {
+        self.listener_by_id(id)
+    }
+
+    fn listener_by_id(&self, id: &ListenerId) -> Result<Option<ListenerMetrics>, MetricsError> {
         let listeners = self
             .inner
             .listeners
             .read()
             .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
-        Ok(listeners.get(name).map(|state| ListenerMetrics {
+        Ok(listeners.states.get(id).map(|state| ListenerMetrics {
             process: Arc::clone(&self.inner.process_admission),
             state: Arc::clone(state),
         }))
@@ -980,11 +1113,33 @@ impl RuntimeMetrics {
         name: &str,
         state: AdministrativeState,
     ) -> Result<(), MetricsError> {
-        let listener = self
-            .listener(name)?
+        let listeners = self
+            .inner
+            .listeners
+            .read()
+            .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
+        let listener = listeners
+            .order
+            .iter()
+            .filter_map(|id| listeners.states.get(id).map(|state| (id, state)))
+            .find(|(id, listener)| {
+                listener.name == name
+                    && listener.metric_policy == ListenerMetricPolicy::Public
+                    && matches!(id, ListenerId::Traffic(_) | ListenerId::Legacy(_))
+            })
+            .map(|(_, listener)| listener)
+            .or_else(|| {
+                listeners
+                    .order
+                    .iter()
+                    .filter_map(|id| listeners.states.get(id))
+                    .find(|listener| {
+                        listener.name == name
+                            && listener.metric_policy == ListenerMetricPolicy::Public
+                    })
+            })
             .ok_or_else(|| MetricsError::ListenerNotFound(name.to_owned()))?;
         listener
-            .state
             .shared
             .administrative_state
             .store(state as u8, Ordering::Release);
@@ -1143,6 +1298,15 @@ impl RuntimeMetrics {
         })
     }
 
+    /// Samples every registered listener, including internal-only control listeners.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the listener registry is poisoned.
+    pub fn internal_listener_snapshots(&self) -> Result<Vec<ListenerSnapshot>, MetricsError> {
+        self.listener_snapshots(false)
+    }
+
     fn upstream_pool_snapshots(&self) -> Result<Vec<PoolHealthSnapshot>, MetricsError> {
         Ok(self
             .inner
@@ -1292,19 +1456,10 @@ impl RuntimeMetrics {
     }
 
     fn counter_snapshots(&self) -> Result<(TrafficSnapshot, Vec<ListenerSnapshot>), MetricsError> {
-        let listeners = self
-            .inner
-            .listeners
-            .read()
-            .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
-        let mut states: Vec<_> = listeners.values().cloned().collect();
-        drop(listeners);
-        states.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        let snapshots = self.listener_snapshots(true)?;
 
         let mut traffic = TrafficSnapshot::default();
-        let mut snapshots = Vec::with_capacity(states.len());
-        for state in states {
-            let snapshot = state.snapshot();
+        for snapshot in &snapshots {
             add_total(
                 &mut traffic.accepted_connections,
                 snapshot.accepted_connections,
@@ -1330,9 +1485,104 @@ impl RuntimeMetrics {
                 snapshot.bytes_sent,
                 "traffic.bytesSent",
             )?;
-            snapshots.push(snapshot);
         }
         Ok((traffic, snapshots))
+    }
+
+    fn listener_snapshots(&self, public_only: bool) -> Result<Vec<ListenerSnapshot>, MetricsError> {
+        let listeners = self
+            .inner
+            .listeners
+            .read()
+            .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
+        let mut snapshots = Vec::with_capacity(listeners.order.len());
+        for id in &listeners.order {
+            let state = listeners
+                .states
+                .get(id)
+                .expect("listener order references registered state");
+            if !public_only || state.metric_policy == ListenerMetricPolicy::Public {
+                snapshots.push(state.snapshot());
+            }
+        }
+        if public_only {
+            snapshots.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        }
+        Ok(snapshots)
+    }
+}
+
+#[derive(Default)]
+struct ListenerMetricsRegistry {
+    states: HashMap<ListenerId, Arc<ListenerMetricsState>>,
+    order: Vec<ListenerId>,
+}
+
+struct ProcessListenerMetricsEntry {
+    state: Arc<SharedListenerMetricsState>,
+    committed: bool,
+    reservations: HashSet<u64>,
+}
+
+#[must_use = "listener registration rolls back unless committed"]
+pub(crate) struct ListenerRegistrationTransaction {
+    process: ProcessRuntime,
+    ids: Vec<ListenerId>,
+    token: u64,
+    committed: bool,
+}
+
+impl ListenerRegistrationTransaction {
+    pub(crate) fn commit(mut self) -> Result<(), MetricsError> {
+        let mut listeners = self
+            .process
+            .inner
+            .listeners
+            .lock()
+            .map_err(|_| MetricsError::StatePoisoned("process listeners"))?;
+        for id in &self.ids {
+            let entry = listeners
+                .get_mut(id)
+                .expect("listener transaction references process state");
+            entry.reservations.remove(&self.token);
+            entry.committed = true;
+        }
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for ListenerRegistrationTransaction {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let Ok(mut listeners) = self.process.inner.listeners.lock() else {
+            return;
+        };
+        for id in &self.ids {
+            let remove = listeners.get_mut(id).is_some_and(|entry| {
+                entry.reservations.remove(&self.token);
+                !entry.committed && entry.reservations.is_empty()
+            });
+            if remove {
+                listeners.remove(id);
+            }
+        }
+    }
+}
+
+fn configured_bind_identity(name: &str, bind: &ListenerBind) -> Result<String, MetricsError> {
+    match bind {
+        ListenerBind::Socket { address } => Ok(format!("socket:{address}")),
+        ListenerBind::Udp { address } => Ok(format!("udp:{address}")),
+        ListenerBind::Unix { path, .. } => path
+            .to_str()
+            .map(|path| format!("unix:{path}"))
+            .ok_or_else(|| MetricsError::InvalidListenerBind {
+                listener: name.to_owned(),
+                detail: "Unix socket path is not valid UTF-8",
+            }),
     }
 }
 
@@ -1414,6 +1664,21 @@ impl ListenerMetrics {
     /// connection counter would overflow.
     #[allow(clippy::too_many_lines)]
     pub fn begin_connection(&self) -> Result<ConnectionGuard, MetricsError> {
+        self.begin_connection_for_plane(false)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    /// Accounts for a control-plane connection while bypassing process administrative drain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when listener or process capacity is unavailable or accounting overflows.
+    pub fn begin_control_connection(&self) -> Result<ConnectionGuard, MetricsError> {
+        self.begin_connection_for_plane(true)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn begin_connection_for_plane(&self, control: bool) -> Result<ConnectionGuard, MetricsError> {
         let started_at = Instant::now();
         if AdministrativeState::from_u8(
             self.state
@@ -1445,7 +1710,11 @@ impl ListenerMetrics {
             self.record_admission_failure(&error, started_at);
             return Err(error);
         }
-        let process = match self.process.acquire() {
+        let process = match if control {
+            self.process.acquire_control()
+        } else {
+            self.process.acquire()
+        } {
             Ok(process) => process,
             Err(error) => {
                 if let Err(accounting_error) = checked_atomic_add(
@@ -1525,6 +1794,7 @@ impl ListenerMetrics {
             process: Some(process),
             state: Arc::clone(&self.state),
             releases_active_connection: true,
+            records_access: true,
             started_at: Instant::now(),
             correlation_id: crate::logging::next_correlation_id(),
             outcome: AtomicU8::new(transport_outcome_index(TransportOutcome::Success)),
@@ -1544,6 +1814,7 @@ impl ListenerMetrics {
             process: None,
             state: Arc::clone(&self.state),
             releases_active_connection: false,
+            records_access: false,
             started_at: Instant::now(),
             correlation_id: String::new(),
             outcome: AtomicU8::new(transport_outcome_index(TransportOutcome::Success)),
@@ -1651,6 +1922,7 @@ pub struct ConnectionGuard {
     process: Option<ProcessConnectionGuard>,
     state: Arc<ListenerMetricsState>,
     releases_active_connection: bool,
+    records_access: bool,
     started_at: Instant,
     correlation_id: String,
     outcome: AtomicU8,
@@ -1687,6 +1959,10 @@ impl ConnectionGuard {
     pub fn record_bytes_sent(&self, bytes: u64) -> Result<(), MetricsError> {
         checked_atomic_add(&self.state.shared.bytes_sent, bytes, "listener.bytesSent")?;
         checked_atomic_add(&self.sent, bytes, "access.bytesSent")
+    }
+
+    pub(crate) fn suppress_access_record(&mut self) {
+        self.records_access = false;
     }
 
     /// Records one terminal TCP relay and its latency sample.
@@ -1733,6 +2009,8 @@ impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         if self.releases_active_connection {
             decrement_counter(&self.state.shared.active_connections);
+        }
+        if self.records_access {
             let duration = self.started_at.elapsed();
             let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
             let transport = transport_for_protocol(&self.state.protocol);
@@ -1877,6 +2155,7 @@ struct ListenerMetricsState {
     protocol: String,
     bind: String,
     max_connections: Option<u64>,
+    metric_policy: ListenerMetricPolicy,
     runtime_state: AtomicU8,
     shared: Arc<SharedListenerMetricsState>,
 }
@@ -2162,6 +2441,7 @@ impl ListenerMetricsState {
         protocol: String,
         bind: String,
         max_connections: Option<u64>,
+        metric_policy: ListenerMetricPolicy,
         shared: Arc<SharedListenerMetricsState>,
     ) -> Self {
         Self {
@@ -2169,6 +2449,7 @@ impl ListenerMetricsState {
             protocol,
             bind,
             max_connections,
+            metric_policy,
             runtime_state: AtomicU8::new(ListenerRuntimeState::Configured as u8),
             shared,
         }
@@ -3003,7 +3284,327 @@ mod platform_tests {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt as _, path::PathBuf};
+
     use super::*;
+    use crate::listener_inventory::{
+        ListenerDescriptorKind, ListenerDescriptorRole, ListenerPlane,
+    };
+
+    fn inventory_entry(id: ListenerId, name: &str, bind: ListenerBind) -> ListenerEntry {
+        ListenerEntry {
+            id: id.clone(),
+            name: name.into(),
+            protocol: oxiroute_config::Protocol::Http,
+            bind,
+            plane: ListenerPlane::Data,
+            descriptor_role: match id {
+                ListenerId::Traffic(name) | ListenerId::Legacy(name) => {
+                    ListenerDescriptorRole::Traffic(name)
+                }
+                ListenerId::Management => ListenerDescriptorRole::Management,
+                ListenerId::Stats(index) => ListenerDescriptorRole::Stats(index),
+                ListenerId::StatsPage(index) => ListenerDescriptorRole::StatsPage(index),
+            },
+            descriptor_kind: ListenerDescriptorKind::Tcp,
+            metric_policy: ListenerMetricPolicy::Public,
+            max_connections: None,
+        }
+    }
+
+    #[test]
+    fn inventory_batch_failure_leaves_generation_and_process_registries_empty() {
+        let process = ProcessRuntime::new(None);
+        let metrics = RuntimeMetrics::for_process(process.clone());
+        let entries = vec![
+            inventory_entry(
+                ListenerId::Traffic("valid".into()),
+                "valid",
+                ListenerBind::Socket {
+                    address: "127.0.0.1:8080".parse().expect("valid address"),
+                },
+            ),
+            inventory_entry(
+                ListenerId::Traffic("invalid".into()),
+                "invalid",
+                ListenerBind::Unix {
+                    path: PathBuf::from(OsString::from_vec(vec![0xff])),
+                    mode: None,
+                },
+            ),
+        ];
+
+        assert!(matches!(
+            metrics.register_inventory(&entries),
+            Err(MetricsError::InvalidListenerBind { .. })
+        ));
+        assert!(metrics.internal_listener_snapshots().unwrap().is_empty());
+        assert_eq!(process.listener_count(), 0);
+    }
+
+    #[test]
+    fn typed_listener_counters_are_reused_across_generations_without_sharing_lifecycle() {
+        let process = ProcessRuntime::new(None);
+        let entry = inventory_entry(
+            ListenerId::Traffic("edge".into()),
+            "edge",
+            ListenerBind::Socket {
+                address: "127.0.0.1:8080".parse().expect("edge address"),
+            },
+        );
+        let first = RuntimeMetrics::for_process(process.clone());
+        first
+            .register_inventory(std::slice::from_ref(&entry))
+            .unwrap()
+            .commit()
+            .unwrap();
+        let first_listener = first
+            .inventory_listener(&entry.id)
+            .unwrap()
+            .expect("first listener");
+        first_listener.mark_listening();
+        drop(first_listener.begin_connection().expect("first connection"));
+
+        let second = RuntimeMetrics::for_process(process.clone());
+        second
+            .register_inventory(std::slice::from_ref(&entry))
+            .unwrap()
+            .commit()
+            .unwrap();
+        let second_snapshot = second.internal_listener_snapshots().unwrap();
+
+        assert_eq!(second_snapshot[0].accepted_connections, 1);
+        assert_eq!(second_snapshot[0].state, ListenerRuntimeState::Configured);
+        assert_eq!(
+            first.internal_listener_snapshots().unwrap()[0].state,
+            ListenerRuntimeState::Listening
+        );
+        assert_eq!(process.listener_count(), 1);
+    }
+
+    #[test]
+    fn failed_registration_cannot_remove_reused_or_concurrently_committed_process_entries() {
+        let process = ProcessRuntime::new(None);
+        let entry = inventory_entry(
+            ListenerId::Traffic("edge".into()),
+            "edge",
+            ListenerBind::Socket {
+                address: "127.0.0.1:8080".parse().expect("edge address"),
+            },
+        );
+        let first = RuntimeMetrics::for_process(process.clone());
+        let failed = first
+            .register_inventory(std::slice::from_ref(&entry))
+            .expect("first reservation");
+        let second = RuntimeMetrics::for_process(process.clone());
+        second
+            .register_inventory(std::slice::from_ref(&entry))
+            .expect("concurrent reservation")
+            .commit()
+            .expect("concurrent commit");
+
+        drop(failed);
+
+        assert_eq!(process.listener_count(), 1);
+        let third = RuntimeMetrics::for_process(process.clone());
+        third
+            .register_inventory(std::slice::from_ref(&entry))
+            .expect("reuse committed entry")
+            .commit()
+            .expect("commit reused entry");
+        assert_eq!(process.listener_count(), 1);
+    }
+
+    #[test]
+    fn public_snapshots_sort_by_display_name_while_internal_snapshots_keep_inventory_order() {
+        let process = ProcessRuntime::new(None);
+        let metrics = RuntimeMetrics::for_process(process);
+        let mut entries = vec![
+            inventory_entry(
+                ListenerId::Traffic("zulu".into()),
+                "zulu",
+                ListenerBind::Socket {
+                    address: "127.0.0.1:8080".parse().unwrap(),
+                },
+            ),
+            inventory_entry(
+                ListenerId::Traffic("alpha".into()),
+                "alpha",
+                ListenerBind::Socket {
+                    address: "127.0.0.1:8081".parse().unwrap(),
+                },
+            ),
+            inventory_entry(
+                ListenerId::Management,
+                "@management",
+                ListenerBind::Socket {
+                    address: "127.0.0.1:9900".parse().unwrap(),
+                },
+            ),
+            inventory_entry(
+                ListenerId::Stats(0),
+                "@stats-0",
+                ListenerBind::Socket {
+                    address: "127.0.0.1:9901".parse().unwrap(),
+                },
+            ),
+        ];
+        entries[2].metric_policy = ListenerMetricPolicy::InternalOnly;
+        entries[3].metric_policy = ListenerMetricPolicy::InternalOnly;
+        metrics
+            .register_inventory(&entries)
+            .unwrap()
+            .commit()
+            .unwrap();
+
+        let public = metrics.snapshot().unwrap();
+        assert_eq!(
+            public
+                .listeners
+                .iter()
+                .map(|listener| listener.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "zulu"]
+        );
+        assert_eq!(
+            metrics
+                .topology_health_snapshot()
+                .unwrap()
+                .listeners
+                .iter()
+                .map(|listener| listener.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "zulu"]
+        );
+        assert_eq!(
+            metrics
+                .internal_listener_snapshots()
+                .unwrap()
+                .iter()
+                .map(|listener| listener.name.as_str())
+                .collect::<Vec<_>>(),
+            ["zulu", "alpha", "@management", "@stats-0"]
+        );
+        let bytes = serde_json::to_vec(&public.listeners).unwrap();
+        assert!(
+            bytes
+                .windows(b"alpha".len())
+                .position(|value| value == b"alpha")
+                < bytes
+                    .windows(b"zulu".len())
+                    .position(|value| value == b"zulu")
+        );
+        assert!(
+            !bytes
+                .windows(b"@management".len())
+                .any(|value| value == b"@management")
+        );
+    }
+
+    #[test]
+    fn administration_targets_public_traffic_when_hidden_control_name_collides() {
+        let process = ProcessRuntime::new(None);
+        let metrics = RuntimeMetrics::for_process(process);
+        let mut entries = vec![
+            inventory_entry(
+                ListenerId::Traffic("@management".into()),
+                "@management",
+                ListenerBind::Socket {
+                    address: "127.0.0.1:8080".parse().unwrap(),
+                },
+            ),
+            inventory_entry(
+                ListenerId::Management,
+                "@management",
+                ListenerBind::Socket {
+                    address: "127.0.0.1:9900".parse().unwrap(),
+                },
+            ),
+        ];
+        entries[1].metric_policy = ListenerMetricPolicy::InternalOnly;
+        metrics
+            .register_inventory(&entries)
+            .unwrap()
+            .commit()
+            .unwrap();
+
+        metrics
+            .set_listener_administrative_state("@management", AdministrativeState::Drain)
+            .unwrap();
+
+        assert_eq!(
+            metrics
+                .internal_listener_snapshots()
+                .unwrap()
+                .iter()
+                .map(|listener| listener.administrative_state)
+                .collect::<Vec<_>>(),
+            [AdministrativeState::Drain, AdministrativeState::Ready]
+        );
+    }
+
+    #[test]
+    fn internal_listener_view_preserves_real_counters_without_changing_public_projection() {
+        let metrics = RuntimeMetrics::new();
+        let public = metrics
+            .register_listener_with_policy(
+                ListenerId::Legacy("public".into()),
+                "public".into(),
+                "http".into(),
+                "socket:127.0.0.1:8080".into(),
+                None,
+                ListenerMetricPolicy::Public,
+            )
+            .expect("public listener");
+        let internal = metrics
+            .register_listener_with_policy(
+                ListenerId::Legacy("@management".into()),
+                "@management".into(),
+                "http".into(),
+                "socket:127.0.0.1:9900".into(),
+                None,
+                ListenerMetricPolicy::InternalOnly,
+            )
+            .expect("internal listener");
+        public.mark_listening();
+        internal.mark_listening();
+        let connection = internal
+            .begin_control_connection()
+            .expect("internal control connection");
+
+        let public_snapshot = metrics.snapshot().expect("public snapshot");
+        assert_eq!(
+            public_snapshot
+                .listeners
+                .iter()
+                .map(|listener| listener.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["public"]
+        );
+        assert_eq!(public_snapshot.traffic.accepted_connections, 0);
+
+        let internal_snapshot = metrics
+            .internal_listener_snapshots()
+            .expect("internal snapshot");
+        assert_eq!(internal_snapshot.len(), 2);
+        let management = internal_snapshot
+            .iter()
+            .find(|listener| listener.name == "@management")
+            .expect("management listener");
+        assert_eq!(management.state, ListenerRuntimeState::Listening);
+        assert_eq!(management.accepted_connections, 1);
+        assert_eq!(management.active_connections, 1);
+
+        drop(connection);
+        let management = metrics
+            .internal_listener_snapshots()
+            .expect("released internal snapshot")
+            .into_iter()
+            .find(|listener| listener.name == "@management")
+            .expect("management listener");
+        assert_eq!(management.accepted_connections, 1);
+        assert_eq!(management.active_connections, 0);
+    }
 
     #[test]
     fn process_uptime_admission_and_listener_capacity_survive_generation_overlap() {

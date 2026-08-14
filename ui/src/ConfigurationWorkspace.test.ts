@@ -339,6 +339,7 @@ function installConfigFetch(
   validationStatus = 200,
   snapshot = configSnapshot(),
   validationRestartRequired = false,
+  validationDiagnostics: ConfigDiagnostic[] = [],
 ) {
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -350,6 +351,7 @@ function installConfigFetch(
         : jsonResponse({
             ...validationResponse(body.config),
             restartRequired: validationRestartRequired,
+            diagnostics: validationDiagnostics,
           })
     }
     if (url === '/api/v1/config' && init?.method === 'PUT') {
@@ -1604,7 +1606,7 @@ describe('ConfigurationWorkspace', () => {
     expect(wrapper.text()).not.toContain('activation pending')
   })
 
-  it('renders the explicit restart-required outcome for an active Unix mode change', async () => {
+  it('renders the backend explanation for a restart-required outcome', async () => {
     installConfigFetch(() => jsonResponse({
       diskRevision: 'disk-restart-required',
       candidateRevision: 'candidate-restart-required',
@@ -1618,18 +1620,63 @@ describe('ConfigurationWorkspace', () => {
         stage: 'activation',
         message: 'an active Unix listener mode changed',
       }],
-    }), 200, configSnapshot(), true)
+    }), 200, configSnapshot(), true, [{
+      code: 'I_RESTART_REQUIRED',
+      severity: 'warning',
+      stage: 'activation',
+      message: 'an active Unix listener mode changed',
+    }])
     const wrapper = await mountUnlocked()
 
     await findButton(wrapper, 'Validate candidate').trigger('click')
     await flushPromises()
     await findButton(wrapper, 'Review save').trigger('click')
-    expect(wrapper.get('.review-warning').text()).toContain('next process restart')
+    const reviewWarning = wrapper.get('.review-warning').text()
+    expect(reviewWarning).toContain('active Unix listener mode changed')
+    expect(reviewWarning).not.toContain('This active Unix listener mode change')
     await findButton(wrapper, 'Save canonical configuration').trigger('click')
     await flushPromises()
 
     expect(wrapper.get('.revision-banner.pending').text()).toContain('restart required')
     expect(wrapper.get('.revision-banner.pending').text()).toContain('active Unix listener mode')
+  })
+
+  it('renders a supervised topology restart explanation without Unix wording', async () => {
+    installConfigFetch(() => jsonResponse({
+      diskRevision: 'disk-topology-restart',
+      candidateRevision: 'candidate-topology-restart',
+      activeRevision,
+      outcome: 'saved_restart_required',
+      activationState: 'restart_required',
+      restartRequired: true,
+      diagnostics: [{
+        code: 'I_RESTART_REQUIRED',
+        severity: 'warning',
+        stage: 'activation',
+        path: '/config/listeners',
+        message: 'the supervised listener or control-listener topology changed; the saved configuration takes effect after a process restart',
+      }],
+    }), 200, configSnapshot(), true, [{
+      code: 'I_RESTART_REQUIRED',
+      severity: 'warning',
+      stage: 'activation',
+      path: '/config/listeners',
+      message: 'the supervised listener or control-listener topology changed; the saved configuration takes effect after a process restart',
+    }])
+    const wrapper = await mountUnlocked()
+
+    await findButton(wrapper, 'Validate candidate').trigger('click')
+    await flushPromises()
+    await findButton(wrapper, 'Review save').trigger('click')
+    const reviewWarning = wrapper.get('.review-warning').text()
+    expect(reviewWarning).toContain('supervised listener or control-listener topology changed')
+    expect(reviewWarning).not.toContain('Unix')
+    await findButton(wrapper, 'Save canonical configuration').trigger('click')
+    await flushPromises()
+
+    const banner = wrapper.get('.revision-banner.pending').text()
+    expect(banner).toContain('supervised listener or control-listener topology changed')
+    expect(banner).not.toContain('Unix')
   })
 
   it('preserves the edited draft after a 409 conflict', async () => {

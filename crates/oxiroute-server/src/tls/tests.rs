@@ -34,10 +34,10 @@ use openssl::{
     },
 };
 use oxiroute_config::{
-    AcmeChallengeType, AcmeKeyType, AlpnProtocol, Certificate, CertificateSource, Config,
+    AcmeChallengeType, AcmeKeyType, AlpnProtocol, Certificate, CertificateSource, ConfigDraft,
     HttpVersion, HttpVersionPolicy, SelfSignedKeyType, TlsClientAuthMode, TlsClientAuthPolicy,
     TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
-    UpstreamPool, UpstreamTls,
+    UpstreamPool, UpstreamTls, ValidatedConfig,
 };
 use pingora::{listeners::ALPN, upstreams::peer::HttpPeer};
 use tempfile::TempDir;
@@ -49,8 +49,8 @@ use tls::{
     CertificateGeneration, CertificateMetadata, CertificatePublishError, CertificateValidity,
     FileReconcileError, FileReconcileOutcome, FileWatcherConfig, FileWatcherSupervisor,
     MAX_CA_CERTIFICATE_BYTES, MAX_CERTIFICATE_CHAIN_BYTES, MAX_DH_PARAMETERS_BYTES,
-    MAX_PRIVATE_KEY_BYTES, TlsBuildError, TlsProfilePlan, UpstreamTlsPlan, prepare_tls,
-    prepare_upstream_tls,
+    MAX_PRIVATE_KEY_BYTES, TlsBuildError, TlsProfilePlan, UpstreamTlsPlan,
+    prepare_tls as prepare_validated_tls, prepare_upstream_tls,
 };
 
 struct IdentityFiles {
@@ -59,13 +59,17 @@ struct IdentityFiles {
     ca: PathBuf,
 }
 
+fn prepare_tls(config: &ValidatedConfig) -> Result<tls::PreparedTls, TlsBuildError> {
+    prepare_validated_tls(config)
+}
+
 #[test]
 fn prepares_metadata_redacted_generation_and_callback_settings() {
     let temp = TempDir::new().unwrap();
     let files = write_identity(temp.path(), "primary", "www.example.test", false);
     let config = config_with_identity(&files);
 
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let active_identity = prepared.certificates().get("primary").unwrap();
     let generation = active_identity.snapshot();
     let metadata = generation.metadata();
@@ -140,7 +144,7 @@ fn applies_explicit_server_tls_policy_to_openssl_settings() {
         prefer_server_ciphers: false,
     };
 
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let profile = prepared.profiles().get("public").unwrap();
     let mut settings = profile.tls_settings().unwrap();
 
@@ -165,7 +169,7 @@ fn downstream_client_auth_defaults_to_disabled_and_is_reported_as_configured_pol
     let files = write_identity(temp.path(), "primary", "www.example.test", false);
     let config = config_with_identity(&files);
 
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let profile = prepared.profiles().get("public").unwrap();
     assert_eq!(profile.client_auth_mode(), TlsClientAuthMode::Disabled);
     assert!(!profile.client_auth_ca_configured());
@@ -184,7 +188,7 @@ fn client_auth_ca_is_loaded_once_into_an_immutable_profile_snapshot() {
         allowed_dns_names: vec!["client.example.test".into()],
     };
 
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let profile = prepared.profiles().get("public").unwrap();
     assert_eq!(profile.client_auth_mode(), TlsClientAuthMode::Required);
     assert!(profile.client_auth_ca_configured());
@@ -194,7 +198,7 @@ fn client_auth_ca_is_loaded_once_into_an_immutable_profile_snapshot() {
     fs::write(&files.ca, b"not a CA bundle").unwrap();
     assert!(profile.tls_settings().is_ok());
     assert!(matches!(
-        prepare_tls(&config),
+        prepare_tls(&config.clone().validate().expect("valid TLS test config")),
         Err(TlsBuildError::ClientCaParse { .. } | TlsBuildError::InvalidPem { .. })
     ));
 }
@@ -212,7 +216,7 @@ fn client_auth_rejects_oversized_and_non_ca_bundles_before_listener_start() {
 
     fs::write(&files.ca, vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]).unwrap();
     assert!(matches!(
-        prepare_tls(&config),
+        prepare_tls(&config.clone().validate().expect("valid TLS test config")),
         Err(TlsBuildError::FileTooLarge {
             kind: "client CA bundle",
             limit: MAX_CA_CERTIFICATE_BYTES,
@@ -230,7 +234,7 @@ fn client_auth_rejects_oversized_and_non_ca_bundles_before_listener_start() {
         .client_auth
         .ca_certificate_path = Some(files.chain);
     assert!(matches!(
-        prepare_tls(&config),
+        prepare_tls(&config.clone().validate().expect("valid TLS test config")),
         Err(TlsBuildError::NonCaClientCertificate { index: 0, .. })
     ));
 }
@@ -245,7 +249,7 @@ fn rejects_oversized_dh_parameters_during_runtime_planning() {
     config.tls_profiles[0].policy.dh_parameters_path = Some(dh_parameters_path);
 
     assert!(matches!(
-        prepare_tls(&config),
+        prepare_tls(&config.clone().validate().expect("valid TLS test config")),
         Err(TlsBuildError::FileTooLarge {
             kind: "DH parameters",
             limit: MAX_DH_PARAMETERS_BYTES,
@@ -265,7 +269,7 @@ fn generates_explicit_development_certificate_with_exact_sans_and_redacted_debug
         key_type: SelfSignedKeyType::EcdsaP256,
     };
 
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let active = prepared.certificates().get("primary").unwrap();
     let generation = active.snapshot();
     assert_eq!(
@@ -309,7 +313,7 @@ fn managed_acme_without_a_current_revision_uses_a_bootstrap_and_is_due() {
         dns01: None,
     };
 
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let [reconciler] = prepared.acme_reconcilers() else {
         panic!("one managed ACME reconciler must be prepared");
     };
@@ -333,7 +337,7 @@ fn direct_file_reconciliation_rotates_rolls_back_and_retains_invalid_candidates(
     let replacement = write_identity(temp.path(), "replacement", "direct.example.test", false);
     let mut config = config_with_identity(&initial);
     config.certificates[0].dns_names = vec!["direct.example.test".into()];
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let [reconciler] = prepared.file_reconcilers() else {
         panic!("one direct-file reconciler must be prepared");
     };
@@ -386,7 +390,7 @@ fn direct_file_watcher_publishes_rotation_and_reports_invalid_rollback() {
     );
     let mut config = config_with_identity(&initial);
     config.certificates[0].dns_names = vec!["watch.example.test".into()];
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let [reconciler] = prepared.file_reconcilers() else {
         panic!("one direct-file reconciler must be prepared");
     };
@@ -452,7 +456,7 @@ fn selects_exact_wildcard_and_default_certificate_generations() {
     ]);
     config.tls_profiles[0].certificates = vec!["primary".into(), "wildcard".into(), "exact".into()];
 
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let profile = prepared.profiles().get("public").unwrap();
     assert_eq!(profile.default_certificate(), "primary");
 
@@ -755,7 +759,7 @@ fn loads_one_certbot_revision_and_archive_private_key_reuse() {
     let files = write_certbot_lineage(temp.path(), "primary", "certbot.example.test");
     let config = config_with_certbot_lineage(&files);
 
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let [reconciler] = prepared.certbot_reconcilers() else {
         panic!("one Certbot reconciler must be prepared");
     };
@@ -803,7 +807,7 @@ fn prepares_only_certbot_sources_for_continuous_reconciliation() {
     config.tls_profiles[0].certificates = vec!["direct".into(), "managed-externally".into()];
     config.tls_profiles[0].default_certificate = "direct".into();
 
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
 
     assert_eq!(prepared.certificates().len(), 2);
     let [reconciler] = prepared.certbot_reconcilers() else {
@@ -1576,7 +1580,7 @@ fn production_watcher_reconciles_the_preparation_to_startup_change_immediately()
     let files = write_certbot_lineage(temp.path(), "primary", "certbot.example.test");
     write_new_certbot_revision(temp.path(), &files, 2, "startup", "certbot.example.test");
     let config = config_with_certbot_lineage(&files);
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let [reconciler] = prepared.certbot_reconcilers() else {
         panic!("one Certbot reconciler must be prepared");
     };
@@ -1607,7 +1611,7 @@ fn production_watcher_reports_reconciliation_degradation_and_filesystem_recovery
     let temp = TempDir::new().unwrap();
     let files = write_certbot_lineage(temp.path(), "primary", "certbot.example.test");
     let config = config_with_certbot_lineage(&files);
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let [reconciler] = prepared.certbot_reconcilers() else {
         panic!("one Certbot reconciler must be prepared");
     };
@@ -1648,7 +1652,7 @@ fn watcher_start_rejects_a_lineage_path_replaced_by_a_regular_file() {
     let temp = TempDir::new().unwrap();
     let files = write_certbot_lineage(temp.path(), "primary", "certbot.example.test");
     let config = config_with_certbot_lineage(&files);
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
 
     fs::remove_dir_all(&files.live).unwrap();
     fs::write(&files.live, b"not a lineage directory").unwrap();
@@ -1934,7 +1938,7 @@ fn accepts_ip_sans_canonicalizes_ipv6_mapped_ipv4_and_uses_ips_only_as_the_defau
     let mut config = config_with_identity(&files);
     config.certificates[0].dns_names = vec!["2001:0db8:0:0:0:0:0:1".into(), "192.0.2.10".into()];
 
-    let prepared = prepare_tls(&config).unwrap();
+    let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let generation = prepared.certificates()["primary"].snapshot();
     assert_eq!(
         generation.metadata().dns_names,
@@ -2640,8 +2644,8 @@ fn rejects_empty_duplicate_expired_and_non_ca_custom_anchors() {
     ));
 }
 
-fn config_with_identity(files: &IdentityFiles) -> Config {
-    Config {
+fn config_with_identity(files: &IdentityFiles) -> ConfigDraft {
+    ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
@@ -2689,7 +2693,7 @@ struct CertbotTestLineage {
 }
 
 #[cfg(unix)]
-fn config_with_certbot_lineage(files: &CertbotTestLineage) -> Config {
+fn config_with_certbot_lineage(files: &CertbotTestLineage) -> ConfigDraft {
     let mut config = config_with_identity(&IdentityFiles {
         chain: PathBuf::new(),
         key: PathBuf::new(),

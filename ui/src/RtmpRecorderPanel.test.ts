@@ -19,6 +19,7 @@ function recorder(overrides: Partial<RecorderSnapshot> = {}): RecorderSnapshot {
     discontinuities: '1',
     last_completed_relative_name: 'live/camera-001.flv',
     recoverable_partial_name: 'live/.camera-002.partial',
+    last_notification: null,
     ...overrides,
   }
 }

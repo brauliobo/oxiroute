@@ -1,20 +1,19 @@
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
 
-use oxiroute_config::{
-    RtmpAclAction, RtmpExecMode, RtmpExecTrigger, RtmpHlsFragmentNaming, RtmpHlsKeyPolicy,
-    RtmpHlsPolicy, RtmpRecordMask,
-};
-use oxiroute_rtmp::{DirectiveContext, DirectiveError, validate_directive};
-
 use crate::{
     Diagnostic, DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INCLUDE_CYCLE,
     E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, E_SOURCE_CHANGED, E_SOURCE_IO, E_SOURCE_LIMIT,
     E_UNSUPPORTED_FEATURE, Report, Severity,
 };
+use oxiroute_config::{
+    RtmpAclAction, RtmpExecMode, RtmpExecTrigger, RtmpHlsFragmentNaming, RtmpHlsKeyPolicy,
+    RtmpHlsPolicy, RtmpRecordMask,
+};
 
 use super::{
-    DirectiveOrigin, ExpandedDirective, ExpandedOccurrence, IncludeCandidateStatus, NginxValue,
-    OccurrenceDecision, OccurrenceDisposition, OccurrenceId, SourceGraph, Word,
+    DirectiveContext, DirectiveError, DirectiveOrigin, ExpandedDirective, ExpandedOccurrence,
+    IncludeCandidateStatus, NginxValue, OccurrenceDecision, OccurrenceDisposition, OccurrenceId,
+    SourceGraph, Word, directive_specs, validate_directive,
 };
 
 const MAX_RECORDING_ROOT_BYTES: usize = 4_096;
@@ -1601,7 +1600,7 @@ impl<'a> Resolver<'a> {
         let Ok(name) = std::str::from_utf8(&directive.directive.name.value) else {
             return false;
         };
-        oxiroute_rtmp::directive_specs()
+        directive_specs()
             .iter()
             .any(|spec| spec.name == name && spec.contexts.contains(&context))
     }

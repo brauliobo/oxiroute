@@ -2,6 +2,7 @@
 
 mod config;
 pub(crate) use config::read_config_body;
+mod dto;
 mod management;
 mod media;
 mod observability;

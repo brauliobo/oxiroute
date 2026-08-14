@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     io,
     sync::{
         Arc, Condvar, Mutex,
@@ -8,22 +7,30 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_config::Config;
+use oxiroute_config::ValidatedConfig;
 use oxiroute_config_source::ConfigFormat;
-use oxiroute_rtmp::{
-    RtmpAutoPushStatus, RtmpRecorderLifecycle, RtmpRecorderShutdown, RtmpRegistry,
-    RtmpServiceRuntime,
-};
+use oxiroute_rtmp::{RtmpAutoPushStatus, RtmpRecorderShutdown, RtmpRegistry, RtmpServiceRuntime};
 #[cfg(target_os = "linux")]
 use oxiroute_supervision_unix::DescriptorSet;
 use pingora::apps::{AcceptGate, AcceptGateClose, AcceptOwnership};
 use serde::Serialize;
 
-use crate::{
-    ListenerReservations, ProcessRuntime, RuntimeMetrics, RuntimePlan, ServiceKind,
-    config_coordinator::{CanonicalConfigDocument, ConfigRevision},
-    runtime_plan,
+use crate::generation_resources::GenerationResources;
+use crate::listener_inventory::{ListenerId, ListenerInventory};
+use crate::rtmp_generation_runtime::{
+    PreparedRtmpGenerationRuntime, RtmpRetirement, RtmpRetirementRegistry,
 };
+use crate::{
+    ListenerMetrics, ListenerReservations, MetricsError, ProcessRuntime, RuntimeMetrics,
+    RuntimePlan, ServiceKind,
+    config_coordinator::{AuthoredRevision, EffectiveRevision, ResolvedConfigDocument},
+    runtime_plan,
+    service_plan::PreparedRtmpRuntime,
+    service_plan::validation_plan,
+    service_plan::{acquire_runtime_services, validate_runtime_services},
+};
+
+pub(crate) const GENERATION_PREPARATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum RuntimeReferenceKind {
@@ -57,158 +64,467 @@ impl RuntimeReferenceKind {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerationRevision {
-    pub disk: ConfigRevision,
-    pub candidate: ConfigRevision,
+    pub disk: AuthoredRevision,
+    pub candidate: EffectiveRevision,
 }
 
 pub struct PreparedGeneration {
-    config: Arc<Config>,
+    config: Arc<ValidatedConfig>,
+    inventory: ListenerInventory,
     metrics: RuntimeMetrics,
-    plan: RuntimePlan,
-    reservations: ListenerReservations,
+    resources: GenerationResources,
     revision: GenerationRevision,
-    rtmp_registry: Arc<RtmpRegistry>,
-    rtmp_runtimes: HashMap<String, RtmpServiceRuntime>,
 }
 
-#[derive(Clone, Copy)]
-enum ReservationPreparation {
-    Activation,
-    Validation,
+enum ListenerSource<'a> {
+    BindOrReuse {
+        previous: Option<&'a ListenerReservations>,
+        process: ProcessRuntime,
+    },
+    #[cfg(target_os = "linux")]
+    Adopt {
+        descriptors: DescriptorSet,
+        process: ProcessRuntime,
+    },
+    Validate {
+        previous: Option<&'a ListenerReservations>,
+    },
+}
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the private output transfers one complete prepared generation without another owner"
+)]
+enum PreparationOutput {
+    Prepared(PreparedGeneration),
+    Validated,
+}
+
+struct PreparedGenerationTransaction {
+    #[cfg(test)]
+    drop_probes: Vec<PreparedTransactionDropProbe>,
+    reservations_precede_plan: bool,
+    #[cfg(target_os = "linux")]
+    descriptors: Option<DescriptorSet>,
+    rtmp: Option<PreparedRtmpGenerationRuntime>,
+    listener_registration: Option<crate::monitoring::ListenerRegistrationTransaction>,
+    reservations: Option<ListenerReservations>,
+    acquired: Option<crate::service_plan::GenerationAcquisition>,
+    plan: Option<RuntimePlan>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreparedTransactionFault {
+    Reservations,
+    ListenerRegistration,
+    RtmpPreparation,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static PREPARED_TRANSACTION_FAULT: std::cell::Cell<Option<PreparedTransactionFault>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn with_prepared_transaction_fault<T>(
+    fault: PreparedTransactionFault,
+    run: impl FnOnce() -> T,
+) -> T {
+    PREPARED_TRANSACTION_FAULT.set(Some(fault));
+    let result = run();
+    PREPARED_TRANSACTION_FAULT.set(None);
+    result
+}
+
+#[cfg(test)]
+fn fail_after_prepared_transaction_stage(
+    stage: PreparedTransactionFault,
+) -> Result<(), GenerationError> {
+    if PREPARED_TRANSACTION_FAULT.get() == Some(stage) {
+        return Err(GenerationError::RuntimePrepare);
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "production and test builds share preparation boundary-fault call sites"
+)]
+fn fail_after_prepared_transaction_stage(_stage: ()) -> Result<(), GenerationError> {
+    Ok(())
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static PREPARED_TRANSACTION_ROLLBACK_TRACE: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+impl PreparedGenerationTransaction {
+    fn new() -> Self {
+        Self {
+            #[cfg(test)]
+            drop_probes: Vec::new(),
+            reservations_precede_plan: false,
+            #[cfg(target_os = "linux")]
+            descriptors: None,
+            rtmp: None,
+            listener_registration: None,
+            reservations: None,
+            acquired: None,
+            plan: None,
+        }
+    }
+
+    fn acquired(&self) -> &crate::service_plan::GenerationAcquisition {
+        self.acquired.as_ref().expect("provisional acquisition")
+    }
+
+    fn commit(mut self) -> GenerationResources {
+        #[cfg(test)]
+        for probe in &mut self.drop_probes {
+            probe.armed = false;
+        }
+        GenerationResources::commit(
+            self.plan.take().expect("provisional runtime plan"),
+            self.acquired.take().expect("provisional acquisition"),
+            self.reservations.take().expect("provisional reservations"),
+            self.listener_registration
+                .take()
+                .expect("provisional listener registration"),
+            self.rtmp.take().expect("provisional RTMP runtime"),
+        )
+    }
+}
+
+impl Drop for PreparedGenerationTransaction {
+    fn drop(&mut self) {
+        self.rtmp.take();
+        #[cfg(test)]
+        drop_prepared_transaction_probe(&mut self.drop_probes, "rtmp_prepared");
+        #[cfg(test)]
+        drop_prepared_transaction_probe(&mut self.drop_probes, "rtmp_registry");
+        self.listener_registration.take();
+        #[cfg(test)]
+        drop_prepared_transaction_probe(&mut self.drop_probes, "listener_registration");
+        if self.reservations_precede_plan {
+            self.acquired.take();
+            #[cfg(test)]
+            drop_prepared_transaction_probe(&mut self.drop_probes, "acquisition");
+            self.plan.take();
+            #[cfg(test)]
+            drop_prepared_transaction_probe(&mut self.drop_probes, "plan");
+            self.reservations.take();
+            #[cfg(test)]
+            drop_prepared_transaction_probe(&mut self.drop_probes, "reservations");
+        } else {
+            self.reservations.take();
+            #[cfg(test)]
+            drop_prepared_transaction_probe(&mut self.drop_probes, "reservations");
+            self.acquired.take();
+            #[cfg(test)]
+            drop_prepared_transaction_probe(&mut self.drop_probes, "acquisition");
+            self.plan.take();
+            #[cfg(test)]
+            drop_prepared_transaction_probe(&mut self.drop_probes, "plan");
+        }
+        #[cfg(target_os = "linux")]
+        self.descriptors.take();
+    }
+}
+
+#[cfg(test)]
+struct PreparedTransactionDropProbe {
+    stage: &'static str,
+    armed: bool,
+}
+
+#[cfg(test)]
+impl PreparedTransactionDropProbe {
+    const fn new(stage: &'static str) -> Self {
+        Self { stage, armed: true }
+    }
+}
+
+#[cfg(test)]
+impl Drop for PreparedTransactionDropProbe {
+    fn drop(&mut self) {
+        if self.armed {
+            PREPARED_TRANSACTION_ROLLBACK_TRACE.with(|trace| trace.borrow_mut().push(self.stage));
+        }
+    }
+}
+
+#[cfg(test)]
+fn drop_prepared_transaction_probe(
+    probes: &mut Vec<PreparedTransactionDropProbe>,
+    stage: &'static str,
+) {
+    if probes.last().is_some_and(|probe| probe.stage == stage) {
+        drop(probes.pop());
+    }
 }
 
 impl PreparedGeneration {
-    fn prepare(
-        document: CanonicalConfigDocument,
-        previous: Option<&ListenerReservations>,
-        process: ProcessRuntime,
-        reservation_preparation: ReservationPreparation,
-    ) -> Result<Self, GenerationError> {
-        let config = Arc::new(document.normalized_config);
-        let plan =
-            runtime_plan(&config).map_err(|source| GenerationError::Plan(Box::new(source)))?;
-        let reservations = match reservation_preparation {
-            ReservationPreparation::Activation => ListenerReservations::prepare(&config, previous),
-            ReservationPreparation::Validation => {
-                ListenerReservations::prepare_for_validation(&config, previous)
-            }
-        }?;
-        crate::stats::preflight_admin_token(
-            config
-                .stats
-                .as_ref()
-                .and_then(|stats| stats.admin_token_file.as_deref()),
-        )?;
-        if config.management.is_some() {
-            let token_file = std::env::var_os("OXIROUTE_MANAGEMENT_TOKEN_FILE")
-                .map(std::path::PathBuf::from)
-                .ok_or(GenerationError::ManagementToken)?;
-            crate::rtmp_api::preflight_management_token(&token_file)
-                .map_err(|_| GenerationError::ManagementToken)?;
-        }
-        if let Some(ui_dir) = config
-            .management
-            .as_ref()
-            .and_then(|management| management.ui_dir.as_deref())
-        {
-            crate::rtmp_api::UiAssets::load(ui_dir).map_err(|_| GenerationError::RuntimePrepare)?;
-        }
-        plan.tls
-            .check_certbot_watcher(crate::CertbotWatcherConfig::default())
-            .map_err(|_| GenerationError::RuntimePrepare)?;
-        plan.tls
-            .check_file_watcher(crate::FileWatcherConfig::default())
-            .map_err(|_| GenerationError::RuntimePrepare)?;
-        let metrics = RuntimeMetrics::for_process(process);
-        metrics.register_upstream_pools(plan.pools.iter().cloned())?;
-        let rtmp_registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
-        let mut rtmp_runtimes = HashMap::new();
-        for service in &plan.services {
-            let ServiceKind::Rtmp(service) = &service.kind else {
-                continue;
-            };
-            if !rtmp_runtimes.contains_key(service.service_id()) {
-                let runtime = service.runtime(Arc::clone(&rtmp_registry))?;
-                rtmp_runtimes.insert(service.service_id().to_owned(), runtime);
-            }
-        }
-        metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
-        Ok(Self {
-            config,
-            metrics,
-            plan,
-            reservations,
-            revision: GenerationRevision {
-                disk: document.disk_revision,
-                candidate: document.candidate_revision,
-            },
-            rtmp_registry,
-            rtmp_runtimes,
-        })
+    #[cfg(test)]
+    fn prepare_rtmp(
+        capabilities: oxiroute_rtmp::RtmpCapabilities,
+        services: &[crate::ServiceSpec],
+        vod_catalog: Arc<oxiroute_rtmp::VodCatalog>,
+        media_catalog: Arc<oxiroute_rtmp::MediaCatalog>,
+    ) -> Result<PreparedRtmpGenerationRuntime, GenerationError> {
+        Self::prepare_rtmp_with_deadline(capabilities, services, vod_catalog, media_catalog, None)
     }
 
-    #[cfg(target_os = "linux")]
-    fn prepare_adopted(
-        document: CanonicalConfigDocument,
-        descriptors: DescriptorSet,
-        process: ProcessRuntime,
-    ) -> Result<Self, GenerationError> {
-        let reservations = ListenerReservations::adopt(&document.normalized_config, descriptors)?;
-        let config = Arc::new(document.normalized_config);
-        let plan =
-            runtime_plan(&config).map_err(|source| GenerationError::Plan(Box::new(source)))?;
+    fn prepare_rtmp_with_deadline(
+        capabilities: oxiroute_rtmp::RtmpCapabilities,
+        services: &[crate::ServiceSpec],
+        vod_catalog: Arc<oxiroute_rtmp::VodCatalog>,
+        media_catalog: Arc<oxiroute_rtmp::MediaCatalog>,
+        deadline: Option<Instant>,
+    ) -> Result<PreparedRtmpGenerationRuntime, GenerationError> {
+        let registry = Arc::new(RtmpRegistry::new(capabilities));
+        let mut prepared = Vec::new();
+        for service in services {
+            let ServiceKind::Rtmp(service) = &service.kind else {
+                continue;
+            };
+            if !prepared
+                .iter()
+                .any(|prepared: &PreparedRtmpRuntime| prepared.service_id() == service.service_id())
+            {
+                prepared.push(service.prepare_with_deadline(deadline)?);
+            }
+        }
+        Ok(PreparedRtmpGenerationRuntime::new(
+            registry,
+            prepared,
+            vod_catalog,
+            media_catalog,
+        ))
+    }
+
+    fn check_generation_inputs(
+        config: &ValidatedConfig,
+        tls: &crate::PreparedTls,
+    ) -> Result<(), GenerationError> {
+        let draft = config.as_draft();
         crate::stats::preflight_admin_token(
-            config
+            draft
                 .stats
                 .as_ref()
                 .and_then(|stats| stats.admin_token_file.as_deref()),
         )?;
-        if config.management.is_some() {
+        if draft.management.is_some() {
             let token_file = std::env::var_os("OXIROUTE_MANAGEMENT_TOKEN_FILE")
                 .map(std::path::PathBuf::from)
                 .ok_or(GenerationError::ManagementToken)?;
             crate::rtmp_api::preflight_management_token(&token_file)
                 .map_err(|_| GenerationError::ManagementToken)?;
         }
-        if let Some(ui_dir) = config
+        if let Some(ui_dir) = draft
             .management
             .as_ref()
             .and_then(|management| management.ui_dir.as_deref())
         {
             crate::rtmp_api::UiAssets::load(ui_dir).map_err(|_| GenerationError::RuntimePrepare)?;
         }
-        plan.tls
-            .check_certbot_watcher(crate::CertbotWatcherConfig::default())
+        tls.check_certbot_watcher(crate::CertbotWatcherConfig::default())
             .map_err(|_| GenerationError::RuntimePrepare)?;
-        plan.tls
-            .check_file_watcher(crate::FileWatcherConfig::default())
+        tls.check_file_watcher(crate::FileWatcherConfig::default())
             .map_err(|_| GenerationError::RuntimePrepare)?;
-        let metrics = RuntimeMetrics::for_process(process);
-        metrics.register_upstream_pools(plan.pools.iter().cloned())?;
-        let rtmp_registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
-        let mut rtmp_runtimes = HashMap::new();
-        for service in &plan.services {
-            let ServiceKind::Rtmp(service) = &service.kind else {
-                continue;
-            };
-            if !rtmp_runtimes.contains_key(service.service_id()) {
-                let runtime = service.runtime(Arc::clone(&rtmp_registry))?;
-                rtmp_runtimes.insert(service.service_id().to_owned(), runtime);
+        Ok(())
+    }
+
+    fn prepare_from(
+        document: ResolvedConfigDocument,
+        source: ListenerSource<'_>,
+    ) -> Result<PreparationOutput, GenerationError> {
+        Self::prepare_from_with_deadline(document, source, None)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "source-specific acquisition and the common transactional tail remain one auditable state machine"
+    )]
+    fn prepare_from_with_deadline(
+        document: ResolvedConfigDocument,
+        source: ListenerSource<'_>,
+        deadline: Option<Instant>,
+    ) -> Result<PreparationOutput, GenerationError> {
+        let revision = GenerationRevision {
+            disk: document.authored_revision,
+            candidate: document.effective_revision,
+        };
+        let config = Arc::new(document.validated_config);
+        let inventory = ListenerInventory::compile(&config);
+        inventory.validate_public_display_names()?;
+        let mut transaction = PreparedGenerationTransaction::new();
+        let process = match source {
+            ListenerSource::BindOrReuse { previous, process } => {
+                transaction.plan = Some(
+                    runtime_plan(&config)
+                        .map_err(|source| GenerationError::Plan(Box::new(source)))?,
+                );
+                #[cfg(test)]
+                transaction
+                    .drop_probes
+                    .push(PreparedTransactionDropProbe::new("plan"));
+                transaction.acquired = Some(
+                    acquire_runtime_services(
+                        transaction.plan.as_ref().expect("provisional runtime plan"),
+                    )
+                    .map_err(|source| GenerationError::Plan(Box::new(source)))?,
+                );
+                #[cfg(test)]
+                transaction
+                    .drop_probes
+                    .push(PreparedTransactionDropProbe::new("acquisition"));
+                transaction.reservations = Some(ListenerReservations::prepare(&config, previous)?);
+                #[cfg(test)]
+                transaction
+                    .drop_probes
+                    .push(PreparedTransactionDropProbe::new("reservations"));
+                Some(process)
             }
-        }
-        metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
-        Ok(Self {
+            #[cfg(target_os = "linux")]
+            ListenerSource::Adopt {
+                descriptors,
+                process,
+            } => {
+                transaction.reservations_precede_plan = true;
+                transaction.descriptors = Some(descriptors);
+                transaction.reservations = Some(ListenerReservations::adopt(
+                    &config,
+                    transaction
+                        .descriptors
+                        .take()
+                        .expect("provisional descriptor set"),
+                )?);
+                #[cfg(test)]
+                transaction
+                    .drop_probes
+                    .push(PreparedTransactionDropProbe::new("reservations"));
+                transaction.plan = Some(
+                    runtime_plan(&config)
+                        .map_err(|source| GenerationError::Plan(Box::new(source)))?,
+                );
+                #[cfg(test)]
+                transaction
+                    .drop_probes
+                    .push(PreparedTransactionDropProbe::new("plan"));
+                transaction.acquired = Some(
+                    acquire_runtime_services(
+                        transaction.plan.as_ref().expect("provisional runtime plan"),
+                    )
+                    .map_err(|source| GenerationError::Plan(Box::new(source)))?,
+                );
+                #[cfg(test)]
+                transaction
+                    .drop_probes
+                    .push(PreparedTransactionDropProbe::new("acquisition"));
+                Some(process)
+            }
+            ListenerSource::Validate { previous } => {
+                transaction.plan = Some(
+                    validation_plan(&config)
+                        .map_err(|source| GenerationError::Plan(Box::new(source)))?,
+                );
+                #[cfg(test)]
+                transaction
+                    .drop_probes
+                    .push(PreparedTransactionDropProbe::new("plan"));
+                transaction.acquired = Some(
+                    validate_runtime_services(
+                        transaction
+                            .plan
+                            .as_ref()
+                            .expect("provisional validation plan"),
+                    )
+                    .map_err(|source| GenerationError::Plan(Box::new(source)))?,
+                );
+                #[cfg(test)]
+                transaction
+                    .drop_probes
+                    .push(PreparedTransactionDropProbe::new("acquisition"));
+                transaction.reservations = Some(ListenerReservations::prepare_for_validation(
+                    &config, previous,
+                )?);
+                #[cfg(test)]
+                transaction
+                    .drop_probes
+                    .push(PreparedTransactionDropProbe::new("reservations"));
+                None
+            }
+        };
+        #[cfg(test)]
+        fail_after_prepared_transaction_stage(PreparedTransactionFault::Reservations)?;
+        #[cfg(not(test))]
+        fail_after_prepared_transaction_stage(())?;
+        Self::check_generation_inputs(&config, transaction.acquired().tls())?;
+        let metrics = if let Some(process) = process {
+            let metrics = RuntimeMetrics::for_process(process);
+            transaction.listener_registration =
+                Some(metrics.register_inventory(inventory.entries())?);
+            #[cfg(test)]
+            transaction
+                .drop_probes
+                .push(PreparedTransactionDropProbe::new("listener_registration"));
+            #[cfg(test)]
+            fail_after_prepared_transaction_stage(PreparedTransactionFault::ListenerRegistration)?;
+            #[cfg(not(test))]
+            fail_after_prepared_transaction_stage(())?;
+            metrics.register_upstream_pools(transaction.acquired().pools().iter().cloned())?;
+            Some(metrics)
+        } else {
+            None
+        };
+        let (rtmp_vod_catalog, rtmp_media_catalog) = transaction
+            .acquired
+            .as_mut()
+            .expect("provisional acquisition")
+            .take_rtmp_catalogs();
+        transaction.rtmp = Some(Self::prepare_rtmp_with_deadline(
+            transaction
+                .plan
+                .as_ref()
+                .expect("provisional runtime plan")
+                .rtmp_capabilities,
+            transaction.acquired().services(),
+            rtmp_vod_catalog,
+            rtmp_media_catalog,
+            deadline,
+        )?);
+        #[cfg(test)]
+        transaction
+            .drop_probes
+            .push(PreparedTransactionDropProbe::new("rtmp_registry"));
+        #[cfg(test)]
+        transaction
+            .drop_probes
+            .push(PreparedTransactionDropProbe::new("rtmp_prepared"));
+        #[cfg(test)]
+        fail_after_prepared_transaction_stage(PreparedTransactionFault::RtmpPreparation)?;
+        #[cfg(not(test))]
+        fail_after_prepared_transaction_stage(())?;
+        let Some(metrics) = metrics else {
+            return Ok(PreparationOutput::Validated);
+        };
+        metrics.set_rtmp_recording_supported(
+            transaction
+                .plan
+                .as_ref()
+                .expect("provisional runtime plan")
+                .rtmp_recording_supported,
+        );
+        Ok(PreparationOutput::Prepared(Self {
             config,
+            inventory,
             metrics,
-            plan,
-            reservations,
-            revision: GenerationRevision {
-                disk: document.disk_revision,
-                candidate: document.candidate_revision,
-            },
-            rtmp_registry,
-            rtmp_runtimes,
-        })
+            resources: transaction.commit(),
+            revision,
+        }))
     }
 
     #[must_use]
@@ -219,16 +535,14 @@ impl PreparedGeneration {
 
 pub struct RuntimeGeneration {
     accept_gate: AcceptGate,
-    config: Arc<Config>,
+    config: Arc<ValidatedConfig>,
     drain: (Mutex<()>, Condvar),
     metrics: RuntimeMetrics,
-    plan: RuntimePlan,
+    inventory: ListenerInventory,
+    resources: GenerationResources,
     references: [AtomicU64; 9],
     mutations: AtomicU64,
-    reservations: ListenerReservations,
     revision: GenerationRevision,
-    rtmp_registry: Arc<RtmpRegistry>,
-    rtmp_runtimes: HashMap<String, RtmpServiceRuntime>,
     runtime_lifecycle: AtomicU8,
     runtime_failed: AtomicBool,
 }
@@ -245,26 +559,54 @@ impl RuntimeGeneration {
             config: prepared.config,
             drain: (Mutex::new(()), Condvar::new()),
             metrics: prepared.metrics,
-            plan: prepared.plan,
+            inventory: prepared.inventory,
+            resources: prepared.resources,
             references: std::array::from_fn(|_| AtomicU64::new(0)),
             mutations: AtomicU64::new(0),
-            reservations: prepared.reservations,
             revision: prepared.revision,
-            rtmp_registry: prepared.rtmp_registry,
-            rtmp_runtimes: prepared.rtmp_runtimes,
             runtime_lifecycle: AtomicU8::new(RUNTIME_PREPARED),
             runtime_failed: AtomicBool::new(false),
         }
     }
 
     #[must_use]
-    pub fn config(&self) -> &Arc<Config> {
+    pub fn config(&self) -> &Arc<ValidatedConfig> {
         &self.config
     }
 
     #[must_use]
     pub const fn plan(&self) -> &RuntimePlan {
-        &self.plan
+        self.resources.plan()
+    }
+
+    #[must_use]
+    pub fn services(&self) -> &[crate::ServiceSpec] {
+        self.resources.services()
+    }
+
+    #[must_use]
+    pub fn health_supervisor(&self) -> Option<crate::HealthSupervisor> {
+        self.resources.health_supervisor()
+    }
+
+    #[must_use]
+    pub fn pools(&self) -> &[Arc<crate::RoundRobinPool>] {
+        self.resources.pools()
+    }
+
+    #[must_use]
+    pub const fn tls(&self) -> &crate::PreparedTls {
+        self.resources.tls()
+    }
+
+    #[must_use]
+    pub const fn rtmp_vod_catalog(&self) -> &Arc<oxiroute_rtmp::VodCatalog> {
+        self.resources.rtmp_vod_catalog()
+    }
+
+    #[must_use]
+    pub const fn rtmp_media_catalog(&self) -> &Arc<oxiroute_rtmp::MediaCatalog> {
+        self.resources.rtmp_media_catalog()
     }
 
     #[must_use]
@@ -272,9 +614,78 @@ impl RuntimeGeneration {
         &self.metrics
     }
 
+    fn listener_metrics(&self, id: &ListenerId) -> Result<ListenerMetrics, MetricsError> {
+        self.metrics
+            .inventory_listener(id)?
+            .ok_or_else(|| MetricsError::ListenerNotFound(format!("{id:?}")))
+    }
+
+    /// Returns the metrics handle for one exact traffic listener identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metrics state is unavailable or the listener is not registered.
+    pub fn traffic_listener_metrics(&self, name: &str) -> Result<ListenerMetrics, MetricsError> {
+        self.listener_metrics(&ListenerId::Traffic(name.to_owned()))
+    }
+
+    /// Returns the metrics handle for the management listener.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metrics state is unavailable or the listener is not registered.
+    pub fn management_listener_metrics(&self) -> Result<ListenerMetrics, MetricsError> {
+        self.listener_metrics(&ListenerId::Management)
+    }
+
+    /// Returns the metrics handle for one exact statistics listener index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metrics state is unavailable or the listener is not registered.
+    pub fn stats_listener_metrics(&self, index: usize) -> Result<ListenerMetrics, MetricsError> {
+        self.listener_metrics(&ListenerId::Stats(index))
+    }
+
+    /// Returns the metrics handle for one exact statistics-page listener index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metrics state is unavailable or the listener is not registered.
+    pub fn stats_page_listener_metrics(
+        &self,
+        index: usize,
+    ) -> Result<ListenerMetrics, MetricsError> {
+        self.listener_metrics(&ListenerId::StatsPage(index))
+    }
+
     #[must_use]
     pub const fn reservations(&self) -> &ListenerReservations {
-        &self.reservations
+        self.resources.reservations()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn expected_runtime_listener_count(&self) -> usize {
+        self.inventory.complete_listener_count()
+    }
+
+    pub(crate) fn listener_restart_required(
+        &self,
+        mode: crate::RuntimeMode,
+        candidate: &ValidatedConfig,
+    ) -> bool {
+        self.inventory
+            .restart_required(mode, &ListenerInventory::compile(candidate))
+    }
+
+    pub(crate) fn listener_restart_reason(
+        &self,
+        mode: crate::RuntimeMode,
+        candidate: &ValidatedConfig,
+    ) -> Option<crate::listener_inventory::ListenerRestartReason> {
+        self.inventory
+            .restart_reason(mode, &ListenerInventory::compile(candidate))
     }
 
     #[must_use]
@@ -284,59 +695,30 @@ impl RuntimeGeneration {
 
     #[must_use]
     pub fn registry(&self) -> &Arc<RtmpRegistry> {
-        &self.rtmp_registry
+        self.resources.registry()
     }
 
     #[must_use]
     pub fn rtmp_runtime(&self, service: &str) -> Option<&RtmpServiceRuntime> {
-        self.rtmp_runtimes.get(service)
+        self.resources.rtmp_runtime(service)
     }
 
     #[must_use]
     pub fn rtmp_auto_push_status(&self) -> RtmpAutoPushStatus {
-        self.rtmp_runtimes
-            .values()
-            .fold(RtmpAutoPushStatus::default(), |mut total, runtime| {
-                let status = runtime.auto_push_status();
-                total.enabled |= status.enabled;
-                total.started |= status.started;
-                total.peers = total.peers.saturating_add(status.peers);
-                total.source_streams = total.source_streams.saturating_add(status.source_streams);
-                total.remote_streams = total.remote_streams.saturating_add(status.remote_streams);
-                total.frames_sent = total.frames_sent.saturating_add(status.frames_sent);
-                total.frames_received =
-                    total.frames_received.saturating_add(status.frames_received);
-                total.frames_dropped = total.frames_dropped.saturating_add(status.frames_dropped);
-                total.authentication_failures = total
-                    .authentication_failures
-                    .saturating_add(status.authentication_failures);
-                total.reconnects = total.reconnects.saturating_add(status.reconnects);
-                total.queue_messages = total.queue_messages.saturating_add(status.queue_messages);
-                total.queue_bytes = total.queue_bytes.saturating_add(status.queue_bytes);
-                total.last_failure = total.last_failure.or(status.last_failure);
-                total
-            })
+        self.resources.rtmp_auto_push_status()
     }
 
     fn close_runtime_admission(&self) {
-        for runtime in self.rtmp_runtimes.values() {
-            runtime.close_admission();
-        }
+        self.resources.close_runtime_admission();
     }
 
     pub fn initiate_recorder_shutdown(&self, deadline: Instant) -> Vec<RtmpRecorderShutdown> {
         self.close_runtime_admission();
-        self.rtmp_runtimes
-            .values()
-            .filter_map(|runtime| runtime.initiate_recorder_shutdown(deadline))
-            .collect()
+        self.resources.initiate_recorder_shutdown(deadline)
     }
 
-    fn recorder_lifecycles(&self) -> Vec<RtmpRecorderLifecycle> {
-        self.rtmp_runtimes
-            .values()
-            .filter_map(RtmpServiceRuntime::recorder_lifecycle)
-            .collect()
+    fn rtmp_retirement(&self) -> RtmpRetirement {
+        self.resources.rtmp_retirement()
     }
 
     fn claim_runtime_start(&self) -> bool {
@@ -348,6 +730,10 @@ impl RuntimeGeneration {
                 Ordering::Acquire,
             )
             .is_ok()
+    }
+
+    fn start_rtmp(&self) -> Result<(), GenerationError> {
+        self.resources.start_rtmp()
     }
 
     #[must_use]
@@ -433,7 +819,7 @@ impl RuntimeGeneration {
     }
 
     fn start_accepting(&self) {
-        self.metrics.activate_limits(self.plan.max_connections);
+        self.metrics.activate_limits(self.plan().max_connections);
         self.accept_gate.enable();
     }
 
@@ -551,18 +937,13 @@ impl Drop for GenerationReference {
 struct GenerationState {
     active: Option<Arc<RuntimeGeneration>>,
     candidate: Option<GenerationCandidate>,
-    disk_revision: Option<ConfigRevision>,
+    disk_revision: Option<AuthoredRevision>,
     last_failure: Option<&'static str>,
     previous: Option<Arc<RuntimeGeneration>>,
-    quarantined_revision: Option<ConfigRevision>,
+    quarantined_revision: Option<EffectiveRevision>,
     shutdown_generations: Vec<Arc<RuntimeGeneration>>,
     shutting_down: bool,
     starting_candidate: Option<CandidateStartReservation>,
-}
-
-#[derive(Default)]
-struct GenerationCleanupRegistry {
-    recorder_lifecycles: Vec<RtmpRecorderLifecycle>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -581,7 +962,7 @@ struct CandidateStartReservation {
 
 struct ActivationReservation {
     previous: Option<Arc<RuntimeGeneration>>,
-    previous_revision: Option<ConfigRevision>,
+    previous_revision: Option<EffectiveRevision>,
     runtime_owned: bool,
     token: u64,
 }
@@ -599,7 +980,7 @@ pub struct GenerationManager {
     #[cfg(test)]
     activation_hook: Arc<Mutex<Option<ActivationHook>>>,
     counters: Arc<GenerationCounters>,
-    cleanup: Arc<Mutex<GenerationCleanupRegistry>>,
+    rtmp_retirements: Arc<Mutex<RtmpRetirementRegistry>>,
     next_candidate_id: Arc<AtomicU64>,
     next_reservation_token: Arc<AtomicU64>,
     operations: Arc<Mutex<()>>,
@@ -675,7 +1056,7 @@ impl GenerationManager {
             #[cfg(test)]
             activation_hook: Arc::new(Mutex::new(None)),
             counters: Arc::new(GenerationCounters::default()),
-            cleanup: Arc::new(Mutex::new(GenerationCleanupRegistry::default())),
+            rtmp_retirements: Arc::new(Mutex::new(RtmpRetirementRegistry::default())),
             next_candidate_id: Arc::new(AtomicU64::new(0)),
             next_reservation_token: Arc::new(AtomicU64::new(0)),
             operations: Arc::new(Mutex::new(())),
@@ -700,7 +1081,27 @@ impl GenerationManager {
     /// unchanged.
     pub fn prepare(
         &self,
-        document: CanonicalConfigDocument,
+        document: ResolvedConfigDocument,
+    ) -> Result<GenerationCandidate, GenerationError> {
+        self.prepare_with_deadline_internal(document, None)
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_with_deadline(
+        &self,
+        document: ResolvedConfigDocument,
+        deadline: Instant,
+    ) -> Result<GenerationCandidate, GenerationError> {
+        // The absolute deadline does not bound operation-mutex acquisition; contention here,
+        // disk-cache registry waits, and other synchronous acquisition remain unbounded startup
+        // residuals until their owning abstractions gain timed boundaries.
+        self.prepare_with_deadline_internal(document, Some(deadline))
+    }
+
+    fn prepare_with_deadline_internal(
+        &self,
+        document: ResolvedConfigDocument,
+        deadline: Option<Instant>,
     ) -> Result<GenerationCandidate, GenerationError> {
         let _operation = self
             .operations
@@ -720,22 +1121,48 @@ impl GenerationManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .active
             .as_ref()
-            .map(|generation| generation.reservations.clone());
-        let disk_revision = document.disk_revision.clone();
-        let candidate_revision = document.candidate_revision.clone();
-        let prepared = PreparedGeneration::prepare(
+            .map(|generation| generation.reservations().clone());
+        let disk_revision = document.authored_revision.clone();
+        let candidate_revision = document.effective_revision.clone();
+        let prepared = PreparedGeneration::prepare_from_with_deadline(
             document,
-            previous.as_ref(),
-            self.process.clone(),
-            ReservationPreparation::Activation,
+            ListenerSource::BindOrReuse {
+                previous: previous.as_ref(),
+                process: self.process.clone(),
+            },
+            deadline,
         )
-        .map(|prepared| Arc::new(RuntimeGeneration::activate(prepared)));
+        .and_then(|output| {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                drop(output);
+                Err(GenerationError::PreparationTimedOut)
+            } else {
+                Ok(output)
+            }
+        })
+        .map(|output| match output {
+            PreparationOutput::Prepared(prepared) => {
+                Arc::new(RuntimeGeneration::activate(prepared))
+            }
+            PreparationOutput::Validated => unreachable!("runtime preparation returned validation"),
+        });
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.disk_revision = Some(disk_revision.clone());
         match prepared {
+            Ok(_generation) if deadline.is_some_and(|deadline| Instant::now() >= deadline) => {
+                let error = GenerationError::PreparationTimedOut;
+                crate::operational_event::emit(
+                    "generation_prepare",
+                    "rejected",
+                    Some(&candidate_revision),
+                );
+                self.counters.failures.fetch_add(1, Ordering::Relaxed);
+                state.last_failure = Some(error.code());
+                Err(error)
+            }
             Ok(generation) => {
                 let candidate = GenerationCandidate {
                     generation,
@@ -759,7 +1186,9 @@ impl GenerationManager {
                     Some(&candidate_revision),
                 );
                 self.counters.failures.fetch_add(1, Ordering::Relaxed);
-                state.quarantined_revision = Some(candidate_revision);
+                if !matches!(error, GenerationError::PreparationTimedOut) {
+                    state.quarantined_revision = Some(candidate_revision);
+                }
                 state.last_failure = Some(error.code());
                 Err(error)
             }
@@ -775,8 +1204,29 @@ impl GenerationManager {
     #[cfg(target_os = "linux")]
     pub fn prepare_adopted(
         &self,
-        document: CanonicalConfigDocument,
+        document: ResolvedConfigDocument,
         descriptors: DescriptorSet,
+    ) -> Result<GenerationCandidate, GenerationError> {
+        self.prepare_adopted_with_deadline_internal(document, descriptors, None)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    pub fn prepare_adopted_with_deadline(
+        &self,
+        document: ResolvedConfigDocument,
+        descriptors: DescriptorSet,
+        deadline: Instant,
+    ) -> Result<GenerationCandidate, GenerationError> {
+        self.prepare_adopted_with_deadline_internal(document, descriptors, Some(deadline))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_adopted_with_deadline_internal(
+        &self,
+        document: ResolvedConfigDocument,
+        descriptors: DescriptorSet,
+        deadline: Option<Instant>,
     ) -> Result<GenerationCandidate, GenerationError> {
         let _operation = self
             .operations
@@ -790,17 +1240,47 @@ impl GenerationManager {
         {
             return Err(GenerationError::MutationInProgress);
         }
-        let disk_revision = document.disk_revision.clone();
-        let candidate_revision = document.candidate_revision.clone();
-        let prepared =
-            PreparedGeneration::prepare_adopted(document, descriptors, self.process.clone())
-                .map(|prepared| Arc::new(RuntimeGeneration::activate(prepared)));
+        let disk_revision = document.authored_revision.clone();
+        let candidate_revision = document.effective_revision.clone();
+        let prepared = PreparedGeneration::prepare_from_with_deadline(
+            document,
+            ListenerSource::Adopt {
+                descriptors,
+                process: self.process.clone(),
+            },
+            deadline,
+        )
+        .and_then(|output| {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                drop(output);
+                Err(GenerationError::PreparationTimedOut)
+            } else {
+                Ok(output)
+            }
+        })
+        .map(|output| match output {
+            PreparationOutput::Prepared(prepared) => {
+                Arc::new(RuntimeGeneration::activate(prepared))
+            }
+            PreparationOutput::Validated => unreachable!("runtime preparation returned validation"),
+        });
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.disk_revision = Some(disk_revision.clone());
         match prepared {
+            Ok(_generation) if deadline.is_some_and(|deadline| Instant::now() >= deadline) => {
+                let error = GenerationError::PreparationTimedOut;
+                crate::operational_event::emit(
+                    "generation_prepare",
+                    "rejected",
+                    Some(&candidate_revision),
+                );
+                self.counters.failures.fetch_add(1, Ordering::Relaxed);
+                state.last_failure = Some(error.code());
+                Err(error)
+            }
             Ok(generation) => {
                 let candidate = GenerationCandidate {
                     generation,
@@ -824,22 +1304,25 @@ impl GenerationManager {
                     Some(&candidate_revision),
                 );
                 self.counters.failures.fetch_add(1, Ordering::Relaxed);
-                state.quarantined_revision = Some(candidate_revision);
+                if !matches!(error, GenerationError::PreparationTimedOut) {
+                    state.quarantined_revision = Some(candidate_revision);
+                }
                 state.last_failure = Some(error.code());
                 Err(error)
             }
         }
     }
 
-    /// Performs the complete preparation path and releases the candidate without publishing it.
+    /// Preflights RTMP resources and performs temporary listener bind probes without publishing.
     ///
     /// # Errors
     ///
-    /// Returns the same redacted preparation errors as [`Self::prepare`]. Active and pending state
-    /// are unchanged.
+    /// Returns redacted preflight or listener-probe errors. RTMP preflight does not acquire runtime
+    /// ownership; listener probes temporarily bind sockets and release them before returning.
+    /// Active and pending state are unchanged.
     pub fn validate_candidate(
         &self,
-        document: CanonicalConfigDocument,
+        document: ResolvedConfigDocument,
     ) -> Result<(), GenerationError> {
         let previous = self
             .state
@@ -847,14 +1330,18 @@ impl GenerationManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .active
             .as_ref()
-            .map(|generation| generation.reservations.clone());
-        PreparedGeneration::prepare(
+            .map(|generation| generation.reservations().clone());
+        match PreparedGeneration::prepare_from(
             document,
-            previous.as_ref(),
-            ProcessRuntime::new(None),
-            ReservationPreparation::Validation,
-        )
-        .map(drop)
+            ListenerSource::Validate {
+                previous: previous.as_ref(),
+            },
+        )? {
+            PreparationOutput::Validated => Ok(()),
+            PreparationOutput::Prepared(_) => {
+                unreachable!("validation preparation returned a runtime generation")
+            }
+        }
     }
 
     /// Atomically publishes the prepared candidate and stops new references to the old generation.
@@ -1050,16 +1537,11 @@ impl GenerationManager {
         if let Some(previous) = state.active.replace(Arc::clone(&active)) {
             let evicted = state.previous.replace(previous);
             if let Some(evicted) = &evicted {
-                let mut cleanup = self
-                    .cleanup
+                let mut retirements = self
+                    .rtmp_retirements
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                cleanup
-                    .recorder_lifecycles
-                    .retain(|lifecycle| !lifecycle.is_complete());
-                for lifecycle in evicted.recorder_lifecycles() {
-                    push_unique_lifecycle(&mut cleanup.recorder_lifecycles, lifecycle);
-                }
+                retirements.retire(evicted.rtmp_retirement());
             }
         }
         active.start_accepting();
@@ -1134,6 +1616,12 @@ impl GenerationManager {
             return Err(GenerationError::CandidateSuperseded);
         }
         if !candidate.generation.claim_runtime_start() {
+            state.starting_candidate = None;
+            self.quarantine_locked(&mut state, candidate, "runtime_start");
+            return Err(GenerationError::RuntimePrepare);
+        }
+        if candidate.generation.start_rtmp().is_err() {
+            candidate.generation.cancel_runtime_start();
             state.starting_candidate = None;
             self.quarantine_locked(&mut state, candidate, "runtime_start");
             return Err(GenerationError::RuntimePrepare);
@@ -1236,6 +1724,20 @@ impl GenerationManager {
     ///
     /// Returns an error when no previous generation is retained.
     pub fn rollback(&self) -> Result<GenerationCandidate, GenerationError> {
+        self.rollback_with_deadline_internal(None)
+    }
+
+    pub(crate) fn rollback_with_deadline(
+        &self,
+        deadline: Instant,
+    ) -> Result<GenerationCandidate, GenerationError> {
+        self.rollback_with_deadline_internal(Some(deadline))
+    }
+
+    fn rollback_with_deadline_internal(
+        &self,
+        deadline: Option<Instant>,
+    ) -> Result<GenerationCandidate, GenerationError> {
         let _operation = self
             .operations
             .lock()
@@ -1254,31 +1756,66 @@ impl GenerationManager {
             }
             previous
         };
-        let active_reservations = previous_config.reservations.clone();
-        let document = CanonicalConfigDocument {
-            disk_revision: previous_config.revision.disk.clone(),
-            candidate_revision: previous_config.revision.candidate.clone(),
-            normalized_config: (*previous_config.config).clone(),
+        let active_reservations = previous_config.reservations().clone();
+        let document = ResolvedConfigDocument {
+            authored_revision: previous_config.revision.disk.clone(),
+            effective_revision: previous_config.revision.candidate.clone(),
+            validated_config: (*previous_config.config).clone(),
             format: ConfigFormat::Kdl,
             compositional: false,
             dependencies: Vec::new(),
             config_preview: String::new(),
             diagnostics: Vec::new(),
         };
-        let prepared = PreparedGeneration::prepare(
+        let prepared = PreparedGeneration::prepare_from_with_deadline(
             document,
-            Some(&active_reservations),
-            self.process.clone(),
-            ReservationPreparation::Activation,
-        )?;
+            ListenerSource::BindOrReuse {
+                previous: Some(&active_reservations),
+                process: self.process.clone(),
+            },
+            deadline,
+        );
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prepared = match prepared {
+            Ok(PreparationOutput::Prepared(prepared))
+                if deadline.is_some_and(|deadline| Instant::now() >= deadline) =>
+            {
+                let error = GenerationError::PreparationTimedOut;
+                drop(prepared);
+                self.counters.failures.fetch_add(1, Ordering::Relaxed);
+                state.last_failure = Some(error.code());
+                return Err(error);
+            }
+            Ok(PreparationOutput::Prepared(prepared)) => prepared,
+            Ok(PreparationOutput::Validated) => {
+                unreachable!("rollback preparation returned validation")
+            }
+            Err(error) => {
+                if !matches!(error, GenerationError::PreparationTimedOut) {
+                    state.quarantined_revision = Some(previous_config.revision.candidate.clone());
+                }
+                self.counters.failures.fetch_add(1, Ordering::Relaxed);
+                state.last_failure = Some(error.code());
+                return Err(error);
+            }
+        };
         let candidate = GenerationCandidate {
             generation: Arc::new(RuntimeGeneration::activate(prepared)),
             id: self.next_candidate_id.fetch_add(1, Ordering::Relaxed) + 1,
         };
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .candidate = Some(candidate.clone());
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            let error = GenerationError::PreparationTimedOut;
+            drop(candidate);
+            self.counters.failures.fetch_add(1, Ordering::Relaxed);
+            state.last_failure = Some(error.code());
+            return Err(error);
+        }
+        state.candidate = Some(candidate.clone());
+        state.quarantined_revision = None;
+        state.last_failure = None;
         self.counters.rollbacks.fetch_add(1, Ordering::Relaxed);
         crate::operational_event::emit(
             "generation_rollback",
@@ -1344,7 +1881,7 @@ impl GenerationManager {
             .clone()
     }
 
-    pub(crate) fn observe_disk_revision(&self, revision: ConfigRevision) {
+    pub(crate) fn observe_disk_revision(&self, revision: AuthoredRevision) {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1358,7 +1895,7 @@ impl GenerationManager {
     /// Returns an error when no generation is active or the expected revision is stale.
     pub fn begin_mutation(
         &self,
-        expected_revision: &str,
+        expected_revision: &EffectiveRevision,
     ) -> Result<GenerationMutation, GenerationError> {
         self.begin_active_mutation(Some(expected_revision))
     }
@@ -1374,7 +1911,7 @@ impl GenerationManager {
 
     fn begin_active_mutation(
         &self,
-        expected_revision: Option<&str>,
+        expected_revision: Option<&EffectiveRevision>,
     ) -> Result<GenerationMutation, GenerationError> {
         let state = self
             .state
@@ -1387,8 +1924,7 @@ impl GenerationManager {
         if state.starting_candidate.is_some() {
             return Err(GenerationError::MutationInProgress);
         }
-        if expected_revision.is_some_and(|expected| active.revision.candidate.as_str() != expected)
-        {
+        if expected_revision.is_some_and(|expected| active.revision.candidate != *expected) {
             return Err(GenerationError::RevisionConflict);
         }
         active.mutations.fetch_add(1, Ordering::AcqRel);
@@ -1418,10 +1954,9 @@ impl GenerationManager {
             drained &= generation.drain(remaining);
         }
         for shutdown in &recorder_shutdowns {
-            if !shutdown.wait_until(deadline) {
-                return false;
-            }
+            drained &= shutdown.wait_until(deadline);
         }
+        self.prune_completed();
         drained
     }
 
@@ -1439,19 +1974,29 @@ impl GenerationManager {
         deadline: Instant,
         shutdowns: &mut Vec<RtmpRecorderShutdown>,
     ) {
-        let lifecycles = {
-            let mut cleanup = self
-                .cleanup
+        let retirement_work = {
+            let mut retirements = self
+                .rtmp_retirements
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cleanup
-                .recorder_lifecycles
-                .retain(|lifecycle| !lifecycle.is_complete());
-            cleanup.recorder_lifecycles.clone()
+            retirements.prune_completed();
+            retirements.take_shutdown_work()
         };
-        for lifecycle in &lifecycles {
-            push_unique_shutdown(shutdowns, &lifecycle.initiate_shutdown(deadline));
+        for work in retirement_work {
+            let (identity, shutdown) = work.initiate(deadline);
+            self.rtmp_retirements
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .store_shutdown(&identity, shutdown.clone());
+            push_unique_shutdown(shutdowns, &shutdown);
         }
+    }
+
+    pub fn prune_completed(&self) {
+        self.rtmp_retirements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .prune_completed();
     }
 
     fn reserve_shutdown(&self) -> Vec<Arc<RuntimeGeneration>> {
@@ -1501,6 +2046,7 @@ impl GenerationManager {
 
     #[must_use]
     pub fn status(&self) -> GenerationStatus {
+        self.prune_completed();
         let state = self
             .state
             .lock()
@@ -1599,27 +2145,15 @@ fn push_unique_shutdown(
     }
 }
 
-fn push_unique_lifecycle(
-    lifecycles: &mut Vec<RtmpRecorderLifecycle>,
-    lifecycle: RtmpRecorderLifecycle,
-) {
-    if !lifecycles
-        .iter()
-        .any(|existing| existing.is_same_lifecycle(&lifecycle))
-    {
-        lifecycles.push(lifecycle);
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerationStatus {
     pub build_version: &'static str,
-    pub disk_revision: Option<ConfigRevision>,
-    pub candidate_revision: Option<ConfigRevision>,
-    pub active_revision: Option<ConfigRevision>,
-    pub previous_revision: Option<ConfigRevision>,
-    pub quarantined_revision: Option<ConfigRevision>,
+    pub disk_revision: Option<AuthoredRevision>,
+    pub candidate_revision: Option<EffectiveRevision>,
+    pub active_revision: Option<EffectiveRevision>,
+    pub previous_revision: Option<EffectiveRevision>,
+    pub quarantined_revision: Option<EffectiveRevision>,
     pub active_accepting: bool,
     pub degraded: bool,
     pub last_failure: Option<&'static str>,
@@ -1635,6 +2169,8 @@ pub enum GenerationError {
     Plan(#[source] Box<crate::ServicePlanError>),
     #[error("candidate runtime preparation failed")]
     RuntimePrepare,
+    #[error("candidate preparation exceeded its deadline")]
+    PreparationTimedOut,
     #[error("candidate listener reservation failed")]
     Listener(#[from] io::Error),
     #[error("candidate metrics preparation failed")]
@@ -1661,12 +2197,24 @@ pub enum GenerationError {
     QuarantinedRevision,
 }
 
+impl From<crate::service_plan::RtmpPreparationError> for GenerationError {
+    fn from(error: crate::service_plan::RtmpPreparationError) -> Self {
+        match error {
+            crate::service_plan::RtmpPreparationError::ServicePlan(error) => Self::Rtmp(error),
+            crate::service_plan::RtmpPreparationError::PreparationTimedOut => {
+                Self::PreparationTimedOut
+            }
+        }
+    }
+}
+
 impl GenerationError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Plan(_) => "service_plan_prepare",
             Self::RuntimePrepare => "runtime_prepare",
+            Self::PreparationTimedOut => "generation_prepare_timeout",
             Self::Listener(_) => "listener_reservation",
             Self::Metrics(_) => "metrics_prepare",
             Self::Rtmp(_) => "rtmp_prepare",
@@ -1684,7 +2232,7 @@ impl GenerationError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         fs,
         sync::{
@@ -1695,19 +2243,274 @@ mod tests {
         thread,
     };
 
-    use oxiroute_config::render_lua;
+    use oxiroute_config::{ConfigDraft, Listener, ListenerBind, Management, Protocol, Stats};
     use tempfile::TempDir;
 
     use crate::config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome};
 
     use super::*;
 
-    fn document() -> CanonicalConfigDocument {
+    fn document() -> ResolvedConfigDocument {
         document_with_max_connections(None)
     }
 
-    fn document_with_max_connections(max_connections: Option<u64>) -> CanonicalConfigDocument {
-        document_for(&Config {
+    #[test]
+    fn provisional_generation_transaction_rolls_back_in_reverse_order() {
+        let config = Arc::new(document().validated_config);
+        let inventory = ListenerInventory::compile(&config);
+        let plan = runtime_plan(&config).expect("runtime plan");
+        let mut acquired = acquire_runtime_services(&plan).expect("runtime acquisition");
+        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+        let metrics = RuntimeMetrics::new();
+        let registration = metrics
+            .register_inventory(inventory.entries())
+            .expect("listener registration");
+        let (vod_catalog, media_catalog) = acquired.take_rtmp_catalogs();
+        let rtmp = PreparedGeneration::prepare_rtmp(
+            plan.rtmp_capabilities,
+            acquired.services(),
+            vod_catalog,
+            media_catalog,
+        )
+        .expect("RTMP preparation");
+        PREPARED_TRANSACTION_ROLLBACK_TRACE.with(|trace| trace.borrow_mut().clear());
+        let transaction = PreparedGenerationTransaction {
+            drop_probes: vec![
+                PreparedTransactionDropProbe::new("plan"),
+                PreparedTransactionDropProbe::new("acquisition"),
+                PreparedTransactionDropProbe::new("reservations"),
+                PreparedTransactionDropProbe::new("listener_registration"),
+                PreparedTransactionDropProbe::new("rtmp_registry"),
+                PreparedTransactionDropProbe::new("rtmp_prepared"),
+            ],
+            reservations_precede_plan: false,
+            #[cfg(target_os = "linux")]
+            descriptors: None,
+            rtmp: Some(rtmp),
+            listener_registration: Some(registration),
+            reservations: Some(reservations),
+            acquired: Some(acquired),
+            plan: Some(plan),
+        };
+
+        drop(transaction);
+
+        assert_eq!(
+            PREPARED_TRANSACTION_ROLLBACK_TRACE.with(|trace| trace.borrow().clone()),
+            [
+                "rtmp_prepared",
+                "rtmp_registry",
+                "listener_registration",
+                "reservations",
+                "acquisition",
+                "plan",
+            ]
+        );
+    }
+
+    #[test]
+    fn every_prepared_transaction_boundary_rolls_back_completed_resources() {
+        for (fault, expected) in [
+            (
+                PreparedTransactionFault::Reservations,
+                vec!["reservations", "acquisition", "plan"],
+            ),
+            (
+                PreparedTransactionFault::ListenerRegistration,
+                vec![
+                    "listener_registration",
+                    "reservations",
+                    "acquisition",
+                    "plan",
+                ],
+            ),
+            (
+                PreparedTransactionFault::RtmpPreparation,
+                vec![
+                    "rtmp_prepared",
+                    "rtmp_registry",
+                    "listener_registration",
+                    "reservations",
+                    "acquisition",
+                    "plan",
+                ],
+            ),
+        ] {
+            PREPARED_TRANSACTION_ROLLBACK_TRACE.with(|trace| trace.borrow_mut().clear());
+            let process = ProcessRuntime::new(None);
+            let result = with_prepared_transaction_fault(fault, || {
+                PreparedGeneration::prepare_from(
+                    document(),
+                    ListenerSource::BindOrReuse {
+                        previous: None,
+                        process: process.clone(),
+                    },
+                )
+            });
+
+            assert!(result.is_err(), "{fault:?}");
+            assert_eq!(process.listener_count(), 0, "{fault:?}");
+            assert_eq!(
+                PREPARED_TRANSACTION_ROLLBACK_TRACE.with(|trace| trace.borrow().clone()),
+                expected,
+                "{fault:?}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn listener_sources_share_preparation_tail_without_validation_runtime_ownership() {
+        use oxiroute_supervision_unix::{DescriptorManifest, DescriptorSet};
+
+        let process = ProcessRuntime::new(None);
+        let normal = PreparedGeneration::prepare_from(
+            document(),
+            ListenerSource::BindOrReuse {
+                previous: None,
+                process: process.clone(),
+            },
+        )
+        .expect("normal preparation");
+        assert!(matches!(normal, PreparationOutput::Prepared(_)));
+        drop(normal);
+        assert_eq!(process.listener_count(), 0);
+
+        let validation = PreparedGeneration::prepare_from(
+            document(),
+            ListenerSource::Validate { previous: None },
+        )
+        .expect("validation preparation");
+        assert!(matches!(validation, PreparationOutput::Validated));
+
+        let manifest = DescriptorManifest::new(Vec::new()).expect("empty descriptor manifest");
+        let descriptors = DescriptorSet::new(&manifest, Vec::new()).expect("empty descriptor set");
+        let adopted = PreparedGeneration::prepare_from(
+            document(),
+            ListenerSource::Adopt {
+                descriptors,
+                process: process.clone(),
+            },
+        )
+        .expect("adopted preparation");
+        assert!(matches!(adopted, PreparationOutput::Prepared(_)));
+        drop(adopted);
+        assert_eq!(process.listener_count(), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn adopted_common_tail_faults_release_metrics_plan_and_descriptors_in_reverse_order() {
+        for (fault, expected) in [
+            (
+                PreparedTransactionFault::ListenerRegistration,
+                vec![
+                    "listener_registration",
+                    "acquisition",
+                    "plan",
+                    "reservations",
+                ],
+            ),
+            (
+                PreparedTransactionFault::RtmpPreparation,
+                vec![
+                    "rtmp_prepared",
+                    "rtmp_registry",
+                    "listener_registration",
+                    "acquisition",
+                    "plan",
+                    "reservations",
+                ],
+            ),
+        ] {
+            let root = TempDir::new().expect("adopted fault root");
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("adopted fault listener");
+            let address = listener.local_addr().expect("adopted fault address");
+            let (document, descriptors) =
+                adopted_rtmp_fixture(root.path(), address, listener, false);
+            let process = ProcessRuntime::new(None);
+            PREPARED_TRANSACTION_ROLLBACK_TRACE.with(|trace| trace.borrow_mut().clear());
+
+            let result = with_prepared_transaction_fault(fault, || {
+                PreparedGeneration::prepare_from(
+                    document,
+                    ListenerSource::Adopt {
+                        descriptors,
+                        process: process.clone(),
+                    },
+                )
+            });
+
+            assert!(result.is_err(), "{fault:?}");
+            assert_eq!(process.listener_count(), 0, "{fault:?}");
+            assert_eq!(
+                PREPARED_TRANSACTION_ROLLBACK_TRACE.with(|trace| trace.borrow().clone()),
+                expected,
+                "{fault:?}"
+            );
+            std::net::TcpListener::bind(address).expect("adopted fault released its descriptor");
+        }
+    }
+
+    #[test]
+    fn adapter_generation_handle_retains_root_and_tears_it_down_exactly_once() {
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let PreparationOutput::Prepared(mut prepared) = PreparedGeneration::prepare_from(
+            document(),
+            ListenerSource::BindOrReuse {
+                previous: None,
+                process: ProcessRuntime::new(None),
+            },
+        )
+        .expect("prepared generation") else {
+            panic!("runtime preparation returned validation");
+        };
+        prepared.resources.set_drop_probe(Arc::clone(&drops));
+        let generation = Arc::new(RuntimeGeneration::activate(prepared));
+        let adapter = Arc::clone(&generation);
+
+        drop(generation);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+
+        drop(adapter);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn plan_error_preserves_code_and_redacted_rtmp_source_chain() {
+        use std::error::Error as _;
+
+        let source = oxiroute_rtmp::RtmpServicePlan::new(
+            "streaming",
+            4_096,
+            oxiroute_rtmp::RtmpSessionLimits::default().with_max_inbound_message_size(0),
+            oxiroute_rtmp::RtmpCallbackPlan::default(),
+            [],
+            None,
+        )
+        .unwrap_err();
+        let error = GenerationError::Plan(Box::new(crate::ServicePlanError::RtmpPreparation(
+            Box::new(source),
+        )));
+
+        assert_eq!(error.code(), "service_plan_prepare");
+        assert!(error.source().is_some());
+        assert!(error.source().unwrap().source().is_some());
+        let rendered = error.to_string();
+        assert!(rendered.contains("invalid RTMP Bound at service.inbound_limits"));
+        assert!(rendered.contains("service `streaming`"));
+        for secret in [
+            "/secret/tenant/key.pem",
+            "token=super-secret",
+            "https://user:password@example.test/private",
+        ] {
+            assert!(!rendered.contains(secret));
+        }
+    }
+
+    fn document_with_max_connections(max_connections: Option<u64>) -> ResolvedConfigDocument {
+        document_for(&ConfigDraft {
             version: 1,
             max_connections,
             management: None,
@@ -1724,10 +2527,19 @@ mod tests {
         })
     }
 
-    fn document_for(config: &Config) -> CanonicalConfigDocument {
+    fn document_for(config: &ConfigDraft) -> ResolvedConfigDocument {
         let directory = TempDir::new().expect("directory");
         let path = directory.path().join("oxiroute.lua");
-        fs::write(&path, render_lua(config).expect("render")).expect("write");
+        let config = config.clone().validate().expect("valid config");
+        fs::write(
+            &path,
+            oxiroute_config_source::render_config(
+                oxiroute_config_source::ConfigFormat::Lua,
+                &config,
+            )
+            .expect("render"),
+        )
+        .expect("write");
         let ConfigLoadOutcome::Loaded(document) = CanonicalConfigCoordinator::new(path)
             .expect("coordinator")
             .load()
@@ -1735,6 +2547,848 @@ mod tests {
             panic!("load")
         };
         *document
+    }
+
+    fn colliding_listener_document() -> ResolvedConfigDocument {
+        let traffic_management = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("traffic management probe")
+            .local_addr()
+            .expect("traffic management address");
+        let traffic_stats = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("traffic stats probe")
+            .local_addr()
+            .expect("traffic stats address");
+        let management = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("management probe")
+            .local_addr()
+            .expect("management address");
+        let stats = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("stats probe")
+            .local_addr()
+            .expect("stats address");
+        let mut config: ConfigDraft = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "listeners": [],
+            "upstream_pools": [{
+                "name": "origin",
+                "endpoints": [{"type": "socket", "address": "127.0.0.1:9000"}]
+            }],
+            "l4_services": [{"name": "relay", "upstream_pool": "origin"}]
+        }))
+        .expect("collision config");
+        config.listeners = vec![
+            Listener {
+                name: "@management".into(),
+                bind: ListenerBind::Socket {
+                    address: traffic_management,
+                },
+                protocol: Protocol::Tcp,
+                service: Some("relay".into()),
+                tls_profile: None,
+                proxy_protocol: None,
+                max_connections: None,
+                downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            },
+            Listener {
+                name: "@stats-0".into(),
+                bind: ListenerBind::Socket {
+                    address: traffic_stats,
+                },
+                protocol: Protocol::Tcp,
+                service: Some("relay".into()),
+                tls_profile: None,
+                proxy_protocol: None,
+                max_connections: None,
+                downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            },
+        ];
+        config.management = Some(Management {
+            bind: management,
+            ui_dir: None,
+        });
+        config.stats = Some(Stats {
+            binds: vec![stats],
+            admin_token_file: None,
+            pages: Vec::new(),
+        });
+        document_for(&config)
+    }
+
+    fn rtmp_failure_document(root: &std::path::Path, auto_push: bool) -> ResolvedConfigDocument {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("RTMP probe")
+            .local_addr()
+            .expect("RTMP address");
+        let mut config: ConfigDraft = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "listeners": [{
+                "name": "ingest",
+                "bind": {"type": "socket", "address": listener},
+                "protocol": "rtmp",
+                "service": "live"
+            }],
+            "rtmp_services": [{
+                "name": "live",
+                "outbound_chunk_size": 4096,
+                "max_inbound_message_size": 8_388_608,
+                "ack_window_size": 5_000_000,
+                "applications": [{
+                    "name": "live",
+                    "live": true,
+                    "recorders": [{"name": "archive", "root_directory": root}]
+                }]
+            }]
+        }))
+        .expect("RTMP failure config");
+        if auto_push {
+            config.rtmp_services[0].auto_push.enabled = true;
+            config.rtmp_services[0].auto_push.socket_dir = root.join("auto-push");
+        }
+        document_for(&config)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn adopted_rtmp_fixture(
+        root: &std::path::Path,
+        address: std::net::SocketAddr,
+        listener: std::net::TcpListener,
+        auto_push: bool,
+    ) -> (ResolvedConfigDocument, DescriptorSet) {
+        use std::os::fd::OwnedFd;
+
+        use oxiroute_supervision_unix::{
+            BindIdentity, DescriptorKind, DescriptorManifest, DescriptorRole, DescriptorSlot,
+            SlotId,
+        };
+
+        let document = rtmp_failure_document_for(root, address, auto_push);
+        let manifest = DescriptorManifest::new(vec![DescriptorSlot {
+            id: SlotId(0),
+            role: DescriptorRole::Traffic("ingest".into()),
+            kind: DescriptorKind::TcpListener,
+            bind: Some(BindIdentity::Tcp(address)),
+            mode: None,
+        }])
+        .expect("RTMP descriptor manifest");
+        let descriptors = DescriptorSet::new(&manifest, vec![OwnedFd::from(listener)])
+            .expect("RTMP descriptor set");
+        (document, descriptors)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn adopted_planning_failure_fixture(
+        address: std::net::SocketAddr,
+        listener: std::net::TcpListener,
+    ) -> (ResolvedConfigDocument, DescriptorSet) {
+        use std::os::fd::OwnedFd;
+
+        use oxiroute_supervision_unix::{
+            BindIdentity, DescriptorKind, DescriptorManifest, DescriptorRole, DescriptorSlot,
+            SlotId,
+        };
+
+        let config: ConfigDraft = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "listeners": [{
+                "name": "web",
+                "bind": {"type": "socket", "address": address},
+                "protocol": "http",
+                "service": "web"
+            }],
+            "http_services": [{
+                "name": "web",
+                "routes": [{
+                    "path": {"kind": "segment_prefix", "value": "/"},
+                    "policy": {
+                        "request_buffering": true,
+                        "max_request_body_bytes": null
+                    },
+                    "action": {"type": "fixed_response", "status": 200}
+                }]
+            }]
+        }))
+        .expect("planning-failure config");
+        let manifest = DescriptorManifest::new(vec![DescriptorSlot {
+            id: SlotId(0),
+            role: DescriptorRole::Traffic("web".into()),
+            kind: DescriptorKind::TcpListener,
+            bind: Some(BindIdentity::Tcp(address)),
+            mode: None,
+        }])
+        .expect("planning-failure descriptor manifest");
+        let descriptors = DescriptorSet::new(&manifest, vec![OwnedFd::from(listener)])
+            .expect("planning-failure descriptor set");
+        (document_for(&config), descriptors)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn rtmp_failure_document_for(
+        root: &std::path::Path,
+        address: std::net::SocketAddr,
+        auto_push: bool,
+    ) -> ResolvedConfigDocument {
+        let mut config: ConfigDraft = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "listeners": [{
+                "name": "ingest",
+                "bind": {"type": "socket", "address": address},
+                "protocol": "rtmp",
+                "service": "live"
+            }],
+            "rtmp_services": [{
+                "name": "live",
+                "outbound_chunk_size": 4096,
+                "max_inbound_message_size": 8_388_608,
+                "ack_window_size": 5_000_000,
+                "applications": [{
+                    "name": "live",
+                    "live": true,
+                    "recorders": [{"name": "archive", "root_directory": root}]
+                }]
+            }]
+        }))
+        .expect("adopted RTMP config");
+        if auto_push {
+            config.rtmp_services[0].auto_push.enabled = true;
+            config.rtmp_services[0].auto_push.socket_dir = root.join("auto-push");
+        }
+        document_for(&config)
+    }
+
+    #[test]
+    fn validation_acquires_and_releases_rtmp_resources_without_starting_runtime_effects() {
+        use crate::service_plan::{reset_rtmp_stage_counts, rtmp_stage_counts};
+
+        let parent = TempDir::new().expect("stage parent");
+        let media = parent.path().join("media-do-not-create");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("RTMP listener probe");
+        let address = listener.local_addr().expect("RTMP listener address");
+        let document = document_for(
+            &serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "listeners": [{
+                    "name": "ingest",
+                    "bind": {"type": "socket", "address": address},
+                    "protocol": "rtmp",
+                    "service": "live",
+                }],
+                "rtmp_services": [{
+                    "name": "live",
+                    "applications": [{
+                        "name": "live",
+                        "live": true,
+                        "hls": {"root_directory": media},
+                    }],
+                }],
+            }))
+            .unwrap(),
+        );
+        let manager = GenerationManager::new();
+        reset_rtmp_stage_counts();
+        drop(listener);
+
+        manager
+            .validate_candidate(document_for(document.validated_config.as_draft()))
+            .expect("RTMP preflight and listener probes");
+        assert_eq!(rtmp_stage_counts(), (1, 0));
+        assert!(!media.exists(), "validation must not create the media root");
+
+        let candidate = manager.prepare(document).expect("activation preparation");
+        assert_eq!(rtmp_stage_counts(), (2, 0));
+        assert!(media.is_dir(), "activation preparation opens media roots");
+        let mut startup = manager
+            .begin_candidate_start(&candidate)
+            .expect("runtime start reservation");
+        let generation = startup.claim_runtime_start().expect("RTMP start");
+        assert_eq!(rtmp_stage_counts(), (2, 1));
+        assert!(generation.rtmp_runtime("live").is_some());
+        assert!(!generation.rtmp_auto_push_status().started);
+        assert!(matches!(
+            startup.claim_runtime_start(),
+            Err(GenerationError::CandidateSuperseded | GenerationError::RuntimePrepare)
+        ));
+        assert_eq!(rtmp_stage_counts(), (2, 1));
+    }
+
+    #[test]
+    fn candidate_failure_shutdown_releases_storage_and_allows_retry() {
+        let root = TempDir::new().expect("recording root");
+        let manager = GenerationManager::new();
+        let candidate = manager
+            .prepare(rtmp_failure_document(root.path(), false))
+            .expect("candidate preparation");
+        let mut startup = manager
+            .begin_candidate_start(&candidate)
+            .expect("runtime start reservation");
+        let generation = startup.claim_runtime_start().expect("runtime start");
+        let later = Instant::now() + Duration::from_secs(1);
+        let first = generation.initiate_recorder_shutdown(later);
+        let second = generation.initiate_recorder_shutdown(later + Duration::from_secs(1));
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert!(first[0].is_same_lifecycle(&second[0]));
+        assert!(first[0].wait_until(later));
+        drop(startup);
+        manager.quarantine(&candidate, "runtime_start");
+        drop(generation);
+        drop(candidate);
+
+        let retry = GenerationManager::new()
+            .prepare(rtmp_failure_document(root.path(), false))
+            .expect("recording ownership retry");
+        drop(retry);
+    }
+
+    #[test]
+    fn published_generation_uses_normal_shutdown() {
+        let root = TempDir::new().expect("recording root");
+        let manager = GenerationManager::new();
+        let candidate = manager
+            .prepare(rtmp_failure_document(root.path(), false))
+            .expect("candidate preparation");
+        let mut startup = manager
+            .begin_candidate_start(&candidate)
+            .expect("runtime start reservation");
+        let generation = startup.claim_runtime_start().expect("runtime start");
+        assert!(generation.mark_runtime_started());
+        startup.activate().expect("candidate publication");
+
+        assert!(manager.shutdown(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn retirement_registry_deduplicates_and_prunes_completed_lifecycles() {
+        let root = TempDir::new().expect("recording root");
+        let manager = GenerationManager::new();
+        let candidate = manager
+            .prepare(rtmp_failure_document(root.path(), false))
+            .expect("candidate preparation");
+        let mut startup = manager
+            .begin_candidate_start(&candidate)
+            .expect("runtime start reservation");
+        let generation = startup.claim_runtime_start().expect("runtime start");
+        let retirement = generation.rtmp_retirement();
+        let mut registry = RtmpRetirementRegistry::default();
+
+        registry.retire(retirement.clone());
+        registry.retire(retirement);
+        assert_eq!(registry.len(), 1);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut work = registry.take_shutdown_work();
+        assert_eq!(work.len(), 1);
+        let (identity, shutdown) = work.pop().expect("retirement work").initiate(deadline);
+        registry.store_shutdown(&identity, shutdown.clone());
+        let mut repeated_work = registry.take_shutdown_work();
+        assert_eq!(repeated_work.len(), 1);
+        let (_, repeated_shutdown) = repeated_work
+            .pop()
+            .expect("repeated retirement work")
+            .initiate(deadline);
+        assert!(shutdown.is_same_lifecycle(&repeated_shutdown));
+        assert!(shutdown.wait_until(deadline));
+        registry.prune_completed();
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn manager_shutdown_retires_evicted_lifecycles_without_process_handles() {
+        let root = TempDir::new().expect("recording root");
+        let manager = GenerationManager::new();
+        let first = manager
+            .prepare(rtmp_failure_document(root.path(), false))
+            .expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(rtmp_failure_document(root.path(), false))
+            .expect("second candidate");
+        manager.activate(&second).expect("second activation");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        drop(manager.begin_shutdown(deadline));
+        assert!(manager.shutdown(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn rtmp_services_start_in_plan_order_and_partial_failure_rolls_back_in_reverse() {
+        use crate::service_plan::{
+            reset_rtmp_stage_counts, rtmp_start_events, with_rtmp_start_failure,
+        };
+
+        let first = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("first RTMP probe")
+            .local_addr()
+            .expect("first RTMP address");
+        let second = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("second RTMP probe")
+            .local_addr()
+            .expect("second RTMP address");
+        let config: ConfigDraft = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "listeners": [
+                {
+                    "name": "first-ingest",
+                    "bind": {"type": "socket", "address": first},
+                    "protocol": "rtmp",
+                    "service": "first"
+                },
+                {
+                    "name": "second-ingest",
+                    "bind": {"type": "socket", "address": second},
+                    "protocol": "rtmp",
+                    "service": "second"
+                }
+            ],
+            "rtmp_services": [
+                {"name": "first", "applications": [{"name": "live", "live": true}]},
+                {"name": "second", "applications": [{"name": "live", "live": true}]}
+            ]
+        }))
+        .expect("ordered RTMP config");
+        let manager = GenerationManager::new();
+        reset_rtmp_stage_counts();
+        let candidate = manager
+            .prepare(document_for(&config))
+            .expect("RTMP preparation");
+        let mut startup = manager
+            .begin_candidate_start(&candidate)
+            .expect("runtime start reservation");
+
+        let result = with_rtmp_start_failure("second", || startup.claim_runtime_start());
+
+        assert!(result.is_err());
+        assert_eq!(
+            rtmp_start_events(),
+            ["start:first", "start:second", "rollback:first"]
+        );
+        assert_eq!(manager.process.listener_count(), 0);
+    }
+
+    #[test]
+    fn validation_reports_rtmp_store_and_runtime_construction_failures_without_starting() {
+        use crate::service_plan::{
+            RtmpRuntimeFault, reset_rtmp_stage_counts, rtmp_stage_counts, with_rtmp_runtime_fault,
+        };
+
+        for fault in [RtmpRuntimeFault::RecorderStore, RtmpRuntimeFault::AutoPush] {
+            let root = TempDir::new().expect("RTMP validation root");
+            let document = rtmp_failure_document(root.path(), fault == RtmpRuntimeFault::AutoPush);
+            let manager = GenerationManager::new();
+            reset_rtmp_stage_counts();
+
+            let result = with_rtmp_runtime_fault(fault, || manager.validate_candidate(document));
+
+            assert!(result.is_err(), "{fault:?} validation must fail");
+            assert_eq!(rtmp_stage_counts(), (1, 0), "{fault:?}");
+            assert_eq!(manager.process.listener_count(), 0);
+        }
+    }
+
+    #[test]
+    fn later_rtmp_failures_roll_back_process_listener_entries_and_allow_retry() {
+        use crate::service_plan::{RtmpRuntimeFault, with_rtmp_runtime_fault};
+
+        for fault in [RtmpRuntimeFault::RecorderStore, RtmpRuntimeFault::AutoPush] {
+            let root = TempDir::new().expect("recording root");
+            let process = ProcessRuntime::new(None);
+            let document = rtmp_failure_document(root.path(), fault == RtmpRuntimeFault::AutoPush);
+            let failed = with_rtmp_runtime_fault(fault, || match fault {
+                RtmpRuntimeFault::RecorderStore => PreparedGeneration::prepare_from(
+                    document,
+                    ListenerSource::BindOrReuse {
+                        previous: None,
+                        process: process.clone(),
+                    },
+                )
+                .map(drop),
+                RtmpRuntimeFault::AutoPush => {
+                    let manager = GenerationManager::new();
+                    let candidate = manager.prepare(document)?;
+                    let mut startup = manager.begin_candidate_start(&candidate)?;
+                    let result = startup.claim_runtime_start().map(drop);
+                    assert_eq!(manager.process.listener_count(), 0);
+                    result
+                }
+                RtmpRuntimeFault::None => unreachable!(),
+            });
+
+            assert!(failed.is_err());
+            assert_eq!(process.listener_count(), 0);
+
+            let retry = PreparedGeneration::prepare_from(
+                rtmp_failure_document(root.path(), fault == RtmpRuntimeFault::AutoPush),
+                ListenerSource::BindOrReuse {
+                    previous: None,
+                    process: process.clone(),
+                },
+            )
+            .expect("successful retry");
+            let PreparationOutput::Prepared(retry) = retry else {
+                panic!("runtime preparation returned validation");
+            };
+            assert_eq!(process.listener_count(), 1);
+            drop(retry);
+            assert_eq!(process.listener_count(), 0);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn adopted_rtmp_failures_roll_back_metrics_descriptors_and_recording_ownership() {
+        use crate::service_plan::{RtmpRuntimeFault, with_rtmp_runtime_fault};
+
+        for fault in [RtmpRuntimeFault::RecorderStore, RtmpRuntimeFault::AutoPush] {
+            let manager = GenerationManager::new_supervised();
+            let active_candidate = manager.prepare(document()).expect("active candidate");
+            let active = manager
+                .activate(&active_candidate)
+                .expect("active generation");
+            let active_revision = active.revision().candidate.clone();
+            let root = TempDir::new().expect("recording root");
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("adopted RTMP listener");
+            let address = listener.local_addr().expect("adopted RTMP address");
+            let (document, descriptors) = adopted_rtmp_fixture(
+                root.path(),
+                address,
+                listener,
+                fault == RtmpRuntimeFault::AutoPush,
+            );
+
+            let failed = with_rtmp_runtime_fault(fault, || match fault {
+                RtmpRuntimeFault::RecorderStore => {
+                    manager.prepare_adopted(document, descriptors).map(drop)
+                }
+                RtmpRuntimeFault::AutoPush => {
+                    let candidate = manager.prepare_adopted(document, descriptors)?;
+                    assert_eq!(manager.process.listener_count(), 1);
+                    assert!(std::net::TcpListener::bind(address).is_err());
+                    let mut startup = manager.begin_candidate_start(&candidate)?;
+                    let result = startup.claim_runtime_start().map(drop);
+                    assert!(matches!(
+                        startup.claim_runtime_start(),
+                        Err(GenerationError::CandidateSuperseded | GenerationError::RuntimePrepare)
+                    ));
+                    drop(startup);
+                    drop(candidate);
+                    result
+                }
+                RtmpRuntimeFault::None => unreachable!(),
+            });
+
+            assert!(failed.is_err());
+            assert_eq!(manager.process.listener_count(), 0);
+            assert_eq!(
+                manager.active().unwrap().revision().candidate,
+                active_revision
+            );
+
+            let retry_listener = std::net::TcpListener::bind(address)
+                .expect("failed adoption released its listener descriptor");
+            let (retry_document, retry_descriptors) = adopted_rtmp_fixture(
+                root.path(),
+                address,
+                retry_listener,
+                fault == RtmpRuntimeFault::AutoPush,
+            );
+            let retry = manager
+                .prepare_adopted(retry_document, retry_descriptors)
+                .expect("adopted RTMP retry preparation");
+            assert_eq!(manager.process.listener_count(), 1);
+            let mut startup = manager
+                .begin_candidate_start(&retry)
+                .expect("adopted RTMP retry reservation");
+            assert!(startup.claim_runtime_start().is_ok());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn adopted_planning_failure_releases_the_consumed_descriptor_once() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("adopted listener");
+        let address = listener.local_addr().expect("adopted listener address");
+        let (document, descriptors) = adopted_planning_failure_fixture(address, listener);
+        PREPARED_TRANSACTION_ROLLBACK_TRACE.with(|trace| trace.borrow_mut().clear());
+
+        let result = PreparedGeneration::prepare_from(
+            document,
+            ListenerSource::Adopt {
+                descriptors,
+                process: ProcessRuntime::new(None),
+            },
+        );
+        let Err(error) = result else {
+            panic!("runtime planning must fail after descriptor adoption");
+        };
+
+        assert!(matches!(error, GenerationError::Plan(_)));
+        assert_eq!(
+            PREPARED_TRANSACTION_ROLLBACK_TRACE.with(|trace| trace.borrow().clone()),
+            ["reservations"]
+        );
+        let rebound = std::net::TcpListener::bind(address)
+            .expect("planning failure released the adopted descriptor");
+        drop(rebound);
+    }
+
+    #[test]
+    fn generation_checks_and_listener_reservation_precede_recording_store_acquisition() {
+        use crate::service_plan::{reset_rtmp_stage_counts, rtmp_stage_counts};
+
+        let manager = GenerationManager::new();
+        let active_candidate = manager.prepare(document()).expect("active candidate");
+        let active = manager
+            .activate(&active_candidate)
+            .expect("active generation");
+        let active_revision = active.revision().candidate.clone();
+        let root = TempDir::new().expect("recording root");
+
+        let mut token_failure = rtmp_failure_document(root.path(), false)
+            .validated_config
+            .to_draft();
+        let stats_address = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("stats probe")
+            .local_addr()
+            .expect("stats address");
+        token_failure.stats = Some(Stats {
+            binds: vec![stats_address],
+            admin_token_file: Some(root.path().join("missing-token")),
+            pages: Vec::new(),
+        });
+        reset_rtmp_stage_counts();
+        assert!(manager.prepare(document_for(&token_failure)).is_err());
+        assert_eq!(rtmp_stage_counts(), (0, 0));
+        assert_eq!(
+            manager.active().unwrap().revision().candidate,
+            active_revision
+        );
+
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupied listener");
+        let mut listener_failure = rtmp_failure_document(root.path(), false)
+            .validated_config
+            .to_draft();
+        listener_failure.listeners[0].bind = ListenerBind::Socket {
+            address: occupied.local_addr().expect("occupied address"),
+        };
+        reset_rtmp_stage_counts();
+        assert!(manager.prepare(document_for(&listener_failure)).is_err());
+        assert_eq!(rtmp_stage_counts(), (0, 0));
+        assert_eq!(
+            manager.active().unwrap().revision().candidate,
+            active_revision
+        );
+    }
+
+    #[test]
+    fn expired_preparation_deadline_drops_resources_without_quarantining_revision() {
+        let manager = GenerationManager::new();
+        let prepared_document = document();
+
+        let Err(error) = manager.prepare_with_deadline(prepared_document, Instant::now()) else {
+            panic!("expired preparation deadline succeeded")
+        };
+
+        assert!(matches!(error, GenerationError::PreparationTimedOut));
+        let status = manager.status();
+        assert_eq!(status.quarantined_revision, None);
+        assert_eq!(status.last_failure, Some("generation_prepare_timeout"));
+        assert!(status.disk_revision.is_some());
+        assert!(manager.candidate().is_none());
+        assert!(manager.prepare(document()).is_ok());
+    }
+
+    #[test]
+    fn ordinary_preparation_failure_quarantines_even_after_deadline() {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupied listener");
+        let address = occupied.local_addr().expect("occupied address");
+        let mut config = document().validated_config.to_draft();
+        let service = serde_json::from_value(serde_json::json!({
+            "name": "occupied-service",
+            "routes": [{
+                "path": {"kind": "segment_prefix", "value": "/"},
+                "action": {"type": "fixed_response", "status": 200}
+            }]
+        }))
+        .expect("occupied service");
+        config.http_services.push(service);
+        config.listeners.push(oxiroute_config::Listener {
+            name: "occupied".into(),
+            bind: oxiroute_config::ListenerBind::Socket { address },
+            protocol: oxiroute_config::Protocol::Http,
+            service: Some("occupied-service".into()),
+            tls_profile: None,
+            proxy_protocol: None,
+            max_connections: None,
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        });
+        let document = document_for(&config);
+        let revision = document.effective_revision.clone();
+
+        let manager = GenerationManager::new();
+        let Err(error) = manager.prepare_with_deadline(document, Instant::now()) else {
+            panic!("occupied listener preparation succeeded")
+        };
+        assert!(matches!(error, GenerationError::Listener(_)));
+        assert_eq!(manager.status().quarantined_revision, Some(revision));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn expired_adopted_preparation_deadline_releases_adopted_descriptors() {
+        let root = TempDir::new().expect("adopted deadline root");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("adopted listener");
+        let address = listener.local_addr().expect("adopted address");
+        let (mut document, descriptors) =
+            adopted_rtmp_fixture(root.path(), address, listener, false);
+        let mut config = document.validated_config.to_draft();
+        config.rtmp_services[0].applications[0].recorders.clear();
+        document.validated_config = config.validate().expect("recording-free adopted config");
+        let manager = GenerationManager::new_supervised();
+
+        let Err(error) =
+            manager.prepare_adopted_with_deadline(document, descriptors, Instant::now())
+        else {
+            panic!("expired adopted preparation succeeded")
+        };
+
+        assert!(matches!(error, GenerationError::PreparationTimedOut));
+        assert_eq!(manager.process.listener_count(), 0);
+        assert!(manager.status().quarantined_revision.is_none());
+        std::net::TcpListener::bind(address).expect("adopted descriptor was released");
+    }
+
+    #[test]
+    fn expired_rollback_deadline_is_retryable_without_quarantine() {
+        let manager = GenerationManager::new();
+        let first = manager
+            .prepare(document_with_max_connections(Some(1)))
+            .expect("first");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second");
+        manager.activate(&second).expect("second activation");
+
+        let Err(error) = manager.rollback_with_deadline(Instant::now()) else {
+            panic!("expired rollback preparation succeeded")
+        };
+
+        assert!(matches!(error, GenerationError::PreparationTimedOut));
+        assert!(manager.candidate().is_none());
+        assert!(manager.status().quarantined_revision.is_none());
+        assert!(manager.rollback().is_ok());
+    }
+
+    #[test]
+    fn public_stats_page_name_collision_fails_before_process_registration() {
+        let mut config = colliding_listener_document().validated_config.to_draft();
+        config.listeners[0].name = "@stats-page-0".into();
+        config
+            .stats
+            .as_mut()
+            .expect("stats")
+            .pages
+            .push(oxiroute_config::StatsPage {
+                bind: std::net::TcpListener::bind("127.0.0.1:0")
+                    .unwrap()
+                    .local_addr()
+                    .unwrap(),
+                uri_prefix: "/stats".into(),
+                refresh_ms: 1_000,
+                admin: oxiroute_config::StatsPageAdminPolicy::Disabled,
+                max_connections: None,
+                downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            });
+        let process = ProcessRuntime::new(None);
+
+        assert!(matches!(
+            PreparedGeneration::prepare_from(
+                document_for(&config),
+                ListenerSource::BindOrReuse {
+                    previous: None,
+                    process: process.clone(),
+                },
+            ),
+            Err(GenerationError::Metrics(MetricsError::DuplicateListener(name)))
+                if name == "@stats-page-0"
+        ));
+        assert_eq!(process.listener_count(), 0);
+    }
+
+    #[test]
+    fn prepared_generation_uses_typed_listener_identity_for_colliding_display_names() {
+        let document = colliding_listener_document();
+        let config = Arc::new(document.validated_config);
+        let inventory = ListenerInventory::compile(&config);
+        let plan = runtime_plan(&config).expect("collision runtime plan");
+        let mut acquired = acquire_runtime_services(&plan).expect("collision runtime acquisition");
+        let rtmp_capabilities = plan.rtmp_capabilities;
+        let (vod_catalog, media_catalog) = acquired.take_rtmp_catalogs();
+        let rtmp = PreparedGeneration::prepare_rtmp(
+            rtmp_capabilities,
+            acquired.services(),
+            vod_catalog,
+            media_catalog,
+        )
+        .expect("collision RTMP preparation");
+        let reservations =
+            ListenerReservations::prepare(&config, None).expect("collision listener reservations");
+        let process = ProcessRuntime::new(None);
+        let metrics = RuntimeMetrics::for_process(process.clone());
+        let registration = metrics
+            .register_inventory(inventory.entries())
+            .expect("collision inventory registration");
+        let prepared = PreparedGeneration {
+            config,
+            inventory,
+            metrics,
+            resources: GenerationResources::commit(
+                plan,
+                acquired,
+                reservations,
+                registration,
+                rtmp,
+            ),
+            revision: GenerationRevision {
+                disk: document.authored_revision,
+                candidate: document.effective_revision,
+            },
+        };
+        let generation = RuntimeGeneration::activate(prepared);
+
+        assert_eq!(
+            generation
+                .metrics
+                .internal_listener_snapshots()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert_eq!(
+            generation
+                .traffic_listener_metrics("@management")
+                .unwrap()
+                .name(),
+            "@management"
+        );
+        assert_eq!(
+            generation.management_listener_metrics().unwrap().name(),
+            "@management"
+        );
+        assert_eq!(
+            generation
+                .traffic_listener_metrics("@stats-0")
+                .unwrap()
+                .name(),
+            "@stats-0"
+        );
+        assert_eq!(
+            generation.stats_listener_metrics(0).unwrap().name(),
+            "@stats-0"
+        );
+        assert_eq!(generation.metrics.snapshot().unwrap().listeners.len(), 2);
+        assert_eq!(process.listener_count(), 4);
     }
 
     fn claim_and_mark_runtime_started(startup: &mut GenerationStartup) -> Arc<RuntimeGeneration> {
@@ -1825,13 +3479,92 @@ mod tests {
     }
 
     #[test]
+    fn admission_claim_and_protocol_reference_have_independent_lifetimes() {
+        let manager = GenerationManager::new();
+        let candidate = manager.prepare(document()).expect("prepare");
+        let generation = manager.activate(&candidate).expect("activate");
+        let admission = generation.begin_admission().expect("admission claim");
+
+        assert_eq!(generation.active_references(RuntimeReferenceKind::Http1), 0);
+
+        let reference = generation
+            .begin_reference(RuntimeReferenceKind::Http1)
+            .expect("HTTP/1 reference");
+        drop(admission);
+
+        assert_eq!(generation.active_references(RuntimeReferenceKind::Http1), 1);
+        assert!(!generation.drain(Duration::ZERO));
+
+        drop(reference);
+        assert!(generation.drain(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn owned_reference_remains_after_acceptance_closes_for_handoff() {
+        let manager = GenerationManager::new();
+        let candidate = manager.prepare(document()).expect("prepare");
+        let generation = manager.activate(&candidate).expect("activate");
+        let reference = generation.begin_owned_reference(RuntimeReferenceKind::Http1);
+
+        generation.stop_accepting();
+
+        assert!(!generation.accepting());
+        assert_eq!(generation.active_references(RuntimeReferenceKind::Http1), 1);
+        drop(reference);
+        assert!(generation.drain(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn listener_runtime_rolls_back_generation_ownership_when_metrics_reject() {
+        let manager = GenerationManager::new();
+        let candidate = manager.prepare(document()).expect("prepare");
+        let generation = manager.activate(&candidate).expect("activate");
+        let metrics = RuntimeMetrics::with_max_connections(Some(1));
+        let listener = metrics
+            .register_listener("edge", "http", "127.0.0.1:8080", Some(1))
+            .expect("listener");
+        let held = listener.begin_connection().expect("held connection");
+        let runtime = crate::listener_runtime::ListenerRuntime::new(listener);
+
+        assert!(
+            runtime
+                .admit(&generation, RuntimeReferenceKind::Http1)
+                .is_err()
+        );
+        assert_eq!(generation.active_references(RuntimeReferenceKind::Http1), 0);
+        drop(held);
+        assert!(generation.drain(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn listener_runtime_owned_admission_does_not_recheck_a_closed_generation_gate() {
+        let manager = GenerationManager::new();
+        let candidate = manager.prepare(document()).expect("prepare");
+        let generation = manager.activate(&candidate).expect("activate");
+        let metrics = RuntimeMetrics::new();
+        let listener = metrics
+            .register_listener("edge", "http", "127.0.0.1:8080", Some(1))
+            .expect("listener");
+        let runtime = crate::listener_runtime::ListenerRuntime::new(listener);
+
+        generation.stop_accepting();
+        let lease = runtime
+            .admit_owned(&generation, RuntimeReferenceKind::Http1)
+            .expect("owned admission after gate close");
+
+        assert_eq!(generation.active_references(RuntimeReferenceKind::Http1), 1);
+        drop(lease);
+        assert!(generation.drain(Duration::from_millis(100)));
+    }
+
+    #[test]
     fn failed_listener_candidate_releases_resources_and_preserves_active_generation() {
         let manager = GenerationManager::new();
         let active_candidate = manager.prepare(document()).expect("prepare active");
         let active = manager.activate(&active_candidate).expect("activate");
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupied");
         let address = occupied.local_addr().expect("address");
-        let mut candidate = (**active.config()).clone();
+        let mut candidate = active.config().to_draft();
         candidate.listeners.push(oxiroute_config::Listener {
             name: "live".into(),
             bind: oxiroute_config::ListenerBind::Socket { address },
@@ -2179,7 +3912,7 @@ mod tests {
         drop(manager.begin_shutdown(Instant::now() + Duration::from_secs(1)));
 
         assert!(matches!(
-            manager.begin_mutation(active.revision().candidate.as_str()),
+            manager.begin_mutation(&active.revision().candidate),
             Err(GenerationError::MutationInProgress)
         ));
         assert!(matches!(
@@ -2688,7 +4421,7 @@ mod tests {
 
         manager.cancel_startup(&second, stale_token);
         assert!(matches!(
-            manager.begin_mutation(active.revision().candidate.as_str()),
+            manager.begin_mutation(&active.revision().candidate),
             Err(GenerationError::MutationInProgress)
         ));
         claim_and_mark_runtime_started(&mut current);
@@ -2718,7 +4451,7 @@ mod tests {
         let manager = GenerationManager::new();
         let first = manager.prepare(document()).expect("first candidate");
         manager.activate(&first).expect("first activation");
-        let mut second_config = (*first.generation().config).clone();
+        let mut second_config = first.generation().config.to_draft();
         second_config.max_connections = Some(2);
         let second = manager
             .prepare(document_for(&second_config))
@@ -2742,17 +4475,15 @@ mod tests {
         let manager = GenerationManager::new();
         let candidate = manager.prepare(document()).expect("candidate");
         let active = manager.activate(&candidate).expect("active");
+        let stale = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            .parse()
+            .unwrap();
 
         assert!(matches!(
-            manager
-                .begin_mutation("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+            manager.begin_mutation(&stale),
             Err(GenerationError::RevisionConflict)
         ));
-        assert!(
-            manager
-                .begin_mutation(active.revision().candidate.as_str())
-                .is_ok()
-        );
+        assert!(manager.begin_mutation(&active.revision().candidate).is_ok());
     }
 
     #[test]
@@ -2762,7 +4493,7 @@ mod tests {
         let active = manager.activate(&first).expect("active");
         let second = manager.prepare(document()).expect("second candidate");
         let mutation = manager
-            .begin_mutation(active.revision().candidate.as_str())
+            .begin_mutation(&active.revision().candidate)
             .expect("active mutation");
 
         assert!(matches!(
@@ -2775,7 +4506,7 @@ mod tests {
             .begin_candidate_start(&second)
             .expect("reserved candidate startup");
         assert!(matches!(
-            manager.begin_mutation(active.revision().candidate.as_str()),
+            manager.begin_mutation(&active.revision().candidate),
             Err(GenerationError::MutationInProgress)
         ));
         claim_and_mark_runtime_started(&mut startup);

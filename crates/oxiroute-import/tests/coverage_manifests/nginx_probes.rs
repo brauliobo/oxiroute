@@ -170,7 +170,12 @@ fn nginx_manifest_contexts_and_cross_directive_requirements_are_executable() {
 
     let defaults = import_nginx_plaintext_supported_fixture();
     assert!(!defaults.has_errors(), "{:?}", defaults.diagnostics);
-    assert!(defaults.config().is_some());
+    assert!(
+        defaults
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_some()
+    );
 
     let unequal_timeouts = import_nginx_source(
         render_nginx_fixture(standard_nginx_fixture())
@@ -181,7 +186,13 @@ fn nginx_manifest_contexts_and_cross_directive_requirements_are_executable() {
         "{:?}",
         unequal_timeouts.diagnostics
     );
-    let policy = unequal_timeouts.config().unwrap().http_services[0].routes[0].policy;
+    let policy = unequal_timeouts
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .unwrap()
+        .http_services[0]
+        .routes[0]
+        .policy;
     assert_eq!(policy.connect_timeout_ms, 15_000);
     assert_eq!(policy.read_timeout_ms, 15_000);
     assert_eq!(policy.write_timeout_ms, 16_000);
@@ -231,7 +242,10 @@ fn assert_nginx_probe(entry: &DirectiveForm, report: &NginxImportReport, label: 
     match entry.disposition {
         Disposition::Lowered => {
             assert!(
-                report.config().is_some(),
+                report
+                    .validated()
+                    .map(oxiroute_config::ValidatedConfig::as_draft)
+                    .is_some(),
                 "{} did not finalize its exact lowering probe ({label}): {:?}",
                 entry.id,
                 report.diagnostics
@@ -333,7 +347,10 @@ fn assert_stream_probe(entry: &DirectiveForm, report: &StreamImportReport, label
     match entry.disposition {
         Disposition::Lowered => {
             assert!(
-                report.config().is_some(),
+                report
+                    .validated()
+                    .map(oxiroute_config::ValidatedConfig::as_draft)
+                    .is_some(),
                 "{} did not finalize its exact stream lowering probe ({label}): {:?}",
                 entry.id,
                 report.diagnostics

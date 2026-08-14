@@ -3,52 +3,93 @@ use std::{
     fs,
     net::ToSocketAddrs,
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock, Weak},
-    time::Duration,
+    sync::{
+        Arc, Condvar, Mutex, OnceLock, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
+pub use crate::planning_errors::ServicePlanError;
+use crate::rtmp_value_mapping as rtmp_map;
 use crate::{
-    CertbotReconciler, ForwardHttp1ServicePlan, ForwardHttp2ServicePlan, HealthBuildError,
-    HealthSupervisor, L4ServicePlan, PassiveFailurePolicy, PoolError, PreparedTls, RelayPolicy,
-    RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint, TlsBuildError, TlsProfilePlan,
-    TopologySnapshot, health,
+    ForwardHttp1ServicePlan, ForwardHttp2ServicePlan, HealthSupervisor, L4ServicePlan,
+    PassiveFailurePolicy, PoolError, PreparedTls, RelayPolicy, RoundRobinPool, RouteTable,
+    RuntimeEndpoint, TlsProfilePlan, TopologySnapshot, health,
     http_action::{
-        AccessLog, FixedResponsePlan, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan,
-        ProxyPolicyPlan, RedirectPlan, RouteAccess, RoutePolicyPlan, StaticFilesPlan,
+        AccessLog, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan, ProxyPolicyPlan,
+        RouteAccess, StaticFilesPlan,
     },
     http_cache::{CachePurgeAccess, DiskBackend, HttpCacheBackend, HttpCachePlan},
     routing::RuntimeServer,
     upstream_peer::UpstreamPlan,
 };
-use http::{Method, Uri, uri::Authority};
-use oxiroute_cache::{Cache, CacheConfig, CacheTimeline, DiskCache, DiskCacheConfig};
-use oxiroute_config::{
-    CacheAuthorizationPolicy, CacheKeyComponent, CachePurgeAuthorization, CacheSetCookiePolicy,
-    CacheStore, CacheVaryPolicy, Config, DnsResolutionPolicy, HttpCachePolicy, HttpProxyPolicy,
-    HttpRoute as ConfigHttpRoute, HttpRouteAction, ListenerBind, Protocol,
-    RtmpAccessPolicy as ConfigRtmpAccessPolicy,
-    RtmpExecFilesystemPolicy as ConfigExecFilesystemPolicy, RtmpExecMode as ConfigExecMode,
-    RtmpExecNetworkPolicy as ConfigExecNetworkPolicy, RtmpExecTrigger as ConfigExecTrigger,
-    RtmpRecorderStart as ConfigRecorderStart, UdpPolicy,
+use crate::{
+    generation_compiler::GenerationCompiler,
+    planning_types::{
+        CachePolicyBlueprint, CacheStoreBlueprint, HttpActionBlueprint, HttpRouteBlueprint,
+        HttpServiceBlueprint, L4ServiceBlueprint, ListenerBlueprint, PoolBlueprint,
+        RtmpCallbackBlueprint, RtmpSpec, ServiceReference,
+    },
 };
+use http::{Method, Uri, uri::Authority};
+use oxiroute_cache::{Cache, DiskCache, DiskCacheConfig};
+use oxiroute_config::{CachePurgeAuthorization, ListenerBind, Protocol, ValidatedConfig};
 use oxiroute_rtmp::{
-    DashOutputConfig, DashSegmentNaming, ExecEnvironment, ExecFilesystemPolicy, ExecLimits,
-    ExecMode, ExecNetworkPolicy, ExecProfile, ExecTrigger, HlsFragmentNaming, HlsKeyConfig,
-    HlsOutputConfig, HlsVariant, LiveHub, LiveHubLimits, MediaApplication, MediaCatalog,
-    MediaStore, MediaStoreLimits, RecorderMediaMask, RecorderWorkerConfig, RecordingPathPolicy,
-    RecordingSegmentNaming, RecordingStore, RecordingStoreLimits, RecordingTimeBasis,
-    RecordingTimezone, RtmpAccessAction, RtmpAccessPolicy as RuntimeRtmpAccessPolicy,
-    RtmpAccessRule, RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig,
-    RtmpCallbackEndpoint, RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCapabilities,
-    RtmpClientOptions, RtmpCredential, RtmpDestinationResolver, RtmpDestinationResolverError,
-    RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget,
-    RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig, RtmpRtmpsMode,
-    RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionLimits, RtmpSessionPolicy, RtmpTokenPolicy,
-    RtmpTransport, VodApplication, VodCatalog, VodLimits, VodSourceDefinition,
+    DashOutputConfig, ExecProfile, HlsOutputConfig, LiveHub, LiveHubLimits, MediaApplication,
+    MediaCatalog, MediaStore, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore,
+    RecordingStoreLimits, RtmpAccessPolicy as RuntimeRtmpAccessPolicy,
+    RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig, RtmpCallbackEndpoint,
+    RtmpCallbackPolicy, RtmpCapabilities, RtmpClientOptions, RtmpCredential,
+    RtmpDestinationResolver, RtmpDestinationResolverError, RtmpOutboundPolicy, RtmpPullTarget,
+    RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig,
+    RtmpServicePreparation, RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionLimits,
+    RtmpSessionPolicy, VodApplication, VodCatalog,
 };
 
-static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>>>> =
-    OnceLock::new();
+enum DiskBackendRegistryEntry {
+    Opening {
+        insertion: u64,
+        config: DiskCacheConfig,
+    },
+    Ready {
+        insertion: u64,
+        config: DiskCacheConfig,
+        backend: Weak<DiskBackend>,
+    },
+}
+
+struct DiskBackendRegistry {
+    entries: Mutex<HashMap<PathBuf, DiskBackendRegistryEntry>>,
+    changed: Condvar,
+}
+
+static DISK_BACKEND_REGISTRY: OnceLock<DiskBackendRegistry> = OnceLock::new();
+static NEXT_DISK_BACKEND_INSERTION: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) struct DiskBackendRegistryLease {
+    root: PathBuf,
+    insertion: u64,
+}
+
+impl Drop for DiskBackendRegistryLease {
+    fn drop(&mut self) {
+        let Some(registry) = DISK_BACKEND_REGISTRY.get() else {
+            return;
+        };
+        let mut entries = registry
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if entries.get(&self.root).is_some_and(|entry| match entry {
+            DiskBackendRegistryEntry::Opening { insertion, .. }
+            | DiskBackendRegistryEntry::Ready { insertion, .. } => *insertion == self.insertion,
+        }) {
+            entries.remove(&self.root);
+            registry.changed.notify_all();
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ServiceSpec {
@@ -102,6 +143,23 @@ pub struct RtmpServicePlan {
     auto_push: Option<RtmpAutoPushConfig>,
 }
 
+pub(crate) struct PreparedRtmpRuntime {
+    service_id: String,
+    preparation: RtmpServicePreparation,
+}
+
+#[derive(Debug)]
+pub(crate) enum RtmpPreparationError {
+    ServicePlan(ServicePlanError),
+    PreparationTimedOut,
+}
+
+impl From<ServicePlanError> for RtmpPreparationError {
+    fn from(error: ServicePlanError) -> Self {
+        Self::ServicePlan(error)
+    }
+}
+
 impl std::fmt::Debug for RtmpServicePlan {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -139,72 +197,45 @@ impl RtmpServicePlan {
             .map_or(Ok(()), |access_log| access_log.write_rtmp(event))
     }
 
+    /// Acquires recording stores and starts this service runtime immediately.
+    ///
+    /// Generation preparation uses the staged `prepare`/`start` path instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted preparation or runtime-start error.
+    pub fn runtime(
+        &self,
+        registry: Arc<RtmpRegistry>,
+    ) -> Result<RtmpServiceRuntime, ServicePlanError> {
+        self.prepare()?.start(registry)
+    }
+
     /// Opens this service's preflighted recording stores and creates its process runtime.
     ///
     /// # Errors
     ///
     /// Returns a redacted error when a recording root cannot be opened and pinned at startup.
-    pub fn runtime(
+    pub(crate) fn prepare(&self) -> Result<PreparedRtmpRuntime, ServicePlanError> {
+        self.prepare_with_deadline(None)
+            .map_err(|error| match error {
+                RtmpPreparationError::ServicePlan(error) => error,
+                RtmpPreparationError::PreparationTimedOut => {
+                    unreachable!("unbounded RTMP preparation cannot time out")
+                }
+            })
+    }
+
+    pub(crate) fn prepare_with_deadline(
         &self,
-        registry: Arc<RtmpRegistry>,
-    ) -> Result<RtmpServiceRuntime, ServicePlanError> {
+        deadline: Option<Instant>,
+    ) -> Result<PreparedRtmpRuntime, RtmpPreparationError> {
+        #[cfg(test)]
+        RTMP_PREPARES.with(|count| count.set(count.get() + 1));
         let mut stores = HashMap::<PathBuf, RecordingStore>::new();
-        let applications =
-            self.applications
-                .iter()
-                .map(|application| {
-                    let recorders = application
-                        .recorders
-                        .iter()
-                        .map(|recorder| {
-                            let store =
-                                if let Some(store) = stores.get(&recorder.root_directory) {
-                                    store.clone()
-                                } else {
-                                    let store = RecordingStore::open(
-                                        &recorder.root_directory,
-                                        recorder.store_limits,
-                                    )
-                                    .map_err(|_| ServicePlanError::RecorderStartup {
-                                        service: self.service_id.clone(),
-                                        application: application.name.clone(),
-                                        recorder: recorder.name.clone(),
-                                    })?;
-                                    stores.insert(recorder.root_directory.clone(), store.clone());
-                                    store
-                                };
-                            Ok(RtmpRecorderPolicy::new(
-                                &recorder.name,
-                                recorder.start,
-                                store,
-                                recorder.path_policy.clone(),
-                                recorder.worker_config,
-                            ))
-                        })
-                        .collect::<Result<Vec<_>, ServicePlanError>>()?;
-                    Ok(RuntimeRtmpApplication::with_runtime(
-                        &application.name,
-                        application.live,
-                        application.idle_streams,
-                        application.hub.clone(),
-                        application.push_targets.clone(),
-                        recorders,
-                    )
-                    .with_pull_targets(application.pull_targets.clone())
-                    .with_vod(application.vod.clone())
-                    .with_media(application.media.clone())
-                    .with_exec_profiles(application.exec_profiles.clone())
-                    .with_callbacks(application.callbacks.clone())
-                    .with_authorization(
-                        application.publish_policy.clone(),
-                        application.play_policy.clone(),
-                        application.session_limits,
-                    ))
-                })
-                .collect::<Result<Vec<_>, ServicePlanError>>()?;
-        let mut runtime = RtmpServiceRuntime::new(
+        let applications = self.prepare_applications_with_deadline(deadline, &mut stores)?;
+        let mut preparation = RtmpServicePreparation::new(
             self.service_id.clone(),
-            registry,
             self.hub.clone(),
             RtmpSessionPolicy::with_session_limits(
                 applications,
@@ -214,13 +245,104 @@ impl RtmpServicePlan {
         )
         .with_callbacks(self.callbacks.clone());
         if let Some(auto_push) = self.auto_push.clone() {
-            runtime = runtime.with_auto_push(auto_push).map_err(|_| {
+            #[cfg(test)]
+            if rtmp_runtime_fault() == RtmpRuntimeFault::AutoPush {
+                return Err(RtmpPreparationError::ServicePlan(
+                    ServicePlanError::AutoPushUnavailable {
+                        service: self.service_id.clone(),
+                    },
+                ));
+            }
+            preparation = preparation.with_auto_push(auto_push).map_err(|_| {
                 ServicePlanError::AutoPushUnavailable {
                     service: self.service_id.clone(),
                 }
             })?;
         }
-        Ok(runtime)
+        Ok(PreparedRtmpRuntime {
+            service_id: self.service_id.clone(),
+            preparation,
+        })
+    }
+
+    fn prepare_applications_with_deadline(
+        &self,
+        deadline: Option<Instant>,
+        stores: &mut HashMap<PathBuf, RecordingStore>,
+    ) -> Result<Vec<RuntimeRtmpApplication>, RtmpPreparationError> {
+        self.applications
+            .iter()
+            .map(|application| {
+                let recorders = application
+                    .recorders
+                    .iter()
+                    .map(|recorder| {
+                        #[cfg(test)]
+                        if rtmp_runtime_fault() == RtmpRuntimeFault::RecorderStore {
+                            return Err(RtmpPreparationError::ServicePlan(
+                                ServicePlanError::RecorderStartup {
+                                    service: self.service_id.clone(),
+                                    application: application.name.clone(),
+                                    recorder: recorder.name.clone(),
+                                },
+                            ));
+                        }
+                        let store = if let Some(store) = stores.get(&recorder.root_directory) {
+                            store.clone()
+                        } else {
+                            let opened = RecordingStore::open_with_deadline(
+                                &recorder.root_directory,
+                                recorder.store_limits,
+                                deadline,
+                            );
+                            let store = opened.map_err(|error| {
+                                if matches!(
+                                    &error,
+                                    oxiroute_rtmp::RecordingStoreError::CreationCancelled
+                                ) && deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                                {
+                                    RtmpPreparationError::PreparationTimedOut
+                                } else {
+                                    ServicePlanError::RecorderStartup {
+                                        service: self.service_id.clone(),
+                                        application: application.name.clone(),
+                                        recorder: recorder.name.clone(),
+                                    }
+                                    .into()
+                                }
+                            })?;
+                            stores.insert(recorder.root_directory.clone(), store.clone());
+                            store
+                        };
+                        Ok(RtmpRecorderPolicy::new(
+                            &recorder.name,
+                            recorder.start,
+                            store,
+                            recorder.path_policy.clone(),
+                            recorder.worker_config,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, RtmpPreparationError>>()?;
+                Ok(RuntimeRtmpApplication::with_runtime(
+                    &application.name,
+                    application.live,
+                    application.idle_streams,
+                    application.hub.clone(),
+                    application.push_targets.clone(),
+                    recorders,
+                )
+                .with_pull_targets(application.pull_targets.clone())
+                .with_vod(application.vod.clone())
+                .with_media(application.media.clone())
+                .with_exec_profiles(application.exec_profiles.clone())
+                .with_callbacks(application.callbacks.clone())
+                .with_authorization(
+                    application.publish_policy.clone(),
+                    application.play_policy.clone(),
+                    application.session_limits,
+                ))
+            })
+            .collect()
     }
 
     #[must_use]
@@ -269,6 +391,106 @@ impl RtmpServicePlan {
     }
 }
 
+impl PreparedRtmpRuntime {
+    pub(crate) fn service_id(&self) -> &str {
+        &self.service_id
+    }
+
+    pub(crate) fn start(
+        self,
+        registry: Arc<RtmpRegistry>,
+    ) -> Result<RtmpServiceRuntime, ServicePlanError> {
+        #[cfg(test)]
+        {
+            RTMP_STARTS.with(|count| count.set(count.get() + 1));
+            RTMP_START_EVENTS.with(|events| {
+                events
+                    .borrow_mut()
+                    .push(format!("start:{}", self.service_id));
+            });
+            if RTMP_START_FAILURE
+                .with(|service| service.borrow().as_deref() == Some(&self.service_id))
+            {
+                return Err(ServicePlanError::AutoPushUnavailable {
+                    service: self.service_id,
+                });
+            }
+        }
+        self.preparation
+            .start(registry)
+            .map_err(|_| ServicePlanError::AutoPushUnavailable {
+                service: self.service_id,
+            })
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static RTMP_PREPARES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RTMP_STARTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RTMP_START_EVENTS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static RTMP_START_FAILURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_rtmp_stage_counts() {
+    RTMP_PREPARES.set(0);
+    RTMP_STARTS.set(0);
+    RTMP_START_EVENTS.with(|events| events.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn rtmp_stage_counts() -> (usize, usize) {
+    (RTMP_PREPARES.get(), RTMP_STARTS.get())
+}
+
+#[cfg(test)]
+pub(crate) fn trace_rtmp_rollback(service: &str) {
+    RTMP_START_EVENTS.with(|events| events.borrow_mut().push(format!("rollback:{service}")));
+}
+
+#[cfg(test)]
+pub(crate) fn with_rtmp_start_failure<T>(service: &str, run: impl FnOnce() -> T) -> T {
+    RTMP_START_FAILURE.with(|failure| failure.replace(Some(service.to_owned())));
+    let result = run();
+    RTMP_START_FAILURE.with(|failure| failure.replace(None));
+    result
+}
+
+#[cfg(test)]
+pub(crate) fn rtmp_start_events() -> Vec<String> {
+    RTMP_START_EVENTS.with(|events| events.borrow().clone())
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum RtmpRuntimeFault {
+    #[default]
+    None,
+    RecorderStore,
+    AutoPush,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static RTMP_RUNTIME_FAULT: std::cell::Cell<RtmpRuntimeFault> = const {
+        std::cell::Cell::new(RtmpRuntimeFault::None)
+    };
+}
+
+#[cfg(test)]
+fn rtmp_runtime_fault() -> RtmpRuntimeFault {
+    RTMP_RUNTIME_FAULT.get()
+}
+
+#[cfg(test)]
+pub(crate) fn with_rtmp_runtime_fault<T>(fault: RtmpRuntimeFault, run: impl FnOnce() -> T) -> T {
+    RTMP_RUNTIME_FAULT.replace(fault);
+    let result = run();
+    RTMP_RUNTIME_FAULT.set(RtmpRuntimeFault::None);
+    result
+}
+
 #[derive(Clone)]
 struct PreparedRtmpApplication {
     name: String,
@@ -309,6 +531,15 @@ pub struct HttpServicePlan {
 }
 
 impl HttpServicePlan {
+    pub fn upstream_pools(&self) -> impl Iterator<Item = &Arc<RoundRobinPool>> {
+        self.route_plans.values().filter_map(|route| {
+            let HttpActionPlan::Proxy(proxy) = &route.action else {
+                return None;
+            };
+            Some(proxy.pool.selector())
+        })
+    }
+
     #[cfg(test)]
     pub(crate) const fn new(
         max_request_body_bytes: Option<u64>,
@@ -397,210 +628,138 @@ impl HttpServicePlan {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ServicePlanError {
-    #[error("runtime configuration is invalid: {0}")]
-    InvalidConfig(#[source] Box<oxiroute_config::ConfigError>),
-    #[error("TLS configuration cannot be prepared: {0}")]
-    Tls(#[source] Box<TlsBuildError>),
-    #[error("HTTP/3 upstream pool `{pool}` cannot be prepared: {source}")]
-    H3Upstream {
-        pool: String,
-        source: Box<crate::H3UpstreamBuildError>,
-    },
-    #[error("upstream pool `{pool}` cannot be compiled: {source}")]
-    Pool { pool: String, source: PoolError },
-    #[error("upstream pool `{pool}` health check cannot be compiled: {source}")]
-    Health {
-        pool: String,
-        source: Box<HealthBuildError>,
-    },
-    #[error("health-enabled configurations require `runtime_plan` so probes remain active")]
-    HealthSupervisorRequired,
-    #[error("HTTP service `{service}` route {route} has invalid method `{method}`")]
-    InvalidMethod {
-        service: String,
-        route: usize,
-        method: String,
-    },
-    #[error("HTTP service `{service}` route {route} cannot be compiled: {source}")]
-    Route {
-        service: String,
-        route: usize,
-        source: RouteError,
-    },
-    #[error("HTTP service `{service}` route {route} access policy failed secure preflight")]
-    AccessPreflight { service: String, route: usize },
-    #[error("HTTP service `{service}` route {route} static root failed secure preflight")]
-    StaticPreflight { service: String, route: usize },
-    #[error("HTTP service `{service}` access log failed secure preflight")]
-    AccessLogPreflight { service: String },
-    #[error("HTTP service `{service}` route {route} references unknown pool `{pool}`")]
-    UnknownHttpPool {
-        service: String,
-        route: usize,
-        pool: String,
-    },
-    #[error(
-        "HTTP service `{service}` route {route} configures cache, but cache runtime is unavailable"
-    )]
-    CacheRuntimeUnavailable { service: String, route: usize },
-    #[error("listener `{listener}` requires a configured service")]
-    MissingListenerService { listener: String },
-    #[error("HTTP listener `{listener}` references unknown service `{service}`")]
-    UnknownHttpService { listener: String, service: String },
-    #[error("TCP listener `{listener}` references unknown service `{service}`")]
-    UnknownL4Service { listener: String, service: String },
-    #[error("UDP listener `{listener}` references unknown service `{service}`")]
-    UnknownUdpService { listener: String, service: String },
-    #[error("RTMP listener `{listener}` references unknown service `{service}`")]
-    UnknownRtmpService { listener: String, service: String },
-    #[error("forward proxy runtime is not integrated for listener `{listener}`")]
-    ForwardProxyRuntimeUnavailable { listener: String },
-    #[error("forward proxy service `{service}` failed runtime preflight: {source}")]
-    ForwardProxyPreflight {
-        service: String,
-        source: crate::forward_proxy::ForwardPlanError,
-    },
-    #[error("forward proxy listener `{listener}` references unknown service `{service}`")]
-    UnknownForwardProxyService { listener: String, service: String },
-    #[error(
-        "RTMP recorder `{recorder}` in application `{application}` of service `{service}` has an invalid runtime policy"
-    )]
-    InvalidRecorderPolicy {
-        service: String,
-        application: String,
-        recorder: String,
-    },
-    #[error(
-        "RTMP recorder `{recorder}` in application `{application}` of service `{service}` failed recording-root preflight"
-    )]
-    RecorderPreflight {
-        service: String,
-        application: String,
-        recorder: String,
-    },
-    #[error(
-        "RTMP recorder `{recorder}` in application `{application}` of service `{service}` could not start"
-    )]
-    RecorderStartup {
-        service: String,
-        application: String,
-        recorder: String,
-    },
-    #[error(
-        "RTMP exec profile `{profile}` in application `{application}` of service `{service}` has an invalid runtime policy"
-    )]
-    InvalidExecProfile {
-        service: String,
-        application: String,
-        profile: String,
-    },
-    #[error(
-        "RTMP HLS output in application `{application}` of service `{service}` failed media-root preflight"
-    )]
-    HlsPreflight {
-        service: String,
-        application: String,
-    },
-    #[error(
-        "RTMP DASH output in application `{application}` of service `{service}` failed media-root preflight"
-    )]
-    DashPreflight {
-        service: String,
-        application: String,
-    },
-    #[error("RTMP auto-push for service `{service}` is unavailable")]
-    AutoPushUnavailable { service: String },
-    #[error(
-        "RTMP push target {target} in application `{application}` of service `{service}` cannot be resolved safely"
-    )]
-    RtmpPushResolution {
-        service: String,
-        application: String,
-        target: usize,
-    },
-    #[error(
-        "RTMP push target {target} in application `{application}` of service `{service}` resolves to an active RTMP listener"
-    )]
-    RtmpPushDirectLoop {
-        service: String,
-        application: String,
-        target: usize,
-    },
-    #[error(
-        "RTMP pull target {target} in application `{application}` of service `{service}` cannot be resolved safely"
-    )]
-    RtmpPullResolution {
-        service: String,
-        application: String,
-        target: usize,
-    },
-    #[error(
-        "RTMP VOD source `{source_name}` in application `{application}` of service `{service}` failed secure preflight"
-    )]
-    RtmpVodPreflight {
-        service: String,
-        application: String,
-        source_name: String,
-    },
-    #[error("RTMP callback `{field}` in {scope} of service `{service}` failed secure preflight")]
-    RtmpCallbackPreflight {
-        service: String,
-        scope: String,
-        field: &'static str,
-    },
-    #[error("listener `{listener}` references unknown TLS profile `{profile}`")]
-    UnknownListenerTlsProfile { listener: String, profile: String },
-    #[error("{protocol:?} listener `{listener}` must not use TLS profile `{profile}`")]
-    UnexpectedListenerTlsProfile {
-        listener: String,
-        protocol: Protocol,
-        profile: String,
-    },
-    #[error("L4 service `{service}` references unknown pool `{pool}`")]
-    UnknownL4Pool { service: String, pool: String },
-    #[error("L4 service `{service}` references TLS-enabled upstream pool `{pool}`")]
-    TlsUpstreamPoolForL4Service { service: String, pool: String },
-    #[error("runtime does not yet implement canonical policy `{policy}`")]
-    RuntimePolicyUnavailable { policy: &'static str },
-}
-
 /// Compiles validated listener definitions into runtime service specifications.
 ///
 /// # Errors
 ///
 /// Returns an error when a programmatically constructed configuration contains invalid routes,
 /// pools, service references, or listener/service protocol relationships.
-pub fn service_specs(config: &Config) -> Result<Vec<ServiceSpec>, ServicePlanError> {
+pub fn service_specs(config: &ValidatedConfig) -> Result<Vec<ServiceSpec>, ServicePlanError> {
     if config
+        .as_draft()
         .upstream_pools
         .iter()
         .any(|pool| pool.health_check.is_some())
     {
         return Err(ServicePlanError::HealthSupervisorRequired);
     }
-    Ok(runtime_plan(config)?.services)
+    let plan = runtime_plan(config)?;
+    let mut acquired = acquire_runtime_services(&plan)?;
+    Ok(acquired.commit().0)
 }
 
+/// Immutable, resource-free decisions for one validated runtime generation.
 pub struct RuntimePlan {
     pub max_connections: Option<u64>,
-    pub services: Vec<ServiceSpec>,
-    pub health_supervisor: Option<HealthSupervisor>,
-    pub pools: Vec<Arc<RoundRobinPool>>,
     pub rtmp_capabilities: RtmpCapabilities,
     pub rtmp_recording_supported: bool,
-    pub rtmp_vod_catalog: Arc<VodCatalog>,
-    pub rtmp_media_catalog: Arc<MediaCatalog>,
-    pub tls: PreparedTls,
     pub topology: Arc<TopologySnapshot>,
+    source: Arc<ValidatedConfig>,
+    passive_policy: Option<PassiveFailurePolicy>,
 }
 
-impl RuntimePlan {
-    #[must_use]
-    pub fn certbot_reconcilers(&self) -> &[Arc<CertbotReconciler>] {
-        self.tls.certbot_reconcilers()
+pub(crate) struct GenerationAcquisition {
+    l4_services: Option<Vec<Arc<L4ServicePlan>>>,
+    rtmp_services: Option<Vec<Arc<RtmpServicePlan>>>,
+    forward_services: Option<Vec<Arc<ForwardHttp1ServicePlan>>>,
+    http_services: Option<Vec<Arc<HttpServicePlan>>>,
+    compiled_pools: Option<CompiledPools>,
+    services: Option<Vec<ServiceSpec>>,
+    health_supervisor: Option<HealthSupervisor>,
+    pools: Option<Vec<Arc<RoundRobinPool>>>,
+    rtmp_vod_catalog: Option<Arc<VodCatalog>>,
+    rtmp_media_catalog: Option<Arc<MediaCatalog>>,
+    tls: Option<PreparedTls>,
+}
+
+impl GenerationAcquisition {
+    fn empty() -> Self {
+        Self {
+            l4_services: None,
+            rtmp_services: None,
+            forward_services: None,
+            http_services: None,
+            compiled_pools: None,
+            services: None,
+            health_supervisor: None,
+            pools: None,
+            rtmp_vod_catalog: None,
+            rtmp_media_catalog: None,
+            tls: None,
+        }
     }
+
+    pub(crate) fn services(&self) -> &[ServiceSpec] {
+        self.services.as_deref().expect("uncommitted services")
+    }
+
+    pub(crate) fn pools(&self) -> &[Arc<RoundRobinPool>] {
+        self.pools.as_deref().unwrap_or_else(|| {
+            self.compiled_pools
+                .as_ref()
+                .expect("uncommitted pools")
+                .ordered
+                .as_slice()
+        })
+    }
+
+    pub(crate) fn tls(&self) -> &PreparedTls {
+        self.tls.as_ref().expect("uncommitted TLS")
+    }
+
+    pub(crate) fn take_rtmp_catalogs(&mut self) -> (Arc<VodCatalog>, Arc<MediaCatalog>) {
+        (
+            self.rtmp_vod_catalog
+                .take()
+                .expect("uncommitted VOD catalog"),
+            self.rtmp_media_catalog
+                .take()
+                .expect("uncommitted media catalog"),
+        )
+    }
+
+    pub(crate) fn commit(
+        &mut self,
+    ) -> (
+        Vec<ServiceSpec>,
+        Option<HealthSupervisor>,
+        Vec<Arc<RoundRobinPool>>,
+        PreparedTls,
+    ) {
+        self.l4_services.take();
+        self.rtmp_services.take();
+        self.forward_services.take();
+        self.http_services.take();
+        self.compiled_pools.take();
+        (
+            self.services.take().expect("uncommitted services"),
+            self.health_supervisor.take(),
+            self.pools.take().expect("uncommitted pools"),
+            self.tls.take().expect("uncommitted TLS"),
+        )
+    }
+}
+
+impl Drop for GenerationAcquisition {
+    fn drop(&mut self) {
+        self.services.take();
+        self.l4_services.take();
+        self.rtmp_services.take();
+        self.rtmp_media_catalog.take();
+        self.rtmp_vod_catalog.take();
+        self.forward_services.take();
+        self.http_services.take();
+        self.health_supervisor.take();
+        self.pools.take();
+        self.compiled_pools.take();
+        self.tls.take();
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum AcquisitionMode {
+    Activate,
+    Validate,
 }
 
 /// Compiles one immutable runtime generation including traffic and health services.
@@ -608,7 +767,29 @@ impl RuntimePlan {
 /// # Errors
 ///
 /// Returns an error when a pool, route, reference, or health probe cannot be compiled.
-pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
+///
+/// ```compile_fail
+/// use oxiroute_config::ConfigDraft;
+///
+/// let draft: ConfigDraft = todo!();
+/// let _ = oxiroute_server::runtime_plan(&draft);
+/// ```
+pub fn runtime_plan(config: &ValidatedConfig) -> Result<RuntimePlan, ServicePlanError> {
+    runtime_plan_with_passive_failure_policy_internal(config, None)
+}
+
+/// Validates runtime acquisitions without retaining resources, then returns the immutable plan.
+///
+/// # Errors
+///
+/// Returns an error when any runtime resource cannot be acquired safely.
+pub fn validate_runtime_plan(config: &ValidatedConfig) -> Result<RuntimePlan, ServicePlanError> {
+    let plan = runtime_plan(config)?;
+    validate_runtime_services(&plan)?;
+    Ok(plan)
+}
+
+pub(crate) fn validation_plan(config: &ValidatedConfig) -> Result<RuntimePlan, ServicePlanError> {
     runtime_plan_with_passive_failure_policy_internal(config, None)
 }
 
@@ -619,122 +800,160 @@ pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
 /// Returns an error when a pool, route, reference, or health probe cannot be compiled, including
 /// when the passive policy exceeds its runtime bounds.
 pub fn runtime_plan_with_passive_failure_policy(
-    config: &Config,
+    config: &ValidatedConfig,
     passive_policy: PassiveFailurePolicy,
 ) -> Result<RuntimePlan, ServicePlanError> {
     runtime_plan_with_passive_failure_policy_internal(config, Some(passive_policy))
 }
 
 fn runtime_plan_with_passive_failure_policy_internal(
-    config: &Config,
+    config: &ValidatedConfig,
     passive_policy: Option<PassiveFailurePolicy>,
 ) -> Result<RuntimePlan, ServicePlanError> {
-    reject_unimplemented_runtime_policies(config)?;
-    let mut config = config.clone();
-    oxiroute_config::validate_config(&mut config)
-        .map_err(|source| ServicePlanError::InvalidConfig(Box::new(source)))?;
-    let tls = crate::tls::prepare_tls(&config)
-        .map_err(|source| ServicePlanError::Tls(Box::new(source)))?;
-    let pools = compile_pools(&config, passive_policy)?;
-    let http_services = compile_http_services(&config, &pools.by_name)?;
-    let forward_services = compile_forward_proxy_services(&config)?;
-    let rtmp_services = compile_rtmp_services(&config)?;
-    let l4_services = compile_l4_services(&config, &pools.by_name)?;
-
-    let services = config
-        .listeners
-        .iter()
-        .map(|listener| {
-            compile_listener(
-                listener,
-                &http_services,
-                &forward_services,
-                &rtmp_services,
-                &l4_services,
-                tls.profiles(),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let topology = Arc::new(TopologySnapshot::compile(
-        &config,
-        &services,
-        &pools.ordered,
-    ));
-    let health_supervisor =
-        (!pools.health_groups.is_empty()).then(|| HealthSupervisor::new(pools.health_groups));
-    let mut active_rtmp_services = services.iter().filter_map(|service| match &service.kind {
-        ServiceKind::Rtmp(service) => Some(service.as_ref()),
-        ServiceKind::ForwardHttp1(_)
-        | ServiceKind::ForwardHttp2(_)
-        | ServiceKind::ForwardHttp3(_)
-        | ServiceKind::Http3(_)
-        | ServiceKind::Http(_)
-        | ServiceKind::Tcp(_)
-        | ServiceKind::Udp(_) => None,
-    });
-    let rtmp_capabilities = RtmpCapabilities {
-        live_ingest: active_rtmp_services.clone().next().is_some(),
-        manual_recording: active_rtmp_services
-            .clone()
-            .any(RtmpServicePlan::manual_recording),
-    };
-    let rtmp_recording_supported = active_rtmp_services.any(RtmpServicePlan::recording_supported);
-    let rtmp_vod_catalog = VodCatalog::from_applications(
-        rtmp_services
-            .values()
-            .flat_map(|service| service.vod_applications()),
-    );
-    let rtmp_media_catalog = MediaCatalog::merge(
-        rtmp_services
-            .values()
-            .map(|service| service.media_catalog()),
-    );
+    let blueprint = GenerationCompiler::compile(config)?;
+    if let Some(passive_policy) = passive_policy {
+        passive_policy
+            .validate()
+            .map_err(|source| ServicePlanError::Pool {
+                pool: "passive-policy-override".into(),
+                source,
+            })?;
+    }
     Ok(RuntimePlan {
-        max_connections: config.max_connections,
-        services,
-        health_supervisor,
-        pools: pools.ordered,
-        rtmp_capabilities,
-        rtmp_recording_supported,
-        rtmp_vod_catalog,
-        rtmp_media_catalog: Arc::new(rtmp_media_catalog),
-        tls,
-        topology,
+        max_connections: blueprint.max_connections,
+        rtmp_capabilities: blueprint.rtmp_capabilities,
+        rtmp_recording_supported: blueprint.rtmp_recording_supported,
+        topology: blueprint.topology,
+        source: Arc::new(config.clone()),
+        passive_policy,
     })
 }
 
+pub(crate) fn acquire_runtime_services(
+    plan: &RuntimePlan,
+) -> Result<GenerationAcquisition, ServicePlanError> {
+    acquire_runtime_services_with_mode(plan, AcquisitionMode::Activate)
+}
+
+pub(crate) fn validate_runtime_services(
+    plan: &RuntimePlan,
+) -> Result<GenerationAcquisition, ServicePlanError> {
+    acquire_runtime_services_with_mode(plan, AcquisitionMode::Validate)
+}
+
+fn acquire_runtime_services_with_mode(
+    plan: &RuntimePlan,
+    mode: AcquisitionMode,
+) -> Result<GenerationAcquisition, ServicePlanError> {
+    let blueprint = GenerationCompiler::compile(&plan.source)?;
+    let mut acquired = GenerationAcquisition::empty();
+    acquired.tls = Some(
+        crate::tls::prepare_tls_blueprint(&blueprint.tls)
+            .map_err(|source| ServicePlanError::Tls(Box::new(source)))?,
+    );
+    let pool_specs = blueprint.pool_specs?;
+    acquired.compiled_pools = Some(compile_pools(
+        &pool_specs,
+        &blueprint.protected_addresses,
+        plan.passive_policy,
+    )?);
+    let cache_specs = blueprint.cache_specs?;
+    let http_service_specs = blueprint.http_service_specs?;
+    acquired.http_services = Some(compile_http_services(
+        &http_service_specs,
+        &cache_specs,
+        &acquired
+            .compiled_pools
+            .as_ref()
+            .expect("acquired pools")
+            .plans,
+        mode,
+    )?);
+    acquired.forward_services = Some(compile_forward_proxy_services(
+        &blueprint.forward_service_specs?,
+        &cache_specs,
+        mode,
+    )?);
+    acquired.rtmp_services = Some(compile_rtmp_services(
+        &blueprint.rtmp_specs?,
+        &blueprint.rtmp_listener_addresses,
+        mode,
+    )?);
+    acquired.l4_services = Some(compile_l4_services(
+        &blueprint.l4_service_specs?,
+        &acquired
+            .compiled_pools
+            .as_ref()
+            .expect("acquired pools")
+            .plans,
+    ));
+    acquired.services = Some(
+        blueprint
+            .listener_specs?
+            .iter()
+            .map(|listener| {
+                compile_listener(
+                    listener,
+                    acquired.http_services.as_deref().expect("acquired HTTP"),
+                    acquired
+                        .forward_services
+                        .as_deref()
+                        .expect("acquired forward proxy"),
+                    acquired.rtmp_services.as_deref().expect("acquired RTMP"),
+                    acquired.l4_services.as_deref().expect("acquired L4"),
+                    acquired.tls().profiles(),
+                    &blueprint.tls,
+                )
+            })
+            .collect(),
+    );
+    let pools = acquired.compiled_pools.take().expect("acquired pools");
+    acquired.health_supervisor =
+        (!pools.health_groups.is_empty()).then(|| HealthSupervisor::new(pools.health_groups));
+    acquired.pools = Some(pools.ordered);
+    let rtmp_services = acquired.rtmp_services.as_deref().expect("acquired RTMP");
+    acquired.rtmp_vod_catalog = Some(VodCatalog::from_applications(
+        rtmp_services
+            .iter()
+            .flat_map(|service| service.vod_applications()),
+    ));
+    acquired.rtmp_media_catalog = Some(Arc::new(MediaCatalog::merge(
+        rtmp_services.iter().map(|service| service.media_catalog()),
+    )));
+    Ok(acquired)
+}
+
 fn compile_forward_proxy_services(
-    config: &Config,
-) -> Result<HashMap<String, Arc<ForwardHttp1ServicePlan>>, ServicePlanError> {
+    services: &[crate::forward_proxy::ForwardServiceBlueprint],
+    cache_specs: &[CacheStoreBlueprint],
+    mode: AcquisitionMode,
+) -> Result<Vec<Arc<ForwardHttp1ServicePlan>>, ServicePlanError> {
     let mut cache_backends = HashMap::new();
-    config
-        .forward_proxy_services
+    services
         .iter()
         .map(|service| {
-            let cache = compile_cache_policy(
+            let cache = acquire_cache_policy(
                 &service.name,
                 0,
-                service.header_policy.cache.as_deref(),
-                false,
-                &[],
-                &config.cache_stores,
+                service.cache.as_ref(),
+                cache_specs,
                 &mut cache_backends,
-                false,
+                mode,
             )?;
             let plan =
-                ForwardHttp1ServicePlan::compile_with_cache(service, cache).map_err(|source| {
+                ForwardHttp1ServicePlan::acquire(service.clone(), cache).map_err(|source| {
                     ServicePlanError::ForwardProxyPreflight {
                         service: service.name.clone(),
                         source,
                     }
                 })?;
-            Ok((service.name.clone(), Arc::new(plan)))
+            Ok(Arc::new(plan))
         })
         .collect()
 }
 
 struct CompiledPools {
-    by_name: Arc<HashMap<String, Arc<UpstreamPlan>>>,
+    plans: Vec<Arc<UpstreamPlan>>,
     health_groups: Vec<health::HealthGroup>,
     ordered: Vec<Arc<RoundRobinPool>>,
 }
@@ -744,67 +963,44 @@ struct CompiledPools {
     reason = "pool compilation performs one atomic validation and construction pass"
 )]
 fn compile_pools(
-    config: &Config,
+    pool_specs: &[PoolBlueprint],
+    protected_addresses: &Arc<[std::net::SocketAddr]>,
     passive_policy_override: Option<PassiveFailurePolicy>,
 ) -> Result<CompiledPools, ServicePlanError> {
-    let protected_addresses: Arc<[std::net::SocketAddr]> = config
-        .management
-        .iter()
-        .map(|management| management.bind)
-        .chain(config.stats.iter().flat_map(|stats| {
-            stats
-                .binds
-                .iter()
-                .copied()
-                .chain(stats.pages.iter().map(|page| page.bind))
-        }))
-        .collect();
-    let mut pools = HashMap::with_capacity(config.upstream_pools.len());
+    let mut pools = HashMap::with_capacity(pool_specs.len());
     let mut health_groups = Vec::new();
-    let mut ordered = Vec::with_capacity(config.upstream_pools.len());
-    for pool in &config.upstream_pools {
-        let passive_policy = passive_policy_override.unwrap_or_else(|| {
-            pool.passive_health
-                .as_ref()
-                .map(PassiveFailurePolicy::from_config)
-                .unwrap_or_default()
-        });
+    let mut ordered = Vec::with_capacity(pool_specs.len());
+    let mut plans = Vec::with_capacity(pool_specs.len());
+    for pool in pool_specs {
+        let passive_policy = passive_policy_override.unwrap_or(pool.passive_health);
         let servers = pool
-            .servers
+            .endpoints
             .iter()
             .map(|server| {
-                let endpoint = RuntimeEndpoint::try_from(&server.endpoint)?;
-                let pinned_addresses: Option<Arc<[std::net::SocketAddr]>> = if server.dns_resolution
-                    == DnsResolutionPolicy::Startup
-                {
-                    let oxiroute_config::UpstreamEndpoint::Dns { host, port } = &server.endpoint
-                    else {
-                        unreachable!(
-                            "configuration validation restricts startup DNS to DNS servers"
-                        );
+                let endpoint = server.endpoint.clone();
+                let pinned_addresses: Option<Arc<[std::net::SocketAddr]>> =
+                    if let Some((host, port)) = &server.startup_dns {
+                        let addresses =
+                            (host.as_str(), *port).to_socket_addrs().map_err(|error| {
+                                PoolError::StartupDns {
+                                    server: server.name.clone(),
+                                    detail: error.to_string(),
+                                }
+                            })?;
+                        Some(
+                            endpoint
+                                .order_addresses(addresses)
+                                .map_err(|error| PoolError::StartupDns {
+                                    server: server.name.clone(),
+                                    detail: error.to_string(),
+                                })?
+                                .into(),
+                        )
+                    } else {
+                        None
                     };
-                    let addresses = (host.as_str(), *port).to_socket_addrs().map_err(|error| {
-                        PoolError::StartupDns {
-                            server: server.name.clone(),
-                            detail: error.to_string(),
-                        }
-                    })?;
-                    Some(
-                        endpoint
-                            .order_addresses(addresses)
-                            .map_err(|error| PoolError::StartupDns {
-                                server: server.name.clone(),
-                                detail: error.to_string(),
-                            })?
-                            .into(),
-                    )
-                } else {
-                    None
-                };
                 let startup_addresses = match (&server.endpoint, &pinned_addresses) {
-                    (oxiroute_config::UpstreamEndpoint::Socket { address }, _) => {
-                        std::slice::from_ref(address)
-                    }
+                    (RuntimeEndpoint::Socket { address }, _) => std::slice::from_ref(address),
                     (_, Some(addresses)) => addresses.as_ref(),
                     _ => &[],
                 };
@@ -823,7 +1019,7 @@ fn compile_pools(
                     endpoint,
                     max_connections: server.max_connections,
                     pinned_addresses,
-                    protected_addresses: Arc::clone(&protected_addresses),
+                    protected_addresses: Arc::clone(protected_addresses),
                 })
             })
             .collect::<Result<Vec<_>, _>>()
@@ -831,24 +1027,25 @@ fn compile_pools(
                 pool: pool.name.clone(),
                 source,
             })?;
-        let selector = Arc::new(
-            RoundRobinPool::new_named_servers_with_policy(
-                pool.name.clone(),
-                servers,
-                pool.algorithm.clone(),
-                pool.health_check.as_ref().map(|health| health.startup),
-                pool.queue_timeout_ms.map(Duration::from_millis),
-                passive_policy,
-            )
-            .map_err(|source| ServicePlanError::Pool {
-                pool: pool.name.clone(),
-                source,
-            })?,
-        );
-        let tls = crate::tls::prepare_upstream_tls(pool)
+        let selector = Arc::new(RoundRobinPool::acquire_compiled(
+            pool.name.clone(),
+            servers,
+            pool.health.as_ref().map(|health| health.startup),
+            pool.queue_timeout,
+            passive_policy,
+            &pool.construction,
+        ));
+        let tls = pool
+            .upstream_tls
+            .as_ref()
+            .map(crate::tls::UpstreamTlsPlan::acquire)
+            .transpose()
             .map_err(|source| ServicePlanError::Tls(Box::new(source)))?
             .map(Arc::new);
-        let h3 = crate::H3UpstreamPlan::from_pool(pool)
+        let h3 = pool
+            .upstream_tls
+            .as_ref()
+            .map_or(Ok(None), crate::H3UpstreamPlan::acquire)
             .map_err(|source| ServicePlanError::H3Upstream {
                 pool: pool.name.clone(),
                 source: Box::new(source),
@@ -857,108 +1054,82 @@ fn compile_pools(
         let compiled = Arc::new(UpstreamPlan::with_http_policy(
             Arc::clone(&selector),
             tls,
-            pool.connect_timeout_ms.map(Duration::from_millis),
-            pool.server_timeout_ms.map(Duration::from_millis),
+            pool.connect_timeout,
+            pool.server_timeout,
             pool.connection_reuse,
-            pool.http_versions.min,
+            pool.min_http_version,
             h3,
         ));
-        if let Some(health_check) = &pool.health_check {
-            health_groups.push(
-                health::compile_health_group(&pool.name, &selector, health_check).map_err(
-                    |source| ServicePlanError::Health {
-                        pool: pool.name.clone(),
-                        source: Box::new(source),
-                    },
-                )?,
-            );
+        if let Some(health_check) = &pool.health {
+            health_groups.push(health::acquire_health_group(
+                &pool.name,
+                &selector,
+                health_check,
+            ));
         }
         pools.insert(pool.name.clone(), Arc::clone(&compiled));
+        plans.push(compiled);
         ordered.push(selector);
     }
     Ok(CompiledPools {
-        by_name: Arc::new(pools),
+        plans,
         health_groups,
         ordered,
     })
 }
 
 fn compile_http_services(
-    config: &Config,
-    pools: &Arc<HashMap<String, Arc<UpstreamPlan>>>,
-) -> Result<HashMap<String, Arc<HttpServicePlan>>, ServicePlanError> {
-    let mut http_services = HashMap::with_capacity(config.http_services.len());
+    services: &[HttpServiceBlueprint],
+    cache_specs: &[CacheStoreBlueprint],
+    pools: &[Arc<UpstreamPlan>],
+    mode: AcquisitionMode,
+) -> Result<Vec<Arc<HttpServicePlan>>, ServicePlanError> {
+    let mut http_services = Vec::with_capacity(services.len());
     let mut cache_backends = HashMap::new();
-    for service in &config.http_services {
-        let mut routes = Vec::with_capacity(service.routes.len());
+    for service in services {
         let mut route_plans = HashMap::with_capacity(service.routes.len());
         for (route_index, route) in service.routes.iter().enumerate() {
-            let (compiled_route, plan) = compile_http_route(
+            let plan = compile_http_route(
                 &service.name,
                 route_index,
                 route,
                 pools,
-                &config.cache_stores,
+                cache_specs,
                 &mut cache_backends,
                 service.gzip.is_some(),
+                mode,
             )?;
-            routes.push(compiled_route);
             route_plans.insert(route_index.to_string(), plan);
         }
-        http_services.insert(
-            service.name.clone(),
-            Arc::new(HttpServicePlan::with_http_policy(
-                service.automatic_response_headers,
-                service.max_request_body_bytes,
-                route_plans,
-                Duration::from_millis(service.upstream_io_timeout_ms),
-                RouteTable::new(routes),
-                service
-                    .gzip
-                    .as_ref()
-                    .map(HttpGzipPlan::compile)
-                    .map(Arc::new),
-                AccessLog::open(&service.name, service.access_log.as_ref())
-                    .map_err(|_| ServicePlanError::AccessLogPreflight {
-                        service: service.name.clone(),
-                    })?
-                    .map(Arc::new),
-            )),
-        );
+        http_services.push(Arc::new(HttpServicePlan::with_http_policy(
+            service.automatic_response_headers,
+            service.max_request_body_bytes,
+            route_plans,
+            service.upstream_io_timeout,
+            service.route_table.clone(),
+            service.gzip.clone().map(Arc::new),
+            acquire_access_log(&service.name, service.access_log.as_ref(), false, mode)?,
+        )));
     }
     Ok(http_services)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "route acquisition carries shared pools, caches, and the explicit acquisition mode"
+)]
 fn compile_http_route(
     service: &str,
     route_index: usize,
-    route: &ConfigHttpRoute,
-    pools: &Arc<HashMap<String, Arc<UpstreamPlan>>>,
-    cache_stores: &[CacheStore],
+    route: &HttpRouteBlueprint,
+    pools: &[Arc<UpstreamPlan>],
+    cache_stores: &[CacheStoreBlueprint],
     cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
-    has_gzip: bool,
-) -> Result<(Route, Arc<HttpRoutePlan>), ServicePlanError> {
-    let methods = if route.methods.is_empty() {
-        None
-    } else {
-        Some(
-            route
-                .methods
-                .iter()
-                .map(|method| {
-                    method
-                        .parse::<Method>()
-                        .map_err(|_| ServicePlanError::InvalidMethod {
-                            service: service.to_owned(),
-                            route: route_index,
-                            method: method.clone(),
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        )
-    };
+    _has_gzip: bool,
+    mode: AcquisitionMode,
+) -> Result<Arc<HttpRoutePlan>, ServicePlanError> {
     let access = route
-        .access_policy
+        .access
         .as_ref()
         .map(RouteAccess::load)
         .transpose()
@@ -967,105 +1138,276 @@ fn compile_http_route(
             route: route_index,
         })?;
     let action = match &route.action {
-        HttpRouteAction::Proxy {
-            upstream_pool,
+        HttpActionBlueprint::Proxy {
+            pool,
             policy,
+            cache,
         } => compile_proxy_action(
             service,
             route_index,
-            upstream_pool,
+            *pool,
             policy,
-            route.access_policy.is_some(),
+            cache.as_ref(),
             pools,
             cache_stores,
             cache_backends,
-            has_gzip,
+            mode,
         )?,
-        HttpRouteAction::FixedResponse {
-            status,
-            body,
-            headers,
-        } => HttpActionPlan::Fixed(FixedResponsePlan::compile(*status, body, headers)),
-        HttpRouteAction::Redirect {
-            status,
-            location,
-            headers,
-        } => HttpActionPlan::Redirect(RedirectPlan::compile(*status, location, headers)),
-        action @ HttpRouteAction::StaticFiles { .. } => HttpActionPlan::Static(
-            StaticFilesPlan::open(http_path_value(&route.path), action).map_err(|_| {
+        HttpActionBlueprint::Fixed(plan) => HttpActionPlan::Fixed(plan.clone()),
+        HttpActionBlueprint::Redirect(plan) => HttpActionPlan::Redirect(plan.clone()),
+        HttpActionBlueprint::Static(action) => {
+            HttpActionPlan::Static(StaticFilesPlan::acquire(action).map_err(|_| {
                 ServicePlanError::StaticPreflight {
                     service: service.to_owned(),
                     route: route_index,
                 }
-            })?,
-        ),
+            })?)
+        }
     };
-    let route_id = route_index.to_string();
-    let compiled_route = Route::new(
-        route.host.clone(),
-        route.path.clone(),
-        methods,
-        route_id.clone(),
-    )
-    .map_err(|source| ServicePlanError::Route {
-        service: service.to_owned(),
-        route: route_index,
-        source,
-    })?;
+    let route_id = route.route.route_id().to_owned();
     let plan = Arc::new(HttpRoutePlan {
         access,
         action,
-        policy: RoutePolicyPlan::compile(route.policy),
+        policy: route.policy,
         route_id,
     });
-    Ok((compiled_route, plan))
+    Ok(plan)
 }
 
-fn http_path_value(path: &oxiroute_config::HttpPathSelector) -> &str {
-    match path {
-        oxiroute_config::HttpPathSelector::SegmentPrefix { value }
-        | oxiroute_config::HttpPathSelector::RawPrefix { value }
-        | oxiroute_config::HttpPathSelector::Exact { value }
-        | oxiroute_config::HttpPathSelector::AsciiCaseInsensitiveExact { value } => value,
-    }
-}
-
-fn reject_unimplemented_runtime_policies(config: &Config) -> Result<(), ServicePlanError> {
-    let unavailable = |policy| ServicePlanError::RuntimePolicyUnavailable { policy };
-    for service in &config.http_services {
-        for route in &service.routes {
-            if route.policy.response_buffering && route.policy.max_request_body_bytes.is_none() {
-                return Err(unavailable(
-                    "http_services[].routes[].policy.unbounded_response_buffering",
-                ));
-            }
-            if route.policy.request_buffering && route.policy.max_request_body_bytes.is_none() {
-                return Err(unavailable(
-                    "http_services[].routes[].policy.unbounded_request_buffering",
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
+#[expect(
+    clippy::too_many_lines,
+    reason = "the token-CAS loop keeps one registry transition state machine auditable"
+)]
 fn open_shared_disk_backend(
     root: &std::path::Path,
-    config: DiskCacheConfig,
+    config: &DiskCacheConfig,
 ) -> Result<Arc<DiskBackend>, ()> {
-    let registry = DISK_BACKEND_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut registry = registry
+    let registry = DISK_BACKEND_REGISTRY.get_or_init(|| DiskBackendRegistry {
+        entries: Mutex::new(HashMap::new()),
+        changed: Condvar::new(),
+    });
+    loop {
+        let snapshot = {
+            let mut entries = registry
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            loop {
+                match entries.get(root) {
+                    Some(DiskBackendRegistryEntry::Opening {
+                        insertion,
+                        config: opening_config,
+                    }) => {
+                        if opening_config != config {
+                            return Err(());
+                        }
+                        let observed = *insertion;
+                        entries = registry
+                            .changed
+                            .wait_while(entries, |entries| {
+                                entries.get(root).is_some_and(|entry| {
+                                    matches!(
+                                        entry,
+                                        DiskBackendRegistryEntry::Opening { insertion, .. }
+                                            if *insertion == observed
+                                    )
+                                })
+                            })
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    }
+                    Some(DiskBackendRegistryEntry::Ready {
+                        insertion,
+                        config: existing_config,
+                        backend,
+                    }) => {
+                        break Some((*insertion, existing_config.clone(), backend.clone()));
+                    }
+                    None => {
+                        let insertion = NEXT_DISK_BACKEND_INSERTION.fetch_add(1, Ordering::Relaxed);
+                        entries.insert(
+                            root.to_owned(),
+                            DiskBackendRegistryEntry::Opening {
+                                insertion,
+                                config: config.clone(),
+                            },
+                        );
+                        break None;
+                    }
+                }
+            }
+        };
+
+        if let Some((insertion, existing_config, backend)) = snapshot {
+            #[cfg(test)]
+            run_disk_registry_snapshot_hook(root);
+            let existing = backend.upgrade();
+            if let Some(existing) = existing {
+                return (&existing_config == config).then_some(existing).ok_or(());
+            }
+            let mut entries = registry
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if entries.get(root).is_some_and(|entry| {
+                matches!(
+                    entry,
+                    DiskBackendRegistryEntry::Ready {
+                        insertion: current,
+                        ..
+                    } if *current == insertion
+                )
+            }) {
+                entries.remove(root);
+                registry.changed.notify_all();
+            }
+            continue;
+        }
+
+        let insertion = {
+            let entries = registry
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match entries.get(root) {
+                Some(DiskBackendRegistryEntry::Opening { insertion, .. }) => *insertion,
+                Some(DiskBackendRegistryEntry::Ready { .. }) | None => continue,
+            }
+        };
+        let Ok(cache) = DiskCache::open(root, config.clone()) else {
+            remove_disk_registry_opening(registry, root, insertion);
+            return Err(());
+        };
+        let cache = Arc::new(cache);
+        let backend = Arc::new(DiskBackend::new(
+            cache,
+            DiskBackendRegistryLease {
+                root: root.to_owned(),
+                insertion,
+            },
+        ));
+        let mut entries = registry
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owns_opening = entries.get(root).is_some_and(|entry| {
+            matches!(
+                entry,
+                DiskBackendRegistryEntry::Opening {
+                    insertion: current,
+                    ..
+                } if *current == insertion
+            )
+        });
+        if owns_opening {
+            entries.insert(
+                root.to_owned(),
+                DiskBackendRegistryEntry::Ready {
+                    insertion,
+                    config: config.clone(),
+                    backend: Arc::downgrade(&backend),
+                },
+            );
+            registry.changed.notify_all();
+            drop(entries);
+            return Ok(backend);
+        }
+        drop(entries);
+        drop(backend);
+    }
+}
+
+fn remove_disk_registry_opening(
+    registry: &DiskBackendRegistry,
+    root: &std::path::Path,
+    insertion: u64,
+) {
+    let mut entries = registry
+        .entries
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(existing) = registry.get(root).and_then(Weak::upgrade) {
-        return (existing.disk_config() == &config)
-            .then_some(existing)
-            .ok_or(());
+    if entries.get(root).is_some_and(|entry| {
+        matches!(
+            entry,
+            DiskBackendRegistryEntry::Opening {
+                insertion: current,
+                ..
+            } if *current == insertion
+        )
+    }) {
+        entries.remove(root);
+        registry.changed.notify_all();
     }
-    let cache = Arc::new(DiskCache::open(root, config).map_err(|_| ())?);
-    let backend = Arc::new(DiskBackend::new(cache));
-    registry.insert(root.to_owned(), Arc::downgrade(&backend));
-    Ok(backend)
+}
+
+#[cfg(test)]
+struct DiskRegistrySnapshotHook {
+    root: PathBuf,
+    reached: Arc<std::sync::Barrier>,
+    release: Arc<std::sync::Barrier>,
+}
+
+#[cfg(test)]
+static DISK_REGISTRY_SNAPSHOT_HOOK: Mutex<Option<Arc<DiskRegistrySnapshotHook>>> = Mutex::new(None);
+
+#[cfg(test)]
+fn run_disk_registry_snapshot_hook(root: &std::path::Path) {
+    let hook = DISK_REGISTRY_SNAPSHOT_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|hook| hook.root == root)
+        .cloned();
+    if let Some(hook) = hook {
+        hook.reached.wait();
+        hook.release.wait();
+    }
+}
+
+#[cfg(test)]
+struct DiskRegistrySnapshotHookGuard;
+
+#[cfg(test)]
+impl Drop for DiskRegistrySnapshotHookGuard {
+    fn drop(&mut self) {
+        DISK_REGISTRY_SNAPSHOT_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+}
+
+#[cfg(test)]
+fn install_disk_registry_snapshot_hook(
+    root: PathBuf,
+) -> (
+    DiskRegistrySnapshotHookGuard,
+    Arc<std::sync::Barrier>,
+    Arc<std::sync::Barrier>,
+) {
+    let reached = Arc::new(std::sync::Barrier::new(2));
+    let release = Arc::new(std::sync::Barrier::new(2));
+    let hook = Arc::new(DiskRegistrySnapshotHook {
+        root,
+        reached: Arc::clone(&reached),
+        release: Arc::clone(&release),
+    });
+    let replaced = DISK_REGISTRY_SNAPSHOT_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replace(hook);
+    assert!(replaced.is_none(), "disk registry hook already installed");
+    (DiskRegistrySnapshotHookGuard, reached, release)
+}
+
+#[cfg(test)]
+pub(crate) fn disk_backend_registry_contains(root: &std::path::Path) -> bool {
+    DISK_BACKEND_REGISTRY.get().is_some_and(|registry| {
+        registry
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(root)
+    })
 }
 
 #[expect(
@@ -1075,263 +1417,66 @@ fn open_shared_disk_backend(
 fn compile_proxy_action(
     service: &str,
     route: usize,
-    upstream_pool: &str,
-    policy: &HttpProxyPolicy,
-    has_access_policy: bool,
-    pools: &HashMap<String, Arc<UpstreamPlan>>,
-    cache_stores: &[CacheStore],
+    pool_index: usize,
+    policy: &ProxyPolicyPlan,
+    cache: Option<&CachePolicyBlueprint>,
+    pools: &[Arc<UpstreamPlan>],
+    cache_stores: &[CacheStoreBlueprint],
     cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
-    has_gzip: bool,
+    mode: AcquisitionMode,
 ) -> Result<HttpActionPlan, ServicePlanError> {
-    let pool = pools
-        .get(upstream_pool)
-        .ok_or_else(|| ServicePlanError::UnknownHttpPool {
-            service: service.into(),
-            route,
-            pool: upstream_pool.into(),
-        })?;
-    let cache = compile_cache_policy(
-        service,
-        route,
-        policy.cache.as_deref(),
-        has_access_policy,
-        &policy.request_headers,
-        cache_stores,
-        cache_backends,
-        has_gzip,
-    )?;
+    let pool = &pools[pool_index];
+    let cache = acquire_cache_policy(service, route, cache, cache_stores, cache_backends, mode)?;
     Ok(HttpActionPlan::Proxy(ProxyActionPlan {
         pool: Arc::clone(pool),
-        policy: ProxyPolicyPlan::compile_with_cache(policy, cache),
+        policy: policy.clone_with_cache(cache),
     }))
 }
 
 #[allow(clippy::too_many_arguments)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "supported cache policy checks and runtime construction stay fail-closed together"
-)]
-fn compile_cache_policy(
+fn acquire_cache_policy(
     service: &str,
     route: usize,
-    policy: Option<&HttpCachePolicy>,
-    has_access_policy: bool,
-    request_headers: &[oxiroute_config::HttpRequestHeaderMutation],
-    stores: &[CacheStore],
+    policy: Option<&CachePolicyBlueprint>,
+    stores: &[CacheStoreBlueprint],
     cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
-    has_gzip: bool,
+    mode: AcquisitionMode,
 ) -> Result<Option<Arc<HttpCachePlan>>, ServicePlanError> {
     let Some(policy) = policy else {
         return Ok(None);
     };
     let unavailable = |name| ServicePlanError::RuntimePolicyUnavailable { policy: name };
-    if has_access_policy {
-        return Err(unavailable(
-            "http_services[].routes[].access_policy_with_cache",
-        ));
-    }
-    if has_gzip {
-        return Err(unavailable("http_services[].gzip_with_cache"));
-    }
-    if !request_headers.is_empty() {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.request_headers_with_cache",
-        ));
-    }
-    if policy.key_components.as_slice()
-        != [
-            CacheKeyComponent::Scheme,
-            CacheKeyComponent::NormalizedHost,
-            CacheKeyComponent::PathAndQuery,
-        ]
-    {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.cache.key_components",
-        ));
-    }
-    if !policy.bypass_request.is_empty() {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.cache.bypass_request",
-        ));
-    }
-    if !policy.no_store_request.is_empty() {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.cache.no_store_request",
-        ));
-    }
-    if !policy.no_store_response.is_empty() {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.cache.no_store_response",
-        ));
-    }
-    if policy.set_cookie_policy != CacheSetCookiePolicy::Bypass {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.cache.set_cookie_policy",
-        ));
-    }
-    if policy.authorization_policy != CacheAuthorizationPolicy::Bypass {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.cache.authorization_policy",
-        ));
-    }
-    if policy.vary_policy != CacheVaryPolicy::Respect {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.cache.vary_policy",
-        ));
-    }
-    if !policy.stale_on.is_empty() {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.cache.stale_on",
-        ));
-    }
-    if !policy.collapsed_forwarding {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.cache.collapsed_forwarding",
-        ));
-    }
-    let cache = if let Some(cache) = cache_backends.get(&policy.store) {
+    let store_name = stores[policy.store].name();
+    let cache = if let Some(cache) = cache_backends.get(store_name) {
         Arc::clone(cache)
     } else {
-        let store = stores.iter().find(|store| match store {
-            CacheStore::Memory { name, .. } | CacheStore::Disk { name, .. } => {
-                name == &policy.store
-            }
-        });
-        let Some(store) = store else {
-            return Err(ServicePlanError::CacheRuntimeUnavailable {
-                service: service.into(),
-                route,
-            });
-        };
-        let to_usize = |value: u64| usize::try_from(value).map_err(|_| unavailable("cache bounds"));
-        let make_memory_config = |max_bytes: u64,
-                                  max_entries: u64,
-                                  max_object_bytes: u64,
-                                  max_header_bytes: u64,
-                                  max_key_bytes: u64,
-                                  max_tag_bytes: u64,
-                                  max_tags_per_object: u64,
-                                  max_in_flight_fills: u64,
-                                  max_followers_per_fill: u64|
-         -> Result<CacheConfig, ServicePlanError> {
-            Ok(CacheConfig {
-                max_entries: to_usize(max_entries)?,
-                max_total_bytes: to_usize(max_bytes)?,
-                max_object_bytes: to_usize(max_object_bytes)?,
-                max_header_bytes: to_usize(max_header_bytes)?,
-                max_header_fields: 256,
-                max_body_bytes: to_usize(max_object_bytes)?,
-                max_key_bytes: to_usize(max_key_bytes)?,
-                max_vary_fields: 32,
-                max_tags_per_entry: to_usize(max_tags_per_object)?,
-                max_tag_bytes: to_usize(max_tag_bytes)?,
-                max_in_flight: to_usize(max_in_flight_fills)?,
-                max_followers_per_fill: to_usize(max_followers_per_fill)?,
-                max_heuristic_freshness: Duration::from_hours(24),
-            })
-        };
-        let cache = match store {
-            CacheStore::Memory {
-                max_bytes,
-                max_entries,
-                max_object_bytes,
-                max_header_bytes,
-                max_key_bytes,
-                max_tag_bytes,
-                max_tags_per_object,
-                max_in_flight_fills,
-                max_followers_per_fill,
-                ..
-            } => {
-                let cache_config = make_memory_config(
-                    *max_bytes,
-                    *max_entries,
-                    *max_object_bytes,
-                    *max_header_bytes,
-                    *max_key_bytes,
-                    *max_tag_bytes,
-                    *max_tags_per_object,
-                    *max_in_flight_fills,
-                    *max_followers_per_fill,
-                )?;
-                Arc::new(HttpCacheBackend::Memory(Arc::new(
-                    Cache::new(cache_config).map_err(|_| {
-                        unavailable("http_services[].routes[].action.policy.cache.memory")
-                    })?,
-                )))
-            }
-            CacheStore::Disk {
-                root_directory,
-                max_bytes,
-                max_files,
-                max_object_bytes,
-                max_header_bytes,
-                max_key_bytes,
-                max_tag_bytes,
-                max_tags_per_object,
-                max_in_flight_fills,
-                max_followers_per_fill,
-                ..
-            } => {
-                let memory = make_memory_config(
-                    *max_bytes,
-                    *max_files,
-                    *max_object_bytes,
-                    *max_header_bytes,
-                    *max_key_bytes,
-                    *max_tag_bytes,
-                    *max_tags_per_object,
-                    *max_in_flight_fills,
-                    *max_followers_per_fill,
-                )?;
-                let disk_config = DiskCacheConfig {
-                    memory,
-                    max_disk_bytes: *max_bytes,
-                    max_disk_files: to_usize(*max_files)?,
-                    max_record_bytes: to_usize(*max_bytes)?,
-                };
-                let backend =
-                    open_shared_disk_backend(root_directory, disk_config).map_err(|()| {
+        let cache = match &stores[policy.store] {
+            CacheStoreBlueprint::Memory { config, .. } => Arc::new(HttpCacheBackend::Memory(
+                Arc::new(Cache::new(config.clone()).map_err(|_| {
+                    unavailable("http_services[].routes[].action.policy.cache.memory")
+                })?),
+            )),
+            CacheStoreBlueprint::Disk { root, config, .. } => {
+                if mode == AcquisitionMode::Validate {
+                    DiskCache::validate(root, config).map_err(|_| {
                         unavailable("http_services[].routes[].action.policy.cache.disk")
                     })?;
-                Arc::new(HttpCacheBackend::Disk(backend))
+                    Arc::new(HttpCacheBackend::Memory(Arc::new(
+                        Cache::new(config.memory.clone()).map_err(|_| {
+                            unavailable("http_services[].routes[].action.policy.cache.memory")
+                        })?,
+                    )))
+                } else {
+                    let backend = open_shared_disk_backend(root, config).map_err(|()| {
+                        unavailable("http_services[].routes[].action.policy.cache.disk")
+                    })?;
+                    Arc::new(HttpCacheBackend::Disk(backend))
+                }
             }
         };
-        cache_backends.insert(policy.store.clone(), Arc::clone(&cache));
+        cache_backends.insert(store_name.to_owned(), Arc::clone(&cache));
         cache
     };
-    let timeline = CacheTimeline::new(
-        policy.use_origin_cache_control,
-        Duration::from_millis(policy.default_ttl_ms),
-        policy.status_ttls.iter().map(|status_ttl| {
-            (
-                http::StatusCode::from_u16(status_ttl.status).expect("validated cache status TTL"),
-                Duration::from_millis(status_ttl.ttl_ms),
-            )
-        }),
-        Duration::from_millis(policy.grace_ms),
-        Duration::from_millis(policy.keep_ms),
-    )
-    .map_err(|_| unavailable("http_services[].routes[].action.policy.cache.timeline"))?;
-    let methods = policy
-        .methods
-        .iter()
-        .map(|method| method.parse::<Method>().expect("validated cache method"))
-        .collect();
-    let surrogate_header = policy.surrogate_tags.as_ref().map(|tags| {
-        http::HeaderName::from_bytes(tags.response_header.as_bytes())
-            .expect("validated cache surrogate header")
-    });
-    let surrogate_limits = policy
-        .surrogate_tags
-        .as_ref()
-        .map(|tags| {
-            Ok::<_, ServicePlanError>((
-                usize::try_from(tags.max_tags).map_err(|_| unavailable("cache tag bounds"))?,
-                usize::try_from(tags.max_tag_bytes).map_err(|_| unavailable("cache tag bounds"))?,
-            ))
-        })
-        .transpose()?;
     let purge_access = policy
         .purge_authorization
         .as_ref()
@@ -1348,136 +1493,81 @@ fn compile_cache_policy(
         .transpose()?;
     Ok(Some(Arc::new(HttpCachePlan {
         cache,
-        timeline,
-        methods,
+        timeline: policy.timeline.clone(),
+        methods: policy.methods.clone(),
         revalidate: policy.revalidate,
-        surrogate_header,
-        surrogate_limits,
+        surrogate_header: policy.surrogate_header.clone(),
+        surrogate_limits: policy.surrogate_limits,
         purge_access,
     })))
 }
 
 fn compile_l4_services(
-    config: &Config,
-    pools: &Arc<HashMap<String, Arc<UpstreamPlan>>>,
-) -> Result<HashMap<String, Arc<L4ServicePlan>>, ServicePlanError> {
-    let mut l4_services = HashMap::with_capacity(config.l4_services.len());
-    for service in &config.l4_services {
-        let Some(pool) = pools.get(&service.upstream_pool) else {
-            return Err(ServicePlanError::UnknownL4Pool {
-                service: service.name.clone(),
-                pool: service.upstream_pool.clone(),
-            });
-        };
-        if pool.tls().is_some() {
-            return Err(ServicePlanError::TlsUpstreamPoolForL4Service {
-                service: service.name.clone(),
-                pool: service.upstream_pool.clone(),
-            });
-        }
-        l4_services.insert(
-            service.name.clone(),
-            Arc::new(L4ServicePlan::new(
-                RelayPolicy {
-                    connect: pool
-                        .connect_timeout(Duration::from_millis(service.connect_timeout_ms)),
-                    idle: Some(Duration::from_millis(service.idle_timeout_ms)),
-                    lifetime: service.lifetime_timeout_ms.map(Duration::from_millis),
-                },
-                Arc::clone(pool.selector()),
-                service.proxy_protocol,
-                service.udp.unwrap_or_else(UdpPolicy::default),
-            )),
-        );
+    services: &[L4ServiceBlueprint],
+    pools: &[Arc<UpstreamPlan>],
+) -> Vec<Arc<L4ServicePlan>> {
+    let mut l4_services = Vec::with_capacity(services.len());
+    for service in services {
+        let pool = &pools[service.pool];
+        l4_services.push(Arc::new(L4ServicePlan::new(
+            RelayPolicy {
+                connect: pool.connect_timeout(service.connect_timeout),
+                idle: Some(service.idle_timeout),
+                lifetime: service.lifetime_timeout,
+            },
+            Arc::clone(pool.selector()),
+            service.proxy_protocol,
+            service.udp,
+        )));
     }
-    Ok(l4_services)
+    l4_services
+}
+
+#[allow(clippy::too_many_lines)]
+#[cfg(test)]
+pub(crate) fn compile_rtmp_value_plans(
+    config: &ValidatedConfig,
+) -> Result<Vec<oxiroute_rtmp::RtmpServicePlan>, oxiroute_rtmp::RtmpPrepareError> {
+    crate::rtmp_value_plan::compile_rtmp_value_plans_from_draft(config.as_draft())
 }
 
 #[allow(clippy::too_many_lines)]
 fn compile_rtmp_services(
-    config: &Config,
-) -> Result<HashMap<String, Arc<RtmpServicePlan>>, ServicePlanError> {
-    let listener_addresses: Vec<_> = config
-        .listeners
-        .iter()
-        .filter(|listener| listener.protocol == Protocol::Rtmp)
-        .filter_map(|listener| match listener.bind {
-            ListenerBind::Socket { address } => Some(address),
-            ListenerBind::Udp { .. } | ListenerBind::Unix { .. } => None,
-        })
-        .collect();
+    specs: &[RtmpSpec],
+    listener_addresses: &[std::net::SocketAddr],
+    mode: AcquisitionMode,
+) -> Result<Vec<Arc<RtmpServicePlan>>, ServicePlanError> {
     let mut preflighted_roots = HashSet::new();
     let mut media_stores = HashMap::<PathBuf, Arc<MediaStore>>::new();
-    let mut services = HashMap::with_capacity(config.rtmp_services.len());
-    for service in &config.rtmp_services {
-        let outbound_policy = compile_rtmp_outbound_policy(&service.outbound_policy);
-        let inbound_limits = RtmpSessionLimits::default()
-            .with_max_inbound_message_size(
-                usize::try_from(service.max_inbound_message_size).map_err(|_| {
-                    ServicePlanError::RuntimePolicyUnavailable {
-                        policy: "rtmp_services[].max_inbound_message_size",
-                    }
-                })?,
-            )
-            .with_window_ack_size(service.ack_window_size);
-        let auto_push = compile_rtmp_auto_push(&service.name, &service.auto_push)?;
-        let callbacks =
-            compile_rtmp_callbacks(&service.name, None, &service.callbacks, &outbound_policy)?;
-        let mut prepared_applications = Vec::with_capacity(service.applications.len());
-        for application in &service.applications {
-            let (hub, _, _) = compile_rtmp_fanout(application)?;
-            let publish_policy = compile_rtmp_access_policy(
-                &service.name,
-                &application.name,
-                "publish",
-                &application.publish,
-            )?;
-            let play_policy = compile_rtmp_access_policy(
-                &service.name,
-                &application.name,
-                "play",
-                &application.play,
-            )?;
-            let session_limits = RtmpSessionCeilings::new(
-                usize::try_from(application.limits.max_connections).map_err(|_| {
-                    ServicePlanError::RuntimePolicyUnavailable {
-                        policy: "rtmp_services[].applications[].limits.max_connections",
-                    }
-                })?,
-                usize::try_from(application.limits.max_publishers).map_err(|_| {
-                    ServicePlanError::RuntimePolicyUnavailable {
-                        policy: "rtmp_services[].applications[].limits.max_publishers",
-                    }
-                })?,
-                usize::try_from(application.limits.max_viewers).map_err(|_| {
-                    ServicePlanError::RuntimePolicyUnavailable {
-                        policy: "rtmp_services[].applications[].limits.max_viewers",
-                    }
-                })?,
-            );
-            let push_targets = compile_rtmp_push_targets(
-                &service.name,
-                application,
-                &listener_addresses,
-                &outbound_policy,
-                &application.relay,
-            )?;
-            let pull_targets = compile_rtmp_pull_targets(
-                &service.name,
-                application,
-                &listener_addresses,
-                &outbound_policy,
-                &application.relay,
-            )?;
-            let callbacks = compile_rtmp_callbacks(
-                &service.name,
-                Some(&application.name),
-                &application.callbacks,
-                &outbound_policy,
-            )?;
-            let vod = compile_rtmp_vod(&service.name, application, &outbound_policy)?;
-            let hls = compile_rtmp_hls(&service.name, application, &mut media_stores)?;
-            let dash = compile_rtmp_dash(&service.name, application, &mut media_stores)?;
+    let mut services = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let plan = &spec.plan;
+        let outbound_policy = plan.outbound_policy().clone();
+        let auto_push = plan.auto_push().map(|plan| plan.config().clone());
+        let callbacks = acquire_rtmp_callbacks(&spec.callbacks, &outbound_policy)?;
+        let mut prepared_applications = Vec::with_capacity(plan.applications().len());
+        for (application, decisions) in plan.applications().iter().zip(&spec.applications) {
+            let hub = LiveHub::new(decisions.fanout_limits);
+            let publish_policy = decisions.publish_policy.clone();
+            let play_policy = decisions.play_policy.clone();
+            let push_targets =
+                compile_rtmp_push_targets(plan.service_id(), application, listener_addresses)?;
+            let pull_targets =
+                compile_rtmp_pull_targets(plan.service_id(), application, listener_addresses)?;
+            let callbacks = acquire_rtmp_callbacks(&decisions.callbacks, &outbound_policy)?;
+            let vod = decisions
+                .vod
+                .as_ref()
+                .map(oxiroute_rtmp::VodApplication::acquire)
+                .transpose()
+                .map_err(|_| ServicePlanError::RtmpVodPreflight {
+                    service: plan.service_id().to_owned(),
+                    application: application.name().to_owned(),
+                    source_name: "unknown".into(),
+                })?
+                .map(Arc::new);
+            let hls = compile_rtmp_hls(plan.service_id(), application, &mut media_stores, mode)?;
+            let dash = compile_rtmp_dash(plan.service_id(), application, &mut media_stores, mode)?;
             let media = match (hls, dash) {
                 (None, None) => None,
                 (Some(hls), None) => Some(hls),
@@ -1486,28 +1576,27 @@ fn compile_rtmp_services(
                 }
                 (Some(hls), Some(dash)) => Some(Arc::new((*hls).clone().with_dash(Some(dash)))),
             };
-            let exec_profiles = service
-                .exec_profiles
+            let exec_profiles = application
+                .exec()
                 .iter()
-                .filter(|profile| profile.application == application.name)
-                .map(|profile| compile_rtmp_exec_profile(&service.name, application, profile))
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut prepared_recorders = Vec::with_capacity(application.recorders.len());
-            for recorder in &application.recorders {
+                .map(|profile| profile.profile().clone())
+                .collect();
+            let mut prepared_recorders = Vec::with_capacity(application.recorders().len());
+            for recorder in application.recorders() {
                 prepared_recorders.push(compile_rtmp_recorder(
-                    &service.name,
-                    &application.name,
+                    plan.service_id(),
+                    application.name(),
                     recorder,
                     &mut preflighted_roots,
                 )?);
             }
             prepared_applications.push(PreparedRtmpApplication {
-                name: application.name.clone(),
-                live: application.live,
-                idle_streams: application.idle_streams,
+                name: application.name().to_owned(),
+                live: application.live(),
+                idle_streams: application.idle_streams(),
                 publish_policy,
                 play_policy,
-                session_limits,
+                session_limits: application.session_limits(),
                 hub,
                 push_targets,
                 pull_targets,
@@ -1529,135 +1618,94 @@ fn compile_rtmp_services(
         );
         let media_catalog = MediaCatalog::from_applications(
             prepared_applications.iter().filter_map(|application| {
-                application
-                    .media
-                    .clone()
-                    .map(|media| (service.name.clone(), application.name.clone(), media))
+                application.media.clone().map(|media| {
+                    (
+                        plan.service_id().to_owned(),
+                        application.name.clone(),
+                        media,
+                    )
+                })
             }),
         );
-        services.insert(
-            service.name.clone(),
-            Arc::new(RtmpServicePlan {
-                service_id: service.name.clone(),
-                outbound_chunk_size: service.outbound_chunk_size,
-                inbound_limits,
-                hub: service_hub,
-                callbacks,
-                access_log: AccessLog::open_rtmp(&service.name, service.access_log.as_ref())
-                    .map_err(|_| ServicePlanError::AccessLogPreflight {
-                        service: service.name.clone(),
-                    })?
-                    .map(Arc::new),
-                applications: prepared_applications,
-                vod_catalog,
-                media_catalog: Arc::new(media_catalog),
-                auto_push,
-            }),
-        );
+        services.push(Arc::new(RtmpServicePlan {
+            service_id: plan.service_id().to_owned(),
+            outbound_chunk_size: plan.outbound_chunk_size(),
+            inbound_limits: plan.inbound_limits(),
+            hub: service_hub,
+            callbacks,
+            access_log: acquire_access_log(
+                plan.service_id(),
+                spec.access_log.as_ref(),
+                true,
+                mode,
+            )?,
+            applications: prepared_applications,
+            vod_catalog,
+            media_catalog: Arc::new(media_catalog),
+            auto_push,
+        }));
     }
     Ok(services)
 }
 
-fn compile_rtmp_access_policy(
+fn acquire_access_log(
     service: &str,
-    application: &str,
-    operation: &'static str,
-    policy: &ConfigRtmpAccessPolicy,
-) -> Result<RuntimeRtmpAccessPolicy, ServicePlanError> {
-    let unavailable = || ServicePlanError::RuntimePolicyUnavailable {
-        policy: match operation {
-            "publish" => "rtmp_services[].applications[].publish",
-            "play" => "rtmp_services[].applications[].play",
-            _ => unreachable!("RTMP access operation is closed"),
-        },
+    policy: Option<&oxiroute_config::AccessLogPolicy>,
+    rtmp: bool,
+    mode: AcquisitionMode,
+) -> Result<Option<Arc<AccessLog>>, ServicePlanError> {
+    let invalid = |_| ServicePlanError::AccessLogPreflight {
+        service: service.to_owned(),
     };
-    let rules = policy
-        .rules
-        .iter()
-        .map(|rule| {
-            let action = match rule.action {
-                oxiroute_config::RtmpAclAction::Allow => RtmpAccessAction::Allow,
-                oxiroute_config::RtmpAclAction::Deny => RtmpAccessAction::Deny,
-            };
-            let network = RtmpNetwork::parse(&rule.network).ok_or_else(unavailable)?;
-            Ok(RtmpAccessRule::new(action, network))
-        })
-        .collect::<Result<Vec<_>, ServicePlanError>>()?;
-    let token = match policy.token.as_ref() {
-        Some(token) => Some(
-            RtmpTokenPolicy::stream_query(token.parameter.as_str(), token.secret.as_bytes())
-                .ok_or_else(unavailable)?,
-        ),
-        None => None,
-    };
-    let _ = (service, application);
-    Ok(RuntimeRtmpAccessPolicy::new(rules, token))
-}
-
-fn compile_rtmp_fanout(
-    application: &oxiroute_config::RtmpApplication,
-) -> Result<(LiveHub, usize, usize), ServicePlanError> {
-    let unavailable = |policy| ServicePlanError::RuntimePolicyUnavailable { policy };
-    let max_subscribers = usize::try_from(application.fanout.max_subscribers)
-        .map_err(|_| unavailable("rtmp_services[].applications[].fanout.max_subscribers"))?;
-    let max_queue_messages = usize::try_from(application.fanout.max_queue_messages_per_subscriber)
-        .map_err(|_| {
-            unavailable("rtmp_services[].applications[].fanout.max_queue_messages_per_subscriber")
-        })?;
-    let max_queue_bytes = usize::try_from(application.fanout.max_queue_bytes_per_subscriber)
-        .map_err(|_| {
-            unavailable("rtmp_services[].applications[].fanout.max_queue_bytes_per_subscriber")
-        })?;
-    let max_fanout_bytes = max_subscribers
-        .checked_mul(max_queue_bytes)
-        .ok_or_else(|| unavailable("rtmp_services[].applications[].fanout"))?;
-    let hub = LiveHub::new(LiveHubLimits {
-        max_subscribers,
-        max_subscribers_per_stream: max_subscribers,
-        max_queue_messages_per_subscriber: max_queue_messages,
-        max_queue_bytes_per_subscriber: max_queue_bytes,
-        max_fanout_bytes,
-        ..LiveHubLimits::default()
-    });
-    Ok((hub, max_queue_messages, max_queue_bytes))
+    if mode == AcquisitionMode::Validate {
+        AccessLog::validate(policy).map_err(invalid)?;
+        Ok(None)
+    } else if rtmp {
+        AccessLog::open_rtmp(service, policy)
+            .map_err(invalid)
+            .map(|log| log.map(Arc::new))
+    } else {
+        AccessLog::open(service, policy)
+            .map_err(invalid)
+            .map(|log| log.map(Arc::new))
+    }
 }
 
 fn compile_rtmp_push_targets(
     service: &str,
-    application: &oxiroute_config::RtmpApplication,
+    application: &oxiroute_rtmp::RtmpApplicationPlan,
     listener_addresses: &[std::net::SocketAddr],
-    outbound_policy: &RtmpOutboundPolicy,
-    relay: &oxiroute_config::RtmpRelayPolicy,
 ) -> Result<Vec<RtmpPushTarget>, ServicePlanError> {
     application
-        .push_targets
+        .relay()
+        .push()
         .iter()
         .enumerate()
         .map(|(target_index, target)| {
             let resolution = || ServicePlanError::RtmpPushResolution {
                 service: service.to_owned(),
-                application: application.name.clone(),
+                application: application.name().to_owned(),
                 target: target_index,
             };
-            let addresses: Vec<_> = (target.host.as_str(), target.port)
+            let addresses: Vec<_> = (target.host(), target.port())
                 .to_socket_addrs()
                 .map_err(|_| resolution())?
                 .take(33)
                 .collect();
-            let transport = compile_rtmp_transport(target.scheme);
+            let transport = target.transport();
             let resolver = RtmpDestinationResolver::from_startup(
-                target.host.clone(),
-                target.port,
+                target.host().to_owned(),
+                target.port(),
                 transport,
                 addresses,
-                outbound_policy.clone(),
+                application.relay().policy().clone(),
                 listener_addresses.iter().copied(),
-                Duration::from_millis(relay.dns_refresh_ms),
+                application.relay().dns_refresh_interval(),
             )
             .map_err(|error| match error {
                 RtmpDestinationResolverError::DirectLoop => ServicePlanError::RtmpPushDirectLoop {
                     service: service.to_owned(),
-                    application: application.name.clone(),
+                    application: application.name().to_owned(),
                     target: target_index,
                 },
                 RtmpDestinationResolverError::EmptyAnswer
@@ -1669,30 +1717,19 @@ fn compile_rtmp_push_targets(
             })?;
             Ok(RtmpPushTarget {
                 address: resolver.address(),
-                host: target.host.clone(),
+                host: target.host().to_owned(),
                 transport,
-                application: if target.application == "$name" {
-                    RtmpPushApplication::StreamName
-                } else {
-                    RtmpPushApplication::Exact(target.application.clone())
-                },
-                stream_name: target.stream_name.clone(),
-                options: compile_rtmp_client_options(
-                    target.tc_url.clone(),
-                    target.flash_version.clone(),
-                    target.credentials.as_ref(),
-                    resolution,
-                )?,
+                application: target.application().clone(),
+                stream_name: target.stream_name().map(str::to_owned),
+                options: compile_rtmp_client_options(target.client(), resolution)?,
                 config: RtmpRelayConfig {
-                    max_queue_messages: usize::try_from(relay.max_queue_messages)
-                        .map_err(|_| resolution())?,
-                    max_queue_bytes: usize::try_from(relay.max_queue_bytes)
-                        .map_err(|_| resolution())?,
-                    buffer_duration: Duration::from_millis(relay.buffer_ms),
-                    connect_timeout: Duration::from_millis(relay.connect_timeout_ms),
-                    handshake_timeout: Duration::from_millis(relay.handshake_timeout_ms),
-                    reconnect_interval: Duration::from_millis(relay.push_reconnect_ms),
-                    max_chain_depth: outbound_policy.max_chain_depth,
+                    max_queue_messages: application.relay().max_queue_messages(),
+                    max_queue_bytes: application.relay().max_queue_bytes(),
+                    buffer_duration: application.relay().buffer_duration(),
+                    connect_timeout: application.relay().connect_timeout(),
+                    handshake_timeout: application.relay().handshake_timeout(),
+                    reconnect_interval: application.relay().push_reconnect_interval(),
+                    max_chain_depth: application.relay().policy().max_chain_depth,
                     dns_resolver: Some(Arc::new(resolver)),
                 },
             })
@@ -1702,35 +1739,34 @@ fn compile_rtmp_push_targets(
 
 fn compile_rtmp_pull_targets(
     service: &str,
-    application: &oxiroute_config::RtmpApplication,
+    application: &oxiroute_rtmp::RtmpApplicationPlan,
     listener_addresses: &[std::net::SocketAddr],
-    outbound_policy: &RtmpOutboundPolicy,
-    relay: &oxiroute_config::RtmpRelayPolicy,
 ) -> Result<Vec<RtmpPullTarget>, ServicePlanError> {
     application
-        .pull_targets
+        .relay()
+        .pull()
         .iter()
         .enumerate()
         .map(|(target_index, target)| {
             let resolution = || ServicePlanError::RtmpPullResolution {
                 service: service.to_owned(),
-                application: application.name.clone(),
+                application: application.name().to_owned(),
                 target: target_index,
             };
-            let addresses: Vec<_> = (target.host.as_str(), target.port)
+            let addresses: Vec<_> = (target.host(), target.port())
                 .to_socket_addrs()
                 .map_err(|_| resolution())?
                 .take(33)
                 .collect();
-            let transport = compile_rtmp_transport(target.scheme);
+            let transport = target.transport();
             let resolver = RtmpDestinationResolver::from_startup(
-                target.host.clone(),
-                target.port,
+                target.host().to_owned(),
+                target.port(),
                 transport,
                 addresses,
-                outbound_policy.clone(),
+                application.relay().policy().clone(),
                 listener_addresses.iter().copied(),
-                Duration::from_millis(relay.dns_refresh_ms),
+                application.relay().dns_refresh_interval(),
             )
             .map_err(|error| match error {
                 RtmpDestinationResolverError::DirectLoop
@@ -1743,28 +1779,21 @@ fn compile_rtmp_pull_targets(
             })?;
             Ok(RtmpPullTarget {
                 address: resolver.address(),
-                host: target.host.clone(),
+                host: target.host().to_owned(),
                 transport,
-                source_application: target.application.clone(),
-                source_stream_name: target.stream_name.clone(),
-                local_application: application.name.clone(),
-                local_stream_name: target.stream_name.clone(),
-                options: compile_rtmp_client_options(
-                    target.tc_url.clone(),
-                    target.flash_version.clone(),
-                    target.credentials.as_ref(),
-                    resolution,
-                )?,
+                source_application: target.source_application().to_owned(),
+                source_stream_name: target.source_stream_name().to_owned(),
+                local_application: target.local_application().to_owned(),
+                local_stream_name: target.local_stream_name().to_owned(),
+                options: compile_rtmp_client_options(target.client(), resolution)?,
                 config: RtmpRelayConfig {
-                    max_queue_messages: usize::try_from(relay.max_queue_messages)
-                        .map_err(|_| resolution())?,
-                    max_queue_bytes: usize::try_from(relay.max_queue_bytes)
-                        .map_err(|_| resolution())?,
-                    buffer_duration: Duration::from_millis(relay.buffer_ms),
-                    connect_timeout: Duration::from_millis(relay.connect_timeout_ms),
-                    handshake_timeout: Duration::from_millis(relay.handshake_timeout_ms),
-                    reconnect_interval: Duration::from_millis(relay.pull_reconnect_ms),
-                    max_chain_depth: outbound_policy.max_chain_depth,
+                    max_queue_messages: application.relay().max_queue_messages(),
+                    max_queue_bytes: application.relay().max_queue_bytes(),
+                    buffer_duration: application.relay().buffer_duration(),
+                    connect_timeout: application.relay().connect_timeout(),
+                    handshake_timeout: application.relay().handshake_timeout(),
+                    reconnect_interval: application.relay().pull_reconnect_interval(),
+                    max_chain_depth: application.relay().policy().max_chain_depth,
                     dns_resolver: Some(Arc::new(resolver)),
                 },
             })
@@ -1772,111 +1801,54 @@ fn compile_rtmp_pull_targets(
         .collect()
 }
 
-fn compile_rtmp_outbound_policy(
-    policy: &oxiroute_config::RtmpOutboundPolicy,
-) -> RtmpOutboundPolicy {
-    RtmpOutboundPolicy {
-        allow_domains: policy.allow_domains.clone(),
-        deny_domains: policy.deny_domains.clone(),
-        allow_cidrs: policy.allow_cidrs.clone(),
-        deny_cidrs: policy.deny_cidrs.clone(),
-        deny_private: policy.deny_private,
-        rtmps: match policy.rtmps {
-            oxiroute_config::RtmpRtmpsPolicy::Disabled => RtmpRtmpsMode::Disabled,
-            oxiroute_config::RtmpRtmpsPolicy::Allowed => RtmpRtmpsMode::Allowed,
-            oxiroute_config::RtmpRtmpsPolicy::Required => RtmpRtmpsMode::Required,
-        },
-        max_chain_depth: policy.max_chain_depth,
-    }
-}
-
-fn compile_rtmp_auto_push(
-    service: &str,
-    policy: &oxiroute_config::RtmpAutoPushPolicy,
-) -> Result<Option<RtmpAutoPushConfig>, ServicePlanError> {
-    if !policy.enabled {
-        return Ok(None);
-    }
-    let unavailable = || ServicePlanError::AutoPushUnavailable {
-        service: service.to_owned(),
-    };
-    Ok(Some(RtmpAutoPushConfig {
-        enabled: true,
-        socket_dir: policy.socket_dir.clone(),
-        secret_file: policy.secret_file.clone(),
-        reconnect_interval: Duration::from_millis(policy.reconnect_ms),
-        connect_timeout: Duration::from_millis(policy.connect_timeout_ms),
-        handshake_timeout: Duration::from_millis(policy.handshake_timeout_ms),
-        max_peers: usize::try_from(policy.max_peers).map_err(|_| unavailable())?,
-        max_queue_messages: usize::try_from(policy.max_queue_messages)
-            .map_err(|_| unavailable())?,
-        max_queue_bytes: usize::try_from(policy.max_queue_bytes).map_err(|_| unavailable())?,
-        max_streams: usize::try_from(policy.max_streams).map_err(|_| unavailable())?,
-    }))
-}
-
-fn compile_rtmp_callbacks(
-    service: &str,
-    application: Option<&str>,
-    callbacks: &oxiroute_config::RtmpCallbackConfig,
+fn acquire_rtmp_callbacks(
+    callbacks: &RtmpCallbackBlueprint,
     outbound_policy: &RtmpOutboundPolicy,
 ) -> Result<RtmpCallbackPolicy, ServicePlanError> {
-    let scope = application.map_or_else(
-        || "service".to_owned(),
-        |name| format!("application `{name}`"),
-    );
-    let endpoint = |field: &'static str,
-                    value: &Option<String>|
-     -> Result<Option<RtmpCallbackEndpoint>, ServicePlanError> {
-        value
-            .as_deref()
-            .map(|value| {
-                RtmpCallbackEndpoint::parse(value, outbound_policy).map_err(|_| {
-                    ServicePlanError::RtmpCallbackPreflight {
-                        service: service.to_owned(),
-                        scope: scope.clone(),
-                        field,
-                    }
+    let mut endpoints = callbacks
+        .endpoints
+        .iter()
+        .map(|endpoint| {
+            endpoint
+                .as_ref()
+                .map(|endpoint| {
+                    RtmpCallbackEndpoint::acquire(&endpoint.endpoint, outbound_policy).map_err(
+                        |_| ServicePlanError::RtmpCallbackPreflight {
+                            service: endpoint.service.clone(),
+                            scope: endpoint.scope.clone(),
+                            field: endpoint.field,
+                        },
+                    )
                 })
-            })
-            .transpose()
-    };
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter();
     Ok(RtmpCallbackPolicy {
-        on_connect: endpoint("callbacks.on_connect", &callbacks.on_connect)?,
-        on_disconnect: endpoint("callbacks.on_disconnect", &callbacks.on_disconnect)?,
-        on_publish: endpoint("callbacks.on_publish", &callbacks.on_publish)?,
-        on_publish_done: endpoint("callbacks.on_publish_done", &callbacks.on_publish_done)?,
-        on_play: endpoint("callbacks.on_play", &callbacks.on_play)?,
-        on_play_done: endpoint("callbacks.on_play_done", &callbacks.on_play_done)?,
-        on_done: endpoint("callbacks.on_done", &callbacks.on_done)?,
-        on_update: endpoint("callbacks.on_update", &callbacks.on_update)?,
-        method: match callbacks.notify_method {
-            oxiroute_config::RtmpNotifyMethod::Get => RtmpCallbackMethod::Get,
-            oxiroute_config::RtmpNotifyMethod::Post => RtmpCallbackMethod::Post,
-        },
-        timeout: Duration::from_millis(callbacks.timeout_ms),
-        update_timeout: Duration::from_millis(callbacks.notify_update_timeout_ms),
-        update_strict: callbacks.notify_update_strict,
-        relay_redirect: callbacks.notify_relay_redirect,
+        on_connect: endpoints.next().expect("callback slot"),
+        on_disconnect: endpoints.next().expect("callback slot"),
+        on_publish: endpoints.next().expect("callback slot"),
+        on_publish_done: endpoints.next().expect("callback slot"),
+        on_play: endpoints.next().expect("callback slot"),
+        on_play_done: endpoints.next().expect("callback slot"),
+        on_done: endpoints.next().expect("callback slot"),
+        on_update: endpoints.next().expect("callback slot"),
+        method: callbacks.method,
+        timeout: callbacks.timeout,
+        update_timeout: callbacks.update_timeout,
+        update_strict: callbacks.update_strict,
+        relay_redirect: callbacks.relay_redirect,
     })
 }
 
-fn compile_rtmp_transport(transport: oxiroute_config::RtmpTransport) -> RtmpTransport {
-    match transport {
-        oxiroute_config::RtmpTransport::Rtmp => RtmpTransport::Rtmp,
-        oxiroute_config::RtmpTransport::Rtmps => RtmpTransport::Rtmps,
-    }
-}
-
 fn compile_rtmp_client_options(
-    tc_url: Option<String>,
-    flash_version: Option<String>,
-    credentials: Option<&oxiroute_config::RtmpCredentialReference>,
+    plan: &oxiroute_rtmp::RtmpClientPlan,
     resolution: impl Fn() -> ServicePlanError,
 ) -> Result<RtmpClientOptions, ServicePlanError> {
-    let credential = credentials
+    let credential = plan
+        .credential()
         .map(|reference| {
-            let secret = fs::read(&reference.secret_file).map_err(|_| resolution())?;
+            let secret = fs::read(reference.secret_file()).map_err(|_| resolution())?;
             if secret.is_empty()
                 || secret.len() > 4 * 1_024
                 || secret.iter().any(u8::is_ascii_control)
@@ -1884,125 +1856,63 @@ fn compile_rtmp_client_options(
             {
                 return Err(resolution());
             }
-            Ok(RtmpCredential::new(reference.username.clone(), secret))
+            Ok(RtmpCredential::new(reference.username().to_owned(), secret))
         })
         .transpose()?;
     Ok(RtmpClientOptions {
-        flash_version: flash_version.unwrap_or_else(|| RtmpClientOptions::default().flash_version),
-        playback_buffer_ms: 2_000,
-        tc_url,
+        flash_version: plan.flash_version().to_owned(),
+        playback_buffer_ms: plan.playback_buffer_ms(),
+        tc_url: plan.tc_url().map(str::to_owned),
         credential,
     })
 }
 
-fn compile_rtmp_vod(
-    service: &str,
-    application: &oxiroute_config::RtmpApplication,
-    outbound_policy: &RtmpOutboundPolicy,
-) -> Result<Option<Arc<VodApplication>>, ServicePlanError> {
-    let Some(policy) = &application.vod else {
-        return Ok(None);
-    };
-    let sources = policy
-        .sources
-        .iter()
-        .map(|source| match source {
-            oxiroute_config::RtmpVodSource::Local {
-                name,
-                root_directory,
-            } => VodSourceDefinition::Local {
-                name: name.clone(),
-                root_directory: root_directory.clone(),
-            },
-            oxiroute_config::RtmpVodSource::Http { name, origin } => VodSourceDefinition::Http {
-                name: name.clone(),
-                origin: origin.clone(),
-            },
-        })
-        .collect::<Vec<_>>();
-    let limits = VodLimits {
-        max_sessions: usize::try_from(policy.max_sessions).map_err(|_| {
-            ServicePlanError::RuntimePolicyUnavailable {
-                policy: "rtmp_services[].applications[].vod.max_sessions",
-            }
-        })?,
-        max_file_bytes: policy.max_file_bytes,
-        max_duration: Duration::from_millis(policy.max_duration_ms),
-    };
-    VodApplication::new(service, &application.name, limits, sources, outbound_policy)
-        .map(Arc::new)
-        .map(Some)
-        .map_err(|_| ServicePlanError::RtmpVodPreflight {
-            service: service.to_owned(),
-            application: application.name.clone(),
-            source_name: policy.sources.first().map_or_else(
-                || "unknown".into(),
-                |source| match source {
-                    oxiroute_config::RtmpVodSource::Local { name, .. }
-                    | oxiroute_config::RtmpVodSource::Http { name, .. } => name.clone(),
-                },
-            ),
-        })
-}
-
 fn compile_rtmp_hls(
     service: &str,
-    application: &oxiroute_config::RtmpApplication,
+    application: &oxiroute_rtmp::RtmpApplicationPlan,
     stores: &mut HashMap<PathBuf, Arc<MediaStore>>,
+    mode: AcquisitionMode,
 ) -> Result<Option<Arc<MediaApplication>>, ServicePlanError> {
-    let Some(policy) = &application.hls else {
+    let Some(plan) = application
+        .media()
+        .and_then(oxiroute_rtmp::RtmpMediaPlan::hls)
+    else {
         return Ok(None);
     };
     let invalid = || ServicePlanError::HlsPreflight {
         service: service.to_owned(),
-        application: application.name.clone(),
+        application: application.name().to_owned(),
     };
-    let limits = MediaStoreLimits {
-        max_bytes: policy.max_storage_bytes,
-        max_files: usize::try_from(policy.max_storage_files).map_err(|_| invalid())?,
-        max_active_streams: usize::try_from(policy.max_active_streams).map_err(|_| invalid())?,
-        max_file_bytes: usize::try_from(policy.max_segment_bytes).map_err(|_| invalid())?,
-    };
-    let store = if let Some(store) = stores.get(&policy.root_directory) {
+    let limits = rtmp_map::media_store_limits(
+        plan.max_storage_bytes(),
+        u64::try_from(plan.max_storage_files()).expect("validated HLS storage files"),
+        u64::try_from(plan.max_active_streams()).expect("validated HLS active streams"),
+        u64::try_from(plan.max_segment_bytes()).expect("validated HLS segment bytes"),
+    );
+    if mode == AcquisitionMode::Validate {
+        MediaStore::preflight(plan.root_directory(), limits).map_err(|_| invalid())?;
+        return Ok(None);
+    }
+    let store = if let Some(store) = stores.get(plan.root_directory()) {
         Arc::clone(store)
     } else {
         let store =
-            Arc::new(MediaStore::open(&policy.root_directory, limits).map_err(|_| invalid())?);
-        stores.insert(policy.root_directory.clone(), Arc::clone(&store));
+            Arc::new(MediaStore::open(plan.root_directory(), limits).map_err(|_| invalid())?);
+        stores.insert(plan.root_directory().to_owned(), Arc::clone(&store));
         store
     };
-    let variants = policy
-        .variants
-        .iter()
-        .map(|variant| HlsVariant {
-            name: variant.name.clone(),
-            bandwidth: variant.bandwidth,
-            codecs: variant.codecs.clone(),
-            width: variant.width,
-            height: variant.height,
-        })
-        .collect();
-    let keys = policy.keys.as_ref().map(|keys| HlsKeyConfig {
-        rotation_segments: usize::try_from(keys.rotation_segments)
-            .expect("validated HLS key rotation fits usize"),
-        url_prefix: keys.url_prefix.clone(),
-    });
     let config = HlsOutputConfig {
         store,
-        segment_duration: Duration::from_millis(policy.segment_duration_ms),
-        max_segment_duration: Duration::from_millis(policy.max_segment_duration_ms),
-        playlist_length: Duration::from_millis(policy.playlist_length_ms),
-        naming: match policy.fragment_naming {
-            oxiroute_config::RtmpHlsFragmentNaming::Sequential => HlsFragmentNaming::Sequential,
-            oxiroute_config::RtmpHlsFragmentNaming::Timestamp => HlsFragmentNaming::Timestamp,
-            oxiroute_config::RtmpHlsFragmentNaming::System => HlsFragmentNaming::System,
-        },
-        nested: policy.nested,
-        cleanup: policy.cleanup,
-        variants,
-        keys,
-        max_segment_bytes: usize::try_from(policy.max_segment_bytes).map_err(|_| invalid())?,
-        max_queue_messages: usize::try_from(policy.max_queue_messages).map_err(|_| invalid())?,
+        segment_duration: plan.segment_duration(),
+        max_segment_duration: plan.max_segment_duration(),
+        playlist_length: plan.playlist_length(),
+        naming: plan.naming(),
+        nested: plan.nested(),
+        cleanup: plan.cleanup(),
+        variants: plan.variants().to_vec(),
+        keys: plan.keys().cloned(),
+        max_segment_bytes: plan.max_segment_bytes(),
+        max_queue_messages: plan.max_queue_messages(),
     };
     Ok(Some(Arc::new(MediaApplication::new(Some(Arc::new(
         config,
@@ -2011,318 +1921,122 @@ fn compile_rtmp_hls(
 
 fn compile_rtmp_dash(
     service: &str,
-    application: &oxiroute_config::RtmpApplication,
+    application: &oxiroute_rtmp::RtmpApplicationPlan,
     stores: &mut HashMap<PathBuf, Arc<MediaStore>>,
+    mode: AcquisitionMode,
 ) -> Result<Option<Arc<DashOutputConfig>>, ServicePlanError> {
-    let Some(policy) = &application.dash else {
+    let Some(plan) = application
+        .media()
+        .and_then(oxiroute_rtmp::RtmpMediaPlan::dash)
+    else {
         return Ok(None);
     };
     let invalid = || ServicePlanError::DashPreflight {
         service: service.to_owned(),
-        application: application.name.clone(),
+        application: application.name().to_owned(),
     };
-    let limits = MediaStoreLimits {
-        max_bytes: policy.max_storage_bytes,
-        max_files: usize::try_from(policy.max_storage_files).map_err(|_| invalid())?,
-        max_active_streams: usize::try_from(policy.max_active_streams).map_err(|_| invalid())?,
-        max_file_bytes: usize::try_from(policy.max_segment_bytes).map_err(|_| invalid())?,
-    };
-    let store = if let Some(store) = stores.get(&policy.root_directory) {
+    let limits = rtmp_map::media_store_limits(
+        plan.max_storage_bytes(),
+        u64::try_from(plan.max_storage_files()).expect("validated DASH storage files"),
+        u64::try_from(plan.max_active_streams()).expect("validated DASH active streams"),
+        u64::try_from(plan.max_segment_bytes()).expect("validated DASH segment bytes"),
+    );
+    if mode == AcquisitionMode::Validate {
+        MediaStore::preflight(plan.root_directory(), limits).map_err(|_| invalid())?;
+        return Ok(None);
+    }
+    let store = if let Some(store) = stores.get(plan.root_directory()) {
         Arc::clone(store)
     } else {
         let store =
-            Arc::new(MediaStore::open(&policy.root_directory, limits).map_err(|_| invalid())?);
-        stores.insert(policy.root_directory.clone(), Arc::clone(&store));
+            Arc::new(MediaStore::open(plan.root_directory(), limits).map_err(|_| invalid())?);
+        stores.insert(plan.root_directory().to_owned(), Arc::clone(&store));
         store
     };
     let config = DashOutputConfig {
         store,
-        segment_duration: Duration::from_millis(policy.segment_duration_ms),
-        max_segment_duration: Duration::from_millis(policy.max_segment_duration_ms),
-        playlist_length: Duration::from_millis(policy.playlist_length_ms),
-        naming: match policy.segment_naming {
-            oxiroute_config::RtmpDashSegmentNaming::Sequential => DashSegmentNaming::Sequential,
-            oxiroute_config::RtmpDashSegmentNaming::Timestamp => DashSegmentNaming::Timestamp,
-            oxiroute_config::RtmpDashSegmentNaming::System => DashSegmentNaming::System,
-        },
-        nested: policy.nested,
-        cleanup: policy.cleanup,
-        max_segment_bytes: usize::try_from(policy.max_segment_bytes).map_err(|_| invalid())?,
-        max_queue_messages: usize::try_from(policy.max_queue_messages).map_err(|_| invalid())?,
+        segment_duration: plan.segment_duration(),
+        max_segment_duration: plan.max_segment_duration(),
+        playlist_length: plan.playlist_length(),
+        naming: plan.naming(),
+        nested: plan.nested(),
+        cleanup: plan.cleanup(),
+        max_segment_bytes: plan.max_segment_bytes(),
+        max_queue_messages: plan.max_queue_messages(),
     };
     Ok(Some(Arc::new(config)))
-}
-
-fn compile_rtmp_exec_profile(
-    service: &str,
-    application: &oxiroute_config::RtmpApplication,
-    profile: &oxiroute_config::RtmpExecProfile,
-) -> Result<ExecProfile, ServicePlanError> {
-    let invalid = || ServicePlanError::InvalidExecProfile {
-        service: service.to_owned(),
-        application: application.name.clone(),
-        profile: profile.name.clone(),
-    };
-    let environment = profile
-        .environment
-        .iter()
-        .map(|entry| ExecEnvironment::new(entry.name.clone(), entry.value.clone()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| invalid())?;
-    let limits = ExecLimits::new(
-        usize::try_from(profile.max_queue_messages).map_err(|_| invalid())?,
-        usize::try_from(profile.max_queue_bytes).map_err(|_| invalid())?,
-        usize::try_from(profile.max_stdout_bytes).map_err(|_| invalid())?,
-        usize::try_from(profile.max_stderr_bytes).map_err(|_| invalid())?,
-        Duration::from_millis(profile.timeout_ms),
-        Duration::from_millis(profile.shutdown_timeout_ms),
-        usize::try_from(profile.max_processes).map_err(|_| invalid())?,
-        Duration::from_millis(profile.respawn_delay_ms),
-        usize::try_from(profile.max_respawns).map_err(|_| invalid())?,
-    )
-    .map_err(|_| invalid())?;
-    ExecProfile::new(
-        profile.name.clone(),
-        profile.application.clone(),
-        match profile.mode {
-            ConfigExecMode::Command => ExecMode::Command,
-            ConfigExecMode::Transcode => ExecMode::Transcode,
-        },
-        match profile.trigger {
-            ConfigExecTrigger::Publisher => ExecTrigger::Publisher,
-            ConfigExecTrigger::PublishDone => ExecTrigger::PublishDone,
-        },
-        profile.executable.clone(),
-        profile.arguments.clone(),
-        environment,
-        profile.working_directory.clone(),
-        match profile.filesystem {
-            ConfigExecFilesystemPolicy::WorkingDirectory => ExecFilesystemPolicy::WorkingDirectory,
-            ConfigExecFilesystemPolicy::Host => return Err(invalid()),
-        },
-        match profile.network {
-            ConfigExecNetworkPolicy::Disabled => ExecNetworkPolicy::Disabled,
-            ConfigExecNetworkPolicy::Inherited => ExecNetworkPolicy::Inherited,
-        },
-        limits,
-        profile.respawn,
-    )
-    .map_err(|_| invalid())
 }
 
 fn compile_rtmp_recorder(
     service: &str,
     application: &str,
-    recorder: &oxiroute_config::RtmpRecorder,
+    recorder: &oxiroute_rtmp::RtmpRecorderPlan,
     preflighted_roots: &mut HashSet<PathBuf>,
 ) -> Result<PreparedRtmpRecorder, ServicePlanError> {
-    let invalid = || ServicePlanError::InvalidRecorderPolicy {
-        service: service.to_owned(),
-        application: application.to_owned(),
-        recorder: recorder.name.clone(),
-    };
-    let path_policy =
-        RecordingPathPolicy::new(&recorder.suffix_template, recorder.append_unix_seconds)
-            .map_err(|_| invalid())?
-            .with_segment_policy(
-                match recorder.timezone {
-                    oxiroute_config::RtmpRecorderTimezone::Utc => RecordingTimezone::Utc,
-                    oxiroute_config::RtmpRecorderTimezone::Iana(ref name) => {
-                        RecordingTimezone::Iana(
-                            name.parse().expect("validated IANA recorder timezone"),
-                        )
-                    }
-                },
-                match recorder.time_basis {
-                    oxiroute_config::RtmpRecorderTimeBasis::SegmentStart => {
-                        RecordingTimeBasis::SegmentStart
-                    }
-                    oxiroute_config::RtmpRecorderTimeBasis::SegmentEnd => {
-                        RecordingTimeBasis::SegmentEnd
-                    }
-                },
-                match recorder.segment_naming {
-                    oxiroute_config::RtmpRecorderSegmentNaming::SafeUnique => {
-                        RecordingSegmentNaming::SafeUnique
-                    }
-                    oxiroute_config::RtmpRecorderSegmentNaming::NginxCompatible => {
-                        RecordingSegmentNaming::NginxCompatible
-                    }
-                },
-            );
-    let worker_config = RecorderWorkerConfig {
-        max_queue_messages: usize::try_from(recorder.max_queue_messages).map_err(|_| invalid())?,
-        max_queue_bytes: usize::try_from(recorder.max_queue_bytes).map_err(|_| invalid())?,
-        rotation_interval: recorder.rotation_interval_ms.map(Duration::from_millis),
-        shutdown_timeout: Duration::from_millis(recorder.shutdown_timeout_ms),
-        video_codec: None,
-        record_mask: RecorderMediaMask::new(
-            recorder.record_mask.audio,
-            recorder.record_mask.video,
-            recorder.record_mask.keyframes,
-        ),
-        append: recorder.append,
-        lock: recorder.lock,
-        max_size: recorder.max_size,
-        max_frames: recorder.max_frames,
-        notify: recorder.notify,
-    };
-    let store_limits = RecordingStoreLimits {
-        max_bytes: recorder.max_storage_bytes,
-        max_files: recorder
-            .max_storage_files
-            .map(usize::try_from)
-            .transpose()
-            .map_err(|_| invalid())?,
-        max_active_recorders: usize::try_from(recorder.max_active_recorders)
-            .map_err(|_| invalid())?,
-    };
-    if preflighted_roots.insert(recorder.root_directory.clone()) {
-        RecordingStore::preflight(&recorder.root_directory, store_limits).map_err(|_| {
-            ServicePlanError::RecorderPreflight {
+    if preflighted_roots.insert(recorder.root_directory().to_owned()) {
+        RecordingStore::preflight(recorder.root_directory(), recorder.store_limits()).map_err(
+            |_| ServicePlanError::RecorderPreflight {
                 service: service.to_owned(),
                 application: application.to_owned(),
-                recorder: recorder.name.clone(),
-            }
-        })?;
+                recorder: recorder.name().to_owned(),
+            },
+        )?;
     }
     Ok(PreparedRtmpRecorder {
-        name: recorder.name.clone(),
-        start: match recorder.start {
-            ConfigRecorderStart::Continuous => RtmpRecorderStart::Continuous,
-            ConfigRecorderStart::Manual => RtmpRecorderStart::Manual,
-        },
-        root_directory: recorder.root_directory.clone(),
-        path_policy,
-        worker_config,
-        store_limits,
+        name: recorder.name().to_owned(),
+        start: recorder.start(),
+        root_directory: recorder.root_directory().to_owned(),
+        path_policy: recorder.path_policy().clone(),
+        worker_config: recorder.worker(),
+        store_limits: recorder.store_limits(),
     })
 }
 
 #[allow(clippy::too_many_lines)]
 fn compile_listener(
-    listener: &oxiroute_config::Listener,
-    http_services: &HashMap<String, Arc<HttpServicePlan>>,
-    forward_services: &HashMap<String, Arc<ForwardHttp1ServicePlan>>,
-    rtmp_services: &HashMap<String, Arc<RtmpServicePlan>>,
-    l4_services: &HashMap<String, Arc<L4ServicePlan>>,
+    listener: &ListenerBlueprint,
+    http_services: &[Arc<HttpServicePlan>],
+    forward_services: &[Arc<ForwardHttp1ServicePlan>],
+    rtmp_services: &[Arc<RtmpServicePlan>],
+    l4_services: &[Arc<L4ServicePlan>],
     tls_profiles: &crate::tls::TlsProfilePlanMap,
-) -> Result<ServiceSpec, ServicePlanError> {
-    let tls = match (listener.protocol, listener.tls_profile.as_deref()) {
-        (
-            Protocol::Http
-            | Protocol::ForwardHttp1
-            | Protocol::ForwardHttp2
-            | Protocol::ForwardHttp3
-            | Protocol::Http3,
-            Some(profile),
-        ) => Some(Arc::clone(tls_profiles.get(profile).ok_or_else(|| {
-            ServicePlanError::UnknownListenerTlsProfile {
-                listener: listener.name.clone(),
-                profile: profile.into(),
-            }
-        })?)),
-        (
-            Protocol::Http
-            | Protocol::ForwardHttp1
-            | Protocol::ForwardHttp2
-            | Protocol::ForwardHttp3
-            | Protocol::Http3
-            | Protocol::Tcp
-            | Protocol::Udp
-            | Protocol::Rtmp,
-            None,
-        ) => None,
-        (protocol @ (Protocol::Tcp | Protocol::Udp | Protocol::Rtmp), Some(profile)) => {
-            return Err(ServicePlanError::UnexpectedListenerTlsProfile {
-                listener: listener.name.clone(),
-                protocol,
-                profile: profile.into(),
-            });
+    tls_blueprint: &crate::tls::TlsBlueprint,
+) -> ServiceSpec {
+    let tls = listener.tls_profile.map(|index| {
+        Arc::clone(
+            tls_profiles
+                .get(&tls_blueprint.profiles[index].name)
+                .expect("compiled TLS profile identity"),
+        )
+    });
+    let kind = match (listener.protocol, listener.service) {
+        (Protocol::Http, ServiceReference::Http(index)) => {
+            ServiceKind::Http(Arc::clone(&http_services[index]))
         }
+        (Protocol::Http3, ServiceReference::Http(index)) => {
+            ServiceKind::Http3(Arc::clone(&http_services[index]))
+        }
+        (Protocol::ForwardHttp1, ServiceReference::Forward(index)) => {
+            ServiceKind::ForwardHttp1(Arc::clone(&forward_services[index]))
+        }
+        (Protocol::ForwardHttp2, ServiceReference::Forward(index)) => {
+            ServiceKind::ForwardHttp2(Arc::clone(&forward_services[index]))
+        }
+        (Protocol::ForwardHttp3, ServiceReference::Forward(index)) => {
+            ServiceKind::ForwardHttp3(Arc::clone(&forward_services[index]))
+        }
+        (Protocol::Rtmp, ServiceReference::Rtmp(index)) => {
+            ServiceKind::Rtmp(Arc::clone(&rtmp_services[index]))
+        }
+        (Protocol::Tcp, ServiceReference::L4(index)) => {
+            ServiceKind::Tcp(Arc::clone(&l4_services[index]))
+        }
+        (Protocol::Udp, ServiceReference::L4(index)) => {
+            ServiceKind::Udp(Arc::clone(&l4_services[index]))
+        }
+        _ => unreachable!("compiled listener protocol identity"),
     };
-    let kind = match (listener.protocol, listener.service.as_deref()) {
-        (
-            Protocol::Http
-            | Protocol::ForwardHttp1
-            | Protocol::ForwardHttp2
-            | Protocol::ForwardHttp3
-            | Protocol::Http3
-            | Protocol::Rtmp
-            | Protocol::Tcp
-            | Protocol::Udp,
-            None,
-        ) => {
-            return Err(ServicePlanError::MissingListenerService {
-                listener: listener.name.clone(),
-            });
-        }
-        (Protocol::Http, Some(service)) => {
-            ServiceKind::Http(Arc::clone(http_services.get(service).ok_or_else(|| {
-                ServicePlanError::UnknownHttpService {
-                    listener: listener.name.clone(),
-                    service: service.into(),
-                }
-            })?))
-        }
-        (Protocol::Http3, Some(service)) => {
-            ServiceKind::Http3(Arc::clone(http_services.get(service).ok_or_else(|| {
-                ServicePlanError::UnknownHttpService {
-                    listener: listener.name.clone(),
-                    service: service.into(),
-                }
-            })?))
-        }
-        (Protocol::ForwardHttp1, Some(service)) => {
-            ServiceKind::ForwardHttp1(Arc::clone(forward_services.get(service).ok_or_else(
-                || ServicePlanError::UnknownForwardProxyService {
-                    listener: listener.name.clone(),
-                    service: service.into(),
-                },
-            )?))
-        }
-        (Protocol::ForwardHttp2, Some(service)) => {
-            ServiceKind::ForwardHttp2(Arc::clone(forward_services.get(service).ok_or_else(
-                || ServicePlanError::UnknownForwardProxyService {
-                    listener: listener.name.clone(),
-                    service: service.into(),
-                },
-            )?))
-        }
-        (Protocol::Tcp, Some(service)) => {
-            ServiceKind::Tcp(Arc::clone(l4_services.get(service).ok_or_else(|| {
-                ServicePlanError::UnknownL4Service {
-                    listener: listener.name.clone(),
-                    service: service.into(),
-                }
-            })?))
-        }
-        (Protocol::ForwardHttp3, Some(service)) => {
-            ServiceKind::ForwardHttp3(Arc::clone(forward_services.get(service).ok_or_else(
-                || ServicePlanError::UnknownForwardProxyService {
-                    listener: listener.name.clone(),
-                    service: service.into(),
-                },
-            )?))
-        }
-        (Protocol::Udp, Some(service)) => {
-            ServiceKind::Udp(Arc::clone(l4_services.get(service).ok_or_else(|| {
-                ServicePlanError::UnknownUdpService {
-                    listener: listener.name.clone(),
-                    service: service.into(),
-                }
-            })?))
-        }
-        (Protocol::Rtmp, Some(service)) => {
-            ServiceKind::Rtmp(Arc::clone(rtmp_services.get(service).ok_or_else(|| {
-                ServicePlanError::UnknownRtmpService {
-                    listener: listener.name.clone(),
-                    service: service.into(),
-                }
-            })?))
-        }
-    };
-    Ok(ServiceSpec {
+    ServiceSpec {
         name: listener.name.clone(),
         bind: listener.bind.clone(),
         max_connections: listener.max_connections,
@@ -2330,5 +2044,475 @@ fn compile_listener(
         proxy_protocol: listener.proxy_protocol,
         kind,
         tls,
-    })
+    }
+}
+
+#[cfg(test)]
+mod disk_registry_tests {
+    use super::*;
+
+    static SNAPSHOT_HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn incompatible_open_does_not_hold_registry_lock_while_final_backend_retires() {
+        let _test_guard = SNAPSHOT_HOOK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let directory = tempfile::tempdir().expect("disk registry root");
+        let root = directory.path().join("cache");
+        let config = DiskCacheConfig::default();
+        let backend = open_shared_disk_backend(&root, &config).expect("initial backend");
+        let mut incompatible = config.clone();
+        incompatible.max_disk_bytes += 1;
+        let (_hook, reached, release) = install_disk_registry_snapshot_hook(root.clone());
+
+        let opener_root = root.clone();
+        let opener_config = incompatible.clone();
+        let opener =
+            std::thread::spawn(move || open_shared_disk_backend(&opener_root, &opener_config));
+        reached.wait();
+        drop(backend);
+        release.wait();
+
+        let replacement = opener
+            .join()
+            .expect("incompatible opener thread")
+            .expect("retired entry permits replacement config");
+        assert_eq!(replacement.disk_config(), &incompatible);
+    }
+
+    #[test]
+    fn concurrent_compatible_opens_publish_one_shared_backend() {
+        let directory = tempfile::tempdir().expect("disk registry root");
+        let root = directory.path().join("cache");
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let open = |start: Arc<std::sync::Barrier>, root: PathBuf| {
+            std::thread::spawn(move || {
+                start.wait();
+                open_shared_disk_backend(&root, &DiskCacheConfig::default())
+                    .expect("compatible backend")
+            })
+        };
+        let first = open(Arc::clone(&start), root.clone());
+        let second = open(Arc::clone(&start), root.clone());
+        start.wait();
+
+        let first = first.join().expect("first opener");
+        let second = second.join().expect("second opener");
+        assert!(Arc::ptr_eq(&first, &second));
+        drop(first);
+        drop(second);
+        assert!(!disk_backend_registry_contains(&root));
+    }
+
+    #[test]
+    fn stale_snapshot_cleanup_does_not_remove_replacement_backend() {
+        let _test_guard = SNAPSHOT_HOOK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let directory = tempfile::tempdir().expect("disk registry root");
+        let root = directory.path().join("cache");
+        let config = DiskCacheConfig::default();
+        let original = open_shared_disk_backend(&root, &config).expect("original backend");
+        let (hook, reached, release) = install_disk_registry_snapshot_hook(root.clone());
+
+        let stale_root = root.clone();
+        let stale_config = config.clone();
+        let stale = std::thread::spawn(move || {
+            open_shared_disk_backend(&stale_root, &stale_config).expect("stale opener")
+        });
+        reached.wait();
+        drop(hook);
+        drop(original);
+        let replacement = open_shared_disk_backend(&root, &config).expect("replacement backend");
+        release.wait();
+
+        let observed = stale.join().expect("stale opener thread");
+        assert!(Arc::ptr_eq(&observed, &replacement));
+        assert!(disk_backend_registry_contains(&root));
+        drop(observed);
+        drop(replacement);
+        assert!(!disk_backend_registry_contains(&root));
+    }
+}
+
+#[cfg(test)]
+mod rtmp_value_plan_tests {
+    use std::error::Error as _;
+
+    use oxiroute_config::ConfigDraft;
+
+    use crate::{
+        planning_errors::rtmp_preparation_error,
+        rtmp_value_plan::compile_rtmp_value_plans_from_draft,
+    };
+
+    use super::*;
+
+    #[test]
+    fn validated_config_translates_to_value_plans_without_acquisition() {
+        let config = oxiroute_config_source::load_lua(
+            r#"
+return {
+  version = 1,
+  listeners = {},
+  rtmp_services = {
+    {
+      name = "streaming",
+      callbacks = { on_connect = "https://callback.example.test/connect" },
+      auto_push = {
+        enabled = true,
+        socket_dir = "/not-created/auto-push",
+        secret_file = "/not-read/auto-push-secret",
+      },
+      exec_profiles = {
+        {
+          name = "publisher",
+          application = "live",
+          executable = "/not-run/transcoder",
+          arguments = { "--input", "$name" },
+          environment = { { name = "TOKEN", value = "not-exposed" } },
+          working_directory = "/not-read/work",
+        },
+      },
+      applications = {
+        {
+          name = "live",
+          live = true,
+          publish = {
+            rules = { { action = "allow", network = "2001:db8::/128" } },
+            token = { source = "stream_query", parameter = "token", secret = "secret" },
+          },
+          push_targets = {
+            {
+              host = "unresolved.example.test",
+              application = "$name",
+              credentials = {
+                username = "relay",
+                secret_file = "/not-read/relay-secret",
+              },
+            },
+          },
+          callbacks = { on_publish = "https://callback.example.test/publish" },
+          vod = {
+            sources = {
+              { type = "local", name = "archive", root_directory = "/not-read/vod" },
+              { type = "http", name = "origin", origin = "https://media.example.test/library" },
+            },
+          },
+          hls = { root_directory = "/not-created/hls" },
+          dash = { root_directory = "/not-created/dash" },
+          recorders = {
+            { name = "archive", root_directory = "/not-created/recordings" },
+          },
+        },
+      },
+    },
+  },
+}
+"#,
+        )
+        .expect("representative validated RTMP config");
+
+        let plans = compile_rtmp_value_plans(&config).expect("opaque RTMP value plans");
+
+        assert_eq!(plans.len(), 1);
+        let plan = &plans[0];
+        assert_eq!(plan.service_id(), "streaming");
+        assert!(plan.auto_push().is_some());
+        let application = &plan.applications()[0];
+        assert!(application.media().is_some());
+        assert!(application.vod().is_some());
+        assert_eq!(application.recorders().len(), 1);
+        assert_eq!(application.exec().len(), 1);
+        assert_eq!(application.relay().push().len(), 1);
+    }
+
+    #[test]
+    fn canonical_minimum_and_maximum_bounds_translate_to_value_plans() {
+        let minimum = oxiroute_config_source::load_lua(
+            r#"
+return {
+  version = 1,
+  listeners = {},
+  rtmp_services = {
+    {
+      name = "minimum",
+      outbound_chunk_size = 1,
+      max_inbound_message_size = 1,
+      ack_window_size = 1,
+      applications = {
+        {
+          name = "live",
+          limits = { max_connections = 1, max_publishers = 1, max_viewers = 1 },
+          fanout = {
+            max_subscribers = 1,
+            max_queue_messages_per_subscriber = 1,
+            max_queue_bytes_per_subscriber = 1,
+          },
+          relay = {
+            max_queue_messages = 1,
+            max_queue_bytes = 1,
+            buffer_ms = 1,
+            push_reconnect_ms = 1,
+            pull_reconnect_ms = 1,
+            dns_refresh_ms = 1000,
+            connect_timeout_ms = 1,
+            handshake_timeout_ms = 1,
+          },
+        },
+      },
+    },
+  },
+}
+"#,
+        )
+        .expect("canonical RTMP minima");
+        assert_eq!(compile_rtmp_value_plans(&minimum).unwrap().len(), 1);
+
+        let draft = minimum.to_draft();
+        let mut service = draft.rtmp_services[0].clone();
+        service.name = "maximum".into();
+        service.outbound_chunk_size = 1_048_576;
+        service.max_inbound_message_size = 8_388_608;
+        service.ack_window_size = u32::MAX;
+        let application = &mut service.applications[0];
+        application.limits.max_connections = 100_000;
+        application.limits.max_publishers = 10_000;
+        application.limits.max_viewers = 1_000_000;
+        application.fanout.max_subscribers = 1_000_000;
+        application.fanout.max_queue_messages_per_subscriber = 65_536;
+        application.fanout.max_queue_bytes_per_subscriber = 1_073_741_824;
+        application.relay.max_queue_messages = 65_536;
+        application.relay.max_queue_bytes = 1_073_741_824;
+        application.relay.buffer_ms = 60_000;
+        application.relay.push_reconnect_ms = 300_000;
+        application.relay.pull_reconnect_ms = 300_000;
+        application.relay.dns_refresh_ms = 300_000;
+        application.relay.connect_timeout_ms = 30_000;
+        application.relay.handshake_timeout_ms = 30_000;
+        let maximum = ConfigDraft {
+            rtmp_services: vec![service],
+            ..draft
+        }
+        .validate()
+        .expect("canonical RTMP maxima");
+
+        let plans = compile_rtmp_value_plans(&maximum).expect("maximum value plans");
+        assert_eq!(plans[0].outbound_chunk_size(), 1_048_576);
+        assert_eq!(
+            plans[0].applications()[0].fanout().max_subscribers(),
+            1_000_000
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn covered_canonical_policy_matrix_rejects_before_value_translation() {
+        let base = oxiroute_config_source::load_lua(
+            r#"
+return {
+  version = 1,
+  listeners = {},
+  rtmp_services = {
+    {
+      name = "streaming",
+      applications = { { name = "live", live = true } },
+    },
+  },
+}
+"#,
+        )
+        .expect("canonical policy base")
+        .to_draft();
+
+        let mut invalid = Vec::new();
+
+        let mut duplicate_services = base.clone();
+        duplicate_services
+            .rtmp_services
+            .push(duplicate_services.rtmp_services[0].clone());
+        invalid.push(duplicate_services);
+
+        let mut duplicate_applications = base.clone();
+        let application = duplicate_applications.rtmp_services[0].applications[0].clone();
+        duplicate_applications.rtmp_services[0]
+            .applications
+            .push(application);
+        invalid.push(duplicate_applications);
+
+        let mut duplicate_push = base.clone();
+        duplicate_push.rtmp_services[0].outbound_policy.deny_private = false;
+        let target = oxiroute_config::RtmpPushTarget {
+            host: "origin.example.test".into(),
+            port: 1935,
+            application: "$name".into(),
+            scheme: oxiroute_config::RtmpTransport::Rtmp,
+            stream_name: None,
+            tc_url: None,
+            flash_version: None,
+            credentials: None,
+        };
+        duplicate_push.rtmp_services[0].applications[0].push_targets = vec![target.clone(), target];
+        invalid.push(duplicate_push);
+
+        let mut non_live_push = base.clone();
+        non_live_push.rtmp_services[0].applications[0].live = false;
+        non_live_push.rtmp_services[0].applications[0]
+            .push_targets
+            .push(oxiroute_config::RtmpPushTarget {
+                host: "origin.example.test".into(),
+                port: 1935,
+                application: "$name".into(),
+                scheme: oxiroute_config::RtmpTransport::Rtmp,
+                stream_name: None,
+                tc_url: None,
+                flash_version: None,
+                credentials: None,
+            });
+        invalid.push(non_live_push);
+
+        let mut non_live_media = base.clone();
+        non_live_media.rtmp_services[0].applications[0].live = false;
+        non_live_media.rtmp_services[0].applications[0].hls =
+            Some(serde_json::from_value(serde_json::json!({"root_directory": "/media"})).unwrap());
+        invalid.push(non_live_media);
+
+        let mut shared_root = base.clone();
+        let first: oxiroute_config::RtmpHlsPolicy = serde_json::from_value(serde_json::json!({
+            "root_directory": "/shared"
+        }))
+        .unwrap();
+        let mut second = first.clone();
+        second.max_storage_bytes += 1;
+        shared_root.rtmp_services[0].applications[0].hls = Some(first);
+        let mut second_application = shared_root.rtmp_services[0].applications[0].clone();
+        second_application.name = "backup".into();
+        second_application.hls = Some(second);
+        shared_root.rtmp_services[0]
+            .applications
+            .push(second_application);
+        invalid.push(shared_root);
+
+        let mut unknown_exec_application = base.clone();
+        unknown_exec_application.rtmp_services[0]
+            .exec_profiles
+            .push(
+                serde_json::from_value(serde_json::json!({
+                    "name": "profile",
+                    "application": "missing",
+                    "executable": "/bin/transcoder",
+                    "working_directory": "/work"
+                }))
+                .unwrap(),
+            );
+        invalid.push(unknown_exec_application);
+
+        for (index, draft) in invalid.into_iter().enumerate() {
+            assert!(draft.validate().is_err(), "canonical policy case {index}");
+        }
+
+        let mut too_many_services = base;
+        for index in 1..=64 {
+            let mut service = too_many_services.rtmp_services[0].clone();
+            service.name = format!("service-{index}");
+            too_many_services.rtmp_services.push(service);
+        }
+        assert!(
+            too_many_services.validate().is_err(),
+            "canonical service count +1"
+        );
+    }
+
+    #[test]
+    fn translator_errors_map_to_typed_redacted_service_plan_errors() {
+        const SECRET_PATH: &str = "/secret/tenant/transcoder-token";
+        const SECRET_TOKEN: &str = "token=super-secret";
+        const SECRET_URL: &str = "https://user:password@example.test/private";
+        let mut config = oxiroute_config_source::load_lua(
+            r#"
+return {
+  version = 1,
+  listeners = {},
+  rtmp_services = {
+    {
+      name = "streaming",
+      exec_profiles = {
+        {
+          name = "publisher",
+          application = "live",
+          executable = "/bin/transcoder",
+          working_directory = "/work",
+        },
+      },
+      applications = { { name = "live", live = true } },
+    },
+  },
+}
+"#,
+        )
+        .unwrap()
+        .to_draft();
+        config.rtmp_services[0].exec_profiles[0].executable = "/bin/sh".into();
+        config.rtmp_services[0].exec_profiles[0].working_directory = SECRET_PATH.into();
+        config.rtmp_services[0].exec_profiles[0].arguments = vec![SECRET_TOKEN.into()];
+        config.rtmp_services[0].applications[0].callbacks.on_publish = Some(SECRET_URL.into());
+        config.rtmp_services[0].applications[0].recorders.push(
+            serde_json::from_value(serde_json::json!({
+                "name": "archive",
+                "root_directory": SECRET_PATH,
+            }))
+            .unwrap(),
+        );
+
+        let source = compile_rtmp_value_plans_from_draft(&config).unwrap_err();
+        let error = rtmp_preparation_error(source);
+        let ServicePlanError::RtmpPreparation(source) = &error else {
+            panic!("typed RTMP preparation error")
+        };
+        assert_eq!(source.service_id(), Some("streaming"));
+        assert_eq!(source.application_name(), Some("live"));
+        assert_eq!(source.profile_name(), Some("publisher"));
+        assert_eq!(source.recorder_name(), None);
+        assert_eq!(source.field(), "exec.executable");
+        assert_eq!(source.category(), oxiroute_rtmp::RtmpPrepareCategory::Value);
+        assert!(error.source().is_some());
+        assert!(error.source().unwrap().source().is_some());
+
+        let rendered = format!("{error:#}");
+        for expected in [
+            "service `streaming`",
+            "application `live`",
+            "profile `publisher`",
+            "exec.executable",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected}: {rendered}"
+            );
+        }
+        for secret in [SECRET_PATH, SECRET_TOKEN, SECRET_URL] {
+            assert!(!rendered.contains(secret), "leaked {secret}: {rendered}");
+            let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+            while let Some(source) = current {
+                assert!(
+                    !source.to_string().contains(secret),
+                    "source leaked {secret}"
+                );
+                current = source.source();
+            }
+        }
+
+        config.rtmp_services[0].exec_profiles.clear();
+        config.rtmp_services[0].applications[0].callbacks.on_publish = None;
+        config.rtmp_services[0].applications[0].recorders[0].root_directory =
+            "relative-secret".into();
+        let recorder = compile_rtmp_value_plans_from_draft(&config).unwrap_err();
+        assert_eq!(recorder.service_id(), Some("streaming"));
+        assert_eq!(recorder.application_name(), Some("live"));
+        assert_eq!(recorder.recorder_name(), Some("archive"));
+        assert_eq!(recorder.profile_name(), None);
+        assert_eq!(recorder.field(), "recorder.root_directory");
+        assert!(!recorder.to_string().contains("relative-secret"));
+    }
 }

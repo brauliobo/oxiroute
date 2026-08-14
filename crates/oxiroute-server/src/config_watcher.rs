@@ -13,9 +13,9 @@ use std::{
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::{
-    GenerationManager,
+    GenerationManager, RuntimeMode,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
-    listener_reservation::unix_listener_mode_change_requires_restart,
+    generation::GENERATION_PREPARATION_TIMEOUT,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -70,6 +70,7 @@ impl ConfigWatcher {
         coordinator: CanonicalConfigCoordinator,
         generations: GenerationManager,
         options: ConfigWatcherOptions,
+        mode: RuntimeMode,
     ) -> notify::Result<Self> {
         validate_options(options)?;
         let parent = coordinator
@@ -107,7 +108,8 @@ impl ConfigWatcher {
             .spawn(move || {
                 let mut watcher = watcher;
                 let mut watched_paths = watched_paths;
-                if let Some(dependencies) = reconcile(&coordinator, &generations, &thread_counters)
+                if let Some(dependencies) =
+                    reconcile(&coordinator, &generations, &thread_counters, mode)
                     && rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
                         .is_err()
                 {
@@ -135,7 +137,7 @@ impl ConfigWatcher {
                         }
                     }
                     if let Some(dependencies) =
-                        reconcile(&coordinator, &generations, &thread_counters)
+                        reconcile(&coordinator, &generations, &thread_counters, mode)
                         && rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
                             .is_err()
                     {
@@ -241,26 +243,51 @@ fn reconcile(
     coordinator: &CanonicalConfigCoordinator,
     generations: &GenerationManager,
     counters: &WatcherCounters,
+    mode: RuntimeMode,
+) -> Option<Vec<PathBuf>> {
+    reconcile_with_preparation_timeout(
+        coordinator,
+        generations,
+        counters,
+        mode,
+        GENERATION_PREPARATION_TIMEOUT,
+    )
+}
+
+fn reconcile_with_preparation_timeout(
+    coordinator: &CanonicalConfigCoordinator,
+    generations: &GenerationManager,
+    counters: &WatcherCounters,
+    mode: RuntimeMode,
+    preparation_timeout: Duration,
 ) -> Option<Vec<PathBuf>> {
     counters.reconciliations.fetch_add(1, Ordering::Relaxed);
     match coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => {
             let dependencies = document.dependencies.clone();
             let status = generations.status();
-            generations.observe_disk_revision(document.disk_revision.clone());
-            let revision = &document.candidate_revision;
+            generations.observe_disk_revision(document.authored_revision.clone());
+            let revision = &document.effective_revision;
             let restart_required = generations.active().is_some_and(|active| {
-                unix_listener_mode_change_requires_restart(
-                    active.config(),
-                    &document.normalized_config,
-                )
+                active.listener_restart_required(mode, &document.validated_config)
             });
-            if status.active_revision.as_ref() != Some(revision)
+            let preparation = if status.active_revision.as_ref() != Some(revision)
                 && status.candidate_revision.as_ref() != Some(revision)
                 && status.quarantined_revision.as_ref() != Some(revision)
                 && !restart_required
-                && generations.prepare(*document).is_err()
             {
+                Some(
+                    generations
+                        .prepare_with_deadline(*document, Instant::now() + preparation_timeout),
+                )
+            } else {
+                None
+            };
+            if preparation.is_some_and(|result| {
+                result.is_err_and(|error| {
+                    !matches!(error, crate::GenerationError::PreparationTimedOut)
+                })
+            }) {
                 counters.rejected.fetch_add(1, Ordering::Relaxed);
             }
             Some(dependencies)
@@ -293,7 +320,7 @@ mod tests {
             RenameMode,
         },
     };
-    use oxiroute_config::{Config, render_lua};
+    use oxiroute_config::ConfigDraft;
     use tempfile::TempDir;
 
     use super::*;
@@ -348,7 +375,16 @@ mod tests {
     fn periodic_reconciliation_does_not_feed_access_events_back() {
         let directory = TempDir::new().expect("directory");
         let path = directory.path().join("oxiroute.lua");
-        fs::write(&path, render_lua(&empty_config()).expect("render")).expect("config");
+        let config = empty_config().validate().expect("valid config");
+        fs::write(
+            &path,
+            oxiroute_config_source::render_config(
+                oxiroute_config_source::ConfigFormat::Lua,
+                &config,
+            )
+            .expect("render"),
+        )
+        .expect("config");
         let coordinator = CanonicalConfigCoordinator::new(&path).expect("coordinator");
         let manager = GenerationManager::new();
         let options = ConfigWatcherOptions {
@@ -357,7 +393,8 @@ mod tests {
             reconciliation_interval: Duration::from_millis(80),
         };
         let started = Instant::now();
-        let mut watcher = ConfigWatcher::start(coordinator, manager, options).expect("watcher");
+        let mut watcher = ConfigWatcher::start(coordinator, manager, options, RuntimeMode::Direct)
+            .expect("watcher");
 
         wait_until(|| watcher.status().reconciliations >= 4);
 
@@ -372,7 +409,16 @@ mod tests {
         let directory = TempDir::new().expect("directory");
         let path = directory.path().join("oxiroute.lua");
         let mut config = empty_config();
-        fs::write(&path, render_lua(&config).expect("initial render")).expect("initial config");
+        let initial_config = config.clone().validate().expect("valid initial config");
+        fs::write(
+            &path,
+            oxiroute_config_source::render_config(
+                oxiroute_config_source::ConfigFormat::Lua,
+                &initial_config,
+            )
+            .expect("initial render"),
+        )
+        .expect("initial config");
         let coordinator = CanonicalConfigCoordinator::new(&path).expect("coordinator");
         let manager = GenerationManager::new();
         let ConfigLoadOutcome::Loaded(initial) = coordinator.load() else {
@@ -389,12 +435,22 @@ mod tests {
                 max_debounce: Duration::from_millis(30),
                 reconciliation_interval: Duration::from_millis(40),
             },
+            RuntimeMode::Direct,
         )
         .expect("watcher");
 
         config.max_connections = Some(7);
         let replacement = directory.path().join("candidate.lua");
-        fs::write(&replacement, render_lua(&config).expect("candidate render")).expect("candidate");
+        let config = config.validate().expect("valid candidate config");
+        fs::write(
+            &replacement,
+            oxiroute_config_source::render_config(
+                oxiroute_config_source::ConfigFormat::Lua,
+                &config,
+            )
+            .expect("candidate render"),
+        )
+        .expect("candidate");
         fs::rename(&replacement, &path).expect("atomic replacement");
         wait_until(|| {
             manager
@@ -419,6 +475,86 @@ mod tests {
     }
 
     #[test]
+    fn reconciliation_projects_structural_candidates_by_explicit_runtime_mode() {
+        for (mode, pending) in [
+            (RuntimeMode::Direct, true),
+            (RuntimeMode::Supervised, false),
+        ] {
+            let directory = TempDir::new().expect("directory");
+            let path = directory.path().join("oxiroute.lua");
+            let active = empty_config().validate().expect("valid active config");
+            fs::write(
+                &path,
+                oxiroute_config_source::render_config(
+                    oxiroute_config_source::ConfigFormat::Lua,
+                    &active,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let coordinator = CanonicalConfigCoordinator::new(&path).unwrap();
+            let manager = match mode {
+                RuntimeMode::Direct => GenerationManager::new(),
+                RuntimeMode::Supervised => GenerationManager::new_supervised(),
+            };
+            let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
+                panic!("active load")
+            };
+            let candidate = manager.prepare(*document).expect("active prepare");
+            manager.activate(&candidate).expect("active generation");
+
+            let mut changed = empty_config();
+            changed.stats = Some(oxiroute_config::Stats {
+                binds: vec!["127.0.0.1:18404".parse().unwrap()],
+                admin_token_file: None,
+                pages: Vec::new(),
+            });
+            let changed = changed.validate().expect("valid changed config");
+            let changed_revision = oxiroute_config_source::render_config(
+                oxiroute_config_source::ConfigFormat::Lua,
+                &changed,
+            )
+            .unwrap();
+            fs::write(&path, changed_revision).unwrap();
+            let counters = WatcherCounters::default();
+
+            assert!(reconcile(&coordinator, &manager, &counters, mode).is_some());
+            assert_eq!(manager.status().candidate_revision.is_some(), pending);
+            assert!(manager.status().quarantined_revision.is_none());
+            assert_eq!(counters.rejected.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn expired_preparation_is_retryable_and_does_not_count_as_rejected() {
+        let directory = TempDir::new().expect("directory");
+        let path = directory.path().join("oxiroute.lua");
+        let config = empty_config().validate().expect("valid config");
+        fs::write(
+            &path,
+            oxiroute_config_source::render_config(
+                oxiroute_config_source::ConfigFormat::Lua,
+                &config,
+            )
+            .expect("render"),
+        )
+        .expect("config");
+        let coordinator = CanonicalConfigCoordinator::new(&path).expect("coordinator");
+        let manager = GenerationManager::new();
+        let counters = WatcherCounters::default();
+        let result = reconcile_with_preparation_timeout(
+            &coordinator,
+            &manager,
+            &counters,
+            RuntimeMode::Direct,
+            Duration::ZERO,
+        );
+
+        assert!(result.is_some());
+        assert_eq!(counters.rejected.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
     fn periodic_reconciliation_prepares_native_dependency_changes() {
         let directory = TempDir::new().expect("directory");
         let native_directory = directory.path().join("native");
@@ -436,7 +572,7 @@ mod tests {
         let ConfigLoadOutcome::Loaded(initial) = coordinator.load() else {
             panic!("initial load")
         };
-        let initial_candidate_revision = initial.candidate_revision.clone();
+        let initial_candidate_revision = initial.effective_revision.clone();
         let initial = manager.prepare(*initial).expect("initial prepare");
         manager.activate(&initial).expect("initial activation");
         let mut watcher = ConfigWatcher::start(
@@ -447,6 +583,7 @@ mod tests {
                 max_debounce: Duration::from_millis(30),
                 reconciliation_interval: Duration::from_millis(40),
             },
+            RuntimeMode::Direct,
         )
         .expect("watcher");
 
@@ -495,7 +632,7 @@ mod tests {
         let ConfigLoadOutcome::Loaded(initial) = coordinator.load() else {
             panic!("initial load")
         };
-        let initial_candidate_revision = initial.candidate_revision.clone();
+        let initial_candidate_revision = initial.effective_revision.clone();
         let initial = manager.prepare(*initial).expect("initial prepare");
         manager.activate(&initial).expect("initial activation");
         let mut watcher = ConfigWatcher::start(
@@ -506,6 +643,7 @@ mod tests {
                 max_debounce: Duration::from_millis(30),
                 reconciliation_interval: Duration::from_secs(30),
             },
+            RuntimeMode::Direct,
         )
         .expect("watcher");
 
@@ -519,7 +657,14 @@ mod tests {
         });
 
         let candidate = manager.candidate().expect("queued candidate");
-        assert!(candidate.generation().config().listeners.is_empty());
+        assert!(
+            candidate
+                .generation()
+                .config()
+                .as_draft()
+                .listeners
+                .is_empty()
+        );
         assert!(watcher.status().events > 0);
         watcher.shutdown();
     }
@@ -546,7 +691,7 @@ mod tests {
         let ConfigLoadOutcome::Loaded(initial) = coordinator.load() else {
             panic!("initial load")
         };
-        let initial_revision = initial.candidate_revision.clone();
+        let initial_revision = initial.effective_revision.clone();
         let initial = manager.prepare(*initial).expect("initial prepare");
         manager.activate(&initial).expect("initial activation");
         let mut watcher = ConfigWatcher::start(
@@ -557,6 +702,7 @@ mod tests {
                 max_debounce: Duration::from_millis(30),
                 reconciliation_interval: Duration::from_secs(30),
             },
+            RuntimeMode::Direct,
         )
         .expect("watcher");
 
@@ -620,8 +766,8 @@ mod tests {
         )
     }
 
-    fn empty_config() -> Config {
-        Config {
+    fn empty_config() -> ConfigDraft {
+        ConfigDraft {
             version: 1,
             max_connections: None,
             management: None,

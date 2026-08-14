@@ -1,15 +1,18 @@
 use std::{
     collections::BTreeMap,
     net::IpAddr,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        Arc, Mutex, Once, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
 use crate::{
     CatalogError, LiveHub, LiveHubError, MediaApplication, PublisherLease, RecorderDefinition,
-    RtmpAutoPushConfig, RtmpAutoPushError, RtmpAutoPushStatus, RtmpCallbackPolicy, RtmpPullTarget,
-    RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, SessionId, StreamKey,
-    VodApplication, VodError,
+    RtmpAutoPushConfig, RtmpAutoPushConfigError, RtmpAutoPushError, RtmpAutoPushStatus,
+    RtmpCallbackPolicy, RtmpPullTarget, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart,
+    RtmpRegistry, SessionId, StreamKey, VodApplication, VodError,
     auto_push::AutoPushCoordinator,
     exec::ExecProfile,
     exec_worker::ExecProfileSet,
@@ -65,6 +68,14 @@ impl RtmpNetwork {
             .then_some(Self::Cidr { address, prefix })
     }
 
+    #[must_use]
+    pub const fn is_representable(&self) -> bool {
+        match self {
+            Self::All => true,
+            Self::Cidr { address, prefix } => *prefix <= if address.is_ipv4() { 32 } else { 128 },
+        }
+    }
+
     fn matches(&self, peer: Option<IpAddr>) -> bool {
         match self {
             Self::All => true,
@@ -91,7 +102,7 @@ fn masked(value: impl Into<u128>, bits: u8, prefix: u8) -> u128 {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RtmpAccessRule {
     action: RtmpAccessAction,
     network: RtmpNetwork,
@@ -102,9 +113,19 @@ impl RtmpAccessRule {
     pub fn new(action: RtmpAccessAction, network: RtmpNetwork) -> Self {
         Self { action, network }
     }
+
+    #[must_use]
+    pub const fn action(&self) -> RtmpAccessAction {
+        self.action
+    }
+
+    #[must_use]
+    pub const fn network(&self) -> &RtmpNetwork {
+        &self.network
+    }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct RtmpTokenPolicy {
     parameter: Arc<str>,
     secret: Arc<[u8]>,
@@ -139,6 +160,11 @@ impl RtmpTokenPolicy {
             parameter,
             secret: Arc::from(secret),
         })
+    }
+
+    #[must_use]
+    pub fn parameter(&self) -> &str {
+        &self.parameter
     }
 
     fn authorize(&self, query: Option<&str>) -> Result<(), RtmpAuthorizationError> {
@@ -232,7 +258,21 @@ impl RtmpSessionCeilings {
             max_viewers,
         }
     }
+
+    /// # Errors
+    ///
+    /// Returns an error when any application session ceiling is zero.
+    pub const fn validate_intrinsic(self) -> Result<(), RtmpSessionLimitError> {
+        if self.max_connections == 0 || self.max_publishers == 0 || self.max_viewers == 0 {
+            return Err(RtmpSessionLimitError);
+        }
+        Ok(())
+    }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("RTMP session limit must be nonzero")]
+pub struct RtmpSessionLimitError;
 
 impl Default for RtmpSessionCeilings {
     fn default() -> Self {
@@ -383,6 +423,29 @@ impl RtmpSessionLimits {
             self.max_amf0_values,
             self.max_amf0_string_bytes,
         )
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when any inbound protocol or AMF admission bound is zero.
+    pub const fn validate_intrinsic(self) -> Result<(), RtmpSessionLimitError> {
+        if self.max_inbound_chunk_size == 0
+            || self.max_inbound_chunk_size > MAX_INBOUND_CHUNK_SIZE
+            || self.max_inbound_message_size == 0
+            || self.max_inbound_message_size > MAX_INBOUND_MESSAGE_SIZE
+            || self.window_ack_size == 0
+            || self.max_amf0_depth == 0
+            || self.max_amf0_depth > MAX_INBOUND_AMF0_DEPTH
+            || self.max_amf0_container_entries == 0
+            || self.max_amf0_container_entries > MAX_INBOUND_AMF0_CONTAINER_ENTRIES
+            || self.max_amf0_values == 0
+            || self.max_amf0_values > MAX_INBOUND_AMF0_VALUES
+            || self.max_amf0_string_bytes == 0
+            || self.max_amf0_string_bytes > MAX_INBOUND_AMF0_STRING_BYTES
+        {
+            return Err(RtmpSessionLimitError);
+        }
+        Ok(())
     }
 }
 
@@ -713,12 +776,85 @@ pub struct RtmpServiceRuntime {
     pull_controllers: Arc<Vec<Arc<RtmpPullController>>>,
     callbacks: Arc<RtmpCallbackPolicy>,
     auto_push: Option<Arc<AutoPushCoordinator>>,
+    recording_retirement_started: Arc<AtomicBool>,
+    recording_shutdown_initiated: Arc<Once>,
+    #[cfg(test)]
+    retirement_callback_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+pub struct RtmpServicePreparation {
+    service_id: Arc<str>,
+    hub: LiveHub,
+    policy: RtmpSessionPolicy,
+    callbacks: RtmpCallbackPolicy,
+    auto_push: Option<RtmpAutoPushConfig>,
+}
+
+impl RtmpServicePreparation {
+    #[must_use]
+    pub fn new(service_id: impl Into<Arc<str>>, hub: LiveHub, policy: RtmpSessionPolicy) -> Self {
+        Self {
+            service_id: service_id.into(),
+            hub,
+            policy,
+            callbacks: RtmpCallbackPolicy::default(),
+            auto_push: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_callbacks(mut self, callbacks: RtmpCallbackPolicy) -> Self {
+        self.callbacks = callbacks;
+        self
+    }
+
+    /// # Errors
+    ///
+    /// Returns an auto-push configuration error when the preparation cannot retain the policy.
+    pub fn with_auto_push(
+        mut self,
+        config: RtmpAutoPushConfig,
+    ) -> Result<Self, RtmpAutoPushConfigError> {
+        config.validate_intrinsic()?;
+        self.auto_push = config.enabled.then_some(config);
+        Ok(self)
+    }
+
+    /// Starts recorder reaping and configured pull controllers exactly once by consuming the
+    /// preparation. Auto-push transport remains lazy until the first publisher is admitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an auto-push configuration error without returning a partially started runtime.
+    pub fn start(
+        self,
+        registry: Arc<RtmpRegistry>,
+    ) -> Result<RtmpServiceRuntime, RtmpAutoPushConfigError> {
+        if let Some(auto_push) = &self.auto_push {
+            auto_push.validate_intrinsic()?;
+        }
+        let mut runtime =
+            RtmpServiceRuntime::start(self.service_id, registry, self.hub, self.policy)
+                .with_callbacks(self.callbacks);
+        if let Some(auto_push) = self.auto_push {
+            runtime = runtime.with_auto_push(auto_push)?;
+        }
+        Ok(runtime)
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static PREPARATION_STARTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static REAPER_STARTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PULL_STARTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Cheap, generation-independent ownership of one recorder shutdown lifecycle.
 #[derive(Clone)]
 pub struct RtmpRecorderLifecycle {
     control: RecorderShutdownControl,
+    initiated: Arc<Once>,
     owner: Weak<RecorderReaperOwner>,
     reaper: RecorderReaperHandle,
     registry: Arc<RtmpRegistry>,
@@ -738,12 +874,13 @@ impl RtmpRecorderLifecycle {
 
     #[must_use]
     pub fn initiate_shutdown(&self, deadline: Instant) -> RtmpRecorderShutdown {
-        if let Some(owner) = self.owner.upgrade() {
-            drop(owner.initiate_shutdown(deadline));
-        }
-        let shutdown = self.control.initiate_shutdown(deadline);
-        self.registry.initiate_recorder_shutdown(&self.reaper);
-        shutdown
+        self.initiated.call_once(|| {
+            if let Some(owner) = self.owner.upgrade() {
+                drop(owner.initiate_shutdown(deadline));
+            }
+            self.registry.initiate_recorder_shutdown(&self.reaper);
+        });
+        self.control.initiate_shutdown(deadline)
     }
 }
 
@@ -755,6 +892,17 @@ impl RtmpServiceRuntime {
         hub: LiveHub,
         policy: RtmpSessionPolicy,
     ) -> Self {
+        Self::start(service_id, registry, hub, policy)
+    }
+
+    fn start(
+        service_id: impl Into<Arc<str>>,
+        registry: Arc<RtmpRegistry>,
+        hub: LiveHub,
+        policy: RtmpSessionPolicy,
+    ) -> Self {
+        #[cfg(test)]
+        PREPARATION_STARTS.with(|count| count.set(count.get() + 1));
         let service_id = service_id.into();
         let max_recorders_per_stream = policy
             .applications
@@ -763,6 +911,8 @@ impl RtmpServiceRuntime {
             .max()
             .unwrap_or(0);
         let recorder_runtime = (max_recorders_per_stream > 0).then(|| {
+            #[cfg(test)]
+            REAPER_STARTS.with(|count| count.set(count.get() + 1));
             let capacity = hub
                 .limits()
                 .max_streams
@@ -776,6 +926,8 @@ impl RtmpServiceRuntime {
             .values()
             .flat_map(|application| {
                 application.pull_targets.iter().cloned().map(|target| {
+                    #[cfg(test)]
+                    PULL_STARTS.with(|count| count.set(count.get() + 1));
                     RtmpPullController::start(
                         Arc::clone(&service_id),
                         target,
@@ -785,7 +937,7 @@ impl RtmpServiceRuntime {
                 })
             })
             .collect();
-        Self {
+        let runtime = Self {
             admission_open: Arc::new(Mutex::new(true)),
             service_id,
             registry,
@@ -797,7 +949,13 @@ impl RtmpServiceRuntime {
             pull_controllers: Arc::new(pull_controllers),
             callbacks: Arc::new(RtmpCallbackPolicy::default()),
             auto_push: None,
-        }
+            recording_retirement_started: Arc::new(AtomicBool::new(false)),
+            recording_shutdown_initiated: Arc::new(Once::new()),
+            #[cfg(test)]
+            retirement_callback_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        runtime.install_recording_retirement();
+        runtime
     }
 
     #[must_use]
@@ -810,8 +968,12 @@ impl RtmpServiceRuntime {
     ///
     /// # Errors
     ///
-    /// Returns an auto-push configuration error when the coordinator cannot be constructed.
-    pub fn with_auto_push(mut self, config: RtmpAutoPushConfig) -> Result<Self, RtmpAutoPushError> {
+    /// Returns an auto-push configuration error before the coordinator is constructed.
+    pub fn with_auto_push(
+        mut self,
+        config: RtmpAutoPushConfig,
+    ) -> Result<Self, RtmpAutoPushConfigError> {
+        config.validate_intrinsic()?;
         if config.enabled {
             let application_hubs = self
                 .policy
@@ -861,6 +1023,18 @@ impl RtmpServiceRuntime {
     }
 
     pub fn close_admission(&self) {
+        self.close_service_admission();
+        self.registry.close_admission();
+    }
+
+    pub(crate) fn admission_is_open(&self) -> bool {
+        *self
+            .admission_open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn close_service_admission(&self) {
         let mut admission_open = self
             .admission_open
             .lock()
@@ -869,7 +1043,6 @@ impl RtmpServiceRuntime {
             return;
         }
         *admission_open = false;
-        self.registry.close_admission();
         if let Some(auto_push) = &self.auto_push {
             auto_push.close();
         }
@@ -884,25 +1057,73 @@ impl RtmpServiceRuntime {
         else {
             return None;
         };
-        Some(RtmpRecorderLifecycle {
+        let lifecycle = RtmpRecorderLifecycle {
             control: reaper.shutdown_control(),
+            initiated: Arc::clone(&self.recording_shutdown_initiated),
             owner: Arc::downgrade(owner),
             reaper: reaper.clone(),
             registry: Arc::clone(&self.registry),
             shutdown: owner.shutdown_handle(),
-        })
+        };
+        Some(lifecycle)
     }
 
     #[must_use]
     pub fn initiate_recorder_shutdown(&self, deadline: Instant) -> Option<RtmpRecorderShutdown> {
         self.close_admission();
+        self.initiate_recorder_shutdown_after_admission_close(deadline)
+    }
+
+    pub(crate) fn initiate_recorder_shutdown_scoped(
+        &self,
+        deadline: Instant,
+    ) -> Option<RtmpRecorderShutdown> {
+        self.close_service_admission();
+        self.initiate_recorder_shutdown_after_admission_close(deadline)
+    }
+
+    fn initiate_recorder_shutdown_after_admission_close(
+        &self,
+        deadline: Instant,
+    ) -> Option<RtmpRecorderShutdown> {
         let (Some(owner), Some(reaper)) = (&self.recorder_reaper_owner, &self.recorder_reaper)
         else {
             return None;
         };
-        let shutdown = owner.initiate_shutdown(deadline);
-        self.registry.initiate_recorder_shutdown(reaper);
-        Some(shutdown)
+        self.recording_shutdown_initiated.call_once(|| {
+            drop(owner.initiate_shutdown(deadline));
+            self.registry.initiate_recorder_shutdown(reaper);
+        });
+        Some(reaper.shutdown_control().initiate_shutdown(deadline))
+    }
+
+    fn install_recording_retirement(&self) {
+        let Some(owner) = &self.recorder_reaper_owner else {
+            return;
+        };
+        let shutdown = owner.shutdown_handle();
+        if !self
+            .recording_retirement_started
+            .swap(true, Ordering::AcqRel)
+        {
+            let policy = self.policy.clone();
+            #[cfg(test)]
+            let callback_count = Arc::clone(&self.retirement_callback_count);
+            shutdown.set_retirement(move || {
+                for application in policy.applications.values() {
+                    for recorder in application.recorder_policies() {
+                        recorder.retire_store();
+                    }
+                }
+                #[cfg(test)]
+                callback_count.fetch_add(1, Ordering::AcqRel);
+            });
+        }
+    }
+
+    #[cfg(test)]
+    fn retirement_callback_count(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        Arc::clone(&self.retirement_callback_count)
     }
 
     #[must_use]
@@ -969,6 +1190,10 @@ impl RtmpServiceRuntime {
             pull_controllers: Arc::clone(&self.pull_controllers),
             callbacks: Arc::clone(&self.callbacks),
             auto_push: self.auto_push.clone(),
+            recording_retirement_started: Arc::clone(&self.recording_retirement_started),
+            recording_shutdown_initiated: Arc::clone(&self.recording_shutdown_initiated),
+            #[cfg(test)]
+            retirement_callback_count: Arc::clone(&self.retirement_callback_count),
         }
     }
 
@@ -1346,8 +1571,160 @@ mod tests {
     use super::*;
     use crate::{
         HlsFragmentNaming, HlsOutputConfig, LiveHubLimits, MediaApplication, MediaEvent,
-        MediaStore, MediaStoreLimits, RtmpCapabilities,
+        MediaStore, MediaStoreLimits, RtmpAutoPushConfigError, RtmpCapabilities,
     };
+
+    #[test]
+    fn preparation_starts_no_runtime_owners_until_consumed() {
+        PREPARATION_STARTS.set(0);
+        REAPER_STARTS.set(0);
+        PULL_STARTS.set(0);
+        let hub = LiveHub::new(LiveHubLimits::default());
+        let application = RtmpApplication::with_runtime("live", true, false, hub.clone(), [], [])
+            .with_pull_targets([RtmpPullTarget {
+                address: "127.0.0.1:9".parse().unwrap(),
+                host: "127.0.0.1".into(),
+                transport: crate::RtmpTransport::Rtmp,
+                source_application: "origin".into(),
+                source_stream_name: "camera".into(),
+                local_application: "live".into(),
+                local_stream_name: "camera".into(),
+                options: crate::RtmpClientOptions::default(),
+                config: crate::RtmpRelayConfig::default(),
+            }]);
+        let preparation =
+            RtmpServicePreparation::new("live", hub, RtmpSessionPolicy::new([application]));
+
+        assert_eq!(PREPARATION_STARTS.get(), 0);
+        assert_eq!(REAPER_STARTS.get(), 0);
+        assert_eq!(PULL_STARTS.get(), 0);
+        let runtime = preparation
+            .start(Arc::new(RtmpRegistry::new(RtmpCapabilities {
+                live_ingest: false,
+                manual_recording: false,
+            })))
+            .expect("start dormant preparation");
+        assert_eq!(PREPARATION_STARTS.get(), 1);
+        assert_eq!(REAPER_STARTS.get(), 0);
+        assert_eq!(PULL_STARTS.get(), 1);
+        drop(runtime);
+    }
+
+    fn invalid_auto_push_config() -> RtmpAutoPushConfig {
+        RtmpAutoPushConfig {
+            enabled: true,
+            socket_dir: "relative/socket".into(),
+            secret_file: None,
+            reconnect_interval: Duration::from_secs(1),
+            connect_timeout: Duration::from_secs(1),
+            handshake_timeout: Duration::from_secs(1),
+            max_peers: 1,
+            max_queue_messages: 1,
+            max_queue_bytes: 1,
+            max_streams: 1,
+        }
+    }
+
+    #[test]
+    fn preparation_rejects_invalid_auto_push_config_before_start() {
+        let preparation = RtmpServicePreparation::new(
+            "live",
+            LiveHub::new(LiveHubLimits::default()),
+            RtmpSessionPolicy::default(),
+        );
+        let Err(error) = preparation.with_auto_push(invalid_auto_push_config()) else {
+            panic!("invalid auto-push config was accepted by preparation")
+        };
+        assert_eq!(error, RtmpAutoPushConfigError::InvalidField("socket_dir"));
+    }
+
+    #[test]
+    fn runtime_rejects_invalid_auto_push_config_before_coordinator_construction() {
+        let runtime = RtmpServiceRuntime::new(
+            "live",
+            Arc::new(RtmpRegistry::new(RtmpCapabilities {
+                live_ingest: true,
+                manual_recording: false,
+            })),
+            LiveHub::new(LiveHubLimits::default()),
+            RtmpSessionPolicy::default(),
+        );
+        let Err(error) = runtime.with_auto_push(invalid_auto_push_config()) else {
+            panic!("invalid auto-push config was accepted by runtime")
+        };
+        assert_eq!(error, RtmpAutoPushConfigError::InvalidField("socket_dir"));
+    }
+
+    #[test]
+    fn retirement_authority_survives_dropped_lifecycle_and_shutdown_handles() {
+        use crate::{
+            RecorderWorkerConfig, RecordingPathPolicy, RecordingStore, RecordingStoreLimits,
+        };
+        use tempfile::tempdir;
+
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024),
+                max_files: Some(4),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let recorder = RtmpRecorderPolicy::new(
+            "archive",
+            RtmpRecorderStart::Continuous,
+            store,
+            RecordingPathPolicy::new(".flv", false).expect("recording path policy"),
+            RecorderWorkerConfig::default(),
+        );
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: true,
+        }));
+        let runtime = RtmpServiceRuntime::new(
+            "live",
+            Arc::clone(&registry),
+            LiveHub::new(LiveHubLimits::default()),
+            RtmpSessionPolicy::new([RtmpApplication::with_runtime(
+                "live",
+                true,
+                false,
+                LiveHub::new(LiveHubLimits::default()),
+                [],
+                [recorder],
+            )]),
+        );
+        let callback_count = runtime.retirement_callback_count();
+        let lifecycle = runtime.recorder_lifecycle().expect("recorder lifecycle");
+        let shutdown = lifecycle.initiate_shutdown(Instant::now() + Duration::from_secs(1));
+        drop(shutdown);
+        drop(lifecycle);
+        drop(runtime);
+        drop(registry);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while callback_count.load(Ordering::Acquire) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "recording retirement callback timed out"
+            );
+            thread::yield_now();
+        }
+
+        let reopened = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024),
+                max_files: Some(4),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("retired store reopens");
+        drop(reopened);
+        assert_eq!(callback_count.load(Ordering::Acquire), 1);
+    }
 
     #[test]
     fn publisher_reconnect_never_exposes_split_hub_and_catalog_ownership() {

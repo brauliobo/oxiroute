@@ -1,27 +1,8 @@
 use oxiroute_config_source::{
     ConfigFormat, ConfigSourceError, MAX_STRUCTURAL_DEPTH, UciEntry, decode_value,
-    parse_uci_document, render_value,
+    parse_uci_document,
 };
 use serde_json::json;
-
-#[test]
-fn round_trips_deterministic_generic_records() {
-    let value = json!({
-        "apostrophe": "router's value",
-        "multiline": "first\nsecond\\literal",
-        "nested": {"enabled": true, "nothing": null},
-        "ports": [80, 443, 1.5]
-    });
-    let rendered = render_value(ConfigFormat::Uci, &value).unwrap();
-    assert!(rendered.starts_with("config json 'root'\n\toption kind 'object'\n"));
-    assert!(rendered.contains("'router'\\''s value'"));
-    assert!(rendered.contains("\"first\\nsecond\\\\literal\""));
-    assert_eq!(
-        decode_value(ConfigFormat::Uci, rendered.as_bytes()).unwrap(),
-        value
-    );
-    assert_eq!(render_value(ConfigFormat::Uci, &value).unwrap(), rendered);
-}
 
 #[test]
 fn public_ast_preserves_lists_for_future_native_mappings() {

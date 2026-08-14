@@ -3,12 +3,65 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::Path,
+    sync::Arc,
 };
 
-use oxiroute_config::{Config, ListenerBind, RtmpRecorder, RtmpRecorderStart, UpstreamEndpoint};
+use oxiroute_config::{
+    ConfigDraft, ListenerBind, RtmpRecorder, RtmpRecorderStart, UpstreamEndpoint, ValidatedConfig,
+};
+use oxiroute_server::{
+    GenerationManager, PassiveFailurePolicy, RuntimeGeneration, RuntimePlan, ServicePlanError,
+    ServiceSpec,
+    config_coordinator::{AuthoredRevision, EffectiveRevision, ResolvedConfigDocument},
+};
 
-pub fn empty_config() -> Config {
-    Config {
+pub fn load_lua(source: &str) -> Result<ValidatedConfig, oxiroute_config_source::LuaConfigError> {
+    oxiroute_config_source::load_lua(source)
+}
+
+pub fn render_lua(config: &ValidatedConfig) -> Result<String, String> {
+    oxiroute_config_source::render_config(oxiroute_config_source::ConfigFormat::Lua, config)
+        .map_err(|error| error.to_string())
+}
+
+pub fn runtime_plan(config: &ValidatedConfig) -> Result<RuntimePlan, ServicePlanError> {
+    oxiroute_server::validate_runtime_plan(config)
+}
+
+pub fn runtime_plan_with_passive_failure_policy(
+    config: &ValidatedConfig,
+    passive_policy: PassiveFailurePolicy,
+) -> Result<RuntimePlan, ServicePlanError> {
+    oxiroute_server::runtime_plan_with_passive_failure_policy(config, passive_policy)
+}
+
+pub fn service_specs(config: &ValidatedConfig) -> Result<Vec<ServiceSpec>, ServicePlanError> {
+    oxiroute_server::service_specs(config)
+}
+
+pub fn runtime_generation(
+    config: &ValidatedConfig,
+) -> Result<Arc<RuntimeGeneration>, oxiroute_server::GenerationError> {
+    let revision = "0000000000000000000000000000000000000000000000000000000000000000";
+    let manager = GenerationManager::new();
+    let candidate = manager.prepare(ResolvedConfigDocument {
+        authored_revision: revision.parse::<AuthoredRevision>().unwrap(),
+        effective_revision: revision.parse::<EffectiveRevision>().unwrap(),
+        validated_config: config.clone(),
+        format: oxiroute_config_source::ConfigFormat::Lua,
+        compositional: false,
+        dependencies: Vec::new(),
+        config_preview: String::new(),
+        diagnostics: Vec::new(),
+    })?;
+    let mut startup = manager.begin_candidate_start(&candidate)?;
+    let generation = startup.claim_runtime_start()?;
+    assert!(generation.mark_runtime_started());
+    startup.activate()
+}
+
+pub fn empty_config() -> ConfigDraft {
+    ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,

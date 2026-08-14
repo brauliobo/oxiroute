@@ -23,9 +23,10 @@ The remaining decisions are intentional:
 
 - RTMP bootstrap sharing requires one contract for ordering, multi-codec retention, fallback audio,
   and queue-fit behavior; the three existing paths are not equivalent enough to consolidate safely.
-- `ConfigDraft`/`ValidatedConfig` is a separate CRITICAL-impact design. It requires an API and
-  migration proposal for validation, rendering, runtime planning, import drafts, and mutable callers,
-  not an incidental module-split change.
+- The separate CRITICAL-impact `ConfigDraft`/`ValidatedConfig` migration is implemented for the
+  coordinated `0.5` boundary: owned validation, proof-only rendering/planning/TLS/listener APIs,
+  importer candidate capability state, authored/effective revisions, and the final `ConfigDraft`
+  rename are mechanically inventoried from baseline commit `2d9c5fe`.
 - Reducing public RTMP recording types is deferred to the `0.5` semver decision; the current `0.4.1`
   public surface was not narrowed during behavior-neutral decomposition.
 - Disk-cache, recording-store, and ACME pinned directories have different symlink, locking,
@@ -358,7 +359,7 @@ implemented separately across Pingora reverse HTTP, H3 reverse HTTP, and forward
   `crates/oxiroute-server/tests/http_proxy_routing.rs`,
   `crates/oxiroute-server/tests/reverse_http3.rs`, and
   `crates/oxiroute-server/tests/forward_proxy_h1.rs`
-- H3 cache validation and wire reuse: `crates/oxiroute-config/tests/cache_forward_proxy.rs`,
+- H3 cache validation and wire reuse: `crates/oxiroute-config-source/tests/cache_forward_proxy.rs`,
   `crates/oxiroute-server/tests/reverse_http3.rs`, and
   `crates/oxiroute-server/tests/forward_proxy_h3/absolute_form.rs`
 
@@ -607,7 +608,10 @@ Implemented bounded server/runtime slices:
 Additional server lifecycle work:
 
 - [ ] Consolidate duplicated generation preparation at `generation.rs:81-212` into reservation
-  acquisition plus one `prepare_generation_components` path.
+  acquisition plus one `prepare_generation_components` path. **Deferred to Phase 3:** the existing
+  full-preparation paths acquire listeners, open stores/files, create workers, and perform watcher and
+  credential checks. Those irreversible side effects make duplicate preflight removal unsafe until
+  pure blueprint compilation and resource preparation are separate owned states.
 - [ ] Create an explicit `RtmpGenerationRuntime` instead of storing RTMP resources in the generic
   generation lifecycle (`generation.rs:220-566`).
 - [ ] Add small admission-layer composition rather than manually rebuilding generation, process,
@@ -638,13 +642,13 @@ Implemented configuration/import decomposition:
 - [x] Keep Varnish source/include path policy product-specific; it is not equivalent to the other
   native source path contracts and was not generalized by the move-only split.
 
-Separate design project, not an incidental cleanup:
+Completed separate configuration proof project:
 
-- [ ] Evaluate `ConfigDraft` and `ValidatedConfig` proof types so runtime planning cannot accept
-  unvalidated mutable configuration. The current mutable `Config`, mutating validator, render-time
-  clone/revalidation, and `CanonicalDraft` duplication justify the design, but `validate_config` has
-  CRITICAL impact and must not be changed during module splitting. **Deferred:** approve the type/API
-  migration and caller rollout as a separate design project first.
+- [x] Introduce `ConfigDraft` and `ValidatedConfig`, remove the public mutating validator and
+  render-time revalidation, migrate composition/import evidence/revisions, and require proof values at
+  public planning, rendering, TLS, listener, and generation boundaries. External compile-fail doctests
+  pin the capability boundary, and the repository-owned Rust 1.97.1 API inventory classifies the
+  coordinated delta from immutable commit `2d9c5fe`.
 
 ### RTMP/cache/ACME/forward/supervision split map
 

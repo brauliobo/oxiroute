@@ -35,7 +35,7 @@ use oxiroute_cache::{CachedResponse, ResponseTiming};
 use oxiroute_config::{
     ForwardAccessAction, ForwardAccessCondition, ForwardAccessMatcher, ForwardAccessPolicy,
     ForwardAuditMode, ForwardDirectFallback, ForwardHeaderPolicy, ForwardHttpVersion, ForwardPeer,
-    ForwardProxyAuth, ForwardProxyService, ForwardTimeRange, ForwardViaPolicy, ForwardWeekday,
+    ForwardProxyAuth, ForwardResolverPolicy, ForwardTimeRange, ForwardViaPolicy, ForwardWeekday,
     ForwardedForPolicy,
 };
 use oxiroute_forward_proxy::{
@@ -139,7 +139,6 @@ struct ForwardBasicAuth {
     access: Arc<BasicHtpasswdAccess>,
     cache: Mutex<VecDeque<CachedBasicCredential>>,
     cache_salt: [u8; 32],
-    challenge: HeaderValue,
     path: PathBuf,
     realm: String,
     refresh: Mutex<()>,
@@ -163,12 +162,10 @@ impl ForwardBasicAuth {
     ) -> Result<Self, ForwardPlanError> {
         let mut cache_salt = [0; 32];
         openssl::rand::rand_bytes(&mut cache_salt).map_err(|_| ForwardPlanError::Authentication)?;
-        let challenge = access.challenge().clone();
         Ok(Self {
             access: Arc::new(access),
             cache: Mutex::new(VecDeque::new()),
             cache_salt,
-            challenge,
             path,
             realm,
             refresh: Mutex::new(()),
@@ -483,9 +480,187 @@ struct AuthorizedRequest {
 }
 
 #[derive(Clone, Debug)]
-struct StaticPeerPlan {
+pub(crate) struct StaticPeerPlan {
     host: Host,
     port: u16,
+}
+
+#[derive(Clone)]
+#[allow(clippy::struct_excessive_bools)]
+pub(crate) struct ForwardServiceBlueprint {
+    pub(crate) name: String,
+    pub(crate) cache: Option<crate::generation_blueprint::CachePolicyBlueprint>,
+    auth: Option<ForwardAuthBlueprint>,
+    challenge: Option<HeaderValue>,
+    access_policy: Option<ForwardAccessPolicy>,
+    allow_absolute_form: bool,
+    audit_mode: ForwardAuditMode,
+    connect_enabled: bool,
+    connect_ports: Arc<[u16]>,
+    connect_udp_enabled: bool,
+    connect_udp_ports: Arc<[u16]>,
+    connect_timeout: Duration,
+    destination_policy: DestinationRules,
+    peer_direct_fallback: ForwardDirectFallback,
+    peer_max_retries: usize,
+    peers: Arc<[StaticPeerPlan]>,
+    header_policy: ForwardHeaderPolicy,
+    idle_timeout: Duration,
+    lifetime_timeout: Duration,
+    max_connections: usize,
+    max_header_bytes: usize,
+    max_request_body_bytes: usize,
+    resolver: ForwardResolverBlueprint,
+    resolver_addresses: usize,
+    resolver_queries: usize,
+    resolver_revalidate_on_connect: bool,
+    h3_upstream_connections: Option<usize>,
+}
+
+#[derive(Clone)]
+enum ForwardAuthBlueprint {
+    Bearer {
+        token_file_path: PathBuf,
+    },
+    Basic {
+        htpasswd_file_path: PathBuf,
+        realm: String,
+        credential_ttl: Option<Duration>,
+        username_case_sensitive: bool,
+    },
+}
+
+#[derive(Clone)]
+struct ForwardResolverBlueprint {
+    nameservers: Arc<[IpAddr]>,
+    options: ResolverOpts,
+}
+
+impl ForwardServiceBlueprint {
+    pub(crate) fn compile(
+        service: &oxiroute_config::ForwardProxyService,
+        cache: Option<crate::generation_blueprint::CachePolicyBlueprint>,
+    ) -> Result<Self, ForwardPlanError> {
+        let destination_policy = DestinationRules::new(
+            service.destination_policy.allow_domains.clone(),
+            service.destination_policy.deny_domains.clone(),
+            service.destination_policy.allow_cidrs.clone(),
+            service.destination_policy.deny_cidrs.clone(),
+            service.destination_policy.deny_private,
+        )
+        .and_then(|policy| {
+            policy.with_time_windows(
+                destination_time_windows(&service.destination_policy.allow_times)?,
+                destination_time_windows(&service.destination_policy.deny_times)?,
+            )
+        })
+        .map_err(|_| ForwardPlanError::DestinationPolicy)?;
+        let peers = service
+            .peer_policy
+            .peers
+            .iter()
+            .map(static_peer_plan)
+            .collect::<Result<Vec<_>, _>>()?
+            .into();
+        let max_connections =
+            usize::try_from(service.max_connections).map_err(|_| ForwardPlanError::Limit)?;
+        let max_header_bytes =
+            usize::try_from(service.max_header_bytes).map_err(|_| ForwardPlanError::Limit)?;
+        let max_request_body_bytes = usize::try_from(
+            service
+                .max_request_body_bytes
+                .ok_or(ForwardPlanError::Limit)?,
+        )
+        .map_err(|_| ForwardPlanError::Limit)?;
+        let resolver_addresses = usize::try_from(service.resolver.max_addresses_per_name)
+            .map_err(|_| ForwardPlanError::Limit)?;
+        let resolver_queries = usize::try_from(service.resolver.max_concurrent_queries)
+            .map_err(|_| ForwardPlanError::Limit)?;
+        let (auth, challenge) = compile_forward_auth(service.auth.as_ref())?;
+        let resolver = compile_resolver_blueprint(&service.resolver);
+        Ok(Self {
+            name: service.name.clone(),
+            cache,
+            auth,
+            challenge,
+            access_policy: service.access_policy.clone(),
+            allow_absolute_form: service.allow_absolute_form,
+            audit_mode: service.audit_mode,
+            connect_enabled: service.connect.enabled,
+            connect_ports: service.connect.allowed_ports.clone().into(),
+            connect_udp_enabled: service.connect_udp.enabled,
+            connect_udp_ports: service.connect_udp.allowed_ports.clone().into(),
+            connect_timeout: Duration::from_millis(service.connect_timeout_ms),
+            destination_policy,
+            peer_direct_fallback: service.peer_policy.direct_fallback,
+            peer_max_retries: usize::from(service.peer_policy.max_retries),
+            peers,
+            header_policy: service.header_policy.clone(),
+            idle_timeout: Duration::from_millis(service.idle_timeout_ms),
+            lifetime_timeout: Duration::from_millis(service.lifetime_timeout_ms),
+            max_connections,
+            max_header_bytes,
+            max_request_body_bytes,
+            resolver,
+            resolver_addresses,
+            resolver_queries,
+            resolver_revalidate_on_connect: service.resolver.revalidate_on_connect,
+            h3_upstream_connections: service
+                .enabled_versions
+                .contains(&ForwardHttpVersion::H3)
+                .then_some(
+                    max_connections.clamp(1, crate::http3_upstream::H3_UPSTREAM_MAX_CONNECTIONS),
+                ),
+        })
+    }
+}
+
+fn compile_forward_auth(
+    auth: Option<&ForwardProxyAuth>,
+) -> Result<(Option<ForwardAuthBlueprint>, Option<HeaderValue>), ForwardPlanError> {
+    match auth {
+        Some(ForwardProxyAuth::BearerTokenFile { token_file_path }) => Ok((
+            Some(ForwardAuthBlueprint::Bearer {
+                token_file_path: token_file_path.clone(),
+            }),
+            Some(HeaderValue::from_static("Bearer")),
+        )),
+        Some(ForwardProxyAuth::BasicHtpasswdFile {
+            htpasswd_file_path,
+            realm,
+            credential_ttl_ms,
+            username_case_sensitive,
+        }) => {
+            let challenge =
+                HeaderValue::from_str(&format!("Basic realm=\"{realm}\", charset=\"UTF-8\""))
+                    .map_err(|_| ForwardPlanError::Authentication)?;
+            Ok((
+                Some(ForwardAuthBlueprint::Basic {
+                    htpasswd_file_path: htpasswd_file_path.clone(),
+                    realm: realm.clone(),
+                    credential_ttl: credential_ttl_ms.map(Duration::from_millis),
+                    username_case_sensitive: *username_case_sensitive,
+                }),
+                Some(challenge),
+            ))
+        }
+        Some(ForwardProxyAuth::MutualTls { .. }) => Err(ForwardPlanError::Authentication),
+        None => Ok((None, None)),
+    }
+}
+
+fn compile_resolver_blueprint(policy: &ForwardResolverPolicy) -> ForwardResolverBlueprint {
+    let mut options = ResolverOpts::default();
+    options.ip_strategy = LookupIpStrategy::Ipv4thenIpv6;
+    options.cache_size = policy.max_cache_entries;
+    options.positive_min_ttl = Some(Duration::from_millis(policy.min_ttl_ms));
+    options.positive_max_ttl = Some(Duration::from_millis(policy.max_ttl_ms));
+    options.negative_min_ttl = Some(Duration::from_millis(policy.negative_ttl_ms));
+    options.negative_max_ttl = Some(Duration::from_millis(policy.negative_ttl_ms));
+    ForwardResolverBlueprint {
+        nameservers: policy.nameservers.clone().into(),
+        options,
+    }
 }
 
 struct ConnectedHttp {
@@ -907,20 +1082,20 @@ async fn purge_forward_cache_base(
 
 impl ForwardHttp1ServicePlan {
     #[allow(clippy::too_many_lines)]
-    pub(crate) fn compile_with_cache(
-        service: &ForwardProxyService,
+    pub(crate) fn acquire(
+        blueprint: ForwardServiceBlueprint,
         cache: Option<Arc<HttpCachePlan>>,
     ) -> Result<Self, ForwardPlanError> {
-        let auth = match &service.auth {
-            Some(ForwardProxyAuth::BearerTokenFile { token_file_path }) => Some(
+        let auth = match &blueprint.auth {
+            Some(ForwardAuthBlueprint::Bearer { token_file_path }) => Some(
                 SecureBearerToken::load(token_file_path)
                     .map(ForwardAuthPlan::Bearer)
                     .map_err(|_| ForwardPlanError::Authentication)?,
             ),
-            Some(ForwardProxyAuth::BasicHtpasswdFile {
+            Some(ForwardAuthBlueprint::Basic {
                 htpasswd_file_path,
                 realm,
-                credential_ttl_ms,
+                credential_ttl,
                 username_case_sensitive,
             }) => {
                 let access = BasicHtpasswdAccess::load_with_username_case(
@@ -933,70 +1108,32 @@ impl ForwardHttp1ServicePlan {
                     access,
                     htpasswd_file_path.clone(),
                     realm.clone(),
-                    credential_ttl_ms.map(Duration::from_millis),
+                    *credential_ttl,
                     *username_case_sensitive,
                 )?)))
             }
-            Some(ForwardProxyAuth::MutualTls { .. }) => {
-                return Err(ForwardPlanError::Authentication);
-            }
             None => None,
         };
-        let challenge = match &auth {
-            Some(ForwardAuthPlan::Bearer(_)) => Some(HeaderValue::from_static("Bearer")),
-            Some(ForwardAuthPlan::Basic(auth)) => Some(auth.challenge.clone()),
-            None => None,
-        };
-        let destination_policy = DestinationRules::new(
-            service.destination_policy.allow_domains.clone(),
-            service.destination_policy.deny_domains.clone(),
-            service.destination_policy.allow_cidrs.clone(),
-            service.destination_policy.deny_cidrs.clone(),
-            service.destination_policy.deny_private,
-        )
-        .and_then(|policy| {
-            policy.with_time_windows(
-                destination_time_windows(&service.destination_policy.allow_times)?,
-                destination_time_windows(&service.destination_policy.deny_times)?,
-            )
-        })
-        .map_err(|_| ForwardPlanError::DestinationPolicy)?;
-        let resolver = resolver(service)?;
-        let peers = service
-            .peer_policy
-            .peers
-            .iter()
-            .map(static_peer_plan)
-            .collect::<Result<Vec<_>, _>>()?;
+        let resolver = acquire_resolver(&blueprint.resolver)?;
         let mut connector =
             SslConnector::builder(SslMethod::tls_client()).map_err(|_| ForwardPlanError::Tls)?;
         connector.set_verify(SslVerifyMode::PEER);
         connector
             .set_default_verify_paths()
             .map_err(|_| ForwardPlanError::Tls)?;
-        let max_connections =
-            usize::try_from(service.max_connections).map_err(|_| ForwardPlanError::Limit)?;
-        let max_header_bytes =
-            usize::try_from(service.max_header_bytes).map_err(|_| ForwardPlanError::Limit)?;
-        let max_request_body_bytes = usize::try_from(
-            service
-                .max_request_body_bytes
-                .ok_or(ForwardPlanError::Limit)?,
-        )
-        .map_err(|_| ForwardPlanError::Limit)?;
-        let h3_upstream = service
-            .enabled_versions
-            .contains(&ForwardHttpVersion::H3)
-            .then(|| {
+        let max_connections = blueprint.max_connections;
+        let max_header_bytes = blueprint.max_header_bytes;
+        let max_request_body_bytes = blueprint.max_request_body_bytes;
+        let h3_upstream = blueprint
+            .h3_upstream_connections
+            .map(|max_connections| {
                 H3UpstreamPlan::for_forward(max_connections)
                     .map(Arc::new)
                     .map_err(|_| ForwardPlanError::Tls)
             })
             .transpose()?;
-        let resolver_addresses = usize::try_from(service.resolver.max_addresses_per_name)
-            .map_err(|_| ForwardPlanError::Limit)?;
-        let resolver_queries = usize::try_from(service.resolver.max_concurrent_queries)
-            .map_err(|_| ForwardPlanError::Limit)?;
+        let resolver_addresses = blueprint.resolver_addresses;
+        let resolver_queries = blueprint.resolver_queries;
         let local_addresses = local_ip_address::list_afinet_netifas()
             .map_err(|_| ForwardPlanError::Resolver)?
             .into_iter()
@@ -1006,31 +1143,31 @@ impl ForwardHttp1ServicePlan {
         http_server_options.h2c = true;
 
         Ok(Self {
-            access_policy: service.access_policy.clone(),
-            allow_absolute_form: service.allow_absolute_form,
-            audit_mode: service.audit_mode,
+            access_policy: blueprint.access_policy,
+            allow_absolute_form: blueprint.allow_absolute_form,
+            audit_mode: blueprint.audit_mode,
             auth,
-            challenge,
-            connect_enabled: service.connect.enabled,
-            connect_ports: service.connect.allowed_ports.clone().into(),
-            connect_udp_enabled: service.connect_udp.enabled,
-            connect_udp_ports: service.connect_udp.allowed_ports.clone().into(),
-            connect_timeout: Duration::from_millis(service.connect_timeout_ms),
-            destination_policy,
-            peer_direct_fallback: service.peer_policy.direct_fallback,
-            peer_max_retries: usize::from(service.peer_policy.max_retries),
-            peers: peers.into(),
-            header_policy: service.header_policy.clone(),
+            challenge: blueprint.challenge,
+            connect_enabled: blueprint.connect_enabled,
+            connect_ports: blueprint.connect_ports,
+            connect_udp_enabled: blueprint.connect_udp_enabled,
+            connect_udp_ports: blueprint.connect_udp_ports,
+            connect_timeout: blueprint.connect_timeout,
+            destination_policy: blueprint.destination_policy,
+            peer_direct_fallback: blueprint.peer_direct_fallback,
+            peer_max_retries: blueprint.peer_max_retries,
+            peers: blueprint.peers,
+            header_policy: blueprint.header_policy,
             http_server_options,
-            idle_timeout: Duration::from_millis(service.idle_timeout_ms),
-            lifetime_timeout: Duration::from_millis(service.lifetime_timeout_ms),
+            idle_timeout: blueprint.idle_timeout,
+            lifetime_timeout: blueprint.lifetime_timeout,
             local_addresses: Arc::new(local_addresses),
             max_header_bytes,
             max_request_body_bytes,
-            name: service.name.clone(),
+            name: blueprint.name,
             resolver,
             resolver_addresses,
-            resolver_revalidate_on_connect: service.resolver.revalidate_on_connect,
+            resolver_revalidate_on_connect: blueprint.resolver_revalidate_on_connect,
             resolver_queries: Arc::new(Semaphore::new(resolver_queries)),
             service_connections: Arc::new(Semaphore::new(max_connections)),
             tls_connector: Arc::new(connector.build()),
@@ -3084,21 +3221,15 @@ fn h2_request(session: &ServerSession) -> Result<Request<()>, ()> {
     Ok(request)
 }
 
-fn resolver(service: &ForwardProxyService) -> Result<TokioResolver, ForwardPlanError> {
-    let mut options = ResolverOpts::default();
-    options.ip_strategy = LookupIpStrategy::Ipv4thenIpv6;
-    options.cache_size = service.resolver.max_cache_entries;
-    options.positive_min_ttl = Some(Duration::from_millis(service.resolver.min_ttl_ms));
-    options.positive_max_ttl = Some(Duration::from_millis(service.resolver.max_ttl_ms));
-    options.negative_min_ttl = Some(Duration::from_millis(service.resolver.negative_ttl_ms));
-    options.negative_max_ttl = Some(Duration::from_millis(service.resolver.negative_ttl_ms));
-    let builder = if service.resolver.nameservers.is_empty() {
+fn acquire_resolver(
+    blueprint: &ForwardResolverBlueprint,
+) -> Result<TokioResolver, ForwardPlanError> {
+    let builder = if blueprint.nameservers.is_empty() {
         let (config, _) = hickory_resolver::system_conf::read_system_conf()
             .map_err(|_| ForwardPlanError::Resolver)?;
         TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
     } else {
-        let nameservers = service
-            .resolver
+        let nameservers = blueprint
             .nameservers
             .iter()
             .copied()
@@ -3110,7 +3241,7 @@ fn resolver(service: &ForwardProxyService) -> Result<TokioResolver, ForwardPlanE
         )
     };
     builder
-        .with_options(options)
+        .with_options(blueprint.options.clone())
         .build()
         .map_err(|_| ForwardPlanError::Resolver)
 }

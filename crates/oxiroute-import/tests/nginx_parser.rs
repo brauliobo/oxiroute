@@ -35,6 +35,48 @@ fn parses_statement_and_block_directives_with_full_spans() {
 }
 
 #[test]
+fn parses_nested_rtmp_and_http_configuration() {
+    let source = source(
+        r#"
+rtmp_auto_push on;
+rtmp {
+  server {
+    listen 1935 proxy_protocol;
+    application live {
+      live on;
+      record_path "/var/media files";
+      push rtmp://backup.example/live app=archive;
+      recorder archive { record all manual; }
+    }
+  }
+}
+http { server { location /stat { rtmp_stat all; } } }
+"#,
+    );
+    let report = parse(&source);
+
+    assert!(report.diagnostics().is_empty());
+    assert_eq!(report.value().directives.len(), 3);
+    let rtmp = &report.value().directives[1];
+    let server = child(rtmp, b"server");
+    let application = child(server, b"application");
+    assert_eq!(application.arguments[0].value, b"live");
+    assert_eq!(
+        child(application, b"record_path").arguments[0].value,
+        b"/var/media files"
+    );
+    assert_eq!(
+        child(application, b"recorder").arguments[0].value,
+        b"archive"
+    );
+    let http = &report.value().directives[2];
+    assert_eq!(
+        child(child(child(http, b"server"), b"location"), b"rtmp_stat").arguments[0].value,
+        b"all"
+    );
+}
+
+#[test]
 fn parses_keepalive_and_cookie_flag_arguments_without_normalizing_them() {
     let source = source(
         "http { keepalive_timeout 65s; proxy_cookie_flags session secure httponly samesite=lax; }",
@@ -185,6 +227,16 @@ fn assert_directive_bounds(source: &SourceFile, directive: &Directive) {
             assert_directive_bounds(source, child);
         }
     }
+}
+
+fn child<'a>(parent: &'a Directive, name: &[u8]) -> &'a Directive {
+    parent
+        .children
+        .as_ref()
+        .expect("block")
+        .iter()
+        .find(|directive| directive.name.value == name)
+        .expect("named child")
 }
 
 fn source(contents: &str) -> SourceFile {

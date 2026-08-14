@@ -1,7 +1,7 @@
 # API Reference
 
-The current control plane is JSON over loopback HTTP. The base path for management routes is
-`/api/v1`. Exact errors, response fields, and security caveats are normative in
+The current control plane is JSON over loopback HTTP. Management routes remain under `/api/v1`, with
+the corrected event-only contract under `/api/v2/events`. Exact errors, response fields, and security caveats are normative in
 [API_UI_SPEC.md](../API_UI_SPEC.md).
 
 ## Route Groups
@@ -19,14 +19,15 @@ The current control plane is JSON over loopback HTTP. The base path for manageme
 | Managed ACME actions | `POST /api/v1/tls/renew`, `/tls/revoke`, `/tls/delete`, `/tls/account/rollover` | Management bearer token and active-generation revision; failed actions retain active material |
 | Managed ACME jobs | `POST /api/v1/tls/jobs/cancel`, `/tls/jobs/pause`, `/tls/jobs/resume` | Management bearer token and active-generation revision; cooperative controls with redacted job IDs |
 | Audit | `GET /api/v1/audit?after={cursor}&limit={n}`, `GET /api/v1/audit/status` | Management bearer token; durable redacted history and persistence status |
-| Events | `GET /api/v1/events?after={cursor}&limit={n}`, `GET /api/v1/events/stream` | Management bearer token; bounded cursor polling or SSE |
+| Events v1 | `GET /api/v1/events?after={cursor}&limit={n}`, `GET /api/v1/events/stream` | Management bearer token; shipped 0.4.1 polling/SSE shape |
+| Events v2 | `GET /api/v2/events?after={cursor}&limit={n}`, `GET /api/v2/events/stream` | Management bearer token; authoritative latest cursor and corrected vocabulary |
 | RTMP | `GET /api/v1/rtmp/streams`, `/streams/{streamId}` | Management bearer token; redacted active catalog |
 | RTMP controls | `POST .../recorders/{recorderId}/start|stop` | Management bearer token; loopback management listener and exact-ID manual controls |
 | RTMP VOD | `GET /api/v1/rtmp/vod/{service}/{application}/{source}/{path}` | Management bearer token; one contiguous byte range and bounded source/session policy |
 | RTMP HLS/DASH media | `GET /api/v1/rtmp/media/{service}/{application}/{stream}/{object}` | Management bearer token; bounded HLS playlists/fragments or DASH `manifest.mpd`, `init.mp4`, and `.m4s` objects; one contiguous byte range |
 | Statistics | `GET /ready`, `GET /metrics`, `GET /stats`, `POST /stats/admin` | Exact `GET /ready` and `GET /metrics` are public; restricted statistics reads/mutations use loopback plus the statistics token/revision |
 
-Every recognized `/api/v1` route requires exactly one management Bearer token. The only public
+Every recognized `/api/v1` or `/api/v2` route requires exactly one management Bearer token. The only public
 recognized API probes are exact `GET /ready` and `GET /metrics`. Separately configured
 `stats.pages[]` listeners are public page-only contracts with their own loopback same-origin form
 policy; they are not remote management routes.

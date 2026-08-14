@@ -6,7 +6,8 @@ failure behavior before a capability is advertised.
 
 ## Contribution Route
 
-1. Read [the architecture](ARCHITECTURE.md) and identify the owning crate.
+1. Read [the architecture](ARCHITECTURE.md) and identify the owning crate. For planned ownership
+   changes, consult the [architecture refactor roadmap](ARCHITECTURE_REFACTOR_ROADMAP.md).
 2. Find or add the smallest failing test at that abstraction.
 3. Keep configuration, runtime planning, activation, and observability changes separate when possible.
 4. Update the compatibility matrix and the relevant user/reference docs in the same change.
@@ -21,8 +22,8 @@ runtime path and failure cases are tested.
 | Crate/path | Owning concern |
 | --- | --- |
 | `oxiroute-server` | Binary, CLI, runtime planning, generation lifecycle, listeners, APIs, monitoring, topology, TLS |
-| `oxiroute-config` | Canonical typed model, defaults, lexical policy, validation, restricted Lua |
-| `oxiroute-config-source` | Format adapters, generic values, templates, native references, composition, rendering |
+| `oxiroute-config` | Canonical typed model, defaults, lexical policy, and validation |
+| `oxiroute-config-source` | Format adapters, restricted Lua, generic values, templates, native references, composition, and rendering |
 | `oxiroute-import` | Native parsers, semantic reports, provenance, diagnostics, canonical lowering |
 | `oxiroute-forward-proxy` | Explicit forward-proxy target/auth/policy/tunnel primitives without socket I/O |
 | `oxiroute-rtmp` | RTMP transport adapter, sessions, catalog, fanout, recording, FLV, relay, directive registry |

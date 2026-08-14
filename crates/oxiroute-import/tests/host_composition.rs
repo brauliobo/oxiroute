@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oxiroute_config::compose_configs;
+use oxiroute_config::compose_validated_configs;
 use oxiroute_import::{
     haproxy::{PreprocessingEnvironment, import_roots_with_environment},
     nginx::{
@@ -40,16 +40,18 @@ fn phoenix_nginx_and_haproxy_candidates_compose_as_one_canonical_host() {
     );
     let nginx = nginx
         .candidate
-        .into_config()
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::to_draft)
         .expect("finalized nginx candidate");
     let haproxy = haproxy
         .value()
-        .config()
-        .cloned()
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::to_draft)
         .expect("finalized HAProxy candidate");
     let listener_count = nginx.listeners.len() + haproxy.listeners.len();
 
-    let composed = compose_configs(&[nginx, haproxy]).expect("composed Phoenix host");
+    let composed = compose_validated_configs(vec![nginx, haproxy]).expect("composed Phoenix host");
+    let composed = composed.as_draft();
 
     assert_eq!(composed.listeners.len(), listener_count);
     assert!(!composed.http_services.is_empty());

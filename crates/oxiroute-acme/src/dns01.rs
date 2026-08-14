@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -161,8 +161,21 @@ impl fmt::Debug for Dns01Challenge {
 }
 
 /// Cooperative cancellation shared by provider operations and their caller.
+#[derive(Debug, Default)]
+struct CancellationState {
+    cancelled_fast: AtomicBool,
+    state: Mutex<CancellationStatus>,
+    changed: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct CancellationStatus {
+    cancelled: bool,
+    generation: u64,
+}
+
 #[derive(Clone, Debug, Default)]
-pub struct Dns01Cancellation(Arc<AtomicBool>);
+pub struct Dns01Cancellation(Arc<CancellationState>);
 
 impl Dns01Cancellation {
     #[must_use]
@@ -171,17 +184,66 @@ impl Dns01Cancellation {
     }
 
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.cancelled {
+            state.cancelled = true;
+            state.generation = state.generation.wrapping_add(1);
+            self.0.cancelled_fast.store(true, Ordering::Release);
+        }
+        self.0.changed.notify_all();
     }
 
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.cancelled_fast.load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub fn wait_timeout(&self, timeout: Duration) -> bool {
+        self.wait_timeout_with_registration(timeout, || {})
+    }
+
+    fn wait_timeout_with_registration(
+        &self,
+        timeout: Duration,
+        before_lock: impl FnOnce(),
+    ) -> bool {
+        if self.is_cancelled() {
+            return true;
+        }
+        before_lock();
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = state.generation;
+        let deadline = Instant::now() + timeout;
+        while !state.cancelled && state.generation == generation {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let (next, wait) = self
+                .0
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if wait.timed_out() {
+                break;
+            }
+        }
+        state.cancelled || state.generation != generation
     }
 }
 
-/// Bounded operation context supplied to every provider call. Providers must check it before
-/// every remote operation and while waiting for propagation.
+/// Operation context supplied to every provider call. Cooperative providers check it before and
+/// after remote calls and while waiting, but this value cannot preempt a blocking provider call.
 #[derive(Clone, Debug)]
 pub struct Dns01Operation {
     deadline: Instant,
@@ -347,6 +409,8 @@ impl fmt::Debug for Dns01Record {
 
 /// Narrow in-process DNS-01 provider contract. Implementations must be statically linked and
 /// registered by exact provider name; dynamic loading and shell hooks are not part of this API.
+/// Calls receive a cooperative operation context, but the caller cannot preempt an implementation
+/// that blocks without checking it.
 pub trait Dns01Provider: Send + Sync {
     fn name(&self) -> &str;
 
@@ -566,7 +630,7 @@ fn valid_dns_record_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::sync::{Barrier, Mutex};
 
     use super::*;
 
@@ -677,6 +741,42 @@ mod tests {
                 .expect("operation");
         cancellation.cancel();
         assert_eq!(operation.check(), Err(Dns01ProviderError::Cancelled));
+    }
+
+    #[test]
+    fn cancellation_between_fast_precheck_and_wait_registration_is_not_lost() {
+        let cancellation = Dns01Cancellation::new();
+        let prechecked = Arc::new(Barrier::new(2));
+        let register = Arc::new(Barrier::new(2));
+        let worker_cancellation = cancellation.clone();
+        let worker_prechecked = Arc::clone(&prechecked);
+        let worker_register = Arc::clone(&register);
+        let worker = std::thread::spawn(move || {
+            worker_cancellation.wait_timeout_with_registration(Duration::from_mins(1), || {
+                worker_prechecked.wait();
+                worker_register.wait();
+            })
+        });
+        prechecked.wait();
+
+        cancellation.cancel();
+        register.wait();
+
+        assert!(worker.join().expect("cancellation waiter"));
+    }
+
+    #[test]
+    fn pre_cancelled_waiters_skip_wait_registration() {
+        for _ in 0..2_000 {
+            let cancellation = Dns01Cancellation::new();
+            cancellation.cancel();
+
+            assert!(
+                cancellation.wait_timeout_with_registration(Duration::from_mins(1), || panic!(
+                    "pre-cancelled waiter attempted registration"
+                ))
+            );
+        }
     }
 
     #[test]

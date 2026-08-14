@@ -61,11 +61,11 @@ use crate::{
         validate_file_path, validate_recording_suffix_template,
     },
     model::{
-        AccessLogPolicy, AcmeDns01Config, AlpnProtocol, Certificate, CertificateSource, Config,
-        ConfigError, DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService, HealthCheck,
-        HealthCheckType, HttpRequestHeaderMutation, HttpResponseHeaderMutation, HttpRouteAction,
-        HttpService, HttpVersion, L4Service, Listener, ListenerBind, Management, Protocol,
-        ProxyProtocolVersion, RtmpAccessPolicy, RtmpAutoPushPolicy, RtmpCallbackConfig,
+        AccessLogPolicy, AcmeDns01Config, AlpnProtocol, Certificate, CertificateSource,
+        ConfigDraft, ConfigError, DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService,
+        HealthCheck, HealthCheckType, HttpRequestHeaderMutation, HttpResponseHeaderMutation,
+        HttpRouteAction, HttpService, HttpVersion, L4Service, Listener, ListenerBind, Management,
+        Protocol, ProxyProtocolVersion, RtmpAccessPolicy, RtmpAutoPushPolicy, RtmpCallbackConfig,
         RtmpCredentialReference, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecProfile,
         RtmpExecTrigger, RtmpOutboundPolicy, RtmpRecorder, RtmpRelayPolicy, RtmpRtmpsPolicy,
         RtmpService, RtmpSessionCeilings, RtmpTokenSource, RtmpTransport, RtmpVodSource, Stats,
@@ -97,9 +97,8 @@ const MAX_UDP_PROXY_V2_ADDRESS_HEADER_BYTES: u64 = 52;
 ///
 /// # Errors
 ///
-/// Returns an error when any configured value or cross-reference is invalid.
 #[allow(clippy::too_many_lines)]
-pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
+pub(crate) fn validate_config_in_place(config: &mut ConfigDraft) -> Result<(), ConfigError> {
     if config.version != 1 {
         return Err(ConfigError::UnsupportedVersion(config.version));
     }
@@ -211,7 +210,7 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_config_names(config: &Config) -> Result<(), ConfigError> {
+fn validate_config_names(config: &ConfigDraft) -> Result<(), ConfigError> {
     validate_names(
         "listener",
         config

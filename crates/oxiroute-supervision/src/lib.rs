@@ -4,6 +4,8 @@
 //! spawns no tasks, and depends on no async runtime.
 
 mod bounded;
+mod catalog;
+mod control;
 mod correlation;
 mod identity;
 mod lifecycle;
@@ -15,6 +17,10 @@ mod validated;
 mod wire;
 
 pub use bounded::{BoundError, BoundedString, BoundedVec};
+pub use catalog::{
+    CatalogError, GenerationLaunchDocument, GenerationRole, SupervisedGenerationCatalog,
+};
+pub use control::{LifecycleControl, LifecycleOperation, LifecycleRequest};
 pub use correlation::{
     CorrelationError, CorrelationGeneration, CorrelationTable, CorrelationToken, PendingRequest,
 };

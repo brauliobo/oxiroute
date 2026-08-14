@@ -13,7 +13,7 @@ use oxiroute_config::{
 };
 
 use crate::{
-    CanonicalDraft, Diagnostic, DiagnosticCode,
+    Diagnostic, DiagnosticCode,
     candidate::{CanonicalProvenanceLedger, EmptyOriginPolicy},
 };
 
@@ -28,7 +28,7 @@ struct Lowerer {
     diagnostics: Vec<Diagnostic>,
     blocked_services: Vec<BlockedService>,
     certificate_identities: HashMap<tls::CertificateIdentity, tls::CertificateMetadata>,
-    draft: CanonicalDraft,
+    draft: oxiroute_config::ConfigDraft,
     provenance: CanonicalProvenanceLedger<DirectiveOrigin>,
     upstream_tls_overlays: HashMap<Vec<u8>, UpstreamTls>,
     bearer_token_overlays: HashMap<Vec<u8>, PathBuf>,
@@ -61,7 +61,7 @@ impl Lowerer {
             diagnostics,
             blocked_services: Vec::new(),
             certificate_identities: HashMap::new(),
-            draft: CanonicalDraft::default(),
+            draft: crate::candidate::empty_config(),
             provenance: CanonicalProvenanceLedger::new(EmptyOriginPolicy::Discard),
             upstream_tls_overlays,
             bearer_token_overlays,

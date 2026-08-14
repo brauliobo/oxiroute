@@ -16,12 +16,25 @@ impl ReservedListener {
 }
 
 pub struct ProxyConfig {
-    config: Config,
+    config: ConfigDraft,
+    directory: TempDir,
+}
+
+pub struct ValidatedProxyConfig {
+    config: ValidatedConfig,
     _directory: TempDir,
 }
 
+impl std::ops::Deref for ValidatedProxyConfig {
+    type Target = ValidatedConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.config
+    }
+}
+
 impl std::ops::Deref for ProxyConfig {
-    type Target = Config;
+    type Target = ConfigDraft;
 
     fn deref(&self) -> &Self::Target {
         &self.config
@@ -34,6 +47,15 @@ impl std::ops::DerefMut for ProxyConfig {
     }
 }
 
+impl ProxyConfig {
+    pub fn validate(self) -> ValidatedProxyConfig {
+        ValidatedProxyConfig {
+            config: self.config.validate().expect("valid wire config"),
+            _directory: self.directory,
+        }
+    }
+}
+
 pub fn proxy_config(
     listener_address: SocketAddr,
     origin_address: SocketAddr,
@@ -43,7 +65,7 @@ pub fn proxy_config(
 ) -> ProxyConfig {
     let directory = TempDir::new().expect("proxy config private-key directory");
     let private_key_path = copy_private_key_fixture(directory.path(), "proxy-a-key.pem");
-    let config = Config {
+    let config = ConfigDraft {
         certificates: vec![Certificate {
             name: "downstream".into(),
             dns_names: vec![PROXY_SERVER_NAME.into()],
@@ -107,7 +129,7 @@ pub fn proxy_config(
     };
     ProxyConfig {
         config,
-        _directory: directory,
+        directory,
     }
 }
 
@@ -122,6 +144,7 @@ pub struct ProxyHarness {
     pub address: SocketAddr,
     pub active_certificate: Arc<ActiveCertificateGeneration>,
     pub tls_alpn_challenges: TlsAlpnChallengeStore,
+    _generation: Arc<RuntimeGeneration>,
     active_certificates: BTreeMap<String, Arc<ActiveCertificateGeneration>>,
     certbot_reconcilers: BTreeMap<String, Arc<CertbotReconciler>>,
     certbot_watcher: Option<CertbotWatcherSupervisor>,
@@ -131,29 +154,31 @@ pub struct ProxyHarness {
 }
 
 impl ProxyHarness {
-    pub fn start(config: &Config, reserved: ReservedListener) -> Self {
-        let mut plan = runtime_plan(config).expect("wire runtime plan");
-        let certbot_reconcilers = plan
+    pub fn start(config: &ValidatedConfig, reserved: ReservedListener) -> Self {
+        let ReservedListener { address, listener } = reserved;
+        drop(listener);
+        let generation = config::runtime_generation(config).expect("wire runtime generation");
+        let tls = generation.tls();
+        let certbot_reconcilers = tls
             .certbot_reconcilers()
             .iter()
             .map(|reconciler| (reconciler.status().certificate, Arc::clone(reconciler)))
             .collect::<BTreeMap<_, _>>();
-        let certbot_watcher = plan
-            .tls
+        let certbot_watcher = tls
             .start_certbot_watcher(CertbotWatcherConfig::default())
             .expect("wire Certbot watcher");
-        let active_certificates = plan.tls.certificates().clone();
-        let tls_alpn_challenges = plan.tls.tls_alpn_challenge_store().clone();
+        let active_certificates = tls.certificates().clone();
+        let tls_alpn_challenges = tls.tls_alpn_challenge_store().clone();
         let active_certificate = Arc::clone(
             active_certificates
                 .get("downstream")
                 .expect("downstream certificate generation"),
         );
-        let spec = plan.services.remove(0);
+        let spec = generation.services().first().expect("wire runtime service");
         assert_eq!(
             spec.bind,
             ListenerBind::Socket {
-                address: reserved.address,
+                address,
             }
         );
         let bind = spec.bind.to_string();
@@ -174,7 +199,7 @@ impl ProxyHarness {
                 spec.max_connections.unwrap_or(u64::MAX),
             )
             .expect("wire listener metrics");
-        let ServiceKind::Http(http_service) = spec.kind else {
+        let ServiceKind::Http(http_service) = &spec.kind else {
             panic!("wire listener must compile as HTTP");
         };
         let server_configuration = Arc::new(ServerConf {
@@ -184,11 +209,11 @@ impl ProxyHarness {
         let app = HttpListenerApp::new(
             http_proxy(
                 &server_configuration,
-                HttpReverseProxy::new(http_service, listener_metrics.clone()),
+                HttpReverseProxy::new(Arc::clone(http_service), listener_metrics.clone()),
             ),
             spec.tls.as_deref(),
         );
-        let tls = spec.tls.expect("downstream TLS profile");
+        let tls = spec.tls.as_ref().expect("downstream TLS profile");
         let app = MonitoredHttpApp::new(app, listener_metrics);
         let mut service = ListeningService::new("OxiRoute wire test".into(), app);
         service.add_tls_with_settings(
@@ -197,8 +222,12 @@ impl ProxyHarness {
             tls.tls_settings().expect("downstream TLS settings"),
         );
 
-        let mut inherited = Fds::new();
-        inherited.add(bind, reserved.listener.into_raw_fd());
+        let inherited = generation
+            .reservations()
+            .get("wire")
+            .expect("wire listener reservation")
+            .duplicate_fds()
+            .expect("duplicate wire listener reservation");
         let inherited = Arc::new(TokioMutex::new(inherited));
         let (shutdown, shutdown_watch) = watch::channel(false);
         let task = tokio::spawn(async move {
@@ -206,9 +235,10 @@ impl ProxyHarness {
         });
 
         Self {
-            address: reserved.address,
+            address,
             active_certificate,
             tls_alpn_challenges,
+            _generation: generation,
             active_certificates,
             certbot_reconcilers,
             certbot_watcher,

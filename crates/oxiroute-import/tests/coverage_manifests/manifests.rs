@@ -3,7 +3,7 @@ use std::{
     path::Path,
 };
 
-use oxiroute_rtmp::{
+use oxiroute_import::nginx::{
     DirectiveContext, DirectiveError, DirectiveSpec, RelayKind, RuntimeSupport, ValueKind,
     directive_specs, validate_directive,
 };

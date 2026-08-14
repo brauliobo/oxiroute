@@ -15,6 +15,47 @@ const MAX_CALLBACK_RESPONSE_BYTES: usize = 16 * 1_024;
 const MAX_CALLBACK_FORM_BYTES: usize = 8 * 1_024;
 const MAX_CALLBACK_ADDRESSES: usize = 32;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RtmpCallbackValueError {
+    #[error("callback URL is intrinsically invalid")]
+    InvalidUrl,
+}
+
+/// Validates callback URL syntax without DNS resolution or destination-policy evaluation.
+///
+/// # Errors
+///
+/// Returns an error when the URL is empty, oversized, contains forbidden bytes, uses an unsupported
+/// scheme, or lacks a valid authority.
+pub fn validate_callback_url_intrinsic(value: &str) -> Result<(), RtmpCallbackValueError> {
+    if value.is_empty()
+        || value.len() > MAX_CALLBACK_URL_BYTES
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b' ')
+        || value.contains('#')
+    {
+        return Err(RtmpCallbackValueError::InvalidUrl);
+    }
+    let (secure, remainder) = value
+        .strip_prefix("https://")
+        .map(|remainder| (true, remainder))
+        .or_else(|| {
+            value
+                .strip_prefix("http://")
+                .map(|remainder| (false, remainder))
+        })
+        .ok_or(RtmpCallbackValueError::InvalidUrl)?;
+    let authority = remainder.split('/').next().unwrap_or_default();
+    if authority.is_empty()
+        || authority.contains('@')
+        || parse_authority(authority, secure).is_err()
+    {
+        return Err(RtmpCallbackValueError::InvalidUrl);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RtmpCallbackMethod {
     Get,
@@ -62,6 +103,15 @@ pub struct RtmpCallbackContext {
 #[derive(Clone, Eq, PartialEq)]
 pub struct RtmpCallbackEndpoint {
     address: SocketAddr,
+    host: String,
+    port: u16,
+    secure: bool,
+    path: String,
+    query: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RtmpCallbackEndpointBlueprint {
     host: String,
     port: u16,
     secure: bool,
@@ -143,6 +193,50 @@ impl RtmpCallbackEndpoint {
         value: &str,
         outbound_policy: &RtmpOutboundPolicy,
     ) -> Result<Self, RtmpCallbackError> {
+        let blueprint = RtmpCallbackEndpointBlueprint::parse(value)?;
+        Self::acquire(&blueprint, outbound_policy)
+    }
+
+    /// Resolves and policy-checks a previously parsed callback endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted resolution or address-policy error.
+    pub fn acquire(
+        blueprint: &RtmpCallbackEndpointBlueprint,
+        outbound_policy: &RtmpOutboundPolicy,
+    ) -> Result<Self, RtmpCallbackError> {
+        let mut addresses: Vec<_> = (blueprint.host.as_str(), blueprint.port)
+            .to_socket_addrs()
+            .map_err(|_| RtmpCallbackError::Resolution)?
+            .take(MAX_CALLBACK_ADDRESSES + 1)
+            .collect();
+        if addresses.is_empty() || addresses.len() > MAX_CALLBACK_ADDRESSES {
+            return Err(RtmpCallbackError::Resolution);
+        }
+        addresses.sort_unstable();
+        addresses.dedup();
+        outbound_policy
+            .validate_resolved(&blueprint.host, &addresses)
+            .map_err(|_| RtmpCallbackError::AddressPolicy)?;
+        Ok(Self {
+            address: addresses[0],
+            host: blueprint.host.clone(),
+            port: blueprint.port,
+            secure: blueprint.secure,
+            path: blueprint.path.clone(),
+            query: blueprint.query.clone(),
+        })
+    }
+}
+
+impl RtmpCallbackEndpointBlueprint {
+    /// Parses one callback URL without resolving its destination.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RtmpCallbackError::InvalidUrl`] for malformed or unbounded input.
+    pub fn parse(value: &str) -> Result<Self, RtmpCallbackError> {
         if value.is_empty()
             || value.len() > MAX_CALLBACK_URL_BYTES
             || value
@@ -181,21 +275,7 @@ impl RtmpCallbackEndpoint {
         {
             return Err(RtmpCallbackError::InvalidUrl);
         }
-        let mut addresses: Vec<_> = (host.as_str(), port)
-            .to_socket_addrs()
-            .map_err(|_| RtmpCallbackError::Resolution)?
-            .take(MAX_CALLBACK_ADDRESSES + 1)
-            .collect();
-        if addresses.is_empty() || addresses.len() > MAX_CALLBACK_ADDRESSES {
-            return Err(RtmpCallbackError::Resolution);
-        }
-        addresses.sort_unstable();
-        addresses.dedup();
-        outbound_policy
-            .validate_resolved(&host, &addresses)
-            .map_err(|_| RtmpCallbackError::AddressPolicy)?;
         Ok(Self {
-            address: addresses[0],
             host,
             port,
             secure,
@@ -203,7 +283,9 @@ impl RtmpCallbackEndpoint {
             query,
         })
     }
+}
 
+impl RtmpCallbackEndpoint {
     #[must_use]
     pub fn address(&self) -> SocketAddr {
         self.address

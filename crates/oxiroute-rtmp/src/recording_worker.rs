@@ -113,6 +113,35 @@ impl Default for RecorderWorkerConfig {
     }
 }
 
+impl RecorderWorkerConfig {
+    /// Validates value-only recorder bounds without starting a worker or touching storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing recorder start error for an invalid queue, timeout, track mask,
+    /// per-segment limit, or rotation interval.
+    pub fn validate_intrinsic(&self) -> Result<(), RecorderWorkerStartError> {
+        if self.max_queue_messages == 0 || self.max_queue_bytes == 0 {
+            return Err(RecorderWorkerStartError::InvalidQueueLimits);
+        }
+        if self.shutdown_timeout.is_zero() {
+            return Err(RecorderWorkerStartError::InvalidShutdownTimeout);
+        }
+        if (self.record_mask.keyframes || !self.record_mask.audio) && !self.record_mask.video {
+            return Err(RecorderWorkerStartError::InvalidRecordMask);
+        }
+        if self.max_size == Some(0) || self.max_frames == Some(0) {
+            return Err(RecorderWorkerStartError::InvalidRecordingLimit);
+        }
+        if self.rotation_interval.is_some_and(|interval| {
+            interval.is_zero() || interval.as_millis() > MAX_ROTATION_INTERVAL_MS
+        }) {
+            return Err(RecorderWorkerStartError::InvalidRotationInterval);
+        }
+        Ok(())
+    }
+}
+
 /// One independent disk worker with a bounded try-enqueue media queue.
 pub struct RecorderWorker {
     default_arrival_origin: Instant,
@@ -1325,7 +1354,8 @@ impl WorkerContext {
         }
         let completion = Arc::clone(&state);
         let panic_partial_relative_name = partial_relative_name.clone();
-        let ticket = self.store.submit_finalization(Box::new(move || {
+        let finalizer = segment.finalizer.clone();
+        let ticket = finalizer.submit(Box::new(move || {
             if !completion.try_claim() {
                 return;
             }
@@ -1480,6 +1510,7 @@ struct Segment {
 
 struct PreparedSegment {
     file: CountedRecordingFile,
+    finalizer: crate::recording_store::RecordingFinalizerAuthority,
     partial_relative_name: String,
     partial_exists: Arc<AtomicBool>,
 }
@@ -1642,8 +1673,10 @@ impl Segment {
         file.inner
             .set_final_relative_name(final_name)
             .map_err(|error| WorkerError::finalization(&error))?;
+        let finalizer = file.inner.finalizer_authority();
         Ok(PreparedSegment {
             file,
+            finalizer,
             partial_relative_name: self.partial_relative_name,
             partial_exists: self.partial_exists,
         })

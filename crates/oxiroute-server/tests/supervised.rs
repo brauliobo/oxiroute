@@ -7,6 +7,7 @@ use std::{
     fs,
     io::{self, BufReader, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket as StdUdpSocket},
+    os::unix::fs::PermissionsExt as _,
     os::{fd::AsRawFd as _, unix::net::UnixStream},
     path::{Path, PathBuf},
     process::Command,
@@ -18,13 +19,13 @@ use std::{
 use bytes::{Buf as _, Bytes};
 use http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, Config, DownstreamTimeoutPolicy,
+    AlpnProtocol, Certificate, CertificateSource, ConfigDraft, DownstreamTimeoutPolicy,
     HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
-    HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Protocol, TlsProfile,
-    TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
-    UpstreamTls,
+    HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management, Protocol, Stats,
+    StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UpstreamAlgorithm,
+    UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamTls, ValidatedConfig,
 };
-use oxiroute_config_source::{ConfigFormat, render_config};
+use oxiroute_config_source::{ConfigFormat, render_config as render_source_config};
 use oxiroute_server::{
     ListenerReservations,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
@@ -43,6 +44,10 @@ use tokio::time::{sleep, timeout};
 
 const MARKER: &str = "--__oxiroute-worker-7f3c9d1e";
 const TEST_RUNTIME_FAILURE_ENV: &str = "OXIROUTE_INTERNAL_TEST_RUNTIME_FAILURE";
+
+fn render_config(format: ConfigFormat, config: &ValidatedConfig) -> String {
+    render_source_config(format, config).expect("render validated config")
+}
 const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
     "OXIROUTE_INTERNAL_TEST_LISTENER_DUPLICATION_FAILURE";
 const TEST_LAUNCHER_ENV: &str = "OXIROUTE_TEST_SUPERVISOR_LAUNCHER";
@@ -55,6 +60,7 @@ struct Harness {
     worker_pid: u32,
     launcher_pid: u32,
     listener_targets: Vec<PathBuf>,
+    _token_directory: Option<tempfile::TempDir>,
 }
 
 impl Harness {
@@ -77,10 +83,11 @@ impl Harness {
         let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
             panic!("canonical fixture was rejected");
         };
-        let reservations = ListenerReservations::prepare(&document.normalized_config, None)
+        let reservations = ListenerReservations::prepare(&document.validated_config, None)
             .expect("master listener reservations");
         let listener_targets = document
-            .normalized_config
+            .validated_config
+            .as_draft()
             .listeners
             .iter()
             .map(|listener| {
@@ -107,6 +114,22 @@ impl Harness {
             .arg(encode_token(TOKEN))
             .arg(config_path)
             .arg(revision);
+        let token_directory = document
+            .validated_config
+            .as_draft()
+            .management
+            .as_ref()
+            .map(|_| {
+                let directory = tempfile::tempdir().expect("management token directory");
+                let path = directory.path().join("management.token");
+                fs::write(&path, "11".repeat(32)).expect("management token");
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                    .expect("management token permissions");
+                (directory, path)
+            });
+        if let Some((_, path)) = &token_directory {
+            command = command.env("OXIROUTE_MANAGEMENT_TOKEN_FILE", path);
+        }
         if inject_runtime_failure {
             command = command.env(TEST_RUNTIME_FAILURE_ENV, "1");
         }
@@ -114,7 +137,7 @@ impl Harness {
             command = command.env(TEST_LISTENER_DUPLICATION_FAILURE_ENV, "1");
         }
         let listeners = reservations
-            .into_stable_listeners(&document.normalized_config)
+            .into_stable_listeners(&document.validated_config)
             .expect("stable master listeners");
         let master = Master::launch(
             MasterConfig::new(
@@ -146,6 +169,7 @@ impl Harness {
             worker_pid,
             launcher_pid,
             listener_targets,
+            _token_directory: token_directory.map(|(directory, _)| directory),
         }
     }
 
@@ -295,7 +319,7 @@ fn canonical_revision(path: &Path) -> String {
     let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
         panic!("canonical fixture was rejected");
     };
-    document.candidate_revision.to_string()
+    document.effective_revision.to_string()
 }
 
 #[test]
@@ -310,7 +334,10 @@ fn supervised_worker_serves_tcp_and_unix_http_from_transferred_descriptors() {
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render supervised config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid supervised config"),
+        ),
     )
     .expect("write supervised config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
@@ -365,7 +392,10 @@ fn supervised_worker_adopts_udp_and_reports_datagram_status() {
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render UDP config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid UDP config"),
+        ),
     )
     .expect("write UDP config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
@@ -409,6 +439,143 @@ fn supervised_worker_adopts_udp_and_reports_datagram_status() {
     harness.verify_reaped();
 }
 
+#[test]
+fn supervised_control_listeners_report_real_lifecycle_and_connection_counters_once() {
+    let directory = tempfile::tempdir().expect("control listener fixture directory");
+    let management = reserve_tcp_address();
+    let stats_address = reserve_tcp_address();
+    let stats_page = reserve_tcp_address();
+    let config = ConfigDraft {
+        version: 1,
+        max_connections: None,
+        management: Some(Management {
+            bind: management,
+            ui_dir: None,
+        }),
+        stats: Some(Stats {
+            binds: vec![stats_address],
+            admin_token_file: None,
+            pages: vec![StatsPage {
+                bind: stats_page,
+                uri_prefix: "/stats".into(),
+                refresh_ms: 1_000,
+                admin: StatsPageAdminPolicy::Disabled,
+                max_connections: None,
+                downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            }],
+        }),
+        certificates: Vec::new(),
+        tls_profiles: Vec::new(),
+        listeners: Vec::new(),
+        cache_stores: Vec::new(),
+        upstream_pools: Vec::new(),
+        http_services: Vec::new(),
+        forward_proxy_services: Vec::new(),
+        rtmp_services: Vec::new(),
+        l4_services: Vec::new(),
+    };
+    let path = directory.path().join("control-listeners.kdl");
+    fs::write(
+        &path,
+        render_config(
+            ConfigFormat::Kdl,
+            &config.validate().expect("valid control listener config"),
+        ),
+    )
+    .expect("write control listener config");
+    let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
+    harness.poll_until(MasterState::Running);
+
+    let management_stream = TcpStream::connect_timeout(&management, Duration::from_secs(2))
+        .expect("connect management listener");
+    drop(management_stream);
+    let metrics = control_http_response(stats_address, "/metrics");
+    assert!(metrics.starts_with("HTTP/1.1 200"), "{metrics}");
+    assert!(!metrics.contains("@management"));
+    assert!(!metrics.contains("@stats-0"));
+    assert!(metrics.contains("@stats-page-0"));
+    let page = control_http_response(stats_page, "/stats");
+    assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+    thread::sleep(Duration::from_millis(300));
+    harness.master.poll(Instant::now()).expect("status poll");
+
+    let status = harness
+        .master
+        .worker_status(WorkerRole::Active)
+        .expect("active worker status");
+    assert_eq!(status.listeners.len(), 3);
+    for name in ["@management", "@stats-0", "@stats-page-0"] {
+        let matching = status
+            .listeners
+            .iter()
+            .filter(|listener| listener.name == name)
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "{name} was not reported exactly once");
+        assert_eq!(
+            matching[0].state,
+            oxiroute_supervisor_master::WorkerListenerState::Listening
+        );
+        assert!(matching[0].accepted_connections > 0);
+        assert_eq!(matching[0].active_connections, 0);
+    }
+
+    assert!(matches!(
+        harness.master.shutdown(Instant::now()).expect("shutdown"),
+        ShutdownProgress::Pending { .. }
+    ));
+    harness.poll_until(MasterState::Stopped);
+    harness.verify_reaped();
+}
+
+#[test]
+fn supervised_control_listener_callback_failure_prevents_readiness() {
+    let directory = tempfile::tempdir().expect("control listener failure fixture directory");
+    let config = ConfigDraft {
+        version: 1,
+        max_connections: None,
+        management: Some(Management {
+            bind: reserve_tcp_address(),
+            ui_dir: None,
+        }),
+        stats: Some(Stats {
+            binds: vec![reserve_tcp_address()],
+            admin_token_file: None,
+            pages: vec![StatsPage {
+                bind: reserve_tcp_address(),
+                uri_prefix: "/stats".into(),
+                refresh_ms: 1_000,
+                admin: StatsPageAdminPolicy::Disabled,
+                max_connections: None,
+                downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            }],
+        }),
+        certificates: Vec::new(),
+        tls_profiles: Vec::new(),
+        listeners: Vec::new(),
+        cache_stores: Vec::new(),
+        upstream_pools: Vec::new(),
+        http_services: Vec::new(),
+        forward_proxy_services: Vec::new(),
+        rtmp_services: Vec::new(),
+        l4_services: Vec::new(),
+    };
+    let path = directory.path().join("control-listener-failure.kdl");
+    fs::write(
+        &path,
+        render_config(
+            ConfigFormat::Kdl,
+            &config.validate().expect("valid control listener config"),
+        ),
+    )
+    .expect("write control listener config");
+
+    let mut harness =
+        Harness::launch_at_with_failures(&path, canonical_revision(&path), false, true);
+    harness.poll_until(MasterState::Failed);
+    assert!(harness.master.worker_status(WorkerRole::Active).is_none());
+    harness.verify_reaped();
+}
+
 #[tokio::test]
 async fn supervised_worker_adopts_h3_and_serves_a_quic_request() {
     let directory = tempfile::tempdir().expect("supervised H3 fixture directory");
@@ -421,7 +588,10 @@ async fn supervised_worker_adopts_h3_and_serves_a_quic_request() {
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render H3 config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid H3 config"),
+        ),
     )
     .expect("write H3 config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
@@ -519,7 +689,13 @@ fn supervised_worker_replaces_an_active_udp_session_without_rebinding_or_leaking
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &initial).expect("render initial UDP config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &initial
+                .clone()
+                .validate()
+                .expect("valid initial UDP config"),
+        ),
     )
     .expect("write initial UDP config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
@@ -546,7 +722,13 @@ fn supervised_worker_replaces_an_active_udp_session_without_rebinding_or_leaking
 
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &candidate).expect("render candidate UDP config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &candidate
+                .clone()
+                .validate()
+                .expect("valid candidate UDP config"),
+        ),
     )
     .expect("write candidate UDP config");
     replace_real_worker(
@@ -678,7 +860,13 @@ fn supervised_udp_replacement_rolls_back_after_candidate_rejects_adoption() {
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render UDP rollback config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config
+                .clone()
+                .validate()
+                .expect("valid UDP rollback config"),
+        ),
     )
     .expect("write UDP rollback config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
@@ -768,7 +956,10 @@ fn supervised_worker_restarts_and_serves_new_udp_traffic_after_clean_shutdown() 
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render UDP restart config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid UDP restart config"),
+        ),
     )
     .expect("write UDP restart config");
 
@@ -852,7 +1043,10 @@ fn supervised_worker_crash_with_active_udp_session_is_reaped_and_releases_listen
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render UDP crash config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid UDP crash config"),
+        ),
     )
     .expect("write UDP crash config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
@@ -906,7 +1100,10 @@ async fn supervised_worker_replaces_an_active_h3_request_with_goaway_and_owned_d
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &initial).expect("render initial H3 config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &initial.clone().validate().expect("valid initial H3 config"),
+        ),
     )
     .expect("write initial H3 config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
@@ -945,7 +1142,13 @@ async fn supervised_worker_replaces_an_active_h3_request_with_goaway_and_owned_d
 
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &candidate).expect("render candidate H3 config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &candidate
+                .clone()
+                .validate()
+                .expect("valid candidate H3 config"),
+        ),
     )
     .expect("write candidate H3 config");
     replace_real_worker(
@@ -1132,7 +1335,10 @@ async fn supervised_h3_replacement_rolls_back_after_candidate_rejects_adoption()
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render H3 rollback config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid H3 rollback config"),
+        ),
     )
     .expect("write H3 rollback config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
@@ -1187,7 +1393,10 @@ async fn supervised_worker_restarts_and_serves_new_h3_traffic_after_clean_shutdo
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render H3 restart config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid H3 restart config"),
+        ),
     )
     .expect("write H3 restart config");
 
@@ -1234,7 +1443,10 @@ async fn supervised_worker_crash_with_active_h3_request_is_reaped_and_releases_l
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render H3 crash config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid H3 crash config"),
+        ),
     )
     .expect("write H3 crash config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
@@ -1311,7 +1523,10 @@ fn supervised_worker_replaces_a_same_manifest_generation() {
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &initial).expect("render initial config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &initial.clone().validate().expect("valid initial config"),
+        ),
     )
     .expect("write initial config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
@@ -1326,7 +1541,13 @@ fn supervised_worker_replaces_a_same_manifest_generation() {
     *body = "stage-3".into();
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &updated).expect("render replacement config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &updated
+                .clone()
+                .validate()
+                .expect("valid replacement config"),
+        ),
     )
     .expect("write replacement config");
 
@@ -1403,7 +1624,10 @@ fn supervised_worker_reactivates_after_a_replacement_rejection() {
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render rollback config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid rollback config"),
+        ),
     )
     .expect("write rollback config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
@@ -1469,7 +1693,10 @@ fn listener_duplication_failure_never_acknowledges_adoption_or_reaches_running()
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render supervised config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid supervised config"),
+        ),
     )
     .expect("write supervised config");
     let mut harness =
@@ -1489,6 +1716,46 @@ fn listener_duplication_failure_never_acknowledges_adoption_or_reaches_running()
 }
 
 #[test]
+fn supervised_listener_rejection_releases_ownership_and_allows_clean_retry() {
+    let directory = tempfile::tempdir().expect("supervised retry fixture directory");
+    let tcp_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("temporary retry TCP bind")
+        .local_addr()
+        .expect("retry TCP address");
+    let unix_path = directory.path().join("retry.sock");
+    let config = listeners_only_config(tcp_address, unix_path.clone());
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid retry config"),
+        ),
+    )
+    .expect("write retry config");
+
+    let mut rejected =
+        Harness::launch_at_with_failures(&path, canonical_revision(&path), false, true);
+    rejected.poll_until(MasterState::Failed);
+    rejected.verify_reaped();
+    drop(rejected);
+    assert!(
+        !unix_path.exists(),
+        "rejected master retained Unix ownership"
+    );
+
+    let mut retry = Harness::launch_at(&path, canonical_revision(&path), false);
+    retry.poll_until(MasterState::Running);
+    assert_fixed_response(TcpStream::connect(tcp_address).expect("retry TCP connection"));
+    retry
+        .master
+        .shutdown(Instant::now())
+        .expect("retry shutdown");
+    retry.poll_until(MasterState::Stopped);
+    retry.verify_reaped();
+}
+
+#[test]
 fn supervised_listener_worker_crash_is_reaped_and_master_cleans_namespace() {
     let directory = tempfile::tempdir().expect("supervised fixture directory");
     let tcp_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -1500,7 +1767,10 @@ fn supervised_listener_worker_crash_is_reaped_and_master_cleans_namespace() {
     let path = directory.path().join("oxiroute.kdl");
     fs::write(
         &path,
-        render_config(ConfigFormat::Kdl, &config).expect("render supervised config"),
+        render_config(
+            ConfigFormat::Kdl,
+            &config.clone().validate().expect("valid supervised config"),
+        ),
     )
     .expect("write supervised config");
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), true);
@@ -1525,6 +1795,31 @@ fn assert_fixed_response(mut stream: impl Read + Write) {
         .expect("read HTTP response");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert!(response.ends_with("stage-2"), "{response}");
+}
+
+fn control_http_response(address: SocketAddr, path: &str) -> String {
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
+        .expect("connect control HTTP listener");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("control listener read timeout");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write control HTTP request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read control HTTP response");
+    response
+}
+
+fn reserve_tcp_address() -> SocketAddr {
+    std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("TCP listener probe")
+        .local_addr()
+        .expect("TCP listener address")
 }
 
 fn verify_listener_descriptors(worker_pid: u32, listener_targets: &[PathBuf]) {
@@ -1564,7 +1859,7 @@ fn verify_listener_descriptors(worker_pid: u32, listener_targets: &[PathBuf]) {
     }
 }
 
-fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf) -> Config {
+fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf) -> ConfigDraft {
     let listeners = [
         (
             "tcp",
@@ -1592,7 +1887,7 @@ fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf) -> Config 
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     })
     .collect();
-    Config {
+    ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
@@ -1628,8 +1923,8 @@ fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf) -> Config 
     }
 }
 
-fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -> Config {
-    Config {
+fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -> ConfigDraft {
+    ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
@@ -1680,8 +1975,8 @@ fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -
     }
 }
 
-fn h3_only_config(listener_address: SocketAddr, private_key_path: &Path) -> Config {
-    Config {
+fn h3_only_config(listener_address: SocketAddr, private_key_path: &Path) -> ConfigDraft {
+    ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
@@ -1770,7 +2065,7 @@ fn h3_proxy_config(
     listener_address: SocketAddr,
     private_key_path: &Path,
     origin_address: SocketAddr,
-) -> Config {
+) -> ConfigDraft {
     let mut config = h3_only_config(listener_address, private_key_path);
     config.upstream_pools.push(UpstreamPool {
         name: "origin".into(),

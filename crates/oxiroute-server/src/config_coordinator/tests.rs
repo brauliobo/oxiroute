@@ -9,11 +9,13 @@ use std::{
 };
 
 use oxiroute_config::{
-    Config, HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction,
+    ConfigDraft, HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction,
     HttpService, HttpVersionPolicy, Listener, ListenerBind, Protocol, RtmpApplication, RtmpService,
-    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, render_lua,
+    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
 };
-use oxiroute_config_source::{ConfigFormat, render_config};
+use oxiroute_config_source::{
+    ConfigFormat, ConfigSourceError, load_lua, render_config, resolve_source_with_format,
+};
 use tempfile::TempDir;
 
 use super::{storage::StorageFailure, *};
@@ -30,8 +32,8 @@ fn socket_endpoint(value: &str) -> UpstreamEndpoint {
     }
 }
 
-fn minimal_config() -> Config {
-    Config {
+fn minimal_config() -> ConfigDraft {
+    ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
@@ -48,7 +50,7 @@ fn minimal_config() -> Config {
     }
 }
 
-fn rtmp_config(name: &str) -> Config {
+fn rtmp_config(name: &str) -> ConfigDraft {
     let mut config = minimal_config();
     config.listeners.push(Listener {
         name: name.into(),
@@ -91,7 +93,7 @@ fn rtmp_config(name: &str) -> Config {
     config
 }
 
-fn normalizable_config() -> Config {
+fn normalizable_config() -> ConfigDraft {
     let mut config = minimal_config();
     config.listeners.push(Listener {
         name: "web-listener".into(),
@@ -143,19 +145,42 @@ fn normalizable_config() -> Config {
     config
 }
 
-fn fixture(config: &Config) -> (TempDir, std::path::PathBuf, CanonicalConfigCoordinator) {
+fn fixture(config: &ConfigDraft) -> (TempDir, std::path::PathBuf, CanonicalConfigCoordinator) {
     let temp = TempDir::new().expect("temporary directory");
     let path = temp.path().join("oxiroute.lua");
-    fs::write(&path, render_lua(config).expect("test config renders")).expect("write config");
+    let config = config.clone().validate().expect("test config validates");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Lua, &config).expect("test config renders"),
+    )
+    .expect("write config");
     let coordinator = CanonicalConfigCoordinator::new(path.clone()).expect("coordinator");
     (temp, path, coordinator)
 }
 
-fn loaded(outcome: ConfigLoadOutcome) -> CanonicalConfigDocument {
+fn loaded(outcome: ConfigLoadOutcome) -> ResolvedConfigDocument {
     let ConfigLoadOutcome::Loaded(document) = outcome else {
         panic!("load rejected")
     };
     *document
+}
+
+fn prepared(
+    coordinator: &CanonicalConfigCoordinator,
+    draft: ConfigDraft,
+) -> PersistableConfigCandidate {
+    let ConfigValidationOutcome::Valid(candidate) = coordinator.prepare(draft) else {
+        panic!("draft is invalid")
+    };
+    *candidate
+}
+
+fn save_draft(
+    coordinator: &CanonicalConfigCoordinator,
+    expected: &AuthoredRevision,
+    draft: ConfigDraft,
+) -> ConfigSaveOutcome {
+    coordinator.save(expected, prepared(coordinator, draft))
 }
 
 fn no_temporary_entries(directory: &Path) -> bool {
@@ -196,7 +221,7 @@ fn wait_for_path(path: &Path) {
 fn save_child(
     mode: &str,
     path: &Path,
-    expected: &ConfigRevision,
+    expected: &AuthoredRevision,
     result: &Path,
     ready: &Path,
     release: &Path,
@@ -216,6 +241,89 @@ fn save_child(
 }
 
 #[test]
+fn revision_domains_have_exact_lowercase_sha256_wire_behavior() {
+    let authored = AuthoredRevision::from_bytes(b"authored");
+    let effective = EffectiveRevision::from_bytes(b"effective");
+
+    for revision in [authored.as_str(), effective.as_str()] {
+        assert_eq!(revision.len(), 64);
+        assert!(
+            revision
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+    }
+    assert_eq!(authored.to_string(), authored.as_str());
+    assert_eq!(effective.to_string(), effective.as_str());
+    assert_eq!(
+        serde_json::to_string(&authored).unwrap(),
+        format!("\"{authored}\"")
+    );
+    assert_eq!(
+        serde_json::to_string(&effective).unwrap(),
+        format!("\"{effective}\"")
+    );
+    assert_eq!(authored.as_str().parse::<AuthoredRevision>(), Ok(authored));
+    assert_eq!(
+        effective.as_str().parse::<EffectiveRevision>(),
+        Ok(effective)
+    );
+    assert!("A".repeat(64).parse::<AuthoredRevision>().is_err());
+    assert!("A".repeat(64).parse::<EffectiveRevision>().is_err());
+    assert!("g".repeat(64).parse::<AuthoredRevision>().is_err());
+    assert!("0".repeat(63).parse::<EffectiveRevision>().is_err());
+}
+
+#[test]
+fn loaded_document_retains_validated_proof_and_both_revision_domains() {
+    let (_temp, path, coordinator) = fixture(&normalizable_config());
+    let authored_bytes = fs::read(path).unwrap();
+
+    let document = loaded(coordinator.load());
+
+    assert_eq!(
+        document.authored_revision,
+        AuthoredRevision::from_bytes(&authored_bytes)
+    );
+    assert_eq!(
+        document.effective_revision,
+        EffectiveRevision::from_bytes(
+            render_config(ConfigFormat::Kdl, &document.validated_config)
+                .unwrap()
+                .as_bytes()
+        )
+    );
+    assert_eq!(
+        document.validated_config.as_draft().http_services[0].routes[0]
+            .host
+            .as_ref(),
+        Some(&HttpHostSelector::NormalizedHost {
+            value: "api.example.test".into(),
+        })
+    );
+}
+
+#[test]
+fn prepared_candidate_bytes_are_consumed_by_save() {
+    let (_temp, path, coordinator) = fixture(&minimal_config());
+    let expected = loaded(coordinator.load()).authored_revision;
+    let ConfigValidationOutcome::Valid(candidate) = coordinator.prepare(normalizable_config())
+    else {
+        panic!("candidate preparation failed")
+    };
+    let expected_preview = candidate.config_preview().to_owned();
+    let expected_effective = candidate.effective_revision().clone();
+
+    let ConfigSaveOutcome::Saved(saved) = coordinator.save(&expected, *candidate) else {
+        panic!("prepared candidate save failed")
+    };
+
+    assert_eq!(fs::read(path).unwrap(), expected_preview.as_bytes());
+    assert_eq!(saved.effective_revision, expected_effective);
+    assert_eq!(saved.validated_config, saved.validated_config.clone());
+}
+
+#[test]
 fn load_hashes_exact_disk_bytes_and_returns_a_normalized_preview() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("oxiroute.lua");
@@ -225,34 +333,114 @@ fn load_hashes_exact_disk_bytes_and_returns_a_normalized_preview() {
 
     let document = loaded(coordinator.load());
 
-    assert_eq!(document.disk_revision, ConfigRevision::from_bytes(source));
-    assert!(document.normalized_config.listeners.is_empty());
-    assert!(document.normalized_config.rtmp_services.is_empty());
     assert_eq!(
-        document.candidate_revision,
-        ConfigRevision::from_bytes(
-            render_config(ConfigFormat::Kdl, &document.normalized_config)
+        document.authored_revision,
+        AuthoredRevision::from_bytes(source)
+    );
+    assert!(document.validated_config.as_draft().listeners.is_empty());
+    assert!(
+        document
+            .validated_config
+            .as_draft()
+            .rtmp_services
+            .is_empty()
+    );
+    assert_eq!(
+        document.effective_revision,
+        EffectiveRevision::from_bytes(
+            render_config(ConfigFormat::Kdl, &document.validated_config)
                 .unwrap()
                 .as_bytes()
         )
     );
-    assert_ne!(document.disk_revision, document.candidate_revision);
+    assert_ne!(
+        document.authored_revision.as_str(),
+        document.effective_revision.as_str()
+    );
     assert_eq!(
-        oxiroute_config::load_lua(&document.config_preview).unwrap(),
-        document.normalized_config
+        load_lua(&document.config_preview).unwrap().as_draft(),
+        document.validated_config.as_draft()
     );
     assert!(document.diagnostics.is_empty());
+}
+
+#[test]
+fn canonical_minimal_config_bytes_and_effective_revision_are_stable() {
+    let config = minimal_config().validate().unwrap();
+    let canonical = render_config(ConfigFormat::Kdl, &config).unwrap();
+
+    assert_eq!(
+        canonical,
+        concat!(
+            "(array)cache_stores {\n}\n",
+            "(array)certificates {\n}\n",
+            "(array)forward_proxy_services {\n}\n",
+            "(array)http_services {\n}\n",
+            "(array)l4_services {\n}\n",
+            "(array)listeners {\n}\n",
+            "management #null\n",
+            "max_connections #null\n",
+            "(array)rtmp_services {\n}\n",
+            "stats #null\n",
+            "(array)tls_profiles {\n}\n",
+            "(array)upstream_pools {\n}\n",
+            "version 1\n",
+        )
+    );
+    assert_eq!(
+        EffectiveRevision::from_bytes(canonical.as_bytes()).as_str(),
+        "055f445bd5783bc7ecf206cfc4b5cdc66849eb6c9d41c8404ae5bbcfbef2202e"
+    );
+}
+
+#[test]
+fn lua_render_and_parse_failures_keep_their_diagnostic_stages() {
+    let oversized: ConfigDraft = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "listeners": [],
+        "cache_stores": [{
+            "type": "memory",
+            "name": "x".repeat(1024 * 1024)
+        }]
+    }))
+    .expect("oversized output draft");
+    let oversized = oversized.validate().expect("valid oversized output");
+    let render_error = render_config(ConfigFormat::Lua, &oversized).unwrap_err();
+    let render_diagnostic = source_error_diagnostic(&render_error);
+    assert_eq!(render_diagnostic.code, "E_RENDER");
+    assert_eq!(render_diagnostic.stage, ConfigDiagnosticStage::Render);
+
+    let representative = ConfigSourceError::Render {
+        format: "Lua",
+        message: "representative renderer failure".into(),
+        source: None,
+    };
+    let representative_diagnostic = source_error_diagnostic(&representative);
+    assert_eq!(representative_diagnostic.code, "E_RENDER");
+    assert_eq!(
+        representative_diagnostic.stage,
+        ConfigDiagnosticStage::Render
+    );
+
+    let parse_error = resolve_source_with_format(
+        Path::new("broken.lua"),
+        b"return { version = 1, listeners = {",
+        ConfigFormat::Lua,
+    )
+    .unwrap_err();
+    let parse_diagnostic = source_error_diagnostic(&parse_error);
+    assert_eq!(parse_diagnostic.code, "E_SYNTAX");
+    assert_eq!(parse_diagnostic.stage, ConfigDiagnosticStage::Parse);
 }
 
 #[test]
 fn typed_validation_is_normalized_and_deterministic() {
     let (_temp, _path, coordinator) = fixture(&minimal_config());
 
-    let ConfigValidationOutcome::Valid(first) = coordinator.validate(&normalizable_config()) else {
+    let ConfigValidationOutcome::Valid(first) = coordinator.prepare(normalizable_config()) else {
         panic!("first draft is invalid")
     };
-    let ConfigValidationOutcome::Valid(second) = coordinator.validate(&normalizable_config())
-    else {
+    let ConfigValidationOutcome::Valid(second) = coordinator.prepare(normalizable_config()) else {
         panic!("second draft is invalid")
     };
     let first = *first;
@@ -260,7 +448,7 @@ fn typed_validation_is_normalized_and_deterministic() {
 
     assert_eq!(first, second);
     assert_eq!(
-        first.normalized_config.http_services[0].routes[0]
+        first.validated_config().as_draft().http_services[0].routes[0]
             .host
             .as_ref(),
         Some(&HttpHostSelector::NormalizedHost {
@@ -268,14 +456,14 @@ fn typed_validation_is_normalized_and_deterministic() {
         })
     );
     assert_eq!(
-        &first.normalized_config.http_services[0].routes[0].path,
+        &first.validated_config().as_draft().http_services[0].routes[0].path,
         &HttpPathSelector::SegmentPrefix {
             value: "/v1/".into(),
         }
     );
     assert_eq!(
-        render_lua(&first.normalized_config).unwrap(),
-        first.config_preview
+        render_config(ConfigFormat::Lua, first.validated_config()).unwrap(),
+        first.config_preview()
     );
 }
 
@@ -289,7 +477,8 @@ fn materialized_formats_load_and_save_in_their_authored_format() {
         ("hocon", ConfigFormat::Hocon),
     ] {
         let path = directory.path().join(format!("oxiroute.{extension}"));
-        let source = render_config(format, &minimal_config()).unwrap();
+        let config = minimal_config().validate().unwrap();
+        let source = render_config(format, &config).unwrap();
         fs::write(&path, &source).unwrap();
         let coordinator = CanonicalConfigCoordinator::new(&path).unwrap();
         let document = loaded(coordinator.load());
@@ -299,19 +488,23 @@ fn materialized_formats_load_and_save_in_their_authored_format() {
         assert!(document.dependencies.is_empty());
         assert_eq!(document.config_preview, source);
         assert_eq!(
-            document.disk_revision,
-            ConfigRevision::from_bytes(source.as_bytes())
+            document.authored_revision,
+            AuthoredRevision::from_bytes(source.as_bytes())
         );
 
         let mut draft = minimal_config();
         draft.max_connections = Some(17);
-        let ConfigSaveOutcome::Saved(saved) = coordinator.save(&document.disk_revision, &draft)
+        let ConfigSaveOutcome::Saved(saved) =
+            save_draft(&coordinator, &document.authored_revision, draft.clone())
         else {
             panic!("{format:?} save failed")
         };
         assert_eq!(saved.format, format);
         assert_eq!(fs::read_to_string(&path).unwrap(), saved.config_preview);
-        assert_eq!(loaded(coordinator.load()).normalized_config, draft);
+        assert_eq!(
+            loaded(coordinator.load()).validated_config.as_draft(),
+            &draft
+        );
     }
 }
 
@@ -326,7 +519,7 @@ fn typed_save_rejects_a_compositional_root_without_flattening_it() {
 
     assert!(document.compositional);
     let ConfigSaveOutcome::InvalidDraft(rejection) =
-        coordinator.save(&document.disk_revision, &minimal_config())
+        save_draft(&coordinator, &document.authored_revision, minimal_config())
     else {
         panic!("compositional root was flattened")
     };
@@ -338,10 +531,10 @@ fn typed_save_rejects_a_compositional_root_without_flattening_it() {
 fn save_escapes_values_and_installs_a_secure_regular_file() {
     let (_temp, path, coordinator) = fixture(&minimal_config());
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-    let expected = loaded(coordinator.load()).disk_revision;
+    let expected = loaded(coordinator.load()).authored_revision;
     let draft = rtmp_config("edge \"quoted\" \\ slash café");
 
-    let ConfigSaveOutcome::Saved(saved) = coordinator.save(&expected, &draft) else {
+    let ConfigSaveOutcome::Saved(saved) = save_draft(&coordinator, &expected, draft.clone()) else {
         panic!("save failed")
     };
 
@@ -354,18 +547,20 @@ fn save_escapes_values_and_installs_a_secure_regular_file() {
     );
     assert_eq!(fs::symlink_metadata(&path).unwrap().mode() & 0o7777, 0o600);
     assert!(fs::symlink_metadata(&path).unwrap().file_type().is_file());
-    assert_eq!(loaded(coordinator.load()).normalized_config, draft);
+    assert_eq!(
+        loaded(coordinator.load()).validated_config.as_draft(),
+        &draft
+    );
 }
 
 #[test]
 fn invalid_draft_is_redacted_and_never_touches_disk() {
     let (_temp, path, coordinator) = fixture(&minimal_config());
     let before = fs::read(&path).unwrap();
-    let expected = loaded(coordinator.load()).disk_revision;
     let mut draft = rtmp_config("private-diagnostic-value");
     draft.version = 99;
 
-    let ConfigSaveOutcome::InvalidDraft(rejection) = coordinator.save(&expected, &draft) else {
+    let ConfigValidationOutcome::Invalid(rejection) = coordinator.prepare(draft) else {
         panic!("draft was not rejected")
     };
 
@@ -387,7 +582,7 @@ fn invalid_external_content_is_reported_without_rewriting_it() {
     assert_eq!(fs::read(&path).unwrap(), invalid);
     assert_eq!(
         rejection.disk_revision,
-        Some(ConfigRevision::from_bytes(invalid))
+        Some(AuthoredRevision::from_bytes(invalid))
     );
     assert!(!format!("{:?}", rejection.diagnostics).contains("secret_external_value"));
 }
@@ -395,12 +590,16 @@ fn invalid_external_content_is_reported_without_rewriting_it() {
 #[test]
 fn stale_expected_revision_conflicts_without_overwriting_external_change() {
     let (_temp, path, coordinator) = fixture(&minimal_config());
-    let expected = loaded(coordinator.load()).disk_revision;
-    let external = render_lua(&rtmp_config("external")).unwrap();
+    let expected = loaded(coordinator.load()).authored_revision;
+    let external = render_config(
+        ConfigFormat::Lua,
+        &rtmp_config("external").validate().unwrap(),
+    )
+    .unwrap();
     fs::write(&path, &external).unwrap();
 
     let ConfigSaveOutcome::Conflict(conflict) =
-        coordinator.save(&expected, &rtmp_config("candidate"))
+        save_draft(&coordinator, &expected, rtmp_config("candidate"))
     else {
         panic!("stale save did not conflict")
     };
@@ -408,7 +607,7 @@ fn stale_expected_revision_conflicts_without_overwriting_external_change() {
     assert_eq!(conflict.expected_revision, expected);
     assert_eq!(
         conflict.disk_revision,
-        ConfigRevision::from_bytes(external.as_bytes())
+        AuthoredRevision::from_bytes(external.as_bytes())
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), external);
 }
@@ -416,13 +615,17 @@ fn stale_expected_revision_conflicts_without_overwriting_external_change() {
 #[test]
 fn exchange_point_race_is_detected_and_external_file_is_restored() {
     let (temp, path, coordinator) = fixture(&minimal_config());
-    let expected = loaded(coordinator.load()).disk_revision;
-    let external = render_lua(&rtmp_config("racing-external")).unwrap();
+    let expected = loaded(coordinator.load()).authored_revision;
+    let external = render_config(
+        ConfigFormat::Lua,
+        &rtmp_config("racing-external").validate().unwrap(),
+    )
+    .unwrap();
     let raced_path = path.clone();
 
     let outcome = coordinator.save_inner(
         &expected,
-        &rtmp_config("candidate"),
+        prepared(&coordinator, rtmp_config("candidate")),
         || fs::write(&raced_path, &external).map_err(|_| ()),
         || {},
         ReplaceControl::default(),
@@ -433,7 +636,7 @@ fn exchange_point_race_is_detected_and_external_file_is_restored() {
     };
     assert_eq!(
         conflict.disk_revision,
-        ConfigRevision::from_bytes(external.as_bytes())
+        AuthoredRevision::from_bytes(external.as_bytes())
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), external);
     assert!(no_temporary_entries(temp.path()));
@@ -442,15 +645,19 @@ fn exchange_point_race_is_detected_and_external_file_is_restored() {
 #[test]
 fn post_exchange_replacement_conflicts_without_destroying_external_write() {
     let (temp, path, coordinator) = fixture(&minimal_config());
-    let expected = loaded(coordinator.load()).disk_revision;
-    let external = render_lua(&rtmp_config("post-exchange-external")).unwrap();
+    let expected = loaded(coordinator.load()).authored_revision;
+    let external = render_config(
+        ConfigFormat::Lua,
+        &rtmp_config("post-exchange-external").validate().unwrap(),
+    )
+    .unwrap();
     let external_path = temp.path().join("external.lua");
     fs::write(&external_path, &external).unwrap();
     let raced_path = path.clone();
 
     let outcome = coordinator.save_inner(
         &expected,
-        &rtmp_config("candidate"),
+        prepared(&coordinator, rtmp_config("candidate")),
         || Ok(()),
         || fs::rename(&external_path, &raced_path).unwrap(),
         ReplaceControl::default(),
@@ -461,7 +668,7 @@ fn post_exchange_replacement_conflicts_without_destroying_external_write() {
     };
     assert_eq!(
         conflict.disk_revision,
-        ConfigRevision::from_bytes(external.as_bytes())
+        AuthoredRevision::from_bytes(external.as_bytes())
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), external);
     assert!(no_temporary_entries(temp.path()));
@@ -470,13 +677,17 @@ fn post_exchange_replacement_conflicts_without_destroying_external_write() {
 #[test]
 fn post_exchange_in_place_write_conflicts_without_rolling_back_external_bytes() {
     let (temp, path, coordinator) = fixture(&minimal_config());
-    let expected = loaded(coordinator.load()).disk_revision;
-    let external = render_lua(&rtmp_config("post-exchange-in-place")).unwrap();
+    let expected = loaded(coordinator.load()).authored_revision;
+    let external = render_config(
+        ConfigFormat::Lua,
+        &rtmp_config("post-exchange-in-place").validate().unwrap(),
+    )
+    .unwrap();
     let raced_path = path.clone();
 
     let outcome = coordinator.save_inner(
         &expected,
-        &rtmp_config("candidate"),
+        prepared(&coordinator, rtmp_config("candidate")),
         || Ok(()),
         || fs::write(&raced_path, &external).unwrap(),
         ReplaceControl::default(),
@@ -487,7 +698,7 @@ fn post_exchange_in_place_write_conflicts_without_rolling_back_external_bytes() 
     };
     assert_eq!(
         conflict.disk_revision,
-        ConfigRevision::from_bytes(external.as_bytes())
+        AuthoredRevision::from_bytes(external.as_bytes())
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), external);
     assert!(no_temporary_entries(temp.path()));
@@ -496,9 +707,17 @@ fn post_exchange_in_place_write_conflicts_without_rolling_back_external_bytes() 
 #[test]
 fn post_exchange_writer_is_not_destroyed_when_displaced_revision_also_conflicts() {
     let (temp, path, coordinator) = fixture(&minimal_config());
-    let expected = loaded(coordinator.load()).disk_revision;
-    let pre_exchange = render_lua(&rtmp_config("pre-exchange-external")).unwrap();
-    let post_exchange = render_lua(&rtmp_config("post-exchange-external")).unwrap();
+    let expected = loaded(coordinator.load()).authored_revision;
+    let pre_exchange = render_config(
+        ConfigFormat::Lua,
+        &rtmp_config("pre-exchange-external").validate().unwrap(),
+    )
+    .unwrap();
+    let post_exchange = render_config(
+        ConfigFormat::Lua,
+        &rtmp_config("post-exchange-external").validate().unwrap(),
+    )
+    .unwrap();
     let external_path = temp.path().join("external.lua");
     fs::write(&external_path, &post_exchange).unwrap();
     let before_path = path.clone();
@@ -506,7 +725,7 @@ fn post_exchange_writer_is_not_destroyed_when_displaced_revision_also_conflicts(
 
     let outcome = coordinator.save_inner(
         &expected,
-        &rtmp_config("candidate"),
+        prepared(&coordinator, rtmp_config("candidate")),
         || fs::write(&before_path, &pre_exchange).map_err(|_| ()),
         || fs::rename(&external_path, &after_path).unwrap(),
         ReplaceControl::default(),
@@ -517,7 +736,7 @@ fn post_exchange_writer_is_not_destroyed_when_displaced_revision_also_conflicts(
     };
     assert_eq!(
         conflict.disk_revision,
-        ConfigRevision::from_bytes(post_exchange.as_bytes())
+        AuthoredRevision::from_bytes(post_exchange.as_bytes())
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), post_exchange);
     assert!(no_temporary_entries(temp.path()));
@@ -526,7 +745,7 @@ fn post_exchange_writer_is_not_destroyed_when_displaced_revision_also_conflicts(
 #[test]
 fn concurrent_saves_allow_exactly_one_revision_winner() {
     let (_temp, path, coordinator) = fixture(&minimal_config());
-    let expected = loaded(coordinator.load()).disk_revision;
+    let expected = loaded(coordinator.load()).authored_revision;
     let barrier = Arc::new(Barrier::new(3));
     let mut workers = Vec::new();
     for name in ["first", "second"] {
@@ -535,7 +754,7 @@ fn concurrent_saves_allow_exactly_one_revision_winner() {
         let barrier = Arc::clone(&barrier);
         workers.push(thread::spawn(move || {
             barrier.wait();
-            coordinator.save(&expected, &rtmp_config(name))
+            save_draft(&coordinator, &expected, rtmp_config(name))
         }));
     }
     barrier.wait();
@@ -561,17 +780,14 @@ fn concurrent_saves_allow_exactly_one_revision_winner() {
     let winning_config = outcomes
         .iter()
         .find_map(|outcome| match outcome {
-            ConfigSaveOutcome::Saved(document) => Some(&document.normalized_config),
+            ConfigSaveOutcome::Saved(document) => Some(&document.validated_config),
             _ => None,
         })
         .unwrap();
+    assert_eq!(loaded(coordinator.load()).validated_config, *winning_config);
     assert_eq!(
-        loaded(coordinator.load()).normalized_config,
-        *winning_config
-    );
-    assert_eq!(
-        ConfigRevision::from_bytes(&fs::read(path).unwrap()),
-        loaded(coordinator.load()).disk_revision
+        AuthoredRevision::from_bytes(&fs::read(path).unwrap()),
+        loaded(coordinator.load()).authored_revision
     );
 }
 
@@ -579,14 +795,14 @@ fn concurrent_saves_allow_exactly_one_revision_winner() {
 fn independent_coordinators_serialize_the_complete_save_transaction() {
     let (temp, path, first) = fixture(&minimal_config());
     let second = CanonicalConfigCoordinator::new(&path).unwrap();
-    let expected = loaded(first.load()).disk_revision;
+    let expected = loaded(first.load()).authored_revision;
     let first_expected = expected.clone();
     let (first_ready_tx, first_ready_rx) = mpsc::channel();
     let (release_first_tx, release_first_rx) = mpsc::channel();
     let first_worker = thread::spawn(move || {
         first.save_inner(
             &first_expected,
-            &rtmp_config("first"),
+            prepared(&first, rtmp_config("first")),
             || {
                 first_ready_tx.send(()).unwrap();
                 release_first_rx.recv().unwrap();
@@ -602,7 +818,7 @@ fn independent_coordinators_serialize_the_complete_save_transaction() {
     let (second_done_tx, second_done_rx) = mpsc::channel();
     let second_worker = thread::spawn(move || {
         second_started_tx.send(()).unwrap();
-        let outcome = second.save(&expected, &rtmp_config("second"));
+        let outcome = save_draft(&second, &expected, rtmp_config("second"));
         second_done_tx.send(()).unwrap();
         outcome
     });
@@ -621,8 +837,10 @@ fn independent_coordinators_serialize_the_complete_save_transaction() {
     assert!(matches!(first_outcome, ConfigSaveOutcome::Saved(_)));
     assert!(matches!(second_outcome, ConfigSaveOutcome::Conflict(_)));
     assert_eq!(
-        loaded(CanonicalConfigCoordinator::new(&path).unwrap().load()).normalized_config,
-        rtmp_config("first")
+        loaded(CanonicalConfigCoordinator::new(&path).unwrap().load())
+            .validated_config
+            .as_draft(),
+        &rtmp_config("first")
     );
     assert!(no_temporary_entries(temp.path()));
 }
@@ -635,7 +853,7 @@ fn child_process_save_helper() {
     let path = PathBuf::from(env::var_os("OXIROUTE_CONFIG_SAVE_PATH").unwrap());
     let expected = env::var("OXIROUTE_CONFIG_SAVE_EXPECTED")
         .unwrap()
-        .parse::<ConfigRevision>()
+        .parse::<AuthoredRevision>()
         .unwrap();
     let result = PathBuf::from(env::var_os("OXIROUTE_CONFIG_SAVE_RESULT").unwrap());
     let ready = PathBuf::from(env::var_os("OXIROUTE_CONFIG_SAVE_READY").unwrap());
@@ -645,7 +863,7 @@ fn child_process_save_helper() {
     let outcome = if mode == "holder" {
         coordinator.save_inner(
             &expected,
-            &rtmp_config("child-first"),
+            prepared(&coordinator, rtmp_config("child-first")),
             || {
                 fs::write(&ready, []).unwrap();
                 wait_for_path(&release);
@@ -656,7 +874,7 @@ fn child_process_save_helper() {
         )
     } else {
         fs::write(&ready, []).unwrap();
-        coordinator.save(&expected, &rtmp_config("child-second"))
+        save_draft(&coordinator, &expected, rtmp_config("child-second"))
     };
     let label = match outcome {
         ConfigSaveOutcome::Saved(_) => "saved",
@@ -670,7 +888,7 @@ fn child_process_save_helper() {
 #[test]
 fn separate_processes_serialize_the_complete_save_transaction() {
     let (temp, path, coordinator) = fixture(&minimal_config());
-    let expected = loaded(coordinator.load()).disk_revision;
+    let expected = loaded(coordinator.load()).authored_revision;
     let first_result = temp.path().join("first.result");
     let first_ready = temp.path().join("first.ready");
     let release = temp.path().join("release");
@@ -705,8 +923,8 @@ fn separate_processes_serialize_the_complete_save_transaction() {
     assert_eq!(fs::read_to_string(first_result).unwrap(), "saved");
     assert_eq!(fs::read_to_string(second_result).unwrap(), "conflict");
     assert_eq!(
-        loaded(coordinator.load()).normalized_config,
-        rtmp_config("child-first")
+        loaded(coordinator.load()).validated_config.as_draft(),
+        &rtmp_config("child-first")
     );
     assert!(no_temporary_entries(temp.path()));
 }
@@ -715,14 +933,14 @@ fn separate_processes_serialize_the_complete_save_transaction() {
 fn replacing_the_lock_entry_cannot_create_an_overlapping_lock_namespace() {
     let (temp, path, first) = fixture(&minimal_config());
     let second = CanonicalConfigCoordinator::new(&path).unwrap();
-    let expected = loaded(first.load()).disk_revision;
+    let expected = loaded(first.load()).authored_revision;
     let first_expected = expected.clone();
     let (first_ready_tx, first_ready_rx) = mpsc::channel();
     let (release_first_tx, release_first_rx) = mpsc::channel();
     let first_worker = thread::spawn(move || {
         first.save_inner(
             &first_expected,
-            &rtmp_config("first"),
+            prepared(&first, rtmp_config("first")),
             || {
                 first_ready_tx.send(()).unwrap();
                 release_first_rx.recv().unwrap();
@@ -746,7 +964,7 @@ fn replacing_the_lock_entry_cannot_create_an_overlapping_lock_namespace() {
 
     let (second_done_tx, second_done_rx) = mpsc::channel();
     let second_worker = thread::spawn(move || {
-        let outcome = second.save(&expected, &rtmp_config("second"));
+        let outcome = save_draft(&second, &expected, rtmp_config("second"));
         second_done_tx.send(()).unwrap();
         outcome
     });
@@ -767,8 +985,10 @@ fn replacing_the_lock_entry_cannot_create_an_overlapping_lock_namespace() {
     assert_eq!(failure.diagnostics[0].code, "E_CONFIG_LOCK");
     assert!(matches!(second_outcome, ConfigSaveOutcome::Saved(_)));
     assert_eq!(
-        loaded(CanonicalConfigCoordinator::new(&path).unwrap().load()).normalized_config,
-        rtmp_config("second")
+        loaded(CanonicalConfigCoordinator::new(&path).unwrap().load())
+            .validated_config
+            .as_draft(),
+        &rtmp_config("second")
     );
     assert!(no_temporary_entries(temp.path()));
 }
@@ -776,8 +996,9 @@ fn replacing_the_lock_entry_cannot_create_an_overlapping_lock_namespace() {
 #[test]
 fn transaction_lock_is_mode_restricted_and_never_follows_symlinks() {
     let (temp, path, coordinator) = fixture(&minimal_config());
-    let expected = loaded(coordinator.load()).disk_revision;
-    let ConfigSaveOutcome::Saved(first) = coordinator.save(&expected, &rtmp_config("first")) else {
+    let expected = loaded(coordinator.load()).authored_revision;
+    let ConfigSaveOutcome::Saved(first) = save_draft(&coordinator, &expected, rtmp_config("first"))
+    else {
         panic!("initial save failed")
     };
     let lock_path = lock_entry(temp.path()).expect("transaction lock entry");
@@ -787,9 +1008,10 @@ fn transaction_lock_is_mode_restricted_and_never_follows_symlinks() {
     );
 
     fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o644)).unwrap();
-    let outcome = CanonicalConfigCoordinator::new(&path)
-        .unwrap()
-        .save(&first.disk_revision, &rtmp_config("wrong-mode"));
+    let outcome = CanonicalConfigCoordinator::new(&path).unwrap().save(
+        &first.authored_revision,
+        prepared(&coordinator, rtmp_config("wrong-mode")),
+    );
     let ConfigSaveOutcome::Failed(failure) = outcome else {
         panic!("permissive transaction lock was accepted")
     };
@@ -800,30 +1022,37 @@ fn transaction_lock_is_mode_restricted_and_never_follows_symlinks() {
     fs::write(&outside, []).unwrap();
     fs::set_permissions(&outside, fs::Permissions::from_mode(0o600)).unwrap();
     symlink(&outside, &lock_path).unwrap();
-    let outcome = CanonicalConfigCoordinator::new(&path)
-        .unwrap()
-        .save(&first.disk_revision, &rtmp_config("symlink"));
+    let outcome = CanonicalConfigCoordinator::new(&path).unwrap().save(
+        &first.authored_revision,
+        prepared(&coordinator, rtmp_config("symlink")),
+    );
     let ConfigSaveOutcome::Failed(failure) = outcome else {
         panic!("symbolic transaction lock was followed")
     };
     assert_eq!(failure.diagnostics[0].code, "E_CONFIG_LOCK");
     assert_eq!(
-        loaded(CanonicalConfigCoordinator::new(&path).unwrap().load()).normalized_config,
-        rtmp_config("first")
+        loaded(CanonicalConfigCoordinator::new(&path).unwrap().load())
+            .validated_config
+            .as_draft(),
+        &rtmp_config("first")
     );
 }
 
 #[test]
 fn symlink_and_special_file_targets_are_rejected_without_following() {
     let (temp, path, coordinator) = fixture(&minimal_config());
-    let expected = loaded(coordinator.load()).disk_revision;
+    let expected = loaded(coordinator.load()).authored_revision;
     let outside = temp.path().join("outside.lua");
-    let outside_bytes = render_lua(&rtmp_config("outside")).unwrap();
+    let outside_bytes = render_config(
+        ConfigFormat::Lua,
+        &rtmp_config("outside").validate().unwrap(),
+    )
+    .unwrap();
     fs::write(&outside, &outside_bytes).unwrap();
     fs::remove_file(&path).unwrap();
     symlink(&outside, &path).unwrap();
 
-    let outcome = coordinator.save(&expected, &rtmp_config("candidate"));
+    let outcome = save_draft(&coordinator, &expected, rtmp_config("candidate"));
 
     assert!(matches!(outcome, ConfigSaveOutcome::Failed(_)));
     assert_eq!(fs::read_to_string(&outside).unwrap(), outside_bytes);
@@ -849,7 +1078,7 @@ fn intermediate_parent_symlinks_are_rejected_without_following() {
     let nested_parent = real_parent.join("nested");
     fs::create_dir_all(&nested_parent).unwrap();
     let real_path = nested_parent.join("oxiroute.lua");
-    let original = render_lua(&minimal_config()).unwrap();
+    let original = render_config(ConfigFormat::Lua, &minimal_config().validate().unwrap()).unwrap();
     fs::write(&real_path, &original).unwrap();
     let linked_parent = temp.path().join("linked");
     symlink(&real_parent, &linked_parent).unwrap();
@@ -862,8 +1091,8 @@ fn intermediate_parent_symlinks_are_rejected_without_following() {
     assert_eq!(rejection.diagnostics[0].code, "E_CONFIG_READ");
 
     let outcome = coordinator.save(
-        &ConfigRevision::from_bytes(original.as_bytes()),
-        &rtmp_config("candidate"),
+        &AuthoredRevision::from_bytes(original.as_bytes()),
+        prepared(&coordinator, rtmp_config("candidate")),
     );
     assert!(matches!(outcome, ConfigSaveOutcome::Failed(_)));
     assert_eq!(fs::read_to_string(real_path).unwrap(), original);
@@ -876,7 +1105,7 @@ fn pinned_parent_chain_rejects_an_intermediate_symlink_rebind() {
     let nested_parent = ancestor.join("nested");
     fs::create_dir_all(&nested_parent).unwrap();
     let path = nested_parent.join("oxiroute.lua");
-    let original = render_lua(&minimal_config()).unwrap();
+    let original = render_config(ConfigFormat::Lua, &minimal_config().validate().unwrap()).unwrap();
     fs::write(&path, &original).unwrap();
     let storage = CanonicalStorage::open(&path).unwrap();
 
@@ -913,11 +1142,11 @@ fn oversized_and_unstable_reads_are_rejected() {
 fn commit_sync_failure_rolls_back_to_the_old_file() {
     let (temp, path, coordinator) = fixture(&minimal_config());
     let before = fs::read(&path).unwrap();
-    let expected = loaded(coordinator.load()).disk_revision;
+    let expected = loaded(coordinator.load()).authored_revision;
 
     let outcome = coordinator.save_inner(
         &expected,
-        &rtmp_config("candidate"),
+        prepared(&coordinator, rtmp_config("candidate")),
         || Ok(()),
         || {},
         ReplaceControl {
@@ -937,13 +1166,14 @@ fn commit_sync_failure_rolls_back_to_the_old_file() {
 #[test]
 fn committed_cleanup_sync_failure_returns_saved_with_a_warning() {
     let (temp, path, coordinator) = fixture(&minimal_config());
-    let expected = loaded(coordinator.load()).disk_revision;
+    let expected = loaded(coordinator.load()).authored_revision;
     let candidate = rtmp_config("candidate");
-    let candidate_bytes = render_lua(&candidate).unwrap();
+    let candidate_bytes =
+        render_config(ConfigFormat::Lua, &candidate.clone().validate().unwrap()).unwrap();
 
     let outcome = coordinator.save_inner(
         &expected,
-        &candidate,
+        prepared(&coordinator, candidate),
         || Ok(()),
         || {},
         ReplaceControl {
@@ -956,8 +1186,8 @@ fn committed_cleanup_sync_failure_returns_saved_with_a_warning() {
         panic!("committed cleanup sync failure was reported as unwritten")
     };
     assert_eq!(
-        saved.disk_revision,
-        ConfigRevision::from_bytes(candidate_bytes.as_bytes())
+        saved.authored_revision,
+        AuthoredRevision::from_bytes(candidate_bytes.as_bytes())
     );
     assert_eq!(saved.diagnostics.len(), 1);
     assert_eq!(saved.diagnostics[0].code, "W_CONFIG_CLEANUP_DURABILITY");
@@ -974,11 +1204,11 @@ fn committed_cleanup_sync_failure_returns_saved_with_a_warning() {
 fn rollback_cleanup_sync_failure_is_reported() {
     let (temp, path, coordinator) = fixture(&minimal_config());
     let before = fs::read(&path).unwrap();
-    let expected = loaded(coordinator.load()).disk_revision;
+    let expected = loaded(coordinator.load()).authored_revision;
 
     let outcome = coordinator.save_inner(
         &expected,
-        &rtmp_config("candidate"),
+        prepared(&coordinator, rtmp_config("candidate")),
         || Ok(()),
         || {},
         ReplaceControl {
@@ -1000,11 +1230,11 @@ fn rollback_cleanup_sync_failure_is_reported() {
 fn failure_after_temp_sync_leaves_old_file_and_no_temp_entry() {
     let (temp, path, coordinator) = fixture(&minimal_config());
     let before = fs::read(&path).unwrap();
-    let expected = loaded(coordinator.load()).disk_revision;
+    let expected = loaded(coordinator.load()).authored_revision;
 
     let outcome = coordinator.save_inner(
         &expected,
-        &rtmp_config("candidate"),
+        prepared(&coordinator, rtmp_config("candidate")),
         || Ok(()),
         || {},
         ReplaceControl {
@@ -1019,12 +1249,12 @@ fn failure_after_temp_sync_leaves_old_file_and_no_temp_entry() {
 }
 
 #[test]
-fn revision_parser_accepts_hex_case_and_rejects_non_sha256_values() {
+fn revision_parser_requires_lowercase_sha256_values() {
     let lower = "a3".repeat(32);
     let upper = lower.to_ascii_uppercase();
-    assert_eq!(
-        lower.parse::<ConfigRevision>().unwrap(),
-        upper.parse::<ConfigRevision>().unwrap()
-    );
-    assert!("not-a-revision".parse::<ConfigRevision>().is_err());
+    assert!(lower.parse::<AuthoredRevision>().is_ok());
+    assert!(lower.parse::<EffectiveRevision>().is_ok());
+    assert!(upper.parse::<AuthoredRevision>().is_err());
+    assert!(upper.parse::<EffectiveRevision>().is_err());
+    assert!("not-a-revision".parse::<AuthoredRevision>().is_err());
 }

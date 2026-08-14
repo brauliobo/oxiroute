@@ -9,10 +9,18 @@ use pingora::protocols::http::ServerSession;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{ApiResponse, config::read_config_body};
+use super::{
+    ApiResponse,
+    config::read_config_body,
+    dto::{
+        GenerationResponse, ListenerInventoryResponse, PoolInventoryResponse,
+        ServerInventoryResponse,
+    },
+};
 use crate::{
     AdministrativeState, GenerationManager, HealthOverride, RuntimeGeneration, RuntimeMetrics,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
+    generation::GENERATION_PREPARATION_TIMEOUT,
     operational_event::{AuditCategory, AuditContext, AuditResult, AuditStore},
 };
 
@@ -59,10 +67,16 @@ pub(super) enum Route<'a> {
     TlsJobResume,
     Audit(Option<&'a str>),
     AuditStatus,
-    Events(Option<&'a str>),
-    EventStream(Option<&'a str>),
+    Events(EventApiVersion, Option<&'a str>),
+    EventStream(EventApiVersion, Option<&'a str>),
     ProcessDrain,
     ProcessShutdown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum EventApiVersion {
+    V1,
+    V2,
 }
 
 pub(super) fn match_route(path_and_query: &str) -> Option<Route<'_>> {
@@ -95,8 +109,10 @@ pub(super) fn match_route(path_and_query: &str) -> Option<Route<'_>> {
         "/api/v1/tls/jobs/resume" => Some(Route::TlsJobResume),
         "/api/v1/audit" => Some(Route::Audit(query)),
         "/api/v1/audit/status" => Some(Route::AuditStatus),
-        "/api/v1/events" => Some(Route::Events(query)),
-        "/api/v1/events/stream" => Some(Route::EventStream(query)),
+        "/api/v1/events" => Some(Route::Events(EventApiVersion::V1, query)),
+        "/api/v1/events/stream" => Some(Route::EventStream(EventApiVersion::V1, query)),
+        "/api/v2/events" => Some(Route::Events(EventApiVersion::V2, query)),
+        "/api/v2/events/stream" => Some(Route::EventStream(EventApiVersion::V2, query)),
         "/api/v1/process/drain" => Some(Route::ProcessDrain),
         "/api/v1/process/shutdown" => Some(Route::ProcessShutdown),
         _ => None,
@@ -104,6 +120,7 @@ pub(super) fn match_route(path_and_query: &str) -> Option<Route<'_>> {
 }
 
 pub(super) struct EventStreamRoute<'a> {
+    pub(super) version: EventApiVersion,
     pub(super) query: Option<&'a str>,
 }
 
@@ -112,8 +129,10 @@ pub(super) fn event_stream_route(
     accepts_event_stream: bool,
 ) -> Option<EventStreamRoute<'_>> {
     match match_route(path_and_query)? {
-        Route::Events(query) if accepts_event_stream => Some(EventStreamRoute { query }),
-        Route::EventStream(query) => Some(EventStreamRoute { query }),
+        Route::Events(version, query) if accepts_event_stream => {
+            Some(EventStreamRoute { version, query })
+        }
+        Route::EventStream(version, query) => Some(EventStreamRoute { version, query }),
         _ => None,
     }
 }
@@ -156,9 +175,11 @@ impl ManagementState {
             (Route::ServerChecks, "POST") => self.server_checks(session).await,
             (Route::ServerMaxConnections, "PUT") => self.server_max_connections(session).await,
             (Route::ServerRefreshDns, "POST") => self.server_refresh_dns(session).await,
-            (Route::Generations, "GET") => {
-                ApiResponse::json(200, &json!({ "generation": self.generations.status() }))
-            }
+            (Route::Generations, "GET") => ApiResponse::json(
+                200,
+                &serde_json::to_value(GenerationResponse::from(self.generations.status()))
+                    .expect("generation response DTO serializes"),
+            ),
             (Route::GenerationReload, "POST") => self.generation_reload(session).await,
             (Route::GenerationRollback, "POST") => self.generation_rollback(session).await,
             (Route::GenerationDrain, "POST") => self.generation_drain(session).await,
@@ -184,7 +205,7 @@ impl ManagementState {
             }
             (Route::Audit(query), "GET") => self.audit(query),
             (Route::AuditStatus, "GET") => self.audit_status(),
-            (Route::Events(query), "GET") => Self::events(query),
+            (Route::Events(version, query), "GET") => Self::events(version, query),
             (Route::ProcessDrain, "POST") => self.process_drain(session).await,
             (Route::ProcessShutdown, "POST") => self.process_shutdown(session).await,
             (
@@ -196,8 +217,8 @@ impl ManagementState {
                 | Route::TlsRenew
                 | Route::Audit(_)
                 | Route::AuditStatus
-                | Route::Events(_)
-                | Route::EventStream(_),
+                | Route::Events(_, _)
+                | Route::EventStream(_, _),
                 _,
             ) => ApiResponse::method_not_allowed("GET"),
             (Route::ServerMaxConnections, _) => ApiResponse::method_not_allowed("PUT"),
@@ -217,7 +238,11 @@ impl ManagementState {
 
     fn listeners(&self) -> ApiResponse {
         match self.metrics.snapshot() {
-            Ok(snapshot) => ApiResponse::json(200, &json!({ "listeners": snapshot.listeners })),
+            Ok(snapshot) => ApiResponse::json(
+                200,
+                &serde_json::to_value(ListenerInventoryResponse::from(snapshot))
+                    .expect("listener inventory DTO serializes"),
+            ),
             Err(_) => ApiResponse::error(
                 503,
                 "listeners_unavailable",
@@ -232,12 +257,15 @@ impl ManagementState {
             Err(response) => return response,
         };
         let pools = active
-            .plan()
-            .pools
+            .pools()
             .iter()
             .map(|pool| pool.health_snapshot())
             .collect::<Vec<_>>();
-        ApiResponse::json(200, &json!({ "pools": pools }))
+        ApiResponse::json(
+            200,
+            &serde_json::to_value(PoolInventoryResponse::from(pools))
+                .expect("pool inventory DTO serializes"),
+        )
     }
 
     fn servers(&self) -> ApiResponse {
@@ -245,21 +273,16 @@ impl ManagementState {
             Ok(active) => active,
             Err(response) => return response,
         };
-        let servers = active
-            .plan()
-            .pools
+        let pools = active
+            .pools()
             .iter()
-            .flat_map(|pool| {
-                let snapshot = pool.health_snapshot();
-                snapshot.endpoints.into_iter().map(move |server| {
-                    json!({
-                        "pool": snapshot.name,
-                        "server": server,
-                    })
-                })
-            })
+            .map(|pool| pool.health_snapshot())
             .collect::<Vec<_>>();
-        ApiResponse::json(200, &json!({ "servers": servers }))
+        ApiResponse::json(
+            200,
+            &serde_json::to_value(ServerInventoryResponse::from(pools))
+                .expect("server inventory DTO serializes"),
+        )
     }
 
     async fn listener_state(&self, session: &mut ServerSession) -> ApiResponse {
@@ -270,12 +293,9 @@ impl ManagementState {
         if request.listeners.is_empty() || request.listeners.len() > MAX_BATCH_TARGETS {
             return invalid_batch();
         }
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         let metrics = mutation.generation().metrics();
         let Ok(snapshot) = metrics.snapshot() else {
@@ -313,12 +333,9 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         let active = mutation.generation();
         if request.pools.is_empty() || request.pools.len() > MAX_BATCH_TARGETS {
@@ -411,12 +428,9 @@ impl ManagementState {
                 }));
             }
         }
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         for (target, addresses) in request.targets.iter().zip(resolutions) {
             let Some(addresses) = addresses else {
@@ -469,10 +483,7 @@ impl ManagementState {
     }
 
     fn select_servers(&self, change: &ServerChange) -> Result<SelectedServers, ApiResponse> {
-        let mutation = self
-            .generations
-            .begin_mutation(&change.expected_active_revision)
-            .map_err(|error| mutation_error(&error))?;
+        let mutation = begin_mutation(&self.generations, &change.expected_active_revision)?;
         let active = mutation.generation();
         if change.targets.is_empty() || change.targets.len() > MAX_BATCH_TARGETS {
             return Err(invalid_batch());
@@ -499,12 +510,9 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let _mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let _mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         let document = match self.coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => document,
@@ -523,7 +531,10 @@ impl ManagementState {
                 );
             }
         };
-        match self.generations.prepare(*document) {
+        match self
+            .generations
+            .prepare_with_deadline(*document, Instant::now() + GENERATION_PREPARATION_TIMEOUT)
+        {
             Ok(candidate) => ApiResponse::json(
                 202,
                 &json!({
@@ -544,14 +555,14 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let _mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let _mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
-        match self.generations.rollback() {
+        match self
+            .generations
+            .rollback_with_deadline(Instant::now() + GENERATION_PREPARATION_TIMEOUT)
+        {
             Ok(candidate) => ApiResponse::json(
                 202,
                 &json!({
@@ -570,12 +581,9 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         let active = mutation.generation();
         let timeout_ms = request.timeout_ms.unwrap_or(0);
@@ -587,9 +595,6 @@ impl ManagementState {
             );
         }
         active.stop_accepting();
-        active
-            .metrics()
-            .set_process_administrative_state(AdministrativeState::Drain);
         ApiResponse::json(
             202,
             &json!({
@@ -604,12 +609,9 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         mutation
             .generation()
@@ -630,12 +632,9 @@ impl ManagementState {
                 "process shutdown control is unavailable",
             );
         };
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         drop(
             self.generations
@@ -658,65 +657,68 @@ impl ManagementState {
         let Ok(snapshot) = active.metrics().snapshot() else {
             return ApiResponse::error(503, "tls_status_unavailable", "TLS status is unavailable");
         };
-        let certificates =
-            active
-                .config()
-                .certificates
-                .iter()
-                .map(|certificate| {
-                    let (source, development_only, status) =
-                        match &certificate.source {
-                            CertificateSource::Files { .. } => (
-                                "files",
-                                false,
-                                snapshot
-                                    .direct_file_certificates
-                                    .iter()
-                                    .find(|status| status.name == certificate.name)
-                                    .map(|status| json!(status)),
-                            ),
-                            CertificateSource::Certbot { .. } => (
-                                "certbot",
-                                false,
-                                snapshot
-                                    .certbot_certificates
-                                    .iter()
-                                    .find(|status| status.name == certificate.name)
-                                    .map(|status| json!(status)),
-                            ),
-                            CertificateSource::AcmeManaged { .. } => (
-                                "acme_managed",
-                                false,
-                                active.plan().tls.acme_reconcilers().iter().find_map(
-                                    |reconciler| {
-                                        (reconciler.status().certificate == certificate.name)
-                                            .then(|| json!(reconciler.status()))
-                                    },
-                                ),
-                            ),
-                            CertificateSource::SelfSignedDevelopment { .. } => (
-                                "self_signed_development",
-                                true,
-                                active.plan().tls.certificates().get(&certificate.name).map(
-                                    |active| {
-                                        let metadata = active.snapshot();
-                                        json!({
-                                            "activeContentRevision": metadata.metadata().revision,
-                                            "expiresAt": metadata.metadata().validity.not_after,
-                                        })
-                                    },
-                                ),
-                            ),
-                        };
-                    json!({
-                        "name": certificate.name,
-                        "dnsNames": certificate.dns_names,
-                        "source": source,
-                        "developmentOnly": development_only,
-                        "status": status,
-                    })
+        let certificates = active
+            .config()
+            .as_draft()
+            .certificates
+            .iter()
+            .map(|certificate| {
+                let (source, development_only, status) = match &certificate.source {
+                    CertificateSource::Files { .. } => (
+                        "files",
+                        false,
+                        snapshot
+                            .direct_file_certificates
+                            .iter()
+                            .find(|status| status.name == certificate.name)
+                            .map(|status| json!(status)),
+                    ),
+                    CertificateSource::Certbot { .. } => (
+                        "certbot",
+                        false,
+                        snapshot
+                            .certbot_certificates
+                            .iter()
+                            .find(|status| status.name == certificate.name)
+                            .map(|status| json!(status)),
+                    ),
+                    CertificateSource::AcmeManaged { .. } => (
+                        "acme_managed",
+                        false,
+                        active
+                            .tls()
+                            .acme_reconcilers()
+                            .iter()
+                            .find_map(|reconciler| {
+                                (reconciler.status().certificate == certificate.name)
+                                    .then(|| json!(reconciler.status()))
+                            }),
+                    ),
+                    CertificateSource::SelfSignedDevelopment { .. } => (
+                        "self_signed_development",
+                        true,
+                        active
+                            .tls()
+                            .certificates()
+                            .get(&certificate.name)
+                            .map(|active| {
+                                let metadata = active.snapshot();
+                                json!({
+                                    "activeContentRevision": metadata.metadata().revision,
+                                    "expiresAt": metadata.metadata().validity.not_after,
+                                })
+                            }),
+                    ),
+                };
+                json!({
+                    "name": certificate.name,
+                    "dnsNames": certificate.dns_names,
+                    "source": source,
+                    "developmentOnly": development_only,
+                    "status": status,
                 })
-                .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
         ApiResponse::json(
             200,
             &json!({
@@ -731,16 +733,13 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         let active = mutation.generation();
-        let reconcilers = active.plan().certbot_reconcilers();
-        let managed_reconcilers = active.plan().tls.acme_reconcilers();
+        let reconcilers = active.tls().certbot_reconcilers();
+        let managed_reconcilers = active.tls().acme_reconcilers();
         if let Some(name) = request.certificate.as_deref()
             && !reconcilers
                 .iter()
@@ -820,18 +819,14 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         let reconciler = {
             let active = mutation.generation();
             active
-                .plan()
-                .tls
+                .tls()
                 .acme_reconcilers()
                 .iter()
                 .find(|reconciler| {
@@ -909,18 +904,14 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         let reconciler = {
             let active = mutation.generation();
             active
-                .plan()
-                .tls
+                .tls()
                 .acme_reconcilers()
                 .iter()
                 .find(|reconciler| reconciler.status().certificate == request.certificate)
@@ -993,18 +984,21 @@ impl ManagementState {
                 "a managed certificate is required",
             );
         };
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         let active = mutation.generation();
-        if active.config().tls_profiles.iter().any(|profile| {
-            profile.default_certificate == certificate
-                || profile.certificates.iter().any(|name| name == certificate)
-        }) {
+        if active
+            .config()
+            .as_draft()
+            .tls_profiles
+            .iter()
+            .any(|profile| {
+                profile.default_certificate == certificate
+                    || profile.certificates.iter().any(|name| name == certificate)
+            })
+        {
             return ApiResponse::error(
                 409,
                 "certificate_in_use",
@@ -1012,8 +1006,7 @@ impl ManagementState {
             );
         }
         let reconciler = active
-            .plan()
-            .tls
+            .tls()
             .acme_reconcilers()
             .iter()
             .find(|reconciler| reconciler.status().certificate == certificate)
@@ -1079,18 +1072,14 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         let reconciler = {
             let active = mutation.generation();
             active
-                .plan()
-                .tls
+                .tls()
                 .acme_reconcilers()
                 .iter()
                 .find(|reconciler| {
@@ -1167,18 +1156,14 @@ impl ManagementState {
             Ok(request) => request,
             Err(response) => return response,
         };
-        let mutation = match self
-            .generations
-            .begin_mutation(&request.expected_active_revision)
-        {
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
             Ok(mutation) => mutation,
-            Err(error) => return mutation_error(&error),
+            Err(response) => return response,
         };
         let reconciler = {
             let active = mutation.generation();
             active
-                .plan()
-                .tls
+                .tls()
                 .acme_reconcilers()
                 .iter()
                 .find(|reconciler| {
@@ -1309,7 +1294,7 @@ impl ManagementState {
         )
     }
 
-    fn events(query: Option<&str>) -> ApiResponse {
+    fn events(version: EventApiVersion, query: Option<&str>) -> ApiResponse {
         let mut after = 0_u64;
         let mut limit = 100_usize;
         if let Some(query) = query {
@@ -1346,24 +1331,42 @@ impl ManagementState {
                 }
             }
         }
-        let (events, cursor, has_more, oldest_cursor) =
-            crate::operational_event::list(after, limit);
-        ApiResponse::json(
-            200,
-            &json!({
-                "events": events,
-                "cursor": cursor,
-                "hasMore": has_more,
-                "oldestCursor": oldest_cursor,
-            }),
-        )
+        let page = crate::operational_event::page(after, limit);
+        match version {
+            EventApiVersion::V1 => ApiResponse::json(
+                200,
+                &json!({
+                    "events": page
+                        .events
+                        .iter()
+                        .map(crate::operational_event::v1_event_value)
+                        .collect::<Vec<_>>(),
+                    "cursor": page.cursor,
+                    "hasMore": page.has_more,
+                    "oldestCursor": page.oldest_cursor,
+                }),
+            ),
+            EventApiVersion::V2 => ApiResponse::json(
+                200,
+                &json!({
+                    "events": page
+                        .events
+                        .iter()
+                        .map(crate::operational_event::v2_event_value)
+                        .collect::<Vec<_>>(),
+                    "cursor": page.cursor,
+                    "latestCursor": page.latest_cursor,
+                    "hasMore": page.has_more,
+                    "oldestCursor": page.oldest_cursor,
+                }),
+            ),
+        }
     }
 }
 
 fn find_pool(active: &RuntimeGeneration, name: &str) -> Option<Arc<crate::RoundRobinPool>> {
     active
-        .plan()
-        .pools
+        .pools()
         .iter()
         .find(|pool| pool.health_snapshot().name == name)
         .cloned()
@@ -1414,6 +1417,18 @@ fn mutation_error(error: &crate::GenerationError) -> ApiResponse {
     )
 }
 
+fn begin_mutation(
+    generations: &GenerationManager,
+    expected_revision: &str,
+) -> Result<crate::GenerationMutation, ApiResponse> {
+    let expected_revision = expected_revision
+        .parse()
+        .map_err(|_| mutation_error(&crate::GenerationError::RevisionConflict))?;
+    generations
+        .begin_mutation(&expected_revision)
+        .map_err(|error| mutation_error(&error))
+}
+
 #[derive(Clone, Copy)]
 enum JobControl {
     Cancel,
@@ -1442,7 +1457,7 @@ async fn body<T: for<'de> Deserialize<'de>>(session: &mut ServerSession) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::{Route, match_route};
+    use super::{EventApiVersion, Route, match_route};
 
     #[test]
     fn audit_routes_preserve_query_filters_and_status_is_distinct() {
@@ -1454,6 +1469,43 @@ mod tests {
             match_route("/api/v1/audit/status"),
             Some(Route::AuditStatus)
         ));
+    }
+
+    #[test]
+    fn event_pages_include_the_authoritative_latest_cursor() {
+        let response = super::ManagementState::events(EventApiVersion::V2, Some("after=0&limit=1"));
+        let body: serde_json::Value = serde_json::from_slice(&response.body).expect("event JSON");
+
+        assert!(body["latestCursor"].is_u64());
+    }
+
+    #[test]
+    fn version_one_event_pages_keep_the_shipped_shape() {
+        let response = super::ManagementState::events(EventApiVersion::V1, Some("after=0&limit=1"));
+        let body: serde_json::Value = serde_json::from_slice(&response.body).expect("event JSON");
+
+        assert!(body.get("latestCursor").is_none());
+    }
+
+    #[test]
+    fn version_two_event_page_and_stream_routes_are_exact() {
+        assert!(matches!(
+            match_route("/api/v1/events?after=4&limit=2"),
+            Some(Route::Events(EventApiVersion::V1, Some("after=4&limit=2")))
+        ));
+        assert!(matches!(
+            match_route("/api/v2/events?after=4&limit=2"),
+            Some(Route::Events(EventApiVersion::V2, Some("after=4&limit=2")))
+        ));
+        assert!(matches!(
+            match_route("/api/v2/events/stream?after=4&limit=2"),
+            Some(Route::EventStream(
+                EventApiVersion::V2,
+                Some("after=4&limit=2")
+            ))
+        ));
+        assert!(match_route("/api/v2/events/").is_none());
+        assert!(match_route("/api/v2/events/stream/").is_none());
     }
 
     #[test]

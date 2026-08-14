@@ -3,10 +3,6 @@ use super::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("Lua configuration failed: {0}")]
-    Lua(#[from] mlua::Error),
-    #[error("configuration exceeds the {MAX_SOURCE_BYTES}-byte source limit")]
-    SourceTooLarge,
     #[error("unsupported configuration version {0}; expected version 1")]
     UnsupportedVersion(u32),
     #[error("{namespace} at index {index} has a blank name")]

@@ -59,6 +59,10 @@ impl RtmpRecorderPolicy {
     pub const fn worker_config(&self) -> RecorderWorkerConfig {
         self.worker
     }
+
+    pub(crate) fn retire_store(&self) {
+        self.store.retire();
+    }
 }
 
 impl fmt::Debug for RtmpRecorderPolicy {
