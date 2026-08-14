@@ -4,6 +4,7 @@ use std::{
         fd::{AsFd, AsRawFd},
         unix::process::ExitStatusExt,
     },
+    path::{Path, PathBuf},
     process::{Command, ExitStatus},
     thread,
     time::{Duration, Instant},
@@ -79,7 +80,64 @@ fn assert_process_gone(pid: u32) {
     while process_exists(pid) && started.elapsed() < Duration::from_secs(2) {
         thread::sleep(Duration::from_millis(5));
     }
-    assert!(!process_exists(pid), "process {pid} survived group signal");
+    assert!(
+        !process_exists(pid),
+        "process {pid} survived containment cleanup"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_pids(path: &Path) -> Vec<u32> {
+    wait_for_file(path)
+        .lines()
+        .map(|pid| pid.parse().expect("descendant pid"))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn delegated_cgroup_path(path: &Path) -> PathBuf {
+    let relative = wait_for_file(path);
+    Path::new(DEFAULT_CGROUP_V2_ROOT).join(relative.trim().trim_start_matches('/'))
+}
+
+#[cfg(target_os = "linux")]
+fn assert_cgroup_released(path: &Path) {
+    let started = Instant::now();
+    while path.exists() && started.elapsed() < Duration::from_secs(2) {
+        if fs::read_to_string(path.join("cgroup.procs")).is_ok_and(|pids| pids.trim().is_empty()) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    if path.exists() {
+        assert!(
+            fs::read_to_string(path.join("cgroup.procs")).is_ok_and(|pids| pids.trim().is_empty()),
+            "worker cgroup remained populated: {}",
+            path.display()
+        );
+        let started = Instant::now();
+        while path.exists() && started.elapsed() < Duration::from_secs(2) {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    assert!(
+        !path.exists(),
+        "worker cgroup survived cleanup: {}",
+        path.display()
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn contained_command(mode: &str, directory: &Path) -> WorkerCommand {
+    command(mode)
+        .env(
+            "DESCENDANT_PID_FILE",
+            directory.join("descendants.pid").as_os_str(),
+        )
+        .env(
+            "CGROUP_PATH_FILE",
+            directory.join("cgroup.path").as_os_str(),
+        )
 }
 
 #[test]
@@ -410,6 +468,65 @@ fn delegated_cgroup_owner_cleans_after_launcher_crash() {
         !cgroup_path.exists(),
         "crashed launcher cgroup survived cleanup"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn delegated_cgroup_lifecycle_contains_nested_and_setsid_descendants() {
+    if !probe_cgroup_v2().is_ready() {
+        return;
+    }
+
+    for lifecycle in ["launcher-crash", "worker-process-drop", "handshake-timeout"] {
+        let temporary = tempfile::tempdir().unwrap();
+        let pid_file = temporary.path().join("descendants.pid");
+        let cgroup_file = temporary.path().join("cgroup.path");
+
+        match lifecycle {
+            "launcher-crash" => {
+                let mut worker = spawner(HANDSHAKE_TIMEOUT)
+                    .spawn(
+                        contained_command("containment", temporary.path()),
+                        identity(),
+                    )
+                    .unwrap();
+                let launcher = worker
+                    .process_group_id()
+                    .and_then(|pid| i32::try_from(pid).ok().and_then(Pid::from_raw))
+                    .expect("launcher pid");
+                wait_for_file(&pid_file);
+                kill_process(launcher, Signal::KILL).unwrap();
+                worker.wait_event().unwrap();
+            }
+            "worker-process-drop" => {
+                let worker = spawner(HANDSHAKE_TIMEOUT)
+                    .spawn(
+                        contained_command("containment", temporary.path()),
+                        identity(),
+                    )
+                    .unwrap();
+                wait_for_file(&pid_file);
+                drop(worker);
+            }
+            "handshake-timeout" => {
+                assert!(matches!(
+                    spawner(Duration::from_millis(100)).spawn(
+                        contained_command("containment-timeout", temporary.path()),
+                        identity(),
+                    ),
+                    Err(SpawnError::HandshakeTimeout)
+                ));
+            }
+            _ => unreachable!(),
+        }
+
+        let descendants = wait_for_pids(&pid_file);
+        assert_eq!(descendants.len(), 3, "{lifecycle} descendant fixture");
+        for descendant in descendants {
+            assert_process_gone(descendant);
+        }
+        assert_cgroup_released(&delegated_cgroup_path(&cgroup_file));
+    }
 }
 
 #[test]

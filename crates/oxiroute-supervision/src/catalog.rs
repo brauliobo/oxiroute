@@ -88,6 +88,14 @@ pub struct SupervisedGenerationCatalog<R, T> {
 }
 
 impl<R, T> SupervisedGenerationCatalog<R, T> {
+    const ROLES: [GenerationRole; 5] = [
+        GenerationRole::Active,
+        GenerationRole::Candidate,
+        GenerationRole::Previous,
+        GenerationRole::Quarantined,
+        GenerationRole::RestartRequired,
+    ];
+
     /// Creates a catalog with one already-active launch document.
     #[must_use]
     pub fn new(active: GenerationLaunchDocument<R, T>) -> Self {
@@ -144,6 +152,15 @@ impl<R, T> SupervisedGenerationCatalog<R, T> {
             GenerationRole::Quarantined => self.quarantined.as_ref(),
             GenerationRole::RestartRequired => self.restart_required.as_ref(),
         }
+    }
+
+    /// Returns retained launch documents in stable role order.
+    pub fn documents(
+        &self,
+    ) -> impl Iterator<Item = (GenerationRole, &GenerationLaunchDocument<R, T>)> {
+        Self::ROLES
+            .into_iter()
+            .filter_map(|role| self.get(role).map(|document| (role, document)))
     }
 
     /// Reserves the next monotonic generation identity.

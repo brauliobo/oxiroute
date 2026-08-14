@@ -28,7 +28,9 @@ pub use protocol::{
 };
 pub use status::{
     AggregatedWorkerEvent, MAX_AGGREGATED_EVENTS, MAX_STATUS_BYTES, MAX_STATUS_EVENTS,
-    MAX_STATUS_LISTENERS, StatusProtocolError, WorkerAdministrativeState, WorkerEventRecord,
-    WorkerGenerationStatus, WorkerLifecycle, WorkerListenerState, WorkerListenerStatus,
-    WorkerMetrics, WorkerStatus,
+    MAX_STATUS_LISTENERS, StatusProtocolError, SupervisorDegradation, SupervisorEventRecord,
+    SupervisorGenerationSnapshot, SupervisorListenerObservation, SupervisorListenerSnapshot,
+    SupervisorProcessSnapshot, SupervisorSnapshot, SupervisorSnapshotError,
+    WorkerAdministrativeState, WorkerEventRecord, WorkerGenerationStatus, WorkerLifecycle,
+    WorkerListenerState, WorkerListenerStatus, WorkerMetrics, WorkerStatus,
 };

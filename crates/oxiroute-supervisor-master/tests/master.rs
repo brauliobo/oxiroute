@@ -11,14 +11,17 @@ use std::{
             net::{UnixListener, UnixStream},
         },
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::Arc,
     thread,
     time::{Duration, Instant},
 };
 
-use oxiroute_supervision::{GenerationId, InstanceId};
+use oxiroute_supervision::{
+    GenerationId, GenerationLaunchDocument, GenerationRole, InstanceId, Revision,
+    SupervisedGenerationCatalog,
+};
 use oxiroute_supervision_unix::{
     BindIdentity, DescriptorKind, DescriptorManifest, DescriptorRole, DescriptorSlot,
     InstanceToken, SlotId,
@@ -28,7 +31,10 @@ use oxiroute_supervisor_master::{
     Master, MasterConfig, MasterError, MasterEvent, MasterState, PreparationError, PreparationStep,
     ShutdownProgress, StableListeners, SystemActionExecutor, WorkerInput, WorkerRole, WorkerState,
 };
-use oxiroute_supervisor_process::{WorkerCommand, WorkerIdentity, WorkerProcess, WorkerSpawner};
+use oxiroute_supervisor_process::{
+    DEFAULT_CGROUP_V2_ROOT, WorkerCommand, WorkerIdentity, WorkerProcess, WorkerSpawner,
+    probe_cgroup_v2,
+};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -47,10 +53,22 @@ impl Harness<SystemActionExecutor> {
     fn launch(active_behavior: &str) -> Self {
         Self::launch_with_executor(active_behavior, SystemActionExecutor)
     }
+
+    #[cfg(target_os = "linux")]
+    fn launch_contained(active_behavior: &str, pid_file: &Path) -> Self {
+        Self::launch_input_with_executor(
+            contained_worker("a", 1, active_behavior, pid_file),
+            SystemActionExecutor,
+        )
+    }
 }
 
 impl<E: ActionExecutor> Harness<E> {
     fn launch_with_executor(active_behavior: &str, executor: E) -> Self {
+        Self::launch_input_with_executor(worker("a", 1, active_behavior), executor)
+    }
+
+    fn launch_input_with_executor(active: WorkerInput<WorkerCommand>, executor: E) -> Self {
         let (temporary, listeners, listener_targets, tcp_address, unix_path) = listeners();
         let config = MasterConfig::new(
             Duration::from_millis(300),
@@ -70,7 +88,7 @@ impl<E: ActionExecutor> Harness<E> {
             listeners,
             executor,
             &mut factory,
-            worker("a", 1, active_behavior),
+            active,
             Instant::now(),
         )
         .unwrap();
@@ -96,6 +114,17 @@ impl<E: ActionExecutor> Harness<E> {
             .replace(
                 &mut self.factory,
                 worker("b", generation, behavior),
+                Instant::now(),
+            )
+            .unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn replace_contained(&mut self, behavior: &str, generation: u64, pid_file: &Path) {
+        self.master
+            .replace(
+                &mut self.factory,
+                contained_worker("b", generation, behavior, pid_file),
                 Instant::now(),
             )
             .unwrap();
@@ -273,6 +302,39 @@ fn authenticated_worker_status_is_retained_without_creating_a_command_path() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].generation_id, GenerationId(1));
     assert_eq!(events[0].worker_event.cursor, 1);
+    let catalog = SupervisedGenerationCatalog::new(GenerationLaunchDocument::new(
+        InstanceId::new("a").unwrap(),
+        GenerationId(1),
+        Revision(10),
+        (),
+    ));
+    let snapshot = harness.master.supervisor_snapshot(&catalog).unwrap();
+    assert_eq!(snapshot.generations.len(), 1);
+    assert_eq!(snapshot.generations[0].role, GenerationRole::Active);
+    assert_eq!(snapshot.generations[0].revision, Revision(10));
+    assert_eq!(snapshot.processes.len(), 1);
+    assert_eq!(snapshot.processes[0].role, GenerationRole::Active);
+    assert_eq!(snapshot.processes[0].lifecycle, status.lifecycle);
+    assert_eq!(snapshot.events.len(), 1);
+    assert_eq!(snapshot.events[0].role, GenerationRole::Active);
+    drop(harness.shutdown());
+}
+
+#[test]
+fn supervisor_snapshot_rejects_a_catalog_for_a_different_process_identity() {
+    let harness = Harness::launch("normal");
+    let catalog = SupervisedGenerationCatalog::new(GenerationLaunchDocument::new(
+        InstanceId::new("other").unwrap(),
+        GenerationId(1),
+        Revision(10),
+        (),
+    ));
+
+    let error = harness.master.supervisor_snapshot(&catalog).unwrap_err();
+
+    assert_eq!(error.instance_id.as_str(), "a");
+    assert_eq!(error.observed_role, GenerationRole::Active);
+    assert_eq!(error.catalog_role, None);
     drop(harness.shutdown());
 }
 
@@ -520,6 +582,98 @@ fn shutdown_deadline_kills_and_reaps_an_uncooperative_worker() {
     );
     wait_process_gone(worker_pid);
     wait_process_gone(launcher_pid);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn delegated_replacement_contains_nested_and_setsid_descendants() {
+    if !probe_cgroup_v2().is_ready() {
+        return;
+    }
+
+    let temporary = tempfile::tempdir().unwrap();
+    let active_pid_file = temporary.path().join("active-descendants.pid");
+    let candidate_pid_file = temporary.path().join("candidate-descendants.pid");
+    let mut harness = Harness::launch_contained("normal", &active_pid_file);
+    let active_pid = harness.master.worker_id(WorkerRole::Active).unwrap();
+    let active_cgroup = worker_cgroup_path(active_pid);
+    let active_descendants = wait_for_pids(&active_pid_file);
+
+    harness.replace_contained("normal", 2, &candidate_pid_file);
+    harness.until(|master| {
+        master.state() == MasterState::Running
+            && master
+                .active_instance()
+                .is_some_and(|instance| instance.as_str() == "b")
+    });
+    for descendant in active_descendants {
+        wait_process_gone(descendant);
+    }
+    assert_cgroup_released(&active_cgroup);
+
+    let candidate_pid = harness.master.worker_id(WorkerRole::Active).unwrap();
+    let candidate_cgroup = worker_cgroup_path(candidate_pid);
+    let candidate_descendants = wait_for_pids(&candidate_pid_file);
+    harness.shutdown();
+    for descendant in candidate_descendants {
+        wait_process_gone(descendant);
+    }
+    assert_cgroup_released(&candidate_cgroup);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn delegated_candidate_startup_timeout_contains_nested_and_setsid_descendants() {
+    if !probe_cgroup_v2().is_ready() {
+        return;
+    }
+
+    let temporary = tempfile::tempdir().unwrap();
+    let candidate_pid_file = temporary.path().join("candidate-descendants.pid");
+    let mut harness = Harness::launch("normal");
+    harness.replace_contained("timeout-adopt", 2, &candidate_pid_file);
+    let candidate_pid = harness.master.worker_id(WorkerRole::Candidate).unwrap();
+    let candidate_cgroup = worker_cgroup_path(candidate_pid);
+    let descendants = wait_for_pids(&candidate_pid_file);
+    let deadline = harness.master.next_deadline().unwrap();
+    harness.master.poll(deadline + POLL_INTERVAL).unwrap();
+    harness.until(|master| {
+        master.state() == MasterState::Running
+            && master
+                .active_instance()
+                .is_some_and(|instance| instance.as_str() == "a")
+    });
+    for descendant in descendants {
+        wait_process_gone(descendant);
+    }
+    assert_cgroup_released(&candidate_cgroup);
+    harness.shutdown();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn delegated_graceful_and_forced_shutdown_contain_nested_and_setsid_descendants() {
+    if !probe_cgroup_v2().is_ready() {
+        return;
+    }
+
+    for behavior in ["normal", "ignore-shutdown"] {
+        let temporary = tempfile::tempdir().unwrap();
+        let pid_file = temporary.path().join("descendants.pid");
+        let harness = Harness::launch_contained(behavior, &pid_file);
+        let worker_pid = harness.master.worker_id(WorkerRole::Active).unwrap();
+        let cgroup = worker_cgroup_path(worker_pid);
+        let descendants = wait_for_pids(&pid_file);
+        let events = harness.shutdown();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            MasterEvent::ShutdownCompleted { forced } if *forced == (behavior == "ignore-shutdown")
+        )));
+        for descendant in descendants {
+            wait_process_gone(descendant);
+        }
+        assert_cgroup_released(&cgroup);
+    }
 }
 
 #[test]
@@ -1328,6 +1482,18 @@ fn worker(name: &str, generation: u64, behavior: &str) -> WorkerInput<WorkerComm
     }
 }
 
+#[cfg(target_os = "linux")]
+fn contained_worker(
+    name: &str,
+    generation: u64,
+    behavior: &str,
+    pid_file: &Path,
+) -> WorkerInput<WorkerCommand> {
+    let mut input = worker(name, generation, behavior);
+    input.command = input.command.arg(pid_file.as_os_str());
+    input
+}
+
 fn matching_descriptor_count(targets: &[PathBuf]) -> usize {
     fs::read_dir("/proc/self/fd")
         .unwrap()
@@ -1464,4 +1630,60 @@ fn wait_process_gone(pid: u32) {
         thread::sleep(POLL_INTERVAL);
     }
     assert!(!path.exists(), "process {pid} was not reaped");
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_pids(path: &Path) -> Vec<u32> {
+    let started = Instant::now();
+    loop {
+        if let Ok(contents) = fs::read_to_string(path) {
+            let pids = contents
+                .lines()
+                .map(str::parse)
+                .collect::<Result<Vec<u32>, _>>()
+                .expect("descendant pids");
+            if !pids.is_empty() {
+                return pids;
+            }
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn worker_cgroup_path(pid: u32) -> PathBuf {
+    let membership = fs::read_to_string(format!("/proc/{pid}/cgroup")).unwrap();
+    let relative = membership
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .expect("unified worker cgroup");
+    Path::new(DEFAULT_CGROUP_V2_ROOT).join(relative.trim_start_matches('/'))
+}
+
+#[cfg(target_os = "linux")]
+fn assert_cgroup_released(path: &Path) {
+    let started = Instant::now();
+    while path.exists() && started.elapsed() < Duration::from_secs(2) {
+        if fs::read_to_string(path.join("cgroup.procs")).is_ok_and(|pids| pids.trim().is_empty()) {
+            break;
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+    if path.exists() {
+        assert!(
+            fs::read_to_string(path.join("cgroup.procs")).is_ok_and(|pids| pids.trim().is_empty()),
+            "worker cgroup remained populated: {}",
+            path.display()
+        );
+        let started = Instant::now();
+        while path.exists() && started.elapsed() < Duration::from_secs(2) {
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+    assert!(
+        !path.exists(),
+        "worker cgroup survived cleanup: {}",
+        path.display()
+    );
 }

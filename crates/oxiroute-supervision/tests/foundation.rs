@@ -152,6 +152,16 @@ fn supervised_catalog_preserves_roles_and_monotonic_generation_identity() {
         "active-1"
     );
     assert_eq!(catalog.allocate_generation().unwrap(), GenerationId(3));
+    assert_eq!(
+        catalog
+            .documents()
+            .map(|(role, document)| (role, document.generation_id()))
+            .collect::<Vec<_>>(),
+        vec![
+            (GenerationRole::Active, GenerationId(2)),
+            (GenerationRole::Previous, GenerationId(1)),
+        ]
+    );
 }
 
 #[test]

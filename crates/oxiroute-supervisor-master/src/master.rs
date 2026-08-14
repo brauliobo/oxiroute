@@ -8,8 +8,9 @@ use std::{
 };
 
 use oxiroute_supervision::{
-    GenerationId, Instance, InstanceId, Lifecycle, ReplacementAction, ReplacementError,
-    ReplacementEvent, ReplacementPhase, ReplacementSupervisor,
+    GenerationId, GenerationRole, Instance, InstanceId, Lifecycle, ReplacementAction,
+    ReplacementError, ReplacementEvent, ReplacementPhase, ReplacementSupervisor,
+    SupervisedGenerationCatalog,
 };
 use oxiroute_supervision_unix::FrameFlags;
 use oxiroute_supervisor_process::{
@@ -23,7 +24,11 @@ use crate::{
     StableListeners,
     listeners::ListenerOwnershipError,
     protocol::{ControlAck, decode_ack, encode_adopt_request, encode_request},
-    status::{AggregatedWorkerEvent, MAX_AGGREGATED_EVENTS, WorkerStatus, decode_status},
+    status::{
+        AggregatedWorkerEvent, SupervisorSnapshot, SupervisorSnapshotError,
+        SupervisorSnapshotHistory, WorkerSnapshotSource, WorkerStatus, decode_status,
+        retain_monotonic_status,
+    },
 };
 
 mod observation;
@@ -416,8 +421,7 @@ pub struct Master<E: ActionExecutor = SystemActionExecutor> {
     stage: Stage,
     next_request_id: u64,
     events: VecDeque<MasterEvent>,
-    aggregated_events: VecDeque<AggregatedWorkerEvent>,
-    next_aggregated_event_cursor: u64,
+    snapshot_history: SupervisorSnapshotHistory,
 }
 
 impl Master<SystemActionExecutor> {
@@ -482,8 +486,7 @@ impl<E: ActionExecutor> Master<E> {
             stage: Stage::BootAdopting,
             next_request_id: 1,
             events: VecDeque::new(),
-            aggregated_events: VecDeque::new(),
-            next_aggregated_event_cursor: 1,
+            snapshot_history: SupervisorSnapshotHistory::new(),
         };
         if let Err(error) = master.issue_adoption(WorkerRole::Active, now) {
             master.compensate_issue_error(
@@ -630,7 +633,7 @@ impl<E: ActionExecutor> Master<E> {
         ) {
             let deadline = deadline(now, self.config.shutdown_timeout())?;
             if self.deferred_active_exit.take().is_some() {
-                self.active.take();
+                self.take_worker(WorkerRole::Active);
             }
             self.stage = Stage::ShuttingDown {
                 deadline,
@@ -744,12 +747,38 @@ impl<E: ActionExecutor> Master<E> {
     /// Returns bounded generation-qualified worker events newer than `after`.
     #[must_use]
     pub fn worker_events(&self, after: u64, limit: usize) -> Vec<AggregatedWorkerEvent> {
-        self.aggregated_events
-            .iter()
-            .filter(|event| event.cursor > after)
-            .take(limit.min(MAX_AGGREGATED_EVENTS))
-            .cloned()
-            .collect()
+        self.snapshot_history.worker_events(after, limit)
+    }
+
+    /// Builds a read-only snapshot from catalog state and identity-matched process observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a current process occupies a role or identity not represented by the
+    /// supplied catalog. Catalog launch documents and process observations remain separate in the
+    /// returned projection.
+    pub fn supervisor_snapshot<R: Clone, T>(
+        &self,
+        catalog: &SupervisedGenerationCatalog<R, T>,
+    ) -> Result<SupervisorSnapshot<R>, SupervisorSnapshotError> {
+        let sources = [
+            (GenerationRole::Active, self.active.as_ref()),
+            (GenerationRole::Candidate, self.candidate.as_ref()),
+            (GenerationRole::Previous, self.retired.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(role, worker)| {
+            worker
+                .zip(worker.and_then(|worker| worker.status.as_ref()))
+                .map(|(worker, status)| WorkerSnapshotSource {
+                    role,
+                    instance_id: &worker.instance_id,
+                    generation_id: worker.generation,
+                    status,
+                })
+        })
+        .collect::<Vec<_>>();
+        self.snapshot_history.snapshot(catalog, &sources)
     }
 
     /// Returns the stable listener manifest whose original descriptors remain master-owned.
@@ -1020,30 +1049,22 @@ impl<E: ActionExecutor> Master<E> {
             });
             return Ok(());
         }
-        let mut event_cursor = previous_event_cursor;
-        for worker_event in &status.events {
-            if worker_event.cursor <= event_cursor {
-                continue;
-            }
-            let cursor = self.next_aggregated_event_cursor;
-            self.next_aggregated_event_cursor = cursor.saturating_add(1);
-            self.aggregated_events.push_back(AggregatedWorkerEvent {
-                cursor,
-                instance_id: instance_id.clone(),
-                generation_id: generation,
-                worker_event: worker_event.clone(),
-            });
-            while self.aggregated_events.len() > MAX_AGGREGATED_EVENTS {
-                self.aggregated_events.pop_front();
-            }
-            event_cursor = worker_event.cursor;
+        let event_cursor = self.snapshot_history.record_events(
+            generation_role(role),
+            &instance_id,
+            generation,
+            previous_event_cursor,
+            status,
+        );
+        let mut retained = status.clone();
+        if let Some(previous) = self.worker(role).and_then(|worker| worker.status.as_ref()) {
+            retain_monotonic_status(previous, &mut retained);
         }
-        event_cursor = event_cursor.max(status.event_cursor);
         let worker = self
             .worker_mut(role)
             .ok_or(MasterError::MissingWorker(role))?;
         worker.last_event_cursor = event_cursor;
-        worker.status = Some(status.clone());
+        worker.status = Some(retained);
         self.events.push_back(MasterEvent::WorkerStatusUpdated {
             role,
             instance_id,
@@ -1311,7 +1332,7 @@ impl<E: ActionExecutor> Master<E> {
                     if self.deferred_active_exit.take().is_some() {
                         self.fail_retired(FailurePhase::Crash, now)?;
                         let retired = self.retired_id()?.clone();
-                        self.retired.take();
+                        self.take_worker(WorkerRole::Retired);
                         self.apply_replacement_event(
                             ReplacementEvent::RetiredStopped {
                                 instance_id: retired,
@@ -1609,7 +1630,7 @@ impl<E: ActionExecutor> Master<E> {
             self.events.push_back(MasterEvent::FailClosed { phase });
         }
         if self.deferred_active_exit.take().is_some() {
-            self.active.take();
+            self.take_worker(WorkerRole::Active);
         }
         for role in [
             WorkerRole::Active,
@@ -1762,11 +1783,14 @@ impl<E: ActionExecutor> Master<E> {
     }
 
     fn take_worker(&mut self, role: WorkerRole) -> Option<ManagedWorker> {
-        match role {
+        let worker = match role {
             WorkerRole::Active => self.active.take(),
             WorkerRole::Candidate => self.candidate.take(),
             WorkerRole::Retired => self.retired.take(),
-        }
+        };
+        self.snapshot_history
+            .reap(worker.as_ref().and_then(|worker| worker.status.as_ref()));
+        worker
     }
 
     fn role_for(&self, instance_id: &InstanceId) -> Option<WorkerRole> {
@@ -1829,6 +1853,14 @@ impl<E: ActionExecutor> Master<E> {
 
     fn replacement_phase(&self) -> Option<ReplacementPhase> {
         self.supervisor.as_ref().map(ReplacementSupervisor::phase)
+    }
+}
+
+const fn generation_role(role: WorkerRole) -> GenerationRole {
+    match role {
+        WorkerRole::Active => GenerationRole::Active,
+        WorkerRole::Candidate => GenerationRole::Candidate,
+        WorkerRole::Retired => GenerationRole::Previous,
     }
 }
 

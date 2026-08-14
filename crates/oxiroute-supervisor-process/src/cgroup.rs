@@ -542,6 +542,55 @@ mod tests {
         assert!(filesystem.contains(&path));
         assert!(filesystem.writes(&path).is_empty());
     }
+
+    #[test]
+    fn fake_filesystem_lifecycle_matrix_kills_empties_and_removes_worker_cgroups() {
+        for (index, lifecycle) in [
+            "replacement",
+            "launcher-crash",
+            "worker-process-drop",
+            "handshake-timeout",
+            "startup-timeout",
+            "graceful-master-shutdown",
+            "forced-master-shutdown",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let filesystem = Arc::new(FakeCgroupFileSystem::default());
+            let filesystem_trait: Arc<dyn CgroupFileSystem> = filesystem.clone();
+            let mut insertion_id = [0_u8; 16];
+            insertion_id[0] = u8::try_from(index).unwrap();
+            let mut lease = WorkerCgroupLease::create_with_id(
+                Path::new("/delegated"),
+                insertion_id,
+                filesystem_trait,
+            )
+            .unwrap();
+            let path = lease.path().to_owned();
+            filesystem.set_populated(&path, true);
+
+            lease.kill().unwrap();
+            assert!(
+                !lease.cleanup().unwrap(),
+                "{lifecycle} removed a populated cgroup"
+            );
+            assert_eq!(
+                filesystem.writes(&path),
+                [("cgroup.kill".to_owned(), b"1".to_vec())],
+                "{lifecycle} did not kill the full worker cgroup",
+            );
+            filesystem.set_populated(&path, false);
+            assert!(
+                lease.cleanup().unwrap(),
+                "{lifecycle} did not release an empty cgroup"
+            );
+            assert!(
+                !filesystem.contains(&path),
+                "{lifecycle} leaked its worker cgroup"
+            );
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
