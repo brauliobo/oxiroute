@@ -1,13 +1,11 @@
-use oxiroute_rtmp::{RtmpCatalogSnapshot, RtmpRegistry};
+use oxiroute_rtmp::RtmpRegistry;
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::ApiResponse;
-use super::wire::{relay_dns_refresh_failure, relay_failure, relay_phase};
-use crate::generation_health::generation_component_status;
+use super::dto::{CapabilitiesResponse, MonitoringResponse, ReadinessResponse, StatusResponse};
 use crate::{
-    GenerationManager, RuntimeMetrics, RuntimeSnapshot, TOPOLOGY_SCHEMA_VERSION, TopologyNodeKind,
-    TopologySnapshot, render_prometheus,
+    GenerationManager, RuntimeMetrics, TOPOLOGY_SCHEMA_VERSION, TopologySnapshot, render_prometheus,
 };
 
 #[derive(Clone, Copy)]
@@ -65,56 +63,54 @@ fn status_response(
             "runtime status could not be sampled",
         );
     };
-    let listeners = runtime.listeners.clone();
     let generation = generations.map(GenerationManager::status);
     let audit = crate::operational_event::audit_status();
-    let tls_profiles = topology
-        .nodes()
-        .iter()
-        .filter(|node| node.kind == TopologyNodeKind::TlsProfile)
-        .map(|node| {
-            json!({
-                "name": node.name,
-                "clientAuth": node.attributes["clientAuth"],
-            })
-        })
-        .collect::<Vec<_>>();
-    ApiResponse::json(
+    let response = match StatusResponse::project(
+        runtime,
+        generation.as_ref(),
+        audit,
+        topology,
+        metrics.supervision_mode(),
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return ApiResponse::error(
+                500,
+                "status_projection_failed",
+                format!("could not project runtime status: {error}"),
+            );
+        }
+    };
+    serialized_response(
         200,
-        &json!({
-            "schemaVersion": 1,
-            "buildVersion": crate::cli::BUILD_VERSION,
-            "diskRevision": generation.as_ref().and_then(|status| status.disk_revision.as_ref()),
-            "candidateRevision": generation.as_ref().and_then(|status| status.candidate_revision.as_ref()),
-            "activeRevision": generation.as_ref().and_then(|status| status.active_revision.as_ref()),
-            "previousRevision": generation.as_ref().and_then(|status| status.previous_revision.as_ref()),
-            "degraded": generation.as_ref().is_none_or(|status| status.degraded),
-            "activeGenerationAgeMs": runtime.generation_age_ms,
-            "components": {
-                "process": runtime.process.status,
-                "host": runtime.host.status,
-                "generation": generation_component_status(generation.as_ref()),
-                "audit": audit.clone(),
-            },
-            "certificates": {
-                "certbot": runtime.certbot_certificates,
-                "acmeManaged": runtime.acme_managed_certificates,
-                "directFiles": runtime.direct_file_certificates,
-            },
-            "audit": audit,
-            "capabilities": crate::http3::capability_snapshot(&listeners, metrics.supervision_mode()),
-            "listeners": listeners,
-            "tlsProfiles": tls_profiles,
-        }),
+        &response,
+        "status_serialization_failed",
+        "could not serialize runtime status",
     )
 }
 
 fn capabilities_response(metrics: &RuntimeMetrics) -> ApiResponse {
     match metrics.snapshot() {
-        Ok(runtime) => ApiResponse::json(
-            200,
-            &crate::http3::capability_snapshot(&runtime.listeners, metrics.supervision_mode()),
-        ),
+        Ok(runtime) => {
+            let response =
+                match CapabilitiesResponse::project(&runtime.listeners, metrics.supervision_mode())
+                {
+                    Ok(response) => response,
+                    Err(error) => {
+                        return ApiResponse::error(
+                            500,
+                            "capabilities_projection_failed",
+                            format!("could not project runtime capabilities: {error}"),
+                        );
+                    }
+                };
+            serialized_response(
+                200,
+                &response,
+                "capabilities_serialization_failed",
+                "could not serialize runtime capabilities",
+            )
+        }
         Err(_) => ApiResponse::error(
             503,
             "capabilities_unavailable",
@@ -130,24 +126,25 @@ fn readiness_response(
     let Ok(runtime) = metrics.snapshot() else {
         return ApiResponse::error(503, "not_ready", "runtime metrics are unavailable");
     };
-    let generation = generations.map(GenerationManager::status);
-    let ready = generation.as_ref().is_some_and(|status| {
-        status.active_revision.is_some()
-            && !status.degraded
-            && runtime.process.administrative_state == crate::AdministrativeState::Ready
-            && runtime.listeners.iter().all(|listener| {
-                listener.state == crate::ListenerRuntimeState::Listening
-                    && listener.administrative_state == crate::AdministrativeState::Ready
-            })
-    });
-    ApiResponse::json(
-        if ready { 200 } else { 503 },
-        &json!({
-            "ready": ready,
-            "buildVersion": crate::cli::BUILD_VERSION,
-            "activeRevision": generation.and_then(|status| status.active_revision),
-        }),
+    let response = ReadinessResponse::project(&runtime, generations.map(GenerationManager::status));
+    serialized_response(
+        if response.ready() { 200 } else { 503 },
+        &response,
+        "readiness_serialization_failed",
+        "could not serialize runtime readiness",
     )
+}
+
+fn serialized_response<T: Serialize>(
+    status: u16,
+    response: &T,
+    error_code: &'static str,
+    error_message: &'static str,
+) -> ApiResponse {
+    match serde_json::to_value(response) {
+        Ok(value) => ApiResponse::json(status, &value),
+        Err(_) => ApiResponse::error(500, error_code, error_message),
+    }
 }
 
 fn metrics_response(
@@ -186,72 +183,6 @@ pub(super) fn candidate_topology(topology: &TopologySnapshot, now_unix_ms: u64) 
     })
 }
 
-#[derive(Serialize)]
-struct MonitoringResponse {
-    #[serde(flatten)]
-    runtime: RuntimeSnapshot,
-    rtmp: RtmpMonitoring,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RtmpMonitoring {
-    active_streams: u64,
-    publishers: u64,
-    subscribers: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    media_payload_bytes_received: u64,
-    recording_supported: bool,
-    manual_recording: bool,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    recorder_bytes_written: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    recorder_segments_started: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    recorder_segments_completed: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    recorder_discontinuities: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    relay_connection_attempts: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    relay_connections: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    relay_reconnects: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    relay_dns_refresh_attempts: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    relay_dns_refresh_successes: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    relay_dns_refresh_failures: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    relay_events_sent: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    relay_events_dropped: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    relay_payload_bytes_sent: u64,
-    access_log: RtmpAccessLogMonitoring,
-    relays: Vec<Value>,
-    recorders: Vec<Value>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RtmpAccessLogMonitoring {
-    queue_capacity: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    queue_depth: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    enqueued: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    written: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    dropped: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    queue_saturated: u64,
-    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    write_failures: u64,
-}
-
 fn monitoring_response(metrics: &RuntimeMetrics, registry: &RtmpRegistry) -> ApiResponse {
     let runtime = match metrics.snapshot() {
         Ok(snapshot) => snapshot,
@@ -264,14 +195,16 @@ fn monitoring_response(metrics: &RuntimeMetrics, registry: &RtmpRegistry) -> Api
         }
     };
     let recording_supported = metrics.rtmp_recording_supported();
-    let Some(rtmp) = rtmp_monitoring(&registry.snapshot(), recording_supported) else {
+    let Some(response) =
+        MonitoringResponse::project(runtime, &registry.snapshot(), recording_supported)
+    else {
         return ApiResponse::error(
             500,
             "monitoring_overflow",
             "RTMP monitoring totals exceed the supported range",
         );
     };
-    match serde_json::to_value(MonitoringResponse { runtime, rtmp }) {
+    match serde_json::to_value(response) {
         Ok(value) => ApiResponse::json(200, &value),
         Err(error) => ApiResponse::error(
             500,
@@ -299,147 +232,5 @@ fn topology_response(metrics: &RuntimeMetrics, topology: &TopologySnapshot) -> A
             "topology_serialization_failed",
             format!("could not serialize active runtime topology: {error}"),
         ),
-    }
-}
-
-#[allow(clippy::too_many_lines)]
-fn rtmp_monitoring(
-    snapshot: &RtmpCatalogSnapshot,
-    recording_supported: bool,
-) -> Option<RtmpMonitoring> {
-    let active_streams = u64::try_from(snapshot.streams.len()).ok()?;
-    let mut publishers = 0_u64;
-    let mut subscribers = 0_u64;
-    let mut media_payload_bytes_received = 0_u64;
-    let mut recorder_bytes_written = 0_u64;
-    let mut recorder_segments_started = 0_u64;
-    let mut recorder_segments_completed = 0_u64;
-    let mut recorder_discontinuities = 0_u64;
-    let mut relay_connection_attempts = 0_u64;
-    let mut relay_connections = 0_u64;
-    let mut relay_reconnects = 0_u64;
-    let mut relay_dns_refresh_attempts = 0_u64;
-    let mut relay_dns_refresh_successes = 0_u64;
-    let mut relay_dns_refresh_failures = 0_u64;
-    let mut relay_events_sent = 0_u64;
-    let mut relay_events_dropped = 0_u64;
-    let mut relay_payload_bytes_sent = 0_u64;
-    let mut relays = Vec::new();
-    let mut recorders = Vec::new();
-    let access_log = crate::logging::rtmp_access_log_snapshot();
-    for stream in &snapshot.streams {
-        if stream.publisher.is_some() {
-            publishers = publishers.checked_add(1)?;
-        }
-        subscribers = subscribers.checked_add(u64::try_from(stream.subscriber_count).ok()?)?;
-        media_payload_bytes_received = media_payload_bytes_received
-            .checked_add(stream.media.audio.payload_bytes_received)?
-            .checked_add(stream.media.video.payload_bytes_received)?;
-        for relay in &stream.relays {
-            relay_connection_attempts =
-                relay_connection_attempts.checked_add(relay.status.connection_attempts)?;
-            relay_connections = relay_connections.checked_add(relay.status.connections)?;
-            relay_reconnects = relay_reconnects.checked_add(relay.status.reconnects)?;
-            relay_dns_refresh_attempts =
-                relay_dns_refresh_attempts.checked_add(relay.status.dns_refresh_attempts)?;
-            relay_dns_refresh_successes =
-                relay_dns_refresh_successes.checked_add(relay.status.dns_refresh_successes)?;
-            relay_dns_refresh_failures =
-                relay_dns_refresh_failures.checked_add(relay.status.dns_refresh_failures)?;
-            relay_events_sent = relay_events_sent.checked_add(relay.status.events_sent)?;
-            relay_events_dropped = relay_events_dropped.checked_add(relay.status.events_dropped)?;
-            relay_payload_bytes_sent =
-                relay_payload_bytes_sent.checked_add(relay.status.payload_bytes_sent)?;
-            relays.push(json!({
-                "streamId": stream.id.to_string(),
-                "relayId": relay.id.to_string(),
-                "address": relay.status.destination.address.to_string(),
-                "application": relay.status.destination.application,
-                "streamName": relay.status.destination.stream_name,
-                "phase": relay_phase(relay.status.phase),
-                "lastFailure": relay.status.last_failure.map(relay_failure),
-                "queueMessages": relay.status.queue_messages,
-                "queueBytes": relay.status.queue_bytes.to_string(),
-                "connectionAttempts": relay.status.connection_attempts.to_string(),
-                "connections": relay.status.connections.to_string(),
-                "reconnects": relay.status.reconnects.to_string(),
-                "dnsRefreshAttempts": relay.status.dns_refresh_attempts.to_string(),
-                "dnsRefreshSuccesses": relay.status.dns_refresh_successes.to_string(),
-                "dnsRefreshFailures": relay.status.dns_refresh_failures.to_string(),
-                "lastDnsRefreshFailure": relay
-                    .status
-                    .last_dns_refresh_failure
-                    .map(relay_dns_refresh_failure),
-                "eventsSent": relay.status.events_sent.to_string(),
-                "eventsDropped": relay.status.events_dropped.to_string(),
-                "payloadBytesSent": relay.status.payload_bytes_sent.to_string(),
-            }));
-        }
-        for recorder in &stream.recorders {
-            recorder_bytes_written = recorder_bytes_written.checked_add(recorder.bytes_written)?;
-            recorder_segments_started =
-                recorder_segments_started.checked_add(recorder.segments_started)?;
-            recorder_segments_completed =
-                recorder_segments_completed.checked_add(recorder.segments_completed)?;
-            recorder_discontinuities =
-                recorder_discontinuities.checked_add(recorder.discontinuities)?;
-            recorders.push(json!({
-                "streamId": stream.id.to_string(),
-                "recorderId": recorder.id.to_string(),
-                "name": recorder.name,
-                "manual": recorder.manual,
-                "phase": recorder_phase(recorder.phase),
-                "bytesWritten": recorder.bytes_written.to_string(),
-                "segmentsStarted": recorder.segments_started.to_string(),
-                "segmentsCompleted": recorder.segments_completed.to_string(),
-                "discontinuities": recorder.discontinuities.to_string(),
-                "currentRelativeName": recorder.current_relative_name,
-                "lastCompletedRelativeName": recorder.last_completed_relative_name,
-                "recoverablePartialName": recorder.recoverable_partial_name,
-                "publishedButNotDurableRelativeName": recorder.published_but_not_durable_relative_name,
-            }));
-        }
-    }
-    Some(RtmpMonitoring {
-        active_streams,
-        publishers,
-        subscribers,
-        media_payload_bytes_received,
-        recording_supported,
-        manual_recording: snapshot.capabilities.manual_recording,
-        recorder_bytes_written,
-        recorder_segments_started,
-        recorder_segments_completed,
-        recorder_discontinuities,
-        relay_connection_attempts,
-        relay_connections,
-        relay_reconnects,
-        relay_dns_refresh_attempts,
-        relay_dns_refresh_successes,
-        relay_dns_refresh_failures,
-        relay_events_sent,
-        relay_events_dropped,
-        relay_payload_bytes_sent,
-        access_log: RtmpAccessLogMonitoring {
-            queue_capacity: crate::logging::RTMP_ACCESS_LOG_QUEUE_CAPACITY,
-            queue_depth: access_log.queue_depth,
-            enqueued: access_log.enqueued,
-            written: access_log.written,
-            dropped: access_log.dropped,
-            queue_saturated: access_log.queue_saturated,
-            write_failures: access_log.write_failures,
-        },
-        relays,
-        recorders,
-    })
-}
-
-fn recorder_phase(phase: oxiroute_rtmp::RecorderPhase) -> &'static str {
-    match phase {
-        oxiroute_rtmp::RecorderPhase::Idle => "idle",
-        oxiroute_rtmp::RecorderPhase::Starting { .. } => "starting",
-        oxiroute_rtmp::RecorderPhase::Recording { .. } => "recording",
-        oxiroute_rtmp::RecorderPhase::Stopping { .. } => "stopping",
-        oxiroute_rtmp::RecorderPhase::Failed { .. } => "failed",
     }
 }

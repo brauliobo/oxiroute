@@ -123,7 +123,7 @@ impl From<Vec<PoolHealthSnapshot>> for ServerInventoryResponse {
 
 #[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ListenerDto {
+pub(super) struct ListenerDto {
     administrative_state: AdministrativeStateDto,
     name: String,
     protocol: String,
@@ -269,7 +269,7 @@ impl From<ProxyProtocolCountSnapshot> for ProxyProtocolCountDto {
 
 #[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LatencyDto {
+pub(super) struct LatencyDto {
     buckets: Vec<LatencyBucketDto>,
     count: DecimalCounter,
     sum_ms: DecimalCounter,
@@ -327,7 +327,7 @@ impl From<CacheSnapshot> for CacheDto {
 
 #[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PoolDto {
+pub(super) struct PoolDto {
     name: String,
     algorithm: &'static str,
     available_endpoints: usize,
