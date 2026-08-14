@@ -35,9 +35,9 @@ use tokio::{
 };
 
 use crate::{
-    ForwardHttp1ServicePlan, H3UpstreamError, HealthFailure, HttpOperationResult, HttpServicePlan,
-    ListenerMetrics, ListenerReservation, ListenerRuntimeState, RuntimeGeneration, RuntimeMode,
-    RuntimeReferenceKind, TlsProfilePlan,
+    AdmissionError, ForwardHttp1ServicePlan, H3UpstreamError, HealthFailure, HttpOperationResult,
+    HttpServicePlan, ListenerMetrics, ListenerReservation, ListenerRuntime, ListenerRuntimeState,
+    RuntimeGeneration, RuntimeMode, RuntimeReferenceKind, TlsProfilePlan,
     http_action::{
         HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget,
         StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
@@ -265,12 +265,14 @@ fn run_forward(
             .send(Ok(()))
             .map_err(|_| io::Error::other("HTTP/3 startup receiver was dropped"))?;
         let listener_metrics = metrics.clone();
+        let listener = ListenerRuntime::new(metrics.clone());
         let accept_gate = generation.accept_gate().register();
         let orderly = serve_endpoint(
             listener_name,
             endpoint,
             service,
             generation,
+            listener,
             metrics,
             shutdown,
             accept_gate,
@@ -318,12 +320,14 @@ fn run_reverse(
             .send(Ok(()))
             .map_err(|_| io::Error::other("reverse HTTP/3 startup receiver was dropped"))?;
         let listener_metrics = metrics.clone();
+        let listener = ListenerRuntime::new(metrics.clone());
         let accept_gate = generation.accept_gate().register();
         let orderly = serve_reverse_endpoint(
             listener_name,
             endpoint,
             service,
             generation,
+            listener,
             metrics,
             downstream_timeouts,
             shutdown,
@@ -385,11 +389,13 @@ fn server_config(
     Ok(config)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_endpoint(
     listener_name: &str,
     endpoint: Endpoint,
     service: Arc<ForwardHttp1ServicePlan>,
     generation: Arc<RuntimeGeneration>,
+    listener: ListenerRuntime,
     metrics: ListenerMetrics,
     mut shutdown: watch::Receiver<bool>,
     mut accept_gate: AcceptGateParticipant,
@@ -427,6 +433,7 @@ async fn serve_endpoint(
                 };
                 let service = Arc::clone(&service);
                 let generation = Arc::clone(&generation);
+                let listener = listener.clone();
                 let metrics = metrics.clone();
                 let shutdown = shutdown.clone();
                 let drain = drain_rx.clone();
@@ -435,6 +442,7 @@ async fn serve_endpoint(
                         incoming,
                         service,
                         generation,
+                        listener,
                         metrics,
                         shutdown,
                         drain,
@@ -455,6 +463,7 @@ async fn serve_reverse_endpoint(
     endpoint: Endpoint,
     service: Arc<HttpServicePlan>,
     generation: Arc<RuntimeGeneration>,
+    listener: ListenerRuntime,
     metrics: ListenerMetrics,
     downstream_timeouts: DownstreamTimeoutPolicy,
     mut shutdown: watch::Receiver<bool>,
@@ -493,6 +502,7 @@ async fn serve_reverse_endpoint(
                 };
                 let service = Arc::clone(&service);
                 let generation = Arc::clone(&generation);
+                let listener = listener.clone();
                 let metrics = metrics.clone();
                 let shutdown = shutdown.clone();
                 let drain = drain_rx.clone();
@@ -501,6 +511,7 @@ async fn serve_reverse_endpoint(
                         incoming,
                         service,
                         generation,
+                        listener,
                         metrics,
                         downstream_timeouts,
                         shutdown,
@@ -558,6 +569,7 @@ async fn run_reverse_connection(
     incoming: quinn::Incoming,
     service: Arc<HttpServicePlan>,
     generation: Arc<RuntimeGeneration>,
+    listener: ListenerRuntime,
     metrics: ListenerMetrics,
     downstream_timeouts: DownstreamTimeoutPolicy,
     mut shutdown: watch::Receiver<bool>,
@@ -571,18 +583,19 @@ async fn run_reverse_connection(
             return;
         }
     };
-    let Some(generation_reference) = generation.begin_reference(RuntimeReferenceKind::Http3) else {
-        connection.close(H3_CLOSE_CODE, b"generation draining");
-        return;
-    };
-    let listener_connection = match metrics.begin_connection() {
-        Ok(connection) => connection,
-        Err(error) => {
-            warn!("reverse HTTP/3 connection admission failed: {error}");
-            connection.close(H3_CLOSE_CODE, b"listener connection limit");
-            return;
-        }
-    };
+    let traffic_lease =
+        match listener.admit_participant_connection(&generation, RuntimeReferenceKind::Http3) {
+            Ok(lease) => lease,
+            Err(error) => {
+                let reason = match &error {
+                    AdmissionError::GenerationNotAccepting => b"generation draining".as_slice(),
+                    AdmissionError::Metrics(_) => b"listener connection limit".as_slice(),
+                };
+                warn!("reverse HTTP/3 connection admission failed: {error}");
+                connection.close(H3_CLOSE_CODE, reason);
+                return;
+            }
+        };
     let mut builder = h3::server::builder();
     builder
         .max_field_section_size(H3_MAX_FIELD_SECTION_BYTES)
@@ -655,14 +668,15 @@ async fn run_reverse_connection(
     )
     .await;
     connection.close(H3_CLOSE_CODE, b"generation draining");
-    drop(listener_connection);
-    drop(generation_reference);
+    drop(traffic_lease);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_connection(
     incoming: quinn::Incoming,
     service: Arc<ForwardHttp1ServicePlan>,
     generation: Arc<RuntimeGeneration>,
+    listener: ListenerRuntime,
     metrics: ListenerMetrics,
     mut shutdown: watch::Receiver<bool>,
     mut drain: watch::Receiver<bool>,
@@ -680,16 +694,17 @@ async fn run_connection(
         connection.close(H3_CLOSE_CODE, b"service connection limit");
         return;
     };
-    let Some(generation_reference) = generation.begin_reference(RuntimeReferenceKind::ForwardHttp3)
-    else {
-        connection.close(H3_CLOSE_CODE, b"generation draining");
-        return;
-    };
-    let listener_connection = match metrics.begin_connection() {
-        Ok(connection) => connection,
+    let traffic_lease = match listener
+        .admit_participant_connection(&generation, RuntimeReferenceKind::ForwardHttp3)
+    {
+        Ok(lease) => lease,
         Err(error) => {
+            let reason = match &error {
+                AdmissionError::GenerationNotAccepting => b"generation draining".as_slice(),
+                AdmissionError::Metrics(_) => b"listener connection limit".as_slice(),
+            };
             warn!("HTTP/3 connection admission failed: {error}");
-            connection.close(H3_CLOSE_CODE, b"listener connection limit");
+            connection.close(H3_CLOSE_CODE, reason);
             return;
         }
     };
@@ -747,8 +762,7 @@ async fn run_connection(
     }
     join_h3_requests("HTTP/3", &mut requests, &request_cancel_tx, deadline).await;
     connection.close(H3_CLOSE_CODE, b"generation draining");
-    drop(listener_connection);
-    drop(generation_reference);
+    drop(traffic_lease);
     drop(service_connection);
 }
 
