@@ -42,7 +42,14 @@ command -v systemd-tmpfiles >/dev/null 2>&1 || {
   printf 'systemd-tmpfiles is required to validate %s\n' "${tmpfiles}" >&2
   exit 1
 }
-systemd-analyze verify "${unit}"
+systemd_version=$(systemd-analyze --version)
+systemd_version=${systemd_version#systemd }
+systemd_version=${systemd_version%% *}
+if (( systemd_version >= 257 )); then
+  systemd-analyze verify "${unit}"
+else
+  printf 'skipped systemd-analyze verification: systemd 257 is required for ProtectControlGroups=private\n'
+fi
 
 declare -A environment_values=()
 while IFS= read -r line; do
@@ -75,7 +82,7 @@ done
 declare -A service_entries=()
 while IFS= read -r line; do
   case "${line}" in
-    EnvironmentFile=*|StateDirectory=*|StateDirectoryMode=*|ReadWritePaths=*|User=*|Group=*|NoNewPrivileges=*|CapabilityBoundingSet=*|AmbientCapabilities=*)
+    ConditionControlGroupController=*|EnvironmentFile=*|StateDirectory=*|StateDirectoryMode=*|ReadWritePaths=*|User=*|Group=*|NoNewPrivileges=*|CapabilityBoundingSet=*|AmbientCapabilities=*|Delegate=*|DelegateSubgroup=*|ProtectControlGroups=*)
       service_entries["${line%%=*}"]=${line#*=}
       ;;
   esac
@@ -102,6 +109,22 @@ done <"${unit}"
 }
 [[ "${service_entries[NoNewPrivileges]:-}" == 'true' ]] || {
   printf 'service unit dropped NoNewPrivileges=true\n' >&2
+  exit 1
+}
+[[ "${service_entries[ConditionControlGroupController]:-}" == 'v2' ]] || {
+  printf 'service unit does not require a unified cgroup v2 hierarchy\n' >&2
+  exit 1
+}
+[[ -v 'service_entries[Delegate]' && -z "${service_entries[Delegate]}" ]] || {
+  printf 'service unit must delegate the cgroup subtree without requesting controllers\n' >&2
+  exit 1
+}
+[[ "${service_entries[DelegateSubgroup]:-}" == 'supervisor' ]] || {
+  printf 'service unit does not pin the main process to the supervisor cgroup\n' >&2
+  exit 1
+}
+[[ "${service_entries[ProtectControlGroups]:-}" == 'private' ]] || {
+  printf 'service unit does not isolate the delegated cgroup subtree\n' >&2
   exit 1
 }
 [[ "${service_entries[CapabilityBoundingSet]:-}" == 'CAP_NET_BIND_SERVICE' &&

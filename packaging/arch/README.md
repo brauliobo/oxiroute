@@ -26,6 +26,25 @@ is supported by the supervised worker; its management API observes the active wo
 retains listener ownership and publishes bounded worker status. Management generation mutations are
 still applied by the worker's active generation and are not arbitrary master commands.
 
+The service requires systemd 257 or newer and a unified cgroup v2 hierarchy. `Delegate=` delegates
+the service's cgroup without requesting any resource controller, `DelegateSubgroup=supervisor` places
+the main process in the `supervisor` leaf, and `ProtectControlGroups=private` gives the service a
+private cgroup namespace. The host path is the `ControlGroup` reported for `oxiroute.service`; inside
+the service that exact delegated boundary is `/sys/fs/cgroup`, with the main process at
+`/sys/fs/cgroup/supervisor`. Systemd owns the boundary's attributes and may create
+`/sys/fs/cgroup/.control` for reload commands. OxiRoute may create children only below the delegated
+boundary; it must not derive or modify the host hierarchy, ancestors, or sibling units.
+
+This is a packaging prerequisite, not process containment. No worker cgroups are created and no
+process is moved or killed by this checkpoint. Future per-worker containment must create one child
+subtree per supervised worker below `/sys/fs/cgroup`, keep the service boundary process-free, and
+remove each child after `cgroup.kill` and reaping. The empty controller list deliberately avoids
+requesting CPU, memory, I/O, or PID resource control, although controllers enabled by an ancestor or
+sibling can still be visible. Delegation lets every process running as `oxiroute` manipulate
+descendant cgroups and therefore disrupt sibling OxiRoute workers; the private namespace limits its
+view and write authority to the service subtree but does not protect workers from each other. The
+existing unprivileged identity, capability bound, and `NoNewPrivileges=true` remain in force.
+
 To enable the authenticated management client on the direct generation runtime, create the
 restrictive default token file:
 
@@ -122,7 +141,8 @@ mode-`0600` token owned by `oxiroute`, set `stats.admin_token_file` to its path,
 
 `oxr` is an exact symlink alias for `oxiroute`; all commands and options are identical.
 
-The service runs in the foreground as the static `oxiroute` user and group. It receives only
+The service runs in the foreground as the static `oxiroute` user and group. It requires systemd 257
+or newer, receives only
 `CAP_NET_BIND_SERVICE`, retains normal IPv4/IPv6/Unix networking for DNS and upstream traffic, and
 can read normal filesystem paths. `ProtectSystem=strict` makes the filesystem read-only except for
 `/run/oxiroute` and `/var/lib/oxiroute`; the packaged RTMP recording root is
