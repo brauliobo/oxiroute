@@ -9,6 +9,7 @@ use std::{
 use super::{
     ApiResponse,
     config::{self, ConfigApiState, Route as ConfigRoute},
+    endpoint_registry::{self, EndpointId},
     management::{self, ManagementState},
     media::{self, Route as MediaRoute},
     observability::{self, Route as ObservabilityRoute},
@@ -386,8 +387,9 @@ impl RtmpManagementApi {
         session: &ServerSession,
     ) -> Option<ApiResponse> {
         let public_read = method == "GET" && matches!(path, "/ready" | "/metrics");
-        let api_request =
-            management::match_route(path_and_query).is_some() || match_api_route(path).is_some();
+        let api_request = endpoint_registry::match_path_and_query(path_and_query).is_some()
+            || management::match_route(path_and_query).is_some()
+            || match_api_route(path).is_some();
         if !api_request || public_read {
             return None;
         }
@@ -433,6 +435,13 @@ impl RtmpManagementApi {
         };
         if let Some(response) = self.authentication_error(&method, &path, &path_and_query, session)
         {
+            Self::audit_api_operation(&method, &path, &context, &response);
+            return response.with_correlation(context.correlation_id);
+        }
+        if let Some(endpoint) = endpoint_registry::match_path_and_query(&path_and_query) {
+            let response = self
+                .handle_registered_endpoint(endpoint, &method, session, &context)
+                .await;
             Self::audit_api_operation(&method, &path, &context, &response);
             return response.with_correlation(context.correlation_id);
         }
@@ -525,6 +534,57 @@ impl RtmpManagementApi {
         let response = self.handle_at_system_time(&method, &path);
         Self::audit_api_operation(&method, &path, &context, &response);
         response.with_correlation(context.correlation_id)
+    }
+
+    async fn handle_registered_endpoint(
+        &self,
+        endpoint: EndpointId,
+        method: &str,
+        session: &mut ServerSession,
+        context: &AuditContext,
+    ) -> ApiResponse {
+        match endpoint {
+            EndpointId::Status => observability::handle(
+                observability::Route::Status,
+                method,
+                &self.metrics,
+                &self.control,
+                self.topology.as_ref(),
+                self.generations.as_ref(),
+            ),
+            EndpointId::Listeners => {
+                let Some(management) = &self.management else {
+                    return ApiResponse::route_not_found();
+                };
+                management
+                    .handle(management::Route::Listeners, method, session, context)
+                    .await
+            }
+            EndpointId::Pools => {
+                let Some(management) = &self.management else {
+                    return ApiResponse::route_not_found();
+                };
+                management
+                    .handle(management::Route::Pools, method, session, context)
+                    .await
+            }
+            EndpointId::Servers => {
+                let Some(management) = &self.management else {
+                    return ApiResponse::route_not_found();
+                };
+                management
+                    .handle(management::Route::Servers, method, session, context)
+                    .await
+            }
+            EndpointId::Generations => {
+                let Some(management) = &self.management else {
+                    return ApiResponse::route_not_found();
+                };
+                management
+                    .handle(management::Route::Generations, method, session, context)
+                    .await
+            }
+        }
     }
 
     fn audit_api_operation(
@@ -1166,6 +1226,9 @@ impl HttpServerApp for RtmpManagementHttpApp {
 }
 
 fn match_api_route(path: &str) -> Option<ApiRoute<'_>> {
+    if endpoint_registry::match_path(path) == Some(EndpointId::Status) {
+        return Some(ApiRoute::Observability(ObservabilityRoute::Status));
+    }
     config::match_route(path)
         .map(ApiRoute::Config)
         .or_else(|| observability::match_route(path).map(ApiRoute::Observability))

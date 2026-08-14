@@ -3,6 +3,7 @@
 mod config;
 pub(crate) use config::read_config_body;
 pub(crate) mod dto;
+mod endpoint_registry;
 mod management;
 mod media;
 mod observability;

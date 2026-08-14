@@ -24,7 +24,6 @@ pub(super) fn match_route(path: &str) -> Option<Route> {
     match path {
         "/api/v1/topology" => Some(Route::Topology),
         "/api/v1/monitoring" => Some(Route::Monitoring),
-        "/api/v1/status" => Some(Route::Status),
         "/api/v1/capabilities" => Some(Route::Capabilities),
         "/ready" => Some(Route::Readiness),
         "/metrics" => Some(Route::Metrics),
