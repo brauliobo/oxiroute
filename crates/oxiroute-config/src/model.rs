@@ -13,7 +13,7 @@ use crate::defaults::{
     MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL,
     MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_DASH_OUTPUTS, MAX_RTMP_HLS_OUTPUTS,
     MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES,
-    MAX_SOURCE_BYTES, MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS,
+    MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS,
     default_acme_dns01_timeout_seconds, default_acme_retained_revisions,
     default_acme_retention_days, default_cache_grace_ms, default_cache_keep_ms,
     default_cache_max_bytes, default_cache_max_entries, default_cache_max_followers_per_fill,

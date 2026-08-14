@@ -3,13 +3,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use oxiroute_config::{RtmpRecorderTimezone, UpstreamTls};
+use oxiroute_config::{ConfigDraft, RtmpRecorderTimezone, UpstreamTls};
 
 use crate::{
-    ActivationRequirement, ActivationRequirementKind, CanonicalCandidate, CanonicalDraft,
-    CanonicalFinalization, CanonicalProvenance, DeploymentRequirement, DeploymentRequirementKind,
-    Diagnostic, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INVALID_VALUE, E_UNSUPPORTED_FEATURE,
-    OperationalOverlayKind, OperationalOverlayRequirement, Report, Severity, SourceImportMetadata,
+    ActivationRequirement, ActivationRequirementKind, CanonicalCandidate, CanonicalProvenance,
+    DeploymentRequirement, DeploymentRequirementKind, Diagnostic, DiagnosticStage,
+    E_DUPLICATE_IDENTITY, E_INVALID_VALUE, E_UNSUPPORTED_FEATURE, OperationalOverlayKind,
+    OperationalOverlayRequirement, Report, Severity, SourceImportMetadata,
+    candidate::{CanonicalCandidateState, finalize_candidate},
 };
 
 use super::{
@@ -242,7 +243,7 @@ pub fn import_root_with_options(
     );
     append_host_timezone_overlays(
         options,
-        &rtmp.draft,
+        rtmp.draft(),
         &mut operational_overlays,
         &mut diagnostics,
     );
@@ -266,13 +267,13 @@ pub fn import_root_with_options(
     );
     reject_unsatisfied_overlays(&operational_overlays, &mut diagnostics);
 
-    let http_listener_count = http.draft.listeners.len();
-    let rtmp_listener_count = rtmp.draft.listeners.len();
-    let http_pool_count = http.draft.upstream_pools.len();
-    let http_l4_count = http.draft.l4_services.len();
-    let mut draft = http.draft.clone();
-    merge_draft(&mut draft, rtmp.draft.clone());
-    merge_draft(&mut draft, stream.draft.clone());
+    let http_listener_count = http.draft().listeners.len();
+    let rtmp_listener_count = rtmp.draft().listeners.len();
+    let http_pool_count = http.draft().upstream_pools.len();
+    let http_l4_count = http.draft().l4_services.len();
+    let mut draft = http.draft().clone();
+    merge_draft(&mut draft, rtmp.draft().clone());
+    merge_draft(&mut draft, stream.draft().clone());
     let mut provenance = http.provenance.clone();
     provenance.extend(
         rtmp.provenance
@@ -293,8 +294,8 @@ pub fn import_root_with_options(
     let blocked_http_services = http.blocked_services;
     let blocked_rtmp_services = rtmp.blocked_services;
     let blocked_stream_services = stream.blocked_services;
-    let finalization = finalize(
-        &draft,
+    let state = finalize(
+        draft,
         &provenance,
         &mut diagnostics,
         blocked_http_services.is_empty()
@@ -324,13 +325,12 @@ pub fn import_root_with_options(
         blocked_rtmp_services,
         blocked_stream_services,
         candidate: CanonicalCandidate::new(
-            draft,
+            state,
             provenance,
             deployment_requirements,
             activation_requirements,
             operational_overlays,
             SourceImportMetadata::default(),
-            finalization,
         ),
     }
 }
@@ -638,7 +638,7 @@ fn append_supplied_overlays(
 
 fn append_host_timezone_overlays(
     options: &NginxImportOptions,
-    rtmp_draft: &CanonicalDraft,
+    rtmp_draft: &ConfigDraft,
     overlays: &mut Vec<OperationalOverlayRequirement<DirectiveOrigin>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -1064,7 +1064,7 @@ fn origin(directive: &ExpandedDirective) -> DirectiveOrigin {
     }
 }
 
-fn merge_draft(target: &mut CanonicalDraft, source: CanonicalDraft) {
+fn merge_draft(target: &mut ConfigDraft, source: ConfigDraft) {
     target.certificates.extend(source.certificates);
     target.tls_profiles.extend(source.tls_profiles);
     target.listeners.extend(source.listeners);
@@ -1121,17 +1121,18 @@ fn rebase_indexed_provenance(
 }
 
 fn finalize(
-    draft: &CanonicalDraft,
+    draft: ConfigDraft,
     provenance: &[CanonicalProvenance<DirectiveOrigin>],
     diagnostics: &mut Vec<Diagnostic>,
     services_complete: bool,
-) -> CanonicalFinalization {
+) -> CanonicalCandidateState {
     let eligible = services_complete
         && !diagnostics
             .iter()
             .any(|diagnostic| diagnostic.severity() == Severity::Error);
-    match draft.finalize(eligible) {
-        Ok(finalization) => finalization,
+    match finalize_candidate(&draft, eligible) {
+        Ok(Some(config)) => CanonicalCandidateState::Validated(config),
+        Ok(None) => CanonicalCandidateState::Blocked(draft),
         Err(error) => {
             let mut diagnostic = Diagnostic::new(
                 E_INVALID_VALUE,
@@ -1143,7 +1144,7 @@ fn finalize(
                 diagnostic = diagnostic.with_primary_span(origin.span);
             }
             diagnostics.push(diagnostic);
-            CanonicalFinalization::Blocked
+            CanonicalCandidateState::Blocked(draft)
         }
     }
 }

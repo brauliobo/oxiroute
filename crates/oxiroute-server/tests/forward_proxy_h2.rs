@@ -104,6 +104,7 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
         max_connections: None,
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });
+    let config = config.validate().expect("valid forward H2 config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
 

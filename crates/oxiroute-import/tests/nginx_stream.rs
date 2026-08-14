@@ -75,7 +75,10 @@ fn lowers_stream_tcp_service_with_inherited_and_local_timeouts() {
 
     let report = import_stream_fragment(Path::new("nginx.conf"), directory.path());
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.config().expect("finalized stream config");
+    let config = report
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .expect("finalized stream config");
     assert_eq!(config.listeners.len(), 1);
     assert_eq!(config.listeners[0].protocol, Protocol::Tcp);
     assert_eq!(
@@ -137,7 +140,10 @@ fn lowers_exact_stream_proxy_protocol_acceptance_and_propagation() {
     let report = import_stream_fragment(Path::new("nginx.conf"), directory.path());
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.config().expect("stream PROXY configuration");
+    let config = report
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .expect("stream PROXY configuration");
     assert_eq!(
         config.listeners[0]
             .proxy_protocol
@@ -209,7 +215,10 @@ fn lowers_unix_stream_listener_and_direct_unix_proxy_destination() {
 
     let report = import_stream_fragment(Path::new("nginx.conf"), directory.path());
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.config().expect("Unix stream config");
+    let config = report
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .expect("Unix stream config");
     assert_eq!(
         config.listeners[0].bind,
         ListenerBind::Unix {
@@ -245,7 +254,12 @@ fn blocks_udp_preread_and_dynamic_stream_routing() {
 
     let report = import_stream_fragment(Path::new("nginx.conf"), directory.path());
     assert!(report.has_errors());
-    assert!(report.config().is_none());
+    assert!(
+        report
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_none()
+    );
     assert_eq!(report.blocked_services.len(), 1);
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic
@@ -284,7 +298,11 @@ fn complete_root_merges_stream_services_and_marks_stream_occurrences() {
 
     let report = import_root(Path::new("nginx.conf"), directory.path());
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.candidate.config().expect("merged config");
+    let config = report
+        .candidate
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .expect("merged config");
     assert_eq!(config.listeners.len(), 2);
     assert_eq!(config.l4_services.len(), 1);
     assert!(report.blocked_stream_services.is_empty());

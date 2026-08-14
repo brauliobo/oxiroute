@@ -1,10 +1,11 @@
 use std::{collections::HashMap, path::Path};
 
-use oxiroute_config::{Config, ListenerBind, UpstreamTls};
+use oxiroute_config::{ConfigDraft, ListenerBind, UpstreamTls, ValidatedConfig};
 
 use crate::{
-    CanonicalDraft, CanonicalFinalization, CanonicalProvenance, Diagnostic, DiagnosticCode,
-    DiagnosticStage, E_INVALID_VALUE, Report, Severity,
+    CanonicalCandidateSummary, CanonicalProvenance, Diagnostic, DiagnosticCode, DiagnosticStage,
+    E_INVALID_VALUE, Report, Severity,
+    candidate::{CanonicalCandidateState, empty_config, finalize_candidate},
 };
 
 use super::{Lowerer, provenance::lower_diagnostic};
@@ -26,9 +27,8 @@ pub struct ImportReport {
     pub occurrence_ledger: Vec<OccurrenceDecision>,
     pub diagnostics: Vec<Diagnostic>,
     pub blocked_services: Vec<BlockedService>,
-    pub draft: CanonicalDraft,
     pub provenance: Vec<CanonicalProvenance<crate::nginx::DirectiveOrigin>>,
-    finalization: CanonicalFinalization,
+    state: CanonicalCandidateState,
     pub(crate) used_upstream_tls_overlays: std::collections::HashSet<Vec<u8>>,
     pub(crate) used_bearer_token_overlays: std::collections::HashSet<Vec<u8>>,
     pub(crate) used_certificate_overlays: std::collections::HashSet<OccurrenceId>,
@@ -46,13 +46,18 @@ impl ImportReport {
     }
 
     #[must_use]
-    pub fn config(&self) -> Option<&Config> {
-        self.finalization.config()
+    pub(crate) const fn draft(&self) -> &ConfigDraft {
+        self.state.draft()
     }
 
     #[must_use]
-    pub fn into_config(self) -> Option<Config> {
-        self.finalization.into_config()
+    pub const fn validated(&self) -> Option<&ValidatedConfig> {
+        self.state.validated()
+    }
+
+    #[must_use]
+    pub const fn summary(&self) -> CanonicalCandidateSummary {
+        self.state.summary()
     }
 }
 
@@ -134,8 +139,8 @@ impl Lowerer {
             }
         }
 
-        let draft = self.draft.clone();
-        let finalization = self.finalize(&draft);
+        let draft = std::mem::replace(&mut self.draft, empty_config());
+        let state = self.finalize(draft);
         let used_upstream_tls_overlays = self.used_upstream_tls_overlays.into_inner();
         let used_bearer_token_overlays = self.used_bearer_token_overlays.into_inner();
         let used_certificate_overlays = self.used_certificate_overlays.into_inner();
@@ -148,9 +153,8 @@ impl Lowerer {
             occurrence_ledger: self.resolution.decisions,
             diagnostics,
             blocked_services: self.blocked_services,
-            draft,
             provenance: self.provenance.into_entries(),
-            finalization,
+            state,
             used_upstream_tls_overlays,
             used_bearer_token_overlays,
             used_certificate_overlays,
@@ -189,13 +193,14 @@ impl Lowerer {
         });
     }
 
-    fn finalize(&mut self, draft: &CanonicalDraft) -> CanonicalFinalization {
+    fn finalize(&mut self, draft: ConfigDraft) -> CanonicalCandidateState {
         let eligible = !self
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.severity() == Severity::Error);
-        match draft.finalize(eligible) {
-            Ok(finalization) => finalization,
+        match finalize_candidate(&draft, eligible) {
+            Ok(Some(config)) => CanonicalCandidateState::Validated(config),
+            Ok(None) => CanonicalCandidateState::Blocked(draft),
             Err(error) => {
                 let mut diagnostic = Diagnostic::new(
                     E_INVALID_VALUE,
@@ -211,7 +216,7 @@ impl Lowerer {
                     diagnostic = diagnostic.with_primary_span(origin.span);
                 }
                 self.diagnostics.push(diagnostic);
-                CanonicalFinalization::Blocked
+                CanonicalCandidateState::Blocked(draft)
             }
         }
     }

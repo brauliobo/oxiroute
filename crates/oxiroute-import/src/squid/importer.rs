@@ -7,19 +7,23 @@ use std::{
 };
 
 use oxiroute_config::{
-    DownstreamTimeoutPolicy, ForwardAccessAction, ForwardAccessCondition, ForwardAccessMatcher,
-    ForwardAccessPolicy, ForwardAccessRule, ForwardAuditMode, ForwardConnectPolicy,
-    ForwardDestinationPolicy, ForwardDirectFallback, ForwardHeaderPolicy, ForwardHttpVersion,
-    ForwardPeer, ForwardPeerPolicy, ForwardPortRange, ForwardProxyAuth, ForwardProxyService,
-    ForwardResolverPolicy, ForwardViaPolicy, ForwardedForPolicy, Listener, ListenerBind, Protocol,
+    ConfigDraft, DownstreamTimeoutPolicy, ForwardAccessAction, ForwardAccessCondition,
+    ForwardAccessMatcher, ForwardAccessPolicy, ForwardAccessRule, ForwardAuditMode,
+    ForwardConnectPolicy, ForwardDestinationPolicy, ForwardDirectFallback, ForwardHeaderPolicy,
+    ForwardHttpVersion, ForwardPeer, ForwardPeerPolicy, ForwardPortRange, ForwardProxyAuth,
+    ForwardProxyService, ForwardResolverPolicy, ForwardViaPolicy, ForwardedForPolicy, Listener,
+    ListenerBind, Protocol,
 };
 
 use crate::canonical::{dns_name, ip_address};
 use crate::{
-    CanonicalCandidate, CanonicalDraft, CanonicalFinalization, CanonicalProvenance, Diagnostic,
-    DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_SEMANTICS_NOT_REPRESENTABLE,
-    E_UNRESOLVED_REFERENCE, E_UNSUPPORTED_FEATURE, Severity, SourceImportMetadata,
-    candidate::{CanonicalProvenanceLedger, EmptyOriginPolicy},
+    CanonicalCandidate, CanonicalProvenance, Diagnostic, DiagnosticCode, DiagnosticStage,
+    E_DUPLICATE_IDENTITY, E_SEMANTICS_NOT_REPRESENTABLE, E_UNRESOLVED_REFERENCE,
+    E_UNSUPPORTED_FEATURE, Severity, SourceImportMetadata,
+    candidate::{
+        CanonicalCandidateState, CanonicalProvenanceLedger, EmptyOriginPolicy, empty_config,
+        finalize_candidate,
+    },
 };
 
 use super::{
@@ -210,15 +214,16 @@ fn import_graph(graph: SourceGraph, mut diagnostics: Vec<Diagnostic>) -> ImportR
     }
     let decision_ledger = effective.ledger.clone();
     let (draft, canonical_provenance) = lowered.map_or_else(
-        |_| (CanonicalDraft::default(), Vec::new()),
+        |_| (empty_config(), Vec::new()),
         |lowered| (lowered.draft, lowered.provenance),
     );
     let eligible = blocked_capabilities.is_empty()
         && !diagnostics
             .iter()
             .any(|diagnostic| diagnostic.severity() == Severity::Error);
-    let finalization = match draft.finalize(eligible) {
-        Ok(finalization) => finalization,
+    let state = match finalize_candidate(&draft, eligible) {
+        Ok(Some(config)) => CanonicalCandidateState::Validated(config),
+        Ok(None) => CanonicalCandidateState::Blocked(draft),
         Err(error) => {
             let mut diagnostic = Diagnostic::new(
                 E_SEMANTICS_NOT_REPRESENTABLE,
@@ -242,7 +247,7 @@ fn import_graph(graph: SourceGraph, mut diagnostics: Vec<Diagnostic>) -> ImportR
                     );
             }
             diagnostics.push(diagnostic);
-            CanonicalFinalization::Blocked
+            CanonicalCandidateState::Blocked(draft)
         }
     };
     let ((), diagnostics) = crate::Report::new((), diagnostics).into_parts();
@@ -262,13 +267,12 @@ fn import_graph(graph: SourceGraph, mut diagnostics: Vec<Diagnostic>) -> ImportR
         capabilities: squid_capability_report(),
         blocked_capabilities,
         candidate: CanonicalCandidate::new(
-            draft,
+            state,
             canonical_provenance,
             Vec::new(),
             Vec::new(),
             Vec::new(),
             source_metadata,
-            finalization,
         ),
         diagnostics,
     }
@@ -425,7 +429,7 @@ fn extend_consumed_dns_occurrences(
 }
 
 struct LoweredCanonical {
-    draft: CanonicalDraft,
+    draft: ConfigDraft,
     provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
 }
 
@@ -554,10 +558,10 @@ fn lower(effective: &EffectiveConfiguration) -> Result<LoweredCanonical, Semanti
         resolver,
         audit_mode,
     };
-    let draft = CanonicalDraft {
+    let draft = ConfigDraft {
         listeners,
         forward_proxy_services: vec![service],
-        ..CanonicalDraft::default()
+        ..empty_config()
     };
     Ok(LoweredCanonical {
         provenance: lower_provenance(effective, &draft),
@@ -591,7 +595,7 @@ impl ProvenanceRecorder {
 #[allow(clippy::too_many_lines)]
 fn lower_provenance(
     effective: &EffectiveConfiguration,
-    draft: &CanonicalDraft,
+    draft: &ConfigDraft,
 ) -> Vec<CanonicalProvenance<DirectiveOrigin>> {
     let mut recorder = ProvenanceRecorder::default();
     let http_ports = effective

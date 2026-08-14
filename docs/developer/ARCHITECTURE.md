@@ -25,9 +25,9 @@ KDL / Lua / HOCON / UCI / native references
 ## Source And Configuration
 
 `oxiroute-config` owns the strict canonical model and validation. `oxiroute-config-source` owns
-format inference, bounded generic decoding, template expansion, native-reference extraction, and
-deterministic rendering. `oxiroute-import` owns product-specific syntax, provenance, decision ledgers,
-diagnostics, and conservative lowering.
+format inference, restricted Lua loading, bounded generic decoding, template expansion,
+native-reference extraction, and deterministic rendering. `oxiroute-import` owns product-specific
+syntax, provenance, decision ledgers, diagnostics, and conservative lowering.
 
 The resolver pipeline is:
 
@@ -114,6 +114,16 @@ worker replacement, and the bounded generation-qualified event ring; workers sen
 status observations for lifecycle, listener, metric, reload, degradation, and drain state. The
 process crate performs authenticated worker spawning and launcher work. Linux-specific process and
 `/proc` behavior stays behind platform modules.
+
+On Linux, `oxiroute serve` selects the supervised master only when the fixed packaged launcher is
+present and the listener descriptor topology is eligible. The Arch package installs the launcher, so
+eligible packaged services are supervised by default; unsupported topologies and development installs
+without the launcher fall back to the direct generation runtime. Non-Linux serving is direct.
+
+The shipped replacement wire uses control protocol version 2 and descriptor manifest version 1. The
+planned bidirectional lifecycle-control boundary is one coordinated version-3 change: version-3
+masters and workers reject version 2 exactly, with no negotiation or dual-protocol compatibility
+layer. Manifest version 1 remains independent and is preserved unless descriptor metadata changes.
 
 The cache crate is integrated into reverse HTTP and eligible HTTP/1/H3 forward requests. The shared
 cache transaction owns lookup, collapsed-fill leadership, revalidation, stale eligibility, admission,

@@ -1,0 +1,76 @@
+diff --git a/crates/oxiroute-server/src/service_plan.rs b/crates/oxiroute-server/src/service_plan.rs
+index 0000000..0000000 100644
+--- a/crates/oxiroute-server/src/service_plan.rs
++++ b/crates/oxiroute-server/src/service_plan.rs
+@@ -50,4 +50,27 @@ static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>
+     OnceLock::new();
+ 
++#[cfg(test)]
++std::thread_local! {
++    static BASELINE_ACQUISITION_TRACE: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
++    static BASELINE_RTMP_RUNTIME_STARTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
++#[cfg(test)]
++pub fn baseline_reset_acquisition_trace() {
++    BASELINE_ACQUISITION_TRACE.with(|trace| trace.borrow_mut().clear());
++    BASELINE_RTMP_RUNTIME_STARTS.set(0);
++}
++
++#[cfg(test)]
++pub fn baseline_acquisition_trace() -> Vec<&'static str> {
++    BASELINE_ACQUISITION_TRACE.with(|trace| trace.borrow().clone())
++}
++
++#[cfg(test)]
++pub fn baseline_rtmp_runtime_starts() -> usize { BASELINE_RTMP_RUNTIME_STARTS.get() }
++
++#[cfg(test)]
++fn baseline_trace(stage: &'static str) { BASELINE_ACQUISITION_TRACE.with(|trace| trace.borrow_mut().push(stage)); }
++
+ #[derive(Clone, Debug)]
+ pub struct ServiceSpec {
+@@ -147,5 +170,7 @@ impl RtmpServicePlan {
+     pub fn runtime(
+         &self,
+         registry: Arc<RtmpRegistry>,
+     ) -> Result<RtmpServiceRuntime, ServicePlanError> {
++        #[cfg(test)]
++        BASELINE_RTMP_RUNTIME_STARTS.with(|count| count.set(count.get() + 1));
+         let mut stores = HashMap::<PathBuf, RecordingStore>::new();
+@@ -633,12 +658,24 @@ fn runtime_plan_with_passive_failure_policy_internal(
+     let mut config = config.clone();
+     oxiroute_config::validate_config(&mut config)
+         .map_err(|source| ServicePlanError::InvalidConfig(Box::new(source)))?;
++    #[cfg(test)]
++    baseline_trace("tls");
+     let tls = crate::tls::prepare_tls(&config)
+         .map_err(|source| ServicePlanError::Tls(Box::new(source)))?;
++    #[cfg(test)]
++    baseline_trace("pools");
+     let pools = compile_pools(&config, passive_policy)?;
++    #[cfg(test)]
++    baseline_trace("http");
+     let http_services = compile_http_services(&config, &pools.by_name)?;
++    #[cfg(test)]
++    baseline_trace("forward");
+     let forward_services = compile_forward_proxy_services(&config)?;
++    #[cfg(test)]
++    baseline_trace("rtmp");
+     let rtmp_services = compile_rtmp_services(&config)?;
++    #[cfg(test)]
++    baseline_trace("l4_listeners");
+     let l4_services = compile_l4_services(&config, &pools.by_name)?;
+ 
+     let services = config
+diff --git a/crates/oxiroute-server/src/lib.rs b/crates/oxiroute-server/src/lib.rs
+index 0000000..0000000 100644
+--- a/crates/oxiroute-server/src/lib.rs
++++ b/crates/oxiroute-server/src/lib.rs
+@@ -88,4 +88,6 @@ pub use service_plan::{
+     HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
+     runtime_plan, runtime_plan_with_passive_failure_policy, service_specs,
+ };
++#[cfg(test)]
++pub use service_plan::{baseline_acquisition_trace, baseline_reset_acquisition_trace, baseline_rtmp_runtime_starts};
+ pub use stats::{HaproxyStatsApi, HaproxyStatsPage};

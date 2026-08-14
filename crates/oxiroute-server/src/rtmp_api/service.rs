@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     GenerationManager, RuntimeMetrics, TopologySnapshot,
-    config_coordinator::{CanonicalConfigCoordinator, ConfigRevision},
+    config_coordinator::{CanonicalConfigCoordinator, EffectiveRevision},
     operational_event::{self, AuditCategory, AuditContext, AuditLimits, AuditResult, AuditStore},
     secure_bearer::{HeaderCardinality, single_header},
 };
@@ -171,8 +171,9 @@ impl RtmpManagementApi {
     pub fn with_config_coordinator(
         mut self,
         coordinator: CanonicalConfigCoordinator,
-        active_revision: ConfigRevision,
+        active_revision: EffectiveRevision,
         token: &str,
+        mode: crate::RuntimeMode,
     ) -> io::Result<Self> {
         self.coordinator = Some(coordinator.clone());
         self.audit = operational_event::configure_audit_store(None);
@@ -180,6 +181,7 @@ impl RtmpManagementApi {
             coordinator.clone(),
             active_revision,
             token,
+            mode,
         )?);
         if let Some(generations) = &self.generations {
             self.management = Some(ManagementState::new(
@@ -200,8 +202,9 @@ impl RtmpManagementApi {
     pub fn with_config_coordinator_from_token_file(
         mut self,
         coordinator: CanonicalConfigCoordinator,
-        active_revision: ConfigRevision,
+        active_revision: EffectiveRevision,
         token_file: &Path,
+        mode: crate::RuntimeMode,
     ) -> io::Result<Self> {
         self.coordinator = Some(coordinator.clone());
         self.audit = operational_event::configure_audit_store(Some(token_file));
@@ -209,6 +212,7 @@ impl RtmpManagementApi {
             coordinator.clone(),
             active_revision,
             token_file,
+            mode,
         )?);
         if let Some(generations) = &self.generations {
             self.management = Some(ManagementState::new(
@@ -271,11 +275,13 @@ impl RtmpManagementApi {
         if session.req_header().method.as_str() != "GET" {
             return ApiResponse::method_not_allowed("GET");
         }
-        let catalog = self
+        let active = self
             .generations
             .as_ref()
-            .and_then(GenerationManager::active)
-            .map(|generation| Arc::clone(&generation.plan().rtmp_vod_catalog))
+            .and_then(GenerationManager::active);
+        let catalog = active
+            .as_ref()
+            .map(|generation| Arc::clone(generation.rtmp_vod_catalog()))
             .or_else(|| self.vod_catalog.clone());
         let Some(catalog) = catalog else {
             return ApiResponse::error(503, "vod_unavailable", "VOD is not active");
@@ -286,6 +292,7 @@ impl RtmpManagementApi {
         let path = route.path.to_owned();
         let content_path = path.clone();
         let object = match tokio::task::spawn_blocking(move || {
+            let _generation = active;
             catalog.open(&service, &application, &source, &path)
         })
         .await
@@ -336,11 +343,13 @@ impl RtmpManagementApi {
         if session.req_header().method.as_str() != "GET" {
             return ApiResponse::method_not_allowed("GET");
         }
-        let catalog = self
+        let active = self
             .generations
             .as_ref()
-            .and_then(GenerationManager::active)
-            .map(|generation| Arc::clone(&generation.plan().rtmp_media_catalog))
+            .and_then(GenerationManager::active);
+        let catalog = active
+            .as_ref()
+            .map(|generation| Arc::clone(generation.rtmp_media_catalog()))
             .or_else(|| self.media_catalog.clone());
         let Some(catalog) = catalog else {
             return ApiResponse::error(503, "media_unavailable", "RTMP media output is not active");
@@ -350,6 +359,7 @@ impl RtmpManagementApi {
         let stream = route.stream.to_owned();
         let object = route.object.to_owned();
         let object = match tokio::task::spawn_blocking(move || {
+            let _generation = active;
             catalog.read_object(&service, &application, &stream, &object)
         })
         .await
@@ -506,7 +516,15 @@ impl RtmpManagementApi {
                 )
                 .with_correlation(context.correlation_id);
             };
-            let mutation = match generations.begin_mutation(revision) {
+            let Ok(revision) = revision.parse::<EffectiveRevision>() else {
+                return ApiResponse::error(
+                    409,
+                    "generation_conflict",
+                    "the active generation revision changed",
+                )
+                .with_correlation(context.correlation_id);
+            };
+            let mutation = match generations.begin_mutation(&revision) {
                 Ok(mutation) => mutation,
                 Err(error) => {
                     return ApiResponse::error(
@@ -561,6 +579,7 @@ impl RtmpManagementHttpApp {
     async fn stream_events(
         &self,
         session: &mut ServerSession,
+        version: management::EventApiVersion,
         cursor: EventStreamCursor,
         shutdown: &ShutdownWatch,
         context: &AuditContext,
@@ -625,7 +644,13 @@ impl RtmpManagementHttpApp {
             if !page.events.is_empty() {
                 for event in page.events {
                     if !self
-                        .write_sse_frame(session, operational_frame(&event))
+                        .write_sse_frame(
+                            session,
+                            match version {
+                                management::EventApiVersion::V1 => operational_frame(&event),
+                                management::EventApiVersion::V2 => operational_frame_v2(&event),
+                            },
+                        )
                         .await
                     {
                         return;
@@ -744,7 +769,20 @@ fn ready_frame(cursor: u64) -> Vec<u8> {
 }
 
 fn operational_frame(event: &crate::operational_event::OperationalEvent) -> Vec<u8> {
-    let data = serde_json::to_string(event).expect("typed operational event serializes");
+    let data = crate::operational_event::v1_event_value(event).to_string();
+    let mut frame = String::new();
+    let _ = writeln!(frame, "id: {}", event.cursor);
+    let _ = writeln!(
+        frame,
+        "event: {}",
+        crate::operational_event::v1_sse_event_name(event.event)
+    );
+    let _ = writeln!(frame, "data: {data}\n");
+    frame.into_bytes()
+}
+
+fn operational_frame_v2(event: &crate::operational_event::OperationalEvent) -> Vec<u8> {
+    let data = crate::operational_event::v2_event_value(event).to_string();
     let mut frame = String::new();
     let _ = writeln!(frame, "id: {}", event.cursor);
     let _ = writeln!(frame, "event: {}", event.event.as_str());
@@ -1054,8 +1092,14 @@ impl HttpServerApp for RtmpManagementHttpApp {
                             return None;
                         }
                     };
-                self.stream_events(&mut session, cursor, shutdown, &context)
-                    .await;
+                self.stream_events(
+                    &mut session,
+                    stream_route.version,
+                    cursor,
+                    shutdown,
+                    &context,
+                )
+                .await;
                 return finish_http_session(session).await;
             }
             if let Some(route) = vod::match_route(&path) {
@@ -1219,5 +1263,54 @@ mod tests {
         assert!(frame.contains(r#""event":"unknown""#));
         assert!(!frame.contains("private-key-secret"));
         assert!(!frame.contains("session-secret"));
+    }
+
+    #[test]
+    fn version_one_sse_keeps_the_shipped_certificate_activation_spellings() {
+        let event = OperationalEvent {
+            cursor: 12,
+            timestamp_unix_ms: None,
+            event: crate::operational_event::EventName::CertificateActivation,
+            outcome: crate::operational_event::EventOutcome::Activated,
+            revision: None,
+            certificate: Some("edge".into()),
+            correlation_id: None,
+            actor: None,
+            source: None,
+            operation: None,
+        };
+        let frame = String::from_utf8(operational_frame(&event)).expect("SSE frame");
+
+        assert!(frame.contains("event: certificate_activated"));
+        assert!(frame.contains(r#""event":"certificate_activation""#));
+
+        let event = OperationalEvent {
+            event: crate::operational_event::EventName::CertificateRevocation,
+            ..event
+        };
+        let frame = String::from_utf8(operational_frame(&event)).expect("SSE frame");
+        assert!(frame.contains("event: unknown"));
+        assert!(frame.contains(r#""event":"unknown""#));
+    }
+
+    #[test]
+    fn version_two_sse_uses_the_complete_matching_event_vocabulary() {
+        let event = OperationalEvent {
+            cursor: 13,
+            timestamp_unix_ms: None,
+            event: crate::operational_event::EventName::CertificateRevocation,
+            outcome: crate::operational_event::EventOutcome::Requested,
+            revision: None,
+            certificate: Some("edge".into()),
+            correlation_id: None,
+            actor: None,
+            source: None,
+            operation: None,
+        };
+        let frame = String::from_utf8(operational_frame_v2(&event)).expect("SSE frame");
+
+        assert!(frame.contains("event: certificate_revocation"));
+        assert!(frame.contains(r#""event":"certificate_revocation""#));
+        assert!(frame.contains(r#""outcome":"requested""#));
     }
 }

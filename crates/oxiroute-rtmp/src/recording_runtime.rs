@@ -658,10 +658,13 @@ pub(crate) struct RecorderReaperOwner {
     shutdown: RtmpRecorderShutdown,
 }
 
+type RecorderRetirement = Box<dyn FnOnce() + Send + 'static>;
+
 /// Completion handle for one RTMP recorder/reaper shutdown lifecycle.
 #[derive(Clone)]
 pub struct RtmpRecorderShutdown {
     queue: Arc<ReaperQueue>,
+    retirement: Arc<Mutex<RecorderRetirementState>>,
 }
 
 #[derive(Clone)]
@@ -689,8 +692,14 @@ struct ReapCompletion {
 struct ReaperQueue {
     sender: Sender<ReaperCommand>,
     capacity: usize,
+    retirement: Arc<Mutex<RecorderRetirementState>>,
     state: Mutex<ReaperQueueState>,
     available: Condvar,
+}
+
+struct RecorderRetirementState {
+    callback: Option<RecorderRetirement>,
+    ran: bool,
 }
 
 struct ReaperQueueState {
@@ -735,6 +744,10 @@ impl RecorderReaper {
         let queue = Arc::new(ReaperQueue {
             sender,
             capacity: capacity.max(1),
+            retirement: Arc::new(Mutex::new(RecorderRetirementState {
+                callback: None,
+                ran: false,
+            })),
             state: Mutex::new(ReaperQueueState {
                 accepting: true,
                 failed: false,
@@ -759,6 +772,7 @@ impl RecorderReaper {
                 })),
                 shutdown: RtmpRecorderShutdown {
                     queue: Arc::clone(&queue),
+                    retirement: Arc::clone(&queue.retirement),
                 },
             }),
             RecorderReaperHandle {
@@ -807,13 +821,28 @@ impl RtmpRecorderShutdown {
     /// Returns true once the reaper has exited and every tracked worker has been reconciled.
     #[must_use]
     pub fn is_complete(&self) -> bool {
+        self.queue.run_retirement_if_complete();
         self.queue.shutdown_complete()
     }
 
     /// Waits until completion or the supplied absolute deadline.
     #[must_use]
     pub fn wait_until(&self, deadline: Instant) -> bool {
-        self.queue.wait_until_shutdown_complete(deadline)
+        let complete = self.queue.wait_until_shutdown_complete(deadline);
+        self.queue.run_retirement_if_complete();
+        complete
+    }
+
+    pub(crate) fn set_retirement(&self, retire: impl FnOnce() + Send + 'static) {
+        let mut retirement = self
+            .retirement
+            .lock()
+            .expect("recorder retirement mutex poisoned");
+        if !retirement.ran && retirement.callback.is_none() {
+            retirement.callback = Some(Box::new(retire));
+        }
+        drop(retirement);
+        self.queue.run_retirement_if_complete();
     }
 }
 
@@ -915,6 +944,7 @@ impl RecorderShutdownControl {
         self.cleanup.wake();
         RtmpRecorderShutdown {
             queue: Arc::clone(&self.queue),
+            retirement: Arc::clone(&self.queue.retirement),
         }
     }
 }
@@ -1114,6 +1144,7 @@ impl ReaperQueue {
         });
         drop(state);
         self.available.notify_all();
+        self.run_retirement_if_complete();
     }
 
     fn shutdown_deadline(&self) -> Option<Instant> {
@@ -1134,6 +1165,7 @@ impl ReaperQueue {
             .expect("recorder reaper completed an untracked task");
         drop(state);
         self.available.notify_one();
+        self.run_retirement_if_complete();
     }
 
     fn fail(&self) {
@@ -1156,6 +1188,30 @@ impl ReaperQueue {
         state.reaper_finished = true;
         drop(state);
         self.available.notify_all();
+        self.run_retirement_if_complete();
+    }
+
+    fn run_retirement_if_complete(&self) {
+        if !self.shutdown_complete() {
+            return;
+        }
+        let retirement = {
+            let mut state = self
+                .retirement
+                .lock()
+                .expect("recorder retirement mutex poisoned");
+            if state.ran {
+                None
+            } else if let Some(callback) = state.callback.take() {
+                state.ran = true;
+                Some(callback)
+            } else {
+                None
+            }
+        };
+        if let Some(retirement) = retirement {
+            retirement();
+        }
     }
 
     fn shutdown_complete(&self) -> bool {
@@ -1476,7 +1532,15 @@ fn count_inactive_recovery_drop(state: &mut ControllerState, result: RecorderEnq
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path, sync::mpsc, thread};
+    use std::{
+        fs,
+        path::Path,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
+        thread,
+    };
 
     use tempfile::{TempDir, tempdir};
 
@@ -1637,6 +1701,28 @@ mod tests {
             RecorderWorkerPhase::Failed(RecorderFailure::ShutdownTimedOut)
         );
         assert!(status.recoverable_partial_name.is_some());
+    }
+
+    #[test]
+    fn recorder_retirement_runs_once_across_shutdown_handle_clones() {
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: true,
+        }));
+        let (owner, _reaper) = registry.create_recorder_reaper(1);
+        let shutdown = owner.shutdown_handle();
+        let clone = shutdown.clone();
+        let retired = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&retired);
+        shutdown.set_retirement(move || {
+            observed.fetch_add(1, Ordering::AcqRel);
+        });
+
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        drop(owner.initiate_shutdown(deadline));
+        assert!(shutdown.wait_until(deadline));
+        assert!(clone.wait_until(deadline));
+        assert_eq!(retired.load(Ordering::Acquire), 1);
     }
 
     #[test]

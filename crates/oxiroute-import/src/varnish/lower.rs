@@ -6,18 +6,21 @@ use std::{
 
 use http::{HeaderName, HeaderValue};
 use oxiroute_config::{
-    CacheKeyComponent, CacheStore, DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck,
-    HealthCheckType, HealthStartup, HttpCachePolicy, HttpProxyPolicy, HttpRequestHeaderMutation,
-    HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRoute, HttpRouteAction,
-    HttpRoutePolicy, HttpService, HttpUpstreamHost, Listener, ListenerBind, Protocol,
-    UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
-    canonical_dns_name,
+    CacheKeyComponent, CacheStore, ConfigDraft, DnsResolutionPolicy, DownstreamTimeoutPolicy,
+    HealthCheck, HealthCheckType, HealthStartup, HttpCachePolicy, HttpProxyPolicy,
+    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRoute,
+    HttpRouteAction, HttpRoutePolicy, HttpService, HttpUpstreamHost, Listener, ListenerBind,
+    Protocol, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
+    UpstreamServer, canonical_dns_name,
 };
 
 use crate::{
-    CanonicalCandidate, CanonicalDraft, Diagnostic, DiagnosticStage, E_INVALID_VALUE,
-    E_SOURCE_CHANGED, E_SOURCE_LIMIT, E_UNSUPPORTED_FEATURE, Severity, SourceImportMetadata,
-    candidate::{CanonicalProvenanceLedger, EmptyOriginPolicy},
+    CanonicalCandidate, Diagnostic, DiagnosticStage, E_INVALID_VALUE, E_SOURCE_CHANGED,
+    E_SOURCE_LIMIT, E_UNSUPPORTED_FEATURE, Severity, SourceImportMetadata,
+    candidate::{
+        CanonicalCandidateState, CanonicalProvenanceLedger, EmptyOriginPolicy, empty_config,
+        finalize_candidate,
+    },
 };
 
 use super::{
@@ -111,7 +114,7 @@ struct Lowerer<'a> {
     vmod_objects: &'a [VmodObject],
     diagnostics: Vec<Diagnostic>,
     blocker: Option<LoweringBlocker>,
-    draft: CanonicalDraft,
+    draft: ConfigDraft,
     provenance: CanonicalProvenanceLedger<Provenance>,
     backend_infos: BTreeMap<usize, BackendInfo>,
     director_infos: BTreeMap<usize, DirectorInfo>,
@@ -179,7 +182,7 @@ impl<'a> Lowerer<'a> {
             vmod_objects,
             diagnostics,
             blocker: None,
-            draft: CanonicalDraft::default(),
+            draft: empty_config(),
             provenance: CanonicalProvenanceLedger::new(EmptyOriginPolicy::Discard),
             backend_infos: BTreeMap::new(),
             director_infos: BTreeMap::new(),
@@ -206,12 +209,13 @@ impl<'a> Lowerer<'a> {
             self.lower_builtin_graph();
         }
 
-        let finalization = if has_canonical_graph {
-            self.finalize()
+        let draft = std::mem::replace(&mut self.draft, empty_config());
+        let state = if has_canonical_graph {
+            self.finalize(draft)
         } else {
-            crate::CanonicalFinalization::Blocked
+            CanonicalCandidateState::Blocked(draft)
         };
-        let status = if finalization.is_finalized() {
+        let status = if state.validated().is_some() {
             LoweringStatus::Lowered
         } else if !has_canonical_graph {
             LoweringStatus::Blocked(LoweringBlocker::NoCanonicalGraph)
@@ -234,13 +238,12 @@ impl<'a> Lowerer<'a> {
             ..SourceImportMetadata::default()
         };
         let candidate = VarnishCanonicalCandidate::new(
-            self.draft,
+            state,
             self.provenance.into_entries(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
             source_metadata,
-            finalization,
         );
         let ((), diagnostics) = crate::Report::new((), self.diagnostics).into_parts();
         (candidate, status, diagnostics)
@@ -1663,9 +1666,10 @@ impl<'a> Lowerer<'a> {
             .collect()
     }
 
-    fn finalize(&mut self) -> crate::CanonicalFinalization {
-        match self.draft.finalize(!self.has_errors()) {
-            Ok(finalization) => finalization,
+    fn finalize(&mut self, draft: ConfigDraft) -> CanonicalCandidateState {
+        match finalize_candidate(&draft, !self.has_errors()) {
+            Ok(Some(config)) => CanonicalCandidateState::Validated(config),
+            Ok(None) => CanonicalCandidateState::Blocked(draft),
             Err(error) => {
                 self.block(
                     LoweringBlocker::Validation,
@@ -1674,7 +1678,7 @@ impl<'a> Lowerer<'a> {
                     format!("lowered Varnish canonical draft is invalid: {error}"),
                     self.root_span(),
                 );
-                crate::CanonicalFinalization::Blocked
+                CanonicalCandidateState::Blocked(draft)
             }
         }
     }

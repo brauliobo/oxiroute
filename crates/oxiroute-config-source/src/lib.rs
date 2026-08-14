@@ -1,4 +1,4 @@
-//! Bounded configuration source adapters and resolution into [`oxiroute_config::Config`].
+//! Bounded configuration source adapters and resolution into [`oxiroute_config::ValidatedConfig`].
 //!
 //! KDL follows the reversible mapping documented in `docs/CONFIG_FORMATS.md`: the document is an
 //! implicit root object, scalar nodes have exactly one positional argument, `(object)` and
@@ -8,29 +8,34 @@
 //! Source resolution additionally recognizes strict native nginx, `HAProxy`, Squid, Apache, and Varnish
 //! directives without changing these generic reversible mappings.
 
+mod composition;
 mod error;
 mod hocon;
 mod kdl;
 mod limits;
+mod lua;
 mod native;
+mod render;
 mod resolver;
 mod templates;
 mod uci;
 
 use std::path::Path;
 
-pub use error::{ConfigSourceError, NativeDiagnosticCount, NativeDiagnostics};
+pub use composition::compose_validated_fragments;
+pub use error::{ConfigSourceError, LuaConfigError, NativeDiagnosticCount, NativeDiagnostics};
 pub use limits::{
     MAX_DEPENDENCY_PATHS, MAX_EXPANSION_DEPTH, MAX_NODES, MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES,
     MAX_STRING_BYTES, MAX_STRUCTURAL_DEPTH, MAX_SUBSTITUTIONS,
 };
+pub use lua::load_lua;
 pub use resolver::{
     NativeReferenceMetadata, ResolvedSource, resolve_source, resolve_source_with_format,
 };
 pub use templates::expand_templates;
-pub use uci::{UciDocument, UciEntry, UciSection, parse_uci_document, render_uci_document};
+pub use uci::{UciDocument, UciEntry, UciSection, parse_uci_document};
 
-use oxiroute_config::{Config, compose_configs, render_lua};
+use oxiroute_config::ValidatedConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -42,7 +47,7 @@ pub enum ConfigFormat {
     /// KDL 2.0, the default source and preview format.
     #[default]
     Kdl,
-    /// Legacy restricted Lua, resolved through [`oxiroute_config::load_lua`].
+    /// Legacy restricted Lua, resolved through [`load_lua`].
     Lua,
     /// `OpenWrt` UCI using deterministic generic JSON records.
     Uci,
@@ -106,7 +111,10 @@ pub fn decode_value(format: ConfigFormat, source: &[u8]) -> Result<Value, Config
 ///
 /// Returns an error when the value exceeds a bound, cannot be represented by the selected format,
 /// or uses the unsupported Lua adapter.
-pub fn render_value(format: ConfigFormat, value: &Value) -> Result<String, ConfigSourceError> {
+pub(crate) fn render_value(
+    format: ConfigFormat,
+    value: &Value,
+) -> Result<String, ConfigSourceError> {
     limits::validate_value(value)?;
     let output = match format {
         ConfigFormat::Kdl => kdl::render(value)?,
@@ -123,25 +131,72 @@ pub fn render_value(format: ConfigFormat, value: &Value) -> Result<String, Confi
     Ok(output)
 }
 
-/// Validates, normalizes, and deterministically renders a typed configuration.
-///
-/// KDL, UCI, and HOCON are rendered from the normalized serde value. Lua uses the existing
-/// restricted canonical renderer.
+/// Deterministically renders a validated typed configuration.
 ///
 /// # Errors
 ///
-/// Returns an error when the typed configuration is invalid or the selected format cannot
-/// represent the normalized value within the configured bounds.
-pub fn render_config(format: ConfigFormat, config: &Config) -> Result<String, ConfigSourceError> {
-    let normalized = compose_configs(std::slice::from_ref(config))
-        .map_err(|error| ConfigSourceError::Composition(error.to_string()))?;
+/// Returns an error when the selected format cannot represent the normalized value within the
+/// configured bounds.
+///
+/// ```compile_fail
+/// use oxiroute_config::ConfigDraft;
+/// use oxiroute_config_source::{ConfigFormat, render_config};
+///
+/// let draft: ConfigDraft = todo!();
+/// let _ = render_config(ConfigFormat::Kdl, &draft);
+/// ```
+pub fn render_config(
+    format: ConfigFormat,
+    config: &ValidatedConfig,
+) -> Result<String, ConfigSourceError> {
     if format == ConfigFormat::Lua {
-        return render_lua(&normalized).map_err(|error| ConfigSourceError::Render {
-            format: "Lua",
-            message: error.to_string(),
-        });
+        return render::render_lua(config)
+            .map_err(|error| ConfigSourceError::render_source("Lua", error));
     }
-    let value = serde_json::to_value(normalized)
+    let value = serde_json::to_value(config)
         .map_err(|error| ConfigSourceError::TypedConfig(error.to_string()))?;
     render_value(format, &value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn low_level_renderers_round_trip_without_becoming_public_configuration_apis() {
+        for format in [ConfigFormat::Kdl, ConfigFormat::Uci, ConfigFormat::Hocon] {
+            let value = json!({"z": [true, null], "a": {"two": 2, "one": 1}});
+            let rendered = render_value(format, &value).unwrap();
+            assert_eq!(decode_value(format, rendered.as_bytes()).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn kdl_renderer_requires_an_object_root() {
+        assert!(matches!(
+            render_value(ConfigFormat::Kdl, &json!([1, 2])),
+            Err(ConfigSourceError::Render {
+                format: "KDL 2",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn low_level_renderers_enforce_the_shared_output_bound() {
+        let oversized = "x".repeat(MAX_STRING_BYTES);
+        let value = Value::Object(
+            ["a", "b", "c", "d", "e"]
+                .into_iter()
+                .map(|key| (key.to_owned(), Value::String(oversized.clone())))
+                .collect(),
+        );
+        for format in [ConfigFormat::Kdl, ConfigFormat::Uci, ConfigFormat::Hocon] {
+            assert!(matches!(
+                render_value(format, &value),
+                Err(ConfigSourceError::OutputTooLarge)
+            ));
+        }
+    }
 }

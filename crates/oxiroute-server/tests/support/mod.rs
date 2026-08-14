@@ -4,7 +4,6 @@ use std::{
     fs::{self, File},
     io::{self, BufReader},
     net::{Ipv4Addr, SocketAddr},
-    os::fd::IntoRawFd,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -35,18 +34,18 @@ use openssl::{
     },
 };
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, Config, HttpPathSelector, HttpProxyPolicy,
+    AlpnProtocol, Certificate, CertificateSource, ConfigDraft, HttpPathSelector, HttpProxyPolicy,
     HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy, Listener, ListenerBind, Protocol,
-    TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamPool, UpstreamTls,
+    TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamPool, UpstreamTls, ValidatedConfig,
 };
 use oxiroute_server::{
     ActiveCertificateGeneration, CertbotReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor,
-    HttpListenerApp, HttpReverseProxy, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RuntimeMetrics,
-    ServiceKind, TlsAlpnChallengeStore, runtime_plan,
+    HttpListenerApp, HttpReverseProxy, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RuntimeGeneration,
+    RuntimeMetrics, ServiceKind, TlsAlpnChallengeStore,
 };
 use pingora::{
     proxy::http_proxy,
-    server::{Fds, configuration::ServerConf},
+    server::configuration::ServerConf,
     services::{Service as PingoraService, listening::Service as ListeningService},
 };
 use rustls::{

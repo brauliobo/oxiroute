@@ -8,7 +8,7 @@ use std::{
 };
 
 use oxiroute_acme::{ChallengeStore, Dns01ProviderRegistry, StateStore};
-use oxiroute_config::{CertificateSource, Config};
+use oxiroute_config::{CertificateSource, ValidatedConfig};
 #[cfg(unix)]
 use rustix::fs::{self as rustix_fs, Mode, OFlags};
 use zeroize::Zeroizing;
@@ -37,6 +37,7 @@ pub use certbot_watcher::{
     CertbotWatcherConfig, CertbotWatcherError, CertbotWatcherMonitor, CertbotWatcherStatus,
     CertbotWatcherSupervisor,
 };
+pub(crate) use certificate::CompiledTlsProfilePolicy;
 pub use certificate::{
     ActiveCertificateGeneration, CertificateGeneration, CertificateMetadata,
     CertificatePublishError, CertificateValidity, TlsProfilePlan,
@@ -52,6 +53,7 @@ pub use tls_alpn::{
     TLS_ALPN_IDENTIFIER_OID, TLS_ALPN_PROTOCOL, TlsAlpnChallenge, TlsAlpnChallengeError,
     TlsAlpnChallengeIdentity, TlsAlpnChallengeLease, TlsAlpnChallengeStore,
 };
+pub(crate) use upstream::UpstreamTlsBlueprint;
 pub use upstream::{UpstreamTlsPlan, prepare_upstream_tls};
 
 pub const MAX_CERTIFICATE_CHAIN_BYTES: usize = 1024 * 1024;
@@ -63,6 +65,78 @@ pub const MAX_CLIENT_CA_CERTIFICATES: usize = 128;
 
 pub type CertificateIdentityMap = BTreeMap<String, Arc<ActiveCertificateGeneration>>;
 pub type TlsProfilePlanMap = BTreeMap<String, Arc<TlsProfilePlan>>;
+
+pub(crate) struct TlsBlueprint {
+    pub(crate) identities: Box<[TlsIdentityBlueprint]>,
+    pub(crate) profiles: Box<[TlsProfileBlueprint]>,
+}
+
+#[derive(Clone)]
+pub(crate) struct TlsIdentityBlueprint {
+    pub(crate) name: String,
+    pub(crate) dns_names: Box<[String]>,
+    pub(crate) source: oxiroute_config::CertificateSource,
+}
+
+#[derive(Clone)]
+pub(crate) struct TlsProfileBlueprint {
+    pub(crate) name: String,
+    pub(crate) certificate_indices: Box<[usize]>,
+    pub(crate) default_certificate_index: usize,
+    pub(crate) policy: CompiledTlsProfilePolicy,
+}
+
+impl TlsBlueprint {
+    pub(crate) fn compile(config: &oxiroute_config::ConfigDraft) -> Result<Self, TlsBuildError> {
+        let identities = config
+            .certificates
+            .iter()
+            .map(|certificate| TlsIdentityBlueprint {
+                name: certificate.name.clone(),
+                dns_names: certificate.dns_names.clone().into_boxed_slice(),
+                source: certificate.source.clone(),
+            })
+            .collect::<Box<[_]>>();
+        let profiles = config
+            .tls_profiles
+            .iter()
+            .map(|profile| {
+                let certificate_indices = profile
+                    .certificates
+                    .iter()
+                    .map(|name| {
+                        config
+                            .certificates
+                            .iter()
+                            .position(|certificate| certificate.name == *name)
+                            .expect("validated TLS certificate reference")
+                    })
+                    .collect::<Box<[_]>>();
+                let default_certificate_index = config
+                    .certificates
+                    .iter()
+                    .position(|certificate| certificate.name == profile.default_certificate)
+                    .expect("validated default TLS certificate reference");
+                let policy = CompiledTlsProfilePolicy::compile(
+                    profile,
+                    &identities,
+                    &certificate_indices,
+                    default_certificate_index,
+                )?;
+                Ok(TlsProfileBlueprint {
+                    name: profile.name.clone(),
+                    certificate_indices,
+                    default_certificate_index,
+                    policy,
+                })
+            })
+            .collect::<Result<Box<[_]>, TlsBuildError>>()?;
+        Ok(Self {
+            identities,
+            profiles,
+        })
+    }
+}
 
 /// A fully prepared TLS snapshot. Its maps are immutable; Certbot-backed certificate slots can
 /// publish validated replacement generations through their process-lifetime reconciler.
@@ -190,7 +264,13 @@ impl std::fmt::Debug for PreparedTls {
 /// Returns a typed error when a file is unstable or invalid, OpenSSL rejects an identity, or a
 /// profile cannot be resolved.
 #[allow(clippy::too_many_lines)]
-pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
+/// ```compile_fail
+/// use oxiroute_config::ConfigDraft;
+///
+/// let draft: ConfigDraft = todo!();
+/// let _ = oxiroute_server::tls::prepare_tls(&draft);
+/// ```
+pub fn prepare_tls(config: &ValidatedConfig) -> Result<PreparedTls, TlsBuildError> {
     prepare_tls_with_dns01_providers(config, Dns01ProviderRegistry::default())
 }
 
@@ -205,17 +285,32 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
 /// configured DNS-01 provider is not registered.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub fn prepare_tls_with_dns01_providers(
-    config: &Config,
+    config: &ValidatedConfig,
     dns01_providers: Dns01ProviderRegistry,
 ) -> Result<PreparedTls, TlsBuildError> {
-    let mut certificates = BTreeMap::new();
+    let blueprint = TlsBlueprint::compile(config.as_draft())?;
+    prepare_tls_blueprint_with_dns01_providers(&blueprint, dns01_providers)
+}
+
+pub(crate) fn prepare_tls_blueprint(
+    blueprint: &TlsBlueprint,
+) -> Result<PreparedTls, TlsBuildError> {
+    prepare_tls_blueprint_with_dns01_providers(blueprint, Dns01ProviderRegistry::default())
+}
+
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+fn prepare_tls_blueprint_with_dns01_providers(
+    blueprint: &TlsBlueprint,
+    dns01_providers: Dns01ProviderRegistry,
+) -> Result<PreparedTls, TlsBuildError> {
+    let mut active_identities = Vec::with_capacity(blueprint.identities.len());
     let mut acme_reconcilers = Vec::new();
     let mut acme_states = BTreeMap::new();
     let challenge_store = ChallengeStore::default();
     let tls_alpn_challenge_store = tls_alpn::TlsAlpnChallengeStore::default();
     let mut certbot_reconcilers = Vec::new();
     let mut file_reconcilers = Vec::new();
-    for certificate in &config.certificates {
+    for certificate in &blueprint.identities {
         let name = certificate.name.clone();
         let (generation, certbot, direct_files, managed_state, managed_policy, dns_provider) =
             match &certificate.source {
@@ -347,17 +442,12 @@ pub fn prepare_tls_with_dns01_providers(
             };
         let generation = Arc::new(generation);
         let active = Arc::new(ActiveCertificateGeneration::new(generation));
-        if certificates
-            .insert(name.clone(), Arc::clone(&active))
-            .is_some()
-        {
-            return Err(TlsBuildError::DuplicateCertificate { name });
-        }
+        active_identities.push(Arc::clone(&active));
         if let Some((lineage, archive_revision)) = certbot {
             certbot_reconcilers.push(Arc::new(CertbotReconciler::new(
                 lineage,
                 name,
-                certificate.dns_names.clone(),
+                certificate.dns_names.to_vec(),
                 archive_revision,
                 active,
             )));
@@ -368,7 +458,7 @@ pub fn prepare_tls_with_dns01_providers(
         {
             acme_reconcilers.push(Arc::new(AcmeManagedReconciler::new_with_challenge_stores(
                 certificate.name.clone(),
-                certificate.dns_names.clone(),
+                certificate.dns_names.to_vec(),
                 policy,
                 revisions,
                 disk_revision,
@@ -383,7 +473,7 @@ pub fn prepare_tls_with_dns01_providers(
         } else if let Some((certificate_chain_path, private_key_path)) = direct_files {
             file_reconcilers.push(Arc::new(FileReconciler::new(
                 certificate.name.clone(),
-                certificate.dns_names.clone(),
+                certificate.dns_names.to_vec(),
                 certificate_chain_path,
                 private_key_path,
                 active,
@@ -391,37 +481,25 @@ pub fn prepare_tls_with_dns01_providers(
         }
     }
 
-    let mut profiles = BTreeMap::new();
-    for profile in &config.tls_profiles {
-        let mut active_generations = BTreeMap::new();
-        for certificate_name in &profile.certificates {
-            let active_generation = certificates.get(certificate_name).ok_or_else(|| {
-                TlsBuildError::UnknownProfileCertificate {
-                    profile: profile.name.clone(),
-                    certificate: certificate_name.clone(),
-                }
-            })?;
-            if active_generations
-                .insert(certificate_name.clone(), Arc::clone(active_generation))
-                .is_some()
-            {
-                return Err(TlsBuildError::DuplicateProfileCertificate {
-                    profile: profile.name.clone(),
-                    certificate: certificate_name.clone(),
-                });
-            }
-        }
-        let plan = Arc::new(TlsProfilePlan::from_config(
-            profile,
-            active_generations,
-            tls_alpn_challenge_store.clone(),
-        )?);
-        if profiles.insert(profile.name.clone(), plan).is_some() {
-            return Err(TlsBuildError::DuplicateTlsProfile {
-                name: profile.name.clone(),
-            });
-        }
-    }
+    let profiles = blueprint
+        .profiles
+        .iter()
+        .map(|profile| {
+            let plan = Arc::new(TlsProfilePlan::acquire(
+                profile,
+                &active_identities,
+                &blueprint.identities,
+                tls_alpn_challenge_store.clone(),
+            )?);
+            Ok((profile.name.clone(), plan))
+        })
+        .collect::<Result<BTreeMap<_, _>, TlsBuildError>>()?;
+    let certificates = blueprint
+        .identities
+        .iter()
+        .zip(active_identities)
+        .map(|(identity, active)| (identity.name.clone(), active))
+        .collect();
 
     Ok(PreparedTls {
         certificates,

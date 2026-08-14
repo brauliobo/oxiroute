@@ -917,15 +917,16 @@ mod tests {
     use std::net::{SocketAddr, UdpSocket as StdUdpSocket};
 
     use oxiroute_config::{
-        Config, DownstreamTimeoutPolicy, L4Service, Listener, ListenerBind, PassiveHealthPolicy,
-        PassiveObserve, PassiveOnError, Protocol, ProxyProtocolPolicy, ProxyProtocolVersion,
-        UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
+        ConfigDraft, DownstreamTimeoutPolicy, L4Service, Listener, ListenerBind,
+        PassiveHealthPolicy, PassiveObserve, PassiveOnError, Protocol, ProxyProtocolPolicy,
+        ProxyProtocolVersion, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint,
+        UpstreamPool,
     };
     use oxiroute_config_source::ConfigFormat;
 
     use crate::{
         GenerationManager, RuntimeReferenceKind, ServiceKind,
-        config_coordinator::{CanonicalConfigDocument, ConfigRevision},
+        config_coordinator::{AuthoredRevision, EffectiveRevision, ResolvedConfigDocument},
     };
 
     use super::*;
@@ -1114,7 +1115,7 @@ mod tests {
                 Some(8),
             )
             .expect("register UDP listener metrics");
-        let service = match &generation.plan().services[0].kind {
+        let service = match &generation.services()[0].kind {
             ServiceKind::Udp(service) => Arc::clone(service),
             _ => panic!("test service must be UDP"),
         };
@@ -1197,9 +1198,7 @@ mod tests {
         wait_for_udp_passive_failures(&harness.generation, 1).await;
         wait_for_udp_references(&harness.generation, 0).await;
 
-        let endpoint = &harness.generation.plan().pools[0]
-            .health_snapshot()
-            .endpoints[0];
+        let endpoint = &harness.generation.pools()[0].health_snapshot().endpoints[0];
         assert_eq!(endpoint.passive_failure_count, 1);
         assert_eq!(
             endpoint.passive_ejection_reason,
@@ -1268,7 +1267,7 @@ mod tests {
         wait_for_udp_passive_failures(&generation, 1).await;
         wait_for_udp_references(&generation, 0).await;
 
-        let endpoint = &generation.plan().pools[0].health_snapshot().endpoints[0];
+        let endpoint = &generation.pools()[0].health_snapshot().endpoints[0];
         assert_eq!(endpoint.passive_failure_count, 1);
         assert_eq!(
             endpoint.passive_ejection_reason,
@@ -1323,9 +1322,7 @@ mod tests {
             "oversized reply reached the client"
         );
 
-        let endpoint = &harness.generation.plan().pools[0]
-            .health_snapshot()
-            .endpoints[0];
+        let endpoint = &harness.generation.pools()[0].health_snapshot().endpoints[0];
         assert_eq!(endpoint.passive_failure_count, 1);
         assert_eq!(
             endpoint.passive_ejection_reason,
@@ -1379,9 +1376,7 @@ mod tests {
             wait_for_udp_references(&harness.generation, 0).await;
         }
 
-        let ejected = &harness.generation.plan().pools[0]
-            .health_snapshot()
-            .endpoints[0];
+        let ejected = &harness.generation.pools()[0].health_snapshot().endpoints[0];
         assert_eq!(ejected.passive_failure_count, 2);
         assert_eq!(ejected.passive_ejection_count, 1);
         assert!(ejected.passive_ejected);
@@ -1429,12 +1424,7 @@ mod tests {
             .expect("recovered reply timeout")
             .expect("recovered reply receive");
         assert_eq!(&received[..length], b"reply");
-        assert!(
-            !harness.generation.plan().pools[0]
-                .health_snapshot()
-                .endpoints[0]
-                .passive_ejected
-        );
+        assert!(!harness.generation.pools()[0].health_snapshot().endpoints[0].passive_ejected);
         harness.stop();
     }
 
@@ -2147,7 +2137,7 @@ mod tests {
                 Some(max_connections),
             )
             .expect("register UDP listener metrics");
-        let service = match &generation.plan().services[0].kind {
+        let service = match &generation.services()[0].kind {
             ServiceKind::Udp(service) => Arc::clone(service),
             _ => panic!("test service must be UDP"),
         };
@@ -2200,7 +2190,7 @@ mod tests {
         timeout(Duration::from_secs(2), async {
             loop {
                 let failures =
-                    generation.plan().pools[0].health_snapshot().endpoints[0].passive_failure_count;
+                    generation.pools()[0].health_snapshot().endpoints[0].passive_failure_count;
                 if failures >= expected {
                     break;
                 }
@@ -2213,12 +2203,12 @@ mod tests {
 
     #[cfg(unix)]
     fn udp_passive_failure_count(generation: &RuntimeGeneration) -> u64 {
-        generation.plan().pools[0].health_snapshot().endpoints[0].passive_failure_count
+        generation.pools()[0].health_snapshot().endpoints[0].passive_failure_count
     }
 
     #[cfg(unix)]
-    fn udp_config(listener: SocketAddr, upstream: SocketAddr) -> Config {
-        Config {
+    fn udp_config(listener: SocketAddr, upstream: SocketAddr) -> ConfigDraft {
+        ConfigDraft {
             version: 1,
             max_connections: None,
             management: None,
@@ -2265,11 +2255,11 @@ mod tests {
         }
     }
 
-    fn document(config: Config) -> CanonicalConfigDocument {
-        CanonicalConfigDocument {
-            disk_revision: ConfigRevision::from_bytes(b"udp-test"),
-            candidate_revision: ConfigRevision::from_bytes(b"udp-test"),
-            normalized_config: config,
+    fn document(config: ConfigDraft) -> ResolvedConfigDocument {
+        ResolvedConfigDocument {
+            authored_revision: AuthoredRevision::from_bytes(b"udp-test"),
+            effective_revision: EffectiveRevision::from_bytes(b"udp-test"),
+            validated_config: config.validate().expect("valid UDP test config"),
             format: ConfigFormat::Lua,
             compositional: false,
             dependencies: Vec::new(),

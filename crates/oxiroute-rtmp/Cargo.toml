@@ -1,6 +1,6 @@
 [package]
 name = "oxiroute-rtmp"
-description = "RTMP protocol and nginx-rtmp compatibility module for OxiRoute"
+description = "RTMP protocol and runtime module for OxiRoute"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

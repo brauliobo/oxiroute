@@ -2,8 +2,8 @@ use std::thread;
 
 use oxiroute_config::ListenerBind;
 use oxiroute_server::{
-    CertbotWatcherHealth, CertbotWatcherSnapshot, HttpOperationResult, MetricsError,
-    ObservedTransport, RuntimeMetrics, TcpRelayResult, TransportOutcome,
+    AdministrativeState, CertbotWatcherHealth, CertbotWatcherSnapshot, HttpOperationResult,
+    MetricsError, ObservedTransport, RuntimeMetrics, TcpRelayResult, TransportOutcome,
 };
 
 #[test]
@@ -96,6 +96,67 @@ fn connection_limits_reject_excess_sessions_without_hiding_accepts() {
             .snapshot()
             .expect("released snapshot")
             .traffic
+            .active_connections,
+        0
+    );
+}
+
+#[test]
+fn process_limit_rejection_releases_listener_capacity() {
+    let metrics = RuntimeMetrics::with_max_connections(Some(1));
+    let listener = metrics
+        .register_listener("limited-process", "tcp", "127.0.0.1:7003", Some(2))
+        .expect("listener registration");
+    let held = listener.begin_connection().expect("first connection");
+
+    assert!(matches!(
+        listener.begin_connection(),
+        Err(MetricsError::ProcessConnectionLimitReached { limit: 1 })
+    ));
+
+    let snapshot = metrics.snapshot().expect("process-limit snapshot");
+    assert_eq!(snapshot.process.active_connections, 1);
+    assert_eq!(snapshot.process.rejected_connections, 1);
+    assert_eq!(snapshot.listeners[0].accepted_connections, 2);
+    assert_eq!(snapshot.listeners[0].rejected_connections, 1);
+    assert_eq!(snapshot.listeners[0].active_connections, 1);
+
+    drop(held);
+    let released = metrics.snapshot().expect("released process-limit snapshot");
+    assert_eq!(released.process.active_connections, 0);
+    assert_eq!(released.listeners[0].active_connections, 0);
+}
+
+#[test]
+fn control_admission_bypasses_process_drain_but_data_admission_does_not() {
+    let metrics = RuntimeMetrics::with_max_connections(Some(1));
+    metrics.set_process_administrative_state(AdministrativeState::Drain);
+
+    assert!(matches!(
+        metrics.begin_process_connection(),
+        Err(MetricsError::AdministrativeDrain {
+            resource: "process",
+            ..
+        })
+    ));
+    let control = metrics
+        .begin_control_connection()
+        .expect("control admission during process drain");
+    assert_eq!(
+        metrics
+            .snapshot()
+            .expect("control snapshot")
+            .process
+            .active_connections,
+        1
+    );
+
+    drop(control);
+    assert_eq!(
+        metrics
+            .snapshot()
+            .expect("released control snapshot")
+            .process
             .active_connections,
         0
     );
@@ -336,6 +397,24 @@ fn access_records_are_bounded_correlated_and_transport_only() {
     assert!(!json.contains("query"));
     assert!(!json.contains("body"));
     assert!(!json.contains("credential"));
+}
+
+#[test]
+fn traffic_accounting_does_not_emit_a_synthetic_access_record() {
+    let metrics = RuntimeMetrics::new();
+    let listener = metrics
+        .register_listener("http", "http", "127.0.0.1:8080", None)
+        .expect("listener");
+
+    drop(listener.traffic_accounting());
+
+    assert!(
+        metrics
+            .snapshot()
+            .expect("snapshot")
+            .access_records
+            .is_empty()
+    );
 }
 
 #[test]

@@ -46,6 +46,91 @@ pub enum VodSourceDefinition {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum VodValueError {
+    #[error("VOD field `{0}` is invalid")]
+    InvalidField(&'static str),
+}
+
+impl VodLimits {
+    /// # Errors
+    ///
+    /// Returns an error when a VOD session, file, or duration bound is zero.
+    pub fn validate_intrinsic(self) -> Result<(), VodValueError> {
+        if self.max_sessions == 0 || self.max_file_bytes == 0 || self.max_duration.is_zero() {
+            return Err(VodValueError::InvalidField("limits"));
+        }
+        Ok(())
+    }
+}
+
+impl VodSourceDefinition {
+    /// # Errors
+    ///
+    /// Returns an error for an invalid source name, local root value, or HTTP origin syntax.
+    pub fn validate_intrinsic(&self) -> Result<(), VodValueError> {
+        let (name, valid_value) = match self {
+            Self::Local {
+                name,
+                root_directory,
+            } => (name, valid_absolute_path(root_directory)),
+            Self::Http { name, origin } => (name, valid_http_origin_syntax(origin)),
+        };
+        if !valid_source_name(name) {
+            return Err(VodValueError::InvalidField("source.name"));
+        }
+        if !valid_value {
+            return Err(VodValueError::InvalidField("source.value"));
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Local { name, .. } | Self::Http { name, .. } => name,
+        }
+    }
+}
+
+fn valid_absolute_path(path: &Path) -> bool {
+    path.is_absolute()
+        && path.as_os_str().len() <= MAX_VOD_PATH_BYTES
+        && path.components().all(|component| {
+            matches!(component, Component::RootDir | Component::Normal(_))
+                && component.as_os_str().to_str().is_some_and(|value| {
+                    !value
+                        .bytes()
+                        .any(|byte| byte == 0 || byte.is_ascii_control())
+                })
+        })
+}
+
+fn valid_http_origin_syntax(value: &str) -> bool {
+    if value.len() > MAX_VOD_ORIGIN_BYTES {
+        return false;
+    }
+    let Ok(uri) = value.parse::<Uri>() else {
+        return false;
+    };
+    if !matches!(uri.scheme_str(), Some("http" | "https")) {
+        return false;
+    }
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    let has_query = uri
+        .path_and_query()
+        .is_some_and(|path_and_query| path_and_query.query().is_some());
+    !authority.as_str().contains('@')
+        && !has_query
+        && !value.contains('#')
+        && !authority.host().is_empty()
+        && authority.port_u16() != Some(0)
+        && !uri.path().contains("..")
+        && !uri.path().contains('%')
+}
+
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub enum VodError {
     #[error("VOD source is not configured")]
@@ -224,7 +309,7 @@ struct HttpOrigin {
     policy: RtmpOutboundPolicy,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum HttpScheme {
     Http,
     Https,
@@ -232,45 +317,29 @@ enum HttpScheme {
 
 impl HttpOrigin {
     fn parse(value: &str, policy: &RtmpOutboundPolicy) -> Result<Self, VodError> {
-        if value.len() > MAX_VOD_ORIGIN_BYTES {
-            return Err(VodError::OriginDenied);
-        }
-        let uri = value.parse::<Uri>().map_err(|_| VodError::OriginDenied)?;
-        let scheme = match uri.scheme_str() {
-            Some("http") => HttpScheme::Http,
-            Some("https") => HttpScheme::Https,
-            _ => return Err(VodError::OriginDenied),
-        };
-        let authority = uri.authority().ok_or(VodError::OriginDenied)?;
-        let has_query = uri
-            .path_and_query()
-            .is_some_and(|path_and_query| path_and_query.query().is_some());
-        if authority.as_str().contains('@') || has_query || value.contains('#') {
-            return Err(VodError::OriginDenied);
-        }
-        let host = authority.host();
-        let port = authority.port_u16().unwrap_or(match scheme {
-            HttpScheme::Http => 80,
-            HttpScheme::Https => 443,
-        });
-        if host.is_empty() || port == 0 || uri.path().contains("..") || uri.path().contains('%') {
-            return Err(VodError::OriginDenied);
-        }
-        let addresses: Vec<_> = (host, port)
+        let blueprint = HttpOriginBlueprint::parse(value)?;
+        Self::acquire(&blueprint, policy)
+    }
+
+    fn acquire(
+        blueprint: &HttpOriginBlueprint,
+        policy: &RtmpOutboundPolicy,
+    ) -> Result<Self, VodError> {
+        let addresses: Vec<_> = (blueprint.host.as_str(), blueprint.port)
             .to_socket_addrs()
             .map_err(|_| VodError::OriginDenied)?
             .take(33)
             .collect();
         policy
-            .validate_resolved(host, &addresses)
+            .validate_resolved(&blueprint.host, &addresses)
             .map_err(|_| VodError::OriginDenied)?;
         let address = addresses.first().copied().ok_or(VodError::OriginDenied)?;
         Ok(Self {
-            scheme,
-            host: host.to_owned(),
-            port,
+            scheme: blueprint.scheme,
+            host: blueprint.host.clone(),
+            port: blueprint.port,
             address,
-            base_path: uri.path().trim_end_matches('/').to_owned(),
+            base_path: blueprint.base_path.clone(),
             policy: policy.clone(),
         })
     }
@@ -310,6 +379,36 @@ impl HttpOrigin {
             return response.body(maximum);
         }
         Err(VodError::Fetch)
+    }
+}
+
+impl HttpOriginBlueprint {
+    fn parse(value: &str) -> Result<Self, VodError> {
+        if !valid_http_origin_syntax(value) {
+            return Err(VodError::OriginDenied);
+        }
+        let uri = value
+            .parse::<Uri>()
+            .expect("validated HTTP origin syntax must parse");
+        let scheme = match uri.scheme_str() {
+            Some("http") => HttpScheme::Http,
+            Some("https") => HttpScheme::Https,
+            _ => return Err(VodError::OriginDenied),
+        };
+        let authority = uri
+            .authority()
+            .expect("validated HTTP origin syntax has an authority");
+        let host = authority.host();
+        let port = authority.port_u16().unwrap_or(match scheme {
+            HttpScheme::Http => 80,
+            HttpScheme::Https => 443,
+        });
+        Ok(Self {
+            scheme,
+            host: host.to_owned(),
+            port,
+            base_path: uri.path().trim_end_matches('/').to_owned(),
+        })
     }
 }
 
@@ -548,6 +647,29 @@ pub struct VodApplication {
     active_sessions: Arc<AtomicUsize>,
 }
 
+#[derive(Clone, Debug)]
+pub struct VodApplicationBlueprint {
+    service: String,
+    application: String,
+    limits: VodLimits,
+    sources: BTreeMap<String, VodSourceBlueprint>,
+    policy: RtmpOutboundPolicy,
+}
+
+#[derive(Clone, Debug)]
+enum VodSourceBlueprint {
+    Local(std::path::PathBuf),
+    Http(HttpOriginBlueprint),
+}
+
+#[derive(Clone, Debug)]
+struct HttpOriginBlueprint {
+    scheme: HttpScheme,
+    host: String,
+    port: u16,
+    base_path: String,
+}
+
 enum VodSource {
     Local(VodRoot),
     Http(HttpOrigin),
@@ -566,20 +688,69 @@ impl VodApplication {
         sources: impl IntoIterator<Item = VodSourceDefinition>,
         policy: &RtmpOutboundPolicy,
     ) -> Result<Self, VodError> {
+        let blueprint =
+            VodApplicationBlueprint::compile(service, application, limits, sources, policy)?;
+        Self::acquire(&blueprint)
+    }
+
+    /// Opens roots and HTTP clients for a compiled VOD application.
+    ///
+    /// # Errors
+    ///
+    /// Returns an acquisition error when a root or origin cannot be prepared.
+    pub fn acquire(blueprint: &VodApplicationBlueprint) -> Result<Self, VodError> {
         let mut compiled = BTreeMap::new();
-        for source in sources {
-            let (name, source) = match source {
-                VodSourceDefinition::Local {
-                    name,
-                    root_directory,
-                } => (name, VodSource::Local(VodRoot::open(&root_directory)?)),
-                VodSourceDefinition::Http { name, origin } => {
-                    (name, VodSource::Http(HttpOrigin::parse(&origin, policy)?))
+        for (name, source) in &blueprint.sources {
+            let source = match source {
+                VodSourceBlueprint::Local(root_directory) => {
+                    VodSource::Local(VodRoot::open(root_directory)?)
+                }
+                VodSourceBlueprint::Http(origin) => {
+                    VodSource::Http(HttpOrigin::acquire(origin, &blueprint.policy)?)
                 }
             };
+            compiled.insert(name.clone(), source);
+        }
+        Ok(Self {
+            service: blueprint.service.clone(),
+            application: blueprint.application.clone(),
+            limits: blueprint.limits,
+            sources: compiled,
+            active_sessions: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+}
+
+impl VodApplicationBlueprint {
+    /// Compiles immutable VOD source and limit decisions without opening resources.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid limits, source identities, paths, or origin syntax.
+    pub fn compile(
+        service: impl Into<String>,
+        application: impl Into<String>,
+        limits: VodLimits,
+        sources: impl IntoIterator<Item = VodSourceDefinition>,
+        policy: &RtmpOutboundPolicy,
+    ) -> Result<Self, VodError> {
+        let mut compiled = BTreeMap::new();
+        for source in sources {
+            source
+                .validate_intrinsic()
+                .map_err(|_| VodError::InvalidPath)?;
+            let name = source.name().to_owned();
             if !valid_source_name(&name) {
                 return Err(VodError::InvalidPath);
             }
+            let source = match source {
+                VodSourceDefinition::Local { root_directory, .. } => {
+                    VodSourceBlueprint::Local(root_directory)
+                }
+                VodSourceDefinition::Http { origin, .. } => {
+                    VodSourceBlueprint::Http(HttpOriginBlueprint::parse(&origin)?)
+                }
+            };
             if compiled.insert(name, source).is_some() {
                 return Err(VodError::SourceNotFound);
             }
@@ -592,10 +763,12 @@ impl VodApplication {
             application: application.into(),
             limits,
             sources: compiled,
-            active_sessions: Arc::new(AtomicUsize::new(0)),
+            policy: policy.clone(),
         })
     }
+}
 
+impl VodApplication {
     #[must_use]
     pub fn service(&self) -> &str {
         &self.service

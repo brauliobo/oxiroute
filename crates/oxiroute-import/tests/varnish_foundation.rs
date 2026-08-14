@@ -5,10 +5,7 @@ pub use source::{ByteRange, SourceFile, SourceId, Span};
 #[path = "../src/candidate.rs"]
 #[allow(dead_code)]
 mod candidate;
-pub use candidate::{
-    CanonicalCandidate, CanonicalDraft, CanonicalFinalization, CanonicalProvenance,
-    SourceImportMetadata,
-};
+pub use candidate::{CanonicalCandidate, CanonicalProvenance, SourceImportMetadata};
 
 #[path = "../src/diagnostic.rs"]
 #[allow(dead_code)]
@@ -460,7 +457,11 @@ fn exact_static_cache_subset_lowers_to_a_finalized_candidate() {
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     assert_eq!(report.lowering, LoweringStatus::Lowered);
-    let config = report.candidate.config().expect("finalized candidate");
+    let config = report
+        .candidate
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .expect("finalized candidate");
     assert_eq!(config.listeners.len(), 1);
     assert_eq!(config.upstream_pools.len(), 1);
     assert_eq!(config.http_services.len(), 1);
@@ -503,7 +504,11 @@ fn exact_http_probes_lower_named_and_default_health_checks() {
     );
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.candidate.config().expect("health probe candidate");
+    let config = report
+        .candidate
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
+        .expect("health probe candidate");
     let shared = config
         .upstream_pools
         .iter()
@@ -696,7 +701,8 @@ fn exact_legacy_round_robin_director_lowers_to_one_upstream_pool() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let config = report
         .candidate
-        .config()
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::as_draft)
         .expect("finalized director candidate");
     let pool = config
         .upstream_pools
@@ -729,7 +735,7 @@ fn exact_file_storage_lowers_to_a_disk_cache_store() {
     assert!(matches!(
         report
             .candidate
-            .config()
+            .validated().map(oxiroute_config::ValidatedConfig::as_draft)
 
             .expect("disk candidate")
             .cache_stores[0],

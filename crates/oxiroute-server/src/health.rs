@@ -133,6 +133,75 @@ pub(crate) struct HealthGroup {
     targets: Vec<HealthTarget>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct HealthCheckBlueprint {
+    kind: HealthCheckKindBlueprint,
+    down_interval: Duration,
+    fast_interval: Duration,
+    healthy_threshold: u16,
+    interval: Duration,
+    pub(crate) startup: oxiroute_config::HealthStartup,
+    timeout: Duration,
+    unhealthy_threshold: u16,
+}
+
+#[derive(Clone, Debug)]
+enum HealthCheckKindBlueprint {
+    Tcp,
+    Http {
+        host: String,
+        request: Box<RequestHeader>,
+        expected_status: u16,
+    },
+}
+
+impl HealthCheckBlueprint {
+    pub(crate) fn compile(
+        name: &str,
+        config: &HealthCheckConfig,
+    ) -> Result<Self, HealthBuildError> {
+        validate_health_check_config(name, config)?;
+        let kind = match config.kind {
+            HealthCheckType::Tcp => HealthCheckKindBlueprint::Tcp,
+            HealthCheckType::Http => {
+                let host = config.host.clone().unwrap_or_default();
+                let path = config
+                    .path
+                    .as_deref()
+                    .ok_or(HealthBuildError::MissingPath)?;
+                let version = match config.http_version.unwrap_or(HealthHttpVersion::Http11) {
+                    HealthHttpVersion::Http10 => http::Version::HTTP_10,
+                    HealthHttpVersion::Http11 => http::Version::HTTP_11,
+                };
+                let mut request = RequestHeader::build("GET", path.as_bytes(), Some(1))?;
+                request.set_version(version);
+                if !host.is_empty() {
+                    request.append_header("Host", &host)?;
+                }
+                HealthCheckKindBlueprint::Http {
+                    host,
+                    request: Box::new(request),
+                    expected_status: config.expected_status.unwrap_or(200),
+                }
+            }
+        };
+        Ok(Self {
+            kind,
+            down_interval: Duration::from_millis(
+                config.down_interval_ms.unwrap_or(config.interval_ms),
+            ),
+            fast_interval: Duration::from_millis(
+                config.fast_interval_ms.unwrap_or(config.interval_ms),
+            ),
+            healthy_threshold: config.healthy_threshold,
+            interval: Duration::from_millis(config.interval_ms),
+            startup: config.startup,
+            timeout: Duration::from_millis(config.timeout_ms),
+            unhealthy_threshold: config.unhealthy_threshold,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct HealthSupervisor {
     groups: Vec<HealthGroup>,
@@ -214,38 +283,27 @@ async fn run_targets(targets: Vec<HealthTarget>, semaphore: Arc<Semaphore>) {
         .await;
 }
 
-pub(crate) fn compile_health_group(
+pub(crate) fn acquire_health_group(
     name: &str,
     pool: &Arc<RoundRobinPool>,
-    config: &HealthCheckConfig,
-) -> Result<HealthGroup, HealthBuildError> {
-    validate_health_check_config(name, config)?;
-    let timeout = Duration::from_millis(config.timeout_ms);
-    let check: Arc<dyn HealthCheck + Send + Sync> = match config.kind {
-        HealthCheckType::Tcp => {
+    blueprint: &HealthCheckBlueprint,
+) -> HealthGroup {
+    let timeout = blueprint.timeout;
+    let check: Arc<dyn HealthCheck + Send + Sync> = match &blueprint.kind {
+        HealthCheckKindBlueprint::Tcp => {
             let mut check = TcpHealthCheck::default();
             check.peer_template.options.connection_timeout = Some(timeout);
             check.peer_template.options.total_connection_timeout = Some(timeout);
             Arc::new(check)
         }
-        HealthCheckType::Http => {
-            let host = config.host.as_deref();
-            let path = config
-                .path
-                .as_deref()
-                .ok_or(HealthBuildError::MissingPath)?;
-            let version = match config.http_version.unwrap_or(HealthHttpVersion::Http11) {
-                HealthHttpVersion::Http10 => http::Version::HTTP_10,
-                HealthHttpVersion::Http11 => http::Version::HTTP_11,
-            };
-            let mut request = RequestHeader::build("GET", path.as_bytes(), Some(1))?;
-            request.set_version(version);
-            if let Some(host) = host {
-                request.append_header("Host", host)?;
-            }
-            let mut check = HttpHealthCheck::new(host.unwrap_or_default(), false);
-            check.req = request;
-            let expected_status = config.expected_status.unwrap_or(200);
+        HealthCheckKindBlueprint::Http {
+            host,
+            request,
+            expected_status,
+        } => {
+            let mut check = HttpHealthCheck::new(host, false);
+            check.req = (**request).clone();
+            let expected_status = *expected_status;
             check.validator = Some(Box::new(move |response| {
                 let actual = response.status.as_u16();
                 if actual == expected_status {
@@ -270,25 +328,21 @@ pub(crate) fn compile_health_group(
         .endpoints()
         .map(|(endpoint_index, endpoint)| HealthTarget {
             check: Arc::clone(&check),
-            down_interval: Duration::from_millis(
-                config.down_interval_ms.unwrap_or(config.interval_ms),
-            ),
+            down_interval: blueprint.down_interval,
             endpoint,
             endpoint_index,
-            fast_interval: Duration::from_millis(
-                config.fast_interval_ms.unwrap_or(config.interval_ms),
-            ),
-            healthy_threshold: config.healthy_threshold,
-            interval: Duration::from_millis(config.interval_ms),
+            fast_interval: blueprint.fast_interval,
+            healthy_threshold: blueprint.healthy_threshold,
+            interval: blueprint.interval,
             pool: Arc::clone(pool),
             pool_name: name.to_owned(),
             probe_lock: Arc::new(Mutex::new(())),
             timeout,
-            unhealthy_threshold: config.unhealthy_threshold,
+            unhealthy_threshold: blueprint.unhealthy_threshold,
         })
         .collect();
 
-    Ok(HealthGroup { targets })
+    HealthGroup { targets }
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -150,7 +150,7 @@ pub fn parse_uci_document(source: &[u8]) -> Result<UciDocument, ConfigSourceErro
 ///
 /// Returns an error for anonymous or duplicate sections, duplicate options, option/list conflicts,
 /// strings that exceed their bound, or output that exceeds its bound.
-pub fn render_uci_document(document: &UciDocument) -> Result<String, ConfigSourceError> {
+pub(crate) fn render_uci_document(document: &UciDocument) -> Result<String, ConfigSourceError> {
     let mut output = BoundedOutput::new();
     let mut names = HashSet::new();
     for (index, section) in document.sections.iter().enumerate() {

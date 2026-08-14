@@ -113,6 +113,7 @@ async fn daemon_forwards_h3_http_absolute_form_to_a_tcp_origin_and_releases_udp_
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });
 
+    let config = config.validate().expect("valid forward H3 config");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint(&fixture_support::fixture("ca-a.pem"), H3_ALPN)
         .expect("H3 client endpoint");
@@ -356,6 +357,7 @@ async fn h3_cache_serves_a_second_absolute_form_get_without_origin_contact() {
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });
 
+    let config = config.validate().expect("valid forward H3 config");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint(&fixture_support::fixture("ca-a.pem"), H3_ALPN)
         .expect("cache H3 client endpoint");

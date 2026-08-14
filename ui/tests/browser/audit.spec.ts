@@ -51,7 +51,7 @@ test.describe('audit workspace browser gates', () => {
         auditUrls.push(url.toString())
         return json(url.searchParams.get('after') === '12' ? next : first)
       }
-      if (path === '/api/v1/events/stream') {
+      if (path === '/api/v2/events/stream') {
         eventStreamRequests += 1
         return shutdownStream()
       }

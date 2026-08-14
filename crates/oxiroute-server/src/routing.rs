@@ -505,6 +505,12 @@ impl TryFrom<&UpstreamEndpoint> for RuntimeEndpoint {
     }
 }
 
+impl RuntimeEndpoint {
+    pub(crate) fn compile(endpoint: &UpstreamEndpoint) -> Result<Self, PoolError> {
+        Self::try_from(endpoint)
+    }
+}
+
 impl fmt::Display for RuntimeEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -650,7 +656,7 @@ impl PassiveFailurePolicy {
         self.mark_down || matches!(self.on_error, PassiveOnError::MarkDown)
     }
 
-    fn validate(self) -> Result<(), PoolError> {
+    pub(crate) fn validate(self) -> Result<(), PoolError> {
         if self.consecutive_failure_threshold == 0
             || self.consecutive_failure_threshold > MAX_PASSIVE_FAILURE_THRESHOLD
         {
@@ -705,6 +711,31 @@ impl Default for PassiveFailurePolicy {
             mark_up: false,
             recovery_threshold: 1,
         }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct PoolConstructionBlueprint {
+    algorithm: UpstreamAlgorithm,
+    weights: Box<[u16]>,
+    weighted_schedule: Box<[usize]>,
+}
+
+impl PoolConstructionBlueprint {
+    pub(crate) fn compile(
+        algorithm: &UpstreamAlgorithm,
+        endpoint_count: usize,
+    ) -> Result<Self, PoolError> {
+        if endpoint_count == 0 {
+            return Err(PoolError::Empty);
+        }
+        let weights = effective_weights(algorithm, endpoint_count)?.into_boxed_slice();
+        let weighted_schedule = build_weighted_schedule(algorithm, &weights)?;
+        Ok(Self {
+            algorithm: algorithm.clone(),
+            weights,
+            weighted_schedule,
+        })
     }
 }
 
@@ -1819,6 +1850,39 @@ fn build_weighted_schedule(
 }
 
 impl EndpointPool {
+    pub(crate) fn acquire_compiled(
+        name: String,
+        servers: impl IntoIterator<Item = RuntimeServer>,
+        startup: Option<HealthStartup>,
+        queue_timeout: Option<Duration>,
+        passive_policy: PassiveFailurePolicy,
+        blueprint: &PoolConstructionBlueprint,
+    ) -> Self {
+        let endpoints = servers
+            .into_iter()
+            .zip(blueprint.weights.iter().copied())
+            .map(|(server, weight)| Arc::new(PoolEndpoint::new(server, startup, weight)))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let queue = Arc::new(PoolQueue::new(queue_timeout.is_some()));
+        let health = Arc::new(PoolHealthState::new(
+            name.clone(),
+            Arc::clone(&queue),
+            passive_policy,
+        ));
+        Self {
+            algorithm: blueprint.algorithm.clone(),
+            name,
+            endpoints,
+            weighted_schedule: blueprint.weighted_schedule.clone(),
+            health,
+            selection: Mutex::new(SelectionState::default()),
+            queue,
+            queue_timeout,
+            unavailable_selections: AtomicU64::new(0),
+        }
+    }
+
     /// Creates an unchecked round-robin pool from socket addresses.
     ///
     /// # Errors
@@ -1917,6 +1981,7 @@ impl EndpointPool {
         )
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn new_named_servers_with_policy(
         name: String,
         servers: impl IntoIterator<Item = RuntimeServer>,
@@ -1927,38 +1992,18 @@ impl EndpointPool {
     ) -> Result<Self, PoolError> {
         passive_policy.validate()?;
         let servers = servers.into_iter().collect::<Vec<_>>();
-        let weights = effective_weights(&algorithm, servers.len())?;
-        let weighted_schedule = build_weighted_schedule(&algorithm, &weights)?;
-        let endpoints = servers
-            .into_iter()
-            .zip(weights)
-            .map(|server| {
-                let (server, weight) = server;
-                server.endpoint.preflight()?;
-                Ok(Arc::new(PoolEndpoint::new(server, startup, weight)))
-            })
-            .collect::<Result<Vec<_>, PoolError>>()?
-            .into_boxed_slice();
-        if endpoints.is_empty() {
-            return Err(PoolError::Empty);
+        for server in &servers {
+            server.endpoint.preflight()?;
         }
-        let queue = Arc::new(PoolQueue::new(queue_timeout.is_some()));
-        let health = Arc::new(PoolHealthState::new(
-            name.clone(),
-            Arc::clone(&queue),
-            passive_policy,
-        ));
-        Ok(Self {
-            algorithm,
+        let blueprint = PoolConstructionBlueprint::compile(&algorithm, servers.len())?;
+        Ok(Self::acquire_compiled(
             name,
-            endpoints,
-            weighted_schedule,
-            health,
-            selection: Mutex::new(SelectionState::default()),
-            queue,
+            servers,
+            startup,
             queue_timeout,
-            unavailable_selections: AtomicU64::new(0),
-        })
+            passive_policy,
+            &blueprint,
+        ))
     }
 
     fn select_server_excluding(&self, excluded: &[String]) -> SelectionAttempt {
@@ -2347,13 +2392,6 @@ impl EndpointPool {
             .iter()
             .enumerate()
             .map(|(index, server)| (index, server.endpoint.clone()))
-    }
-
-    pub(crate) fn servers(&self) -> impl Iterator<Item = (usize, String, RuntimeEndpoint)> + '_ {
-        self.endpoints
-            .iter()
-            .enumerate()
-            .map(|(index, server)| (index, server.name.clone(), server.endpoint.clone()))
     }
 
     pub(crate) fn record_health(

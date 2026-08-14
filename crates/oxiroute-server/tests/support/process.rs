@@ -11,11 +11,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_config::{Config, render_lua};
+use oxiroute_config::ValidatedConfig;
 use tempfile::TempDir;
 use tokio::{net::TcpStream, time::sleep};
 
 use crate::fixture_support::write_file_with_mode;
+
+fn render_lua(config: &ValidatedConfig) -> Result<String, String> {
+    oxiroute_config_source::render_config(oxiroute_config_source::ConfigFormat::Lua, config)
+        .map_err(|error| error.to_string())
+}
 
 pub const PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_DELAY: Duration = Duration::from_millis(10);
@@ -54,7 +59,7 @@ pub struct ServerProcess {
 }
 
 impl ServerProcess {
-    pub fn start(config: &Config, token: Option<&str>) -> Self {
+    pub fn start(config: &ValidatedConfig, token: Option<&str>) -> Self {
         let directory = TempDir::new().expect("server process directory");
         let config_path = directory.path().join("oxiroute.lua");
         write_config(&config_path, config);
@@ -168,7 +173,7 @@ impl Drop for ServerProcess {
     }
 }
 
-pub fn write_config(path: &Path, config: &Config) {
+pub fn write_config(path: &Path, config: &ValidatedConfig) {
     let temporary = path.with_extension("tmp");
     fs::write(
         &temporary,

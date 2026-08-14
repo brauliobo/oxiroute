@@ -41,7 +41,7 @@ test.describe('configuration workspace browser gates', () => {
         validationRequests += 1
         return json({ error: { code: 'unauthorized', message: 'expired browser token' } }, 401)
       }
-      if (path === '/api/v1/events/stream') return shutdownStream()
+      if (path === '/api/v2/events/stream') return shutdownStream()
       return undefined
     })
 
@@ -77,7 +77,7 @@ test.describe('configuration workspace browser gates', () => {
         saves.push({ revision: request.headers()['if-config-revision'], config: body.config })
         return json(configSaveResponse())
       }
-      if (path === '/api/v1/events/stream') return shutdownStream()
+      if (path === '/api/v2/events/stream') return shutdownStream()
       return undefined
     })
 
@@ -113,7 +113,7 @@ test.describe('configuration workspace browser gates', () => {
         saved = requestBody<{ config: CanonicalConfig }>(request).config
         return json(configSaveResponse())
       }
-      if (path === '/api/v1/events/stream') return shutdownStream()
+      if (path === '/api/v2/events/stream') return shutdownStream()
       return undefined
     })
 
@@ -147,7 +147,7 @@ test.describe('configuration workspace browser gates', () => {
         validated.push(body.config)
         return json(configValidation(body.config))
       }
-      if (path === '/api/v1/events/stream') return shutdownStream()
+      if (path === '/api/v2/events/stream') return shutdownStream()
       return undefined
     })
 
@@ -193,7 +193,7 @@ test.describe('configuration workspace browser gates', () => {
         validated = body.config
         return json(configValidation(body.config))
       }
-      if (path === '/api/v1/events/stream') return shutdownStream()
+      if (path === '/api/v2/events/stream') return shutdownStream()
       return undefined
     })
 
@@ -244,7 +244,7 @@ test.describe('configuration workspace browser gates', () => {
           diagnostics: [],
         }, 409)
       }
-      if (path === '/api/v1/events/stream') return shutdownStream()
+      if (path === '/api/v2/events/stream') return shutdownStream()
       return undefined
     })
 
@@ -279,7 +279,7 @@ test.describe('configuration workspace browser gates', () => {
         configReads += 1
         return json(configReads === 1 ? initial : updated)
       }
-      if (path === '/api/v1/events/stream') {
+      if (path === '/api/v2/events/stream') {
         streamRequests += 1
         streamHeaders.push(request.headers())
         if (streamRequests === 1) {

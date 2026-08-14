@@ -91,6 +91,16 @@ Pingora is configured with a 3-second connection grace period followed by a 2-se
 shutdown deadline. SIGTERM requests graceful shutdown; packaging uses a 15-second systemd stop
 deadline. Tests send SIGTERM and reserve force-kill only as a bounded test cleanup fallback.
 
+Automatic ACME cancellation is cooperative. DNS resolution, connect, TLS handshake, socket I/O,
+and polling/sleep loops check cancellation within their configured scheduler interval (at most 50
+ms for network and poll waits). Local filesystem/state/fsync and OpenSSL calls, and arbitrary
+in-process DNS-provider calls, cannot be preempted; they check before/after when control returns and
+providers receive the operation context for cooperative checks. The generation process still applies
+the existing five-second orchestration deadline and may detach its generation thread. If a local or
+provider call remains blocked, ACME authority and resources are released eventually after it returns;
+ACME creates no hidden detached helper. Cancellation before confirmed DNS cleanup leaves the durable
+pending journal for recovery, while confirmed cleanup removes it exactly once.
+
 ## Readiness
 
 `GET /ready` returns 200 only when an active non-degraded generation exists and all configured
@@ -100,11 +110,13 @@ component states, certificate expiry data, and audit component degradation. Proc
 is healthy on Linux x86_64 and aarch64; other platforms keep status available with explicit
 `unsupported` process/host component states and null unavailable samples.
 
-Every recognized `/api/v1` route, including monitoring, topology, RTMP, listener/pool/server,
+Every recognized `/api/v1` or `/api/v2` route, including monitoring, topology, RTMP, listener/pool/server,
 generation, TLS, process, configuration, audit, and event routes, requires exactly one management Bearer
 token. The only public recognized API probes are exact `GET /ready` and `GET /metrics`. Event
-operations use bounded cursor polling at `/api/v1/events` or authenticated bounded SSE at
-`/api/v1/events/stream` (also negotiated on `/api/v1/events` with `Accept: text/event-stream`).
+operations preserve their shipped v1 polling/SSE contract at `/api/v1/events` and
+`/api/v1/events/stream`. The corrected contract is at `/api/v2/events` and
+`/api/v2/events/stream`; both versions also negotiate SSE on their page path with
+`Accept: text/event-stream`.
 There is no unbounded event queue. Durable audit history is separate from the event ring and is
 available through authenticated `/api/v1/audit` and `/api/v1/audit/status`.
 
@@ -133,5 +145,11 @@ applies the saved candidate when the process is restarted. Unix listeners retain
 `<socket>.oxiroute.lock` ownership marker so abnormal termination can safely reclaim unchanged
 stale sockets that reject connection attempts. Permission-denied sockets fail closed because their
 liveness cannot be proven.
+In supervised mode, any incompatible listener/control-listener descriptor topology also produces
+`saved_restart_required`; this includes identity, order, role, transport kind, bind, Unix mode,
+protocol, or count changes across traffic, management, statistics, statistics-page, UDP, and HTTP/3
+listeners. The `I_RESTART_REQUIRED` diagnostic uses `/config/listeners` and explains whether the
+cause is the direct Unix mode case or supervised topology, while API status/outcome fields and
+audit/event behavior remain unchanged.
 The socket directory must be owned by the effective service user or be sticky, and no path ancestor
 may be group/world writable unless it has the sticky bit.

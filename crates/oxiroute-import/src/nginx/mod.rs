@@ -8,6 +8,7 @@ mod lower;
 mod parser;
 #[cfg(unix)]
 mod root;
+mod rtmp_directives;
 #[cfg(unix)]
 mod rtmp_lower;
 #[cfg(unix)]
@@ -37,6 +38,11 @@ pub use root::{
     NginxHostTimezoneOverlay, NginxImportOptions, NginxImportReport, NginxRecordingRootOverlay,
     NginxUpstreamTlsOverlay, RootOccurrenceDecision, RootOccurrenceDisposition, import_root,
     import_root_with_options,
+};
+pub use rtmp_directives::{
+    DirectiveCompatibilityReport, DirectiveContext, DirectiveError, DirectiveForm, DirectiveSpec,
+    DirectiveStatus, DirectiveStatusCounts, RelayKind, RuntimeSupport, ValueKind,
+    directive_compatibility_report, directive_specs, validate_directive,
 };
 #[cfg(unix)]
 pub use rtmp_lower::{

@@ -27,6 +27,8 @@ const VIDEO_PID: u16 = 0x0101;
 const AUDIO_PID: u16 = 0x0102;
 const PMT_PID: u16 = 0x1000;
 const MAX_PLAYLIST_SEGMENTS: usize = 512;
+const MAX_HLS_VARIANT_NAME_BYTES: usize = 128;
+const MAX_HLS_KEY_URL_PREFIX_BYTES: usize = 512;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HlsFragmentNaming {
@@ -48,6 +50,74 @@ pub struct HlsVariant {
 pub struct HlsKeyConfig {
     pub rotation_segments: usize,
     pub url_prefix: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum HlsValueError {
+    #[error("HLS field `{0}` is invalid")]
+    InvalidField(&'static str),
+}
+
+impl HlsVariant {
+    /// # Errors
+    ///
+    /// Returns an error for an invalid variant identity, media bound, or codecs value.
+    pub fn validate_intrinsic(&self) -> Result<(), HlsValueError> {
+        if self.name.is_empty()
+            || self.name.len() > MAX_HLS_VARIANT_NAME_BYTES
+            || !self
+                .name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            return Err(HlsValueError::InvalidField("variant.name"));
+        }
+        if self.bandwidth == 0
+            || self.bandwidth > 9_007_199_254_740_991
+            || self.width.is_some() != self.height.is_some()
+            || self.width == Some(0)
+            || self.height == Some(0)
+        {
+            return Err(HlsValueError::InvalidField("variant.bounds"));
+        }
+        if self.codecs.as_ref().is_some_and(|value| {
+            value.is_empty()
+                || value.len() > 128
+                || !value.is_ascii()
+                || value
+                    .bytes()
+                    .any(|byte| byte.is_ascii_control() || matches!(byte, b'"' | b'\\'))
+        }) {
+            return Err(HlsValueError::InvalidField("variant.codecs"));
+        }
+        Ok(())
+    }
+}
+
+impl HlsKeyConfig {
+    /// # Errors
+    ///
+    /// Returns an error for a zero rotation interval or invalid URL prefix.
+    pub fn validate_intrinsic(&self) -> Result<(), HlsValueError> {
+        if self.rotation_segments == 0 {
+            return Err(HlsValueError::InvalidField("keys.rotation_segments"));
+        }
+        if self.url_prefix.len() > MAX_HLS_KEY_URL_PREFIX_BYTES
+            || !self.url_prefix.is_ascii()
+            || self.url_prefix.bytes().any(|byte| {
+                byte.is_ascii_control() || matches!(byte, b'?' | b'#' | b'\\' | b'"' | b'%' | b' ')
+            })
+            || !self.url_prefix.is_empty()
+                && (!self.url_prefix.ends_with('/')
+                    || self.url_prefix.starts_with('/')
+                    || self.url_prefix[..self.url_prefix.len() - 1]
+                        .split('/')
+                        .any(|component| component.is_empty() || matches!(component, "." | "..")))
+        {
+            return Err(HlsValueError::InvalidField("keys.url_prefix"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]

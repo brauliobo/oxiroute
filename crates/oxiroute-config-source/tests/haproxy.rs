@@ -11,7 +11,7 @@ fn native_haproxy_reference_preserves_http_check_send_policy() {
 
     let resolved = resolve_source(Path::new("health-check.hocon"), source.as_bytes())
         .expect("representable HAProxy health-check root");
-    let health = resolved.config.upstream_pools[0]
+    let health = resolved.config.as_draft().upstream_pools[0]
         .health_check
         .as_ref()
         .expect("native health check");

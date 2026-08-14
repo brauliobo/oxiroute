@@ -44,8 +44,7 @@ use openssl::{
     },
 };
 use oxiroute_config::{
-    AlpnProtocol, SelfSignedKeyType, TlsClientAuthMode, TlsPolicy, TlsProfile, TlsSessionCache,
-    TlsVersion,
+    AlpnProtocol, SelfSignedKeyType, TlsClientAuthMode, TlsPolicy, TlsProfile, TlsVersion,
 };
 use pingora::{
     listeners::{ALPN, TlsAccept, tls::TlsSettings},
@@ -781,10 +780,52 @@ struct ClientAuthPlan {
     h3_client_verifier: Option<Arc<dyn rustls::server::danger::ClientCertVerifier>>,
 }
 
-impl ClientAuthPlan {
-    fn from_config(profile: &TlsProfile) -> Result<Self, TlsBuildError> {
-        let client_auth = &profile.policy.client_auth;
-        let allowed_dns_names = client_auth
+#[derive(Clone)]
+pub(crate) struct CompiledTlsProfilePolicy {
+    min_version: TlsVersion,
+    alpn: ALPN,
+    cipher_list: Option<String>,
+    dh_parameters_path: Option<std::path::PathBuf>,
+    client_auth: CompiledClientAuthPolicy,
+    session_cache: Option<CompiledSessionCachePolicy>,
+    session_timeout: Option<i32>,
+    session_tickets: bool,
+    prefer_server_ciphers: bool,
+    selector: CompiledCertificateSelector,
+    source_policy: TlsPolicy,
+}
+
+#[derive(Clone)]
+struct CompiledClientAuthPolicy {
+    mode: TlsClientAuthMode,
+    ca_certificate_path: Option<std::path::PathBuf>,
+    allowed_dns_names: Arc<[CertificateIdentity]>,
+}
+
+#[derive(Clone)]
+struct CompiledSessionCachePolicy {
+    capacity: i32,
+    id_context: [u8; 32],
+}
+
+#[derive(Clone)]
+struct CompiledCertificateSelector {
+    exact_names: BTreeMap<String, usize>,
+    wildcard_suffixes: BTreeMap<String, usize>,
+}
+
+impl CompiledTlsProfilePolicy {
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn compile(
+        profile: &TlsProfile,
+        identities: &[super::TlsIdentityBlueprint],
+        certificate_indices: &[usize],
+        _default_certificate_index: usize,
+    ) -> Result<Self, TlsBuildError> {
+        let alpn = compile_alpn(&profile.name, &profile.alpn)?;
+        let allowed_dns_names = profile
+            .policy
+            .client_auth
             .allowed_dns_names
             .iter()
             .map(|dns_name| {
@@ -794,57 +835,138 @@ impl ClientAuthPlan {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-
-        let (ca_certificates, rustls_roots) = match client_auth.mode {
-            TlsClientAuthMode::Disabled => {
-                if client_auth.ca_certificate_path.is_some() || !allowed_dns_names.is_empty() {
-                    return Err(TlsBuildError::InvalidTlsClientAuthPolicy {
+        let client_auth = &profile.policy.client_auth;
+        match client_auth.mode {
+            TlsClientAuthMode::Disabled
+                if client_auth.ca_certificate_path.is_some() || !allowed_dns_names.is_empty() =>
+            {
+                return Err(TlsBuildError::InvalidTlsClientAuthPolicy {
+                    profile: profile.name.clone(),
+                    detail: "disabled client authentication cannot configure a CA or identities",
+                });
+            }
+            TlsClientAuthMode::Optional | TlsClientAuthMode::Required
+                if client_auth.ca_certificate_path.is_none() =>
+            {
+                return Err(TlsBuildError::InvalidTlsClientAuthPolicy {
+                    profile: profile.name.clone(),
+                    detail: "enabled client authentication requires a CA certificate path",
+                });
+            }
+            _ => {}
+        }
+        let session_cache = profile
+            .policy
+            .session_cache
+            .as_ref()
+            .map(|cache| {
+                Ok(CompiledSessionCachePolicy {
+                    capacity: i32::try_from(cache.size_bytes / ESTIMATED_SESSION_BYTES).map_err(
+                        |_| TlsBuildError::InvalidTlsProfilePolicy {
+                            profile: profile.name.clone(),
+                        },
+                    )?,
+                    id_context: sha256(
+                        format!("oxiroute-session-cache:{}:{}", profile.name, cache.name)
+                            .as_bytes(),
+                    ),
+                })
+            })
+            .transpose()?;
+        let session_timeout = profile
+            .policy
+            .session_timeout_seconds
+            .map(|timeout| {
+                i32::try_from(timeout).map_err(|_| TlsBuildError::InvalidTlsProfilePolicy {
+                    profile: profile.name.clone(),
+                })
+            })
+            .transpose()?;
+        let mut exact_names = BTreeMap::new();
+        let mut wildcard_suffixes = BTreeMap::new();
+        for &index in certificate_indices {
+            for dns_name in &identities[index].dns_names {
+                if dns_name.parse::<IpAddr>().is_ok() {
+                    continue;
+                }
+                let (names, name) = if let Some(suffix) = dns_name.strip_prefix("*.") {
+                    (&mut wildcard_suffixes, suffix)
+                } else {
+                    (&mut exact_names, dns_name.as_str())
+                };
+                if let Some(first_index) = names.insert(name.into(), index) {
+                    return Err(TlsBuildError::OverlappingProfileDnsName {
                         profile: profile.name.clone(),
-                        detail: "disabled client authentication cannot configure a CA or identities",
+                        dns_name: dns_name.clone(),
+                        first_certificate: identities[first_index].name.clone(),
+                        second_certificate: identities[index].name.clone(),
                     });
                 }
-                (
-                    Arc::from(Vec::<X509>::new().into_boxed_slice()),
-                    Arc::new(rustls::RootCertStore::empty()),
-                )
             }
-            TlsClientAuthMode::Optional | TlsClientAuthMode::Required => {
-                let path = client_auth.ca_certificate_path.as_deref().ok_or_else(|| {
-                    TlsBuildError::InvalidTlsClientAuthPolicy {
-                        profile: profile.name.clone(),
-                        detail: "enabled client authentication requires a CA certificate path",
-                    }
-                })?;
-                load_client_ca_bundle(&profile.name, path)?
-            }
-        };
+        }
+        Ok(Self {
+            min_version: profile.min_version,
+            alpn,
+            cipher_list: profile.policy.cipher_list.clone(),
+            dh_parameters_path: profile.policy.dh_parameters_path.clone(),
+            client_auth: CompiledClientAuthPolicy {
+                mode: client_auth.mode,
+                ca_certificate_path: client_auth.ca_certificate_path.clone(),
+                allowed_dns_names: allowed_dns_names.into(),
+            },
+            session_cache,
+            session_timeout,
+            session_tickets: profile.policy.session_tickets,
+            prefer_server_ciphers: profile.policy.prefer_server_ciphers,
+            selector: CompiledCertificateSelector {
+                exact_names,
+                wildcard_suffixes,
+            },
+            source_policy: profile.policy.clone(),
+        })
+    }
+}
 
-        let allowed_dns_names = Arc::from(allowed_dns_names.into_boxed_slice());
-        let h3_client_verifier = match client_auth.mode {
+impl ClientAuthPlan {
+    fn acquire(profile: &str, policy: &CompiledClientAuthPolicy) -> Result<Self, TlsBuildError> {
+        let (ca_certificates, rustls_roots) = match policy.mode {
+            TlsClientAuthMode::Disabled => (
+                Arc::from(Vec::<X509>::new().into_boxed_slice()),
+                Arc::new(rustls::RootCertStore::empty()),
+            ),
+            TlsClientAuthMode::Optional | TlsClientAuthMode::Required => load_client_ca_bundle(
+                profile,
+                policy
+                    .ca_certificate_path
+                    .as_deref()
+                    .expect("compiled client CA path"),
+            )?,
+        };
+        let h3_client_verifier = match policy.mode {
             TlsClientAuthMode::Disabled => None,
             TlsClientAuthMode::Optional | TlsClientAuthMode::Required => {
                 let builder = rustls::server::WebPkiClientVerifier::builder(rustls_roots);
-                let delegate = match client_auth.mode {
+                let delegate = match policy.mode {
                     TlsClientAuthMode::Optional => builder.allow_unauthenticated().build(),
                     TlsClientAuthMode::Required => builder.build(),
                     TlsClientAuthMode::Disabled => unreachable!(),
                 }
                 .map_err(|error| TlsBuildError::ClientCaRustlsVerifier {
-                    profile: profile.name.clone(),
+                    profile: profile.into(),
                     detail: error.to_string(),
                 })?;
                 Some(Arc::new(ExactClientCertificateVerifier {
                     delegate,
-                    allowed_dns_names: Arc::clone(&allowed_dns_names),
+                    allowed_dns_names: Arc::clone(&policy.allowed_dns_names),
                 })
                     as Arc<dyn rustls::server::danger::ClientCertVerifier>)
             }
         };
 
         Ok(Self {
-            mode: client_auth.mode,
+            mode: policy.mode,
             ca_certificates,
-            allowed_dns_names,
+            allowed_dns_names: Arc::clone(&policy.allowed_dns_names),
             h3_client_verifier,
         })
     }
@@ -1004,47 +1126,61 @@ pub struct TlsProfilePlan {
     min_version: TlsVersion,
     alpn: ALPN,
     policy: TlsPolicy,
+    cipher_list: Option<String>,
     dh_parameters: Option<Dh<Params>>,
     client_auth: ClientAuthPlan,
+    session_cache: Option<CompiledSessionCachePolicy>,
+    session_timeout: Option<i32>,
+    session_tickets: bool,
+    prefer_server_ciphers: bool,
     tls_alpn_challenge_store: TlsAlpnChallengeStore,
     selector: Arc<CertificateSelector>,
 }
 
 impl TlsProfilePlan {
-    pub(crate) fn from_config(
-        profile: &TlsProfile,
-        active_generations: BTreeMap<String, Arc<ActiveCertificateGeneration>>,
+    pub(crate) fn acquire(
+        blueprint: &super::TlsProfileBlueprint,
+        active_identities: &[Arc<ActiveCertificateGeneration>],
+        identities: &[super::TlsIdentityBlueprint],
         tls_alpn_challenge_store: TlsAlpnChallengeStore,
     ) -> Result<Self, TlsBuildError> {
-        let alpn = compile_alpn(&profile.name, &profile.alpn)?;
-        let dh_parameters = profile
-            .policy
+        let policy = &blueprint.policy;
+        let dh_parameters = policy
             .dh_parameters_path
             .as_ref()
             .map(|path| {
                 let pem = read_bounded_stable(
-                    &profile.name,
+                    &blueprint.name,
                     DH_PARAMETERS_FILE,
                     path,
                     MAX_DH_PARAMETERS_BYTES,
                     false,
                 )?;
                 Dh::params_from_pem(&pem).map_err(|source| TlsBuildError::TlsDhParameters {
-                    profile: profile.name.clone(),
+                    profile: blueprint.name.clone(),
                     path: path.clone(),
                     source,
                 })
             })
             .transpose()?;
-        let client_auth = ClientAuthPlan::from_config(profile)?;
-        let selector = Arc::new(CertificateSelector::new(profile, active_generations)?);
+        let client_auth = ClientAuthPlan::acquire(&blueprint.name, &policy.client_auth)?;
+        let selector = Arc::new(CertificateSelector::acquire(
+            blueprint,
+            active_identities,
+            identities,
+        ));
         Ok(Self {
-            name: profile.name.clone(),
-            min_version: profile.min_version,
-            alpn,
-            policy: profile.policy.clone(),
+            name: blueprint.name.clone(),
+            min_version: policy.min_version,
+            alpn: policy.alpn.clone(),
+            policy: policy.source_policy.clone(),
+            cipher_list: policy.cipher_list.clone(),
             dh_parameters,
             client_auth,
+            session_cache: policy.session_cache.clone(),
+            session_timeout: policy.session_timeout,
+            session_tickets: policy.session_tickets,
+            prefer_server_ciphers: policy.prefer_server_ciphers,
             tls_alpn_challenge_store,
             selector,
         })
@@ -1141,7 +1277,7 @@ impl TlsProfilePlan {
                 profile: self.name.clone(),
                 source,
             })?;
-        if let Some(cipher_list) = &self.policy.cipher_list {
+        if let Some(cipher_list) = &self.cipher_list {
             settings.set_cipher_list(cipher_list).map_err(|source| {
                 TlsBuildError::TlsProfileSettings {
                     profile: self.name.clone(),
@@ -1157,37 +1293,27 @@ impl TlsProfilePlan {
                 }
             })?;
         }
-        if let Some(cache) = &self.policy.session_cache {
-            let session_count =
-                i32::try_from(cache.size_bytes / ESTIMATED_SESSION_BYTES).map_err(|_| {
-                    TlsBuildError::InvalidTlsProfilePolicy {
-                        profile: self.name.clone(),
-                    }
-                })?;
+        if let Some(compiled) = &self.session_cache {
             settings
-                .set_session_id_context(&session_id_context(&self.name, cache))
+                .set_session_id_context(&compiled.id_context)
                 .map_err(|source| TlsBuildError::TlsProfileSettings {
                     profile: self.name.clone(),
                     source,
                 })?;
-            settings.set_session_cache_size(session_count);
+            settings.set_session_cache_size(compiled.capacity);
             settings.set_session_cache_mode(SslSessionCacheMode::SERVER);
         } else {
             settings.set_session_cache_mode(SslSessionCacheMode::OFF);
         }
-        if let Some(timeout) = self.policy.session_timeout_seconds {
-            let timeout =
-                i32::try_from(timeout).map_err(|_| TlsBuildError::InvalidTlsProfilePolicy {
-                    profile: self.name.clone(),
-                })?;
+        if let Some(timeout) = self.session_timeout {
             settings.set_session_timeout(timeout);
         }
-        if self.policy.session_tickets {
+        if self.session_tickets {
             settings.clear_options(SslOptions::NO_TICKET);
         } else {
             settings.set_options(SslOptions::NO_TICKET);
         }
-        if self.policy.prefer_server_ciphers {
+        if self.prefer_server_ciphers {
             settings.set_options(SslOptions::CIPHER_SERVER_PREFERENCE);
         } else {
             settings.clear_options(SslOptions::CIPHER_SERVER_PREFERENCE);
@@ -1424,10 +1550,6 @@ fn client_certificate_matches(
                 .any(|identity| allowed_dns_names.contains(identity)))
 }
 
-fn session_id_context(profile: &str, cache: &TlsSessionCache) -> [u8; 32] {
-    sha256(format!("oxiroute-session-cache:{profile}:{}", cache.name).as_bytes())
-}
-
 struct CertificateSelector {
     default_certificate: String,
     active_generations: BTreeMap<String, Arc<ActiveCertificateGeneration>>,
@@ -1436,47 +1558,41 @@ struct CertificateSelector {
 }
 
 impl CertificateSelector {
-    fn new(
-        profile: &TlsProfile,
-        active_generations: BTreeMap<String, Arc<ActiveCertificateGeneration>>,
-    ) -> Result<Self, TlsBuildError> {
-        if !active_generations.contains_key(&profile.default_certificate) {
-            return Err(TlsBuildError::ProfileDefaultNotListed {
-                profile: profile.name.clone(),
-                certificate: profile.default_certificate.clone(),
-            });
-        }
-
-        let mut exact_names = BTreeMap::new();
-        let mut wildcard_suffixes = BTreeMap::new();
-        for (certificate_name, active_generation) in &active_generations {
-            for dns_name in &active_generation.snapshot().metadata().dns_names {
-                if dns_name.parse::<IpAddr>().is_ok() {
-                    continue;
-                }
-                let (names, name) = if let Some(suffix) = dns_name.strip_prefix("*.") {
-                    (&mut wildcard_suffixes, suffix)
-                } else {
-                    (&mut exact_names, dns_name.as_str())
-                };
-                if let Some(first_certificate) = names.insert(name.into(), certificate_name.clone())
-                {
-                    return Err(TlsBuildError::OverlappingProfileDnsName {
-                        profile: profile.name.clone(),
-                        dns_name: dns_name.clone(),
-                        first_certificate,
-                        second_certificate: certificate_name.clone(),
-                    });
-                }
-            }
-        }
-
-        Ok(Self {
-            default_certificate: profile.default_certificate.clone(),
+    fn acquire(
+        blueprint: &super::TlsProfileBlueprint,
+        active_identities: &[Arc<ActiveCertificateGeneration>],
+        identities: &[super::TlsIdentityBlueprint],
+    ) -> Self {
+        let active_generations = blueprint
+            .certificate_indices
+            .iter()
+            .map(|&index| {
+                (
+                    identities[index].name.clone(),
+                    Arc::clone(&active_identities[index]),
+                )
+            })
+            .collect();
+        let exact_names = blueprint
+            .policy
+            .selector
+            .exact_names
+            .iter()
+            .map(|(name, &index)| (name.clone(), identities[index].name.clone()))
+            .collect();
+        let wildcard_suffixes = blueprint
+            .policy
+            .selector
+            .wildcard_suffixes
+            .iter()
+            .map(|(name, &index)| (name.clone(), identities[index].name.clone()))
+            .collect();
+        Self {
+            default_certificate: identities[blueprint.default_certificate_index].name.clone(),
             active_generations,
             exact_names,
             wildcard_suffixes,
-        })
+        }
     }
 
     fn select(&self, server_name: Option<&str>) -> &Arc<ActiveCertificateGeneration> {

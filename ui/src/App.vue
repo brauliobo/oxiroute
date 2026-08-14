@@ -74,7 +74,7 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
       strong {{ monitoring ? formatBytes(totalTrafficBytes) : '--' }}
     .readout
       span.label Host memory used
-      strong {{ monitoring ? formatPercent(memoryUsagePercent) : '--' }}
+      strong {{ monitoring ? formatOptionalPercent(memoryUsagePercent) : '--' }}
     .readout
       span.label Uptime
       strong.mono {{ monitoring ? formatTelemetryDuration(monitoring.uptimeMs) : '--' }}
@@ -177,10 +177,10 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
         .memory-readout
           .memory-copy
             span.label Memory used
-            strong {{ formatBytes(usedMemoryBytes) }} / {{ formatBytes(monitoring.host.totalMemoryBytes) }}
+            strong {{ formatOptionalBytes(usedMemoryBytes) }} / {{ formatOptionalBytes(monitoring.host.totalMemoryBytes) }}
           .memory-track(aria-hidden="true")
-            span(:style="{ width: `${memoryUsagePercent}%` }")
-          span.available-copy {{ formatBytes(monitoring.host.availableMemoryBytes) }} available
+            span(:style="{ width: `${memoryUsagePercent ?? 0}%` }")
+          span.available-copy {{ formatOptionalBytes(monitoring.host.availableMemoryBytes) }} available
 
       article.monitor-panel.process-panel
         header.panel-heading
@@ -194,16 +194,16 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
         .process-grid
           .compact-metric
             span.label Resident
-            strong {{ formatBytes(monitoring.process.residentMemoryBytes) }}
+            strong {{ formatOptionalBytes(monitoring.process.residentMemoryBytes) }}
           .compact-metric
             span.label Virtual
-            strong {{ formatBytes(monitoring.process.virtualMemoryBytes) }}
+            strong {{ formatOptionalBytes(monitoring.process.virtualMemoryBytes) }}
           .compact-metric
             span.label Threads
-            strong {{ formatCount(monitoring.process.threadCount) }}
+            strong {{ formatOptionalCount(monitoring.process.threadCount) }}
           .compact-metric
             span.label Open files
-            strong {{ formatCount(monitoring.process.openFileDescriptors) }}
+            strong {{ formatOptionalCount(monitoring.process.openFileDescriptors) }}
 
       article.monitor-panel.rtmp-panel
         header.panel-heading
@@ -391,6 +391,7 @@ import {
   type EndpointHealthState,
   type EventStreamClient,
   type HealthFailure,
+  type MonitoringListenerProtocol,
   type MonitoringPool,
   type MonitoringSnapshot,
   type RecorderSnapshot,
@@ -402,7 +403,6 @@ import {
   type TopologySnapshot,
   type TrackSnapshot,
 } from './api'
-import type { ListenerProtocol } from './config'
 
 const REFRESH_INTERVAL_MS = 5_000
 const STALE_AFTER_MS = REFRESH_INTERVAL_MS * 3
@@ -424,10 +424,12 @@ const poolAlgorithmLabels: Record<MonitoringPool['algorithm'], string> = {
   least_connections: 'Least connections',
   first:             'First server',
 }
-const listenerProtocolLabels: Record<ListenerProtocol, string> = {
+const listenerProtocolLabels: Record<MonitoringListenerProtocol, string> = {
   http:          'HTTP',
   tcp:           'TCP',
   rtmp:          'RTMP',
+  http3:         'HTTP/3',
+  udp:           'UDP',
   forward_http1: 'Forward H1',
   forward_http2: 'Forward H2',
   forward_http3: 'Forward H3',
@@ -473,19 +475,35 @@ const totalTrafficBytes = computed(
     : (BigInt(monitoring.value.traffic.bytesReceived) + BigInt(monitoring.value.traffic.bytesSent)).toString(),
 )
 const usedMemoryBytes = computed(() => {
-  if (!monitoring.value) return 0
-  return Math.max(0, monitoring.value.host.totalMemoryBytes - monitoring.value.host.availableMemoryBytes)
+  if (!monitoring.value) return null
+  const { totalMemoryBytes, availableMemoryBytes } = monitoring.value.host
+  return totalMemoryBytes === null || availableMemoryBytes === null
+    ? null
+    : Math.max(0, totalMemoryBytes - availableMemoryBytes)
 })
 const memoryUsagePercent = computed(() => {
-  const total = monitoring.value?.host.totalMemoryBytes ?? 0
-  return total === 0 ? 0 : Math.min(100, Math.max(0, (usedMemoryBytes.value / total) * 100))
+  const total = monitoring.value?.host.totalMemoryBytes
+  const used = usedMemoryBytes.value
+  if (total === null || total === undefined || used === null) return null
+  return total === 0 ? 0 : Math.min(100, Math.max(0, (used / total) * 100))
 })
 const hostLoads = computed(() => [
-  { label: '01m', value: monitoring.value?.host.loadAverage1m ?? 0 },
-  { label: '05m', value: monitoring.value?.host.loadAverage5m ?? 0 },
-  { label: '15m', value: monitoring.value?.host.loadAverage15m ?? 0 },
+  { label: '01m', value: monitoring.value?.host.loadAverage1m ?? null },
+  { label: '05m', value: monitoring.value?.host.loadAverage5m ?? null },
+  { label: '15m', value: monitoring.value?.host.loadAverage15m ?? null },
 ])
-const maximumHostLoad = computed(() => Math.max(1, ...hostLoads.value.map(({ value }) => value)))
+const maximumHostLoad = computed(() => Math.max(
+  1,
+  ...hostLoads.value.flatMap(({ value }) => value === null ? [] : [value]),
+))
+
+function formatOptionalBytes(value: number | null): string {
+  return value === null ? 'Unavailable' : formatBytes(value)
+}
+
+function formatOptionalCount(value: number | null): string {
+  return value === null ? 'Unavailable' : formatCount(value)
+}
 const isStale = computed(
   () =>
     monitoring.value !== null &&
@@ -807,8 +825,8 @@ function poolAvailabilityLabel(pool: MonitoringPool): string {
   return 'Degraded'
 }
 
-function formatDecimal(value: number): string {
-  return value.toFixed(2)
+function formatDecimal(value: number | null): string {
+  return value === null ? 'Unavailable' : value.toFixed(2)
 }
 
 function formatPercent(value: number): string {
@@ -827,8 +845,8 @@ function formatSampleAge(sampledAt: number): string {
   return minutes < 60 ? `${minutes}m ago` : `${Math.floor(minutes / 60)}h ago`
 }
 
-function loadBarWidth(value: number): string {
-  if (value <= 0) return '0%'
+function loadBarWidth(value: number | null): string {
+  if (value === null || value <= 0) return '0%'
   return `${Math.max(4, (value / maximumHostLoad.value) * 100)}%`
 }
 

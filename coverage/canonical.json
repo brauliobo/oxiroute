@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source": {
     "crate": "oxiroute-config",
-    "root_type": "Config",
+    "root_type": "ConfigDraft",
     "config_version": 1
   },
   "evidence": [

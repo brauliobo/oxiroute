@@ -21,7 +21,7 @@ fn canonical_manifest_is_complete_and_executable() {
 
     assert_eq!(manifest.schema_version, 1);
     assert_eq!(manifest.source.crate_name, "oxiroute-config");
-    assert_eq!(manifest.source.root_type, "Config");
+    assert_eq!(manifest.source.root_type, "ConfigDraft");
     assert_eq!(manifest.source.config_version, 1);
 
     let expected = canonical_schema_entries();
@@ -157,7 +157,7 @@ fn path_has_prefix(path: &str, prefix: &str) -> bool {
 fn canonical_schema_entries() -> BTreeSet<(EntryKind, String)> {
     let schema = config_source_schema();
     let mut entries = BTreeSet::new();
-    collect_canonical_type(&schema, "Config", "", &mut entries);
+    collect_canonical_type(&schema, "ConfigDraft", "", &mut entries);
     entries
 }
 
@@ -165,7 +165,7 @@ fn ui_schema_fields() -> (BTreeSet<String>, BTreeSet<String>) {
     let schema = config_source_schema();
     let mut fields = BTreeSet::new();
     let mut editable = BTreeSet::new();
-    collect_ui_type(&schema, "Config", "", &mut fields, &mut editable);
+    collect_ui_type(&schema, "ConfigDraft", "", &mut fields, &mut editable);
     (fields, editable)
 }
 

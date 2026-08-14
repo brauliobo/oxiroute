@@ -821,6 +821,24 @@ mod tests {
     }
 
     #[test]
+    fn exposition_preserves_public_listener_display_name_order() {
+        let metrics = RuntimeMetrics::new();
+        metrics
+            .register_listener("zulu", "http", "socket:127.0.0.1:8080", None)
+            .unwrap();
+        metrics
+            .register_listener("alpha", "http", "socket:127.0.0.1:8081", None)
+            .unwrap();
+        let registry = RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: false,
+            manual_recording: false,
+        });
+        let output = render_prometheus(&metrics, &registry, &GenerationManager::new()).unwrap();
+
+        assert!(output.find("listener=\"alpha\"") < output.find("listener=\"zulu\""));
+    }
+
+    #[test]
     fn exposition_contains_bounded_http_and_tcp_outcome_histograms() {
         let metrics = RuntimeMetrics::new();
         let listener = metrics

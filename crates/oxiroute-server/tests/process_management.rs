@@ -15,9 +15,10 @@ use std::{
 };
 
 use oxiroute_config::{
-    Config, DnsResolutionPolicy, HttpVersionPolicy, Listener, ListenerBind, Management, Protocol,
-    RtmpApplication, RtmpRecorderStart, RtmpService, Stats, StatsPage, StatsPageAdminPolicy,
-    UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    ConfigDraft, DnsResolutionPolicy, HttpVersionPolicy, Listener, ListenerBind, Management,
+    Protocol, RtmpApplication, RtmpRecorderStart, RtmpService, Stats, StatsPage,
+    StatsPageAdminPolicy, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint,
+    UpstreamPool, UpstreamServer,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -44,7 +45,10 @@ fn sigterm_during_runtime_startup_is_bounded() {
         fs::write(ui.path().join("assets").join(format!("{index}.js")), b"x").expect("asset");
     }
     let config = management_config(reserve_tcp_address(), Some(ui.path().to_path_buf()));
-    let server = ServerProcess::start(&config, Some(TOKEN));
+    let server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        Some(TOKEN),
+    );
     std::thread::sleep(Duration::from_millis(10));
     let started = Instant::now();
 
@@ -63,7 +67,10 @@ async fn built_process_serves_readiness_status_and_redacted_metrics_on_multiple_
         admin_token_file: None,
         pages: Vec::new(),
     });
-    let mut server = ServerProcess::start(&config, None);
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        None,
+    );
     server.wait_for_tcp(ipv4_first).await;
     server.wait_for_tcp(ipv4_second).await;
 
@@ -131,7 +138,10 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::Safe,
     }];
-    let mut server = ServerProcess::start(&config, None);
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        None,
+    );
     server.wait_for_tcp(page_address).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -297,7 +307,10 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
 async fn generation_status_remains_responsive_through_publication() {
     let management_address = reserve_tcp_address();
     let mut config = management_config(management_address, None);
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        Some(TOKEN),
+    );
     server.wait_for_tcp(management_address).await;
     let authorization = format!("Bearer {TOKEN}");
     let mut status_connection = TcpStream::connect(management_address)
@@ -354,7 +367,10 @@ async fn generation_status_remains_responsive_through_publication() {
         .await
         .expect("first status request started");
     config.max_connections = Some(101);
-    write_config(&server.config_path, &config);
+    write_config(
+        &server.config_path,
+        &config.clone().validate().expect("valid process config"),
+    );
     let status_reads = tokio::time::timeout(process_support::PROCESS_TIMEOUT, status_reader)
         .await
         .expect("generation reload timed out")
@@ -396,7 +412,10 @@ async fn stats_admin_uses_json_targets_and_rejects_duplicate_authorization_heade
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::Safe,
     }];
-    let mut server = ServerProcess::start(&config, None);
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        None,
+    );
     server.wait_for_tcp(stats_address).await;
     let authorization = format!("Bearer {TOKEN}");
 
@@ -493,7 +512,10 @@ async fn persistent_old_generation_management_and_stats_connections_mutate_the_s
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::Safe,
     }];
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        Some(TOKEN),
+    );
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(stats_address).await;
     let authorization = format!("Bearer {TOKEN}");
@@ -529,7 +551,10 @@ async fn persistent_old_generation_management_and_stats_connections_mutate_the_s
     );
 
     config.max_connections = Some(101);
-    write_config(&server.config_path, &config);
+    write_config(
+        &server.config_path,
+        &config.clone().validate().expect("valid process config"),
+    );
     let deadline = Instant::now() + process_support::PROCESS_TIMEOUT;
     let active_revision = loop {
         let response = http_request(
@@ -634,7 +659,10 @@ async fn built_process_replaces_generation_and_reuses_existing_listener_reservat
         admin_token_file: None,
         pages: Vec::new(),
     });
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        Some(TOKEN),
+    );
     server.wait_for_tcp(original_bind).await;
     server.wait_for_tcp(management_bind).await;
     let authorization = format!("Bearer {TOKEN}");
@@ -653,7 +681,10 @@ async fn built_process_replaces_generation_and_reuses_existing_listener_reservat
 
     config.max_connections = Some(100);
     config.stats.as_mut().expect("stats").binds.push(added_bind);
-    write_config(&server.config_path, &config);
+    write_config(
+        &server.config_path,
+        &config.clone().validate().expect("valid process config"),
+    );
     server.wait_for_tcp(added_bind).await;
     let deadline = std::time::Instant::now() + process_support::PROCESS_TIMEOUT;
     loop {
@@ -711,7 +742,10 @@ async fn built_process_replaces_generation_and_reuses_existing_listener_reservat
     .await;
     assert_eq!(drained.status, 202);
     config.max_connections = Some(101);
-    write_config(&server.config_path, &config);
+    write_config(
+        &server.config_path,
+        &config.clone().validate().expect("valid process config"),
+    );
     let deadline = std::time::Instant::now() + process_support::PROCESS_TIMEOUT;
     loop {
         let status = http_request(
@@ -748,7 +782,10 @@ async fn built_management_ui_and_authenticated_config_lifecycle_run_over_real_tc
     let ui_dir = build_ui();
     let management_address = reserve_tcp_address();
     let active = management_config(management_address, Some(ui_dir.clone()));
-    let mut server = ServerProcess::start(&active, Some(TOKEN));
+    let mut server = ServerProcess::start(
+        &active.clone().validate().expect("valid active config"),
+        Some(TOKEN),
+    );
     server.wait_for_tcp(management_address).await;
     let token_path = server.token_path.as_ref().expect("management token file");
     let authorization = format!("Bearer {TOKEN}");
@@ -1017,7 +1054,10 @@ async fn authenticated_server_batches_are_prevalidated_and_mutate_owned_runtime_
             connection_reuse: UpstreamConnectionReuse::Safe,
         })
         .collect();
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        Some(TOKEN),
+    );
     server.wait_for_tcp(management_address).await;
     let authorization = format!("Bearer {TOKEN}");
     let active_revision = http_request(
@@ -1076,6 +1116,25 @@ async fn authenticated_server_batches_are_prevalidated_and_mutate_owned_runtime_
     .await;
     assert_eq!(stale.status, 409);
     assert_eq!(stale.json()["error"]["code"], "generation_conflict");
+
+    let malformed = http_request(
+        management_address,
+        "POST",
+        "/api/v1/servers/administrative-state",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+        ],
+        &serde_json::to_vec(&json!({
+            "targets": [{ "pool": "public-v4", "server": "origin-a" }],
+            "state": "drain",
+            "expectedActiveRevision": "malformed",
+        }))
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(malformed.status, 409);
+    assert_eq!(malformed.json()["error"]["code"], "generation_conflict");
 
     let unchanged = http_request(
         management_address,
@@ -1214,7 +1273,10 @@ async fn dns_refresh_batch_reports_every_target_and_explicit_non_atomic_outcomes
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::Safe,
     }];
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        Some(TOKEN),
+    );
     server.wait_for_tcp(management_address).await;
     let authorization = format!("Bearer {TOKEN}");
 
@@ -1278,7 +1340,10 @@ async fn dns_refresh_batch_reports_every_target_and_explicit_non_atomic_outcomes
 async fn authenticated_local_shutdown_uses_the_graceful_process_channel() {
     let management_address = reserve_tcp_address();
     let config = management_config(management_address, None);
-    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        Some(TOKEN),
+    );
     server.wait_for_tcp(management_address).await;
     let authorization = format!("Bearer {TOKEN}");
     let mut management = TcpStream::connect(management_address)
@@ -1407,7 +1472,10 @@ fn built_process_rejects_invalid_token_config_and_recording_roots() {
     let token_case = TempDir::new().expect("invalid token case");
     let token_config_path = token_case.path().join("oxiroute.lua");
     let token_config = management_config(reserve_tcp_address(), None);
-    write_config(&token_config_path, &token_config);
+    write_config(
+        &token_config_path,
+        &token_config.validate().expect("valid token config"),
+    );
     let token_path = write_token(token_case.path(), TOKEN, 0o644);
     let token_failure = run_to_failure(&token_config_path, Some(&token_path));
     assert!(!token_failure.status.success());
@@ -1431,7 +1499,10 @@ fn built_process_rejects_invalid_token_config_and_recording_roots() {
     let recording_config_path = recording_case.path().join("oxiroute.lua");
     let secret_root = recording_case.path().join("missing-secret-recording-root");
     let recording_config = recording_candidate(&empty_config(), &secret_root);
-    write_config(&recording_config_path, &recording_config);
+    write_config(
+        &recording_config_path,
+        &recording_config.validate().expect("valid recording config"),
+    );
     let recording_failure = run_to_failure(&recording_config_path, None);
     assert!(!recording_failure.status.success());
     let recording_output = output_text(&recording_failure);
@@ -1445,7 +1516,12 @@ fn built_process_fails_before_runtime_when_a_tcp_listener_cannot_bind() {
     let address = occupied.local_addr().expect("occupied address");
     let directory = TempDir::new().expect("bind failure case");
     let config_path = directory.path().join("oxiroute.lua");
-    write_config(&config_path, &rtmp_listener_config(socket_bind(address)));
+    write_config(
+        &config_path,
+        &rtmp_listener_config(socket_bind(address))
+            .validate()
+            .expect("valid RTMP listener config"),
+    );
 
     let failure = run_to_failure(&config_path, None);
 
@@ -1469,7 +1545,9 @@ fn built_process_does_not_unlink_an_existing_unix_listener_path() {
         &rtmp_listener_config(ListenerBind::Unix {
             path: path.clone(),
             mode: None,
-        }),
+        })
+        .validate()
+        .expect("valid Unix RTMP listener config"),
     );
 
     let failure = run_to_failure(&config_path, None);
@@ -1490,7 +1568,10 @@ async fn built_process_activates_a_real_unix_listener() {
         path: socket_path.clone(),
         mode: None,
     });
-    let mut server = ServerProcess::start(&config, None);
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        None,
+    );
 
     server.wait_for_unix(&socket_path).await;
 
@@ -1516,7 +1597,10 @@ async fn unix_listener_mode_change_is_saved_as_restart_required_without_mutating
         bind: management_address,
         ui_dir: None,
     });
-    let mut server = ServerProcess::start(&active, Some(TOKEN));
+    let mut server = ServerProcess::start(
+        &active.clone().validate().expect("valid active config"),
+        Some(TOKEN),
+    );
     server.wait_for_unix(&socket_path).await;
     server.wait_for_tcp(management_address).await;
     let authorization = format!("Bearer {TOKEN}");
@@ -1555,6 +1639,17 @@ async fn unix_listener_mode_change_is_saved_as_restart_required_without_mutating
     assert_eq!(validated.status, 200, "{}", validated.text());
     let validated = validated.json();
     assert_eq!(validated["restartRequired"], true);
+    let direct_diagnostic = validated["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "I_RESTART_REQUIRED")
+        .expect("direct restart diagnostic");
+    assert_eq!(direct_diagnostic["path"], "/config/listeners");
+    assert_eq!(
+        direct_diagnostic["message"],
+        "an active Unix listener mode changed; the saved configuration takes effect after a process restart"
+    );
     assert!(
         validated["diagnostics"]
             .as_array()
@@ -1590,6 +1685,17 @@ async fn unix_listener_mode_change_is_saved_as_restart_required_without_mutating
     assert_eq!(saved["outcome"], "saved_restart_required");
     assert_eq!(saved["activationState"], "restart_required");
     assert_eq!(saved["restartRequired"], true);
+    let direct_diagnostic = saved["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "I_RESTART_REQUIRED")
+        .expect("saved direct restart diagnostic");
+    assert_eq!(direct_diagnostic["path"], "/config/listeners");
+    assert_eq!(
+        direct_diagnostic["message"],
+        "an active Unix listener mode changed; the saved configuration takes effect after a process restart"
+    );
     assert_eq!(saved["activeRevision"], active_revision);
     assert!(saved["diagnostics"].as_array().is_some_and(|diagnostics| {
         diagnostics
@@ -1622,7 +1728,10 @@ async fn unix_listener_mode_change_is_saved_as_restart_required_without_mutating
     assert_eq!(ready.status, 200, "{}", ready.text());
     server.shutdown();
 
-    let mut restarted = ServerProcess::start(&candidate, Some(TOKEN));
+    let mut restarted = ServerProcess::start(
+        &candidate.validate().expect("valid restart candidate"),
+        Some(TOKEN),
+    );
     restarted.wait_for_unix(&socket_path).await;
     assert_eq!(
         fs::metadata(&socket_path)
@@ -1638,8 +1747,8 @@ async fn unix_listener_mode_change_is_saved_as_restart_required_without_mutating
 fn management_config(
     management_address: std::net::SocketAddr,
     ui_dir: Option<std::path::PathBuf>,
-) -> Config {
-    Config {
+) -> ConfigDraft {
+    ConfigDraft {
         management: Some(Management {
             bind: management_address,
             ui_dir,
@@ -1649,7 +1758,7 @@ fn management_config(
     }
 }
 
-fn recording_candidate(active: &Config, root: &Path) -> Config {
+fn recording_candidate(active: &ConfigDraft, root: &Path) -> ConfigDraft {
     let mut candidate = active.clone();
     candidate.listeners.push(Listener {
         name: "recording-wire".into(),
@@ -1697,8 +1806,8 @@ fn recording_candidate(active: &Config, root: &Path) -> Config {
     candidate
 }
 
-fn rtmp_listener_config(bind: ListenerBind) -> Config {
-    Config {
+fn rtmp_listener_config(bind: ListenerBind) -> ConfigDraft {
+    ConfigDraft {
         listeners: vec![Listener {
             name: "live".into(),
             bind,

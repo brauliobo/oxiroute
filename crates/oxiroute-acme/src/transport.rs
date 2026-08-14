@@ -1,20 +1,23 @@
 use std::{
     io::{Read as _, Write as _},
-    net::{TcpStream, ToSocketAddrs},
+    net::{IpAddr, SocketAddr, TcpStream},
     time::Duration,
 };
 
+use hickory_resolver::Resolver;
 use http::Uri;
 use openssl::ssl::{SslConnector, SslMethod, SslStream};
 
 use crate::protocol::{
-    AcmeTransport, HttpRequest, HttpResponse, MAX_ACME_BODY_BYTES, TransportError,
+    AcmeError, AcmeOperation, AcmeTransport, HttpRequest, HttpResponse, MAX_ACME_BODY_BYTES,
+    TransportError,
 };
 
 const MAX_RESPONSE_HEADERS_BYTES: usize = 128 * 1024;
 const MAX_RESPONSE_BYTES: usize = MAX_RESPONSE_HEADERS_BYTES + MAX_ACME_BODY_BYTES;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
+const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransportConfig {
@@ -49,50 +52,173 @@ impl SystemAcmeTransport {
 
 impl AcmeTransport for SystemAcmeTransport {
     fn request(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
-        let uri = request.url.parse::<Uri>().map_err(|_| TransportError)?;
-        let scheme = uri.scheme_str().ok_or(TransportError)?;
+        self.request_inner(request, &AcmeOperation::default())
+            .map_err(|_| TransportError)
+    }
+
+    fn request_with_operation(
+        &self,
+        request: HttpRequest,
+        operation: &AcmeOperation,
+    ) -> Result<HttpResponse, AcmeError> {
+        self.request_inner(request, operation)
+    }
+}
+
+impl SystemAcmeTransport {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the transport owns the request for the full connect/write/read transaction"
+    )]
+    fn request_inner(
+        &self,
+        request: HttpRequest,
+        operation: &AcmeOperation,
+    ) -> Result<HttpResponse, AcmeError> {
+        operation.check()?;
+        let uri = request
+            .url
+            .parse::<Uri>()
+            .map_err(|_| AcmeError::Transport(TransportError))?;
+        let scheme = uri
+            .scheme_str()
+            .ok_or(AcmeError::Transport(TransportError))?;
         if scheme != "https" {
-            return Err(TransportError);
+            return Err(AcmeError::Transport(TransportError));
         }
-        let authority = uri.authority().ok_or(TransportError)?;
+        let authority = uri
+            .authority()
+            .ok_or(AcmeError::Transport(TransportError))?;
         let host = authority.host();
         if host.is_empty() {
-            return Err(TransportError);
+            return Err(AcmeError::Transport(TransportError));
         }
         let port = authority.port_u16().unwrap_or(443);
-        let socket = socket_address(host, port).ok_or(TransportError)?;
-        let stream = TcpStream::connect_timeout(&socket, self.config.connect_timeout)
-            .map_err(|_| TransportError)?;
+        let socket = socket_address(host, port, operation)?;
+        let stream = connect(&socket, self.config.connect_timeout, operation)?;
         stream
-            .set_read_timeout(Some(self.config.io_timeout))
-            .map_err(|_| TransportError)?;
+            .set_read_timeout(Some(CANCELLATION_POLL_INTERVAL))
+            .map_err(|_| AcmeError::Transport(TransportError))?;
         stream
-            .set_write_timeout(Some(self.config.io_timeout))
-            .map_err(|_| TransportError)?;
+            .set_write_timeout(Some(CANCELLATION_POLL_INTERVAL))
+            .map_err(|_| AcmeError::Transport(TransportError))?;
         let connector = SslConnector::builder(SslMethod::tls())
-            .map_err(|_| TransportError)?
+            .map_err(|_| AcmeError::Transport(TransportError))?
             .build();
-        let mut stream = connector
-            .connect(host, stream)
-            .map_err(|_| TransportError)?;
+        let mut stream = tls_connect(&connector, host, stream, self.config.io_timeout, operation)?;
         write_request(
             &mut stream,
             &request,
             authority.as_str(),
             uri.path_and_query(),
+            self.config.io_timeout,
+            operation,
         )?;
-        let raw = read_response(&mut stream)?;
-        parse_response(&request.url, &raw)
+        let raw = read_response(&mut stream, self.config.io_timeout, operation)?;
+        parse_response(&request.url, &raw).map_err(AcmeError::Transport)
     }
 }
 
-fn socket_address(host: &str, port: u16) -> Option<std::net::SocketAddr> {
-    let address = if host.contains(':') {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
+fn connect(
+    socket: &std::net::SocketAddr,
+    timeout: Duration,
+    operation: &AcmeOperation,
+) -> Result<TcpStream, AcmeError> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        operation.check()?;
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(AcmeError::Transport(TransportError));
+        }
+        match TcpStream::connect_timeout(socket, remaining.min(CANCELLATION_POLL_INTERVAL)) {
+            Ok(stream) => return Ok(stream),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) => {}
+            Err(_) => return Err(AcmeError::Transport(TransportError)),
+        }
+    }
+}
+
+fn tls_connect(
+    connector: &SslConnector,
+    host: &str,
+    stream: TcpStream,
+    timeout: Duration,
+    operation: &AcmeOperation,
+) -> Result<SslStream<TcpStream>, AcmeError> {
+    let deadline = std::time::Instant::now() + timeout;
+    stream
+        .set_nonblocking(true)
+        .map_err(|_| AcmeError::Transport(TransportError))?;
+    let mut handshake = match connector.connect(host, stream) {
+        Ok(stream) => {
+            stream
+                .get_ref()
+                .set_nonblocking(false)
+                .map_err(|_| AcmeError::Transport(TransportError))?;
+            return Ok(stream);
+        }
+        Err(openssl::ssl::HandshakeError::WouldBlock(handshake)) => handshake,
+        Err(_) => return Err(AcmeError::Transport(TransportError)),
     };
-    address.to_socket_addrs().ok()?.next()
+    loop {
+        operation.check()?;
+        if std::time::Instant::now() >= deadline {
+            return Err(AcmeError::Transport(TransportError));
+        }
+        handshake = match handshake.handshake() {
+            Ok(stream) => {
+                stream
+                    .get_ref()
+                    .set_nonblocking(false)
+                    .map_err(|_| AcmeError::Transport(TransportError))?;
+                return Ok(stream);
+            }
+            Err(openssl::ssl::HandshakeError::WouldBlock(handshake)) => handshake,
+            Err(_) => return Err(AcmeError::Transport(TransportError)),
+        };
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn socket_address(
+    host: &str,
+    port: u16,
+    operation: &AcmeOperation,
+) -> Result<SocketAddr, AcmeError> {
+    if let Ok(address) = host.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(address, port));
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| AcmeError::Transport(TransportError))?;
+    let resolver = Resolver::builder_tokio()
+        .map_err(|_| AcmeError::Transport(TransportError))?
+        .build()
+        .map_err(|_| AcmeError::Transport(TransportError))?;
+    runtime.block_on(async {
+        let lookup = resolver.lookup_ip(host);
+        tokio::pin!(lookup);
+        loop {
+            operation.check()?;
+            tokio::select! {
+                result = &mut lookup => {
+                    return result
+                        .map_err(|_| AcmeError::Transport(TransportError))?
+                        .iter()
+                        .next()
+                        .map(|address| SocketAddr::new(address, port))
+                        .ok_or(AcmeError::Transport(TransportError));
+                }
+                () = tokio::time::sleep(CANCELLATION_POLL_INTERVAL) => {}
+            }
+        }
+    })
 }
 
 fn write_request(
@@ -100,9 +226,11 @@ fn write_request(
     request: &HttpRequest,
     authority: &str,
     path_and_query: Option<&http::uri::PathAndQuery>,
-) -> Result<(), TransportError> {
+    timeout: Duration,
+    operation: &AcmeOperation,
+) -> Result<(), AcmeError> {
     if request.body.len() > MAX_ACME_BODY_BYTES {
-        return Err(TransportError);
+        return Err(AcmeError::Transport(TransportError));
     }
     let target = path_and_query.map_or("/", http::uri::PathAndQuery::as_str);
     let mut head = format!(
@@ -112,7 +240,7 @@ fn write_request(
     );
     for (name, value) in &request.headers {
         if !valid_header_name(name) || !valid_header_value(value) {
-            return Err(TransportError);
+            return Err(AcmeError::Transport(TransportError));
         }
         head.push_str(name);
         head.push_str(": ");
@@ -120,22 +248,66 @@ fn write_request(
         head.push_str("\r\n");
     }
     head.push_str("\r\n");
-    stream
-        .write_all(head.as_bytes())
-        .and_then(|()| stream.write_all(&request.body))
-        .map_err(|_| TransportError)
+    write_all(stream, head.as_bytes(), timeout, operation)?;
+    write_all(stream, &request.body, timeout, operation)
 }
 
-fn read_response(stream: &mut SslStream<TcpStream>) -> Result<Vec<u8>, TransportError> {
+fn write_all(
+    stream: &mut SslStream<TcpStream>,
+    mut bytes: &[u8],
+    timeout: Duration,
+    operation: &AcmeOperation,
+) -> Result<(), AcmeError> {
+    let deadline = std::time::Instant::now() + timeout;
+    while !bytes.is_empty() {
+        operation.check()?;
+        if std::time::Instant::now() >= deadline {
+            return Err(AcmeError::Transport(TransportError));
+        }
+        match stream.write(bytes) {
+            Ok(0) => return Err(AcmeError::Transport(TransportError)),
+            Ok(written) => bytes = &bytes[written..],
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) => {}
+            Err(_) => return Err(AcmeError::Transport(TransportError)),
+        }
+    }
+    Ok(())
+}
+
+fn read_response(
+    stream: &mut SslStream<TcpStream>,
+    timeout: Duration,
+    operation: &AcmeOperation,
+) -> Result<Vec<u8>, AcmeError> {
     let mut response = Vec::new();
     let mut buffer = [0_u8; 16 * 1024];
+    let deadline = std::time::Instant::now() + timeout;
     loop {
-        let read = stream.read(&mut buffer).map_err(|_| TransportError)?;
+        operation.check()?;
+        if std::time::Instant::now() >= deadline {
+            return Err(AcmeError::Transport(TransportError));
+        }
+        let read = match stream.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue;
+            }
+            Err(_) => return Err(AcmeError::Transport(TransportError)),
+        };
         if read == 0 {
             break;
         }
         if response.len().saturating_add(read) > MAX_RESPONSE_BYTES {
-            return Err(TransportError);
+            return Err(AcmeError::Transport(TransportError));
         }
         response.extend_from_slice(&buffer[..read]);
     }

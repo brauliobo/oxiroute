@@ -4,18 +4,22 @@ use std::{
 };
 
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, DnsResolutionPolicy, DownstreamTimeoutPolicy,
-    HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
-    HttpVersionPolicy, Listener, ListenerBind, Protocol, TlsPolicy, TlsProfile, TlsVersion,
-    UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool, UpstreamServer, UpstreamTls,
+    AlpnProtocol, Certificate, CertificateSource, ConfigDraft, DnsResolutionPolicy,
+    DownstreamTimeoutPolicy, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction,
+    HttpRoutePolicy, HttpService, HttpVersionPolicy, Listener, ListenerBind, Protocol, TlsPolicy,
+    TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool,
+    UpstreamServer, UpstreamTls,
 };
 
 use crate::{
-    ActivationRequirement, CanonicalCandidate as SharedCanonicalCandidate, CanonicalDraft,
-    DeploymentRequirement, DeploymentRequirementKind, Diagnostic, DiagnosticStage, E_INVALID_VALUE,
+    ActivationRequirement, CanonicalCandidate as SharedCanonicalCandidate, DeploymentRequirement,
+    DeploymentRequirementKind, Diagnostic, DiagnosticStage, E_INVALID_VALUE,
     E_SEMANTICS_NOT_REPRESENTABLE, OperationalOverlayKind, OperationalOverlayRequirement,
     ProvenanceRole, Report, Severity, SourceImportMetadata,
-    candidate::{CanonicalProvenanceLedger, EmptyOriginPolicy},
+    candidate::{
+        CanonicalCandidateState, CanonicalProvenanceLedger, EmptyOriginPolicy, empty_config,
+        finalize_candidate,
+    },
 };
 
 use super::{
@@ -63,7 +67,7 @@ struct Lowerer {
     graph: SourceGraph,
     resolution: ApacheResolution,
     diagnostics: Vec<Diagnostic>,
-    draft: CanonicalDraft,
+    draft: ConfigDraft,
     provenance: CanonicalProvenanceLedger<ApacheProvenance>,
     deployment_requirements: Vec<DeploymentRequirement<ApacheProvenance>>,
     activation_requirements: Vec<ActivationRequirement<ApacheProvenance>>,
@@ -91,7 +95,7 @@ impl Lowerer {
             graph,
             resolution,
             diagnostics,
-            draft: CanonicalDraft::default(),
+            draft: empty_config(),
             provenance: CanonicalProvenanceLedger::new(EmptyOriginPolicy::Preserve),
             deployment_requirements: Vec::new(),
             activation_requirements: Vec::new(),
@@ -158,8 +162,8 @@ impl Lowerer {
             let _ = key;
         }
 
-        let draft = self.draft.clone();
-        let finalization = self.finalize(&draft);
+        let draft = std::mem::replace(&mut self.draft, empty_config());
+        let state = self.finalize(draft);
         let source_metadata = SourceImportMetadata {
             original_sources: self
                 .graph
@@ -175,13 +179,12 @@ impl Lowerer {
             diagnostics: Report::new((), self.diagnostics).into_parts().1,
             blocked_virtual_hosts: self.blocked_virtual_hosts,
             candidate: CanonicalCandidate::new(
-                draft,
+                state,
                 self.provenance.into_entries(),
                 self.deployment_requirements,
                 self.activation_requirements,
                 self.operational_overlays,
                 source_metadata,
-                finalization,
             ),
         }
     }
@@ -828,13 +831,14 @@ impl Lowerer {
         self.record_blocked_virtual_host(&virtual_host);
     }
 
-    fn finalize(&mut self, draft: &CanonicalDraft) -> crate::CanonicalFinalization {
+    fn finalize(&mut self, draft: ConfigDraft) -> CanonicalCandidateState {
         let eligible = !self
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.severity() == Severity::Error);
-        match draft.finalize(eligible) {
-            Ok(finalization) => finalization,
+        match finalize_candidate(&draft, eligible) {
+            Ok(Some(config)) => CanonicalCandidateState::Validated(config),
+            Ok(None) => CanonicalCandidateState::Blocked(draft),
             Err(error) => {
                 let mut diagnostic = Diagnostic::new(
                     E_INVALID_VALUE,
@@ -857,7 +861,7 @@ impl Lowerer {
                         );
                 }
                 self.diagnostics.push(diagnostic);
-                crate::CanonicalFinalization::Blocked
+                CanonicalCandidateState::Blocked(draft)
             }
         }
     }

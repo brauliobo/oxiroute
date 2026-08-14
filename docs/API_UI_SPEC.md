@@ -49,6 +49,8 @@ Implemented and recognized endpoints:
 | `GET` | `/api/v1/audit/status` | Authenticated audit persistence, retention, corruption, and degradation status. |
 | `GET` | `/api/v1/events?after={cursor}&limit={n}` | Bounded cursor polling over the in-memory operational event ring. |
 | `GET` | `/api/v1/events/stream` | Bearer-authenticated bounded SSE over the same event ring; `/api/v1/events` with `Accept: text/event-stream` is equivalent. |
+| `GET` | `/api/v2/events?after={cursor}&limit={n}` | Version-2 event polling with authoritative `latestCursor` and the complete corrected event vocabulary. |
+| `GET` | `/api/v2/events/stream` | Version-2 SSE over the same ring and vocabulary; `/api/v2/events` with `Accept: text/event-stream` is equivalent. |
 | `POST` | `/api/v1/process/drain`, `/api/v1/process/shutdown` | Revision-checked process drain or shutdown requests. |
 | `GET` | `/api/v1/rtmp/streams` | Active RTMP catalog and runtime capabilities. |
 | `GET` | `/api/v1/rtmp/streams/{streamId}` | One exact-ID active stream snapshot. |
@@ -59,7 +61,7 @@ Implemented and recognized endpoints:
 | `GET` | `/api/v1/rtmp/vod/{service}/{application}/{source}/{path}` | Read one bounded local/HTTP VOD object; one contiguous `Range` is accepted. |
 | `GET` | `/api/v1/rtmp/media/{service}/{application}/{stream}/{object}` | Read one bounded authenticated HLS or DASH playlist, fragment, key, or manifest object. |
 
-Every `/api/v1/...` route in this table requires the management bearer token. The only public
+Every `/api/v1/...` and `/api/v2/...` route in this table requires the management bearer token. The only public
 recognized API probes are exact `GET /ready` and `GET /metrics`; wrong methods and unknown paths do
 not create an authentication bypass.
 
@@ -143,14 +145,18 @@ format-preserving `configPreview`, diagnostics, `restartRequired`, and a candida
 `not_active`. A restricted-Lua coordinator also returns the legacy `luaPreview` alias. Validation
 compiles the complete runtime plan,
 loads configured UI assets, checks the configured Certbot and direct-file watcher prerequisites, and performs a
-read-only recording-root ownership/quota preflight. Recorder preflight does not create an ownership
-lock, probe, partial, or recording file. Actual daemon activation separately opens and pins each
-store and can still fail if a root changes after validation.
+reversible RTMP acquisition pass. It opens and drops configured access logs, media roots, recording
+stores, and service preparations so startup-grade environmental failures are reported without starting
+recorder reapers, pull controllers, or auto-push transport. Recording acquisition may take the store's
+startup ownership lock and clean owned stale partials, but it does not create a recording file. Actual
+daemon preparation reacquires and retains each resource and can still fail if it changes after validation.
 
 `PUT /api/v1/config` requires the same body plus `If-Config-Revision`. It performs the same complete
-preflight before opening the write transaction, except that a detected active Unix-listener mode
-change validates the complete runtime plan without attempting to rebind the active path and is
-classified as restart-required, including when the candidate contains other changes. A `422`
+preflight before opening the write transaction. Restart classification is mode-aware: direct mode
+classifies an active same-path Unix-listener mode change without attempting to rebind the active
+path, while supervised mode classifies any incompatible listener/control-listener descriptor
+topology. Both validate the complete runtime plan and remain restart-required when the candidate
+contains other changes. A `422`
 preflight failure cannot mutate the canonical file. The
 save then re-reads and compares the authoritative disk bytes, writes mode
 `0600`, synchronizes, atomically replaces, and synchronizes the parent directory.
@@ -174,9 +180,15 @@ three exact outcomes:
   `restartRequired` is `false` while the watcher starts the prepared generation.
 - `unchanged_active`: the candidate revision equals the active generation, `activationState` is `active`, and
   `restartRequired` is `false`.
-- `saved_restart_required`: a valid durable candidate changes the mode of an active Unix listener,
-  `activationState` is `restart_required`, and `restartRequired` is `true`. The active generation
-  remains unchanged until a process restart applies the complete saved candidate.
+- `saved_restart_required`: a valid durable candidate requires a process restart because direct
+  mode changed an active Unix listener mode or supervised mode changed listener/control-listener
+  descriptor topology. `activationState` is `restart_required`, and `restartRequired` is `true`.
+  The active generation remains unchanged until a process restart applies the complete saved candidate.
+
+The warning remains schema-v1 `I_RESTART_REQUIRED`. Direct Unix mode changes retain path
+`/config/listeners` and the shipped Unix-specific message. Supervised descriptor incompatibility
+uses `/config/listeners` with a topology-neutral listener/control-listener message. UI lifecycle
+messaging displays this backend diagnostic rather than inferring a Unix cause.
 
 There is no `202` API response. For a changed save, the canonical configuration watcher observes the durable
 replacement, prepares a candidate, and the generation supervisor publishes it only after the new
@@ -359,12 +371,17 @@ stream query arguments are not included in active or candidate topology.
 
 ## Events and event stream
 
-`GET /api/v1/events` is implemented as bounded cursor polling over a 2,048-event in-memory ring.
-It returns `events`, `cursor`, `hasMore`, and `oldestCursor`; callers can page with `after` and
-`limit`. It is bearer-protected like every other recognized `/api/v1` route. `GET
-/api/v1/events/stream` adds a bounded SSE delivery over the same ring; `GET /api/v1/events` with
-`Accept: text/event-stream` is an equivalent negotiated form. Both forms require exactly one
-management bearer token.
+`GET /api/v1/events` preserves the shipped 0.4.1 bounded polling contract over the 2,048-event
+in-memory ring. It returns exactly `events`, `cursor`, `hasMore`, and `oldestCursor`; its event-name
+serialization and SSE event/data pairing remain unchanged. `GET /api/v1/events/stream` and content
+negotiation on `/api/v1/events` preserve that same version-1 contract.
+
+`GET /api/v2/events` adds authoritative `latestCursor` and the corrected complete event vocabulary,
+including certificate revocation, deletion, account rollover, job control, and structured endpoint
+ejection/recovery outcomes. `/api/v2/events/stream` and content negotiation on `/api/v2/events` use
+the same version-2 names and outcomes in both the SSE `event` field and JSON data. All four routes
+require exactly one management bearer token. The bundled UI uses v2 and falls back to v1 only when a
+0.4.1 server returns 404 for v2; only that fallback derives `latestCursor` from `cursor`.
 
 An SSE connection sends `event: ready` with `{"cursor":N}` before replay or live delivery. Without
 a cursor, `N` is the current ring cursor and only later events are delivered. A `Last-Event-ID`

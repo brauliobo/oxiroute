@@ -84,12 +84,12 @@ impl ExecEnvironment {
     }
 
     #[must_use]
-    pub(crate) fn name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
     #[must_use]
-    pub(crate) fn value(&self) -> &str {
+    pub fn value(&self) -> &str {
         &self.value
     }
 }
@@ -188,7 +188,7 @@ pub enum ExecProfileError {
     InvalidTranscodeTrigger,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ExecProfile {
     name: Arc<str>,
     application: Arc<str>,

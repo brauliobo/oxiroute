@@ -531,9 +531,11 @@ exclusive hidden partials, atomic no-replace publication, startup cleanup under 
 on the descriptor-pinned root directory,
 and byte/file/active-recorder limits. One lease accounts for each recorder worker's full lifetime;
 segment files and pending finalizations do not consume additional recorder slots. Runtime-plan and
-config-API candidate validation use a
-read-only preflight; actual RTMP service activation opens and descriptor-pins the root. Existing
-files count toward quota. Equal limits for one normalized
+config-API candidate validation performs read-only recording-store preflight; daemon preparation
+reacquires the descriptor-pinned store and ownership lease
+preparation, preserving startup environmental failures without starting recorder reapers or pull
+controllers. Validation may take the startup ownership lock and clean owned stale partials; it does
+not create recording output. Existing files count toward quota. Equal limits for one normalized
 root share counters within one daemon process only; the lock protocol is cross-process, but quota
 accounting is not.
 

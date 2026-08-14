@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use oxiroute_config::{Config, compose_configs, load_lua};
+use oxiroute_config::{ConfigDraft, ValidatedConfig};
 use oxiroute_import::ImportReportEnvelope;
 use serde_json::Value;
 
@@ -18,7 +18,7 @@ use crate::error::{NativeDiagnosticCount, NativeDiagnostics};
 use crate::native::{NativeDirective, extract_directives};
 use crate::{
     ConfigFormat, ConfigSourceError, MAX_DEPENDENCY_PATHS, expand_templates, hocon, kdl, limits,
-    render_config, uci,
+    load_lua, render_config, uci,
 };
 
 /// A fully resolved, normalized configuration source.
@@ -27,7 +27,7 @@ pub struct ResolvedSource {
     /// Authored source syntax.
     pub format: ConfigFormat,
     /// Final normalized canonical configuration.
-    pub config: Config,
+    pub config: ValidatedConfig,
     /// Deterministic KDL rendering of `config`, never the authored source.
     pub canonical_kdl: String,
     /// Whether templates or native source references contributed to `config`.
@@ -75,7 +75,7 @@ pub fn resolve_source_with_format(
 ) -> Result<ResolvedSource, ConfigSourceError> {
     let source = limits::source_text(bytes)?;
     if format == ConfigFormat::Lua {
-        let config = load_lua(source).map_err(|error| ConfigSourceError::Lua(error.to_string()))?;
+        let config = load_lua(source)?;
         return finish(format, config, false, Vec::new(), Vec::new());
     }
 
@@ -96,28 +96,21 @@ pub fn resolve_source_with_format(
     let value = expand_templates(&value)?;
     let native_version = source_version(&value)?.unwrap_or(1);
     let inline = inline_config(value)?;
-    let mut fragments = Vec::with_capacity(directives.len() + usize::from(inline.is_some()));
-    if let Some(config) = inline {
-        fragments.push(config);
-    }
+    let mut imported_fragments = Vec::with_capacity(directives.len());
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut dependencies = Dependencies::default();
     let mut native_references = Vec::with_capacity(directives.len());
     for directive in &directives {
         let imported = import_native(directive, parent, &mut dependencies)?;
-        let mut config = imported.config;
-        config.version = fragments
-            .first()
-            .map_or(native_version, |inline| inline.version);
-        fragments.push(config);
+        imported_fragments.push(imported.config);
         native_references.push(imported.metadata);
     }
-    if fragments.is_empty() {
+    if inline.is_none() && imported_fragments.is_empty() {
         return Err(ConfigSourceError::NoFragments);
     }
 
-    let config = compose_configs(&fragments)
+    let config = crate::compose_validated_fragments(inline, imported_fragments, native_version)
         .map_err(|error| ConfigSourceError::Composition(error.to_string()))?;
     finish(
         format,
@@ -128,7 +121,7 @@ pub fn resolve_source_with_format(
     )
 }
 
-fn inline_config(mut value: Value) -> Result<Option<Config>, ConfigSourceError> {
+fn inline_config(mut value: Value) -> Result<Option<ConfigDraft>, ConfigSourceError> {
     let Value::Object(root) = &mut value else {
         return Err(ConfigSourceError::TypedConfig(
             "configuration root must be an object".to_owned(),
@@ -159,13 +152,11 @@ fn source_version(value: &Value) -> Result<Option<u32>, ConfigSourceError> {
 
 fn finish(
     format: ConfigFormat,
-    config: Config,
+    config: ValidatedConfig,
     compositional: bool,
     dependencies: Vec<PathBuf>,
     native_references: Vec<NativeReferenceMetadata>,
 ) -> Result<ResolvedSource, ConfigSourceError> {
-    let config = compose_configs(&[config])
-        .map_err(|error| ConfigSourceError::Composition(error.to_string()))?;
     let canonical_kdl = render_config(ConfigFormat::Kdl, &config)?;
     Ok(ResolvedSource {
         format,

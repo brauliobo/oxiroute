@@ -21,7 +21,7 @@ oxiroute --output json topology
 | Dashboard keeps old values | UI stale banner and management listener logs | The last valid sample is retained after a transient refresh failure |
 | Configuration save returns `409` | Disk and active revisions | Another writer changed the authoritative file; reconcile instead of overwriting |
 | Configuration save returns `422` | Validation diagnostics and compositional flag | Draft or runtime preflight failed, or a compositional root cannot be flattened |
-| Configuration save says restart required | Listener bind/mode changes | Active Unix listener mode changes are not live-rebound |
+| Configuration save says restart required | Runtime mode and `/config/listeners` diagnostic | Direct mode cannot live-rebind a same-path Unix listener mode change; supervised mode cannot replace an incompatible listener or control-listener descriptor topology in place |
 | Manual recorder button is disabled | Publisher, recorder phase, capability, observed codec | The requested operation is not safe or supported for this stream |
 | Import produces a report but no preview | Blocking diagnostic or deployment requirement | The source contains behavior that cannot be represented safely |
 | Metrics show large string counters | API shape | Decimal strings preserve exact `u64` values; do not parse through a JavaScript number |
@@ -61,6 +61,18 @@ that will be captured by process inspection.
 Use `--output report`, read blocking errors first, and keep the native source unchanged. A finalized
 preview can still contain deployment warnings; reproduce user/group/chroot/logging/process behavior
 outside OxiRoute before cutover.
+
+## Restart-Required Configuration
+
+A restart-required validation or save is not a failed write. Read the `I_RESTART_REQUIRED` diagnostic
+for the specific cause. In direct mode, changing the filesystem mode of an active Unix listener at
+the same path requires a process restart. In supervised mode, changing the complete listener or
+control-listener descriptor topology requires a process restart, including descriptor identity,
+order, role, kind, bind, Unix mode, protocol, or count.
+
+Validation reports the candidate as restart-required before writing. A successful save reports
+`saved_restart_required`; the canonical file is durable, but the active generation remains unchanged
+until the process restarts. Policy and service-only changes remain eligible for in-process activation.
 
 ## Collect A Useful Bug Report
 

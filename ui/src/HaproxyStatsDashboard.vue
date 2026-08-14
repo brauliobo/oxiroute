@@ -158,8 +158,7 @@ import {
   formatTelemetryAge,
   formatTelemetryDuration,
 } from './formatters'
-import type { ListenerProtocol } from './config'
-import type { MonitoringPool, MonitoringSnapshot } from './api'
+import type { MonitoringListenerProtocol, MonitoringPool, MonitoringSnapshot } from './api'
 
 const props = defineProps<{ monitoring: MonitoringSnapshot }>()
 
@@ -184,10 +183,10 @@ const processMetrics = computed<Metric[]>(() => [
   { label: 'Retry attempts', value: formatCount(monitoring.value.process.retryAttempts), mono: true },
   { label: 'CPU utilization', value: formatPercent(monitoring.value.process.cpuPercent) },
   { label: 'Uptime', value: formatTelemetryDuration(monitoring.value.uptimeMs), mono: true },
-  { label: 'Resident memory', value: formatBytes(monitoring.value.process.residentMemoryBytes), mono: true },
-  { label: 'Virtual memory', value: formatBytes(monitoring.value.process.virtualMemoryBytes), mono: true },
-  { label: 'Threads', value: formatCount(monitoring.value.process.threadCount), mono: true },
-  { label: 'Open files', value: formatCount(monitoring.value.process.openFileDescriptors), mono: true },
+  { label: 'Resident memory', value: formatOptionalBytes(monitoring.value.process.residentMemoryBytes), mono: true },
+  { label: 'Virtual memory', value: formatOptionalBytes(monitoring.value.process.virtualMemoryBytes), mono: true },
+  { label: 'Threads', value: formatOptionalCount(monitoring.value.process.threadCount), mono: true },
+  { label: 'Open files', value: formatOptionalCount(monitoring.value.process.openFileDescriptors), mono: true },
 ])
 const trafficMetrics = computed<Metric[]>(() => [
   { label: 'Active connections', value: formatCount(monitoring.value.traffic.activeConnections), mono: true },
@@ -197,20 +196,23 @@ const trafficMetrics = computed<Metric[]>(() => [
   { label: 'Bytes sent', value: formatBytes(monitoring.value.traffic.bytesSent), mono: true },
 ])
 const hostMetrics = computed<Metric[]>(() => [
-  { label: 'Load average / 1m', value: monitoring.value.host.loadAverage1m.toFixed(2), mono: true },
-  { label: 'Load average / 5m', value: monitoring.value.host.loadAverage5m.toFixed(2), mono: true },
-  { label: 'Load average / 15m', value: monitoring.value.host.loadAverage15m.toFixed(2), mono: true },
-  { label: 'Total memory', value: formatBytes(monitoring.value.host.totalMemoryBytes), mono: true },
-  { label: 'Available memory', value: formatBytes(monitoring.value.host.availableMemoryBytes), mono: true },
-  { label: 'Used memory', value: formatBytes(usedMemoryBytes(monitoring.value)), mono: true },
+  { label: 'Load average / 1m', value: formatOptionalDecimal(monitoring.value.host.loadAverage1m), mono: true },
+  { label: 'Load average / 5m', value: formatOptionalDecimal(monitoring.value.host.loadAverage5m), mono: true },
+  { label: 'Load average / 15m', value: formatOptionalDecimal(monitoring.value.host.loadAverage15m), mono: true },
+  { label: 'Total memory', value: formatOptionalBytes(monitoring.value.host.totalMemoryBytes), mono: true },
+  { label: 'Available memory', value: formatOptionalBytes(monitoring.value.host.availableMemoryBytes), mono: true },
+  { label: 'Used memory', value: formatOptionalBytes(usedMemoryBytes(monitoring.value)), mono: true },
 ])
 
 function addDecimal(left: string, right: string): string {
   return (BigInt(left) + BigInt(right)).toString()
 }
 
-function usedMemoryBytes(snapshot: MonitoringSnapshot): number {
-  return Math.max(0, snapshot.host.totalMemoryBytes - snapshot.host.availableMemoryBytes)
+function usedMemoryBytes(snapshot: MonitoringSnapshot): number | null {
+  const { totalMemoryBytes, availableMemoryBytes } = snapshot.host
+  return totalMemoryBytes === null || availableMemoryBytes === null
+    ? null
+    : Math.max(0, totalMemoryBytes - availableMemoryBytes)
 }
 
 function formatLimit(value: number | null): string {
@@ -221,15 +223,29 @@ function formatPercent(value: number | null): string {
   return value === null ? 'Unavailable' : `${value.toFixed(1).replace(/\.0$/, '')}%`
 }
 
+function formatOptionalBytes(value: number | null): string {
+  return value === null ? 'Unavailable' : formatBytes(value)
+}
+
+function formatOptionalCount(value: number | null): string {
+  return value === null ? 'Unavailable' : formatCount(value)
+}
+
+function formatOptionalDecimal(value: number | null): string {
+  return value === null ? 'Unavailable' : value.toFixed(2)
+}
+
 function humanize(value: string): string {
   return value.replace(/_/g, ' ').replace(/\b\w/g, (character) => character.toUpperCase())
 }
 
-function listenerProtocolLabel(protocol: ListenerProtocol): string {
-  const labels: Record<ListenerProtocol, string> = {
+function listenerProtocolLabel(protocol: MonitoringListenerProtocol): string {
+  const labels: Record<MonitoringListenerProtocol, string> = {
     http: 'HTTP',
     tcp: 'TCP',
     rtmp: 'RTMP',
+    http3: 'HTTP/3',
+    udp: 'UDP',
     forward_http1: 'Forward H1',
     forward_http2: 'Forward H2',
     forward_http3: 'Forward H3',

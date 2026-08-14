@@ -5,11 +5,11 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use oxiroute_config::{
-    Config, HttpPathSelector, HttpProxyPolicy, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-    HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy, Listener, Protocol,
-    UpstreamAlgorithm, UpstreamPool,
+    ConfigDraft, HttpPathSelector, HttpProxyPolicy, HttpRequestHeaderMutation,
+    HttpRequestHeaderValue, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy, Listener,
+    Protocol, UpstreamAlgorithm, UpstreamPool,
 };
-use oxiroute_server::{HttpReverseProxy, RuntimeMetrics, ServiceKind, service_specs};
+use oxiroute_server::{HttpReverseProxy, RuntimeMetrics, ServiceKind};
 use pingora::{apps::ServerApp, proxy::http_proxy, server::configuration::ServerConf};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -19,7 +19,7 @@ use tokio::{
 };
 use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message};
 
-use config_support::{empty_config, socket_bind, socket_endpoint};
+use config_support::{empty_config, service_specs, socket_bind, socket_endpoint};
 
 #[tokio::test]
 async fn websocket_upgrade_proxies_frames_in_both_directions() {
@@ -51,6 +51,7 @@ async fn websocket_upgrade_proxies_frames_in_both_directions() {
             .register_listener("websocket", "http", proxy_address.to_string(), 100)
             .expect("listener metrics");
         let config = websocket_config(proxy_address, origin_address);
+        let config = config.validate().expect("valid websocket config");
         let mut services = service_specs(&config).expect("service plan");
         let ServiceKind::Http(http_service) = services.remove(0).kind else {
             panic!("websocket listener must compile as HTTP");
@@ -143,6 +144,7 @@ async fn upgrade_preserves_request_body_before_101_and_tunnel_bytes_after_101() 
             .register_listener("upgrade-body", "http", proxy_address.to_string(), 100)
             .expect("listener metrics");
         let config = websocket_config(proxy_address, origin_address);
+        let config = config.validate().expect("valid websocket config");
         let mut services = service_specs(&config).expect("service plan");
         let ServiceKind::Http(http_service) = services.remove(0).kind else {
             panic!("upgrade listener must compile as HTTP");
@@ -196,8 +198,8 @@ async fn upgrade_preserves_request_body_before_101_and_tunnel_bytes_after_101() 
     .expect("upgrade body exchange timed out");
 }
 
-fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> Config {
-    Config {
+fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> ConfigDraft {
+    ConfigDraft {
         listeners: vec![Listener {
             name: "websocket".into(),
             bind: socket_bind(proxy_address),

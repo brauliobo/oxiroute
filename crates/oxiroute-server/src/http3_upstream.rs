@@ -9,7 +9,6 @@ use std::{
 
 use bytes::{Buf as _, Bytes};
 use http::{HeaderMap, Request, StatusCode, header::CONTENT_LENGTH};
-use oxiroute_config::UpstreamPool;
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint, TransportConfig, VarInt};
 use rustls::{
@@ -105,23 +104,20 @@ impl std::fmt::Debug for H3UpstreamPlan {
 }
 
 impl H3UpstreamPlan {
-    pub(crate) fn from_pool(pool: &UpstreamPool) -> Result<Option<Self>, H3UpstreamBuildError> {
-        if pool.http_versions.min != oxiroute_config::HttpVersion::Http3 {
+    pub(crate) fn acquire(
+        blueprint: &crate::tls::UpstreamTlsBlueprint,
+    ) -> Result<Option<Self>, H3UpstreamBuildError> {
+        if !blueprint.h3 {
             return Ok(None);
         }
-        let Some(tls) = &pool.tls else {
-            return Err(H3UpstreamBuildError::EmptyRoots {
-                pool: pool.name.clone(),
-            });
-        };
-        let roots = match tls.ca_certificate_path.as_deref() {
-            Some(path) => custom_roots(&pool.name, path)?,
-            None => native_roots(&pool.name)?,
+        let roots = match blueprint.ca_certificate_path.as_deref() {
+            Some(path) => custom_roots(&blueprint.pool, path)?,
+            None => native_roots(&blueprint.pool)?,
         };
         Self::new(
-            pool.name.clone(),
+            blueprint.pool.clone(),
             roots,
-            Some(tls.server_name.to_ascii_lowercase()),
+            Some(blueprint.server_name.clone()),
             H3_UPSTREAM_MAX_CONNECTIONS,
         )
         .map(Some)
@@ -129,12 +125,7 @@ impl H3UpstreamPlan {
 
     pub(crate) fn for_forward(max_connections: usize) -> Result<Self, H3UpstreamBuildError> {
         let roots = native_roots("forward HTTP/3")?;
-        Self::new(
-            "forward HTTP/3".into(),
-            roots,
-            None,
-            max_connections.clamp(1, H3_UPSTREAM_MAX_CONNECTIONS),
-        )
+        Self::new("forward HTTP/3".into(), roots, None, max_connections)
     }
 
     fn new(

@@ -5,15 +5,18 @@ use std::{
 };
 
 use oxiroute_config::{
-    Config, DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpVersionPolicy, L4Service, Listener,
-    ListenerBind, Protocol, ProxyProtocolPolicy, ProxyProtocolVersion, UpstreamAlgorithm,
-    UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    ConfigDraft, DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpVersionPolicy, L4Service,
+    Listener, ListenerBind, Protocol, ProxyProtocolPolicy, ProxyProtocolVersion, UpstreamAlgorithm,
+    UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, ValidatedConfig,
 };
 
 use crate::{
-    CanonicalDraft, CanonicalFinalization, CanonicalProvenance, Diagnostic, DiagnosticCode,
-    DiagnosticStage, E_INVALID_VALUE, Report, Severity,
-    candidate::{CanonicalProvenanceLedger, EmptyOriginPolicy},
+    CanonicalCandidateSummary, CanonicalProvenance, Diagnostic, DiagnosticCode, DiagnosticStage,
+    E_INVALID_VALUE, Report, Severity,
+    candidate::{
+        CanonicalCandidateState, CanonicalProvenanceLedger, EmptyOriginPolicy, empty_config,
+        finalize_candidate,
+    },
 };
 
 use super::{
@@ -39,8 +42,7 @@ pub struct StreamImportReport {
     pub diagnostics: Vec<Diagnostic>,
     pub provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
     pub blocked_services: Vec<BlockedStreamService>,
-    pub draft: CanonicalDraft,
-    finalization: CanonicalFinalization,
+    state: CanonicalCandidateState,
 }
 
 impl StreamImportReport {
@@ -52,13 +54,18 @@ impl StreamImportReport {
     }
 
     #[must_use]
-    pub fn config(&self) -> Option<&Config> {
-        self.finalization.config()
+    pub(crate) const fn draft(&self) -> &ConfigDraft {
+        self.state.draft()
     }
 
     #[must_use]
-    pub fn into_config(self) -> Option<Config> {
-        self.finalization.into_config()
+    pub const fn validated(&self) -> Option<&ValidatedConfig> {
+        self.state.validated()
+    }
+
+    #[must_use]
+    pub const fn summary(&self) -> CanonicalCandidateSummary {
+        self.state.summary()
     }
 }
 
@@ -93,7 +100,7 @@ struct Lowerer {
     diagnostics: Vec<Diagnostic>,
     provenance: CanonicalProvenanceLedger<DirectiveOrigin>,
     blocked_services: Vec<BlockedStreamService>,
-    draft: CanonicalDraft,
+    draft: ConfigDraft,
     upstream_pool_names: HashMap<OccurrenceId, String>,
     direct_pool_names: HashMap<StaticEndpoint, String>,
 }
@@ -106,7 +113,7 @@ impl Lowerer {
             diagnostics,
             provenance: CanonicalProvenanceLedger::new(EmptyOriginPolicy::Preserve),
             blocked_services: Vec::new(),
-            draft: CanonicalDraft::default(),
+            draft: empty_config(),
             upstream_pool_names: HashMap::new(),
             direct_pool_names: HashMap::new(),
         }
@@ -140,8 +147,10 @@ impl Lowerer {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.severity() == Severity::Error);
-        let finalization = match self.draft.finalize(finalizable) {
-            Ok(finalization) => finalization,
+        let draft = std::mem::replace(&mut self.draft, empty_config());
+        let state = match finalize_candidate(&draft, finalizable) {
+            Ok(Some(config)) => CanonicalCandidateState::Validated(config),
+            Ok(None) => CanonicalCandidateState::Blocked(draft),
             Err(error) => {
                 self.diagnostics.push(Diagnostic::new(
                     E_INVALID_VALUE,
@@ -149,7 +158,7 @@ impl Lowerer {
                     DiagnosticStage::Validate,
                     format!("lowered canonical nginx stream configuration is invalid: {error}"),
                 ));
-                CanonicalFinalization::Blocked
+                CanonicalCandidateState::Blocked(draft)
             }
         };
         let ((), diagnostics) = Report::new((), self.diagnostics).into_parts();
@@ -160,8 +169,7 @@ impl Lowerer {
             diagnostics,
             provenance: self.provenance.into_entries(),
             blocked_services: self.blocked_services,
-            draft: self.draft,
-            finalization,
+            state,
         }
     }
 

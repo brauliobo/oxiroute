@@ -11,7 +11,7 @@ use std::{
 
 use tempfile::TempDir;
 
-use oxiroute_config::Config;
+use oxiroute_config::ConfigDraft;
 use oxiroute_config_source::{
     ConfigFormat, decode_value, render_config, resolve_source_with_format,
 };
@@ -228,7 +228,7 @@ fn chunked_interim_response_is_decoded_by_the_cli_process() {
 #[test]
 fn config_check_accepts_all_source_formats_and_compose_defaults_to_kdl() {
     let directory = TempDir::new().expect("directory");
-    let config = empty_config();
+    let config = empty_config().validate().expect("valid empty config");
     for (extension, format) in [
         ("kdl", ConfigFormat::Kdl),
         ("lua", ConfigFormat::Lua),
@@ -629,6 +629,7 @@ fn varnish_import_report_and_preview_use_exact_invocation_arguments() {
         )
         .expect("Varnish preview round trip")
         .config
+        .as_draft()
         .http_services
         .len(),
         1
@@ -699,8 +700,8 @@ fn generation_reload_cli_keeps_the_old_generation_and_surfaces_native_failure() 
     );
 }
 
-fn empty_config() -> Config {
-    Config {
+fn empty_config() -> ConfigDraft {
+    ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
@@ -717,7 +718,7 @@ fn empty_config() -> Config {
     }
 }
 
-fn import_preview(args: &[&str], format_name: Option<&str>, format: ConfigFormat) -> Config {
+fn import_preview(args: &[&str], format_name: Option<&str>, format: ConfigFormat) -> ConfigDraft {
     let mut command = cli();
     command.args(args).args(["--output", "preview"]);
     if let Some(format_name) = format_name {
@@ -735,6 +736,7 @@ fn import_preview(args: &[&str], format_name: Option<&str>, format: ConfigFormat
     resolve_source_with_format(Path::new("preview"), &output.stdout, format)
         .expect("preview round trip")
         .config
+        .to_draft()
 }
 
 fn cli() -> Command {

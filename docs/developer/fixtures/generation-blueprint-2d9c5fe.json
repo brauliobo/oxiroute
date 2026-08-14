@@ -1,0 +1,3280 @@
+{
+  "cases": [
+    {
+      "acquisitionOrder": [
+        "tls",
+        "pools",
+        "http",
+        "forward",
+        "rtmp",
+        "l4_listeners"
+      ],
+      "case": "comprehensive",
+      "decisions": {
+        "cache_stores": [
+          {
+            "max_bytes": 1048576,
+            "max_entries": 128,
+            "max_followers_per_fill": 128,
+            "max_header_bytes": 65536,
+            "max_in_flight_fills": 1024,
+            "max_key_bytes": 4096,
+            "max_object_bytes": 65536,
+            "max_tag_bytes": 256,
+            "max_tags_per_object": 64,
+            "name": "memory",
+            "type": "memory"
+          }
+        ],
+        "certificates": [
+          {
+            "dns_names": [
+              "h2.example.test"
+            ],
+            "name": "h2-cert",
+            "source": {
+              "key_type": "ecdsa_p256",
+              "type": "self_signed_development",
+              "validity_days": 7
+            }
+          },
+          {
+            "dns_names": [
+              "h3.example.test",
+              "*.h3.example.test"
+            ],
+            "name": "h3-cert",
+            "source": {
+              "key_type": "ecdsa_p256",
+              "type": "self_signed_development",
+              "validity_days": 7
+            }
+          }
+        ],
+        "forward_proxy_services": [
+          {
+            "access_policy": {
+              "default_action": "deny",
+              "rules": [
+                {
+                  "action": "allow",
+                  "conditions": [
+                    {
+                      "cidrs": [
+                        "192.0.2.0/24"
+                      ],
+                      "negated": false,
+                      "type": "source_cidrs"
+                    }
+                  ]
+                }
+              ]
+            },
+            "allow_absolute_form": true,
+            "audit_mode": "metadata",
+            "auth": {
+              "token_file_path": "<fixture-root>/forward.token",
+              "type": "bearer_token_file"
+            },
+            "cache": {
+              "authorization_policy": "bypass",
+              "bypass_request": [],
+              "collapsed_forwarding": true,
+              "default_ttl_ms": 5000,
+              "grace_ms": 500,
+              "keep_ms": 750,
+              "key_components": [
+                {
+                  "type": "scheme"
+                },
+                {
+                  "type": "normalized_host"
+                },
+                {
+                  "type": "path_and_query"
+                }
+              ],
+              "methods": [
+                "GET",
+                "HEAD"
+              ],
+              "no_store_request": [],
+              "no_store_response": [],
+              "purge_authorization": null,
+              "revalidate": true,
+              "set_cookie_policy": "bypass",
+              "stale_on": [],
+              "status_ttls": [],
+              "store": "memory",
+              "surrogate_tags": null,
+              "use_origin_cache_control": true,
+              "vary_policy": "respect"
+            },
+            "connect": {
+              "allowed_ports": [
+                443,
+                8443
+              ],
+              "enabled": true
+            },
+            "connect_timeout_ms": 1000,
+            "connect_udp": {
+              "allowed_ports": [
+                443
+              ],
+              "enabled": true
+            },
+            "destination_policy": {
+              "allow_cidrs": [],
+              "allow_domains": [
+                "example.test"
+              ],
+              "allow_times": [],
+              "deny_cidrs": [],
+              "deny_domains": [
+                "blocked.example.test"
+              ],
+              "deny_private": false,
+              "deny_times": []
+            },
+            "enabled_versions": [
+              "h1",
+              "h2",
+              "h3"
+            ],
+            "header_policy": {
+              "forwarded_for": "preserve",
+              "via": "preserve"
+            },
+            "idle_timeout_ms": 2000,
+            "lifetime_timeout_ms": 3000,
+            "max_connections": 32,
+            "max_header_bytes": 16384,
+            "max_request_body_bytes": 65536,
+            "name": "forward",
+            "peer_policy": {
+              "direct_fallback": "allowed",
+              "max_retries": 3,
+              "peers": []
+            },
+            "resolver": {
+              "max_addresses_per_name": 16,
+              "max_cache_entries": 4096,
+              "max_concurrent_queries": 256,
+              "max_ttl_ms": 300000,
+              "min_ttl_ms": 1000,
+              "nameservers": [],
+              "negative_ttl_ms": 30000,
+              "revalidate_on_connect": true
+            },
+            "tls_required": false
+          }
+        ],
+        "http_services": [
+          {
+            "access_log": null,
+            "automatic_response_headers": true,
+            "gzip": null,
+            "max_request_body_bytes": 10485760,
+            "name": "web",
+            "routes": [
+              {
+                "access_policy": {
+                  "header_name": "authorization",
+                  "realm": "baseline",
+                  "token_file_path": "<fixture-root>/forward.token",
+                  "type": "bearer_token_file"
+                },
+                "action": {
+                  "body": "fixed",
+                  "headers": [
+                    {
+                      "always": true,
+                      "name": "x-baseline",
+                      "value": "fixed"
+                    }
+                  ],
+                  "status": 201,
+                  "type": "fixed_response"
+                },
+                "host": null,
+                "methods": [],
+                "path": {
+                  "kind": "exact",
+                  "value": "/fixed"
+                },
+                "policy": {
+                  "connect_timeout_ms": 30000,
+                  "max_request_body_bytes": 10485760,
+                  "read_timeout_ms": 30000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 30000
+                }
+              },
+              {
+                "access_policy": null,
+                "action": {
+                  "headers": [],
+                  "location": {
+                    "kind": "literal",
+                    "value": "/fixed"
+                  },
+                  "status": 308,
+                  "type": "redirect"
+                },
+                "host": null,
+                "methods": [],
+                "path": {
+                  "kind": "exact",
+                  "value": "/redirect"
+                },
+                "policy": {
+                  "connect_timeout_ms": 30000,
+                  "max_request_body_bytes": 10485760,
+                  "read_timeout_ms": 30000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 30000
+                }
+              },
+              {
+                "access_policy": null,
+                "action": {
+                  "autoindex": false,
+                  "autoindex_exact_size": true,
+                  "autoindex_local_time": false,
+                  "directory_redirects": false,
+                  "error_responses": [],
+                  "etag": true,
+                  "headers": [],
+                  "index_files": [
+                    "index.html"
+                  ],
+                  "internal_index_redirects": false,
+                  "mime": {
+                    "default_type": null,
+                    "types": []
+                  },
+                  "path_mapping": "root",
+                  "root_directory": "<fixture-root>/static",
+                  "spa_fallback": null,
+                  "try_files": [],
+                  "type": "static_files"
+                },
+                "host": null,
+                "methods": [],
+                "path": {
+                  "kind": "segment_prefix",
+                  "value": "/static"
+                },
+                "policy": {
+                  "connect_timeout_ms": 30000,
+                  "max_request_body_bytes": 10485760,
+                  "read_timeout_ms": 30000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 30000
+                }
+              },
+              {
+                "access_policy": null,
+                "action": {
+                  "policy": {
+                    "cache": {
+                      "authorization_policy": "bypass",
+                      "bypass_request": [],
+                      "collapsed_forwarding": true,
+                      "default_ttl_ms": 10000,
+                      "grace_ms": 2000,
+                      "keep_ms": 3000,
+                      "key_components": [
+                        {
+                          "type": "scheme"
+                        },
+                        {
+                          "type": "normalized_host"
+                        },
+                        {
+                          "type": "path_and_query"
+                        }
+                      ],
+                      "methods": [
+                        "GET",
+                        "HEAD"
+                      ],
+                      "no_store_request": [],
+                      "no_store_response": [],
+                      "purge_authorization": null,
+                      "revalidate": true,
+                      "set_cookie_policy": "bypass",
+                      "stale_on": [],
+                      "status_ttls": [
+                        {
+                          "status": 404,
+                          "ttl_ms": 1000
+                        }
+                      ],
+                      "store": "memory",
+                      "surrogate_tags": null,
+                      "use_origin_cache_control": true,
+                      "vary_policy": "respect"
+                    },
+                    "request_headers": [],
+                    "response_cookie_attributes": [],
+                    "response_cookie_path_rewrites": [],
+                    "response_headers": [],
+                    "retry": {
+                      "body_safety": "empty",
+                      "delay_ms": 0,
+                      "final_redispatch": false,
+                      "max_retries": 0,
+                      "method_safety": "get_head",
+                      "target": "next_server",
+                      "triggers": [
+                        "connect_failure",
+                        "connect_timeout",
+                        "refused_stream"
+                      ]
+                    },
+                    "upstream_host": {
+                      "type": "preserve_incoming"
+                    },
+                    "upstream_path_rewrite": null
+                  },
+                  "type": "proxy",
+                  "upstream_pool": "origin"
+                },
+                "host": {
+                  "kind": "normalized_host",
+                  "value": "api.example.test"
+                },
+                "methods": [
+                  "GET",
+                  "HEAD"
+                ],
+                "path": {
+                  "kind": "segment_prefix",
+                  "value": "/"
+                },
+                "policy": {
+                  "connect_timeout_ms": 1000,
+                  "max_request_body_bytes": 65536,
+                  "read_timeout_ms": 2000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 3000
+                }
+              }
+            ],
+            "upstream_io_timeout_ms": 30000
+          },
+          {
+            "access_log": null,
+            "automatic_response_headers": true,
+            "gzip": {
+              "content_types": [
+                "text/plain",
+                "application/json"
+              ],
+              "disable_on_via": true,
+              "level": 6,
+              "min_http_version": "1.1",
+              "min_length_bytes": 64,
+              "vary": true
+            },
+            "max_request_body_bytes": 10485760,
+            "name": "gzip",
+            "routes": [
+              {
+                "access_policy": null,
+                "action": {
+                  "body": "gzip",
+                  "headers": [],
+                  "status": 200,
+                  "type": "fixed_response"
+                },
+                "host": null,
+                "methods": [],
+                "path": {
+                  "kind": "segment_prefix",
+                  "value": "/"
+                },
+                "policy": {
+                  "connect_timeout_ms": 30000,
+                  "max_request_body_bytes": 10485760,
+                  "read_timeout_ms": 30000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 30000
+                }
+              }
+            ],
+            "upstream_io_timeout_ms": 30000
+          },
+          {
+            "access_log": null,
+            "automatic_response_headers": true,
+            "gzip": null,
+            "max_request_body_bytes": 10485760,
+            "name": "web-h3",
+            "routes": [
+              {
+                "access_policy": null,
+                "action": {
+                  "policy": {
+                    "cache": null,
+                    "request_headers": [],
+                    "response_cookie_attributes": [],
+                    "response_cookie_path_rewrites": [],
+                    "response_headers": [],
+                    "retry": {
+                      "body_safety": "empty",
+                      "delay_ms": 0,
+                      "final_redispatch": false,
+                      "max_retries": 0,
+                      "method_safety": "get_head",
+                      "target": "next_server",
+                      "triggers": [
+                        "connect_failure",
+                        "connect_timeout",
+                        "refused_stream"
+                      ]
+                    },
+                    "upstream_host": {
+                      "type": "preserve_incoming"
+                    },
+                    "upstream_path_rewrite": null
+                  },
+                  "type": "proxy",
+                  "upstream_pool": "h3-origin"
+                },
+                "host": null,
+                "methods": [],
+                "path": {
+                  "kind": "segment_prefix",
+                  "value": "/"
+                },
+                "policy": {
+                  "connect_timeout_ms": 30000,
+                  "max_request_body_bytes": 10485760,
+                  "read_timeout_ms": 30000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 30000
+                }
+              }
+            ],
+            "upstream_io_timeout_ms": 30000
+          }
+        ],
+        "l4_services": [
+          {
+            "connect_timeout_ms": 1000,
+            "idle_timeout_ms": 2000,
+            "lifetime_timeout_ms": null,
+            "name": "tcp",
+            "proxy_protocol": null,
+            "udp": null,
+            "upstream_pool": "tcp"
+          },
+          {
+            "connect_timeout_ms": 1000,
+            "idle_timeout_ms": 2000,
+            "lifetime_timeout_ms": null,
+            "name": "udp",
+            "proxy_protocol": null,
+            "udp": {
+              "max_datagram_bytes": 1232,
+              "max_queue_bytes": 16384,
+              "max_queue_datagrams": 8,
+              "max_session_bytes": 65536,
+              "max_sessions": 32
+            },
+            "upstream_pool": "udp"
+          }
+        ],
+        "listeners": [
+          {
+            "bind": {
+              "address": "127.0.0.1:18080",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "web",
+            "protocol": "http",
+            "proxy_protocol": null,
+            "service": "web",
+            "tls_profile": null
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:18084",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "gzip",
+            "protocol": "http",
+            "proxy_protocol": null,
+            "service": "gzip",
+            "tls_profile": null
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:18443",
+              "type": "udp"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "reverse-h3",
+            "protocol": "http3",
+            "proxy_protocol": null,
+            "service": "web-h3",
+            "tls_profile": "h3"
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:18081",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "forward-h1",
+            "protocol": "forward_http1",
+            "proxy_protocol": null,
+            "service": "forward",
+            "tls_profile": null
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:18082",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "forward-h2",
+            "protocol": "forward_http2",
+            "proxy_protocol": null,
+            "service": "forward",
+            "tls_profile": "h2"
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:18083",
+              "type": "udp"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "forward-h3",
+            "protocol": "forward_http3",
+            "proxy_protocol": null,
+            "service": "forward",
+            "tls_profile": "h3"
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:15432",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "tcp",
+            "protocol": "tcp",
+            "proxy_protocol": null,
+            "service": "tcp",
+            "tls_profile": null
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:15353",
+              "type": "udp"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "udp",
+            "protocol": "udp",
+            "proxy_protocol": null,
+            "service": "udp",
+            "tls_profile": null
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:11935",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "rtmp",
+            "protocol": "rtmp",
+            "proxy_protocol": null,
+            "service": "rtmp",
+            "tls_profile": null
+          }
+        ],
+        "management": null,
+        "max_connections": null,
+        "rtmp_services": [
+          {
+            "access_log": null,
+            "ack_window_size": 5000000,
+            "applications": [
+              {
+                "callbacks": {
+                  "notify_method": "get",
+                  "notify_relay_redirect": true,
+                  "notify_update_strict": true,
+                  "notify_update_timeout_ms": 1400,
+                  "on_connect": null,
+                  "on_disconnect": null,
+                  "on_done": "http://127.0.0.1:19090/done",
+                  "on_play": "http://127.0.0.1:19090/play",
+                  "on_play_done": "http://127.0.0.1:19090/play-done",
+                  "on_publish": "http://127.0.0.1:19090/publish",
+                  "on_publish_done": "http://127.0.0.1:19090/publish-done",
+                  "on_update": "http://127.0.0.1:19090/update",
+                  "timeout_ms": 1300
+                },
+                "dash": {
+                  "cleanup": true,
+                  "max_active_streams": 1024,
+                  "max_queue_messages": 256,
+                  "max_segment_bytes": 8388608,
+                  "max_segment_duration_ms": 15000,
+                  "max_storage_bytes": 536870912,
+                  "max_storage_files": 10000,
+                  "nested": false,
+                  "playlist_length_ms": 30000,
+                  "root_directory": "<fixture-root>/dash",
+                  "segment_duration_ms": 5000,
+                  "segment_naming": "sequential"
+                },
+                "fanout": {
+                  "max_queue_bytes_per_subscriber": 262144,
+                  "max_queue_messages_per_subscriber": 64,
+                  "max_subscribers": 32
+                },
+                "hls": {
+                  "cleanup": true,
+                  "fragment_naming": "sequential",
+                  "keys": null,
+                  "max_active_streams": 1024,
+                  "max_queue_messages": 256,
+                  "max_segment_bytes": 8388608,
+                  "max_segment_duration_ms": 10000,
+                  "max_storage_bytes": 536870912,
+                  "max_storage_files": 10000,
+                  "nested": false,
+                  "playlist_length_ms": 30000,
+                  "root_directory": "<fixture-root>/hls",
+                  "segment_duration_ms": 2000,
+                  "variants": []
+                },
+                "idle_streams": false,
+                "limits": {
+                  "max_connections": 100,
+                  "max_publishers": 5,
+                  "max_viewers": 95
+                },
+                "live": true,
+                "name": "live",
+                "play": {
+                  "rules": [
+                    {
+                      "action": "deny",
+                      "network": "198.51.100.0/24"
+                    }
+                  ],
+                  "token": null
+                },
+                "publish": {
+                  "rules": [
+                    {
+                      "action": "allow",
+                      "network": "192.0.2.0/24"
+                    }
+                  ],
+                  "token": null
+                },
+                "pull_targets": [
+                  {
+                    "application": "origin",
+                    "credentials": null,
+                    "flash_version": null,
+                    "host": "127.0.0.1",
+                    "port": 1937,
+                    "scheme": "rtmp",
+                    "stream_name": "source",
+                    "tc_url": null
+                  }
+                ],
+                "push_targets": [
+                  {
+                    "application": "$name",
+                    "credentials": null,
+                    "flash_version": null,
+                    "host": "127.0.0.1",
+                    "port": 1936,
+                    "scheme": "rtmp",
+                    "stream_name": "mirror",
+                    "tc_url": null
+                  }
+                ],
+                "recorders": [
+                  {
+                    "append": false,
+                    "append_unix_seconds": false,
+                    "lock": false,
+                    "max_active_recorders": 2,
+                    "max_frames": null,
+                    "max_queue_bytes": 1048576,
+                    "max_queue_messages": 32,
+                    "max_size": null,
+                    "max_storage_bytes": null,
+                    "max_storage_files": null,
+                    "name": "archive",
+                    "notify": true,
+                    "record_mask": {
+                      "audio": true,
+                      "keyframes": false,
+                      "video": true
+                    },
+                    "root_directory": "<fixture-root>/recording",
+                    "rotation_interval_ms": null,
+                    "segment_naming": "safe_unique",
+                    "shutdown_timeout_ms": 1000,
+                    "start": "manual",
+                    "suffix_template": "-%Y%m%d.flv",
+                    "time_basis": "segment_start",
+                    "timezone": "utc"
+                  }
+                ],
+                "relay": {
+                  "buffer_ms": 1000,
+                  "connect_timeout_ms": 1000,
+                  "dns_refresh_ms": 5000,
+                  "handshake_timeout_ms": 1500,
+                  "max_queue_bytes": 131072,
+                  "max_queue_messages": 32,
+                  "pull_reconnect_ms": 3000,
+                  "push_reconnect_ms": 2000
+                },
+                "vod": {
+                  "max_duration_ms": 60000,
+                  "max_file_bytes": 1048576,
+                  "max_sessions": 2,
+                  "sources": [
+                    {
+                      "name": "archive",
+                      "root_directory": "<fixture-root>/vod",
+                      "type": "local"
+                    },
+                    {
+                      "name": "origin",
+                      "origin": "http://127.0.0.1:19091/media",
+                      "type": "http"
+                    }
+                  ]
+                }
+              }
+            ],
+            "auto_push": {
+              "connect_timeout_ms": 500,
+              "enabled": true,
+              "handshake_timeout_ms": 750,
+              "max_peers": 2,
+              "max_queue_bytes": 65536,
+              "max_queue_messages": 16,
+              "max_streams": 4,
+              "reconnect_ms": 1000,
+              "secret_file": "<fixture-root>/auto-push.secret",
+              "socket_dir": "<fixture-root>/auto-push"
+            },
+            "callbacks": {
+              "notify_method": "post",
+              "notify_relay_redirect": false,
+              "notify_update_strict": false,
+              "notify_update_timeout_ms": 30000,
+              "on_connect": "http://127.0.0.1:19090/connect",
+              "on_disconnect": "http://127.0.0.1:19090/disconnect",
+              "on_done": null,
+              "on_play": null,
+              "on_play_done": null,
+              "on_publish": null,
+              "on_publish_done": null,
+              "on_update": null,
+              "timeout_ms": 1200
+            },
+            "exec_profiles": [
+              {
+                "application": "live",
+                "arguments": [
+                  "--baseline"
+                ],
+                "environment": [
+                  {
+                    "name": "BASELINE",
+                    "value": "fixture"
+                  }
+                ],
+                "executable": "/bin/true",
+                "filesystem": "working_directory",
+                "max_processes": 1,
+                "max_queue_bytes": 4096,
+                "max_queue_messages": 8,
+                "max_respawns": 3,
+                "max_stderr_bytes": 1024,
+                "max_stdout_bytes": 1024,
+                "mode": "command",
+                "name": "publisher",
+                "network": "disabled",
+                "respawn": false,
+                "respawn_delay_ms": 250,
+                "shutdown_timeout_ms": 500,
+                "timeout_ms": 1000,
+                "trigger": "publisher",
+                "working_directory": "<fixture-root>/exec"
+              }
+            ],
+            "max_inbound_message_size": 1048576,
+            "name": "rtmp",
+            "outbound_chunk_size": 4096,
+            "outbound_policy": {
+              "allow_cidrs": [],
+              "allow_domains": [],
+              "deny_cidrs": [],
+              "deny_domains": [],
+              "deny_private": false,
+              "max_chain_depth": 4,
+              "rtmps": "allowed"
+            }
+          }
+        ],
+        "stats": null,
+        "tls_profiles": [
+          {
+            "alpn": [
+              "h2",
+              "http/1.1"
+            ],
+            "certificates": [
+              "h2-cert"
+            ],
+            "default_certificate": "h2-cert",
+            "min_version": "1.2",
+            "name": "h2",
+            "policy": {
+              "cipher_list": "ECDHE-ECDSA-AES128-GCM-SHA256",
+              "client_auth": {
+                "allowed_dns_names": [],
+                "ca_certificate_path": null,
+                "mode": "disabled"
+              },
+              "dh_parameters_path": null,
+              "prefer_server_ciphers": true,
+              "session_cache": {
+                "name": "h2",
+                "size_bytes": 65536
+              },
+              "session_tickets": false,
+              "session_timeout_seconds": 60
+            }
+          },
+          {
+            "alpn": [
+              "h3"
+            ],
+            "certificates": [
+              "h3-cert"
+            ],
+            "default_certificate": "h3-cert",
+            "min_version": "1.3",
+            "name": "h3",
+            "policy": {
+              "cipher_list": null,
+              "client_auth": {
+                "allowed_dns_names": [],
+                "ca_certificate_path": null,
+                "mode": "disabled"
+              },
+              "dh_parameters_path": null,
+              "prefer_server_ciphers": true,
+              "session_cache": null,
+              "session_tickets": false,
+              "session_timeout_seconds": null
+            }
+          }
+        ],
+        "upstream_pools": [
+          {
+            "algorithm": {
+              "type": "weighted_round_robin",
+              "weights": [
+                2,
+                1
+              ]
+            },
+            "connect_timeout_ms": null,
+            "connection_reuse": "safe",
+            "health_check": {
+              "down_interval_ms": null,
+              "expected_status": null,
+              "fast_interval_ms": null,
+              "healthy_threshold": 1,
+              "host": null,
+              "http_version": null,
+              "interval_ms": 5000,
+              "path": null,
+              "startup": "checking",
+              "timeout_ms": 1000,
+              "type": "tcp",
+              "unhealthy_threshold": 2
+            },
+            "http_versions": {
+              "max": "1.1",
+              "min": "1.1"
+            },
+            "name": "origin",
+            "passive_health": {
+              "error_limit": 2,
+              "initial_backoff_ms": 30000,
+              "mark_down": false,
+              "mark_up": false,
+              "max_backoff_ms": 30000,
+              "observe": "layer7",
+              "on_error": "count",
+              "recovery_threshold": 1
+            },
+            "queue_timeout_ms": null,
+            "server_timeout_ms": null,
+            "servers": [
+              {
+                "dns_resolution": "on_connect",
+                "endpoint": {
+                  "address": "127.0.0.1:13000",
+                  "type": "socket"
+                },
+                "max_connections": null,
+                "name": "endpoint-1"
+              },
+              {
+                "dns_resolution": "on_connect",
+                "endpoint": {
+                  "address": "127.0.0.1:13001",
+                  "type": "socket"
+                },
+                "max_connections": null,
+                "name": "endpoint-2"
+              }
+            ],
+            "tls": null
+          },
+          {
+            "algorithm": "round_robin",
+            "connect_timeout_ms": null,
+            "connection_reuse": "safe",
+            "health_check": null,
+            "http_versions": {
+              "max": "3",
+              "min": "3"
+            },
+            "name": "h3-origin",
+            "passive_health": null,
+            "queue_timeout_ms": null,
+            "server_timeout_ms": null,
+            "servers": [
+              {
+                "dns_resolution": "on_connect",
+                "endpoint": {
+                  "address": "127.0.0.1:13443",
+                  "type": "socket"
+                },
+                "max_connections": null,
+                "name": "endpoint-1"
+              }
+            ],
+            "tls": {
+              "ca_certificate_path": null,
+              "server_name": "origin.example.test"
+            }
+          },
+          {
+            "algorithm": "round_robin",
+            "connect_timeout_ms": null,
+            "connection_reuse": "safe",
+            "health_check": null,
+            "http_versions": {
+              "max": "1.1",
+              "min": "1.1"
+            },
+            "name": "tcp",
+            "passive_health": null,
+            "queue_timeout_ms": null,
+            "server_timeout_ms": null,
+            "servers": [
+              {
+                "dns_resolution": "on_connect",
+                "endpoint": {
+                  "address": "127.0.0.1:5432",
+                  "type": "socket"
+                },
+                "max_connections": null,
+                "name": "endpoint-1"
+              }
+            ],
+            "tls": null
+          },
+          {
+            "algorithm": "round_robin",
+            "connect_timeout_ms": null,
+            "connection_reuse": "safe",
+            "health_check": null,
+            "http_versions": {
+              "max": "1.1",
+              "min": "1.1"
+            },
+            "name": "udp",
+            "passive_health": null,
+            "queue_timeout_ms": null,
+            "server_timeout_ms": null,
+            "servers": [
+              {
+                "dns_resolution": "on_connect",
+                "endpoint": {
+                  "address": "127.0.0.1:5353",
+                  "type": "socket"
+                },
+                "max_connections": null,
+                "name": "endpoint-1"
+              }
+            ],
+            "tls": null
+          }
+        ],
+        "version": 1
+      },
+      "healthSupervisor": true,
+      "pools": [
+        {
+          "algorithm": "weighted_round_robin",
+          "endpoints": [
+            {
+              "address": "127.0.0.1:13000",
+              "maxConnections": null,
+              "name": "endpoint-1",
+              "weight": 2
+            },
+            {
+              "address": "127.0.0.1:13001",
+              "maxConnections": null,
+              "name": "endpoint-2",
+              "weight": 1
+            }
+          ],
+          "name": "origin"
+        },
+        {
+          "algorithm": "round_robin",
+          "endpoints": [
+            {
+              "address": "127.0.0.1:13443",
+              "maxConnections": null,
+              "name": "endpoint-1",
+              "weight": 1
+            }
+          ],
+          "name": "h3-origin"
+        },
+        {
+          "algorithm": "round_robin",
+          "endpoints": [
+            {
+              "address": "127.0.0.1:5432",
+              "maxConnections": null,
+              "name": "endpoint-1",
+              "weight": 1
+            }
+          ],
+          "name": "tcp"
+        },
+        {
+          "algorithm": "round_robin",
+          "endpoints": [
+            {
+              "address": "127.0.0.1:5353",
+              "maxConnections": null,
+              "name": "endpoint-1",
+              "weight": 1
+            }
+          ],
+          "name": "udp"
+        }
+      ],
+      "result": "ok",
+      "rtmp": {
+        "live": true,
+        "manual": true,
+        "recording": true
+      },
+      "services": [
+        {
+          "name": "web",
+          "protocol": "http",
+          "tls": null
+        },
+        {
+          "name": "gzip",
+          "protocol": "http",
+          "tls": null
+        },
+        {
+          "name": "reverse-h3",
+          "protocol": "http3",
+          "tls": {
+            "alpn": "Custom(CustomALPN { wire: [2, 104, 51], header: 1 })",
+            "clientAuthAllowedDnsNames": 0,
+            "clientAuthCaConfigured": false,
+            "clientAuthMode": "Disabled",
+            "defaultCertificate": "h3-cert",
+            "minVersion": "Tls13",
+            "name": "h3"
+          }
+        },
+        {
+          "name": "forward-h1",
+          "protocol": "forward_http1",
+          "tls": null
+        },
+        {
+          "name": "forward-h2",
+          "protocol": "forward_http2",
+          "tls": {
+            "alpn": "H2H1",
+            "clientAuthAllowedDnsNames": 0,
+            "clientAuthCaConfigured": false,
+            "clientAuthMode": "Disabled",
+            "defaultCertificate": "h2-cert",
+            "minVersion": "Tls12",
+            "name": "h2"
+          }
+        },
+        {
+          "name": "forward-h3",
+          "protocol": "forward_http3",
+          "tls": {
+            "alpn": "Custom(CustomALPN { wire: [2, 104, 51], header: 1 })",
+            "clientAuthAllowedDnsNames": 0,
+            "clientAuthCaConfigured": false,
+            "clientAuthMode": "Disabled",
+            "defaultCertificate": "h3-cert",
+            "minVersion": "Tls13",
+            "name": "h3"
+          }
+        },
+        {
+          "name": "tcp",
+          "protocol": "tcp",
+          "tls": null
+        },
+        {
+          "name": "udp",
+          "protocol": "udp",
+          "tls": null
+        },
+        {
+          "name": "rtmp",
+          "protocol": "rtmp",
+          "tls": null
+        }
+      ],
+      "topology": {
+        "edges": [
+          {
+            "configPath": "/listeners/0/service",
+            "id": "edge:16:dispatch_service:14:listener:3:web:18:http_service:3:web",
+            "kind": "dispatch_service",
+            "source": "listener:3:web",
+            "target": "http_service:3:web"
+          },
+          {
+            "configPath": "/listeners/1/service",
+            "id": "edge:16:dispatch_service:15:listener:4:gzip:19:http_service:4:gzip",
+            "kind": "dispatch_service",
+            "source": "listener:4:gzip",
+            "target": "http_service:4:gzip"
+          },
+          {
+            "configPath": "/listeners/2/service",
+            "id": "edge:16:dispatch_service:22:listener:10:reverse-h3:21:http_service:6:web-h3",
+            "kind": "dispatch_service",
+            "source": "listener:10:reverse-h3",
+            "target": "http_service:6:web-h3"
+          },
+          {
+            "configPath": "/listeners/2/tls_profile",
+            "id": "edge:12:listener_tls:22:listener:10:reverse-h3:16:tls_profile:2:h3",
+            "kind": "listener_tls",
+            "source": "listener:10:reverse-h3",
+            "target": "tls_profile:2:h3"
+          },
+          {
+            "configPath": "/listeners/3/service",
+            "id": "edge:16:dispatch_service:22:listener:10:forward-h1:31:forward_proxy_service:7:forward",
+            "kind": "dispatch_service",
+            "source": "listener:10:forward-h1",
+            "target": "forward_proxy_service:7:forward"
+          },
+          {
+            "configPath": "/listeners/4/service",
+            "id": "edge:16:dispatch_service:22:listener:10:forward-h2:31:forward_proxy_service:7:forward",
+            "kind": "dispatch_service",
+            "source": "listener:10:forward-h2",
+            "target": "forward_proxy_service:7:forward"
+          },
+          {
+            "configPath": "/listeners/4/tls_profile",
+            "id": "edge:12:listener_tls:22:listener:10:forward-h2:16:tls_profile:2:h2",
+            "kind": "listener_tls",
+            "source": "listener:10:forward-h2",
+            "target": "tls_profile:2:h2"
+          },
+          {
+            "configPath": "/listeners/5/service",
+            "id": "edge:16:dispatch_service:22:listener:10:forward-h3:31:forward_proxy_service:7:forward",
+            "kind": "dispatch_service",
+            "source": "listener:10:forward-h3",
+            "target": "forward_proxy_service:7:forward"
+          },
+          {
+            "configPath": "/listeners/5/tls_profile",
+            "id": "edge:12:listener_tls:22:listener:10:forward-h3:16:tls_profile:2:h3",
+            "kind": "listener_tls",
+            "source": "listener:10:forward-h3",
+            "target": "tls_profile:2:h3"
+          },
+          {
+            "configPath": "/listeners/6/service",
+            "id": "edge:16:dispatch_service:14:listener:3:tcp:16:l4_service:3:tcp",
+            "kind": "dispatch_service",
+            "source": "listener:3:tcp",
+            "target": "l4_service:3:tcp"
+          },
+          {
+            "configPath": "/listeners/7/service",
+            "id": "edge:16:dispatch_service:14:listener:3:udp:16:l4_service:3:udp",
+            "kind": "dispatch_service",
+            "source": "listener:3:udp",
+            "target": "l4_service:3:udp"
+          },
+          {
+            "configPath": "/tls_profiles/0/certificates/0",
+            "id": "edge:15:tls_certificate:16:tls_profile:2:h2:21:certificate:7:h2-cert",
+            "kind": "tls_certificate",
+            "source": "tls_profile:2:h2",
+            "target": "certificate:7:h2-cert"
+          },
+          {
+            "configPath": "/tls_profiles/1/certificates/0",
+            "id": "edge:15:tls_certificate:16:tls_profile:2:h3:21:certificate:7:h3-cert",
+            "kind": "tls_certificate",
+            "source": "tls_profile:2:h3",
+            "target": "certificate:7:h3-cert"
+          },
+          {
+            "configPath": "/http_services/0/routes/0",
+            "id": "edge:13:service_route:18:http_service:3:web:38:http_route:3:web:0::12:exact:/fixed:0:",
+            "kind": "service_route",
+            "source": "http_service:3:web",
+            "target": "http_route:3:web:0::12:exact:/fixed:0:"
+          },
+          {
+            "configPath": "/http_services/0/routes/1",
+            "id": "edge:13:service_route:18:http_service:3:web:41:http_route:3:web:0::15:exact:/redirect:0:",
+            "kind": "service_route",
+            "source": "http_service:3:web",
+            "target": "http_route:3:web:0::15:exact:/redirect:0:"
+          },
+          {
+            "configPath": "/http_services/0/routes/2",
+            "id": "edge:13:service_route:18:http_service:3:web:48:http_route:3:web:0::22:segment_prefix:/static:0:",
+            "kind": "service_route",
+            "source": "http_service:3:web",
+            "target": "http_route:3:web:0::22:segment_prefix:/static:0:"
+          },
+          {
+            "configPath": "/http_services/0/routes/3",
+            "id": "edge:13:service_route:18:http_service:3:web:83:http_route:3:web:32:normalized_host:api.example.test:16:segment_prefix:/:8:GET,HEAD",
+            "kind": "service_route",
+            "source": "http_service:3:web",
+            "target": "http_route:3:web:32:normalized_host:api.example.test:16:segment_prefix:/:8:GET,HEAD"
+          },
+          {
+            "configPath": "/http_services/0/routes/3/action/upstream_pool",
+            "id": "edge:10:route_pool:83:http_route:3:web:32:normalized_host:api.example.test:16:segment_prefix:/:8:GET,HEAD:22:upstream_pool:6:origin",
+            "kind": "route_pool",
+            "source": "http_route:3:web:32:normalized_host:api.example.test:16:segment_prefix:/:8:GET,HEAD",
+            "target": "upstream_pool:6:origin"
+          },
+          {
+            "configPath": "/http_services/1/routes/0",
+            "id": "edge:13:service_route:19:http_service:4:gzip:43:http_route:4:gzip:0::16:segment_prefix:/:0:",
+            "kind": "service_route",
+            "source": "http_service:4:gzip",
+            "target": "http_route:4:gzip:0::16:segment_prefix:/:0:"
+          },
+          {
+            "configPath": "/http_services/2/routes/0",
+            "id": "edge:13:service_route:21:http_service:6:web-h3:45:http_route:6:web-h3:0::16:segment_prefix:/:0:",
+            "kind": "service_route",
+            "source": "http_service:6:web-h3",
+            "target": "http_route:6:web-h3:0::16:segment_prefix:/:0:"
+          },
+          {
+            "configPath": "/http_services/2/routes/0/action/upstream_pool",
+            "id": "edge:10:route_pool:45:http_route:6:web-h3:0::16:segment_prefix:/:0::25:upstream_pool:9:h3-origin",
+            "kind": "route_pool",
+            "source": "http_route:6:web-h3:0::16:segment_prefix:/:0:",
+            "target": "upstream_pool:9:h3-origin"
+          },
+          {
+            "configPath": "/l4_services/0/upstream_pool",
+            "id": "edge:12:service_pool:16:l4_service:3:tcp:19:upstream_pool:3:tcp",
+            "kind": "service_pool",
+            "source": "l4_service:3:tcp",
+            "target": "upstream_pool:3:tcp"
+          },
+          {
+            "configPath": "/l4_services/1/upstream_pool",
+            "id": "edge:12:service_pool:16:l4_service:3:udp:19:upstream_pool:3:udp",
+            "kind": "service_pool",
+            "source": "l4_service:3:udp",
+            "target": "upstream_pool:3:udp"
+          },
+          {
+            "configPath": "/upstream_pools/0/servers/0",
+            "id": "edge:13:pool_endpoint:22:upstream_pool:6:origin:38:upstream_server:6:origin:10:endpoint-1",
+            "kind": "pool_endpoint",
+            "source": "upstream_pool:6:origin",
+            "target": "upstream_server:6:origin:10:endpoint-1"
+          },
+          {
+            "configPath": "/upstream_pools/0/servers/1",
+            "id": "edge:13:pool_endpoint:22:upstream_pool:6:origin:38:upstream_server:6:origin:10:endpoint-2",
+            "kind": "pool_endpoint",
+            "source": "upstream_pool:6:origin",
+            "target": "upstream_server:6:origin:10:endpoint-2"
+          },
+          {
+            "configPath": "/upstream_pools/1/servers/0",
+            "id": "edge:13:pool_endpoint:25:upstream_pool:9:h3-origin:41:upstream_server:9:h3-origin:10:endpoint-1",
+            "kind": "pool_endpoint",
+            "source": "upstream_pool:9:h3-origin",
+            "target": "upstream_server:9:h3-origin:10:endpoint-1"
+          },
+          {
+            "configPath": "/upstream_pools/2/servers/0",
+            "id": "edge:13:pool_endpoint:19:upstream_pool:3:tcp:35:upstream_server:3:tcp:10:endpoint-1",
+            "kind": "pool_endpoint",
+            "source": "upstream_pool:3:tcp",
+            "target": "upstream_server:3:tcp:10:endpoint-1"
+          },
+          {
+            "configPath": "/upstream_pools/3/servers/0",
+            "id": "edge:13:pool_endpoint:19:upstream_pool:3:udp:35:upstream_server:3:udp:10:endpoint-1",
+            "kind": "pool_endpoint",
+            "source": "upstream_pool:3:udp",
+            "target": "upstream_server:3:udp:10:endpoint-1"
+          }
+        ],
+        "nodes": [
+          {
+            "attributes": {
+              "bind": {
+                "address": "127.0.0.1:18080",
+                "type": "socket"
+              },
+              "downstreamTimeouts": {
+                "clientTimeoutMs": null,
+                "keepaliveTimeoutMs": null,
+                "requestTimeoutMs": null
+              },
+              "maxConnections": null,
+              "protocol": "http",
+              "service": "web",
+              "tlsProfile": null
+            },
+            "configPath": "/listeners/0",
+            "id": "listener:3:web",
+            "kind": "listener",
+            "name": "web"
+          },
+          {
+            "attributes": {
+              "bind": {
+                "address": "127.0.0.1:18084",
+                "type": "socket"
+              },
+              "downstreamTimeouts": {
+                "clientTimeoutMs": null,
+                "keepaliveTimeoutMs": null,
+                "requestTimeoutMs": null
+              },
+              "maxConnections": null,
+              "protocol": "http",
+              "service": "gzip",
+              "tlsProfile": null
+            },
+            "configPath": "/listeners/1",
+            "id": "listener:4:gzip",
+            "kind": "listener",
+            "name": "gzip"
+          },
+          {
+            "attributes": {
+              "bind": {
+                "address": "127.0.0.1:18443",
+                "type": "udp"
+              },
+              "downstreamTimeouts": {
+                "clientTimeoutMs": null,
+                "keepaliveTimeoutMs": null,
+                "requestTimeoutMs": null
+              },
+              "maxConnections": null,
+              "protocol": "http3",
+              "service": "web-h3",
+              "tlsProfile": "h3"
+            },
+            "configPath": "/listeners/2",
+            "id": "listener:10:reverse-h3",
+            "kind": "listener",
+            "name": "reverse-h3"
+          },
+          {
+            "attributes": {
+              "bind": {
+                "address": "127.0.0.1:18081",
+                "type": "socket"
+              },
+              "downstreamTimeouts": {
+                "clientTimeoutMs": null,
+                "keepaliveTimeoutMs": null,
+                "requestTimeoutMs": null
+              },
+              "maxConnections": null,
+              "protocol": "forward_http1",
+              "service": "forward",
+              "tlsProfile": null
+            },
+            "configPath": "/listeners/3",
+            "id": "listener:10:forward-h1",
+            "kind": "forward_proxy_listener",
+            "name": "forward-h1"
+          },
+          {
+            "attributes": {
+              "bind": {
+                "address": "127.0.0.1:18082",
+                "type": "socket"
+              },
+              "downstreamTimeouts": {
+                "clientTimeoutMs": null,
+                "keepaliveTimeoutMs": null,
+                "requestTimeoutMs": null
+              },
+              "maxConnections": null,
+              "protocol": "forward_http2",
+              "service": "forward",
+              "tlsProfile": "h2"
+            },
+            "configPath": "/listeners/4",
+            "id": "listener:10:forward-h2",
+            "kind": "forward_proxy_listener",
+            "name": "forward-h2"
+          },
+          {
+            "attributes": {
+              "bind": {
+                "address": "127.0.0.1:18083",
+                "type": "udp"
+              },
+              "downstreamTimeouts": {
+                "clientTimeoutMs": null,
+                "keepaliveTimeoutMs": null,
+                "requestTimeoutMs": null
+              },
+              "maxConnections": null,
+              "protocol": "forward_http3",
+              "service": "forward",
+              "tlsProfile": "h3"
+            },
+            "configPath": "/listeners/5",
+            "id": "listener:10:forward-h3",
+            "kind": "forward_proxy_listener",
+            "name": "forward-h3"
+          },
+          {
+            "attributes": {
+              "bind": {
+                "address": "127.0.0.1:15432",
+                "type": "socket"
+              },
+              "downstreamTimeouts": {
+                "clientTimeoutMs": null,
+                "keepaliveTimeoutMs": null,
+                "requestTimeoutMs": null
+              },
+              "maxConnections": null,
+              "protocol": "tcp",
+              "service": "tcp",
+              "tlsProfile": null
+            },
+            "configPath": "/listeners/6",
+            "id": "listener:3:tcp",
+            "kind": "listener",
+            "name": "tcp"
+          },
+          {
+            "attributes": {
+              "bind": {
+                "address": "127.0.0.1:15353",
+                "type": "udp"
+              },
+              "downstreamTimeouts": {
+                "clientTimeoutMs": null,
+                "keepaliveTimeoutMs": null,
+                "requestTimeoutMs": null
+              },
+              "maxConnections": null,
+              "protocol": "udp",
+              "service": "udp",
+              "tlsProfile": null
+            },
+            "configPath": "/listeners/7",
+            "id": "listener:3:udp",
+            "kind": "listener",
+            "name": "udp"
+          },
+          {
+            "attributes": {
+              "accessLog": "default_disabled",
+              "applications": [
+                {
+                  "fanout": {
+                    "maxQueueBytesPerSubscriber": 262144,
+                    "maxQueueMessagesPerSubscriber": 64,
+                    "maxSubscribers": 32
+                  },
+                  "idleStreams": false,
+                  "live": true,
+                  "name": "live",
+                  "pushTargetCount": 1,
+                  "recording": {
+                    "continuousRecorderCount": 0,
+                    "manualRecorderCount": 1,
+                    "recorderCount": 1,
+                    "supported": true
+                  }
+                }
+              ],
+              "bind": {
+                "address": "127.0.0.1:11935",
+                "type": "socket"
+              },
+              "downstreamTimeouts": {
+                "clientTimeoutMs": null,
+                "keepaliveTimeoutMs": null,
+                "requestTimeoutMs": null
+              },
+              "maxConnections": null,
+              "outboundChunkSize": 4096,
+              "protocol": "rtmp",
+              "service": "rtmp",
+              "tlsProfile": null
+            },
+            "configPath": "/listeners/8",
+            "id": "rtmp_listener:4:rtmp",
+            "kind": "rtmp_listener",
+            "name": "rtmp"
+          },
+          {
+            "attributes": {
+              "alpn": [
+                "h2",
+                "http/1.1"
+              ],
+              "certificates": [
+                "h2-cert"
+              ],
+              "clientAuth": {
+                "allowedDnsNameCount": 0,
+                "caConfigured": false,
+                "mode": "disabled"
+              },
+              "defaultCertificate": "h2-cert",
+              "minVersion": "1.2"
+            },
+            "configPath": "/tls_profiles/0",
+            "id": "tls_profile:2:h2",
+            "kind": "tls_profile",
+            "name": "h2"
+          },
+          {
+            "attributes": {
+              "alpn": [
+                "h3"
+              ],
+              "certificates": [
+                "h3-cert"
+              ],
+              "clientAuth": {
+                "allowedDnsNameCount": 0,
+                "caConfigured": false,
+                "mode": "disabled"
+              },
+              "defaultCertificate": "h3-cert",
+              "minVersion": "1.3"
+            },
+            "configPath": "/tls_profiles/1",
+            "id": "tls_profile:2:h3",
+            "kind": "tls_profile",
+            "name": "h3"
+          },
+          {
+            "attributes": {
+              "dnsNames": [
+                "h2.example.test"
+              ],
+              "source": {
+                "developmentOnly": true,
+                "keyType": "ecdsa_p256",
+                "type": "self_signed_development",
+                "validityDays": 7
+              }
+            },
+            "configPath": "/certificates/0",
+            "id": "certificate:7:h2-cert",
+            "kind": "certificate",
+            "name": "h2-cert"
+          },
+          {
+            "attributes": {
+              "dnsNames": [
+                "h3.example.test",
+                "*.h3.example.test"
+              ],
+              "source": {
+                "developmentOnly": true,
+                "keyType": "ecdsa_p256",
+                "type": "self_signed_development",
+                "validityDays": 7
+              }
+            },
+            "configPath": "/certificates/1",
+            "id": "certificate:7:h3-cert",
+            "kind": "certificate",
+            "name": "h3-cert"
+          },
+          {
+            "attributes": {
+              "accessRuleCount": 1,
+              "allowAbsoluteForm": true,
+              "auditMode": "metadata",
+              "auth": "bearer_token_file",
+              "connectEnabled": true,
+              "connectPortCount": 2,
+              "connectUdpEnabled": true,
+              "connectUdpPortCount": 1,
+              "denyPrivate": false,
+              "enabledVersions": [
+                "h1",
+                "h2",
+                "h3"
+              ],
+              "nameserverCount": 0,
+              "tlsRequired": false
+            },
+            "configPath": "/forward_proxy_services/0",
+            "id": "forward_proxy_service:7:forward",
+            "kind": "forward_proxy_service",
+            "name": "forward"
+          },
+          {
+            "attributes": {
+              "accessLog": "default_disabled",
+              "gzip": null,
+              "maxRequestBodyBytes": 10485760,
+              "upstreamIoTimeoutMs": 30000
+            },
+            "configPath": "/http_services/0",
+            "id": "http_service:3:web",
+            "kind": "http_service",
+            "name": "web"
+          },
+          {
+            "attributes": {
+              "access": {
+                "headerName": "authorization",
+                "realm": "baseline",
+                "type": "bearer_token_file"
+              },
+              "action": {
+                "bodyBytes": 5,
+                "headerCount": 1,
+                "status": 201,
+                "type": "fixed_response"
+              },
+              "host": null,
+              "methods": [],
+              "path": {
+                "kind": "exact",
+                "value": "/fixed"
+              },
+              "policy": {
+                "connectTimeoutMs": 30000,
+                "maxRequestBodyBytes": 10485760,
+                "readTimeoutMs": 30000,
+                "requestBuffering": true,
+                "responseBuffering": false,
+                "writeTimeoutMs": 30000
+              }
+            },
+            "configPath": "/http_services/0/routes/0",
+            "id": "http_route:3:web:0::12:exact:/fixed:0:",
+            "kind": "http_route",
+            "name": "* /fixed"
+          },
+          {
+            "attributes": {
+              "access": null,
+              "action": {
+                "headerCount": 0,
+                "locationType": "literal",
+                "status": 308,
+                "type": "redirect"
+              },
+              "host": null,
+              "methods": [],
+              "path": {
+                "kind": "exact",
+                "value": "/redirect"
+              },
+              "policy": {
+                "connectTimeoutMs": 30000,
+                "maxRequestBodyBytes": 10485760,
+                "readTimeoutMs": 30000,
+                "requestBuffering": true,
+                "responseBuffering": false,
+                "writeTimeoutMs": 30000
+              }
+            },
+            "configPath": "/http_services/0/routes/1",
+            "id": "http_route:3:web:0::15:exact:/redirect:0:",
+            "kind": "http_route",
+            "name": "* /redirect"
+          },
+          {
+            "attributes": {
+              "access": null,
+              "action": {
+                "autoindex": false,
+                "autoindexExactSize": true,
+                "autoindexLocalTime": false,
+                "defaultType": null,
+                "errorResponseCount": 0,
+                "headerCount": 0,
+                "indexFiles": [
+                  "index.html"
+                ],
+                "mimeMappingCount": 0,
+                "pathMapping": "root",
+                "spaFallback": false,
+                "tryFileCount": 0,
+                "type": "static_files"
+              },
+              "host": null,
+              "methods": [],
+              "path": {
+                "kind": "segment_prefix",
+                "value": "/static"
+              },
+              "policy": {
+                "connectTimeoutMs": 30000,
+                "maxRequestBodyBytes": 10485760,
+                "readTimeoutMs": 30000,
+                "requestBuffering": true,
+                "responseBuffering": false,
+                "writeTimeoutMs": 30000
+              }
+            },
+            "configPath": "/http_services/0/routes/2",
+            "id": "http_route:3:web:0::22:segment_prefix:/static:0:",
+            "kind": "http_route",
+            "name": "* /static"
+          },
+          {
+            "attributes": {
+              "access": null,
+              "action": {
+                "cookieAttributePolicyCount": 0,
+                "cookiePathRewriteCount": 0,
+                "requestHeaderMutationCount": 0,
+                "responseHeaderMutationCount": 0,
+                "retry": {
+                  "delayMs": 0,
+                  "finalRedispatch": false,
+                  "maxRetries": 0,
+                  "target": "next_server",
+                  "triggers": [
+                    "connect_failure",
+                    "connect_timeout",
+                    "refused_stream"
+                  ]
+                },
+                "type": "proxy",
+                "upstreamHost": "preserve_incoming",
+                "upstreamPool": "origin"
+              },
+              "host": {
+                "kind": "normalized_host",
+                "value": "api.example.test"
+              },
+              "methods": [
+                "GET",
+                "HEAD"
+              ],
+              "path": {
+                "kind": "segment_prefix",
+                "value": "/"
+              },
+              "policy": {
+                "connectTimeoutMs": 1000,
+                "maxRequestBodyBytes": 65536,
+                "readTimeoutMs": 2000,
+                "requestBuffering": true,
+                "responseBuffering": false,
+                "writeTimeoutMs": 3000
+              }
+            },
+            "configPath": "/http_services/0/routes/3",
+            "id": "http_route:3:web:32:normalized_host:api.example.test:16:segment_prefix:/:8:GET,HEAD",
+            "kind": "http_route",
+            "name": "api.example.test /"
+          },
+          {
+            "attributes": {
+              "accessLog": "default_disabled",
+              "gzip": {
+                "contentTypes": [
+                  "text/plain",
+                  "application/json"
+                ],
+                "disableOnVia": true,
+                "level": 6,
+                "minHttpVersion": "1.1",
+                "minLengthBytes": 64,
+                "vary": true
+              },
+              "maxRequestBodyBytes": 10485760,
+              "upstreamIoTimeoutMs": 30000
+            },
+            "configPath": "/http_services/1",
+            "id": "http_service:4:gzip",
+            "kind": "http_service",
+            "name": "gzip"
+          },
+          {
+            "attributes": {
+              "access": null,
+              "action": {
+                "bodyBytes": 4,
+                "headerCount": 0,
+                "status": 200,
+                "type": "fixed_response"
+              },
+              "host": null,
+              "methods": [],
+              "path": {
+                "kind": "segment_prefix",
+                "value": "/"
+              },
+              "policy": {
+                "connectTimeoutMs": 30000,
+                "maxRequestBodyBytes": 10485760,
+                "readTimeoutMs": 30000,
+                "requestBuffering": true,
+                "responseBuffering": false,
+                "writeTimeoutMs": 30000
+              }
+            },
+            "configPath": "/http_services/1/routes/0",
+            "id": "http_route:4:gzip:0::16:segment_prefix:/:0:",
+            "kind": "http_route",
+            "name": "* /"
+          },
+          {
+            "attributes": {
+              "accessLog": "default_disabled",
+              "gzip": null,
+              "maxRequestBodyBytes": 10485760,
+              "upstreamIoTimeoutMs": 30000
+            },
+            "configPath": "/http_services/2",
+            "id": "http_service:6:web-h3",
+            "kind": "http_service",
+            "name": "web-h3"
+          },
+          {
+            "attributes": {
+              "access": null,
+              "action": {
+                "cookieAttributePolicyCount": 0,
+                "cookiePathRewriteCount": 0,
+                "requestHeaderMutationCount": 0,
+                "responseHeaderMutationCount": 0,
+                "retry": {
+                  "delayMs": 0,
+                  "finalRedispatch": false,
+                  "maxRetries": 0,
+                  "target": "next_server",
+                  "triggers": [
+                    "connect_failure",
+                    "connect_timeout",
+                    "refused_stream"
+                  ]
+                },
+                "type": "proxy",
+                "upstreamHost": "preserve_incoming",
+                "upstreamPool": "h3-origin"
+              },
+              "host": null,
+              "methods": [],
+              "path": {
+                "kind": "segment_prefix",
+                "value": "/"
+              },
+              "policy": {
+                "connectTimeoutMs": 30000,
+                "maxRequestBodyBytes": 10485760,
+                "readTimeoutMs": 30000,
+                "requestBuffering": true,
+                "responseBuffering": false,
+                "writeTimeoutMs": 30000
+              }
+            },
+            "configPath": "/http_services/2/routes/0",
+            "id": "http_route:6:web-h3:0::16:segment_prefix:/:0:",
+            "kind": "http_route",
+            "name": "* /"
+          },
+          {
+            "attributes": {
+              "connectTimeoutMs": 1000,
+              "idleTimeoutMs": 2000,
+              "lifetimeTimeoutMs": null,
+              "upstreamPool": "tcp"
+            },
+            "configPath": "/l4_services/0",
+            "id": "l4_service:3:tcp",
+            "kind": "l4_service",
+            "name": "tcp"
+          },
+          {
+            "attributes": {
+              "connectTimeoutMs": 1000,
+              "idleTimeoutMs": 2000,
+              "lifetimeTimeoutMs": null,
+              "upstreamPool": "udp"
+            },
+            "configPath": "/l4_services/1",
+            "id": "l4_service:3:udp",
+            "kind": "l4_service",
+            "name": "udp"
+          },
+          {
+            "attributes": {
+              "algorithm": "weighted_round_robin",
+              "healthCheck": {
+                "healthyThreshold": 1,
+                "host": null,
+                "intervalMs": 5000,
+                "path": null,
+                "timeoutMs": 1000,
+                "type": "tcp",
+                "unhealthyThreshold": 2
+              },
+              "httpVersions": {
+                "max": "1.1",
+                "min": "1.1"
+              },
+              "tls": null
+            },
+            "configPath": "/upstream_pools/0",
+            "id": "upstream_pool:6:origin",
+            "kind": "upstream_pool",
+            "name": "origin"
+          },
+          {
+            "attributes": {
+              "address": "127.0.0.1:13000",
+              "maxConnections": null,
+              "serverName": "endpoint-1",
+              "type": "socket"
+            },
+            "configPath": "/upstream_pools/0/servers/0",
+            "id": "upstream_server:6:origin:10:endpoint-1",
+            "kind": "endpoint",
+            "name": "endpoint-1"
+          },
+          {
+            "attributes": {
+              "address": "127.0.0.1:13001",
+              "maxConnections": null,
+              "serverName": "endpoint-2",
+              "type": "socket"
+            },
+            "configPath": "/upstream_pools/0/servers/1",
+            "id": "upstream_server:6:origin:10:endpoint-2",
+            "kind": "endpoint",
+            "name": "endpoint-2"
+          },
+          {
+            "attributes": {
+              "algorithm": "round_robin",
+              "healthCheck": null,
+              "httpVersions": {
+                "max": "3",
+                "min": "3"
+              },
+              "tls": {
+                "caCertificatePath": null,
+                "serverName": "origin.example.test"
+              }
+            },
+            "configPath": "/upstream_pools/1",
+            "id": "upstream_pool:9:h3-origin",
+            "kind": "upstream_pool",
+            "name": "h3-origin"
+          },
+          {
+            "attributes": {
+              "address": "127.0.0.1:13443",
+              "maxConnections": null,
+              "serverName": "endpoint-1",
+              "type": "socket"
+            },
+            "configPath": "/upstream_pools/1/servers/0",
+            "id": "upstream_server:9:h3-origin:10:endpoint-1",
+            "kind": "endpoint",
+            "name": "endpoint-1"
+          },
+          {
+            "attributes": {
+              "algorithm": "round_robin",
+              "healthCheck": null,
+              "httpVersions": {
+                "max": "1.1",
+                "min": "1.1"
+              },
+              "tls": null
+            },
+            "configPath": "/upstream_pools/2",
+            "id": "upstream_pool:3:tcp",
+            "kind": "upstream_pool",
+            "name": "tcp"
+          },
+          {
+            "attributes": {
+              "address": "127.0.0.1:5432",
+              "maxConnections": null,
+              "serverName": "endpoint-1",
+              "type": "socket"
+            },
+            "configPath": "/upstream_pools/2/servers/0",
+            "id": "upstream_server:3:tcp:10:endpoint-1",
+            "kind": "endpoint",
+            "name": "endpoint-1"
+          },
+          {
+            "attributes": {
+              "algorithm": "round_robin",
+              "healthCheck": null,
+              "httpVersions": {
+                "max": "1.1",
+                "min": "1.1"
+              },
+              "tls": null
+            },
+            "configPath": "/upstream_pools/3",
+            "id": "upstream_pool:3:udp",
+            "kind": "upstream_pool",
+            "name": "udp"
+          },
+          {
+            "attributes": {
+              "address": "127.0.0.1:5353",
+              "maxConnections": null,
+              "serverName": "endpoint-1",
+              "type": "socket"
+            },
+            "configPath": "/upstream_pools/3/servers/0",
+            "id": "upstream_server:3:udp:10:endpoint-1",
+            "kind": "endpoint",
+            "name": "endpoint-1"
+          }
+        ]
+      }
+    },
+    {
+      "acquisitionOrder": [],
+      "case": "unsupported_before_tls",
+      "decisions": {
+        "cache_stores": [
+          {
+            "max_bytes": 1048576,
+            "max_entries": 128,
+            "max_followers_per_fill": 128,
+            "max_header_bytes": 65536,
+            "max_in_flight_fills": 1024,
+            "max_key_bytes": 4096,
+            "max_object_bytes": 65536,
+            "max_tag_bytes": 256,
+            "max_tags_per_object": 64,
+            "name": "memory",
+            "type": "memory"
+          }
+        ],
+        "certificates": [
+          {
+            "dns_names": [
+              "h2.example.test"
+            ],
+            "name": "h2-cert",
+            "source": {
+              "key_type": "ecdsa_p256",
+              "type": "self_signed_development",
+              "validity_days": 7
+            }
+          },
+          {
+            "dns_names": [
+              "h3.example.test",
+              "*.h3.example.test"
+            ],
+            "name": "h3-cert",
+            "source": {
+              "key_type": "ecdsa_p256",
+              "type": "self_signed_development",
+              "validity_days": 7
+            }
+          }
+        ],
+        "forward_proxy_services": [
+          {
+            "access_policy": {
+              "default_action": "deny",
+              "rules": [
+                {
+                  "action": "allow",
+                  "conditions": [
+                    {
+                      "cidrs": [
+                        "192.0.2.0/24"
+                      ],
+                      "negated": false,
+                      "type": "source_cidrs"
+                    }
+                  ]
+                }
+              ]
+            },
+            "allow_absolute_form": true,
+            "audit_mode": "metadata",
+            "auth": {
+              "token_file_path": "<fixture-root>/forward.token",
+              "type": "bearer_token_file"
+            },
+            "cache": {
+              "authorization_policy": "bypass",
+              "bypass_request": [],
+              "collapsed_forwarding": true,
+              "default_ttl_ms": 5000,
+              "grace_ms": 500,
+              "keep_ms": 750,
+              "key_components": [
+                {
+                  "type": "scheme"
+                },
+                {
+                  "type": "normalized_host"
+                },
+                {
+                  "type": "path_and_query"
+                }
+              ],
+              "methods": [
+                "GET",
+                "HEAD"
+              ],
+              "no_store_request": [],
+              "no_store_response": [],
+              "purge_authorization": null,
+              "revalidate": true,
+              "set_cookie_policy": "bypass",
+              "stale_on": [],
+              "status_ttls": [],
+              "store": "memory",
+              "surrogate_tags": null,
+              "use_origin_cache_control": true,
+              "vary_policy": "respect"
+            },
+            "connect": {
+              "allowed_ports": [
+                443,
+                8443
+              ],
+              "enabled": true
+            },
+            "connect_timeout_ms": 1000,
+            "connect_udp": {
+              "allowed_ports": [
+                443
+              ],
+              "enabled": true
+            },
+            "destination_policy": {
+              "allow_cidrs": [],
+              "allow_domains": [
+                "example.test"
+              ],
+              "allow_times": [],
+              "deny_cidrs": [],
+              "deny_domains": [
+                "blocked.example.test"
+              ],
+              "deny_private": false,
+              "deny_times": []
+            },
+            "enabled_versions": [
+              "h1",
+              "h2",
+              "h3"
+            ],
+            "header_policy": {
+              "forwarded_for": "preserve",
+              "via": "preserve"
+            },
+            "idle_timeout_ms": 2000,
+            "lifetime_timeout_ms": 3000,
+            "max_connections": 32,
+            "max_header_bytes": 16384,
+            "max_request_body_bytes": 65536,
+            "name": "forward",
+            "peer_policy": {
+              "direct_fallback": "allowed",
+              "max_retries": 3,
+              "peers": []
+            },
+            "resolver": {
+              "max_addresses_per_name": 16,
+              "max_cache_entries": 4096,
+              "max_concurrent_queries": 256,
+              "max_ttl_ms": 300000,
+              "min_ttl_ms": 1000,
+              "nameservers": [],
+              "negative_ttl_ms": 30000,
+              "revalidate_on_connect": true
+            },
+            "tls_required": false
+          }
+        ],
+        "http_services": [
+          {
+            "access_log": null,
+            "automatic_response_headers": true,
+            "gzip": null,
+            "max_request_body_bytes": 10485760,
+            "name": "web",
+            "routes": [
+              {
+                "access_policy": {
+                  "header_name": "authorization",
+                  "realm": "baseline",
+                  "token_file_path": "<fixture-root>/forward.token",
+                  "type": "bearer_token_file"
+                },
+                "action": {
+                  "body": "fixed",
+                  "headers": [
+                    {
+                      "always": true,
+                      "name": "x-baseline",
+                      "value": "fixed"
+                    }
+                  ],
+                  "status": 201,
+                  "type": "fixed_response"
+                },
+                "host": null,
+                "methods": [],
+                "path": {
+                  "kind": "exact",
+                  "value": "/fixed"
+                },
+                "policy": {
+                  "connect_timeout_ms": 30000,
+                  "max_request_body_bytes": 10485760,
+                  "read_timeout_ms": 30000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 30000
+                }
+              },
+              {
+                "access_policy": null,
+                "action": {
+                  "headers": [],
+                  "location": {
+                    "kind": "literal",
+                    "value": "/fixed"
+                  },
+                  "status": 308,
+                  "type": "redirect"
+                },
+                "host": null,
+                "methods": [],
+                "path": {
+                  "kind": "exact",
+                  "value": "/redirect"
+                },
+                "policy": {
+                  "connect_timeout_ms": 30000,
+                  "max_request_body_bytes": 10485760,
+                  "read_timeout_ms": 30000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 30000
+                }
+              },
+              {
+                "access_policy": null,
+                "action": {
+                  "autoindex": false,
+                  "autoindex_exact_size": true,
+                  "autoindex_local_time": false,
+                  "directory_redirects": false,
+                  "error_responses": [],
+                  "etag": true,
+                  "headers": [],
+                  "index_files": [
+                    "index.html"
+                  ],
+                  "internal_index_redirects": false,
+                  "mime": {
+                    "default_type": null,
+                    "types": []
+                  },
+                  "path_mapping": "root",
+                  "root_directory": "<fixture-root>/static",
+                  "spa_fallback": null,
+                  "try_files": [],
+                  "type": "static_files"
+                },
+                "host": null,
+                "methods": [],
+                "path": {
+                  "kind": "segment_prefix",
+                  "value": "/static"
+                },
+                "policy": {
+                  "connect_timeout_ms": 30000,
+                  "max_request_body_bytes": 10485760,
+                  "read_timeout_ms": 30000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 30000
+                }
+              },
+              {
+                "access_policy": null,
+                "action": {
+                  "policy": {
+                    "cache": {
+                      "authorization_policy": "bypass",
+                      "bypass_request": [],
+                      "collapsed_forwarding": true,
+                      "default_ttl_ms": 10000,
+                      "grace_ms": 2000,
+                      "keep_ms": 3000,
+                      "key_components": [
+                        {
+                          "type": "scheme"
+                        },
+                        {
+                          "type": "normalized_host"
+                        },
+                        {
+                          "type": "path_and_query"
+                        }
+                      ],
+                      "methods": [
+                        "GET",
+                        "HEAD"
+                      ],
+                      "no_store_request": [],
+                      "no_store_response": [],
+                      "purge_authorization": null,
+                      "revalidate": true,
+                      "set_cookie_policy": "bypass",
+                      "stale_on": [],
+                      "status_ttls": [
+                        {
+                          "status": 404,
+                          "ttl_ms": 1000
+                        }
+                      ],
+                      "store": "memory",
+                      "surrogate_tags": null,
+                      "use_origin_cache_control": true,
+                      "vary_policy": "respect"
+                    },
+                    "request_headers": [],
+                    "response_cookie_attributes": [],
+                    "response_cookie_path_rewrites": [],
+                    "response_headers": [],
+                    "retry": {
+                      "body_safety": "empty",
+                      "delay_ms": 0,
+                      "final_redispatch": false,
+                      "max_retries": 0,
+                      "method_safety": "get_head",
+                      "target": "next_server",
+                      "triggers": [
+                        "connect_failure",
+                        "connect_timeout",
+                        "refused_stream"
+                      ]
+                    },
+                    "upstream_host": {
+                      "type": "preserve_incoming"
+                    },
+                    "upstream_path_rewrite": null
+                  },
+                  "type": "proxy",
+                  "upstream_pool": "origin"
+                },
+                "host": {
+                  "kind": "normalized_host",
+                  "value": "api.example.test"
+                },
+                "methods": [
+                  "GET",
+                  "HEAD"
+                ],
+                "path": {
+                  "kind": "segment_prefix",
+                  "value": "/"
+                },
+                "policy": {
+                  "connect_timeout_ms": 1000,
+                  "max_request_body_bytes": null,
+                  "read_timeout_ms": 2000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 3000
+                }
+              }
+            ],
+            "upstream_io_timeout_ms": 30000
+          },
+          {
+            "access_log": null,
+            "automatic_response_headers": true,
+            "gzip": {
+              "content_types": [
+                "text/plain",
+                "application/json"
+              ],
+              "disable_on_via": true,
+              "level": 6,
+              "min_http_version": "1.1",
+              "min_length_bytes": 64,
+              "vary": true
+            },
+            "max_request_body_bytes": 10485760,
+            "name": "gzip",
+            "routes": [
+              {
+                "access_policy": null,
+                "action": {
+                  "body": "gzip",
+                  "headers": [],
+                  "status": 200,
+                  "type": "fixed_response"
+                },
+                "host": null,
+                "methods": [],
+                "path": {
+                  "kind": "segment_prefix",
+                  "value": "/"
+                },
+                "policy": {
+                  "connect_timeout_ms": 30000,
+                  "max_request_body_bytes": 10485760,
+                  "read_timeout_ms": 30000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 30000
+                }
+              }
+            ],
+            "upstream_io_timeout_ms": 30000
+          },
+          {
+            "access_log": null,
+            "automatic_response_headers": true,
+            "gzip": null,
+            "max_request_body_bytes": 10485760,
+            "name": "web-h3",
+            "routes": [
+              {
+                "access_policy": null,
+                "action": {
+                  "policy": {
+                    "cache": null,
+                    "request_headers": [],
+                    "response_cookie_attributes": [],
+                    "response_cookie_path_rewrites": [],
+                    "response_headers": [],
+                    "retry": {
+                      "body_safety": "empty",
+                      "delay_ms": 0,
+                      "final_redispatch": false,
+                      "max_retries": 0,
+                      "method_safety": "get_head",
+                      "target": "next_server",
+                      "triggers": [
+                        "connect_failure",
+                        "connect_timeout",
+                        "refused_stream"
+                      ]
+                    },
+                    "upstream_host": {
+                      "type": "preserve_incoming"
+                    },
+                    "upstream_path_rewrite": null
+                  },
+                  "type": "proxy",
+                  "upstream_pool": "h3-origin"
+                },
+                "host": null,
+                "methods": [],
+                "path": {
+                  "kind": "segment_prefix",
+                  "value": "/"
+                },
+                "policy": {
+                  "connect_timeout_ms": 30000,
+                  "max_request_body_bytes": 10485760,
+                  "read_timeout_ms": 30000,
+                  "request_buffering": true,
+                  "response_buffering": false,
+                  "write_timeout_ms": 30000
+                }
+              }
+            ],
+            "upstream_io_timeout_ms": 30000
+          }
+        ],
+        "l4_services": [
+          {
+            "connect_timeout_ms": 1000,
+            "idle_timeout_ms": 2000,
+            "lifetime_timeout_ms": null,
+            "name": "tcp",
+            "proxy_protocol": null,
+            "udp": null,
+            "upstream_pool": "tcp"
+          },
+          {
+            "connect_timeout_ms": 1000,
+            "idle_timeout_ms": 2000,
+            "lifetime_timeout_ms": null,
+            "name": "udp",
+            "proxy_protocol": null,
+            "udp": {
+              "max_datagram_bytes": 1232,
+              "max_queue_bytes": 16384,
+              "max_queue_datagrams": 8,
+              "max_session_bytes": 65536,
+              "max_sessions": 32
+            },
+            "upstream_pool": "udp"
+          }
+        ],
+        "listeners": [
+          {
+            "bind": {
+              "address": "127.0.0.1:18080",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "web",
+            "protocol": "http",
+            "proxy_protocol": null,
+            "service": "web",
+            "tls_profile": null
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:18084",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "gzip",
+            "protocol": "http",
+            "proxy_protocol": null,
+            "service": "gzip",
+            "tls_profile": null
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:18443",
+              "type": "udp"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "reverse-h3",
+            "protocol": "http3",
+            "proxy_protocol": null,
+            "service": "web-h3",
+            "tls_profile": "h3"
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:18081",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "forward-h1",
+            "protocol": "forward_http1",
+            "proxy_protocol": null,
+            "service": "forward",
+            "tls_profile": null
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:18082",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "forward-h2",
+            "protocol": "forward_http2",
+            "proxy_protocol": null,
+            "service": "forward",
+            "tls_profile": "h2"
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:18083",
+              "type": "udp"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "forward-h3",
+            "protocol": "forward_http3",
+            "proxy_protocol": null,
+            "service": "forward",
+            "tls_profile": "h3"
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:15432",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "tcp",
+            "protocol": "tcp",
+            "proxy_protocol": null,
+            "service": "tcp",
+            "tls_profile": null
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:15353",
+              "type": "udp"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "udp",
+            "protocol": "udp",
+            "proxy_protocol": null,
+            "service": "udp",
+            "tls_profile": null
+          },
+          {
+            "bind": {
+              "address": "127.0.0.1:11935",
+              "type": "socket"
+            },
+            "downstream_timeouts": {
+              "client_timeout_ms": null,
+              "keepalive_timeout_ms": null,
+              "request_timeout_ms": null
+            },
+            "max_connections": null,
+            "name": "rtmp",
+            "protocol": "rtmp",
+            "proxy_protocol": null,
+            "service": "rtmp",
+            "tls_profile": null
+          }
+        ],
+        "management": null,
+        "max_connections": null,
+        "rtmp_services": [
+          {
+            "access_log": null,
+            "ack_window_size": 5000000,
+            "applications": [
+              {
+                "callbacks": {
+                  "notify_method": "get",
+                  "notify_relay_redirect": true,
+                  "notify_update_strict": true,
+                  "notify_update_timeout_ms": 1400,
+                  "on_connect": null,
+                  "on_disconnect": null,
+                  "on_done": "http://127.0.0.1:19090/done",
+                  "on_play": "http://127.0.0.1:19090/play",
+                  "on_play_done": "http://127.0.0.1:19090/play-done",
+                  "on_publish": "http://127.0.0.1:19090/publish",
+                  "on_publish_done": "http://127.0.0.1:19090/publish-done",
+                  "on_update": "http://127.0.0.1:19090/update",
+                  "timeout_ms": 1300
+                },
+                "dash": {
+                  "cleanup": true,
+                  "max_active_streams": 1024,
+                  "max_queue_messages": 256,
+                  "max_segment_bytes": 8388608,
+                  "max_segment_duration_ms": 15000,
+                  "max_storage_bytes": 536870912,
+                  "max_storage_files": 10000,
+                  "nested": false,
+                  "playlist_length_ms": 30000,
+                  "root_directory": "<fixture-root>/dash",
+                  "segment_duration_ms": 5000,
+                  "segment_naming": "sequential"
+                },
+                "fanout": {
+                  "max_queue_bytes_per_subscriber": 262144,
+                  "max_queue_messages_per_subscriber": 64,
+                  "max_subscribers": 32
+                },
+                "hls": {
+                  "cleanup": true,
+                  "fragment_naming": "sequential",
+                  "keys": null,
+                  "max_active_streams": 1024,
+                  "max_queue_messages": 256,
+                  "max_segment_bytes": 8388608,
+                  "max_segment_duration_ms": 10000,
+                  "max_storage_bytes": 536870912,
+                  "max_storage_files": 10000,
+                  "nested": false,
+                  "playlist_length_ms": 30000,
+                  "root_directory": "<fixture-root>/hls",
+                  "segment_duration_ms": 2000,
+                  "variants": []
+                },
+                "idle_streams": false,
+                "limits": {
+                  "max_connections": 100,
+                  "max_publishers": 5,
+                  "max_viewers": 95
+                },
+                "live": true,
+                "name": "live",
+                "play": {
+                  "rules": [
+                    {
+                      "action": "deny",
+                      "network": "198.51.100.0/24"
+                    }
+                  ],
+                  "token": null
+                },
+                "publish": {
+                  "rules": [
+                    {
+                      "action": "allow",
+                      "network": "192.0.2.0/24"
+                    }
+                  ],
+                  "token": null
+                },
+                "pull_targets": [
+                  {
+                    "application": "origin",
+                    "credentials": null,
+                    "flash_version": null,
+                    "host": "127.0.0.1",
+                    "port": 1937,
+                    "scheme": "rtmp",
+                    "stream_name": "source",
+                    "tc_url": null
+                  }
+                ],
+                "push_targets": [
+                  {
+                    "application": "$name",
+                    "credentials": null,
+                    "flash_version": null,
+                    "host": "127.0.0.1",
+                    "port": 1936,
+                    "scheme": "rtmp",
+                    "stream_name": "mirror",
+                    "tc_url": null
+                  }
+                ],
+                "recorders": [
+                  {
+                    "append": false,
+                    "append_unix_seconds": false,
+                    "lock": false,
+                    "max_active_recorders": 2,
+                    "max_frames": null,
+                    "max_queue_bytes": 1048576,
+                    "max_queue_messages": 32,
+                    "max_size": null,
+                    "max_storage_bytes": null,
+                    "max_storage_files": null,
+                    "name": "archive",
+                    "notify": true,
+                    "record_mask": {
+                      "audio": true,
+                      "keyframes": false,
+                      "video": true
+                    },
+                    "root_directory": "<fixture-root>/recording",
+                    "rotation_interval_ms": null,
+                    "segment_naming": "safe_unique",
+                    "shutdown_timeout_ms": 1000,
+                    "start": "manual",
+                    "suffix_template": "-%Y%m%d.flv",
+                    "time_basis": "segment_start",
+                    "timezone": "utc"
+                  }
+                ],
+                "relay": {
+                  "buffer_ms": 1000,
+                  "connect_timeout_ms": 1000,
+                  "dns_refresh_ms": 5000,
+                  "handshake_timeout_ms": 1500,
+                  "max_queue_bytes": 131072,
+                  "max_queue_messages": 32,
+                  "pull_reconnect_ms": 3000,
+                  "push_reconnect_ms": 2000
+                },
+                "vod": {
+                  "max_duration_ms": 60000,
+                  "max_file_bytes": 1048576,
+                  "max_sessions": 2,
+                  "sources": [
+                    {
+                      "name": "archive",
+                      "root_directory": "<fixture-root>/vod",
+                      "type": "local"
+                    },
+                    {
+                      "name": "origin",
+                      "origin": "http://127.0.0.1:19091/media",
+                      "type": "http"
+                    }
+                  ]
+                }
+              }
+            ],
+            "auto_push": {
+              "connect_timeout_ms": 500,
+              "enabled": true,
+              "handshake_timeout_ms": 750,
+              "max_peers": 2,
+              "max_queue_bytes": 65536,
+              "max_queue_messages": 16,
+              "max_streams": 4,
+              "reconnect_ms": 1000,
+              "secret_file": "<fixture-root>/auto-push.secret",
+              "socket_dir": "<fixture-root>/auto-push"
+            },
+            "callbacks": {
+              "notify_method": "post",
+              "notify_relay_redirect": false,
+              "notify_update_strict": false,
+              "notify_update_timeout_ms": 30000,
+              "on_connect": "http://127.0.0.1:19090/connect",
+              "on_disconnect": "http://127.0.0.1:19090/disconnect",
+              "on_done": null,
+              "on_play": null,
+              "on_play_done": null,
+              "on_publish": null,
+              "on_publish_done": null,
+              "on_update": null,
+              "timeout_ms": 1200
+            },
+            "exec_profiles": [
+              {
+                "application": "live",
+                "arguments": [
+                  "--baseline"
+                ],
+                "environment": [
+                  {
+                    "name": "BASELINE",
+                    "value": "fixture"
+                  }
+                ],
+                "executable": "/bin/true",
+                "filesystem": "working_directory",
+                "max_processes": 1,
+                "max_queue_bytes": 4096,
+                "max_queue_messages": 8,
+                "max_respawns": 3,
+                "max_stderr_bytes": 1024,
+                "max_stdout_bytes": 1024,
+                "mode": "command",
+                "name": "publisher",
+                "network": "disabled",
+                "respawn": false,
+                "respawn_delay_ms": 250,
+                "shutdown_timeout_ms": 500,
+                "timeout_ms": 1000,
+                "trigger": "publisher",
+                "working_directory": "<fixture-root>/exec"
+              }
+            ],
+            "max_inbound_message_size": 1048576,
+            "name": "rtmp",
+            "outbound_chunk_size": 4096,
+            "outbound_policy": {
+              "allow_cidrs": [],
+              "allow_domains": [],
+              "deny_cidrs": [],
+              "deny_domains": [],
+              "deny_private": false,
+              "max_chain_depth": 4,
+              "rtmps": "allowed"
+            }
+          }
+        ],
+        "stats": null,
+        "tls_profiles": [
+          {
+            "alpn": [
+              "h2",
+              "http/1.1"
+            ],
+            "certificates": [
+              "h2-cert"
+            ],
+            "default_certificate": "h2-cert",
+            "min_version": "1.2",
+            "name": "h2",
+            "policy": {
+              "cipher_list": "ECDHE-ECDSA-AES128-GCM-SHA256",
+              "client_auth": {
+                "allowed_dns_names": [],
+                "ca_certificate_path": null,
+                "mode": "disabled"
+              },
+              "dh_parameters_path": null,
+              "prefer_server_ciphers": true,
+              "session_cache": {
+                "name": "h2",
+                "size_bytes": 65536
+              },
+              "session_tickets": false,
+              "session_timeout_seconds": 60
+            }
+          },
+          {
+            "alpn": [
+              "h3"
+            ],
+            "certificates": [
+              "h3-cert"
+            ],
+            "default_certificate": "h3-cert",
+            "min_version": "1.3",
+            "name": "h3",
+            "policy": {
+              "cipher_list": null,
+              "client_auth": {
+                "allowed_dns_names": [],
+                "ca_certificate_path": null,
+                "mode": "disabled"
+              },
+              "dh_parameters_path": null,
+              "prefer_server_ciphers": true,
+              "session_cache": null,
+              "session_tickets": false,
+              "session_timeout_seconds": null
+            }
+          }
+        ],
+        "upstream_pools": [
+          {
+            "algorithm": {
+              "type": "weighted_round_robin",
+              "weights": [
+                2,
+                1
+              ]
+            },
+            "connect_timeout_ms": null,
+            "connection_reuse": "safe",
+            "health_check": {
+              "down_interval_ms": null,
+              "expected_status": null,
+              "fast_interval_ms": null,
+              "healthy_threshold": 1,
+              "host": null,
+              "http_version": null,
+              "interval_ms": 5000,
+              "path": null,
+              "startup": "checking",
+              "timeout_ms": 1000,
+              "type": "tcp",
+              "unhealthy_threshold": 2
+            },
+            "http_versions": {
+              "max": "1.1",
+              "min": "1.1"
+            },
+            "name": "origin",
+            "passive_health": {
+              "error_limit": 2,
+              "initial_backoff_ms": 30000,
+              "mark_down": false,
+              "mark_up": false,
+              "max_backoff_ms": 30000,
+              "observe": "layer7",
+              "on_error": "count",
+              "recovery_threshold": 1
+            },
+            "queue_timeout_ms": null,
+            "server_timeout_ms": null,
+            "servers": [
+              {
+                "dns_resolution": "on_connect",
+                "endpoint": {
+                  "address": "127.0.0.1:13000",
+                  "type": "socket"
+                },
+                "max_connections": null,
+                "name": "endpoint-1"
+              },
+              {
+                "dns_resolution": "on_connect",
+                "endpoint": {
+                  "address": "127.0.0.1:13001",
+                  "type": "socket"
+                },
+                "max_connections": null,
+                "name": "endpoint-2"
+              }
+            ],
+            "tls": null
+          },
+          {
+            "algorithm": "round_robin",
+            "connect_timeout_ms": null,
+            "connection_reuse": "safe",
+            "health_check": null,
+            "http_versions": {
+              "max": "3",
+              "min": "3"
+            },
+            "name": "h3-origin",
+            "passive_health": null,
+            "queue_timeout_ms": null,
+            "server_timeout_ms": null,
+            "servers": [
+              {
+                "dns_resolution": "on_connect",
+                "endpoint": {
+                  "address": "127.0.0.1:13443",
+                  "type": "socket"
+                },
+                "max_connections": null,
+                "name": "endpoint-1"
+              }
+            ],
+            "tls": {
+              "ca_certificate_path": null,
+              "server_name": "origin.example.test"
+            }
+          },
+          {
+            "algorithm": "round_robin",
+            "connect_timeout_ms": null,
+            "connection_reuse": "safe",
+            "health_check": null,
+            "http_versions": {
+              "max": "1.1",
+              "min": "1.1"
+            },
+            "name": "tcp",
+            "passive_health": null,
+            "queue_timeout_ms": null,
+            "server_timeout_ms": null,
+            "servers": [
+              {
+                "dns_resolution": "on_connect",
+                "endpoint": {
+                  "address": "127.0.0.1:5432",
+                  "type": "socket"
+                },
+                "max_connections": null,
+                "name": "endpoint-1"
+              }
+            ],
+            "tls": null
+          },
+          {
+            "algorithm": "round_robin",
+            "connect_timeout_ms": null,
+            "connection_reuse": "safe",
+            "health_check": null,
+            "http_versions": {
+              "max": "1.1",
+              "min": "1.1"
+            },
+            "name": "udp",
+            "passive_health": null,
+            "queue_timeout_ms": null,
+            "server_timeout_ms": null,
+            "servers": [
+              {
+                "dns_resolution": "on_connect",
+                "endpoint": {
+                  "address": "127.0.0.1:5353",
+                  "type": "socket"
+                },
+                "max_connections": null,
+                "name": "endpoint-1"
+              }
+            ],
+            "tls": null
+          }
+        ],
+        "version": 1
+      },
+      "error": "runtime does not yet implement canonical policy `http_services[].routes[].policy.unbounded_request_buffering`",
+      "result": "error"
+    }
+  ],
+  "coverage": [
+    "normalized_validated_decisions",
+    "runtime_services_tls",
+    "runtime_pool_endpoints",
+    "exact_topology",
+    "errors",
+    "acquisition_trace_stop_points",
+    "generation_validation_environmental_failures"
+  ],
+  "schemaVersion": 2,
+  "sourceCommit": "2d9c5fe66cd096d7a1d8e3bada8d5784b5f97f6c",
+  "validationCases": [
+    {
+      "case": "access-log",
+      "result": "service_plan_prepare",
+      "rtmpRuntimeStarts": 0
+    },
+    {
+      "case": "media",
+      "result": "service_plan_prepare",
+      "rtmpRuntimeStarts": 0
+    },
+    {
+      "case": "recording",
+      "result": "service_plan_prepare",
+      "rtmpRuntimeStarts": 0
+    }
+  ]
+}

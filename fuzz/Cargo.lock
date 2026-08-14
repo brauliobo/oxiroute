@@ -2274,7 +2274,6 @@ version = "0.4.1"
 dependencies = [
  "chrono-tz",
  "http",
- "mlua",
  "serde",
  "thiserror 2.0.19",
 ]
@@ -2285,6 +2284,7 @@ version = "0.4.1"
 dependencies = [
  "hocon-parser",
  "kdl",
+ "mlua",
  "oxiroute-config",
  "oxiroute-import",
  "serde",
@@ -2330,11 +2330,11 @@ dependencies = [
  "http",
  "openssl",
  "oxiroute-config",
- "oxiroute-rtmp",
  "rustix",
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "thiserror 2.0.19",
  "x509-parser",
  "zeroize",
 ]

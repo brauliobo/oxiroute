@@ -659,9 +659,9 @@ fn compose_config_files(paths: &[PathBuf], format: ConfigFormat) -> Result<Strin
                 format!("canonical configuration `{}` was rejected", path.display()).into(),
             );
         };
-        configs.push(document.normalized_config.clone());
+        configs.push(document.validated_config.to_draft());
     }
-    let composed = oxiroute_config::compose_configs(&configs)?;
+    let composed = oxiroute_config::compose_validated_configs(configs)?;
     Ok(render_config(format, &composed)?)
 }
 
@@ -711,7 +711,7 @@ fn import_nginx(
     let report = oxiroute_import::nginx::import_root_with_options(path, root_prefix, &options);
     match output {
         ImportOutput::Preview => preview_with_shadow_listener_offset(
-            report.candidate.config(),
+            report.candidate.validated(),
             shadow_port_offset,
             format,
         ),
@@ -745,9 +745,11 @@ fn import_haproxy(
         },
     );
     match output {
-        ImportOutput::Preview => {
-            preview_with_shadow_listener_offset(report.value().config(), shadow_port_offset, format)
-        }
+        ImportOutput::Preview => preview_with_shadow_listener_offset(
+            report.value().validated(),
+            shadow_port_offset,
+            format,
+        ),
         ImportOutput::Report => {
             if shadow_port_offset.is_some() {
                 return Err("--shadow-port-offset requires --output preview".into());
@@ -769,7 +771,7 @@ fn import_squid(
     let report = oxiroute_import::squid::import(path);
     match output {
         ImportOutput::Preview => preview_with_shadow_listener_offset(
-            report.candidate.config(),
+            report.candidate.validated(),
             shadow_port_offset,
             format,
         ),
@@ -791,7 +793,7 @@ fn import_apache(
     let report = oxiroute_import::apache::import_root(path);
     match output {
         ImportOutput::Preview => preview_with_shadow_listener_offset(
-            report.candidate.config(),
+            report.candidate.validated(),
             shadow_port_offset,
             format,
         ),
@@ -815,7 +817,7 @@ fn import_varnish(
     let report = oxiroute_import::varnish::import(path, &invocation);
     match output {
         ImportOutput::Preview => preview_with_shadow_listener_offset(
-            report.candidate.config(),
+            report.candidate.validated(),
             shadow_port_offset,
             format,
         ),
@@ -829,7 +831,7 @@ fn import_varnish(
 }
 
 fn preview_with_shadow_listener_offset(
-    config: Option<&oxiroute_config::Config>,
+    config: Option<&oxiroute_config::ValidatedConfig>,
     shadow_port_offset: Option<u16>,
     format: ConfigFormat,
 ) -> Result<String, Box<dyn Error>> {
@@ -838,7 +840,7 @@ fn preview_with_shadow_listener_offset(
     };
     let mut config = config
         .ok_or("native configuration did not produce an activatable candidate")?
-        .clone();
+        .to_draft();
     for listener in &mut config.listeners {
         let oxiroute_config::ListenerBind::Socket { address } = &mut listener.bind else {
             continue;
@@ -850,13 +852,14 @@ fn preview_with_shadow_listener_offset(
                 .ok_or("shadow listener port offset exceeds 65535")?,
         );
     }
-    oxiroute_config::validate_config(&mut config)
+    let config = config
+        .validate()
         .map_err(|_| "shadow listener configuration is not valid")?;
     Ok(render_config(format, &config)?)
 }
 
 fn preview(
-    config: Option<&oxiroute_config::Config>,
+    config: Option<&oxiroute_config::ValidatedConfig>,
     format: ConfigFormat,
 ) -> Result<String, Box<dyn Error>> {
     let config = config.ok_or("native configuration did not produce an activatable candidate")?;

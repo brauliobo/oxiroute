@@ -14,7 +14,7 @@ use openssl::{
     ssl::SslVersion,
     x509::{X509, X509PurposeId, store::X509StoreBuilder, verify::X509VerifyFlags},
 };
-use oxiroute_config::{HttpVersion, UpstreamPool};
+use oxiroute_config::{HttpVersion, HttpVersionPolicy, UpstreamPool, UpstreamTls};
 use pingora::{
     protocols::tls::{CaType, TlsConfigureHook, TlsRef},
     upstreams::peer::{HttpPeer, Scheme},
@@ -59,6 +59,52 @@ pub struct UpstreamTlsPlan {
     group_key: u64,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct UpstreamTlsBlueprint {
+    pub(crate) pool: String,
+    pub(crate) server_name: String,
+    pub(crate) ca_certificate_path: Option<std::path::PathBuf>,
+    pub(crate) min_http_version: HttpVersion,
+    pub(crate) max_http_version: HttpVersion,
+    pub(crate) h3: bool,
+}
+
+impl UpstreamTlsBlueprint {
+    pub(crate) fn compile(
+        pool: &str,
+        tls: Option<&UpstreamTls>,
+        http_versions: HttpVersionPolicy,
+    ) -> Result<Option<Self>, TlsBuildError> {
+        let Some(tls) = tls else {
+            return Ok(None);
+        };
+        let mut server_name = tls.server_name.clone();
+        server_name.make_ascii_lowercase();
+        if !valid_server_name(&server_name) {
+            return Err(TlsBuildError::InvalidUpstreamServerName {
+                pool: pool.to_owned(),
+                server_name,
+            });
+        }
+        if matches!(
+            (http_versions.min, http_versions.max),
+            (HttpVersion::Http2, HttpVersion::Http11)
+        ) {
+            return Err(TlsBuildError::InvalidHttpVersionRange {
+                pool: pool.to_owned(),
+            });
+        }
+        Ok(Some(Self {
+            pool: pool.to_owned(),
+            server_name,
+            ca_certificate_path: tls.ca_certificate_path.clone(),
+            min_http_version: http_versions.min,
+            max_http_version: http_versions.max,
+            h3: http_versions.min == HttpVersion::Http3,
+        }))
+    }
+}
+
 impl UpstreamTlsPlan {
     /// Prepares the TLS policy for a pool, returning `None` for a plaintext pool.
     ///
@@ -66,30 +112,25 @@ impl UpstreamTlsPlan {
     ///
     /// Returns an error for invalid SNI/version policy or an unusable custom CA bundle.
     pub fn from_pool(pool: &UpstreamPool) -> Result<Option<Self>, TlsBuildError> {
-        let Some(tls) = &pool.tls else {
+        Self::from_spec(&pool.name, pool.tls.as_ref(), pool.http_versions)
+    }
+
+    fn from_spec(
+        pool: &str,
+        tls: Option<&UpstreamTls>,
+        http_versions: HttpVersionPolicy,
+    ) -> Result<Option<Self>, TlsBuildError> {
+        let Some(blueprint) = UpstreamTlsBlueprint::compile(pool, tls, http_versions)? else {
             return Ok(None);
         };
-        let mut server_name = tls.server_name.clone();
-        server_name.make_ascii_lowercase();
-        if !valid_server_name(&server_name) {
-            return Err(TlsBuildError::InvalidUpstreamServerName {
-                pool: pool.name.clone(),
-                server_name,
-            });
-        }
-        if matches!(
-            (pool.http_versions.min, pool.http_versions.max),
-            (HttpVersion::Http2, HttpVersion::Http11)
-        ) {
-            return Err(TlsBuildError::InvalidHttpVersionRange {
-                pool: pool.name.clone(),
-            });
-        }
+        Self::acquire(&blueprint).map(Some)
+    }
 
-        let custom_ca = tls
+    pub(crate) fn acquire(blueprint: &UpstreamTlsBlueprint) -> Result<Self, TlsBuildError> {
+        let custom_ca = blueprint
             .ca_certificate_path
             .as_deref()
-            .map(|path| load_custom_ca_bundle(&pool.name, path))
+            .map(|path| load_custom_ca_bundle(&blueprint.pool, path))
             .transpose()?;
         let (ca, ca_revision, ca_policy) = custom_ca.map_or_else(
             || (None, None, vec![0]),
@@ -97,20 +138,20 @@ impl UpstreamTlsPlan {
         );
 
         let group_key = group_key(
-            &server_name,
-            pool.http_versions.min,
-            pool.http_versions.max,
+            &blueprint.server_name,
+            blueprint.min_http_version,
+            blueprint.max_http_version,
             &ca_policy,
         );
-        Ok(Some(Self {
-            pool: pool.name.clone(),
-            server_name,
+        Ok(Self {
+            pool: blueprint.pool.clone(),
+            server_name: blueprint.server_name.clone(),
             ca,
             ca_revision,
-            min_http_version: pool.http_versions.min,
-            max_http_version: pool.http_versions.max,
+            min_http_version: blueprint.min_http_version,
+            max_http_version: blueprint.max_http_version,
             group_key,
-        }))
+        })
     }
 
     #[must_use]

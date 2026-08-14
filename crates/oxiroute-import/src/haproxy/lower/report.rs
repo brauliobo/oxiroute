@@ -32,7 +32,7 @@ impl<'a> Lowerer<'a> {
         Self {
             effective: resolution.value(),
             diagnostics: resolution.diagnostics().to_vec(),
-            draft: crate::CanonicalDraft::default(),
+            draft: crate::candidate::empty_config(),
             provenance: crate::candidate::CanonicalProvenanceLedger::new(
                 crate::candidate::EmptyOriginPolicy::Preserve,
             ),
@@ -116,17 +116,16 @@ impl<'a> Lowerer<'a> {
         }
         self.finish_connection_lifecycle_overlays();
 
-        let draft = self.draft.clone();
-        let finalization = self.finalize(&draft);
+        let draft = std::mem::replace(&mut self.draft, crate::candidate::empty_config());
+        let state = self.finalize(draft);
         Report::new(
             CanonicalCandidate::new(
-                draft,
+                state,
                 self.provenance.into_entries(),
                 self.deployment_requirements,
                 self.activation_requirements,
                 self.operational_overlays,
                 crate::SourceImportMetadata::default(),
-                finalization,
             ),
             self.diagnostics,
         )
@@ -164,13 +163,17 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn finalize(&mut self, draft: &crate::CanonicalDraft) -> crate::CanonicalFinalization {
+    fn finalize(
+        &mut self,
+        draft: oxiroute_config::ConfigDraft,
+    ) -> crate::candidate::CanonicalCandidateState {
         let eligible = !self
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.severity() == Severity::Error);
-        match draft.finalize(eligible) {
-            Ok(finalization) => finalization,
+        match crate::candidate::finalize_candidate(&draft, eligible) {
+            Ok(Some(config)) => crate::candidate::CanonicalCandidateState::Validated(config),
+            Ok(None) => crate::candidate::CanonicalCandidateState::Blocked(draft),
             Err(error) => {
                 let mut diagnostic = Diagnostic::new(
                     E_INVALID_VALUE,
@@ -187,7 +190,7 @@ impl<'a> Lowerer<'a> {
                     diagnostic = diagnostic.with_primary_span(span);
                 }
                 self.diagnostics.push(diagnostic);
-                crate::CanonicalFinalization::Blocked
+                crate::candidate::CanonicalCandidateState::Blocked(draft)
             }
         }
     }

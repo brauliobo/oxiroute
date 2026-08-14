@@ -50,8 +50,8 @@ test.describe('certificates workspace browser gates', () => {
       if (path === '/api/v1/monitoring') return managementMonitoring()
       if (path === '/api/v1/tls') return json(inventory)
       if (path === '/api/v1/generations') return json(managementGeneration())
-      if (path === '/api/v1/events') return json(managementEventPage())
-      if (path === '/api/v1/events/stream') return shutdownStream()
+      if (path === '/api/v2/events') return json(managementEventPage())
+      if (path === '/api/v2/events/stream') return shutdownStream()
       return undefined
     })
 

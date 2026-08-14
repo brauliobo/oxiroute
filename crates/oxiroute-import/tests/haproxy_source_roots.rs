@@ -213,7 +213,13 @@ fn fatal_root_decisions_reach_resolution_without_parsing_a_partial_configuration
 
     let imported = import_roots(&[first, missing, last]);
     assert!(imported.has_errors());
-    assert!(imported.value().config().is_none());
+    assert!(
+        imported
+            .value()
+            .validated()
+            .map(oxiroute_config::ValidatedConfig::as_draft)
+            .is_none()
+    );
     assert!(
         imported
             .diagnostics()

@@ -61,8 +61,9 @@ goal. These are the current building blocks:
   Complete nginx roots can compose the strict nginx-RTMP subset into the canonical runtime through
   native references.
 - **Supervision:** platform-neutral replacement state machines and a tested Linux master, worker, and
-  launcher slice for typed listener adoption. The default public entry point remains direct
-  `oxiroute serve` while packaged active-traffic supervised replacement is gated.
+  launcher slice for typed listener adoption. On Linux, `oxiroute serve` uses supervision when the
+  fixed launcher is installed and the listener topology is eligible. The Arch package installs that
+  launcher; unsupported topologies, unpackaged installs without it, and non-Linux builds run direct.
 
 ## Five-Minute Local Run
 

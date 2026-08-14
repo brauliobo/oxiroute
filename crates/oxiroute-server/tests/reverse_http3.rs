@@ -22,13 +22,13 @@ use bytes::{Buf as _, Bytes, BytesMut};
 use h3::{client::RequestStream, error::Code, proto::coding::BufMutExt as _, server::Connection};
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use oxiroute_config::{
-    AlpnProtocol, CacheKeyComponent, CacheStore, Certificate, CertificateSource, Config,
+    AlpnProtocol, CacheKeyComponent, CacheStore, Certificate, CertificateSource, ConfigDraft,
     DownstreamTimeoutPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpPathSelector,
     HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
     HttpResponseHeaderMutation, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpSameSite,
     HttpService, HttpStaticMimePolicy, HttpStaticPathMapping, HttpVersion, HttpVersionPolicy,
     Listener, ListenerBind, Management, Protocol, TlsProfile, TlsVersion, UpstreamAlgorithm,
-    UpstreamPool, UpstreamTls, validate_config,
+    UpstreamPool, UpstreamTls,
 };
 use quinn::crypto::rustls::{HandshakeData, QuicClientConfig, QuicServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
@@ -177,7 +177,7 @@ async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool() {
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });
 
-    validate_config(&mut config).expect("valid reverse H3 configuration");
+    let config = config.validate().expect("valid reverse H3 configuration");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let connection = timeout(Duration::from_secs(10), async {
@@ -398,7 +398,9 @@ async fn reverse_h3_cache_serves_a_second_get_without_origin_contact() {
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });
 
-    validate_config(&mut config).expect("valid cached reverse H3 configuration");
+    let config = config
+        .validate()
+        .expect("valid cached reverse H3 configuration");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint().expect("cache H3 client endpoint");
     let connection = timeout(Duration::from_secs(10), async {
@@ -625,6 +627,7 @@ async fn reverse_h3_characterizes_http_policy_parity_and_early_origin_contact() 
         vec![h3_pool(origin_address)],
         Some(8),
     );
+    let config = config.validate().expect("valid reverse H3 policy config");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint().expect("policy H3 client endpoint");
     let connection = connect_h3(&endpoint, listener_address).await;
@@ -746,7 +749,8 @@ async fn daemon_reloads_reverse_h3_while_active_request_drains_and_rejects_new_s
         bind: management_address,
         ui_dir: None,
     });
-    let mut server = process_support::ServerProcess::start(&config, Some(TEST_TOKEN));
+    let active_config = config.clone().validate().expect("valid active H3 config");
+    let mut server = process_support::ServerProcess::start(&active_config, Some(TEST_TOKEN));
     server.wait_for_tcp(management_address).await;
     let authorization = format!("Bearer {TEST_TOKEN}");
     let original_revision = active_revision(management_address, &authorization).await;
@@ -770,7 +774,10 @@ async fn daemon_reloads_reverse_h3_while_active_request_drains_and_rejects_new_s
         body: "candidate-h3".into(),
         headers: Vec::new(),
     };
-    process_support::write_config(&server.config_path, &config);
+    process_support::write_config(
+        &server.config_path,
+        &config.validate().expect("valid candidate H3 config"),
+    );
     wait_for_new_revision(management_address, &authorization, &original_revision).await;
 
     assert!(
@@ -1068,7 +1075,9 @@ async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });
 
-    validate_config(&mut config).expect("valid reverse H3 static configuration");
+    let config = config
+        .validate()
+        .expect("valid reverse H3 static configuration");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let connection = timeout(Duration::from_secs(10), async {
@@ -1219,12 +1228,16 @@ async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(recv_body(&mut stale_if_range).await.as_ref(), b"0123456789");
 
+    let mut config = config.to_draft();
     config.http_services[0].routes[0].action = HttpRouteAction::FixedResponse {
         status: 200,
         body: "reloaded".into(),
         headers: Vec::new(),
     };
-    process_support::write_config(&server.config_path, &config);
+    process_support::write_config(
+        &server.config_path,
+        &config.validate().expect("valid replacement H3 config"),
+    );
     timeout(Duration::from_secs(10), async {
         loop {
             let Ok(connecting) = endpoint.connect(listener_address, support::PROXY_SERVER_NAME)
@@ -1353,6 +1366,7 @@ async fn daemon_rejects_reverse_h3_connections_at_the_listener_limit() {
         vec![h3_pool(upstream_address)],
         Some(1),
     );
+    let config = config.validate().expect("valid reverse H3 config");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let first_connection = connect_h3(&endpoint, listener_address).await;
@@ -1414,6 +1428,7 @@ async fn daemon_rejects_reverse_h3_request_bodies_over_the_configured_bound() {
         vec![h3_pool(upstream_address)],
         Some(8),
     );
+    let config = config.validate().expect("valid reverse H3 config");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let connection = connect_h3(&endpoint, listener_address).await;
@@ -1464,6 +1479,7 @@ async fn daemon_rejects_oversized_headers_and_malformed_reverse_h3_frames() {
         Vec::new(),
         Some(8),
     );
+    let config = config.validate().expect("valid reverse H3 config");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let connection = connect_h3(&endpoint, listener_address).await;
@@ -1541,6 +1557,7 @@ async fn daemon_rejects_reverse_h3_static_responses_over_the_body_bound() {
         Vec::new(),
         Some(8),
     );
+    let config = config.validate().expect("valid reverse H3 config");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let connection = connect_h3(&endpoint, listener_address).await;
@@ -1594,6 +1611,7 @@ async fn daemon_enforces_reverse_h3_quic_stream_and_concurrent_request_bounds() 
         vec![h3_pool(upstream_address)],
         Some(8),
     );
+    let config = config.validate().expect("valid reverse H3 config");
     let server = process_support::ServerProcess::start(&config, None);
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let connection = connect_h3(&endpoint, listener_address).await;
@@ -1655,7 +1673,7 @@ fn reverse_config(
     service: HttpService,
     upstream_pools: Vec<UpstreamPool>,
     max_connections: Option<u64>,
-) -> Config {
+) -> ConfigDraft {
     let mut config = support::empty_config();
     config.certificates.push(Certificate {
         name: "downstream".into(),
@@ -1687,7 +1705,6 @@ fn reverse_config(
         max_connections,
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });
-    validate_config(&mut config).expect("valid reverse H3 test configuration");
     config
 }
 

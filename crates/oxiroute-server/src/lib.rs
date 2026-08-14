@@ -5,7 +5,10 @@ mod config_watcher;
 mod encoding;
 mod forward_proxy;
 mod generation;
+mod generation_blueprint;
+mod generation_compiler;
 mod generation_health;
+mod generation_resources;
 mod health;
 mod html;
 mod http3;
@@ -16,14 +19,22 @@ mod http_policy;
 mod http_proxy;
 mod http_server_app;
 mod l4_service;
+mod listener_inventory;
 mod listener_reservation;
+mod listener_runtime;
 mod logging;
 mod monitoring;
 mod operational_event;
+mod planning_errors;
+mod planning_types;
 mod prometheus;
 mod proxy_protocol;
 mod routing;
 mod rtmp_api;
+mod rtmp_generation_runtime;
+mod rtmp_value_mapping;
+mod rtmp_value_plan;
+mod runtime_policy;
 mod secure_bearer;
 mod service_plan;
 mod shutdown;
@@ -81,7 +92,7 @@ pub use routing::{
 pub use rtmp_api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
 pub use service_plan::{
     HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
-    runtime_plan, runtime_plan_with_passive_failure_policy, service_specs,
+    runtime_plan, runtime_plan_with_passive_failure_policy, service_specs, validate_runtime_plan,
 };
 pub use stats::{HaproxyStatsApi, HaproxyStatsPage};
 pub use tcp_relay::{

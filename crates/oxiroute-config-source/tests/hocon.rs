@@ -2,7 +2,6 @@ use std::fmt::Write as _;
 
 use oxiroute_config_source::{
     ConfigFormat, ConfigSourceError, MAX_STRUCTURAL_DEPTH, MAX_SUBSTITUTIONS, decode_value,
-    render_value,
 };
 use serde_json::json;
 
@@ -59,31 +58,6 @@ fn rejects_every_include_form_before_resolution() {
             "unexpected error for {source:?}: {error}"
         );
     }
-}
-
-#[test]
-fn renders_deterministic_json_that_hocon_can_decode() {
-    let value = json!({"z": [true, null], "a": {"two": 2, "one": 1}});
-    let rendered = render_value(ConfigFormat::Hocon, &value).unwrap();
-    assert_eq!(
-        rendered,
-        concat!(
-            "{\n",
-            "  \"a\": {\n",
-            "    \"one\": 1,\n",
-            "    \"two\": 2\n",
-            "  },\n",
-            "  \"z\": [\n",
-            "    true,\n",
-            "    null\n",
-            "  ]\n",
-            "}\n",
-        )
-    );
-    assert_eq!(
-        decode_value(ConfigFormat::Hocon, rendered.as_bytes()).unwrap(),
-        value
-    );
 }
 
 #[test]

@@ -131,6 +131,18 @@ impl fmt::Display for DestinationPolicyError {
 impl std::error::Error for DestinationPolicyError {}
 
 impl RtmpOutboundPolicy {
+    /// Validates only CIDR syntax and prefix representability without applying destination or
+    /// transport policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an allow or deny CIDR is malformed.
+    pub fn validate_cidrs_intrinsic(&self) -> Result<(), DestinationPolicyError> {
+        parse_cidrs(&self.allow_cidrs)?;
+        parse_cidrs(&self.deny_cidrs)?;
+        Ok(())
+    }
+
     /// Validates every address returned for a destination before one address is pinned.
     ///
     /// Checking the complete answer, rather than only the selected address, prevents a later

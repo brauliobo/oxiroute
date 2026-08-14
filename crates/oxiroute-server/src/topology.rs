@@ -1,7 +1,7 @@
-use std::{collections::HashMap, fmt::Write as _, sync::Arc};
+use std::{collections::HashMap, fmt::Write as _};
 
 use oxiroute_config::{
-    AlpnProtocol, CertificateSource, Config, HealthCheck, HealthCheckType, HttpAccessPolicy,
+    AlpnProtocol, CertificateSource, ConfigDraft, HealthCheck, HealthCheckType, HttpAccessPolicy,
     HttpHostSelector, HttpPathSelector, HttpRoute, HttpRouteAction, HttpUpstreamHost, HttpVersion,
     ListenerBind, Protocol, RtmpRecorderStart, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
     UpstreamTls,
@@ -9,7 +9,7 @@ use oxiroute_config::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::{ListenerRuntimeState, RoundRobinPool, ServiceSpec, monitoring::RuntimeHealthSnapshot};
+use crate::{ListenerRuntimeState, monitoring::RuntimeHealthSnapshot};
 
 pub const TOPOLOGY_SCHEMA_VERSION: u32 = 1;
 
@@ -24,22 +24,15 @@ pub struct TopologySnapshot {
 }
 
 impl TopologySnapshot {
-    pub(crate) fn compile(
-        config: &Config,
-        services: &[ServiceSpec],
-        pools: &[Arc<RoundRobinPool>],
-    ) -> Self {
-        debug_assert_eq!(config.listeners.len(), services.len());
-        debug_assert_eq!(config.upstream_pools.len(), pools.len());
-
+    pub(crate) fn compile(config: &ConfigDraft) -> Self {
         let mut builder = TopologyBuilder::new(config);
-        builder.add_listeners(config, services);
+        builder.add_listeners(config);
         builder.add_stats_pages(config);
         builder.add_tls(config);
         builder.add_forward_proxy_services(config);
         builder.add_http_services(config);
         builder.add_l4_services(config);
-        builder.add_upstream_pools(config, pools);
+        builder.add_upstream_pools(config);
         builder.finish()
     }
 
@@ -209,7 +202,7 @@ struct TopologyBuilder {
 }
 
 impl TopologyBuilder {
-    fn new(config: &Config) -> Self {
+    fn new(config: &ConfigDraft) -> Self {
         let endpoint_capacity = config
             .upstream_pools
             .iter()
@@ -226,8 +219,8 @@ impl TopologyBuilder {
         }
     }
 
-    fn add_listeners(&mut self, config: &Config, services: &[ServiceSpec]) {
-        for (index, (listener, service)) in config.listeners.iter().zip(services).enumerate() {
+    fn add_listeners(&mut self, config: &ConfigDraft) {
+        for (index, listener) in config.listeners.iter().enumerate() {
             let kind = match listener.protocol {
                 Protocol::Rtmp => TopologyNodeKind::RtmpListener,
                 Protocol::Http | Protocol::Http3 | Protocol::Tcp | Protocol::Udp => {
@@ -276,7 +269,8 @@ impl TopologyBuilder {
                 config_path: config_path.clone(),
                 attributes,
             });
-            self.listener_nodes.insert(service.name.clone(), id.clone());
+            self.listener_nodes
+                .insert(listener.name.clone(), id.clone());
 
             if let Some(service) = &listener.service {
                 let target = match listener.protocol {
@@ -305,7 +299,7 @@ impl TopologyBuilder {
         }
     }
 
-    fn add_stats_pages(&mut self, config: &Config) {
+    fn add_stats_pages(&mut self, config: &ConfigDraft) {
         let Some(stats) = &config.stats else {
             return;
         };
@@ -337,7 +331,7 @@ impl TopologyBuilder {
         }
     }
 
-    fn add_forward_proxy_services(&mut self, config: &Config) {
+    fn add_forward_proxy_services(&mut self, config: &ConfigDraft) {
         for (index, service) in config.forward_proxy_services.iter().enumerate() {
             let id = forward_proxy_service_id(&service.name);
             let config_path = format!("/forward_proxy_services/{index}");
@@ -369,7 +363,7 @@ impl TopologyBuilder {
         }
     }
 
-    fn add_tls(&mut self, config: &Config) {
+    fn add_tls(&mut self, config: &ConfigDraft) {
         for (index, profile) in config.tls_profiles.iter().enumerate() {
             let id = tls_profile_id(&profile.name);
             let config_path = format!("/tls_profiles/{index}");
@@ -413,7 +407,7 @@ impl TopologyBuilder {
         }
     }
 
-    fn add_http_services(&mut self, config: &Config) {
+    fn add_http_services(&mut self, config: &ConfigDraft) {
         for (service_index, service) in config.http_services.iter().enumerate() {
             let id = http_service_id(&service.name);
             let config_path = format!("/http_services/{service_index}");
@@ -485,7 +479,7 @@ impl TopologyBuilder {
         }
     }
 
-    fn add_l4_services(&mut self, config: &Config) {
+    fn add_l4_services(&mut self, config: &ConfigDraft) {
         for (index, service) in config.l4_services.iter().enumerate() {
             let id = l4_service_id(&service.name);
             let config_path = format!("/l4_services/{index}");
@@ -510,10 +504,8 @@ impl TopologyBuilder {
         }
     }
 
-    fn add_upstream_pools(&mut self, config: &Config, pools: &[Arc<RoundRobinPool>]) {
-        for (pool_index, (pool, runtime_pool)) in
-            config.upstream_pools.iter().zip(pools).enumerate()
-        {
+    fn add_upstream_pools(&mut self, config: &ConfigDraft) {
+        for (pool_index, pool) in config.upstream_pools.iter().enumerate() {
             let id = pool_id(&pool.name);
             let config_path = format!("/upstream_pools/{pool_index}");
             self.nodes.push(TopologyNode {
@@ -531,13 +523,9 @@ impl TopologyBuilder {
                     },
                 }),
             });
-            let runtime_pool_name = runtime_pool.health_snapshot().name;
-            self.pool_nodes
-                .insert(runtime_pool_name.clone(), id.clone());
+            self.pool_nodes.insert(pool.name.clone(), id.clone());
 
-            for ((server_index, server), (_, runtime_name, _runtime_endpoint)) in
-                pool.servers.iter().enumerate().zip(runtime_pool.servers())
-            {
+            for (server_index, server) in pool.servers.iter().enumerate() {
                 let endpoint = &server.endpoint;
                 let endpoint_id = endpoint_id(&pool.name, &server.name);
                 let endpoint_name = server.name.clone();
@@ -560,7 +548,7 @@ impl TopologyBuilder {
                     endpoint_path,
                 ));
                 self.endpoint_nodes
-                    .insert((runtime_pool_name.clone(), runtime_name), endpoint_id);
+                    .insert((pool.name.clone(), server.name.clone()), endpoint_id);
             }
         }
     }

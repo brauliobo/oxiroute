@@ -42,4 +42,39 @@ describe('HaproxyStatsDashboard', () => {
     expect(wrapper.text()).toContain('No upstream pools are configured.')
     expect(wrapper.findAll('.empty-state')).toHaveLength(2)
   })
+
+  it('renders unavailable telemetry distinctly from numeric zero', () => {
+    const unavailable = contractMonitoring()
+    unavailable.process.cpuPercent = null
+    unavailable.process.residentMemoryBytes = null
+    unavailable.process.virtualMemoryBytes = null
+    unavailable.process.threadCount = null
+    unavailable.process.openFileDescriptors = null
+    unavailable.host.loadAverage1m = null
+    unavailable.host.loadAverage5m = null
+    unavailable.host.loadAverage15m = null
+    unavailable.host.totalMemoryBytes = null
+    unavailable.host.availableMemoryBytes = null
+
+    const wrapper = mount(HaproxyStatsDashboard, { props: { monitoring: unavailable } })
+    expect(wrapper.get('.stats-panel').text()).toContain('Unavailable')
+    expect(wrapper.findAll('.stats-panel')[2]!.text()).toContain('Unavailable')
+
+    const zero = contractMonitoring()
+    zero.process.cpuPercent = 0
+    zero.process.residentMemoryBytes = 0
+    zero.process.virtualMemoryBytes = 0
+    zero.process.threadCount = 0
+    zero.process.openFileDescriptors = 0
+    zero.host.loadAverage1m = 0
+    zero.host.loadAverage5m = 0
+    zero.host.loadAverage15m = 0
+    zero.host.totalMemoryBytes = 0
+    zero.host.availableMemoryBytes = 0
+
+    const zeroWrapper = mount(HaproxyStatsDashboard, { props: { monitoring: zero } })
+    expect(zeroWrapper.get('.stats-panel').text()).toContain('0%')
+    expect(zeroWrapper.findAll('.stats-panel')[2]!.text()).toContain('0.00')
+    expect(zeroWrapper.findAll('.stats-panel')[2]!.text()).not.toContain('Unavailable')
+  })
 })

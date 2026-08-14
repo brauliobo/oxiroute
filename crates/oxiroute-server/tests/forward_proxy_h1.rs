@@ -16,7 +16,7 @@ use oxiroute_config::{
     ForwardAccessMatcher, ForwardAccessPolicy, ForwardAccessRule, ForwardAuditMode,
     ForwardConnectPolicy, ForwardDestinationPolicy, ForwardDirectFallback, ForwardHeaderPolicy,
     ForwardHttpVersion, ForwardPeer, ForwardPeerPolicy, ForwardProxyAuth, ForwardProxyService,
-    ForwardResolverPolicy, Listener, Protocol, Stats, TlsProfile, TlsVersion, load_lua,
+    ForwardResolverPolicy, Listener, Protocol, Stats, TlsProfile, TlsVersion,
 };
 use oxiroute_import::squid::import;
 use tempfile::tempdir;
@@ -25,6 +25,8 @@ use tokio::{
     net::{TcpListener, TcpStream, UdpSocket},
     time::{Duration, timeout},
 };
+
+use config_support::load_lua;
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -127,6 +129,7 @@ async fn downstream_tls_h1_forwards_absolute_form_and_connect_on_a_real_listener
         max_connections: Some(1),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
+    let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
 
@@ -432,6 +435,7 @@ async fn basic_authenticated_absolute_form_and_connect_cross_the_runtime_listene
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
+    let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
 
@@ -684,6 +688,7 @@ async fn static_peers_retry_in_order_and_receive_absolute_form() {
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
+    let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
 
@@ -763,6 +768,7 @@ async fn failed_static_peer_can_fall_back_to_direct_http() {
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
+    let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
 
@@ -1019,6 +1025,7 @@ async fn cache_collapses_gets_preserves_head_only_if_cached_and_exact_metrics() 
         admin_token_file: None,
         pages: Vec::new(),
     });
+    let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
     server.wait_for_tcp(stats_address).await;
@@ -1135,6 +1142,7 @@ async fn cache_revalidates_304_and_serves_stale_only_for_upstream_failures() {
         admin_token_file: None,
         pages: Vec::new(),
     });
+    let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
     server.wait_for_tcp(stats_address).await;
@@ -1220,6 +1228,7 @@ async fn cache_cancels_disconnected_leaders_but_not_leaders_with_cancelled_follo
 
     let proxy_address = process_support::reserve_tcp_address();
     let config = forward_cache_config(proxy_address);
+    let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
 
@@ -1319,6 +1328,7 @@ async fn cache_admits_only_after_eos_and_rejects_trailered_framing() {
 
     let proxy_address = process_support::reserve_tcp_address();
     let config = forward_cache_config(proxy_address);
+    let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
     let request = format!(
@@ -1377,8 +1387,10 @@ async fn imported_squid_candidate_serves_authenticated_http_over_daemon() {
     let report = import(&squid);
     let config = report
         .candidate
-        .into_config()
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::to_draft)
         .expect("finalized imported Squid candidate");
+    let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
 
@@ -1444,8 +1456,10 @@ async fn imported_squid_authentication_rejects_missing_credentials() {
     let report = import(&squid);
     let config = report
         .candidate
-        .into_config()
+        .validated()
+        .map(oxiroute_config::ValidatedConfig::to_draft)
         .expect("finalized authenticated Squid candidate");
+    let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
 
@@ -1526,6 +1540,7 @@ async fn connect_udp_upgrade_relays_capsule_datagrams_on_a_real_listener() {
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
+    let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
 
@@ -1622,7 +1637,7 @@ async fn exchange(address: std::net::SocketAddr, request: &[u8]) -> Vec<u8> {
     .expect("proxy exchange timeout")
 }
 
-fn forward_cache_config(address: std::net::SocketAddr) -> oxiroute_config::Config {
+fn forward_cache_config(address: std::net::SocketAddr) -> oxiroute_config::ConfigDraft {
     load_lua(&format!(
         r#"return {{
   version = 1,
@@ -1642,6 +1657,7 @@ fn forward_cache_config(address: std::net::SocketAddr) -> oxiroute_config::Confi
 }}"#,
     ))
     .expect("forward cache config")
+    .to_draft()
 }
 
 async fn read_request_head(stream: &mut TcpStream, buffer: &mut [u8]) -> Vec<u8> {

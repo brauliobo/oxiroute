@@ -1,55 +1,7 @@
 use std::fmt::Write as _;
 
-use oxiroute_config_source::{
-    ConfigFormat, ConfigSourceError, MAX_STRUCTURAL_DEPTH, decode_value, render_value,
-};
+use oxiroute_config_source::{ConfigFormat, ConfigSourceError, MAX_STRUCTURAL_DEPTH, decode_value};
 use serde_json::json;
-
-#[test]
-fn round_trips_canonical_kdl_with_sorted_objects_and_ordered_arrays() {
-    let value = json!({
-        "z": null,
-        "name": "edge",
-        "enabled": true,
-        "-": "object member",
-        "ratio": 1.25,
-        "listeners": [
-            {"port": 80, "host": "0.0.0.0"},
-            "unix socket"
-        ],
-        "empty_object": {},
-        "empty_array": []
-    });
-
-    let rendered = render_value(ConfigFormat::Kdl, &value).unwrap();
-    assert_eq!(
-        rendered,
-        concat!(
-            "- \"object member\"\n",
-            "(array)empty_array {\n",
-            "}\n",
-            "(object)empty_object {\n",
-            "}\n",
-            "enabled #true\n",
-            "(array)listeners {\n",
-            "  (object)- {\n",
-            "    host \"0.0.0.0\"\n",
-            "    port 80\n",
-            "  }\n",
-            "  - \"unix socket\"\n",
-            "}\n",
-            "name \"edge\"\n",
-            "ratio 1.25\n",
-            "z #null\n",
-        )
-    );
-    assert_eq!(
-        decode_value(ConfigFormat::Kdl, rendered.as_bytes()).unwrap(),
-        value
-    );
-    assert!(!rendered.contains(';'));
-    assert!(!rendered.contains(','));
-}
 
 #[test]
 fn decodes_the_documented_shape() {
@@ -102,17 +54,6 @@ fn rejects_ambiguous_or_non_reversible_kdl_shapes() {
 #[test]
 fn does_not_fall_back_to_kdl_v1() {
     assert!(decode_value(ConfigFormat::Kdl, b"enabled true").is_err());
-}
-
-#[test]
-fn kdl_renderer_requires_the_documented_object_root() {
-    assert!(matches!(
-        render_value(ConfigFormat::Kdl, &json!([1, 2])),
-        Err(ConfigSourceError::Render {
-            format: "KDL 2",
-            ..
-        })
-    ));
 }
 
 #[test]

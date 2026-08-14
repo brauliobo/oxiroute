@@ -33,7 +33,9 @@ export async function installApiMock(page: Page, handler: ApiMockHandler): Promi
       await route.abort('blockedbyclient')
       return
     }
-    if (!url.pathname.startsWith('/api/v1/')) {
+    const managementPath = url.pathname.startsWith('/api/v1/') ||
+      url.pathname === '/api/v2/events' || url.pathname === '/api/v2/events/stream'
+    if (!managementPath) {
       await route.continue()
       return
     }

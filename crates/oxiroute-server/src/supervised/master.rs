@@ -16,11 +16,11 @@ use std::{
 
 use log::{info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
-use oxiroute_config::{Config, ListenerBind, Protocol};
+use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
-    ListenerReservations,
+    ListenerReservations, RuntimeMode,
     config_coordinator::{
-        CanonicalConfigCoordinator, CanonicalConfigDocument, ConfigLoadOutcome, ConfigRevision,
+        CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision, ResolvedConfigDocument,
     },
 };
 use oxiroute_supervision::{GenerationId, InstanceId};
@@ -54,7 +54,7 @@ const CONFIG_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) fn run_master(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let coordinator = CanonicalConfigCoordinator::new(config_path)?;
     let document = load_document(&coordinator)?;
-    eligibility(&document.normalized_config)?;
+    eligibility(&document.validated_config)?;
     MasterRunner::production()?.run_loaded(&coordinator, &document)
 }
 
@@ -68,7 +68,7 @@ pub(crate) fn run_if_supported(config_path: &Path) -> Result<(), Box<dyn Error>>
     }
     let coordinator = CanonicalConfigCoordinator::new(config_path)?;
     let document = load_document(&coordinator)?;
-    match eligibility(&document.normalized_config) {
+    match eligibility(&document.validated_config) {
         Ok(()) if MasterRunner::launcher_available() => {
             MasterRunner::production()?.run_loaded(&coordinator, &document)
         }
@@ -86,13 +86,13 @@ struct UnsupportedConfig {
     reason: &'static str,
 }
 
-fn eligibility(config: &Config) -> Result<(), UnsupportedConfig> {
+fn eligibility(config: &ValidatedConfig) -> Result<(), UnsupportedConfig> {
     worker::validate_stage_one_config(config).map_err(|reason| UnsupportedConfig { reason })
 }
 
 fn load_document(
     coordinator: &CanonicalConfigCoordinator,
-) -> Result<Box<CanonicalConfigDocument>, Box<dyn Error>> {
+) -> Result<Box<ResolvedConfigDocument>, Box<dyn Error>> {
     match coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => Ok(document),
         ConfigLoadOutcome::Rejected(rejection) => {
@@ -158,16 +158,16 @@ impl MasterRunner {
     fn run_loaded(
         &self,
         coordinator: &CanonicalConfigCoordinator,
-        document: &CanonicalConfigDocument,
+        document: &ResolvedConfigDocument,
     ) -> Result<(), Box<dyn Error>> {
-        let config = &document.normalized_config;
+        let config = &document.validated_config;
         let reservations = ListenerReservations::prepare(config, None)?;
         let listeners = reservations.into_stable_listeners(config)?;
         let token = generate_instance_token()?;
         let (instance_id, identity) = worker_identity(token)?;
         let command = self.build_worker_command(
             coordinator.canonical_path(),
-            &document.candidate_revision,
+            &document.effective_revision,
             identity,
         )?;
         let master_config = master_config()?;
@@ -204,7 +204,7 @@ impl MasterRunner {
     fn build_worker_command(
         &self,
         config_path: &Path,
-        revision: &ConfigRevision,
+        revision: &EffectiveRevision,
         identity: WorkerIdentity,
     ) -> Result<WorkerCommand, Box<dyn Error>> {
         self.build_worker_command_with_environment(config_path, revision, identity, |key: &str| {
@@ -215,7 +215,7 @@ impl MasterRunner {
     fn build_worker_command_with_environment(
         &self,
         config_path: &Path,
-        revision: &ConfigRevision,
+        revision: &EffectiveRevision,
         identity: WorkerIdentity,
         environment: impl Fn(&str) -> Option<OsString>,
     ) -> Result<WorkerCommand, Box<dyn Error>> {
@@ -248,7 +248,7 @@ impl MasterRunner {
         stop: &AtomicBool,
         reload_requested: &AtomicBool,
         coordinator: &CanonicalConfigCoordinator,
-        initial_document: &CanonicalConfigDocument,
+        initial_document: &ResolvedConfigDocument,
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
     ) -> Result<(), Box<dyn Error>> {
@@ -275,7 +275,7 @@ impl MasterRunner {
         stop: &AtomicBool,
         reload_requested: &AtomicBool,
         coordinator: &CanonicalConfigCoordinator,
-        initial_document: &CanonicalConfigDocument,
+        initial_document: &ResolvedConfigDocument,
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
     ) -> Result<(), Box<dyn Error>> {
@@ -341,15 +341,19 @@ impl MasterRunner {
         if let Err(error) = reload.watch_dependencies(&document.dependencies) {
             warn!("supervised master could not watch a configuration dependency: {error}");
         }
-        let revision = document.candidate_revision.clone();
+        let revision = document.effective_revision.clone();
         if revision == reload_state.active_revision {
             return Ok(());
         }
-        if let Err(error) = eligibility(&document.normalized_config) {
+        if let Err(error) = eligibility(&document.validated_config) {
             warn!("supervised master ignored an unsupported configuration reload: {error}");
             return Ok(());
         }
-        if !same_listener_manifest(&reload_state.active_config, &document.normalized_config) {
+        if ListenerReservations::listener_restart_required(
+            RuntimeMode::Supervised,
+            &reload_state.active_config,
+            &document.validated_config,
+        ) {
             warn!("supervised master ignored a configuration reload that changes listeners");
             return Ok(());
         }
@@ -377,7 +381,7 @@ impl MasterRunner {
         }
         reload_state.pending = Some(PendingReplacement {
             revision,
-            config: document.normalized_config.clone(),
+            config: document.validated_config.clone(),
         });
         Ok(())
     }
@@ -393,22 +397,22 @@ fn log_master_events(events: &[MasterEvent]) {
 }
 
 struct PendingReplacement {
-    revision: ConfigRevision,
-    config: Config,
+    revision: EffectiveRevision,
+    config: ValidatedConfig,
 }
 
 struct ReloadState {
-    active_config: Config,
-    active_revision: ConfigRevision,
+    active_config: ValidatedConfig,
+    active_revision: EffectiveRevision,
     pending: Option<PendingReplacement>,
     next_generation: u64,
 }
 
 impl ReloadState {
-    fn new(document: &CanonicalConfigDocument) -> Self {
+    fn new(document: &ResolvedConfigDocument) -> Self {
         Self {
-            active_config: document.normalized_config.clone(),
-            active_revision: document.candidate_revision.clone(),
+            active_config: document.validated_config.clone(),
+            active_revision: document.effective_revision.clone(),
             pending: None,
             next_generation: INITIAL_GENERATION.0 + 1,
         }
@@ -513,53 +517,6 @@ impl ConfigReloadMonitor {
         }
         periodic
     }
-}
-
-fn same_listener_manifest(active: &Config, candidate: &Config) -> bool {
-    descriptor_manifest(active) == descriptor_manifest(candidate)
-}
-
-fn descriptor_manifest(config: &Config) -> Vec<(String, Protocol, ListenerBind)> {
-    let descriptor_count = config.listeners.len()
-        + usize::from(config.management.is_some())
-        + config
-            .stats
-            .as_ref()
-            .map_or(0, |stats| stats.binds.len() + stats.pages.len());
-    let mut manifest = Vec::with_capacity(descriptor_count);
-    manifest.extend(config.listeners.iter().map(|listener| {
-        (
-            listener.name.clone(),
-            listener.protocol,
-            listener.bind.clone(),
-        )
-    }));
-    if let Some(management) = &config.management {
-        manifest.push((
-            "@management".into(),
-            Protocol::Http,
-            ListenerBind::Socket {
-                address: management.bind,
-            },
-        ));
-    }
-    if let Some(stats) = &config.stats {
-        manifest.extend(stats.binds.iter().enumerate().map(|(index, address)| {
-            (
-                format!("@stats-{index}"),
-                Protocol::Http,
-                ListenerBind::Socket { address: *address },
-            )
-        }));
-        manifest.extend(stats.pages.iter().enumerate().map(|(index, page)| {
-            (
-                format!("@stats-page-{index}"),
-                Protocol::Http,
-                ListenerBind::Socket { address: page.bind },
-            )
-        }));
-    }
-    manifest
 }
 
 fn master_config() -> Result<MasterConfig, Box<dyn Error>> {
@@ -708,42 +665,99 @@ mod tests {
     use std::{net::SocketAddr, path::PathBuf, str::FromStr as _};
 
     use oxiroute_config::{
-        Config, DownstreamTimeoutPolicy, Listener, ListenerBind, Management, Protocol, Stats,
+        ConfigDraft, DownstreamTimeoutPolicy, Listener, ListenerBind, Management, Protocol, Stats,
     };
+    use serde_json::json;
 
     use super::*;
 
-    fn config() -> Config {
-        Config {
-            version: 1,
-            max_connections: None,
-            management: None,
-            stats: None,
-            certificates: Vec::new(),
-            tls_profiles: Vec::new(),
-            listeners: Vec::new(),
-            cache_stores: Vec::new(),
-            upstream_pools: Vec::new(),
-            http_services: Vec::new(),
-            forward_proxy_services: Vec::new(),
-            rtmp_services: Vec::new(),
-            l4_services: Vec::new(),
-        }
+    fn config() -> ConfigDraft {
+        serde_json::from_value(json!({
+            "version": 1,
+            "certificates": [{
+                "name": "downstream",
+                "dns_names": ["proxy.example.test"],
+                "source": {
+                    "type": "files",
+                    "certificate_chain_path": "/tmp/oxiroute-master-test-chain.pem",
+                    "private_key_path": "/tmp/oxiroute-master-test-key.pem"
+                }
+            }],
+            "tls_profiles": [{
+                "name": "h3",
+                "certificates": ["downstream"],
+                "default_certificate": "downstream",
+                "min_version": "1.3",
+                "alpn": ["h3"]
+            }],
+            "listeners": [],
+            "http_services": [
+                {
+                    "name": "web",
+                    "routes": [{
+                        "path": {"kind": "segment_prefix", "value": "/"},
+                        "action": {"type": "fixed_response", "status": 200}
+                    }]
+                },
+                {
+                    "name": "changed",
+                    "routes": [{
+                        "path": {"kind": "segment_prefix", "value": "/"},
+                        "action": {"type": "fixed_response", "status": 200}
+                    }]
+                }
+            ],
+            "forward_proxy_services": [{
+                "name": "forward",
+                "enabled_versions": ["h1", "h2", "h3"],
+                "tls_required": false
+            }],
+            "rtmp_services": [{
+                "name": "live",
+                "applications": [{"name": "broadcast", "live": true}]
+            }],
+            "upstream_pools": [{
+                "name": "origin",
+                "endpoints": [{"type": "socket", "address": "127.0.0.1:9000"}]
+            }],
+            "l4_services": [{"name": "relay", "upstream_pool": "origin", "udp": {}}]
+        }))
+        .expect("supervised test config")
     }
 
     fn listener(name: &str, protocol: Protocol, tls_profile: Option<&str>) -> Listener {
+        let service = match protocol {
+            Protocol::Http | Protocol::Http3 => "web",
+            Protocol::Rtmp => "live",
+            Protocol::Tcp | Protocol::Udp => "relay",
+            Protocol::ForwardHttp1 | Protocol::ForwardHttp2 | Protocol::ForwardHttp3 => "forward",
+        };
+        let bind = if matches!(
+            protocol,
+            Protocol::Udp | Protocol::Http3 | Protocol::ForwardHttp3
+        ) {
+            ListenerBind::Udp {
+                address: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            }
+        } else {
+            ListenerBind::Socket {
+                address: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            }
+        };
         Listener {
             name: name.into(),
-            bind: ListenerBind::Socket {
-                address: SocketAddr::from(([127, 0, 0, 1], 8080)),
-            },
+            bind,
             protocol,
-            service: None,
+            service: Some(service.into()),
             tls_profile: tls_profile.map(str::to_owned),
             proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
         }
+    }
+
+    fn validated(config: &ConfigDraft) -> ValidatedConfig {
+        config.clone().validate().expect("valid supervised config")
     }
 
     #[test]
@@ -752,30 +766,35 @@ mod tests {
         config
             .listeners
             .push(listener("http", Protocol::Http, None));
-        assert_eq!(eligibility(&config), Ok(()));
+        assert_eq!(eligibility(&validated(&config)), Ok(()));
 
-        config.listeners[0].protocol = Protocol::Rtmp;
-        assert_eq!(eligibility(&config), Ok(()));
+        config.listeners[0] = listener("rtmp", Protocol::Rtmp, None);
+        assert_eq!(eligibility(&validated(&config)), Ok(()));
 
-        config.listeners[0].protocol = Protocol::ForwardHttp3;
-        assert_eq!(eligibility(&config), Ok(()));
+        config.listeners[0] = listener("forward-h3", Protocol::ForwardHttp3, Some("h3"));
+        assert_eq!(eligibility(&validated(&config)), Ok(()));
 
-        config.listeners[0].protocol = Protocol::Http;
-        config.listeners[0].bind = ListenerBind::Udp {
-            address: SocketAddr::from(([127, 0, 0, 1], 8080)),
-        };
-        config.listeners[0].protocol = Protocol::Udp;
-        assert_eq!(eligibility(&config), Ok(()));
+        config.listeners[0] = listener("udp", Protocol::Udp, None);
+        assert_eq!(eligibility(&validated(&config)), Ok(()));
     }
 
     #[test]
     fn eligibility_uses_the_worker_descriptor_limit() {
         let mut config = config();
         config.listeners = (0..=oxiroute_supervision_unix::MAX_DESCRIPTOR_COUNT)
-            .map(|index| listener(&format!("listener-{index}"), Protocol::Http, None))
+            .map(|index| {
+                let mut listener = listener(&format!("listener-{index}"), Protocol::Http, None);
+                listener.bind = ListenerBind::Socket {
+                    address: SocketAddr::from((
+                        [127, 0, 0, 1],
+                        10_000 + u16::try_from(index).expect("bounded listener index"),
+                    )),
+                };
+                listener
+            })
             .collect();
         assert!(matches!(
-            eligibility(&config),
+            eligibility(&validated(&config)),
             Err(UnsupportedConfig {
                 reason: "Stage 2 worker listener descriptor limit is 64",
             })
@@ -789,7 +808,7 @@ mod tests {
             bind: SocketAddr::from(([127, 0, 0, 1], 9900)),
             ui_dir: None,
         });
-        assert_eq!(eligibility(&config), Ok(()));
+        assert_eq!(eligibility(&validated(&config)), Ok(()));
     }
 
     #[test]
@@ -824,16 +843,25 @@ mod tests {
             .push(listener("http", Protocol::Http, None));
         let mut candidate = active.clone();
         candidate.listeners[0].service = Some("changed".into());
-        assert!(same_listener_manifest(&active, &candidate));
+        assert!(ListenerReservations::same_supervised_listener_topology(
+            &validated(&active),
+            &validated(&candidate),
+        ));
 
         candidate.listeners[0].name = "renamed".into();
-        assert!(!same_listener_manifest(&active, &candidate));
+        assert!(!ListenerReservations::same_supervised_listener_topology(
+            &validated(&active),
+            &validated(&candidate),
+        ));
 
         candidate = active.clone();
         candidate.listeners[0].bind = ListenerBind::Socket {
             address: SocketAddr::from(([127, 0, 0, 1], 8081)),
         };
-        assert!(!same_listener_manifest(&active, &candidate));
+        assert!(!ListenerReservations::same_supervised_listener_topology(
+            &validated(&active),
+            &validated(&candidate),
+        ));
 
         active = config();
         active.management = Some(Management {
@@ -845,7 +873,10 @@ mod tests {
             bind: SocketAddr::from(([127, 0, 0, 1], 9901)),
             ui_dir: None,
         });
-        assert!(!same_listener_manifest(&active, &candidate));
+        assert!(!ListenerReservations::same_supervised_listener_topology(
+            &validated(&active),
+            &validated(&candidate),
+        ));
 
         candidate = active.clone();
         candidate.stats = Some(Stats {
@@ -853,7 +884,10 @@ mod tests {
             admin_token_file: None,
             pages: Vec::new(),
         });
-        assert!(!same_listener_manifest(&active, &candidate));
+        assert!(!ListenerReservations::same_supervised_listener_topology(
+            &validated(&active),
+            &validated(&candidate),
+        ));
     }
 
     #[test]
@@ -868,7 +902,7 @@ mod tests {
         let executable = std::env::current_exe().expect("test executable");
         let launcher = PathBuf::from("/test-only/oxiroute-worker-launcher");
         let runner = MasterRunner::new_for_test(launcher.clone(), executable.clone());
-        let revision = ConfigRevision::from_str(&"a".repeat(64)).expect("revision");
+        let revision = EffectiveRevision::from_str(&"a".repeat(64)).expect("revision");
         let (_, identity) = worker_identity(InstanceToken([0xcd; 16])).expect("identity");
         let command = runner
             .build_worker_command(Path::new("/etc/oxiroute/oxiroute.kdl"), &revision, identity)

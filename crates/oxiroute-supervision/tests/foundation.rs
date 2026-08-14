@@ -5,11 +5,13 @@ use std::{
 };
 
 use oxiroute_supervision::{
-    BoundError, BoundedString, BoundedVec, CorrelationError, CorrelationTable, Epoch,
-    EventEnvelope, GenerationId, IdentityError, InstanceId, Lifecycle, MetricBatch,
+    BoundError, BoundedString, BoundedVec, CatalogError, CorrelationError, CorrelationTable, Epoch,
+    EventEnvelope, GenerationId, GenerationLaunchDocument, GenerationRole, IdentityError,
+    InstanceId, Lifecycle, LifecycleControl, LifecycleOperation, LifecycleRequest, MetricBatch,
     MetricBatchError, MetricDescriptor, MetricId, MetricKind, MetricRegistry, MetricRegistryError,
     MetricSample, MetricValue, ProtocolError, RequestEnvelope, RequestId, ResponseEnvelope,
     Revision, RpcOutcome, Sequence, ServiceId, ServiceProtocol, SnapshotEnvelope,
+    SupervisedGenerationCatalog,
 };
 use serde::{
     Deserialize,
@@ -109,6 +111,223 @@ fn lifecycle_accepts_explicit_snapshot_and_reactivation_phases() {
     );
     assert!(Lifecycle::Draining.transition(Lifecycle::Stopping).is_err());
     assert!(Lifecycle::Quiescing.transition(Lifecycle::Active).is_err());
+}
+
+fn launch_document(
+    instance: &str,
+    generation: u64,
+    revision: u64,
+    payload: &str,
+) -> GenerationLaunchDocument<Revision, String> {
+    GenerationLaunchDocument::new(
+        InstanceId::new(instance).unwrap(),
+        GenerationId(generation),
+        Revision(revision),
+        payload.to_owned(),
+    )
+}
+
+#[test]
+fn supervised_catalog_preserves_roles_and_monotonic_generation_identity() {
+    let mut catalog =
+        SupervisedGenerationCatalog::new(launch_document("active-1", 1, 10, "active"));
+    assert_eq!(catalog.allocate_generation().unwrap(), GenerationId(2));
+
+    catalog
+        .begin_candidate(launch_document("candidate-3", 3, 30, "candidate"))
+        .unwrap();
+    assert_eq!(
+        catalog.get(GenerationRole::Candidate).unwrap().payload(),
+        "candidate"
+    );
+    assert_eq!(
+        catalog.begin_candidate(launch_document("candidate-4", 4, 40, "second")),
+        Err(CatalogError::CandidateInProgress)
+    );
+
+    assert_eq!(catalog.commit_candidate().unwrap(), None);
+    assert_eq!(catalog.active().instance_id().as_str(), "candidate-3");
+    assert_eq!(
+        catalog.previous().unwrap().instance_id().as_str(),
+        "active-1"
+    );
+    assert_eq!(catalog.allocate_generation().unwrap(), GenerationId(4));
+}
+
+#[test]
+fn supervised_catalog_quarantines_candidates_and_rejects_reused_or_stale_documents() {
+    let mut catalog =
+        SupervisedGenerationCatalog::new(launch_document("active-1", 1, 10, "active"));
+    catalog
+        .begin_candidate(launch_document("candidate-2", 2, 20, "bad"))
+        .unwrap();
+    assert_eq!(catalog.quarantine_candidate().unwrap(), None);
+    assert_eq!(
+        catalog.quarantined().unwrap().instance_id().as_str(),
+        "candidate-2"
+    );
+    assert_eq!(
+        catalog.begin_candidate(launch_document("candidate-3", 3, 30, "next")),
+        Ok(())
+    );
+    assert_eq!(
+        catalog
+            .quarantine_candidate()
+            .unwrap()
+            .unwrap()
+            .instance_id()
+            .as_str(),
+        "candidate-2"
+    );
+    assert_eq!(
+        catalog.record_restart_required(launch_document("restart-3", 3, 30, "restart")),
+        Err(CatalogError::StaleGeneration {
+            current: GenerationId(3),
+            candidate: GenerationId(3),
+        })
+    );
+    assert_eq!(
+        catalog.begin_candidate(launch_document("restart-3", 3, 30, "stale")),
+        Err(CatalogError::StaleGeneration {
+            current: GenerationId(3),
+            candidate: GenerationId(3),
+        })
+    );
+    assert_eq!(
+        catalog.record_restart_required(launch_document("restart-4", 4, 40, "restart")),
+        Ok(None)
+    );
+    assert_eq!(
+        catalog.record_restart_required(launch_document("active-1", 5, 50, "duplicate")),
+        Err(CatalogError::DuplicateInstanceId {
+            instance_id: InstanceId::new("active-1").unwrap(),
+        })
+    );
+}
+
+#[test]
+fn supervised_catalog_rejects_generation_reuse_after_releasing_retained_documents() {
+    let mut previous_catalog =
+        SupervisedGenerationCatalog::new(launch_document("active-1", 1, 10, "active"));
+    previous_catalog
+        .begin_candidate(launch_document("candidate-2", 2, 20, "candidate"))
+        .unwrap();
+    assert_eq!(previous_catalog.commit_candidate().unwrap(), None);
+    assert_eq!(
+        previous_catalog.take_previous().unwrap().generation_id(),
+        GenerationId(1)
+    );
+    assert!(matches!(
+        previous_catalog.begin_candidate(launch_document("previous-reuse", 1, 30, "reuse")),
+        Err(CatalogError::StaleGeneration {
+            current: GenerationId(2),
+            candidate: GenerationId(1),
+        })
+    ));
+
+    let mut quarantined_catalog =
+        SupervisedGenerationCatalog::new(launch_document("active-1", 1, 10, "active"));
+    quarantined_catalog
+        .begin_candidate(launch_document("candidate-3", 3, 30, "candidate"))
+        .unwrap();
+    quarantined_catalog.quarantine_candidate().unwrap();
+    assert_eq!(
+        quarantined_catalog
+            .take_quarantined()
+            .unwrap()
+            .generation_id(),
+        GenerationId(3)
+    );
+    assert!(matches!(
+        quarantined_catalog.begin_candidate(launch_document("quarantined-reuse", 3, 40, "reuse")),
+        Err(CatalogError::StaleGeneration {
+            current: GenerationId(3),
+            candidate: GenerationId(3),
+        })
+    ));
+
+    let mut restart_required_catalog =
+        SupervisedGenerationCatalog::new(launch_document("active-1", 1, 10, "active"));
+    restart_required_catalog
+        .record_restart_required(launch_document("restart-4", 4, 40, "restart"))
+        .unwrap();
+    assert_eq!(
+        restart_required_catalog
+            .take_restart_required()
+            .unwrap()
+            .generation_id(),
+        GenerationId(4)
+    );
+    assert!(matches!(
+        restart_required_catalog.record_restart_required(launch_document(
+            "restart-reuse",
+            4,
+            50,
+            "reuse"
+        )),
+        Err(CatalogError::StaleGeneration {
+            current: GenerationId(4),
+            candidate: GenerationId(4),
+        })
+    ));
+}
+
+#[test]
+fn supervised_catalog_allocator_exhausts_without_reusing_u64_max() {
+    let maximum = u64::MAX;
+    let mut catalog = SupervisedGenerationCatalog::new(launch_document(
+        "active-max-minus-one",
+        maximum - 1,
+        10,
+        "active",
+    ));
+
+    assert_eq!(catalog.allocate_generation(), Ok(GenerationId(maximum)));
+    assert_eq!(
+        catalog.allocate_generation(),
+        Err(CatalogError::GenerationExhausted)
+    );
+    assert!(matches!(
+        catalog.begin_candidate(launch_document("maximum-reuse", maximum, 20, "reuse")),
+        Err(CatalogError::StaleGeneration {
+            current: GenerationId(value),
+            candidate: GenerationId(candidate),
+        }) if value == maximum && candidate == maximum
+    ));
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TestLifecycleControl;
+
+impl LifecycleControl for TestLifecycleControl {
+    type Revision = Revision;
+    type Status = &'static str;
+
+    fn status(&self) -> Self::Status {
+        "active"
+    }
+}
+
+#[test]
+fn lifecycle_control_builds_mode_neutral_revision_precondition_requests() {
+    let control = TestLifecycleControl;
+    assert_eq!(control.status(), "active");
+    assert_eq!(
+        control.request_reload(&Revision(7)),
+        LifecycleRequest::new(LifecycleOperation::Reload, Revision(7))
+    );
+    assert_eq!(
+        control.request_rollback(&Revision(7)).operation(),
+        LifecycleOperation::Rollback
+    );
+    assert_eq!(
+        control.request_drain(&Revision(7)).expected_revision(),
+        &Revision(7)
+    );
+    assert_eq!(
+        serde_json::to_string(&control.request_shutdown(&Revision(7))).unwrap(),
+        r#"{"operation":"shutdown","expected_revision":7}"#
+    );
 }
 
 #[derive(Debug, Eq, PartialEq)]

@@ -4,10 +4,11 @@ use std::{
 };
 
 use crate::{
-    ActivationRequirement, CanonicalCandidate as SharedCanonicalCandidate, CanonicalDraft,
-    DeploymentRequirement, Diagnostic, OperationalOverlayRequirement, ProvenanceSpan,
+    ActivationRequirement, CanonicalCandidate as SharedCanonicalCandidate, DeploymentRequirement,
+    Diagnostic, OperationalOverlayRequirement, ProvenanceSpan,
     candidate::CanonicalProvenanceLedger,
 };
+use oxiroute_config::ConfigDraft;
 
 use super::{
     EffectiveBackend, EffectiveConfiguration, EffectiveListen, EffectiveSection,
@@ -29,7 +30,7 @@ pub(super) use report::lower;
 pub(super) struct Lowerer<'a> {
     effective: &'a EffectiveConfiguration,
     diagnostics: Vec<Diagnostic>,
-    draft: CanonicalDraft,
+    draft: ConfigDraft,
     provenance: CanonicalProvenanceLedger<ProvenanceSpan>,
     lowered_pools: HashSet<SectionId>,
     certificate_names: HashMap<(PathBuf, PathBuf), (String, usize)>,

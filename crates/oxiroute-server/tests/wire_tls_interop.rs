@@ -53,7 +53,7 @@ async fn downstream_tls_h1_uses_runtime_profile_and_pingora_listener() {
             None,
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         assert!(
             tls_connect(
@@ -116,7 +116,7 @@ async fn required_downstream_client_auth_rejects_no_certificate_before_http() {
             ca_certificate_path: Some(ca_bundle),
             allowed_dns_names: vec!["client.example.test".into()],
         };
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         let no_certificate_rejected =
             match tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"]).await {
@@ -186,7 +186,7 @@ async fn optional_downstream_client_auth_validates_chain_and_san_when_present() 
             ca_certificate_path: Some(ca_bundle),
             allowed_dns_names: vec!["client.example.test".into()],
         };
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         let mut no_certificate =
             tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
@@ -271,7 +271,7 @@ async fn required_downstream_client_auth_preserves_h2_alpn_and_grpc_transport() 
             ca_certificate_path: Some(client_identity.root_certificate_path.clone()),
             allowed_dns_names: vec!["client.example.test".into()],
         };
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         let no_certificate_rejected =
             match tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"]).await {
@@ -340,7 +340,7 @@ async fn production_listener_populates_the_client_ip_request_header_variable() {
             name: "x-client-ip".into(),
             value: HttpRequestHeaderValue::ClientIp,
         }];
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let mut client = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("client-IP downstream TLS connect");
@@ -385,7 +385,7 @@ async fn downstream_serves_ecdsa_leaf_and_intermediate_to_a_root_only_rustls_cli
                 private_key_path: chain.leaf_private_key_path.clone(),
             },
         };
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         assert_eq!(
             proxy
                 .active_certificate
@@ -456,7 +456,7 @@ async fn downstream_selects_exact_wildcard_and_default_certificates_by_sni() {
         config.tls_profiles[0]
             .certificates
             .extend(["wildcard".into(), "exact".into()]);
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         let exact_client = tls_client_config(&exact.root_certificate_path, &[b"http/1.1"])
             .expect("exact-name rustls client config");
@@ -530,7 +530,7 @@ async fn downstream_tls_alpn01_selects_only_owned_live_challenges() {
             None,
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let mut ordinary =
             tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
                 .await
@@ -659,7 +659,7 @@ async fn downstream_connection_cap_includes_incomplete_tls_handshakes() {
             HttpVersionPolicy::default(),
         );
         config.listeners[0].max_connections = Some(1);
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         let incomplete = tcp_connect(proxy.address)
             .await
@@ -706,7 +706,7 @@ async fn downstream_refuses_tls_1_0_and_1_1_before_any_http_bytes() {
             None,
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         for version in [LegacyTlsVersion::Tls10, LegacyTlsVersion::Tls11] {
             let rejected = legacy_tls_handshake(proxy.address, version)
@@ -753,7 +753,7 @@ async fn downstream_tls_1_3_minimum_rejects_tls_1_2_and_accepts_tls_1_3() {
             HttpVersionPolicy::default(),
         );
         config.tls_profiles[0].min_version = TlsVersion::Tls13;
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         let tls12 = tls_client_config_with_versions(
             &fixture("ca-a.pem"),
@@ -808,7 +808,7 @@ async fn downstream_tls_h2_negotiates_alpn_and_proxies_a_real_stream() {
             None,
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         let stream = tls_connect(
             proxy.address,
@@ -884,7 +884,7 @@ async fn downstream_h2_upload_streams_to_plain_h1_upstream() {
             None,
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
@@ -977,7 +977,7 @@ async fn downstream_h2_executes_fixed_actions_with_head_semantics_without_an_ups
                 always: true,
             }],
         };
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
             .expect("H2 action TLS connect");
@@ -1075,7 +1075,7 @@ async fn downstream_h2_serves_static_headers_and_internal_error_page() {
                 internal_redirect: Some("/404.html".into()),
             }],
         };
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
             .expect("H2 static response TLS connect");
@@ -1123,7 +1123,7 @@ async fn downstream_h2_only_rejects_no_alpn_and_h1_before_http_but_allows_h2() {
             None,
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         // OpenSSL does not invoke the ALPN selection callback when the ClientHello omits ALPN, so
         // TLS can complete. The production listener wrapper must close before HTTP/1 parsing.
@@ -1184,7 +1184,7 @@ async fn upstream_tls_verifies_server_name_and_custom_ca_before_http() {
             Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let mut client = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("trusted-upstream downstream connection");
@@ -1213,7 +1213,7 @@ async fn upstream_tls_verifies_server_name_and_custom_ca_before_http() {
             Some(verified_upstream("wrong.example.test", "ca-a.pem")),
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let mut client = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("wrong-name downstream connection");
@@ -1241,7 +1241,7 @@ async fn upstream_tls_verifies_server_name_and_custom_ca_before_http() {
             Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-b.pem")),
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let mut client = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("untrusted-CA downstream connection");
@@ -1279,7 +1279,7 @@ async fn upstream_tls_without_a_custom_ca_uses_system_roots_and_rejects_private_
             }),
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let mut client = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("system-root verification downstream connection");
@@ -1322,7 +1322,7 @@ async fn upstream_custom_intermediate_ca_is_a_runtime_trust_anchor() {
             }),
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let mut client = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("intermediate-anchor downstream connection");
@@ -1367,7 +1367,7 @@ async fn upstream_rejects_legacy_tls_before_decrypted_http_and_accepts_modern_tl
                 Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
                 HttpVersionPolicy::default(),
             );
-            let proxy = ProxyHarness::start(&config, reserved);
+            let proxy = ProxyHarness::start(&config.validate(), reserved);
             let mut client =
                 tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
                     .await
@@ -1397,7 +1397,7 @@ async fn upstream_rejects_legacy_tls_before_decrypted_http_and_accepts_modern_tl
                 max: HttpVersion::Http2,
             },
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let mut client = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("TLS1.2-control downstream connection");
@@ -1440,7 +1440,7 @@ async fn h2_only_upstream_preserves_grpc_data_and_trailers_without_h1_downgrade(
             Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
             h2_only,
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(
             proxy.address,
             PROXY_SERVER_NAME,
@@ -1517,7 +1517,7 @@ async fn h2_grpc_streaming_data_and_trailers_survive_without_downgrade() {
             Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
             h2_only,
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
             .expect("streaming gRPC downstream connection");
@@ -1565,7 +1565,7 @@ async fn h2_grpc_request_data_streams_to_an_h2_origin() {
             Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
             h2_only,
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
             .expect("request-streaming H2 connection");
@@ -1625,7 +1625,7 @@ async fn downstream_h2_cancellation_resets_the_h2_origin_stream() {
             Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
             h2_only,
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
             .expect("cancellation H2 connection");
@@ -1671,7 +1671,7 @@ async fn downstream_h2_deadline_returns_bounded_upstream_error_and_resets_origin
             h2_only,
         );
         config.http_services[0].routes[0].policy.read_timeout_ms = 50;
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
             .expect("deadline H2 connection");
@@ -1714,7 +1714,7 @@ async fn downstream_h2_large_bounded_body_returns_413_before_origin_admission() 
             .policy
             .max_request_body_bytes = Some(8);
         config.http_services[0].routes[0].policy.request_buffering = true;
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
             .expect("bounded-body H2 connection");
@@ -1759,7 +1759,7 @@ async fn upstream_h2_reset_and_malformed_flow_fail_closed_without_downgrade() {
             Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
             h2_only,
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
             .expect("reset H2 connection");
@@ -1802,7 +1802,7 @@ async fn downstream_h2_flow_control_backpressures_a_large_grpc_stream() {
             Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
             h2_only,
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
             .expect("flow-control H2 connection");
@@ -1885,7 +1885,7 @@ async fn maxconn_one_multiplexes_concurrent_h2_requests_on_one_physical_connecti
             dns_resolution: oxiroute_config::DnsResolutionPolicy::OnConnect,
         });
         config.upstream_pools[0].queue_timeout_ms = Some(1_000);
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let proxy_address = proxy.address;
         let request = |path: &'static str| async move {
             let stream = tls_connect(proxy_address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
@@ -1944,7 +1944,7 @@ async fn h2_refused_stream_retries_a_bodyless_get_on_a_distinct_endpoint() {
             triggers: vec![HttpRetryTrigger::RefusedStream],
             ..HttpRetryPolicy::default()
         };
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
             .await
             .expect("downstream H2 retry TLS connect");
@@ -1986,7 +1986,7 @@ async fn h2_only_upstream_without_compatible_alpn_fails_before_http_headers() {
             Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
             h2_only,
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let mut client = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("H2-only mismatch downstream connection");
@@ -2024,7 +2024,7 @@ async fn flexible_upstream_versions_fall_back_to_http_1_1_alpn() {
                 max: HttpVersion::Http2,
             },
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let mut client = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("flexible-version downstream connection");
@@ -2059,7 +2059,7 @@ async fn certificate_rotation_changes_new_handshakes_without_mutating_existing_c
             None,
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let initial_leaf = fixture_leaf("proxy-a.pem");
         let replacement_leaf = fixture_leaf("proxy-b.pem");
         let client_config = tls_client_config(&fixture("ca-a.pem"), &[b"http/1.1"])
@@ -2167,7 +2167,7 @@ async fn rotating_one_sni_identity_does_not_change_other_certificate_generations
             },
         });
         config.tls_profiles[0].certificates.push("tenant".into());
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         let initial_client =
             tls_client_config(&initial_tenant.root_certificate_path, &[b"http/1.1"])
@@ -2277,7 +2277,7 @@ async fn certbot_watcher_rotates_new_handshakes_without_changing_existing_connec
             source: lineage.source(),
         });
         config.tls_profiles[0].certificates.push("tenant".into());
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
 
         let initial_client =
             tls_client_config(&initial_tenant.root_certificate_path, &[b"http/1.1"])
@@ -2375,7 +2375,7 @@ async fn concurrent_handshake_waves_switch_complete_generation_after_publication
             None,
             HttpVersionPolicy::default(),
         );
-        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy = ProxyHarness::start(&config.validate(), reserved);
         let initial_leaf = fixture_leaf("proxy-a.pem");
         let replacement_leaf = fixture_leaf("proxy-b.pem");
         let client_config = tls_client_config(&fixture("ca-a.pem"), &[b"http/1.1"])

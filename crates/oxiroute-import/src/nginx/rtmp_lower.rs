@@ -5,17 +5,18 @@ use std::{
 };
 
 use oxiroute_config::{
-    AccessLogPolicy, Config, DownstreamTimeoutPolicy, Listener, ListenerBind, Protocol,
+    AccessLogPolicy, ConfigDraft, DownstreamTimeoutPolicy, Listener, ListenerBind, Protocol,
     RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpAutoPushPolicy, RtmpCallbackConfig,
     RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecNetworkPolicy, RtmpExecProfile,
     RtmpFanoutPolicy, RtmpOutboundPolicy, RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming,
     RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpRelayPolicy, RtmpService,
-    RtmpSessionCeilings, RtmpTransport,
+    RtmpSessionCeilings, RtmpTransport, ValidatedConfig,
 };
 
 use crate::{
-    CanonicalDraft, CanonicalFinalization, CanonicalProvenance, Diagnostic, DiagnosticCode,
-    DiagnosticStage, E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, Report, Severity,
+    CanonicalCandidateSummary, CanonicalProvenance, Diagnostic, DiagnosticCode, DiagnosticStage,
+    E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, Report, Severity,
+    candidate::{CanonicalCandidateState, empty_config, finalize_candidate},
 };
 
 use super::{
@@ -54,8 +55,7 @@ pub struct RtmpImportReport {
     pub diagnostics: Vec<Diagnostic>,
     pub provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
     pub blocked_services: Vec<BlockedRtmpService>,
-    pub draft: CanonicalDraft,
-    finalization: CanonicalFinalization,
+    state: CanonicalCandidateState,
     pub(crate) used_recording_root_overlay: bool,
 }
 
@@ -68,13 +68,18 @@ impl RtmpImportReport {
     }
 
     #[must_use]
-    pub fn config(&self) -> Option<&Config> {
-        self.finalization.config()
+    pub(crate) const fn draft(&self) -> &ConfigDraft {
+        self.state.draft()
     }
 
     #[must_use]
-    pub fn into_config(self) -> Option<Config> {
-        self.finalization.into_config()
+    pub const fn validated(&self) -> Option<&ValidatedConfig> {
+        self.state.validated()
+    }
+
+    #[must_use]
+    pub const fn summary(&self) -> CanonicalCandidateSummary {
+        self.state.summary()
     }
 }
 
@@ -136,7 +141,7 @@ struct Lowerer {
     diagnostics: Vec<Diagnostic>,
     provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
     blocked_services: Vec<BlockedRtmpService>,
-    draft: CanonicalDraft,
+    draft: ConfigDraft,
     host_timezone: Option<String>,
     recording_root: Option<PathBuf>,
     used_recording_root_overlay: bool,
@@ -156,7 +161,7 @@ impl Lowerer {
             diagnostics,
             provenance: Vec::new(),
             blocked_services: Vec::new(),
-            draft: CanonicalDraft::default(),
+            draft: empty_config(),
             host_timezone,
             recording_root,
             used_recording_root_overlay: false,
@@ -221,8 +226,10 @@ impl Lowerer {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.severity() == Severity::Error);
-        let finalization = match self.draft.finalize(finalizable) {
-            Ok(finalization) => finalization,
+        let draft = std::mem::replace(&mut self.draft, empty_config());
+        let state = match finalize_candidate(&draft, finalizable) {
+            Ok(Some(config)) => CanonicalCandidateState::Validated(config),
+            Ok(None) => CanonicalCandidateState::Blocked(draft),
             Err(error) => {
                 self.diagnostics.push(Diagnostic::new(
                     E_INVALID_VALUE,
@@ -230,7 +237,7 @@ impl Lowerer {
                     DiagnosticStage::Validate,
                     format!("lowered canonical RTMP configuration is invalid: {error}"),
                 ));
-                CanonicalFinalization::Blocked
+                CanonicalCandidateState::Blocked(draft)
             }
         };
         let ((), diagnostics) = Report::new((), self.diagnostics).into_parts();
@@ -241,8 +248,7 @@ impl Lowerer {
             diagnostics,
             provenance: self.provenance,
             blocked_services: self.blocked_services,
-            draft: self.draft,
-            finalization,
+            state,
             used_recording_root_overlay: self.used_recording_root_overlay,
         }
     }
@@ -706,11 +712,9 @@ impl Lowerer {
         let Ok(name) = std::str::from_utf8(&decision.name.value) else {
             return false;
         };
-        oxiroute_rtmp::directive_specs().iter().any(|spec| {
+        super::directive_specs().iter().any(|spec| {
             spec.name == name
-                && spec
-                    .contexts
-                    .contains(&oxiroute_rtmp::DirectiveContext::NginxMain)
+                && spec.contexts.contains(&super::DirectiveContext::NginxMain)
                 && spec.name != "rtmp"
         })
     }

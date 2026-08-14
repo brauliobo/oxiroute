@@ -64,7 +64,7 @@ function installFetch(
       configRequests += 1
       return Promise.resolve(jsonResponse(configRequests === 1 ? initial : updated))
     }
-    if (url === '/api/v1/events/stream') return Promise.resolve(stream.response)
+    if (url === '/api/v2/events/stream') return Promise.resolve(stream.response)
     throw new Error(`Unexpected request: ${url}`)
   })
   vi.stubGlobal('fetch', fetch)

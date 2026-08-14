@@ -9,15 +9,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_config::Config;
+use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
     AdministrativeState, GenerationManager, ListenerRuntimeState, RuntimeGeneration,
     RuntimeSnapshot,
-    config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision},
+    config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
     worker_event_page,
 };
 use oxiroute_supervision::GenerationId;
-use oxiroute_supervision_unix::{InstanceToken, MAX_DESCRIPTOR_COUNT};
+use oxiroute_supervision_unix::InstanceToken;
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, MAX_STATUS_EVENTS,
     WorkerAdministrativeState, WorkerControl, WorkerEventRecord, WorkerGenerationStatus,
@@ -26,7 +26,9 @@ use oxiroute_supervisor_master::{
 use oxiroute_supervisor_process::WorkerIdentity;
 use pingora::apps::AcceptGateClose;
 
-use crate::{GenerationProcess, shutdown_generation_processes};
+use crate::{
+    GenerationProcess, finish_candidate_generation_process, shutdown_generation_processes,
+};
 
 const MAX_CONFIG_PATH_BYTES: usize = 4 * 1024;
 const REJECT_INVALID_STATE: u8 = 1;
@@ -66,22 +68,24 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             return Err("canonical configuration was rejected".into());
         }
     };
-    if document.candidate_revision != metadata.revision {
+    if document.effective_revision != metadata.revision {
         control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_REVISION))?;
         return Err("canonical configuration revision did not match worker metadata".into());
     }
-    if let Err(error) = validate_stage_one_config(&document.normalized_config) {
+    if let Err(error) = validate_stage_one_config(&document.validated_config) {
         control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_UNSUPPORTED))?;
         return Err(error.into());
     }
+    let startup_deadline = Instant::now() + LIFECYCLE_PHASE_TIMEOUT;
     let manager = GenerationManager::new_supervised();
-    let candidate = match manager.prepare_adopted(*document, listeners) {
-        Ok(candidate) => candidate,
-        Err(error) => {
-            control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_CONFIG))?;
-            return Err(error.into());
-        }
-    };
+    let candidate =
+        match manager.prepare_adopted_with_deadline(*document, listeners, startup_deadline) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_CONFIG))?;
+                return Err(error.into());
+            }
+        };
     let mut startup = match manager.begin_candidate_start(&candidate) {
         Ok(startup) => Some(startup),
         Err(error) => {
@@ -105,8 +109,9 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     let mut process = match GenerationProcess::start(
         Arc::clone(&generation),
         coordinator,
-        manager.clone(),
+        &manager,
         &stop,
+        startup_deadline,
     ) {
         Ok(process) => Some(process),
         Err(error) => {
@@ -117,13 +122,14 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     if let Err(error) = wait_for_generation_marker(
         &generation,
         process.as_ref().expect("generation process is owned"),
+        startup_deadline,
     ) {
-        drop(startup.take());
-        let _ = shutdown_generation_processes(
+        let _ = finish_candidate_generation_process(
             &manager,
-            vec![process.take().expect("generation process is owned")],
+            process.take().expect("generation process is owned"),
             Instant::now() + SHUTDOWN_TIMEOUT,
         );
+        drop(startup.take());
         control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_RUNTIME))?;
         return Err(error);
     }
@@ -158,12 +164,14 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                 lifecycle,
             );
             drop(control);
-            drop(startup.take());
-            let _ = shutdown_generation_processes(
+            let process = process.take().expect("generation process is owned");
+            let _ = finish_worker_generation_process(
                 &manager,
-                vec![process.take().expect("generation process is owned")],
+                process,
+                startup.is_some(),
                 Instant::now() + SHUTDOWN_TIMEOUT,
             );
+            drop(startup.take());
             return Err("generation runtime terminated unexpectedly".into());
         }
 
@@ -187,12 +195,14 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             }
             Err(error) => {
                 drop(control);
-                drop(startup.take());
-                let _ = shutdown_generation_processes(
+                let process = process.take().expect("generation process is owned");
+                let _ = finish_worker_generation_process(
                     &manager,
-                    vec![process.take().expect("generation process is owned")],
+                    process,
+                    startup.is_some(),
                     Instant::now() + SHUTDOWN_TIMEOUT,
                 );
+                drop(startup.take());
                 return Err(error.into());
             }
         };
@@ -229,9 +239,9 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                             &manager,
                             lifecycle,
                         );
-                        let _ = shutdown_generation_processes(
+                        let _ = finish_candidate_generation_process(
                             &manager,
-                            vec![process.take().expect("generation process is owned")],
+                            process.take().expect("generation process is owned"),
                             Instant::now() + SHUTDOWN_TIMEOUT,
                         );
                         return Err(error.into());
@@ -240,12 +250,14 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             }
             ControlPhase::Shutdown => {
                 lifecycle = WorkerLifecycle::Stopping;
-                drop(startup.take());
-                let clean = shutdown_generation_processes(
+                let process = process.take().expect("generation process is owned");
+                let clean = finish_worker_generation_process(
                     &manager,
-                    vec![process.take().expect("generation process is owned")],
+                    process,
+                    startup.is_some(),
                     Instant::now() + SHUTDOWN_TIMEOUT,
                 );
+                drop(startup.take());
                 let outcome = if clean {
                     ControlOutcome::Accepted
                 } else {
@@ -329,6 +341,19 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     }
 }
 
+fn finish_worker_generation_process(
+    manager: &GenerationManager,
+    process: GenerationProcess,
+    unpublished: bool,
+    deadline: Instant,
+) -> bool {
+    if unpublished {
+        finish_candidate_generation_process(manager, process, deadline)
+    } else {
+        shutdown_generation_processes(manager, vec![process], deadline)
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn report_status(
     control: &mut WorkerControl,
@@ -341,11 +366,11 @@ fn report_status(
 ) -> Result<(), Box<dyn Error>> {
     let generation_status = manager.status();
     let runtime_snapshot = generation.metrics().snapshot();
+    let internal_listeners = generation.metrics().internal_listener_snapshots();
     let metrics = runtime_snapshot.as_ref().ok().map(metrics_status);
-    let mut listeners = runtime_snapshot
+    let listeners = internal_listeners
         .as_ref()
-        .map_or_else(|_| Vec::new(), listener_statuses);
-    append_configured_listener_statuses(&mut listeners, generation);
+        .map_or_else(|_| Vec::new(), |listeners| listener_statuses(listeners));
 
     let event_page = worker_event_page(*event_cursor, MAX_STATUS_EVENTS);
     let events = event_page
@@ -371,7 +396,7 @@ fn report_status(
     } else {
         event_page.latest_cursor
     };
-    let metrics_degraded = runtime_snapshot.is_err();
+    let metrics_degraded = runtime_snapshot.is_err() || internal_listeners.is_err();
     let degraded = generation_status.degraded
         || generation.runtime_failed()
         || metrics_degraded
@@ -463,9 +488,8 @@ fn metrics_status(snapshot: &RuntimeSnapshot) -> WorkerMetrics {
     }
 }
 
-fn listener_statuses(snapshot: &RuntimeSnapshot) -> Vec<WorkerListenerStatus> {
-    snapshot
-        .listeners
+fn listener_statuses(listeners: &[oxiroute_server::ListenerSnapshot]) -> Vec<WorkerListenerStatus> {
+    listeners
         .iter()
         .map(|listener| WorkerListenerStatus {
             name: listener.name.clone(),
@@ -480,47 +504,6 @@ fn listener_statuses(snapshot: &RuntimeSnapshot) -> Vec<WorkerListenerStatus> {
             bytes_sent: listener.bytes_sent,
         })
         .collect()
-}
-
-fn append_configured_listener_statuses(
-    statuses: &mut Vec<WorkerListenerStatus>,
-    generation: &RuntimeGeneration,
-) {
-    let state = if generation.runtime_started() {
-        WorkerListenerState::Listening
-    } else {
-        WorkerListenerState::Configured
-    };
-    let mut append = |name: String, protocol: String, bind: String| {
-        if statuses.iter().any(|status| status.name == name) {
-            return;
-        }
-        statuses.push(WorkerListenerStatus {
-            name,
-            protocol,
-            bind,
-            administrative_state: WorkerAdministrativeState::Ready,
-            state,
-            accepted_connections: 0,
-            rejected_connections: 0,
-            active_connections: 0,
-            bytes_received: 0,
-            bytes_sent: 0,
-        });
-    };
-    let config = generation.config();
-    if let Some(management) = &config.management {
-        append(
-            "@management".into(),
-            "http".into(),
-            management.bind.to_string(),
-        );
-    }
-    if let Some(stats) = &config.stats {
-        for (index, bind) in stats.binds.iter().enumerate() {
-            append(format!("@stats-{index}"), "http".into(), bind.to_string());
-        }
-    }
 }
 
 const fn listener_state(state: ListenerRuntimeState) -> WorkerListenerState {
@@ -554,7 +537,7 @@ fn parse_identity(
 
 struct RuntimeMetadata {
     config_path: PathBuf,
-    revision: ConfigRevision,
+    revision: EffectiveRevision,
 }
 
 impl RuntimeMetadata {
@@ -564,7 +547,8 @@ impl RuntimeMetadata {
         {
             return Err("worker config path is empty or exceeds its bound".into());
         }
-        let revision = parse_ascii(arguments.next(), "revision", 64)?.parse::<ConfigRevision>()?;
+        let revision =
+            parse_ascii(arguments.next(), "revision", 64)?.parse::<EffectiveRevision>()?;
         if arguments.next().is_some() {
             return Err("trailing worker metadata".into());
         }
@@ -575,38 +559,24 @@ impl RuntimeMetadata {
     }
 }
 
-pub(super) fn validate_stage_one_config(config: &Config) -> Result<(), &'static str> {
-    let descriptor_count = config
-        .listeners
-        .len()
-        .saturating_add(usize::from(config.management.is_some()))
-        .saturating_add(
-            config
-                .stats
-                .as_ref()
-                .map_or(0, |stats| stats.binds.len() + stats.pages.len()),
-        );
-    if descriptor_count > MAX_DESCRIPTOR_COUNT {
-        return Err("Stage 2 worker listener descriptor limit is 64");
-    }
-    Ok(())
+pub(super) fn validate_stage_one_config(config: &ValidatedConfig) -> Result<(), &'static str> {
+    oxiroute_server::ListenerReservations::validate_supervised_descriptor_limit(config)
 }
 
 fn wait_for_generation_marker(
     generation: &RuntimeGeneration,
     process: &GenerationProcess,
+    deadline: Instant,
 ) -> Result<(), Box<dyn Error>> {
-    let expected_listener_count = config_listener_count(generation.config());
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let expected_listener_count = generation.expected_runtime_listener_count();
     loop {
         if generation.runtime_failed() || process.is_finished() {
             return Err(io::Error::other("generation listeners failed during startup").into());
         }
-        let snapshot = generation.metrics().snapshot()?;
+        let listeners = generation.metrics().internal_listener_snapshots()?;
         if generation.runtime_started()
-            && snapshot.listeners.len() == expected_listener_count
-            && snapshot
-                .listeners
+            && listeners.len() == expected_listener_count
+            && listeners
                 .iter()
                 .all(|listener| listener.state == oxiroute_server::ListenerRuntimeState::Listening)
         {
@@ -621,13 +591,6 @@ fn wait_for_generation_marker(
         }
         thread::sleep(POLL_INTERVAL);
     }
-}
-
-fn config_listener_count(config: &Config) -> usize {
-    config
-        .listeners
-        .len()
-        .saturating_add(config.stats.as_ref().map_or(0, |stats| stats.pages.len()))
 }
 
 fn parse_ascii(
@@ -706,9 +669,46 @@ fn reactivate_active(quiesced: &mut Option<AcceptGateClose>) -> ControlOutcome {
 
 #[cfg(test)]
 mod tests {
-    use oxiroute_config::{Protocol, Stats};
+    use std::sync::mpsc;
+
+    use oxiroute_config::{ConfigDraft, Protocol, Stats};
+    use oxiroute_config_source::{ConfigFormat, render_config};
+    use oxiroute_rtmp::{RecordingStore, RecordingStoreLimits};
+    use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn worker_listener_statuses_are_exact_real_snapshots_without_synthesis() {
+        let snapshots = vec![oxiroute_server::ListenerSnapshot {
+            administrative_state: AdministrativeState::Ready,
+            name: "@management".into(),
+            protocol: "http".into(),
+            bind: "socket:127.0.0.1:9900".into(),
+            max_connections: None,
+            state: ListenerRuntimeState::Listening,
+            accepted_connections: 3,
+            rejected_connections: 1,
+            active_connections: 2,
+            bytes_received: 11,
+            bytes_sent: 13,
+            http_operations: None,
+            tcp_relays: None,
+            proxy_protocol: None,
+            cache: None,
+        }];
+
+        let statuses = listener_statuses(&snapshots);
+
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].name, "@management");
+        assert_eq!(statuses[0].state, WorkerListenerState::Listening);
+        assert_eq!(statuses[0].accepted_connections, 3);
+        assert_eq!(statuses[0].rejected_connections, 1);
+        assert_eq!(statuses[0].active_connections, 2);
+        assert_eq!(statuses[0].bytes_received, 11);
+        assert_eq!(statuses[0].bytes_sent, 13);
+    }
 
     #[test]
     fn deferred_lifecycle_phases_are_supported() {
@@ -730,29 +730,150 @@ mod tests {
     }
 
     #[test]
-    fn stage_two_configuration_accepts_stream_listeners_and_statistics() {
-        let mut config = Config {
-            version: 1,
-            max_connections: None,
-            management: None,
-            stats: None,
-            certificates: Vec::new(),
-            tls_profiles: Vec::new(),
-            listeners: Vec::new(),
-            cache_stores: Vec::new(),
-            upstream_pools: Vec::new(),
-            http_services: Vec::new(),
-            forward_proxy_services: Vec::new(),
-            rtmp_services: Vec::new(),
-            l4_services: Vec::new(),
+    fn prepublication_runtime_failure_retires_recording_authority_before_quarantine() {
+        assert_prepublication_recording_cleanup("runtime_failure");
+    }
+
+    #[test]
+    fn prepublication_control_error_retires_recording_authority_before_quarantine() {
+        assert_prepublication_recording_cleanup("control_error");
+    }
+
+    #[test]
+    fn prepublication_shutdown_retires_recording_authority_before_quarantine() {
+        assert_prepublication_recording_cleanup("shutdown");
+    }
+
+    fn assert_prepublication_recording_cleanup(branch: &str) {
+        let directory = tempfile::tempdir().expect("supervised recording directory");
+        let root = directory.path().join("recordings");
+        std::fs::create_dir(&root).expect("recording root");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("RTMP listener probe");
+        let listener_address = listener.local_addr().expect("RTMP listener address");
+        drop(listener);
+        let config: ConfigDraft = serde_json::from_value(json!({
+            "version": 1,
+            "listeners": [{
+                "name": "ingest",
+                "bind": {"type": "socket", "address": listener_address},
+                "protocol": "rtmp",
+                "service": "live"
+            }],
+            "rtmp_services": [{
+                "name": "live",
+                "applications": [{
+                    "name": "live",
+                    "live": true,
+                    "recorders": [{"name": "archive", "root_directory": root}]
+                }]
+            }]
+        }))
+        .expect("recording config");
+        let path = directory.path().join("oxiroute.kdl");
+        std::fs::write(
+            &path,
+            render_config(
+                ConfigFormat::Kdl,
+                &config.clone().validate().expect("valid recording config"),
+            )
+            .expect("render recording config"),
+        )
+        .expect("write recording config");
+        let coordinator = CanonicalConfigCoordinator::new(&path).expect("coordinator");
+        let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
+            panic!("recording config rejected")
         };
-        assert!(validate_stage_one_config(&config).is_ok());
+        let manager = GenerationManager::new();
+        let candidate = manager.prepare(*document).expect("candidate");
+        let mut startup = Some(
+            manager
+                .begin_candidate_start(&candidate)
+                .expect("startup reservation"),
+        );
+        let generation = startup
+            .as_mut()
+            .expect("startup")
+            .claim_runtime_start()
+            .expect("runtime start");
+        let detached_runtime = generation
+            .rtmp_runtime("live")
+            .expect("RTMP runtime")
+            .clone();
+        let (release, released) = mpsc::sync_channel(0);
+        let (finished, completion) = mpsc::sync_channel(1);
+        let thread = thread::spawn(move || {
+            released.recv().expect("release detached worker");
+            drop(detached_runtime.session());
+            finished.send(()).expect("detached completion receiver");
+        });
+        let (shutdown, _receiver) = tokio::sync::watch::channel(false);
+        let process = GenerationProcess {
+            retirement: crate::CandidateRtmpRetirementHandle::capture(&generation),
+            generation,
+            shutdown,
+            thread,
+        };
+        let started = Instant::now();
+
+        assert!(finish_worker_generation_process(
+            &manager,
+            process,
+            true,
+            started + Duration::from_millis(75),
+        ));
+        drop(startup.take());
+
+        assert!(started.elapsed() < Duration::from_millis(250), "{branch}");
+        assert_eq!(manager.status().failures, 1, "{branch}");
+        let retry = RecordingStore::open(
+            &root,
+            RecordingStoreLimits {
+                max_bytes: None,
+                max_files: None,
+                max_active_recorders: usize::try_from(
+                    config.rtmp_services[0].applications[0].recorders[0].max_active_recorders,
+                )
+                .expect("validated recorder limit"),
+            },
+        )
+        .unwrap_or_else(|error| panic!("{branch} recording retry failed: {error}"));
+        drop(retry);
+        release.send(()).expect("release detached worker");
+        completion
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap_or_else(|error| panic!("{branch} detached exit failed: {error}"));
+    }
+
+    #[test]
+    fn stage_two_configuration_accepts_stream_listeners_and_statistics() {
+        let mut config: ConfigDraft = serde_json::from_value(json!({
+            "version": 1,
+            "listeners": [],
+            "http_services": [{
+                "name": "http",
+                "routes": [{
+                    "path": {"kind": "segment_prefix", "value": "/"},
+                    "action": {"type": "fixed_response", "status": 200}
+                }]
+            }],
+            "upstream_pools": [{
+                "name": "origin",
+                "endpoints": [{"type": "socket", "address": "127.0.0.1:9000"}]
+            }],
+            "l4_services": [{"name": "relay", "upstream_pool": "origin", "udp": {}}]
+        }))
+        .expect("stage two test config");
+        assert!(
+            validate_stage_one_config(&config.clone().validate().expect("valid config")).is_ok()
+        );
 
         config.management = Some(oxiroute_config::Management {
             bind: "127.0.0.1:9900".parse().expect("management address"),
             ui_dir: None,
         });
-        assert!(validate_stage_one_config(&config).is_ok());
+        assert!(
+            validate_stage_one_config(&config.clone().validate().expect("valid config")).is_ok()
+        );
         config.management = None;
 
         config.listeners.push(oxiroute_config::Listener {
@@ -767,19 +888,24 @@ mod tests {
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         });
-        assert!(validate_stage_one_config(&config).is_ok());
+        assert!(
+            validate_stage_one_config(&config.clone().validate().expect("valid config")).is_ok()
+        );
 
         config.stats = Some(Stats {
-            binds: Vec::new(),
+            binds: vec!["127.0.0.1:8404".parse().expect("statistics address")],
             admin_token_file: None,
             pages: Vec::new(),
         });
-        assert!(validate_stage_one_config(&config).is_ok());
+        assert!(
+            validate_stage_one_config(&config.clone().validate().expect("valid config")).is_ok()
+        );
 
         config.listeners[0].bind = oxiroute_config::ListenerBind::Udp {
             address: "127.0.0.1:8080".parse().expect("UDP address"),
         };
         config.listeners[0].protocol = Protocol::Udp;
-        assert!(validate_stage_one_config(&config).is_ok());
+        config.listeners[0].service = Some("relay".into());
+        assert!(validate_stage_one_config(&config.validate().expect("valid config")).is_ok());
     }
 }

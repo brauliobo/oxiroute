@@ -16,12 +16,13 @@ use pingora::{
 };
 use tokio::sync::watch;
 
+use crate::listener_runtime::{AdmissionError, ListenerRuntime};
 use crate::{ListenerMetrics, RuntimeGeneration, RuntimeReferenceKind, TlsProfilePlan};
 
 pub struct MonitoredHttpApp<A> {
     generation: Option<Arc<RuntimeGeneration>>,
     inner: Arc<A>,
-    metrics: ListenerMetrics,
+    listener: ListenerRuntime,
 }
 
 impl<A> MonitoredHttpApp<A> {
@@ -30,7 +31,7 @@ impl<A> MonitoredHttpApp<A> {
         Self {
             generation: None,
             inner: Arc::new(inner),
-            metrics,
+            listener: ListenerRuntime::new(metrics),
         }
     }
 
@@ -54,7 +55,7 @@ where
     }
 
     fn accepting(&self) -> bool {
-        self.metrics.accepting()
+        self.listener.accepting()
             && self.generation.as_ref().map_or_else(
                 || self.inner.accepting(),
                 |generation| generation.accepting(),
@@ -62,38 +63,50 @@ where
     }
 
     fn admit_connection(&self) -> Option<ConnectionAdmission> {
-        let generation = if let Some(generation) = &self.generation {
-            let admission = generation.begin_admission()?;
-            let reference = generation.begin_reference(RuntimeReferenceKind::Http1)?;
-            Some((admission, reference))
+        let lease = if let Some(generation) = &self.generation {
+            match self.listener.admit(generation, RuntimeReferenceKind::Http1) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    log_admission_error("HTTP", &error);
+                    return None;
+                }
+            }
         } else {
-            None
-        };
-        let connection = match self.metrics.begin_connection() {
-            Ok(connection) => connection,
-            Err(error) => {
-                warn!("rejected HTTP connection: {error}");
-                return None;
+            match self.listener.admit_without_generation() {
+                Ok(lease) => lease,
+                Err(error) => {
+                    log_admission_error("HTTP", &error);
+                    return None;
+                }
             }
         };
         let inner = self.inner.admit_connection()?;
-        Some(Box::new((generation, connection, inner)))
+        Some(Box::new((lease, inner)))
     }
 
     fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
-        let generation = self
-            .generation
-            .as_ref()
-            .map(|generation| generation.begin_owned_reference(RuntimeReferenceKind::Http1));
-        let connection = match self.metrics.begin_connection() {
-            Ok(connection) => connection,
-            Err(error) => {
-                warn!("rejected HTTP connection: {error}");
-                return None;
+        let lease = if let Some(generation) = &self.generation {
+            match self
+                .listener
+                .admit_owned(generation, RuntimeReferenceKind::Http1)
+            {
+                Ok(lease) => lease,
+                Err(error) => {
+                    log_admission_error("HTTP", &error);
+                    return None;
+                }
+            }
+        } else {
+            match self.listener.admit_without_generation() {
+                Ok(lease) => lease,
+                Err(error) => {
+                    log_admission_error("HTTP", &error);
+                    return None;
+                }
             }
         };
         let inner = self.inner.admit_owned_connection()?;
-        Some(Box::new((generation, connection, inner)))
+        Some(Box::new((lease, inner)))
     }
 
     async fn process_new(
@@ -107,6 +120,10 @@ where
     async fn cleanup(&self) {
         self.inner.cleanup().await;
     }
+}
+
+fn log_admission_error(protocol: &str, error: &AdmissionError) {
+    warn!("rejected {protocol} connection: {error}");
 }
 
 /// Enforces listener protocol policy on a negotiated transport before HTTP parsing begins.
@@ -159,18 +176,25 @@ where
         mut downstream: Stream,
         shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
-        let h2_reference = if matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
-            self.generation
-                .as_ref()
-                .and_then(|generation| generation.begin_reference(RuntimeReferenceKind::Http2))
-        } else {
-            None
-        };
         if self.h2_only && !matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
             // A ClientHello without ALPN completes TLS, so close before Pingora's HTTP/1 fallback.
             downstream.shutdown().await;
             return None;
         }
+        let h2_reference = if matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
+            if let Some(generation) = self.generation.as_ref() {
+                let Some(reference) = generation.begin_reference(RuntimeReferenceKind::Http2)
+                else {
+                    downstream.shutdown().await;
+                    return None;
+                };
+                Some(reference)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let (h2_shutdown, h2_monitor) = if h2_reference.is_some() {
             let generation = self
                 .generation
@@ -293,18 +317,130 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+    use std::{
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::{Context, Poll},
     };
 
-    use pingora::{apps::ServerApp, protocols::Stream, server::ShutdownWatch};
+    use oxiroute_config::ConfigDraft;
+    use oxiroute_config_source::ConfigFormat;
+    use pingora::{
+        apps::ServerApp,
+        protocols::{
+            ALPN, GetProxyDigest, GetSocketDigest, GetTimingDigest, Peek,
+            Shutdown as PingoraShutdown, SocketDigest, Ssl, Stream, TimingDigest, UniqueID,
+        },
+        server::ShutdownWatch,
+    };
+    use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 
     use super::*;
-    use crate::RuntimeMetrics;
+    use crate::{
+        GenerationManager, RuntimeMetrics,
+        config_coordinator::{AuthoredRevision, EffectiveRevision, ResolvedConfigDocument},
+    };
 
     struct CleanupApp {
         cleaned: Arc<AtomicBool>,
+    }
+
+    #[derive(Debug)]
+    struct H2TestStream {
+        inner: DuplexStream,
+        shutdown: Arc<AtomicBool>,
+    }
+
+    impl AsyncRead for H2TestStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_read(context, buffer)
+        }
+    }
+
+    impl AsyncWrite for H2TestStream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(context, buffer)
+        }
+
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(context)
+        }
+
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(context)
+        }
+    }
+
+    #[async_trait]
+    impl PingoraShutdown for H2TestStream {
+        async fn shutdown(&mut self) {
+            self.shutdown.store(true, Ordering::Release);
+        }
+    }
+
+    impl UniqueID for H2TestStream {
+        fn id(&self) -> pingora::protocols::UniqueIDType {
+            0
+        }
+    }
+
+    impl Ssl for H2TestStream {
+        fn selected_alpn_proto(&self) -> Option<ALPN> {
+            Some(ALPN::H2)
+        }
+    }
+
+    impl GetTimingDigest for H2TestStream {
+        fn get_timing_digest(&self) -> Vec<Option<TimingDigest>> {
+            Vec::new()
+        }
+    }
+
+    impl GetProxyDigest for H2TestStream {
+        fn get_proxy_digest(&self) -> Option<Arc<pingora::protocols::raw_connect::ProxyDigest>> {
+            None
+        }
+    }
+
+    impl GetSocketDigest for H2TestStream {
+        fn get_socket_digest(&self) -> Option<Arc<SocketDigest>> {
+            None
+        }
+    }
+
+    impl Peek for H2TestStream {}
+
+    struct ProcessProbe {
+        called: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl ServerApp for ProcessProbe {
+        async fn process_new(
+            self: &Arc<Self>,
+            _session: Stream,
+            _shutdown: &ShutdownWatch,
+        ) -> Option<Stream> {
+            self.called.store(true, Ordering::Release);
+            None
+        }
     }
 
     #[async_trait]
@@ -339,5 +475,71 @@ mod tests {
         app.cleanup().await;
 
         assert!(cleaned.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn h2_process_new_closes_when_generation_reference_is_unavailable() {
+        let config = ConfigDraft {
+            version: 1,
+            max_connections: None,
+            management: None,
+            stats: None,
+            certificates: Vec::new(),
+            tls_profiles: Vec::new(),
+            listeners: Vec::new(),
+            cache_stores: Vec::new(),
+            upstream_pools: Vec::new(),
+            http_services: Vec::new(),
+            forward_proxy_services: Vec::new(),
+            rtmp_services: Vec::new(),
+            l4_services: Vec::new(),
+        }
+        .validate()
+        .expect("valid H2 test config");
+        let manager = GenerationManager::new();
+        let candidate = manager
+            .prepare(ResolvedConfigDocument {
+                authored_revision: AuthoredRevision::from_bytes(b"h2-test"),
+                effective_revision: EffectiveRevision::from_bytes(b"h2-test"),
+                validated_config: config,
+                format: ConfigFormat::Lua,
+                compositional: false,
+                dependencies: Vec::new(),
+                config_preview: String::new(),
+                diagnostics: Vec::new(),
+            })
+            .expect("prepared H2 test generation");
+        let generation = manager
+            .activate(&candidate)
+            .expect("active H2 test generation");
+        generation.stop_accepting();
+
+        let called = Arc::new(AtomicBool::new(false));
+        let app = Arc::new(
+            HttpListenerApp::new(
+                ProcessProbe {
+                    called: Arc::clone(&called),
+                },
+                None,
+            )
+            .with_generation(generation),
+        );
+        let (shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
+        drop(shutdown_tx);
+        let (stream, _peer) = tokio::io::duplex(16);
+        let closed = Arc::new(AtomicBool::new(false));
+        let result = app
+            .process_new(
+                Box::new(H2TestStream {
+                    inner: stream,
+                    shutdown: Arc::clone(&closed),
+                }),
+                &shutdown,
+            )
+            .await;
+
+        assert!(result.is_none());
+        assert!(closed.load(Ordering::Acquire));
+        assert!(!called.load(Ordering::Acquire));
     }
 }

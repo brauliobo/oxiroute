@@ -6,7 +6,7 @@ mod fixture_support;
 use std::{fs, sync::Arc};
 
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, Config, HttpAccessPolicy, HttpHostSelector,
+    AlpnProtocol, Certificate, CertificateSource, ConfigDraft, HttpAccessPolicy, HttpHostSelector,
     HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
     L4Service, Listener, ListenerBind, Protocol, RtmpApplication, RtmpService, SelfSignedKeyType,
     Stats, StatsPage, StatsPageAdminPolicy, TlsClientAuthMode, TlsClientAuthPolicy, TlsProfile,
@@ -14,14 +14,15 @@ use oxiroute_config::{
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry};
 use oxiroute_server::{
-    RtmpManagementApi, RuntimeMetrics, RuntimePlan, TopologyEdgeKind, TopologyNode,
-    TopologyNodeKind, runtime_plan,
+    RtmpManagementApi, RuntimeGeneration, RuntimeMetrics, RuntimePlan, TopologyEdgeKind,
+    TopologyNode, TopologyNodeKind,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use config_support::{
     empty_config, parsed_socket_bind as socket_bind, parsed_socket_endpoint as socket_endpoint,
+    runtime_plan,
 };
 use fixture_support::{create_secure_root, write_file_with_mode, write_test_identity};
 
@@ -30,11 +31,13 @@ fn compiles_stable_redacted_nodes_and_typed_reference_edges() {
     let temp = TempDir::new().expect("TLS temp directory");
     let config = topology_config(&temp);
 
+    let config = config.validate().expect("valid topology config");
     let plan = runtime_plan(&config).expect("runtime plan");
-    let mut reordered = config.clone();
+    let mut reordered = config.to_draft();
     reordered.listeners.reverse();
     reordered.upstream_pools.reverse();
     reordered.upstream_pools[1].servers.reverse();
+    let reordered = reordered.validate().expect("valid reordered config");
     let reordered_plan = runtime_plan(&reordered).expect("reordered runtime plan");
     let mut node_ids = plan
         .topology
@@ -102,7 +105,7 @@ fn compiles_stable_redacted_nodes_and_typed_reference_edges() {
     assert_eq!(route.attributes["action"]["upstreamPool"], "api");
 
     assert_canonical_listener_service_and_endpoint_attributes(&plan);
-    assert_private_key_redaction(&plan, &config);
+    assert_private_key_redaction(&plan, config.as_draft());
     let tls_profile = node(&plan, TopologyNodeKind::TlsProfile, "public");
     assert_eq!(
         tls_profile.attributes["clientAuth"],
@@ -125,6 +128,7 @@ fn topology_marks_self_signed_certificates_as_development_only() {
         key_type: SelfSignedKeyType::EcdsaP256,
     };
 
+    let config = config.validate().expect("valid self-signed config");
     let plan = runtime_plan(&config).expect("self-signed runtime plan");
     let certificate = plan
         .topology
@@ -226,7 +230,7 @@ fn assert_canonical_listener_service_and_endpoint_attributes(plan: &RuntimePlan)
     );
 }
 
-fn assert_private_key_redaction(plan: &RuntimePlan, config: &Config) {
+fn assert_private_key_redaction(plan: &RuntimePlan, config: &ConfigDraft) {
     let certificate = plan
         .topology
         .nodes()
@@ -259,12 +263,19 @@ fn assert_private_key_redaction(plan: &RuntimePlan, config: &Config) {
 fn serves_active_topology_with_name_joined_runtime_overlays() {
     let temp = TempDir::new().expect("TLS temp directory");
     let config = topology_config(&temp);
+    let config = config.validate().expect("valid topology config");
     let plan = runtime_plan(&config).expect("runtime plan");
+    let generation = topology_runtime_generation(&config, &temp);
     let metrics = RuntimeMetrics::new();
     metrics
-        .register_upstream_pools(plan.pools.iter().cloned())
+        .register_upstream_pools(generation.pools().iter().cloned())
         .expect("pool metrics");
-    for (listener, service) in config.listeners.iter().zip(&plan.services) {
+    for (listener, service) in config
+        .as_draft()
+        .listeners
+        .iter()
+        .zip(generation.services())
+    {
         let listener_metrics = metrics
             .register_configured_listener(
                 &listener.name,
@@ -280,7 +291,7 @@ fn serves_active_topology_with_name_joined_runtime_overlays() {
         .expect("listener registry")
         .expect("web listener");
     let _connection = web.begin_connection().expect("active connection");
-    let endpoint_lease = plan.pools[0].select().expect("API endpoint lease");
+    let endpoint_lease = generation.pools()[0].select().expect("API endpoint lease");
     assert_eq!(endpoint_lease.endpoint().to_string(), "127.0.0.1:3000");
     let api = RtmpManagementApi::new(
         Arc::new(RtmpRegistry::new(RtmpCapabilities {
@@ -335,7 +346,7 @@ fn serves_active_topology_with_name_joined_runtime_overlays() {
     }
 
     let body_text = String::from_utf8(response.body).expect("UTF-8 topology body");
-    let private_key_path = match &config.certificates[0].source {
+    let private_key_path = match &config.as_draft().certificates[0].source {
         CertificateSource::Files {
             private_key_path, ..
         } => private_key_path,
@@ -399,12 +410,19 @@ fn serves_topology_with_a_stats_page_runtime_overlay() {
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         }],
     });
+    let config = config.validate().expect("valid topology config");
     let plan = runtime_plan(&config).expect("runtime plan");
+    let generation = topology_runtime_generation(&config, &temp);
     let metrics = RuntimeMetrics::new();
     metrics
-        .register_upstream_pools(plan.pools.iter().cloned())
+        .register_upstream_pools(generation.pools().iter().cloned())
         .expect("pool metrics");
-    for (listener, service) in config.listeners.iter().zip(&plan.services) {
+    for (listener, service) in config
+        .as_draft()
+        .listeners
+        .iter()
+        .zip(generation.services())
+    {
         metrics
             .register_configured_listener(
                 &listener.name,
@@ -491,6 +509,7 @@ fn action_aware_topology_never_serializes_access_tokens_or_filesystem_roots() {
         },
     });
 
+    let config = config.validate().expect("valid action-aware config");
     let plan = runtime_plan(&config).expect("action-aware topology plan");
     let route = plan
         .topology
@@ -510,10 +529,10 @@ fn action_aware_topology_never_serializes_access_tokens_or_filesystem_roots() {
 }
 
 #[allow(clippy::too_many_lines)]
-fn topology_config(temp: &TempDir) -> Config {
+fn topology_config(temp: &TempDir) -> ConfigDraft {
     let (certificate_chain_path, private_key_path) =
         write_test_identity(temp.path(), "topology-private-key-do-not-expose.pem");
-    let mut config = Config {
+    let mut config = ConfigDraft {
         certificates: vec![Certificate {
             name: "public".into(),
             dns_names: vec!["proxy.example.test".into()],
@@ -653,6 +672,47 @@ fn topology_config(temp: &TempDir) -> Config {
         allowed_dns_names: vec!["client.example.test".into()],
     };
     config
+}
+
+fn topology_runtime_generation(
+    config: &oxiroute_config::ValidatedConfig,
+    temp: &TempDir,
+) -> Arc<RuntimeGeneration> {
+    let socket_root = create_secure_root(temp.path(), "runtime-listeners");
+    let mut activation = config.to_draft();
+    for (index, listener) in activation.listeners.iter_mut().enumerate() {
+        match &mut listener.bind {
+            ListenerBind::Socket { address } => {
+                let mut probe_address = *address;
+                probe_address.set_port(0);
+                let probe = std::net::TcpListener::bind(probe_address)
+                    .expect("available TCP listener address");
+                address.set_port(probe.local_addr().expect("TCP listener address").port());
+            }
+            ListenerBind::Udp { address } => {
+                let mut probe_address = *address;
+                probe_address.set_port(0);
+                let probe = std::net::UdpSocket::bind(probe_address)
+                    .expect("available UDP listener address");
+                address.set_port(probe.local_addr().expect("UDP listener address").port());
+            }
+            ListenerBind::Unix { path, .. } => {
+                *path = socket_root.join(format!("listener-{index}.sock"));
+            }
+        }
+    }
+    if let Some(stats) = &mut activation.stats {
+        for page in &mut stats.pages {
+            let mut probe_address = page.bind;
+            probe_address.set_port(0);
+            let probe =
+                std::net::TcpListener::bind(probe_address).expect("available stats page address");
+            page.bind
+                .set_port(probe.local_addr().expect("stats page address").port());
+        }
+    }
+    let activation = activation.validate().expect("valid activation fixture");
+    config_support::runtime_generation(&activation).expect("runtime generation")
 }
 
 fn upstream_server(name: &str, endpoint: UpstreamEndpoint) -> UpstreamServer {

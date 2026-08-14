@@ -402,7 +402,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
             dt Normalization
             dd {{ normalizationChanged ? 'Server normalized the submitted model' : 'No model changes' }}
         p.dialog-error(v-if="dialogError" role="alert") {{ dialogError }}
-        p.review-warning(v-if="validationResult?.restartRequired") This active Unix listener mode change is saved for the next process restart.
+        p.review-warning(v-if="validationResult?.restartRequired") {{ restartRequiredReviewMessage }}
         p.review-warning(v-else) A changed canonical file is queued for in-process activation; no process restart is required.
         .review-actions
           button.secondary-button(type="button" @click="closeReview") Continue editing
@@ -538,6 +538,10 @@ const reviewDisabledReason = computed(() => {
   if (!validationCurrent.value) return 'Validate the current draft on the server before reviewing a save.'
   return undefined
 })
+const restartRequiredReviewMessage = computed(() =>
+  validationResult.value?.diagnostics.find(({ code }) => code === 'I_RESTART_REQUIRED')?.message ??
+    'This configuration takes effect after the next process restart.',
+)
 
 async function unlockConfiguration(): Promise<void> {
   const token = tokenInput.value

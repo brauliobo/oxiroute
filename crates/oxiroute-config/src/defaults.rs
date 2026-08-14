@@ -1,8 +1,3 @@
-pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
-pub(crate) const MAX_LUA_MEMORY_BYTES: usize = 4 * 1024 * 1024;
-pub(crate) const MAX_LUA_INSTRUCTIONS: u32 = 1_000_000;
-pub(crate) const INSTRUCTION_HOOK_INTERVAL: u32 = 10_000;
-
 const DEFAULT_UPSTREAM_IO_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MAX_REQUEST_BODY_BYTES: u64 = 10 * 1024 * 1024;
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10_000;

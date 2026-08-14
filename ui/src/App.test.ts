@@ -133,6 +133,62 @@ describe('monitoring dashboard', () => {
     wrapper.unmount()
   })
 
+  it('renders unavailable telemetry distinctly from numeric zero', async () => {
+    const unavailable = monitoringSample()
+    unavailable.process.cpuPercent = null
+    unavailable.process.residentMemoryBytes = null
+    unavailable.process.virtualMemoryBytes = null
+    unavailable.process.threadCount = null
+    unavailable.process.openFileDescriptors = null
+    unavailable.host.loadAverage1m = null
+    unavailable.host.loadAverage5m = null
+    unavailable.host.loadAverage15m = null
+    unavailable.host.totalMemoryBytes = null
+    unavailable.host.availableMemoryBytes = null
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(unavailable))
+      if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
+      if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      return Promise.resolve(jsonResponse(catalog))
+    })
+    vi.stubGlobal('fetch', fetch)
+
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.get('.host-panel').text()).toContain('Unavailable')
+    expect(wrapper.get('.process-panel').text()).toContain('Unavailable')
+    expect(wrapper.get('.readout-bar').text()).toContain('Host memory usedUnavailable')
+    wrapper.unmount()
+
+    const zero = monitoringSample()
+    zero.process.cpuPercent = 0
+    zero.process.residentMemoryBytes = 0
+    zero.process.virtualMemoryBytes = 0
+    zero.process.threadCount = 0
+    zero.process.openFileDescriptors = 0
+    zero.host.loadAverage1m = 0
+    zero.host.loadAverage5m = 0
+    zero.host.loadAverage15m = 0
+    zero.host.totalMemoryBytes = 0
+    zero.host.availableMemoryBytes = 0
+    fetch.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(zero))
+      if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
+      if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      return Promise.resolve(jsonResponse(catalog))
+    })
+
+    const zeroWrapper = mount(App)
+    await flushPromises()
+    expect(zeroWrapper.get('.host-panel').text()).toContain('0.00')
+    expect(zeroWrapper.get('.process-panel').text()).toContain('0%')
+    expect(zeroWrapper.get('.readout-bar').text()).toContain('Host memory used0%')
+    zeroWrapper.unmount()
+  })
+
   it('announces the first load without presenting placeholder data as telemetry', async () => {
     const pendingMonitoring = deferred<Response>()
     const pendingCatalog = deferred<Response>()

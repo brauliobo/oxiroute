@@ -15,6 +15,7 @@ use crate::generation_health::generation_component_status;
 use crate::html::escape_html;
 use crate::{
     ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics,
+    config_coordinator::EffectiveRevision,
     prometheus::render_prometheus,
     rtmp_api::response::to_http_response,
     secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
@@ -251,7 +252,7 @@ impl HaproxyStatsApi {
                 "If-Generation-Revision is required",
             );
         };
-        let mutation = match self.generations.begin_mutation(generation_revision) {
+        let mutation = match begin_stats_mutation(&self.generations, generation_revision) {
             Ok(mutation) => mutation,
             Err(error) => {
                 return ApiResponse::error(
@@ -268,8 +269,7 @@ impl HaproxyStatsApi {
         };
         let Some(pool) = mutation
             .generation()
-            .plan()
-            .pools
+            .pools()
             .iter()
             .find(|pool| pool.health_snapshot().name == target.pool)
         else {
@@ -467,7 +467,7 @@ impl HaproxyStatsPage {
                 "stats page administration requires a same-origin loopback request",
             );
         }
-        let mutation = match self.generations.begin_mutation(&target.generation_revision) {
+        let mutation = match begin_stats_mutation(&self.generations, &target.generation_revision) {
             Ok(mutation) => mutation,
             Err(error) => {
                 return ApiResponse::error(
@@ -485,8 +485,7 @@ impl HaproxyStatsPage {
         };
         let Some(pool) = mutation
             .generation()
-            .plan()
-            .pools
+            .pools()
             .iter()
             .find(|pool| pool.health_snapshot().name == target.pool)
         else {
@@ -834,6 +833,16 @@ struct StatsAdminTarget {
     action: String,
 }
 
+fn begin_stats_mutation(
+    generations: &GenerationManager,
+    expected_revision: &str,
+) -> Result<crate::GenerationMutation, crate::GenerationError> {
+    let expected_revision: EffectiveRevision = expected_revision
+        .parse()
+        .map_err(|_| crate::GenerationError::RevisionConflict)?;
+    generations.begin_mutation(&expected_revision)
+}
+
 pub(crate) fn preflight_admin_token(path: Option<&Path>) -> io::Result<()> {
     path.map(SecureBearerToken::load)
         .transpose()
@@ -853,8 +862,8 @@ mod tests {
     use std::{fs, os::unix::fs::PermissionsExt as _};
 
     use oxiroute_config::{
-        Config, DnsResolutionPolicy, HttpVersionPolicy, UpstreamAlgorithm, UpstreamConnectionReuse,
-        UpstreamEndpoint, UpstreamPool, UpstreamServer, render_lua,
+        ConfigDraft, DnsResolutionPolicy, HttpVersionPolicy, UpstreamAlgorithm,
+        UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
     };
     use oxiroute_rtmp::RtmpCapabilities;
     use tempfile::TempDir;
@@ -874,7 +883,7 @@ mod tests {
         fs::write(&token_path, format!("{token}\n")).expect("token");
         fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600)).expect("mode");
         let config_path = directory.path().join("oxiroute.lua");
-        let config = Config {
+        let config = ConfigDraft {
             version: 1,
             max_connections: None,
             management: None,
@@ -909,7 +918,16 @@ mod tests {
             rtmp_services: Vec::new(),
             l4_services: Vec::new(),
         };
-        fs::write(&config_path, render_lua(&config).expect("render")).expect("config");
+        let config = config.validate().expect("valid config");
+        fs::write(
+            &config_path,
+            oxiroute_config_source::render_config(
+                oxiroute_config_source::ConfigFormat::Lua,
+                &config,
+            )
+            .expect("render"),
+        )
+        .expect("config");
         let coordinator = crate::config_coordinator::CanonicalConfigCoordinator::new(config_path)
             .expect("coordinator");
         let crate::config_coordinator::ConfigLoadOutcome::Loaded(document) = coordinator.load()
@@ -920,7 +938,7 @@ mod tests {
         let candidate = generations.prepare(*document).expect("prepare");
         let active = generations.activate(&candidate).expect("activate");
         let revision = active.revision().candidate.as_str().to_owned();
-        let pool = Arc::clone(&active.plan().pools[0]);
+        let pool = Arc::clone(&active.pools()[0]);
         let api = HaproxyStatsApi::new(
             active.metrics().clone(),
             vec![Arc::clone(&pool)],
@@ -1093,7 +1111,10 @@ mod tests {
             crate::AdministrativeState::Ready
         );
         target.generation_revision = "stale".into();
-        assert_eq!(page.admin_response(&target, true, true).status, 409);
+        let response = page.admin_response(&target, true, true);
+        assert_eq!(response.status, 409);
+        let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["error"]["code"], "generation_conflict");
     }
 
     #[test]
