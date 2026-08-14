@@ -7,6 +7,8 @@
   "scripts": {
     "build": "vue-tsc --noEmit && vite build",
     "dev": "vite",
+    "generate:control-plane": "node ../scripts/generate-control-plane-types.mjs",
+    "verify:control-plane": "node ../scripts/generate-control-plane-types.mjs --check",
     "test": "vitest run",
     "test:browser": "playwright test",
     "test:browser:install": "playwright install --with-deps chromium",
