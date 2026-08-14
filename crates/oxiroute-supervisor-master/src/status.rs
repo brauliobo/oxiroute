@@ -1,5 +1,8 @@
+use std::collections::{BTreeMap, VecDeque};
+
 use oxiroute_supervision::{
-    BoundedWireProtocol, BoundedWireReader, BoundedWireWriter, GenerationId, InstanceId,
+    BoundedWireProtocol, BoundedWireReader, BoundedWireWriter, GenerationId, GenerationRole,
+    InstanceId, SupervisedGenerationCatalog,
 };
 use oxiroute_supervision_unix::MessageType;
 use oxiroute_supervisor_process::AuthenticatedFrame;
@@ -135,6 +138,411 @@ pub struct AggregatedWorkerEvent {
     pub instance_id: InstanceId,
     pub generation_id: GenerationId,
     pub worker_event: WorkerEventRecord,
+}
+
+/// One catalog-owned generation projected without its launch payload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupervisorGenerationSnapshot<R> {
+    pub role: GenerationRole,
+    pub instance_id: InstanceId,
+    pub generation_id: GenerationId,
+    pub revision: R,
+}
+
+/// One current process observation matched to its catalog identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct SupervisorProcessSnapshot {
+    pub role: GenerationRole,
+    pub instance_id: InstanceId,
+    pub generation_id: GenerationId,
+    pub sequence: u64,
+    pub lifecycle: WorkerLifecycle,
+    pub administrative_state: WorkerAdministrativeState,
+    pub accepting: bool,
+    pub runtime_started: bool,
+    pub runtime_failed: bool,
+    pub drained: bool,
+    pub generation: WorkerGenerationStatus,
+}
+
+/// A role-qualified listener observation from one current process.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupervisorListenerObservation {
+    pub role: GenerationRole,
+    pub instance_id: InstanceId,
+    pub listener: WorkerListenerStatus,
+}
+
+/// Monotonic counters for one logical listener across live and reaped workers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupervisorListenerSnapshot {
+    pub name: String,
+    pub protocol: String,
+    pub bind: String,
+    pub administrative_state: WorkerAdministrativeState,
+    pub state: WorkerListenerState,
+    pub accepted_connections: u64,
+    pub rejected_connections: u64,
+    pub active_connections: u64,
+    pub bytes_received: u64,
+    pub bytes_sent: u64,
+}
+
+/// A role-qualified degradation observation from one current process.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupervisorDegradation {
+    pub role: GenerationRole,
+    pub instance_id: InstanceId,
+    pub reason: Option<String>,
+}
+
+/// A bounded worker event with the role occupied when the master observed it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupervisorEventRecord {
+    pub role: GenerationRole,
+    pub event: AggregatedWorkerEvent,
+}
+
+/// Read-only master projection of catalog state and matched process observations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupervisorSnapshot<R> {
+    pub generations: Vec<SupervisorGenerationSnapshot<R>>,
+    pub processes: Vec<SupervisorProcessSnapshot>,
+    pub listener_observations: Vec<SupervisorListenerObservation>,
+    pub listeners: Vec<SupervisorListenerSnapshot>,
+    pub degraded: bool,
+    pub degradation: Vec<SupervisorDegradation>,
+    pub metrics: WorkerMetrics,
+    pub events: Vec<SupervisorEventRecord>,
+}
+
+/// A catalog/process identity mismatch while building a supervisor snapshot.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error(
+    "process observation for {instance_id} in {observed_role:?} does not match catalog role {catalog_role:?}"
+)]
+pub struct SupervisorSnapshotError {
+    pub instance_id: InstanceId,
+    pub observed_role: GenerationRole,
+    pub catalog_role: Option<GenerationRole>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WorkerSnapshotSource<'a> {
+    pub(crate) role: GenerationRole,
+    pub(crate) instance_id: &'a InstanceId,
+    pub(crate) generation_id: GenerationId,
+    pub(crate) status: &'a WorkerStatus,
+}
+
+#[derive(Debug)]
+struct RetainedEvent {
+    role: GenerationRole,
+    event: AggregatedWorkerEvent,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SupervisorSnapshotHistory {
+    metrics: WorkerMetrics,
+    listeners: BTreeMap<(String, String, String), SupervisorListenerSnapshot>,
+    events: VecDeque<RetainedEvent>,
+    next_event_cursor: u64,
+}
+
+impl SupervisorSnapshotHistory {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_event_cursor: 1,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn record_events(
+        &mut self,
+        role: GenerationRole,
+        instance_id: &InstanceId,
+        generation_id: GenerationId,
+        previous_cursor: u64,
+        status: &WorkerStatus,
+    ) -> u64 {
+        let mut event_cursor = previous_cursor;
+        for worker_event in &status.events {
+            if worker_event.cursor <= event_cursor {
+                continue;
+            }
+            let cursor = self.next_event_cursor;
+            if cursor == 0 {
+                break;
+            }
+            self.next_event_cursor = cursor.checked_add(1).unwrap_or(0);
+            self.events.push_back(RetainedEvent {
+                role,
+                event: AggregatedWorkerEvent {
+                    cursor,
+                    instance_id: instance_id.clone(),
+                    generation_id,
+                    worker_event: worker_event.clone(),
+                },
+            });
+            while self.events.len() > MAX_AGGREGATED_EVENTS {
+                self.events.pop_front();
+            }
+            event_cursor = worker_event.cursor;
+        }
+        event_cursor.max(status.event_cursor)
+    }
+
+    pub(crate) fn reap(&mut self, status: Option<&WorkerStatus>) {
+        let Some(status) = status else {
+            return;
+        };
+        if let Some(metrics) = status.metrics {
+            add_cumulative_metrics(&mut self.metrics, metrics);
+        }
+        for listener in &status.listeners {
+            let entry = self
+                .listeners
+                .entry(listener_key(listener))
+                .or_insert_with(|| listener_snapshot(listener));
+            add_cumulative_listener(entry, listener);
+            entry.active_connections = 0;
+        }
+    }
+
+    pub(crate) fn worker_events(&self, after: u64, limit: usize) -> Vec<AggregatedWorkerEvent> {
+        self.events
+            .iter()
+            .filter(|retained| retained.event.cursor > after)
+            .take(limit.min(MAX_AGGREGATED_EVENTS))
+            .map(|retained| retained.event.clone())
+            .collect()
+    }
+
+    pub(crate) fn snapshot<R: Clone, T>(
+        &self,
+        catalog: &SupervisedGenerationCatalog<R, T>,
+        sources: &[WorkerSnapshotSource<'_>],
+    ) -> Result<SupervisorSnapshot<R>, SupervisorSnapshotError> {
+        let generations = catalog
+            .documents()
+            .map(|(role, document)| SupervisorGenerationSnapshot {
+                role,
+                instance_id: document.instance_id().clone(),
+                generation_id: document.generation_id(),
+                revision: document.revision().clone(),
+            })
+            .collect::<Vec<_>>();
+        for source in sources {
+            let catalog_role = catalog.documents().find_map(|(role, document)| {
+                (document.instance_id() == source.instance_id
+                    && document.generation_id() == source.generation_id)
+                    .then_some(role)
+            });
+            if catalog_role != Some(source.role) {
+                return Err(SupervisorSnapshotError {
+                    instance_id: source.instance_id.clone(),
+                    observed_role: source.role,
+                    catalog_role,
+                });
+            }
+        }
+
+        let mut metrics = self.metrics;
+        let mut listeners = self.listeners.clone();
+        let mut listener_priorities = BTreeMap::new();
+        let mut processes = Vec::with_capacity(sources.len());
+        let mut listener_observations = Vec::new();
+        let mut degradation = Vec::new();
+        for source in sources {
+            let status = source.status;
+            if let Some(worker_metrics) = status.metrics {
+                add_all_metrics(&mut metrics, worker_metrics);
+            }
+            processes.push(SupervisorProcessSnapshot {
+                role: source.role,
+                instance_id: source.instance_id.clone(),
+                generation_id: source.generation_id,
+                sequence: status.sequence,
+                lifecycle: status.lifecycle,
+                administrative_state: status.administrative_state,
+                accepting: status.accepting,
+                runtime_started: status.runtime_started,
+                runtime_failed: status.runtime_failed,
+                drained: status.drained,
+                generation: status.generation.clone(),
+            });
+            for listener in &status.listeners {
+                listener_observations.push(SupervisorListenerObservation {
+                    role: source.role,
+                    instance_id: source.instance_id.clone(),
+                    listener: listener.clone(),
+                });
+                let key = listener_key(listener);
+                let priority = role_priority(source.role);
+                let entry = listeners
+                    .entry(key.clone())
+                    .or_insert_with(|| listener_snapshot(listener));
+                add_all_listener(entry, listener);
+                if listener_priorities
+                    .get(&key)
+                    .is_none_or(|current| priority > *current)
+                {
+                    entry.administrative_state = listener.administrative_state;
+                    entry.state = listener.state;
+                    listener_priorities.insert(key, priority);
+                }
+            }
+            if status.degraded || status.generation.degraded || status.runtime_failed {
+                degradation.push(SupervisorDegradation {
+                    role: source.role,
+                    instance_id: source.instance_id.clone(),
+                    reason: status
+                        .degradation
+                        .clone()
+                        .or_else(|| status.generation.last_failure.clone()),
+                });
+            }
+        }
+        let events = self
+            .events
+            .iter()
+            .map(|retained| SupervisorEventRecord {
+                role: retained.role,
+                event: retained.event.clone(),
+            })
+            .collect();
+        Ok(SupervisorSnapshot {
+            generations,
+            processes,
+            listener_observations,
+            listeners: listeners.into_values().collect(),
+            degraded: !degradation.is_empty(),
+            degradation,
+            metrics,
+            events,
+        })
+    }
+}
+
+pub(crate) fn retain_monotonic_status(previous: &WorkerStatus, status: &mut WorkerStatus) {
+    match (&previous.metrics, &mut status.metrics) {
+        (Some(previous), Some(current)) => retain_monotonic_metrics(*previous, current),
+        (Some(previous), None) => status.metrics = Some(*previous),
+        (None, _) => {}
+    }
+    status.generation.prepares = status.generation.prepares.max(previous.generation.prepares);
+    status.generation.activations = status
+        .generation
+        .activations
+        .max(previous.generation.activations);
+    status.generation.failures = status.generation.failures.max(previous.generation.failures);
+    status.generation.rollbacks = status
+        .generation
+        .rollbacks
+        .max(previous.generation.rollbacks);
+    for previous_listener in &previous.listeners {
+        if let Some(current) = status.listeners.iter_mut().find(|current| {
+            current.name == previous_listener.name
+                && current.protocol == previous_listener.protocol
+                && current.bind == previous_listener.bind
+        }) {
+            retain_monotonic_listener(previous_listener, current);
+        } else {
+            status.listeners.push(previous_listener.clone());
+        }
+    }
+}
+
+fn listener_key(listener: &WorkerListenerStatus) -> (String, String, String) {
+    (
+        listener.name.clone(),
+        listener.protocol.clone(),
+        listener.bind.clone(),
+    )
+}
+
+fn listener_snapshot(listener: &WorkerListenerStatus) -> SupervisorListenerSnapshot {
+    SupervisorListenerSnapshot {
+        name: listener.name.clone(),
+        protocol: listener.protocol.clone(),
+        bind: listener.bind.clone(),
+        administrative_state: listener.administrative_state,
+        state: listener.state,
+        accepted_connections: 0,
+        rejected_connections: 0,
+        active_connections: 0,
+        bytes_received: 0,
+        bytes_sent: 0,
+    }
+}
+
+fn add_cumulative_metrics(total: &mut WorkerMetrics, value: WorkerMetrics) {
+    total.accepted_connections = total
+        .accepted_connections
+        .saturating_add(value.accepted_connections);
+    total.rejected_connections = total
+        .rejected_connections
+        .saturating_add(value.rejected_connections);
+    total.bytes_received = total.bytes_received.saturating_add(value.bytes_received);
+    total.bytes_sent = total.bytes_sent.saturating_add(value.bytes_sent);
+}
+
+fn add_all_metrics(total: &mut WorkerMetrics, value: WorkerMetrics) {
+    add_cumulative_metrics(total, value);
+    total.active_connections = total
+        .active_connections
+        .saturating_add(value.active_connections);
+}
+
+fn retain_monotonic_metrics(previous: WorkerMetrics, current: &mut WorkerMetrics) {
+    current.accepted_connections = current
+        .accepted_connections
+        .max(previous.accepted_connections);
+    current.rejected_connections = current
+        .rejected_connections
+        .max(previous.rejected_connections);
+    current.bytes_received = current.bytes_received.max(previous.bytes_received);
+    current.bytes_sent = current.bytes_sent.max(previous.bytes_sent);
+}
+
+fn add_cumulative_listener(total: &mut SupervisorListenerSnapshot, value: &WorkerListenerStatus) {
+    total.accepted_connections = total
+        .accepted_connections
+        .saturating_add(value.accepted_connections);
+    total.rejected_connections = total
+        .rejected_connections
+        .saturating_add(value.rejected_connections);
+    total.bytes_received = total.bytes_received.saturating_add(value.bytes_received);
+    total.bytes_sent = total.bytes_sent.saturating_add(value.bytes_sent);
+}
+
+fn add_all_listener(total: &mut SupervisorListenerSnapshot, value: &WorkerListenerStatus) {
+    add_cumulative_listener(total, value);
+    total.active_connections = total
+        .active_connections
+        .saturating_add(value.active_connections);
+}
+
+fn retain_monotonic_listener(previous: &WorkerListenerStatus, current: &mut WorkerListenerStatus) {
+    current.accepted_connections = current
+        .accepted_connections
+        .max(previous.accepted_connections);
+    current.rejected_connections = current
+        .rejected_connections
+        .max(previous.rejected_connections);
+    current.bytes_received = current.bytes_received.max(previous.bytes_received);
+    current.bytes_sent = current.bytes_sent.max(previous.bytes_sent);
+}
+
+const fn role_priority(role: GenerationRole) -> u8 {
+    match role {
+        GenerationRole::Active => 5,
+        GenerationRole::Candidate => 4,
+        GenerationRole::Previous => 3,
+        GenerationRole::Quarantined => 2,
+        GenerationRole::RestartRequired => 1,
+    }
 }
 
 #[derive(Debug, Error)]
@@ -603,6 +1011,7 @@ type Decoder<'a> = BoundedWireReader<'a, StatusWire>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxiroute_supervision::{GenerationLaunchDocument, Revision};
 
     fn status() -> WorkerStatus {
         WorkerStatus {
@@ -703,6 +1112,263 @@ mod tests {
             &[
                 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7, 3, 3, 0
             ]
+        );
+    }
+
+    fn document(
+        instance: &str,
+        generation: u64,
+        revision: u64,
+    ) -> GenerationLaunchDocument<Revision, ()> {
+        GenerationLaunchDocument::new(
+            InstanceId::new(instance).unwrap(),
+            GenerationId(generation),
+            Revision(revision),
+            (),
+        )
+    }
+
+    fn replacement_catalog() -> SupervisedGenerationCatalog<Revision, ()> {
+        let mut catalog = SupervisedGenerationCatalog::new(document("retired", 1, 10));
+        catalog.begin_candidate(document("active", 2, 20)).unwrap();
+        catalog.commit_candidate().unwrap();
+        catalog
+    }
+
+    #[test]
+    fn snapshot_separates_catalog_and_process_observations_and_sums_live_values() {
+        let catalog = replacement_catalog();
+        let mut active = status();
+        active.generation_id = GenerationId(2);
+        active.metrics = Some(WorkerMetrics {
+            accepted_connections: 10,
+            rejected_connections: 2,
+            active_connections: 4,
+            bytes_received: 100,
+            bytes_sent: 200,
+        });
+        active.listeners[0].accepted_connections = 10;
+        active.listeners[0].active_connections = 4;
+        let mut retired = status();
+        retired.generation_id = GenerationId(1);
+        retired.metrics = Some(WorkerMetrics {
+            accepted_connections: 7,
+            rejected_connections: 1,
+            active_connections: 2,
+            bytes_received: 70,
+            bytes_sent: 90,
+        });
+        retired.listeners[0].accepted_connections = 7;
+        retired.listeners[0].active_connections = 2;
+        retired.degraded = true;
+        retired.degradation = Some("drain delayed".into());
+        let active_id = InstanceId::new("active").unwrap();
+        let retired_id = InstanceId::new("retired").unwrap();
+        let mut history = SupervisorSnapshotHistory::new();
+        history.record_events(
+            GenerationRole::Active,
+            &active_id,
+            GenerationId(2),
+            0,
+            &active,
+        );
+        history.record_events(
+            GenerationRole::Previous,
+            &retired_id,
+            GenerationId(1),
+            0,
+            &retired,
+        );
+        let sources = [
+            WorkerSnapshotSource {
+                role: GenerationRole::Active,
+                instance_id: &active_id,
+                generation_id: GenerationId(2),
+                status: &active,
+            },
+            WorkerSnapshotSource {
+                role: GenerationRole::Previous,
+                instance_id: &retired_id,
+                generation_id: GenerationId(1),
+                status: &retired,
+            },
+        ];
+
+        let snapshot = history.snapshot(&catalog, &sources).unwrap();
+
+        assert_eq!(
+            snapshot
+                .generations
+                .iter()
+                .map(|generation| (generation.role, generation.revision))
+                .collect::<Vec<_>>(),
+            vec![
+                (GenerationRole::Active, Revision(20)),
+                (GenerationRole::Previous, Revision(10)),
+            ]
+        );
+        assert_eq!(snapshot.processes.len(), 2);
+        assert_eq!(snapshot.listener_observations.len(), 2);
+        assert_eq!(snapshot.metrics.accepted_connections, 17);
+        assert_eq!(snapshot.metrics.active_connections, 6);
+        assert_eq!(snapshot.listeners[0].accepted_connections, 17);
+        assert_eq!(snapshot.listeners[0].active_connections, 6);
+        assert!(snapshot.degraded);
+        assert_eq!(snapshot.degradation[0].role, GenerationRole::Previous);
+        assert_eq!(snapshot.events.len(), 2);
+        assert_eq!(snapshot.events[0].role, GenerationRole::Active);
+        assert_eq!(snapshot.events[1].role, GenerationRole::Previous);
+    }
+
+    #[test]
+    fn reaped_workers_keep_cumulative_baselines_but_not_active_gauges() {
+        let catalog = replacement_catalog();
+        let mut active = status();
+        active.generation_id = GenerationId(2);
+        active.metrics = Some(WorkerMetrics {
+            accepted_connections: 10,
+            active_connections: 4,
+            ..WorkerMetrics::default()
+        });
+        active.listeners[0].accepted_connections = 10;
+        active.listeners[0].active_connections = 4;
+        let mut retired = status();
+        retired.generation_id = GenerationId(1);
+        retired.metrics = Some(WorkerMetrics {
+            accepted_connections: 7,
+            active_connections: 2,
+            ..WorkerMetrics::default()
+        });
+        retired.listeners[0].accepted_connections = 7;
+        retired.listeners[0].active_connections = 2;
+        let active_id = InstanceId::new("active").unwrap();
+        let mut history = SupervisorSnapshotHistory::new();
+        history.reap(Some(&retired));
+        let sources = [WorkerSnapshotSource {
+            role: GenerationRole::Active,
+            instance_id: &active_id,
+            generation_id: GenerationId(2),
+            status: &active,
+        }];
+
+        let snapshot = history.snapshot(&catalog, &sources).unwrap();
+
+        assert_eq!(snapshot.metrics.accepted_connections, 17);
+        assert_eq!(snapshot.metrics.active_connections, 4);
+        assert_eq!(snapshot.listeners[0].accepted_connections, 17);
+        assert_eq!(snapshot.listeners[0].active_connections, 4);
+        history.reap(Some(&active));
+        let snapshot = history.snapshot(&catalog, &[]).unwrap();
+        assert_eq!(snapshot.metrics.accepted_connections, 17);
+        assert_eq!(snapshot.metrics.active_connections, 0);
+        assert_eq!(snapshot.listeners[0].active_connections, 0);
+    }
+
+    #[test]
+    fn snapshot_rejects_process_role_or_identity_mismatches() {
+        let catalog = replacement_catalog();
+        let active = status();
+        let active_id = InstanceId::new("active").unwrap();
+        let sources = [WorkerSnapshotSource {
+            role: GenerationRole::Candidate,
+            instance_id: &active_id,
+            generation_id: GenerationId(2),
+            status: &active,
+        }];
+
+        assert_eq!(
+            SupervisorSnapshotHistory::new()
+                .snapshot(&catalog, &sources)
+                .unwrap_err(),
+            SupervisorSnapshotError {
+                instance_id: active_id,
+                observed_role: GenerationRole::Candidate,
+                catalog_role: Some(GenerationRole::Active),
+            }
+        );
+    }
+
+    #[test]
+    fn status_counters_remain_monotonic_while_gauges_use_the_latest_value() {
+        let previous = status();
+        let mut current = status();
+        current.metrics = Some(WorkerMetrics {
+            accepted_connections: 1,
+            rejected_connections: 1,
+            active_connections: 1,
+            bytes_received: 1,
+            bytes_sent: 1,
+        });
+        current.listeners[0].accepted_connections = 1;
+        current.listeners[0].active_connections = 1;
+        current.generation.activations = 0;
+
+        retain_monotonic_status(&previous, &mut current);
+
+        let metrics = current.metrics.unwrap();
+        assert_eq!(metrics.accepted_connections, 2);
+        assert_eq!(metrics.active_connections, 1);
+        assert_eq!(current.listeners[0].accepted_connections, 2);
+        assert_eq!(current.listeners[0].active_connections, 1);
+        assert_eq!(current.generation.activations, 1);
+    }
+
+    #[test]
+    fn aggregated_events_are_bounded_with_stable_master_cursors() {
+        let mut history = SupervisorSnapshotHistory::new();
+        let instance_id = InstanceId::new("active").unwrap();
+        for cursor in 1..=u64::try_from(MAX_AGGREGATED_EVENTS + 3).unwrap() {
+            let mut current = status();
+            current.event_cursor = cursor;
+            current.events[0].cursor = cursor;
+            history.record_events(
+                GenerationRole::Active,
+                &instance_id,
+                GenerationId(7),
+                cursor - 1,
+                &current,
+            );
+        }
+
+        let events = history.worker_events(0, usize::MAX);
+        assert_eq!(events.len(), MAX_AGGREGATED_EVENTS);
+        assert_eq!(events.first().unwrap().cursor, 4);
+        assert_eq!(
+            events.last().unwrap().cursor,
+            u64::try_from(MAX_AGGREGATED_EVENTS + 3).unwrap()
+        );
+        assert!(
+            events
+                .windows(2)
+                .all(|events| events[0].cursor < events[1].cursor)
+        );
+
+        history.next_event_cursor = u64::MAX;
+        let mut final_status = status();
+        final_status.event_cursor = 2;
+        final_status.events[0].cursor = 2;
+        history.record_events(
+            GenerationRole::Active,
+            &instance_id,
+            GenerationId(7),
+            1,
+            &final_status,
+        );
+        final_status.event_cursor = 3;
+        final_status.events[0].cursor = 3;
+        history.record_events(
+            GenerationRole::Active,
+            &instance_id,
+            GenerationId(7),
+            2,
+            &final_status,
+        );
+        let events = history.worker_events(0, usize::MAX);
+        assert_eq!(events.last().unwrap().cursor, u64::MAX);
+        assert!(
+            events
+                .windows(2)
+                .all(|events| events[0].cursor < events[1].cursor)
         );
     }
 }

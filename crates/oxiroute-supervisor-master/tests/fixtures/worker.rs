@@ -3,7 +3,7 @@ use std::{
     io::Write as _,
     net::TcpListener,
     os::unix::net::UnixListener,
-    process::ExitCode,
+    process::{Command, ExitCode},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -38,11 +38,30 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             ExitCode::SUCCESS
         });
     }
+    if behavior == "containment-descendant-tree" {
+        let pid_file = arguments.next().ok_or("missing nested pid file")?;
+        let child = Command::new(env::current_exe()?)
+            .arg("containment-descendant-sleep")
+            .spawn()?;
+        fs::write(pid_file, child.id().to_string())?;
+        thread::sleep(Duration::from_secs(30));
+        return Ok(ExitCode::SUCCESS);
+    }
+    if behavior == "containment-setsid-sleep" {
+        rustix::process::setsid()?;
+        thread::sleep(Duration::from_secs(30));
+        return Ok(ExitCode::SUCCESS);
+    }
+    if behavior == "containment-descendant-sleep" {
+        thread::sleep(Duration::from_secs(30));
+        return Ok(ExitCode::SUCCESS);
+    }
     let generation = arguments
         .next()
         .ok_or("missing generation")?
         .parse::<u64>()?;
     let token = decode_token(&arguments.next().ok_or("missing instance token")?)?;
+    let descendant_pid_file = arguments.next();
     if arguments.next().is_some() {
         return Err("trailing fixture arguments".into());
     }
@@ -52,6 +71,9 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         protocol: CONTROL_PROTOCOL_VERSION,
     };
     let mut control = WorkerControl::adopt_at_process_entry(identity)?;
+    if let Some(pid_file) = descendant_pid_file {
+        spawn_containment_descendants(&pid_file)?;
+    }
     let mut serving = None;
     let mut status_sequence = 1_u64;
     loop {
@@ -106,6 +128,9 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             thread::sleep(Duration::from_millis(150));
         }
         if behavior == "timeout-activate" && phase == ControlPhase::Activate {
+            thread::sleep(Duration::from_secs(1));
+        }
+        if behavior == "timeout-adopt" && phase == ControlPhase::AdoptListeners {
             thread::sleep(Duration::from_secs(1));
         }
         control.acknowledge(&request, ControlOutcome::Accepted)?;
@@ -195,6 +220,31 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             return Ok(ExitCode::SUCCESS);
         }
     }
+}
+
+fn spawn_containment_descendants(pid_file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let pid_file = std::path::PathBuf::from(pid_file);
+    let nested_pid_file = pid_file.with_extension("nested.pid");
+    let ordinary = Command::new(env::current_exe()?)
+        .arg("containment-descendant-tree")
+        .arg(&nested_pid_file)
+        .spawn()?;
+    let escaped = Command::new(env::current_exe()?)
+        .arg("containment-setsid-sleep")
+        .spawn()?;
+    let nested = loop {
+        if let Ok(pid) = fs::read_to_string(&nested_pid_file)
+            && !pid.trim().is_empty()
+        {
+            break pid;
+        }
+        thread::sleep(Duration::from_millis(1));
+    };
+    fs::write(
+        pid_file,
+        format!("{}\n{}\n{}\n", ordinary.id(), nested.trim(), escaped.id()),
+    )?;
+    Ok(())
 }
 
 struct Serving {

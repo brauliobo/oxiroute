@@ -169,6 +169,41 @@ fn escaped_descendant_mode() -> Result<ExitCode, Box<dyn std::error::Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn containment_descendants() -> Result<(), Box<dyn std::error::Error>> {
+    let pid_file = std::path::PathBuf::from(
+        env::var_os("DESCENDANT_PID_FILE").ok_or("missing descendant pid file")?,
+    );
+    let nested_pid_file = pid_file.with_extension("nested.pid");
+    let ordinary = Command::new(env::current_exe()?)
+        .arg("descendant-tree")
+        .arg(&nested_pid_file)
+        .spawn()?;
+    let escaped = Command::new(env::current_exe()?)
+        .arg("escaped-descendant-sleep")
+        .spawn()?;
+    let nested = loop {
+        if let Ok(pid) = fs::read_to_string(&nested_pid_file)
+            && !pid.trim().is_empty()
+        {
+            break pid;
+        }
+        thread::sleep(Duration::from_millis(1));
+    };
+    fs::write(
+        &pid_file,
+        format!("{}\n{}\n{}\n", ordinary.id(), nested.trim(), escaped.id()),
+    )?;
+    if let Some(path) = env::var_os("CGROUP_PATH_FILE") {
+        let membership = fs::read_to_string("/proc/self/cgroup")?;
+        let cgroup = membership
+            .lines()
+            .find_map(|line| line.strip_prefix("0::"))
+            .ok_or("missing unified cgroup membership")?;
+        fs::write(path, cgroup)?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mode = env::args().nth(1).unwrap_or_default();
     match mode.as_str() {
@@ -193,6 +228,17 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         "descendant" => descendant_mode(true),
         "descendant-exit" => descendant_mode(false),
         "escaped-descendant-exit" => escaped_descendant_mode(),
+        "containment" => {
+            let _endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
+            containment_descendants()?;
+            thread::sleep(Duration::from_secs(30));
+            Ok(ExitCode::SUCCESS)
+        }
+        "containment-timeout" => {
+            containment_descendants()?;
+            thread::sleep(Duration::from_secs(30));
+            Ok(ExitCode::SUCCESS)
+        }
         "linger" => {
             let _endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
             thread::sleep(Duration::from_secs(30));
@@ -213,6 +259,15 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         "escaped-descendant-sleep" => {
             rustix::process::setsid()?;
+            thread::sleep(Duration::from_secs(30));
+            Ok(ExitCode::SUCCESS)
+        }
+        "descendant-tree" => {
+            let pid_file = env::args_os().nth(2).ok_or("missing nested pid file")?;
+            let child = Command::new(env::current_exe()?)
+                .arg("descendant-sleep")
+                .spawn()?;
+            fs::write(pid_file, child.id().to_string())?;
             thread::sleep(Duration::from_secs(30));
             Ok(ExitCode::SUCCESS)
         }
