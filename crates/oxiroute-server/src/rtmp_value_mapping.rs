@@ -155,21 +155,6 @@ pub(crate) const fn dash_naming(value: RtmpDashSegmentNaming) -> DashSegmentNami
     }
 }
 
-pub(crate) fn media_store_limits(
-    max_storage_bytes: u64,
-    max_storage_files: u64,
-    max_active_streams: u64,
-    max_segment_bytes: u64,
-) -> oxiroute_rtmp::MediaStoreLimits {
-    oxiroute_rtmp::MediaStoreLimits {
-        max_bytes: max_storage_bytes,
-        max_files: usize::try_from(max_storage_files).expect("validated media storage files"),
-        max_active_streams: usize::try_from(max_active_streams)
-            .expect("validated media active streams"),
-        max_file_bytes: usize::try_from(max_segment_bytes).expect("validated media segment bytes"),
-    }
-}
-
 pub(crate) fn vod(policy: &RtmpVodPolicy) -> (VodLimits, Vec<VodSourceDefinition>) {
     let limits = VodLimits {
         max_sessions: usize::try_from(policy.max_sessions).expect("validated VOD sessions"),

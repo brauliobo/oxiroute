@@ -11,7 +11,6 @@ use std::{
 };
 
 pub use crate::planning_errors::ServicePlanError;
-use crate::rtmp_value_mapping as rtmp_map;
 use crate::{
     ForwardHttp1ServicePlan, ForwardHttp2ServicePlan, HealthSupervisor, L4ServicePlan,
     PassiveFailurePolicy, PoolError, PreparedTls, RelayPolicy, RoundRobinPool, RouteTable,
@@ -1896,12 +1895,7 @@ fn compile_rtmp_hls(
         service: service.to_owned(),
         application: application.name().to_owned(),
     };
-    let limits = rtmp_map::media_store_limits(
-        plan.max_storage_bytes(),
-        u64::try_from(plan.max_storage_files()).expect("validated HLS storage files"),
-        u64::try_from(plan.max_active_streams()).expect("validated HLS active streams"),
-        u64::try_from(plan.max_segment_bytes()).expect("validated HLS segment bytes"),
-    );
+    let limits = plan.media_store_limits();
     if mode == AcquisitionMode::Validate {
         MediaStore::preflight(plan.root_directory(), limits).map_err(|_| invalid())?;
         return Ok(None);
@@ -1933,12 +1927,7 @@ fn compile_rtmp_dash(
         service: service.to_owned(),
         application: application.name().to_owned(),
     };
-    let limits = rtmp_map::media_store_limits(
-        plan.max_storage_bytes(),
-        u64::try_from(plan.max_storage_files()).expect("validated DASH storage files"),
-        u64::try_from(plan.max_active_streams()).expect("validated DASH active streams"),
-        u64::try_from(plan.max_segment_bytes()).expect("validated DASH segment bytes"),
-    );
+    let limits = plan.media_store_limits();
     if mode == AcquisitionMode::Validate {
         MediaStore::preflight(plan.root_directory(), limits).map_err(|_| invalid())?;
         return Ok(None);

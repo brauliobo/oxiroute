@@ -12,7 +12,7 @@ use crate::{
     DashOutputConfig, DashSegmentNaming, DestinationPolicyError, ExecEnvironment,
     ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecProfile, ExecProfileError,
     ExecTrigger, HlsFragmentNaming, HlsKeyConfig, HlsOutputConfig, HlsValueError, HlsVariant,
-    LiveHub, LiveHubLimits, MediaApplication, MediaStore, RecorderWorkerConfig,
+    LiveHub, LiveHubLimits, MediaApplication, MediaStore, MediaStoreLimits, RecorderWorkerConfig,
     RecorderWorkerStartError, RecordingPathPolicy, RecordingStoreLimits, RecordingStoreLimitsError,
     RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpAutoPushConfig,
     RtmpAutoPushConfigError, RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCallbackValueError,
@@ -775,6 +775,16 @@ impl RtmpHlsPlan {
         self.max_active_streams
     }
 
+    #[must_use]
+    pub const fn media_store_limits(&self) -> MediaStoreLimits {
+        MediaStoreLimits {
+            max_bytes: self.max_storage_bytes,
+            max_files: self.max_storage_files,
+            max_active_streams: self.max_active_streams,
+            max_file_bytes: self.max_segment_bytes,
+        }
+    }
+
     /// Builds the HLS output from an already-open media store.
     #[must_use]
     pub fn build_output(&self, store: Arc<MediaStore>) -> Arc<HlsOutputConfig> {
@@ -920,6 +930,16 @@ impl RtmpDashPlan {
     #[must_use]
     pub const fn max_active_streams(&self) -> usize {
         self.max_active_streams
+    }
+
+    #[must_use]
+    pub const fn media_store_limits(&self) -> MediaStoreLimits {
+        MediaStoreLimits {
+            max_bytes: self.max_storage_bytes,
+            max_files: self.max_storage_files,
+            max_active_streams: self.max_active_streams,
+            max_file_bytes: self.max_segment_bytes,
+        }
     }
 
     /// Builds the DASH output from an already-open media store.
