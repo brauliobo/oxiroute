@@ -11,15 +11,15 @@ use std::{
 use crate::{
     DashOutputConfig, DashSegmentNaming, DestinationPolicyError, ExecEnvironment,
     ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecProfile, ExecProfileError,
-    ExecTrigger, HlsFragmentNaming, HlsKeyConfig, HlsValueError, HlsVariant, LiveHub,
-    LiveHubLimits, MediaApplication, RecorderWorkerConfig, RecorderWorkerStartError,
-    RecordingPathPolicy, RecordingStoreLimits, RecordingStoreLimitsError, RtmpAccessAction,
-    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpAutoPushConfig, RtmpAutoPushConfigError,
-    RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCallbackValueError, RtmpNetwork,
-    RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRecorderPolicy,
-    RtmpRecorderStart, RtmpSessionCeilings, RtmpSessionLimitError, RtmpSessionLimits,
-    RtmpStreamPath, RtmpTokenPolicy, RtmpTransport, VodApplication, VodLimits, VodSourceDefinition,
-    VodValueError, validate_callback_url_intrinsic,
+    ExecTrigger, HlsFragmentNaming, HlsKeyConfig, HlsOutputConfig, HlsValueError, HlsVariant,
+    LiveHub, LiveHubLimits, MediaApplication, MediaStore, RecorderWorkerConfig,
+    RecorderWorkerStartError, RecordingPathPolicy, RecordingStoreLimits, RecordingStoreLimitsError,
+    RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpAutoPushConfig,
+    RtmpAutoPushConfigError, RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCallbackValueError,
+    RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget,
+    RtmpRecorderPolicy, RtmpRecorderStart, RtmpSessionCeilings, RtmpSessionLimitError,
+    RtmpSessionLimits, RtmpStreamPath, RtmpTokenPolicy, RtmpTransport, VodApplication, VodLimits,
+    VodSourceDefinition, VodValueError, validate_callback_url_intrinsic,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -630,14 +630,16 @@ impl RtmpMediaPlan {
     /// Combines acquired HLS and DASH outputs into one media application.
     #[must_use]
     pub fn combine_outputs(
-        hls: Option<Arc<MediaApplication>>,
+        hls: Option<Arc<HlsOutputConfig>>,
         dash: Option<Arc<DashOutputConfig>>,
     ) -> Option<Arc<MediaApplication>> {
         match (hls, dash) {
             (None, None) => None,
-            (Some(hls), None) => Some(hls),
+            (Some(hls), None) => Some(Arc::new(MediaApplication::new(Some(hls)))),
             (None, Some(dash)) => Some(Arc::new(MediaApplication::new(None).with_dash(Some(dash)))),
-            (Some(hls), Some(dash)) => Some(Arc::new((*hls).clone().with_dash(Some(dash)))),
+            (Some(hls), Some(dash)) => Some(Arc::new(
+                MediaApplication::new(Some(hls)).with_dash(Some(dash)),
+            )),
         }
     }
 }
@@ -772,6 +774,24 @@ impl RtmpHlsPlan {
     pub const fn max_active_streams(&self) -> usize {
         self.max_active_streams
     }
+
+    /// Builds the HLS output from an already-open media store.
+    #[must_use]
+    pub fn build_output(&self, store: Arc<MediaStore>) -> Arc<HlsOutputConfig> {
+        Arc::new(HlsOutputConfig {
+            store,
+            segment_duration: self.segment_duration,
+            max_segment_duration: self.max_segment_duration,
+            playlist_length: self.playlist_length,
+            naming: self.naming,
+            nested: self.nested,
+            cleanup: self.cleanup,
+            variants: self.variants.clone(),
+            keys: self.keys.clone(),
+            max_segment_bytes: self.max_segment_bytes,
+            max_queue_messages: self.max_queue_messages,
+        })
+    }
 }
 
 impl fmt::Debug for RtmpHlsPlan {
@@ -900,6 +920,22 @@ impl RtmpDashPlan {
     #[must_use]
     pub const fn max_active_streams(&self) -> usize {
         self.max_active_streams
+    }
+
+    /// Builds the DASH output from an already-open media store.
+    #[must_use]
+    pub fn build_output(&self, store: Arc<MediaStore>) -> Arc<DashOutputConfig> {
+        Arc::new(DashOutputConfig {
+            store,
+            segment_duration: self.segment_duration,
+            max_segment_duration: self.max_segment_duration,
+            playlist_length: self.playlist_length,
+            naming: self.naming,
+            nested: self.nested,
+            cleanup: self.cleanup,
+            max_segment_bytes: self.max_segment_bytes,
+            max_queue_messages: self.max_queue_messages,
+        })
     }
 }
 

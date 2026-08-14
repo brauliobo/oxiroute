@@ -17,8 +17,8 @@ const checked = new Map([
 const allowedCrateSymbols = new Set([
   'DashOutputConfig', 'DashSegmentNaming', 'DestinationPolicyError', 'ExecEnvironment', 'ExecFilesystemPolicy',
   'ExecLimits', 'ExecMode', 'ExecNetworkPolicy', 'ExecProfile', 'ExecProfileError', 'ExecTrigger',
-  'HlsFragmentNaming', 'HlsKeyConfig', 'HlsValueError', 'HlsVariant', 'LiveHub', 'LiveHubLimits',
-  'MediaApplication',
+  'HlsFragmentNaming', 'HlsKeyConfig', 'HlsOutputConfig', 'HlsValueError', 'HlsVariant', 'LiveHub',
+  'LiveHubLimits', 'MediaApplication', 'MediaStore',
   'RecorderWorkerConfig',
   'RecorderWorkerStartError', 'RecordingPathPolicy', 'RecordingStoreLimits',
   'RecordingStoreLimitsError', 'RtmpAccessAction', 'RtmpAccessPolicy', 'RtmpAccessRule', 'RtmpAutoPushConfig',
