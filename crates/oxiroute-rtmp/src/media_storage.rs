@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use crate::{PublisherIncarnation, StreamKey};
+use crate::{PublisherIncarnation, RtmpPrepareMode, StreamKey};
 
 pub const MAX_MEDIA_PATH_BYTES: usize = 4_096;
 
@@ -63,6 +63,41 @@ pub enum MediaStoreError {
 #[derive(Clone)]
 pub struct MediaStore {
     shared: Arc<MediaStoreShared>,
+}
+
+/// Deduplicates media-store preparation for one RTMP generation.
+#[derive(Default)]
+pub struct RtmpMediaStoreRegistry {
+    stores: HashMap<PathBuf, Arc<MediaStore>>,
+}
+
+impl RtmpMediaStoreRegistry {
+    /// Preflights or opens one media root according to the preparation mode.
+    ///
+    /// Validation scans the root without creating or retaining a store. Activation reuses one
+    /// opened store for every output that names the same root.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying media-store error when preflight or activation fails.
+    pub fn prepare(
+        &mut self,
+        root: impl AsRef<Path>,
+        limits: MediaStoreLimits,
+        mode: RtmpPrepareMode,
+    ) -> Result<Option<Arc<MediaStore>>, MediaStoreError> {
+        let root = root.as_ref();
+        if mode == RtmpPrepareMode::Validation {
+            MediaStore::preflight(root, limits)?;
+            return Ok(None);
+        }
+        if let Some(store) = self.stores.get(root) {
+            return Ok(Some(Arc::clone(store)));
+        }
+        let store = Arc::new(MediaStore::open(root, limits)?);
+        self.stores.insert(root.to_owned(), Arc::clone(&store));
+        Ok(Some(store))
+    }
 }
 
 struct MediaStoreShared {

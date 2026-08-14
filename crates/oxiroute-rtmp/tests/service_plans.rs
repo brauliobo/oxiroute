@@ -1,6 +1,7 @@
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::PathBuf,
+    sync::Arc,
     time::Duration,
 };
 
@@ -8,16 +9,16 @@ use tempfile::tempdir;
 
 use oxiroute_rtmp::{
     DashSegmentNaming, ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecTrigger,
-    HlsFragmentNaming, HlsKeyConfig, HlsVariant, RecorderMediaMask, RecorderWorkerConfig,
-    RecordingPathPolicy, RecordingStoreLimits, RtmpAccessAction, RtmpAccessPlan,
-    RtmpAccessRulePlan, RtmpApplicationPlan, RtmpAutoPushConfig, RtmpAutoPushPlan,
+    HlsFragmentNaming, HlsKeyConfig, HlsVariant, MediaStoreLimits, RecorderMediaMask,
+    RecorderWorkerConfig, RecordingPathPolicy, RecordingStoreLimits, RtmpAccessAction,
+    RtmpAccessPlan, RtmpAccessRulePlan, RtmpApplicationPlan, RtmpAutoPushConfig, RtmpAutoPushPlan,
     RtmpCallbackError, RtmpCallbackEventPlan, RtmpCallbackMethod, RtmpCallbackPlan,
     RtmpCallbackPolicy, RtmpClientPlan, RtmpCredentialPlan, RtmpDashPlan, RtmpExecEnvironmentPlan,
-    RtmpExecPlan, RtmpFanoutPlan, RtmpHlsPlan, RtmpMediaPlan, RtmpNetwork, RtmpOutboundPolicy,
-    RtmpPrepareCategory, RtmpPrepareContext, RtmpPrepareMode, RtmpPrepareSource, RtmpPullPlan,
-    RtmpPushApplication, RtmpPushPlan, RtmpRecorderPlan, RtmpRecorderStart, RtmpRelayPlan,
-    RtmpServicePlan, RtmpSessionCeilings, RtmpSessionLimits, RtmpTransport, RtmpVodPlan, VodLimits,
-    VodSourceDefinition,
+    RtmpExecPlan, RtmpFanoutPlan, RtmpHlsPlan, RtmpMediaPlan, RtmpMediaStoreRegistry, RtmpNetwork,
+    RtmpOutboundPolicy, RtmpPrepareCategory, RtmpPrepareContext, RtmpPrepareMode,
+    RtmpPrepareSource, RtmpPullPlan, RtmpPushApplication, RtmpPushPlan, RtmpRecorderPlan,
+    RtmpRecorderStart, RtmpRelayPlan, RtmpServicePlan, RtmpSessionCeilings, RtmpSessionLimits,
+    RtmpTransport, RtmpVodPlan, VodLimits, VodSourceDefinition,
 };
 
 fn relay() -> RtmpRelayPlan {
@@ -159,6 +160,36 @@ fn runtime_application_construction_stays_inside_the_rtmp_plan_owner() {
         runtime.session_limits(),
         RtmpSessionCeilings::new(16, 4, 12)
     );
+}
+
+#[test]
+fn media_store_registry_validates_without_opening_and_shares_activation_roots() {
+    let root = tempdir().expect("media root");
+    let media_root = root.path().join("media");
+    let limits = MediaStoreLimits {
+        max_bytes: 1_024,
+        max_files: 4,
+        max_active_streams: 2,
+        max_file_bytes: 512,
+    };
+    let mut registry = RtmpMediaStoreRegistry::default();
+
+    assert!(
+        registry
+            .prepare(&media_root, limits, RtmpPrepareMode::Validation)
+            .expect("media preflight")
+            .is_none()
+    );
+    let first = registry
+        .prepare(&media_root, limits, RtmpPrepareMode::Activation)
+        .expect("media activation")
+        .expect("opened store");
+    let second = registry
+        .prepare(&media_root, limits, RtmpPrepareMode::Activation)
+        .expect("shared media activation")
+        .expect("opened store");
+
+    assert!(Arc::ptr_eq(&first, &second));
 }
 
 #[test]

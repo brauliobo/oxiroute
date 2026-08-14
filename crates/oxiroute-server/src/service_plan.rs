@@ -36,13 +36,13 @@ use oxiroute_cache::{Cache, DiskCache, DiskCacheConfig};
 use oxiroute_config::{CachePurgeAuthorization, ListenerBind, Protocol, ValidatedConfig};
 use oxiroute_rtmp::{
     DashOutputConfig, ExecProfile, HlsOutputConfig, LiveHub, LiveHubLimits, MediaApplication,
-    MediaCatalog, MediaStore, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore,
-    RecordingStoreLimits, RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig,
-    RtmpCallbackPolicy, RtmpCapabilities, RtmpClientOptions, RtmpCredential,
-    RtmpDestinationResolver, RtmpDestinationResolverError, RtmpOutboundPolicy, RtmpPullTarget,
-    RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig,
-    RtmpServicePreparation, RtmpServiceRuntime, RtmpSessionLimits, RtmpSessionPolicy,
-    VodApplication, VodCatalog,
+    MediaCatalog, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore, RecordingStoreLimits,
+    RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig, RtmpCallbackPolicy,
+    RtmpCapabilities, RtmpClientOptions, RtmpCredential, RtmpDestinationResolver,
+    RtmpDestinationResolverError, RtmpMediaStoreRegistry, RtmpOutboundPolicy, RtmpPrepareMode,
+    RtmpPullTarget, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry,
+    RtmpRelayConfig, RtmpServicePreparation, RtmpServiceRuntime, RtmpSessionLimits,
+    RtmpSessionPolicy, VodApplication, VodCatalog,
 };
 
 enum DiskBackendRegistryEntry {
@@ -746,6 +746,13 @@ impl Drop for GenerationAcquisition {
 pub(crate) enum AcquisitionMode {
     Activate,
     Validate,
+}
+
+const fn rtmp_prepare_mode(mode: AcquisitionMode) -> RtmpPrepareMode {
+    match mode {
+        AcquisitionMode::Activate => RtmpPrepareMode::Activation,
+        AcquisitionMode::Validate => RtmpPrepareMode::Validation,
+    }
 }
 
 /// Compiles one immutable runtime generation including traffic and health services.
@@ -1524,7 +1531,7 @@ fn compile_rtmp_services(
     mode: AcquisitionMode,
 ) -> Result<Vec<Arc<RtmpServicePlan>>, ServicePlanError> {
     let mut preflighted_roots = HashSet::new();
-    let mut media_stores = HashMap::<PathBuf, Arc<MediaStore>>::new();
+    let mut media_stores = RtmpMediaStoreRegistry::default();
     let mut services = Vec::with_capacity(specs.len());
     for spec in specs {
         let plan = &spec.plan;
@@ -1882,7 +1889,7 @@ fn compile_rtmp_client_options(
 fn compile_rtmp_hls(
     service: &str,
     application: &oxiroute_rtmp::RtmpApplicationPlan,
-    stores: &mut HashMap<PathBuf, Arc<MediaStore>>,
+    stores: &mut RtmpMediaStoreRegistry,
     mode: AcquisitionMode,
 ) -> Result<Option<Arc<HlsOutputConfig>>, ServicePlanError> {
     let Some(plan) = application
@@ -1896,17 +1903,11 @@ fn compile_rtmp_hls(
         application: application.name().to_owned(),
     };
     let limits = plan.media_store_limits();
-    if mode == AcquisitionMode::Validate {
-        MediaStore::preflight(plan.root_directory(), limits).map_err(|_| invalid())?;
+    let Some(store) = stores
+        .prepare(plan.root_directory(), limits, rtmp_prepare_mode(mode))
+        .map_err(|_| invalid())?
+    else {
         return Ok(None);
-    }
-    let store = if let Some(store) = stores.get(plan.root_directory()) {
-        Arc::clone(store)
-    } else {
-        let store =
-            Arc::new(MediaStore::open(plan.root_directory(), limits).map_err(|_| invalid())?);
-        stores.insert(plan.root_directory().to_owned(), Arc::clone(&store));
-        store
     };
     Ok(Some(plan.build_output(store)))
 }
@@ -1914,7 +1915,7 @@ fn compile_rtmp_hls(
 fn compile_rtmp_dash(
     service: &str,
     application: &oxiroute_rtmp::RtmpApplicationPlan,
-    stores: &mut HashMap<PathBuf, Arc<MediaStore>>,
+    stores: &mut RtmpMediaStoreRegistry,
     mode: AcquisitionMode,
 ) -> Result<Option<Arc<DashOutputConfig>>, ServicePlanError> {
     let Some(plan) = application
@@ -1928,17 +1929,11 @@ fn compile_rtmp_dash(
         application: application.name().to_owned(),
     };
     let limits = plan.media_store_limits();
-    if mode == AcquisitionMode::Validate {
-        MediaStore::preflight(plan.root_directory(), limits).map_err(|_| invalid())?;
+    let Some(store) = stores
+        .prepare(plan.root_directory(), limits, rtmp_prepare_mode(mode))
+        .map_err(|_| invalid())?
+    else {
         return Ok(None);
-    }
-    let store = if let Some(store) = stores.get(plan.root_directory()) {
-        Arc::clone(store)
-    } else {
-        let store =
-            Arc::new(MediaStore::open(plan.root_directory(), limits).map_err(|_| invalid())?);
-        stores.insert(plan.root_directory().to_owned(), Arc::clone(&store));
-        store
     };
     Ok(Some(plan.build_output(store)))
 }
