@@ -1,16 +1,23 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     net::IpAddr,
     sync::Arc,
     time::Instant,
 };
 
 use crate::{
-    CatalogError, RecorderId, RecorderSnapshot, RtmpAutoPushStatus, RtmpCatalogSnapshot,
-    RtmpClientSnapshot, RtmpRecorderShutdown, RtmpRegistry, RtmpServiceRuntime, RtmpSession,
-    RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome, SessionId,
-    StreamId,
+    CatalogError, LiveHub, LiveHubLimits, RecorderId, RecorderSnapshot, RtmpAutoPushStatus,
+    RtmpCallbackEventPlan, RtmpCallbackPlan, RtmpCallbackPolicy, RtmpCatalogSnapshot,
+    RtmpClientOptions, RtmpClientSnapshot, RtmpCredential, RtmpMediaPlan, RtmpMediaStoreRegistry,
+    RtmpPrepareContext, RtmpPrepareMode, RtmpRecorderShutdown, RtmpRecorderStoreRegistry,
+    RtmpRegistry, RtmpServicePlan, RtmpServicePreparation, RtmpServiceRuntime, RtmpSession,
+    RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome,
+    RtmpSessionPolicy, SessionId, StreamId,
 };
+
+#[cfg(test)]
+use std::sync::Mutex;
 
 /// Opaque access to one started RTMP service runtime.
 #[derive(Clone)]
@@ -216,12 +223,406 @@ pub struct RtmpRuntimeSet {
     control: RtmpControlHandle,
 }
 
+/// Linear owner of RTMP service plans that have completed preparation but have not been started.
+pub struct PreparedRtmpRuntimeSet {
+    mode: RtmpPrepareMode,
+    services: Vec<PreparedRtmpService>,
+    #[cfg(test)]
+    start_failure: Option<String>,
+    #[cfg(test)]
+    start_events: Arc<Mutex<Vec<String>>>,
+}
+
+struct PreparedRtmpService {
+    service_id: String,
+    preparation: RtmpServicePreparation,
+}
+
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
 pub enum RtmpRuntimeSetError {
     #[error("RTMP service `{service_id}` is registered more than once")]
     DuplicateService { service_id: String },
     #[error("RTMP service `{service_id}` uses a different registry")]
     RegistryMismatch { service_id: String },
+    #[error("RTMP service `{service_id}` preparation timed out")]
+    PreparationTimedOut { service_id: String },
+    #[error("RTMP service `{service_id}` could not prepare {resource}")]
+    Preparation {
+        service_id: String,
+        resource: &'static str,
+    },
+    #[error("validated RTMP plans cannot be started without activation preparation")]
+    ValidationOnly,
+    #[error("RTMP service `{service_id}` start timed out")]
+    StartTimedOut { service_id: String },
+    #[error("RTMP service `{service_id}` could not start")]
+    Start { service_id: String },
+}
+
+impl PreparedRtmpRuntimeSet {
+    /// Prepares RTMP service plans in canonical input order without starting runtime workers.
+    ///
+    /// Duplicate service identifiers are rejected before any plan acquisition. Media and recorder
+    /// stores are shared across the complete set. Validation mode performs preflight only;
+    /// activation mode retains the acquired resources needed by [`Self::start`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a contextual preparation error when identifiers are duplicated, the deadline has
+    /// expired, or a plan resource cannot be acquired.
+    pub fn prepare(
+        plans: impl IntoIterator<Item = RtmpServicePlan>,
+        context: &RtmpPrepareContext,
+        deadline: Instant,
+    ) -> Result<Self, RtmpRuntimeSetError> {
+        let plans: Vec<_> = plans.into_iter().collect();
+        let mut service_ids = BTreeSet::new();
+        for plan in &plans {
+            let service_id = plan.service_id().to_owned();
+            if !service_ids.insert(service_id.clone()) {
+                return Err(RtmpRuntimeSetError::DuplicateService { service_id });
+            }
+        }
+
+        let mut media_stores = RtmpMediaStoreRegistry::default();
+        let mut recorder_stores = RtmpRecorderStoreRegistry::default();
+        let mut services = Vec::with_capacity(plans.len());
+        for plan in plans {
+            ensure_preparation_deadline(plan.service_id(), deadline)?;
+            services.push(prepare_service(
+                &plan,
+                context,
+                deadline,
+                &mut media_stores,
+                &mut recorder_stores,
+            )?);
+        }
+        Ok(Self {
+            mode: context.mode(),
+            services,
+            #[cfg(test)]
+            start_failure: None,
+            #[cfg(test)]
+            start_events: Arc::default(),
+        })
+    }
+
+    /// Returns the number of prepared services.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.services.len()
+    }
+
+    /// Returns true when no service plans were prepared.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.services.is_empty()
+    }
+
+    /// Consumes activation preparation and starts every service against one shared registry.
+    ///
+    /// Services start in canonical plan order. A timeout or start failure closes admission and
+    /// rolls already-started services back in reverse order, bounded by `deadline`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for validation-only preparation, an expired start deadline, or a service
+    /// start failure.
+    pub fn start(
+        self,
+        registry: Arc<RtmpRegistry>,
+        deadline: Instant,
+    ) -> Result<RtmpRuntimeSet, RtmpRuntimeSetError> {
+        if self.mode == RtmpPrepareMode::Validation {
+            return Err(RtmpRuntimeSetError::ValidationOnly);
+        }
+        let mut runtimes = Vec::with_capacity(self.services.len());
+        for service in self.services {
+            #[cfg(test)]
+            self.start_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("start:{}", service.service_id));
+            let start = if Instant::now() >= deadline {
+                Err(RtmpRuntimeSetError::StartTimedOut {
+                    service_id: service.service_id.clone(),
+                })
+            } else {
+                #[cfg(test)]
+                if self.start_failure.as_deref() == Some(&service.service_id) {
+                    Err(RtmpRuntimeSetError::Start {
+                        service_id: service.service_id.clone(),
+                    })
+                } else {
+                    service
+                        .preparation
+                        .start(Arc::clone(&registry))
+                        .map_err(|_| RtmpRuntimeSetError::Start {
+                            service_id: service.service_id.clone(),
+                        })
+                }
+                #[cfg(not(test))]
+                service
+                    .preparation
+                    .start(Arc::clone(&registry))
+                    .map_err(|_| RtmpRuntimeSetError::Start {
+                        service_id: service.service_id.clone(),
+                    })
+            };
+            match start {
+                Ok(runtime) => runtimes.push(runtime),
+                Err(error) => {
+                    while let Some(runtime) = runtimes.pop() {
+                        #[cfg(test)]
+                        self.start_events
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("rollback:{}", runtime.service_id()));
+                        rollback_runtime(runtime, deadline);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        RtmpRuntimeSet::from_started(registry, runtimes)
+    }
+
+    #[cfg(test)]
+    fn fail_start_for(mut self, service_id: impl Into<String>) -> Self {
+        self.start_failure = Some(service_id.into());
+        self
+    }
+
+    #[cfg(test)]
+    fn start_events(&self) -> Arc<Mutex<Vec<String>>> {
+        Arc::clone(&self.start_events)
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn prepare_service(
+    plan: &RtmpServicePlan,
+    context: &RtmpPrepareContext,
+    deadline: Instant,
+    media_stores: &mut RtmpMediaStoreRegistry,
+    recorder_stores: &mut RtmpRecorderStoreRegistry,
+) -> Result<PreparedRtmpService, RtmpRuntimeSetError> {
+    let service_id = plan.service_id();
+    let callbacks = prepare_callbacks(plan.callbacks(), plan.outbound_policy(), service_id)?;
+    let mut applications = Vec::with_capacity(plan.applications().len());
+    let mut service_hub = None;
+    for application in plan.applications() {
+        ensure_preparation_deadline(service_id, deadline)?;
+        let hub = application.fanout().runtime_hub();
+        service_hub.get_or_insert_with(|| hub.clone());
+        let relay = application.relay();
+        let push_targets = relay
+            .push()
+            .iter()
+            .map(|target| {
+                ensure_preparation_deadline(service_id, deadline)?;
+                relay.acquire_push_target(
+                    target,
+                    context.candidate_listener_addresses().iter().copied(),
+                    || prepare_client_options(target.client(), service_id),
+                    |_| preparation_error(service_id, "push target"),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let pull_targets = relay
+            .pull()
+            .iter()
+            .map(|target| {
+                ensure_preparation_deadline(service_id, deadline)?;
+                relay.acquire_pull_target(
+                    target,
+                    context.candidate_listener_addresses().iter().copied(),
+                    || prepare_client_options(target.client(), service_id),
+                    |_| preparation_error(service_id, "pull target"),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let application_callbacks =
+            prepare_callbacks(application.callbacks(), plan.outbound_policy(), service_id)?;
+        let vod = application
+            .vod()
+            .map(|vod| vod.acquire(service_id, application.name()))
+            .transpose()
+            .map_err(|_| preparation_error(service_id, "VOD application"))?
+            .map(Arc::new);
+        let hls = if let Some(hls) = application.media().and_then(RtmpMediaPlan::hls) {
+            media_stores
+                .prepare(
+                    hls.root_directory(),
+                    hls.media_store_limits(),
+                    context.mode(),
+                )
+                .map_err(|_| preparation_error(service_id, "HLS store"))?
+                .map(|store| hls.build_output(store))
+        } else {
+            None
+        };
+        let dash = if let Some(dash) = application.media().and_then(RtmpMediaPlan::dash) {
+            media_stores
+                .prepare(
+                    dash.root_directory(),
+                    dash.media_store_limits(),
+                    context.mode(),
+                )
+                .map_err(|_| preparation_error(service_id, "DASH store"))?
+                .map(|store| dash.build_output(store))
+        } else {
+            None
+        };
+        let media = RtmpMediaPlan::combine_outputs(hls, dash);
+        let recorders = application
+            .recorders()
+            .iter()
+            .map(|recorder| {
+                let store = recorder_stores
+                    .prepare(
+                        recorder.root_directory(),
+                        recorder.store_limits(),
+                        context.mode(),
+                        Some(deadline),
+                    )
+                    .map_err(|_| {
+                        if Instant::now() >= deadline {
+                            RtmpRuntimeSetError::PreparationTimedOut {
+                                service_id: service_id.to_owned(),
+                            }
+                        } else {
+                            preparation_error(service_id, "recorder store")
+                        }
+                    })?;
+                Ok(store.map(|store| recorder.build_policy(store)))
+            })
+            .collect::<Result<Vec<_>, RtmpRuntimeSetError>>()?
+            .into_iter()
+            .flatten();
+        applications.push(application.build_runtime_application(
+            hub,
+            push_targets,
+            pull_targets,
+            application_callbacks,
+            vod,
+            media,
+            application.exec().iter().map(|plan| plan.profile().clone()),
+            recorders,
+        ));
+    }
+    let policy = RtmpSessionPolicy::with_session_limits(
+        applications,
+        plan.outbound_chunk_size(),
+        plan.inbound_limits(),
+    );
+    let mut preparation = RtmpServicePreparation::new(
+        service_id,
+        service_hub.unwrap_or_else(|| LiveHub::new(LiveHubLimits::default())),
+        policy,
+    )
+    .with_callbacks(callbacks);
+    if let Some(auto_push) = plan.auto_push() {
+        preparation = preparation
+            .with_auto_push(auto_push.config().clone())
+            .map_err(|_| preparation_error(service_id, "auto-push policy"))?;
+    }
+    Ok(PreparedRtmpService {
+        service_id: service_id.to_owned(),
+        preparation,
+    })
+}
+
+fn prepare_callbacks(
+    plan: &RtmpCallbackPlan,
+    outbound_policy: &crate::RtmpOutboundPolicy,
+    service_id: &str,
+) -> Result<RtmpCallbackPolicy, RtmpRuntimeSetError> {
+    let mut endpoints = [
+        RtmpCallbackEventPlan::Connect,
+        RtmpCallbackEventPlan::Disconnect,
+        RtmpCallbackEventPlan::Publish,
+        RtmpCallbackEventPlan::PublishDone,
+        RtmpCallbackEventPlan::Play,
+        RtmpCallbackEventPlan::PlayDone,
+        RtmpCallbackEventPlan::Done,
+        RtmpCallbackEventPlan::Update,
+    ]
+    .map(|event| plan.acquire_endpoint(event, outbound_policy))
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|_| preparation_error(service_id, "callback endpoint"))?
+    .into_iter();
+    Ok(RtmpCallbackPolicy {
+        on_connect: endpoints.next().expect("callback slot"),
+        on_disconnect: endpoints.next().expect("callback slot"),
+        on_publish: endpoints.next().expect("callback slot"),
+        on_publish_done: endpoints.next().expect("callback slot"),
+        on_play: endpoints.next().expect("callback slot"),
+        on_play_done: endpoints.next().expect("callback slot"),
+        on_done: endpoints.next().expect("callback slot"),
+        on_update: endpoints.next().expect("callback slot"),
+        method: plan.method(),
+        timeout: plan.timeout(),
+        update_timeout: plan.update_timeout(),
+        update_strict: plan.update_strict(),
+        relay_redirect: plan.relay_redirect(),
+    })
+}
+
+fn prepare_client_options(
+    plan: &crate::RtmpClientPlan,
+    service_id: &str,
+) -> Result<RtmpClientOptions, RtmpRuntimeSetError> {
+    let credential = plan
+        .credential()
+        .map(|reference| {
+            let secret = fs::read(reference.secret_file())
+                .map_err(|_| preparation_error(service_id, "relay credential"))?;
+            if secret.is_empty()
+                || secret.len() > 4 * 1_024
+                || secret.iter().any(u8::is_ascii_control)
+                || std::str::from_utf8(&secret).is_err()
+            {
+                return Err(preparation_error(service_id, "relay credential"));
+            }
+            Ok(RtmpCredential::new(reference.username(), secret))
+        })
+        .transpose()?;
+    Ok(RtmpClientOptions {
+        flash_version: plan.flash_version().to_owned(),
+        playback_buffer_ms: plan.playback_buffer_ms(),
+        tc_url: plan.tc_url().map(str::to_owned),
+        credential,
+    })
+}
+
+fn ensure_preparation_deadline(
+    service_id: &str,
+    deadline: Instant,
+) -> Result<(), RtmpRuntimeSetError> {
+    if Instant::now() >= deadline {
+        Err(RtmpRuntimeSetError::PreparationTimedOut {
+            service_id: service_id.to_owned(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn preparation_error(service_id: &str, resource: &'static str) -> RtmpRuntimeSetError {
+    RtmpRuntimeSetError::Preparation {
+        service_id: service_id.to_owned(),
+        resource,
+    }
+}
+
+fn rollback_runtime(runtime: RtmpServiceRuntime, deadline: Instant) {
+    runtime.close_service_admission();
+    if let Some(shutdown) = runtime.initiate_recorder_shutdown_scoped(deadline) {
+        let _ = shutdown.wait_until(deadline);
+    }
+    drop(runtime);
 }
 
 impl RtmpRuntimeSet {
@@ -305,8 +706,10 @@ mod tests {
     use super::*;
     use crate::{
         LiveHub, LiveHubLimits, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore,
-        RecordingStoreLimits, RtmpApplication, RtmpCapabilities, RtmpRecorderPolicy,
-        RtmpRecorderStart, RtmpSessionPolicy,
+        RecordingStoreLimits, RtmpAccessPlan, RtmpApplication, RtmpApplicationPlan,
+        RtmpCallbackPlan, RtmpCapabilities, RtmpFanoutPlan, RtmpOutboundPolicy, RtmpRecorderPolicy,
+        RtmpRecorderStart, RtmpRelayPlan, RtmpServicePlan, RtmpSessionCeilings, RtmpSessionLimits,
+        RtmpSessionPolicy,
     };
 
     fn registry() -> Arc<RtmpRegistry> {
@@ -327,6 +730,199 @@ mod tests {
             LiveHub::new(LiveHubLimits::default()),
             RtmpSessionPolicy::new([RtmpApplication::new("live", true, true)]),
         )
+    }
+
+    fn service_plan(service_id: &str) -> RtmpServicePlan {
+        let relay = RtmpRelayPlan::new(
+            RtmpOutboundPolicy::default(),
+            8,
+            4_096,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Duration::from_secs(30),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            [],
+            [],
+        )
+        .expect("relay plan");
+        let application = RtmpApplicationPlan::new(
+            "live",
+            true,
+            true,
+            RtmpAccessPlan::default(),
+            RtmpAccessPlan::default(),
+            RtmpSessionCeilings::new(16, 4, 12),
+            RtmpFanoutPlan::new(12, 8, 4_096).expect("fanout plan"),
+            relay,
+            None,
+            [],
+            None,
+            RtmpCallbackPlan::default(),
+            [],
+        )
+        .expect("application plan");
+        RtmpServicePlan::new(
+            service_id,
+            4_096,
+            RtmpSessionLimits::default(),
+            RtmpCallbackPlan::default(),
+            [application],
+            None,
+        )
+        .expect("service plan")
+    }
+
+    #[test]
+    fn staged_preparation_is_linear_and_validation_only_cannot_start() {
+        let context = RtmpPrepareContext::new(RtmpPrepareMode::Validation, []);
+        let prepared = PreparedRtmpRuntimeSet::prepare(
+            [service_plan("zulu"), service_plan("alpha")],
+            &context,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect("validated runtime set");
+
+        assert_eq!(prepared.len(), 2);
+        assert!(!prepared.is_empty());
+        assert!(matches!(
+            prepared.start(registry(), Instant::now() + Duration::from_secs(1)),
+            Err(RtmpRuntimeSetError::ValidationOnly)
+        ));
+    }
+
+    #[test]
+    fn activation_starts_in_canonical_order_against_one_registry() {
+        let context = RtmpPrepareContext::new(RtmpPrepareMode::Activation, []);
+        let prepared = PreparedRtmpRuntimeSet::prepare(
+            [service_plan("zulu"), service_plan("alpha")],
+            &context,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect("prepared runtime set");
+        let registry = registry();
+        let set = prepared
+            .start(
+                Arc::clone(&registry),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .expect("started runtime set");
+
+        assert_eq!(
+            set.services
+                .iter()
+                .map(RtmpServiceHandle::service_id)
+                .collect::<Vec<_>>(),
+            ["zulu", "alpha"]
+        );
+        assert!(
+            set.services
+                .iter()
+                .all(|service| Arc::ptr_eq(service.runtime.registry(), &registry))
+        );
+    }
+
+    #[test]
+    fn duplicate_plans_and_expired_preparation_are_rejected() {
+        let context = RtmpPrepareContext::new(RtmpPrepareMode::Activation, []);
+        let Err(duplicate) = PreparedRtmpRuntimeSet::prepare(
+            [service_plan("edge"), service_plan("edge")],
+            &context,
+            Instant::now() + Duration::from_secs(1),
+        ) else {
+            panic!("duplicate service plans were accepted")
+        };
+        assert_eq!(
+            duplicate,
+            RtmpRuntimeSetError::DuplicateService {
+                service_id: "edge".into()
+            }
+        );
+        let Err(expired) =
+            PreparedRtmpRuntimeSet::prepare([service_plan("edge")], &context, Instant::now())
+        else {
+            panic!("expired preparation was accepted")
+        };
+        assert_eq!(
+            expired,
+            RtmpRuntimeSetError::PreparationTimedOut {
+                service_id: "edge".into()
+            }
+        );
+
+        let prepared = PreparedRtmpRuntimeSet::prepare(
+            [service_plan("edge")],
+            &context,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect("prepared runtime set");
+        let Err(expired) = prepared.start(registry(), Instant::now()) else {
+            panic!("expired start was accepted")
+        };
+        assert_eq!(
+            expired,
+            RtmpRuntimeSetError::StartTimedOut {
+                service_id: "edge".into()
+            }
+        );
+    }
+
+    #[test]
+    fn partial_start_failure_rolls_back_in_reverse_order() {
+        let context = RtmpPrepareContext::new(RtmpPrepareMode::Activation, []);
+        let prepared = PreparedRtmpRuntimeSet::prepare(
+            [
+                service_plan("alpha"),
+                service_plan("beta"),
+                service_plan("charlie"),
+            ],
+            &context,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect("prepared runtime set")
+        .fail_start_for("charlie");
+        let events = prepared.start_events();
+
+        let Err(failure) = prepared.start(registry(), Instant::now() + Duration::from_secs(1))
+        else {
+            panic!("injected start failure was ignored")
+        };
+        assert_eq!(
+            failure,
+            RtmpRuntimeSetError::Start {
+                service_id: "charlie".into()
+            }
+        );
+        assert_eq!(
+            *events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            [
+                "start:alpha",
+                "start:beta",
+                "start:charlie",
+                "rollback:beta",
+                "rollback:alpha",
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_prepared_set_starts_and_shuts_down_within_its_deadline() {
+        let context = RtmpPrepareContext::new(RtmpPrepareMode::Activation, []);
+        let prepared =
+            PreparedRtmpRuntimeSet::prepare([], &context, Instant::now() + Duration::from_secs(1))
+                .expect("empty prepared set");
+        assert!(prepared.is_empty());
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let set = prepared
+            .start(registry(), deadline)
+            .expect("empty runtime set");
+        let shutdown = set.begin_shutdown(deadline);
+        assert!(shutdown.is_complete());
+        assert!(shutdown.wait_until(deadline));
     }
 
     #[test]
