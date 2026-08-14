@@ -18,7 +18,7 @@ const allowedCrateSymbols = new Set([
   'DashOutputConfig', 'DashSegmentNaming', 'DestinationPolicyError', 'ExecEnvironment', 'ExecFilesystemPolicy',
   'ExecLimits', 'ExecMode', 'ExecNetworkPolicy', 'ExecProfile', 'ExecProfileError', 'ExecTrigger',
   'HlsFragmentNaming', 'HlsKeyConfig', 'HlsOutputConfig', 'HlsValueError', 'HlsVariant', 'LiveHub',
-  'LiveHubLimits', 'MediaApplication', 'MediaStore',
+  'LiveHubLimits', 'MediaApplication', 'MediaStore', 'MediaStoreLimits',
   'RecorderWorkerConfig',
   'RecorderWorkerStartError', 'RecordingPathPolicy', 'RecordingStoreLimits',
   'RecordingStoreLimitsError', 'RtmpAccessAction', 'RtmpAccessPolicy', 'RtmpAccessRule', 'RtmpAutoPushConfig',
