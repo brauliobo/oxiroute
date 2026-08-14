@@ -64,6 +64,7 @@ pub use http3::Http3Runtime;
 pub(crate) use http3_upstream::{H3UpstreamBuildError, H3UpstreamError, H3UpstreamPlan};
 pub use l4_service::L4ServicePlan;
 pub use listener_reservation::{ListenerReservation, ListenerReservations};
+pub use listener_runtime::{AdmissionError, ListenerRuntime, TrafficLease};
 pub use monitoring::{
     ACCESS_RECORD_CAPACITY, AccessRecord, AcmeManagedCertificateSnapshot, CacheSnapshot,
     CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot, ComponentState,

@@ -37,9 +37,9 @@ use oxiroute_server::{
     ConfigWatcherOptions, ConnectionGuard, FileWatcherConfig, FileWatcherSupervisor,
     ForwardConnectionLifecycle, ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, GenerationManager,
     HaproxyStatsApi, HaproxyStatsPage, Http3Runtime, HttpDownstreamPolicyApp, HttpListenerApp,
-    HttpReverseProxy, ListenerMetrics, ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp,
-    RtmpManagementApi, RtmpServicePlan, RuntimeGeneration, RuntimeMetrics, RuntimeReferenceKind,
-    ServiceKind, TcpRelayCore, TlsProfilePlan, TopologySnapshot, UdpRuntime,
+    HttpReverseProxy, ListenerMetrics, ListenerReservation, ListenerRuntime, MAX_HTTP_ATTEMPTS,
+    MonitoredHttpApp, RtmpManagementApi, RtmpServicePlan, RuntimeGeneration, RuntimeMetrics,
+    RuntimeReferenceKind, ServiceKind, TcpRelayCore, TlsProfilePlan, TopologySnapshot, UdpRuntime,
     cli::{Cli, Command, ConfigCommand, execute_offline},
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
     emit_certificate, emit_rtmp_access,
@@ -416,7 +416,7 @@ struct ForwardHttp1RuntimeApp {
 struct ForwardHttp2App<A> {
     generation: Arc<RuntimeGeneration>,
     inner: Arc<A>,
-    metrics: ListenerMetrics,
+    listener: ListenerRuntime,
     service: Arc<ForwardHttp1ServicePlan>,
 }
 
@@ -430,7 +430,7 @@ impl<A> ForwardHttp2App<A> {
         Self {
             generation,
             inner: Arc::new(inner),
-            metrics,
+            listener: ListenerRuntime::new(metrics),
             service,
         }
     }
@@ -719,7 +719,7 @@ where
     }
 
     fn accepting(&self) -> bool {
-        self.metrics.accepting() && self.generation.accepting() && self.inner.accepting()
+        self.listener.accepting() && self.generation.accepting() && self.inner.accepting()
     }
 
     fn admit_connection(&self) -> Option<ConnectionAdmission> {
@@ -730,12 +730,18 @@ where
             );
             return None;
         };
-        let generation = self
-            .generation
-            .begin_reference(RuntimeReferenceKind::Http2)?;
-        let connection = admit_connection(&self.metrics)?;
+        let lease = match self
+            .listener
+            .admit(&self.generation, RuntimeReferenceKind::Http2)
+        {
+            Ok(lease) => lease,
+            Err(error) => {
+                warn!("rejected forward HTTP/2 connection: {error}");
+                return None;
+            }
+        };
         let inner = self.inner.admit_connection()?;
-        Some(Box::new((service, generation, connection, inner)))
+        Some(Box::new((service, lease, inner)))
     }
 
     fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
@@ -746,12 +752,18 @@ where
             );
             return None;
         };
-        let generation = self
-            .generation
-            .begin_owned_reference(RuntimeReferenceKind::Http2);
-        let connection = admit_connection(&self.metrics)?;
+        let lease = match self
+            .listener
+            .admit_owned(&self.generation, RuntimeReferenceKind::Http2)
+        {
+            Ok(lease) => lease,
+            Err(error) => {
+                warn!("rejected forward HTTP/2 connection: {error}");
+                return None;
+            }
+        };
         let inner = self.inner.admit_owned_connection()?;
-        Some(Box::new((service, generation, connection, inner)))
+        Some(Box::new((service, lease, inner)))
     }
 
     async fn process_new(

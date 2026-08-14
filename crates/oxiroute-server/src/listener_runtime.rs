@@ -6,7 +6,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(crate) enum AdmissionError {
+pub enum AdmissionError {
     GenerationNotAccepting,
     Metrics(MetricsError),
 }
@@ -21,20 +21,27 @@ impl fmt::Display for AdmissionError {
 }
 
 #[derive(Clone)]
-pub(crate) struct ListenerRuntime {
+pub struct ListenerRuntime {
     metrics: ListenerMetrics,
 }
 
 impl ListenerRuntime {
-    pub(crate) const fn new(metrics: ListenerMetrics) -> Self {
+    #[must_use]
+    pub const fn new(metrics: ListenerMetrics) -> Self {
         Self { metrics }
     }
 
-    pub(crate) fn accepting(&self) -> bool {
+    #[must_use]
+    pub fn accepting(&self) -> bool {
         self.metrics.accepting()
     }
 
-    pub(crate) fn admit(
+    /// Acquires generation ownership and listener/process connection capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generation is not accepting or connection capacity is unavailable.
+    pub fn admit(
         &self,
         generation: &std::sync::Arc<RuntimeGeneration>,
         kind: RuntimeReferenceKind,
@@ -57,7 +64,12 @@ impl ListenerRuntime {
         })
     }
 
-    pub(crate) fn admit_owned(
+    /// Acquires listener/process capacity while converting an existing accept-gate claim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when connection capacity is unavailable.
+    pub fn admit_owned(
         &self,
         generation: &std::sync::Arc<RuntimeGeneration>,
         kind: RuntimeReferenceKind,
@@ -89,7 +101,7 @@ impl ListenerRuntime {
     }
 }
 
-pub(crate) struct TrafficLease {
+pub struct TrafficLease {
     _connection: ConnectionGuard,
     _generation_reference: Option<GenerationReference>,
     _generation_admission: Option<GenerationAdmission>,
