@@ -135,7 +135,6 @@ pub(crate) enum ServiceReference {
 pub(crate) struct RtmpSpec {
     pub(crate) plan: RtmpServicePlan,
     pub(crate) access_log: Option<AccessLogPolicy>,
-    pub(crate) callbacks: RtmpCallbackBlueprint,
     pub(crate) applications: Box<[RtmpApplicationBlueprint]>,
 }
 
@@ -143,22 +142,4 @@ pub(crate) struct RtmpApplicationBlueprint {
     pub(crate) publish_policy: oxiroute_rtmp::RtmpAccessPolicy,
     pub(crate) play_policy: oxiroute_rtmp::RtmpAccessPolicy,
     pub(crate) fanout_limits: oxiroute_rtmp::LiveHubLimits,
-    pub(crate) callbacks: RtmpCallbackBlueprint,
-    pub(crate) vod: Option<oxiroute_rtmp::VodApplicationBlueprint>,
-}
-
-pub(crate) struct RtmpCallbackBlueprint {
-    pub(crate) endpoints: [Option<RtmpCallbackEndpointBlueprint>; 8],
-    pub(crate) method: oxiroute_rtmp::RtmpCallbackMethod,
-    pub(crate) timeout: std::time::Duration,
-    pub(crate) update_timeout: std::time::Duration,
-    pub(crate) update_strict: bool,
-    pub(crate) relay_redirect: bool,
-}
-
-pub(crate) struct RtmpCallbackEndpointBlueprint {
-    pub(crate) endpoint: oxiroute_rtmp::RtmpCallbackEndpointBlueprint,
-    pub(crate) service: String,
-    pub(crate) scope: String,
-    pub(crate) field: &'static str,
 }

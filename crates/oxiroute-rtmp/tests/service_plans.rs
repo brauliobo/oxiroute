@@ -4,12 +4,14 @@ use std::{
     time::Duration,
 };
 
+use tempfile::tempdir;
+
 use oxiroute_rtmp::{
     DashSegmentNaming, ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecTrigger,
     HlsFragmentNaming, HlsKeyConfig, HlsVariant, RecorderMediaMask, RecorderWorkerConfig,
     RecordingPathPolicy, RecordingStoreLimits, RtmpAccessAction, RtmpAccessPlan,
     RtmpAccessRulePlan, RtmpApplicationPlan, RtmpAutoPushConfig, RtmpAutoPushPlan,
-    RtmpCallbackEventPlan, RtmpCallbackMethod, RtmpCallbackPlan, RtmpClientPlan,
+    RtmpCallbackError, RtmpCallbackEventPlan, RtmpCallbackMethod, RtmpCallbackPlan, RtmpClientPlan,
     RtmpCredentialPlan, RtmpDashPlan, RtmpExecEnvironmentPlan, RtmpExecPlan, RtmpFanoutPlan,
     RtmpHlsPlan, RtmpMediaPlan, RtmpNetwork, RtmpOutboundPolicy, RtmpPrepareCategory,
     RtmpPrepareContext, RtmpPrepareMode, RtmpPrepareSource, RtmpPullPlan, RtmpPushApplication,
@@ -83,6 +85,58 @@ fn context_normalizes_configured_candidate_listener_addresses_without_binding() 
 
     assert_eq!(context.mode(), RtmpPrepareMode::Validation);
     assert_eq!(context.candidate_listener_addresses(), &[first, second]);
+}
+
+#[test]
+fn callback_endpoint_acquisition_stays_inside_the_rtmp_plan_owner() {
+    let callbacks = RtmpCallbackPlan::default()
+        .with_endpoint(
+            RtmpCallbackEventPlan::Connect,
+            "http://127.0.0.1:9/callback",
+        )
+        .expect("intrinsic callback URL");
+
+    assert_eq!(
+        callbacks
+            .acquire_endpoint(
+                RtmpCallbackEventPlan::Connect,
+                &RtmpOutboundPolicy::default()
+            )
+            .expect_err("private callback destination must be denied"),
+        RtmpCallbackError::AddressPolicy
+    );
+    assert!(
+        callbacks
+            .acquire_endpoint(
+                RtmpCallbackEventPlan::Disconnect,
+                &RtmpOutboundPolicy::default()
+            )
+            .expect("missing callback remains absent")
+            .is_none()
+    );
+}
+
+#[test]
+fn vod_acquisition_stays_inside_the_rtmp_plan_owner() {
+    let root = tempdir().expect("VOD root");
+    let plan = RtmpVodPlan::new(
+        VodLimits {
+            max_sessions: 2,
+            max_file_bytes: 1_024,
+            max_duration: Duration::from_secs(10),
+        },
+        [VodSourceDefinition::Local {
+            name: "media".into(),
+            root_directory: root.path().to_owned(),
+        }],
+        RtmpOutboundPolicy::default(),
+    )
+    .expect("VOD plan");
+
+    let application = plan.acquire("streaming", "vod").expect("VOD application");
+    assert_eq!(application.service(), "streaming");
+    assert_eq!(application.application(), "vod");
+    assert_eq!(application.limits().max_sessions, 2);
 }
 
 #[test]
