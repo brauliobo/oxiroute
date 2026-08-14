@@ -48,6 +48,7 @@ quinn.workspace = true
 rustix.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true
+schemars = "=1.2.2"
 serde.workspace = true
 serde_json.workspace = true
 signal-hook.workspace = true

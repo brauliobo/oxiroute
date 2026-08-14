@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::DecimalCounter;
@@ -10,7 +11,7 @@ use crate::{
     TcpRelayResult, TcpRelaySnapshot,
 };
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 pub(crate) struct GenerationResponse {
     generation: GenerationStatusDto,
 }
@@ -23,7 +24,7 @@ impl From<GenerationStatus> for GenerationResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerationStatusDto {
     build_version: &'static str,
@@ -71,7 +72,7 @@ fn effective_revision(
     value.map(|revision| revision.as_str().to_owned())
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 pub(crate) struct ListenerInventoryResponse {
     listeners: Vec<ListenerDto>,
 }
@@ -84,7 +85,7 @@ impl From<RuntimeSnapshot> for ListenerInventoryResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 pub(crate) struct PoolInventoryResponse {
     pools: Vec<PoolDto>,
 }
@@ -97,7 +98,7 @@ impl From<Vec<PoolHealthSnapshot>> for PoolInventoryResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 pub(crate) struct ServerInventoryResponse {
     servers: Vec<ServerInventoryEntry>,
 }
@@ -120,7 +121,7 @@ impl From<Vec<PoolHealthSnapshot>> for ServerInventoryResponse {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ListenerDto {
     administrative_state: AdministrativeStateDto,
@@ -162,7 +163,7 @@ impl From<ListenerSnapshot> for ListenerDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HttpOperationDto {
     outcomes: Vec<HttpOperationCountDto>,
@@ -183,7 +184,7 @@ impl From<HttpOperationSnapshot> for HttpOperationDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 struct HttpOperationCountDto {
     result: HttpOperationResultDto,
     count: DecimalCounter,
@@ -198,7 +199,7 @@ impl From<HttpOperationCountSnapshot> for HttpOperationCountDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 struct TcpRelayDto {
     outcomes: Vec<TcpRelayCountDto>,
     latency: LatencyDto,
@@ -218,7 +219,7 @@ impl From<TcpRelaySnapshot> for TcpRelayDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 struct TcpRelayCountDto {
     result: TcpRelayResultDto,
     count: DecimalCounter,
@@ -233,7 +234,7 @@ impl From<TcpRelayCountSnapshot> for TcpRelayCountDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 struct ProxyProtocolDto {
     outcomes: Vec<ProxyProtocolCountDto>,
 }
@@ -251,7 +252,7 @@ impl From<ProxyProtocolSnapshot> for ProxyProtocolDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 struct ProxyProtocolCountDto {
     result: ProxyProtocolResultDto,
     count: DecimalCounter,
@@ -266,7 +267,7 @@ impl From<ProxyProtocolCountSnapshot> for ProxyProtocolCountDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LatencyDto {
     buckets: Vec<LatencyBucketDto>,
@@ -289,7 +290,7 @@ impl From<LatencySnapshot> for LatencyDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LatencyBucketDto {
     upper_bound_ms: Option<u64>,
@@ -305,7 +306,7 @@ impl From<LatencyBucketSnapshot> for LatencyBucketDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 struct CacheDto {
     hits: DecimalCounter,
     misses: DecimalCounter,
@@ -324,7 +325,7 @@ impl From<CacheSnapshot> for CacheDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PoolDto {
     name: String,
@@ -356,13 +357,13 @@ impl From<PoolHealthSnapshot> for PoolDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 struct ServerInventoryEntry {
     pool: String,
     server: EndpointDto,
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EndpointDto {
     active_connections: DecimalCounter,
@@ -430,7 +431,7 @@ impl From<EndpointHealthSnapshot> for EndpointDto {
 
 macro_rules! api_enum {
     ($name:ident from $domain:ty { $($source:path => $target:ident),+ $(,)? }) => {
-        #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+        #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
         #[serde(rename_all = "snake_case")]
         enum $name {
             $($target),+
@@ -516,7 +517,8 @@ api_enum!(ProxyProtocolResultDto from ProxyProtocolResult {
 mod tests {
     use std::str::FromStr;
 
-    use serde_json::json;
+    use schemars::{JsonSchema, generate::SchemaSettings};
+    use serde_json::{Value, json};
 
     use super::*;
     use crate::{
@@ -524,6 +526,146 @@ mod tests {
         ProcessSnapshot, RuntimeEndpoint, TrafficSnapshot,
         config_coordinator::{AuthoredRevision, EffectiveRevision},
     };
+
+    #[test]
+    fn management_response_schema_roots_match_the_version_one_contract() {
+        let roots = [
+            (
+                "GenerationResponse",
+                "generation",
+                response_schema::<GenerationResponse>(),
+            ),
+            (
+                "ListenerInventoryResponse",
+                "listeners",
+                response_schema::<ListenerInventoryResponse>(),
+            ),
+            (
+                "PoolInventoryResponse",
+                "pools",
+                response_schema::<PoolInventoryResponse>(),
+            ),
+            (
+                "ServerInventoryResponse",
+                "servers",
+                response_schema::<ServerInventoryResponse>(),
+            ),
+        ];
+
+        for (title, property, schema) in roots {
+            assert_eq!(schema["title"], title);
+            assert_eq!(schema["type"], "object");
+            assert_eq!(schema["required"], json!([property]));
+            assert!(schema["properties"].get(property).is_some());
+        }
+    }
+
+    #[test]
+    fn management_schemas_preserve_decimal_null_enum_and_secret_contracts() {
+        let generation = response_schema::<GenerationResponse>();
+        let listeners = response_schema::<ListenerInventoryResponse>();
+        let pools = response_schema::<PoolInventoryResponse>();
+
+        assert_eq!(
+            listeners["$defs"]["DecimalCounter"],
+            json!({ "type": "string", "pattern": "^[0-9]+$" })
+        );
+        assert_eq!(
+            generation["$defs"]["GenerationStatusDto"]["properties"]["lastFailure"],
+            json!({ "type": ["string", "null"] })
+        );
+        assert!(
+            generation["$defs"]["GenerationStatusDto"]["required"]
+                .as_array()
+                .is_some_and(|required| required.contains(&json!("lastFailure")))
+        );
+        assert_eq!(
+            pools["$defs"]["EndpointDto"]["properties"]["lastFailure"],
+            json!({
+                "anyOf": [
+                    { "$ref": "#/$defs/HealthFailureDto" },
+                    { "type": "null" },
+                ],
+            })
+        );
+
+        assert_eq!(
+            listeners["$defs"]["AdministrativeStateDto"]["enum"],
+            json!(["ready", "drain", "maintenance"])
+        );
+        assert_eq!(
+            listeners["$defs"]["ListenerRuntimeStateDto"]["enum"],
+            json!(["configured", "listening", "stopped", "failed"])
+        );
+        assert_eq!(
+            listeners["$defs"]["HttpOperationResultDto"]["enum"],
+            json!([
+                "success",
+                "client_error",
+                "server_error",
+                "upstream_error",
+                "timeout",
+                "cancelled",
+                "internal_error",
+            ])
+        );
+        assert_eq!(
+            listeners["$defs"]["TcpRelayResultDto"]["enum"],
+            json!([
+                "success",
+                "connect_error",
+                "connect_timeout",
+                "idle_timeout",
+                "lifetime_timeout",
+                "cancelled",
+                "io_error",
+                "accounting_error",
+                "proxy_protocol_error",
+            ])
+        );
+        assert_eq!(
+            listeners["$defs"]["ProxyProtocolResultDto"]["enum"],
+            json!([
+                "accepted",
+                "sent",
+                "timeout",
+                "cancelled",
+                "malformed",
+                "unsupported",
+                "mismatch",
+                "io_error",
+            ])
+        );
+        assert_eq!(
+            pools["$defs"]["EndpointHealthStateDto"]["enum"],
+            json!(["unchecked", "unknown", "healthy", "unhealthy"])
+        );
+        assert_eq!(
+            pools["$defs"]["HealthOverrideDto"]["enum"],
+            json!(["auto", "up", "down"])
+        );
+        assert_eq!(
+            pools["$defs"]["HealthFailureDto"]["enum"],
+            json!([
+                "timeout",
+                "connect_failed",
+                "unexpected_status",
+                "protocol_error",
+            ])
+        );
+
+        for schema in [&generation, &listeners, &pools] {
+            let schema = serde_json::to_string(schema).expect("management response schema JSON");
+            for secret in ["private-key", "session-secret", "token", "password"] {
+                assert!(!schema.contains(secret), "schema exposed {secret}");
+            }
+        }
+    }
+
+    fn response_schema<T: JsonSchema>() -> Value {
+        let generator = SchemaSettings::default().for_serialize().into_generator();
+        serde_json::to_value(generator.into_root_schema_for::<T>()).expect("response schema")
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]
