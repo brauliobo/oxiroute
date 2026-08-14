@@ -68,6 +68,24 @@ pub(crate) struct DiskBackendRegistryLease {
     insertion: u64,
 }
 
+#[derive(Debug)]
+pub(crate) enum RuntimeAcquisitionError {
+    ServicePlan(ServicePlanError),
+    PreparationTimedOut,
+}
+
+impl From<ServicePlanError> for RuntimeAcquisitionError {
+    fn from(error: ServicePlanError) -> Self {
+        Self::ServicePlan(error)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DiskBackendOpenError {
+    Unavailable,
+    TimedOut,
+}
+
 impl Drop for DiskBackendRegistryLease {
     fn drop(&mut self) {
         let Some(registry) = DISK_BACKEND_REGISTRY.get() else {
@@ -804,19 +822,39 @@ fn runtime_plan_with_passive_failure_policy_internal(
 pub(crate) fn acquire_runtime_services(
     plan: &RuntimePlan,
 ) -> Result<GenerationAcquisition, ServicePlanError> {
-    acquire_runtime_services_with_mode(plan, AcquisitionMode::Activate)
+    acquire_runtime_services_with_deadline(plan, None).map_err(|error| match error {
+        RuntimeAcquisitionError::ServicePlan(error) => error,
+        RuntimeAcquisitionError::PreparationTimedOut => {
+            unreachable!("unbounded runtime acquisition cannot time out")
+        }
+    })
+}
+
+pub(crate) fn acquire_runtime_services_with_deadline(
+    plan: &RuntimePlan,
+    deadline: Option<Instant>,
+) -> Result<GenerationAcquisition, RuntimeAcquisitionError> {
+    acquire_runtime_services_with_mode(plan, AcquisitionMode::Activate, deadline)
 }
 
 pub(crate) fn validate_runtime_services(
     plan: &RuntimePlan,
 ) -> Result<GenerationAcquisition, ServicePlanError> {
-    acquire_runtime_services_with_mode(plan, AcquisitionMode::Validate)
+    acquire_runtime_services_with_mode(plan, AcquisitionMode::Validate, None).map_err(|error| {
+        match error {
+            RuntimeAcquisitionError::ServicePlan(error) => error,
+            RuntimeAcquisitionError::PreparationTimedOut => {
+                unreachable!("runtime validation has no deadline")
+            }
+        }
+    })
 }
 
 fn acquire_runtime_services_with_mode(
     plan: &RuntimePlan,
     mode: AcquisitionMode,
-) -> Result<GenerationAcquisition, ServicePlanError> {
+    deadline: Option<Instant>,
+) -> Result<GenerationAcquisition, RuntimeAcquisitionError> {
     let blueprint = GenerationCompiler::compile(&plan.source)?;
     let mut acquired = GenerationAcquisition::empty();
     acquired.tls = Some(
@@ -840,11 +878,13 @@ fn acquire_runtime_services_with_mode(
             .expect("acquired pools")
             .plans,
         mode,
+        deadline,
     )?);
     acquired.forward_services = Some(compile_forward_proxy_services(
         &blueprint.forward_service_specs?,
         &cache_specs,
         mode,
+        deadline,
     )?);
     acquired.rtmp_services = Some(compile_rtmp_services(
         &blueprint.rtmp_specs?,
@@ -899,7 +939,8 @@ fn compile_forward_proxy_services(
     services: &[crate::forward_proxy::ForwardServiceBlueprint],
     cache_specs: &[CacheStoreBlueprint],
     mode: AcquisitionMode,
-) -> Result<Vec<Arc<ForwardHttp1ServicePlan>>, ServicePlanError> {
+    deadline: Option<Instant>,
+) -> Result<Vec<Arc<ForwardHttp1ServicePlan>>, RuntimeAcquisitionError> {
     let mut cache_backends = HashMap::new();
     services
         .iter()
@@ -911,6 +952,7 @@ fn compile_forward_proxy_services(
                 cache_specs,
                 &mut cache_backends,
                 mode,
+                deadline,
             )?;
             let plan =
                 ForwardHttp1ServicePlan::acquire(service.clone(), cache).map_err(|source| {
@@ -1055,7 +1097,8 @@ fn compile_http_services(
     cache_specs: &[CacheStoreBlueprint],
     pools: &[Arc<UpstreamPlan>],
     mode: AcquisitionMode,
-) -> Result<Vec<Arc<HttpServicePlan>>, ServicePlanError> {
+    deadline: Option<Instant>,
+) -> Result<Vec<Arc<HttpServicePlan>>, RuntimeAcquisitionError> {
     let mut http_services = Vec::with_capacity(services.len());
     let mut cache_backends = HashMap::new();
     for service in services {
@@ -1070,6 +1113,7 @@ fn compile_http_services(
                 &mut cache_backends,
                 service.gzip.is_some(),
                 mode,
+                deadline,
             )?;
             route_plans.insert(route_index.to_string(), plan);
         }
@@ -1099,7 +1143,8 @@ fn compile_http_route(
     cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
     _has_gzip: bool,
     mode: AcquisitionMode,
-) -> Result<Arc<HttpRoutePlan>, ServicePlanError> {
+    deadline: Option<Instant>,
+) -> Result<Arc<HttpRoutePlan>, RuntimeAcquisitionError> {
     let access = route
         .access
         .as_ref()
@@ -1124,6 +1169,7 @@ fn compile_http_route(
             cache_stores,
             cache_backends,
             mode,
+            deadline,
         )?,
         HttpActionBlueprint::Fixed(plan) => HttpActionPlan::Fixed(plan.clone()),
         HttpActionBlueprint::Redirect(plan) => HttpActionPlan::Redirect(plan.clone()),
@@ -1146,14 +1192,23 @@ fn compile_http_route(
     Ok(plan)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the token-CAS loop keeps one registry transition state machine auditable"
-)]
+#[cfg(test)]
 fn open_shared_disk_backend(
     root: &std::path::Path,
     config: &DiskCacheConfig,
 ) -> Result<Arc<DiskBackend>, ()> {
+    open_shared_disk_backend_with_deadline(root, config, None).map_err(|_| ())
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the token-CAS loop keeps one registry transition state machine auditable"
+)]
+fn open_shared_disk_backend_with_deadline(
+    root: &std::path::Path,
+    config: &DiskCacheConfig,
+    deadline: Option<Instant>,
+) -> Result<Arc<DiskBackend>, DiskBackendOpenError> {
     let registry = DISK_BACKEND_REGISTRY.get_or_init(|| DiskBackendRegistry {
         entries: Mutex::new(HashMap::new()),
         changed: Condvar::new(),
@@ -1171,21 +1226,41 @@ fn open_shared_disk_backend(
                         config: opening_config,
                     }) => {
                         if opening_config != config {
-                            return Err(());
+                            return Err(DiskBackendOpenError::Unavailable);
                         }
                         let observed = *insertion;
-                        entries = registry
-                            .changed
-                            .wait_while(entries, |entries| {
-                                entries.get(root).is_some_and(|entry| {
-                                    matches!(
-                                        entry,
-                                        DiskBackendRegistryEntry::Opening { insertion, .. }
-                                            if *insertion == observed
-                                    )
-                                })
+                        let same_opening = |entries: &mut HashMap<_, _>| {
+                            entries.get(root).is_some_and(|entry| {
+                                matches!(
+                                    entry,
+                                    DiskBackendRegistryEntry::Opening { insertion, .. }
+                                        if *insertion == observed
+                                )
                             })
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        };
+                        if let Some(deadline) = deadline {
+                            let now = Instant::now();
+                            if now >= deadline {
+                                return Err(DiskBackendOpenError::TimedOut);
+                            }
+                            let (next, _) = registry
+                                .changed
+                                .wait_timeout_while(
+                                    entries,
+                                    deadline.saturating_duration_since(now),
+                                    same_opening,
+                                )
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            entries = next;
+                            if same_opening(&mut entries) && Instant::now() >= deadline {
+                                return Err(DiskBackendOpenError::TimedOut);
+                            }
+                        } else {
+                            entries = registry
+                                .changed
+                                .wait_while(entries, same_opening)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        }
                     }
                     Some(DiskBackendRegistryEntry::Ready {
                         insertion,
@@ -1214,7 +1289,9 @@ fn open_shared_disk_backend(
             run_disk_registry_snapshot_hook(root);
             let existing = backend.upgrade();
             if let Some(existing) = existing {
-                return (&existing_config == config).then_some(existing).ok_or(());
+                return (&existing_config == config)
+                    .then_some(existing)
+                    .ok_or(DiskBackendOpenError::Unavailable);
             }
             let mut entries = registry
                 .entries
@@ -1245,9 +1322,11 @@ fn open_shared_disk_backend(
                 Some(DiskBackendRegistryEntry::Ready { .. }) | None => continue,
             }
         };
+        #[cfg(test)]
+        run_disk_registry_opening_hook(root);
         let Ok(cache) = DiskCache::open(root, config.clone()) else {
             remove_disk_registry_opening(registry, root, insertion);
-            return Err(());
+            return Err(DiskBackendOpenError::Unavailable);
         };
         let cache = Arc::new(cache);
         let backend = Arc::new(DiskBackend::new(
@@ -1322,6 +1401,11 @@ struct DiskRegistrySnapshotHook {
 static DISK_REGISTRY_SNAPSHOT_HOOK: Mutex<Option<Arc<DiskRegistrySnapshotHook>>> = Mutex::new(None);
 
 #[cfg(test)]
+static DISK_REGISTRY_OPENING_HOOKS: OnceLock<
+    Mutex<HashMap<PathBuf, Arc<DiskRegistrySnapshotHook>>>,
+> = OnceLock::new();
+
+#[cfg(test)]
 fn run_disk_registry_snapshot_hook(root: &std::path::Path) {
     let hook = DISK_REGISTRY_SNAPSHOT_HOOK
         .lock()
@@ -1336,7 +1420,26 @@ fn run_disk_registry_snapshot_hook(root: &std::path::Path) {
 }
 
 #[cfg(test)]
+fn run_disk_registry_opening_hook(root: &std::path::Path) {
+    let hook = DISK_REGISTRY_OPENING_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(root)
+        .cloned();
+    if let Some(hook) = hook {
+        hook.reached.wait();
+        hook.release.wait();
+    }
+}
+
+#[cfg(test)]
 struct DiskRegistrySnapshotHookGuard;
+
+#[cfg(test)]
+pub(crate) struct DiskRegistryOpeningHookGuard {
+    root: PathBuf,
+}
 
 #[cfg(test)]
 impl Drop for DiskRegistrySnapshotHookGuard {
@@ -1345,6 +1448,17 @@ impl Drop for DiskRegistrySnapshotHookGuard {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+    }
+}
+
+#[cfg(test)]
+impl Drop for DiskRegistryOpeningHookGuard {
+    fn drop(&mut self) {
+        DISK_REGISTRY_OPENING_HOOKS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.root);
     }
 }
 
@@ -1372,6 +1486,33 @@ fn install_disk_registry_snapshot_hook(
 }
 
 #[cfg(test)]
+pub(crate) fn install_disk_registry_opening_hook(
+    root: PathBuf,
+) -> (
+    DiskRegistryOpeningHookGuard,
+    Arc<std::sync::Barrier>,
+    Arc<std::sync::Barrier>,
+) {
+    let reached = Arc::new(std::sync::Barrier::new(2));
+    let release = Arc::new(std::sync::Barrier::new(2));
+    let hook = Arc::new(DiskRegistrySnapshotHook {
+        root: root.clone(),
+        reached: Arc::clone(&reached),
+        release: Arc::clone(&release),
+    });
+    let replaced = DISK_REGISTRY_OPENING_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(root.clone(), hook);
+    assert!(
+        replaced.is_none(),
+        "disk registry opening hook already installed"
+    );
+    (DiskRegistryOpeningHookGuard { root }, reached, release)
+}
+
+#[cfg(test)]
 pub(crate) fn disk_backend_registry_contains(root: &std::path::Path) -> bool {
     DISK_BACKEND_REGISTRY.get().is_some_and(|registry| {
         registry
@@ -1396,9 +1537,18 @@ fn compile_proxy_action(
     cache_stores: &[CacheStoreBlueprint],
     cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
     mode: AcquisitionMode,
-) -> Result<HttpActionPlan, ServicePlanError> {
+    deadline: Option<Instant>,
+) -> Result<HttpActionPlan, RuntimeAcquisitionError> {
     let pool = &pools[pool_index];
-    let cache = acquire_cache_policy(service, route, cache, cache_stores, cache_backends, mode)?;
+    let cache = acquire_cache_policy(
+        service,
+        route,
+        cache,
+        cache_stores,
+        cache_backends,
+        mode,
+        deadline,
+    )?;
     Ok(HttpActionPlan::Proxy(ProxyActionPlan {
         pool: Arc::clone(pool),
         policy: policy.clone_with_cache(cache),
@@ -1413,7 +1563,8 @@ fn acquire_cache_policy(
     stores: &[CacheStoreBlueprint],
     cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
     mode: AcquisitionMode,
-) -> Result<Option<Arc<HttpCachePlan>>, ServicePlanError> {
+    deadline: Option<Instant>,
+) -> Result<Option<Arc<HttpCachePlan>>, RuntimeAcquisitionError> {
     let Some(policy) = policy else {
         return Ok(None);
     };
@@ -1439,9 +1590,17 @@ fn acquire_cache_policy(
                         })?,
                     )))
                 } else {
-                    let backend = open_shared_disk_backend(root, config).map_err(|()| {
-                        unavailable("http_services[].routes[].action.policy.cache.disk")
-                    })?;
+                    let backend = open_shared_disk_backend_with_deadline(root, config, deadline)
+                        .map_err(|error| match error {
+                            DiskBackendOpenError::Unavailable => {
+                                RuntimeAcquisitionError::ServicePlan(unavailable(
+                                    "http_services[].routes[].action.policy.cache.disk",
+                                ))
+                            }
+                            DiskBackendOpenError::TimedOut => {
+                                RuntimeAcquisitionError::PreparationTimedOut
+                            }
+                        })?;
                     Arc::new(HttpCacheBackend::Disk(backend))
                 }
             }
@@ -1969,6 +2128,34 @@ mod disk_registry_tests {
         assert!(Arc::ptr_eq(&first, &second));
         drop(first);
         drop(second);
+        assert!(!disk_backend_registry_contains(&root));
+    }
+
+    #[test]
+    fn compatible_waiter_times_out_without_removing_the_opening_insertion() {
+        let directory = tempfile::tempdir().expect("disk registry root");
+        let root = directory.path().join("cache");
+        let config = DiskCacheConfig::default();
+        let (_hook, reached, release) = install_disk_registry_opening_hook(root.clone());
+        let opener_root = root.clone();
+        let opener_config = config.clone();
+        let opener = std::thread::spawn(move || {
+            open_shared_disk_backend(&opener_root, &opener_config).expect("opening backend")
+        });
+        reached.wait();
+
+        let deadline = Instant::now() + Duration::from_millis(25);
+        let Err(error) = open_shared_disk_backend_with_deadline(&root, &config, Some(deadline))
+        else {
+            panic!("compatible waiter did not time out")
+        };
+
+        assert_eq!(error, DiskBackendOpenError::TimedOut);
+        assert!(Instant::now() >= deadline);
+        assert!(disk_backend_registry_contains(&root));
+        release.wait();
+        let backend = opener.join().expect("opener thread");
+        drop(backend);
         assert!(!disk_backend_registry_contains(&root));
     }
 
