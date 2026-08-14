@@ -20,6 +20,8 @@ use crate::listener_inventory::{ListenerId, ListenerInventory};
 use crate::rtmp_generation_runtime::{
     PreparedRtmpGenerationRuntime, RtmpRetirement, RtmpRetirementRegistry,
 };
+#[cfg(test)]
+use crate::service_plan::acquire_runtime_services;
 use crate::{
     ListenerMetrics, ListenerReservations, MetricsError, ProcessRuntime, RuntimeMetrics,
     RuntimePlan, ServiceKind,
@@ -27,7 +29,9 @@ use crate::{
     runtime_plan,
     service_plan::PreparedRtmpRuntime,
     service_plan::validation_plan,
-    service_plan::{acquire_runtime_services, validate_runtime_services},
+    service_plan::{
+        RuntimeAcquisitionError, acquire_runtime_services_with_deadline, validate_runtime_services,
+    },
 };
 
 pub(crate) const GENERATION_PREPARATION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -372,10 +376,11 @@ impl PreparedGeneration {
                     .drop_probes
                     .push(PreparedTransactionDropProbe::new("plan"));
                 transaction.acquired = Some(
-                    acquire_runtime_services(
+                    acquire_runtime_services_with_deadline(
                         transaction.plan.as_ref().expect("provisional runtime plan"),
+                        deadline,
                     )
-                    .map_err(|source| GenerationError::Plan(Box::new(source)))?,
+                    .map_err(GenerationError::from)?,
                 );
                 #[cfg(test)]
                 transaction
@@ -415,10 +420,11 @@ impl PreparedGeneration {
                     .drop_probes
                     .push(PreparedTransactionDropProbe::new("plan"));
                 transaction.acquired = Some(
-                    acquire_runtime_services(
+                    acquire_runtime_services_with_deadline(
                         transaction.plan.as_ref().expect("provisional runtime plan"),
+                        deadline,
                     )
-                    .map_err(|source| GenerationError::Plan(Box::new(source)))?,
+                    .map_err(GenerationError::from)?,
                 );
                 #[cfg(test)]
                 transaction
@@ -2275,6 +2281,15 @@ impl From<crate::service_plan::RtmpPreparationError> for GenerationError {
     }
 }
 
+impl From<RuntimeAcquisitionError> for GenerationError {
+    fn from(error: RuntimeAcquisitionError) -> Self {
+        match error {
+            RuntimeAcquisitionError::ServicePlan(error) => Self::Plan(Box::new(error)),
+            RuntimeAcquisitionError::PreparationTimedOut => Self::PreparationTimedOut,
+        }
+    }
+}
+
 impl GenerationError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -2319,6 +2334,53 @@ pub(crate) mod tests {
 
     fn document() -> ResolvedConfigDocument {
         document_with_max_connections(None)
+    }
+
+    fn disk_cache_document(root: &std::path::Path) -> ResolvedConfigDocument {
+        let source = format!(
+            r#"
+return {{
+  version = 1,
+  listeners = {{}},
+  cache_stores = {{
+    {{
+      name = "disk",
+      type = "disk",
+      root_directory = "{}",
+      max_bytes = 1048576,
+      max_files = 128,
+      max_object_bytes = 65536,
+    }},
+  }},
+  upstream_pools = {{
+    {{
+      name = "origin",
+      endpoints = {{ {{ type = "socket", address = "127.0.0.1:3000" }} }},
+    }},
+  }},
+  http_services = {{
+    {{
+      name = "web",
+      routes = {{
+        {{
+          path = {{ kind = "segment_prefix", value = "/" }},
+          action = {{
+            type = "proxy",
+            upstream_pool = "origin",
+            policy = {{ cache = {{ store = "disk" }} }},
+          }},
+        }},
+      }},
+    }},
+  }},
+}}
+"#,
+            root.display()
+        );
+        let config = oxiroute_config_source::load_lua(&source)
+            .expect("disk cache configuration")
+            .to_draft();
+        document_for(&config)
     }
 
     #[test]
@@ -3284,6 +3346,43 @@ pub(crate) mod tests {
         assert_eq!(status.failures, 1);
         drop(authority);
         assert!(manager.prepare(document()).is_ok());
+    }
+
+    #[test]
+    fn disk_registry_wait_timeout_is_retryable_without_quarantine() {
+        let directory = TempDir::new().expect("disk cache root");
+        let root = directory.path().join("cache");
+        let (hook, reached, release) =
+            crate::service_plan::install_disk_registry_opening_hook(root.clone());
+        let opener_manager = GenerationManager::new();
+        let opener_thread_manager = opener_manager.clone();
+        let opener_document = disk_cache_document(&root);
+        let opener = thread::spawn(move || opener_thread_manager.prepare(opener_document));
+        reached.wait();
+
+        let manager = GenerationManager::new();
+        let deadline = Instant::now() + Duration::from_millis(25);
+        let Err(error) = manager.prepare_with_deadline(disk_cache_document(&root), deadline) else {
+            panic!("disk registry waiter did not time out")
+        };
+
+        assert!(matches!(error, GenerationError::PreparationTimedOut));
+        assert!(Instant::now() >= deadline);
+        let status = manager.status();
+        assert_eq!(status.candidate_revision, None);
+        assert_eq!(status.quarantined_revision, None);
+        assert_eq!(status.last_failure, Some("generation_prepare_timeout"));
+        assert_eq!(status.failures, 1);
+
+        release.wait();
+        opener
+            .join()
+            .expect("disk backend opener thread")
+            .expect("disk backend opener generation");
+        drop(hook);
+        manager
+            .prepare(disk_cache_document(&root))
+            .expect("disk registry timeout retry");
     }
 
     #[test]
