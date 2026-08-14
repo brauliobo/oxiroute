@@ -139,7 +139,5 @@ pub(crate) struct RtmpSpec {
 }
 
 pub(crate) struct RtmpApplicationBlueprint {
-    pub(crate) publish_policy: oxiroute_rtmp::RtmpAccessPolicy,
-    pub(crate) play_policy: oxiroute_rtmp::RtmpAccessPolicy,
     pub(crate) fanout_limits: oxiroute_rtmp::LiveHubLimits,
 }
