@@ -731,6 +731,9 @@ request/success/error schemas, body/content policy, audit category
 
 - [ ] Introduce `EndpointSpec` and derive recognition, auth, method policy, dispatch, and audit
   classification from the composed registry.
+  The initial registry now centralizes metadata and recognition/dispatch for the protected status,
+  listener, pool, server, and generation GET projections; the shared auth owner and generated
+  artifact remain separate work.
 - [ ] Separate `ManagementAuth` from configuration state; it owns the secure bearer for every
   protected control-plane surface.
 - [ ] Preserve the current order: correlation validation, exact route recognition, duplicate-header

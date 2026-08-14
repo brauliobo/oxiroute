@@ -83,17 +83,13 @@ pub(super) fn match_route(path_and_query: &str) -> Option<Route<'_>> {
         .split_once('?')
         .map_or((path_and_query, None), |(path, query)| (path, Some(query)));
     match path {
-        "/api/v1/listeners" => Some(Route::Listeners),
         "/api/v1/listeners/administrative-state" => Some(Route::ListenerState),
-        "/api/v1/pools" => Some(Route::Pools),
         "/api/v1/pools/administrative-state" => Some(Route::PoolState),
-        "/api/v1/servers" => Some(Route::Servers),
         "/api/v1/servers/administrative-state" => Some(Route::ServerState),
         "/api/v1/servers/health-override" => Some(Route::ServerHealth),
         "/api/v1/servers/checks" => Some(Route::ServerChecks),
         "/api/v1/servers/max-connections" => Some(Route::ServerMaxConnections),
         "/api/v1/servers/refresh-dns" => Some(Route::ServerRefreshDns),
-        "/api/v1/generations" => Some(Route::Generations),
         "/api/v1/generations/reload" => Some(Route::GenerationReload),
         "/api/v1/generations/rollback" => Some(Route::GenerationRollback),
         "/api/v1/generations/drain" => Some(Route::GenerationDrain),

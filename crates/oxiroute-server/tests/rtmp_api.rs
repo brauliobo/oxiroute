@@ -707,6 +707,61 @@ async fn config_routes_require_the_injected_bearer_token() {
 }
 
 #[tokio::test]
+async fn protected_read_only_registry_preserves_auth_method_and_path_contract() {
+    let active = editable_config()
+        .validate()
+        .expect("valid management fixture");
+    let source = render_lua(&active).expect("active config renders");
+    let harness = ManagementHarness::start_source_with_generation_manager(
+        &active,
+        "lua",
+        source.as_bytes(),
+        true,
+        RuntimeMode::Direct,
+    )
+    .await;
+
+    for path in [
+        "/api/v1/status",
+        "/api/v1/listeners",
+        "/api/v1/pools",
+        "/api/v1/servers",
+        "/api/v1/generations",
+    ] {
+        let missing = harness
+            .request_with("GET", path, None, None, None, None)
+            .await;
+        assert_eq!(missing.status, 401, "{path}");
+        assert_eq!(missing.json()["error"]["code"], "unauthorized");
+
+        let missing_method = harness
+            .request_with("POST", path, None, None, None, None)
+            .await;
+        assert_eq!(missing_method.status, 401, "{path}");
+
+        let wrong_method = harness
+            .request_with("POST", path, Some(TEST_TOKEN), None, None, None)
+            .await;
+        assert_eq!(wrong_method.status, 405, "{path}");
+        assert_eq!(wrong_method.header("allow"), Some("GET"));
+
+        let authorized = harness.request("GET", path, None, None).await;
+        assert_eq!(authorized.status, 200, "{path}");
+
+        let queried = harness
+            .request("GET", &format!("{path}?view=summary"), None, None)
+            .await;
+        assert_eq!(queried.status, 200, "{path} query");
+
+        let trailing = harness
+            .request("GET", &format!("{path}/"), None, None)
+            .await;
+        assert_eq!(trailing.status, 404, "{path} trailing slash");
+        assert_eq!(trailing.json()["error"]["code"], "route_not_found");
+    }
+}
+
+#[tokio::test]
 async fn event_stream_requires_the_management_bearer_token() {
     let harness = ManagementHarness::start(
         &(editable_config())
