@@ -87,6 +87,26 @@ impl ListenerRuntime {
         })
     }
 
+    pub(crate) fn admit_participant_connection(
+        &self,
+        generation: &std::sync::Arc<RuntimeGeneration>,
+        kind: RuntimeReferenceKind,
+    ) -> Result<TrafficLease, AdmissionError> {
+        let generation_reference = generation
+            .begin_reference(kind)
+            .ok_or(AdmissionError::GenerationNotAccepting)?;
+        let mut connection = self
+            .metrics
+            .begin_connection()
+            .map_err(AdmissionError::Metrics)?;
+        connection.suppress_access_record();
+        Ok(TrafficLease {
+            _connection: connection,
+            _generation_reference: Some(generation_reference),
+            _generation_admission: None,
+        })
+    }
+
     pub(crate) fn admit_without_generation(&self) -> Result<TrafficLease, AdmissionError> {
         let mut connection = self
             .metrics
