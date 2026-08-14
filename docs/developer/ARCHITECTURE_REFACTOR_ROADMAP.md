@@ -408,7 +408,9 @@ validation-only acquisition.
   the preparation path. `RuntimePlan` remains resource-free; an initially empty private
   `GenerationAcquisition` takes each completed typed stage immediately. Partial failure explicitly
   drops only completed stages in reverse order without changing the pinned acquisition/error trace.
-- [ ] Consolidate normal and descriptor-adopted preparation after listener acquisition.
+- [x] Consolidate normal and descriptor-adopted preparation after listener acquisition. The shared
+  runtime-plan and environmental-acquisition continuation is now extracted while bind/reuse and
+  descriptor-adoption retain their distinct ordering and rollback ownership.
 - [x] Introduce private `GenerationResources` with concrete plan, listener, and RTMP owners.
   A provisional preparation transaction owns listener reservations, listener metrics registration,
   and RTMP preparation before its only commit creates this aggregate. `PreparedGeneration` transfers
