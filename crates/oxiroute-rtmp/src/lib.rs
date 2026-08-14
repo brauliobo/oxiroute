@@ -81,6 +81,7 @@ pub use media_segmenter::{
 };
 pub use media_storage::{
     MAX_MEDIA_PATH_BYTES, MediaStore, MediaStoreError, MediaStoreLimits, MediaStoreStats,
+    RtmpMediaStoreRegistry,
 };
 pub use recording_path::{
     MAX_RECORDING_FILENAME_BYTES, MAX_RECORDING_SUFFIX_TEMPLATE_BYTES, RecordingDateTime,
