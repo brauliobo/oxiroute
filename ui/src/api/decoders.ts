@@ -1,4 +1,4 @@
-import { decimalString, isRecord, nullableSafeInteger, safeInteger } from '../valueGuards'
+import { decimalString, integerInRange, isRecord, nullableSafeInteger, nullableString, safeInteger } from '../valueGuards'
 import type {
   ListenerInventoryResponse,
   MonitoringListener,
@@ -14,8 +14,11 @@ export function parseRuntimeStatus(value: unknown): RuntimeStatus {
   if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.buildVersion !== 'string' ||
     !nullableRevision(value.diskRevision) || !nullableRevision(value.candidateRevision) ||
     !nullableRevision(value.activeRevision) || !nullableRevision(value.previousRevision) ||
-    typeof value.degraded !== 'boolean' || !Array.isArray(value.listeners) ||
-    !value.listeners.every(monitoringListener)
+    typeof value.degraded !== 'boolean' || !safeInteger(value.activeGenerationAgeMs) ||
+    !statusComponents(value.components) || !statusCertificates(value.certificates) ||
+    !auditStatus(value.audit) || !statusCapabilities(value.capabilities) ||
+    !Array.isArray(value.listeners) || !value.listeners.every(monitoringListener) ||
+    !Array.isArray(value.tlsProfiles) || !value.tlsProfiles.every(statusTlsProfile)
   ) return invalidPayload('runtime status')
   return value as unknown as RuntimeStatus
 }
@@ -129,6 +132,114 @@ function monitoringLatency(value: unknown): boolean {
 function monitoringCache(value: unknown): boolean {
   return isRecord(value) && ['hits', 'misses', 'admissions', 'evictions']
     .every((key) => decimalString(value[key]))
+}
+
+function statusComponents(value: unknown): boolean {
+  return isRecord(value) && componentStatus(value.process) && componentStatus(value.host) &&
+    componentStatus(value.generation) && auditStatus(value.audit)
+}
+
+function componentStatus(value: unknown): boolean {
+  return isRecord(value) && enumValue(value.state, ['healthy', 'degraded', 'unsupported']) &&
+    (value.reason === undefined || nullableString(value.reason))
+}
+
+function statusCertificates(value: unknown): boolean {
+  return isRecord(value) && Array.isArray(value.certbot) && value.certbot.every(certbotCertificate) &&
+    Array.isArray(value.acmeManaged) && value.acmeManaged.every(acmeManagedCertificate) &&
+    Array.isArray(value.directFiles) && value.directFiles.every(directFileCertificate)
+}
+
+function certbotCertificate(value: unknown): boolean {
+  return isRecord(value) && typeof value.name === 'string' &&
+    safeInteger(value.activeArchiveRevision) && typeof value.activeContentRevision === 'string' &&
+    typeof value.expiresAt === 'string' && nullableString(value.lastOutcome) &&
+    nullableString(value.lastErrorCode)
+}
+
+function acmeManagedCertificate(value: unknown): boolean {
+  return isRecord(value) && typeof value.name === 'string' && typeof value.directoryUrl === 'string' &&
+    typeof value.diskRevision === 'string' && typeof value.activeRevision === 'string' &&
+    typeof value.expiresAt === 'string' && nullableSafeInteger(value.notBeforeUnixSeconds) &&
+    nullableSafeInteger(value.notAfterUnixSeconds) && nullableSafeInteger(value.nextActionUnixSeconds) &&
+    nullableString(value.lastOutcome) && nullableString(value.lastErrorCode) &&
+    nullableString(value.dnsProvider) && nullableString(value.dnsProviderDeployment) &&
+    nullableString(value.dnsProviderHealth) && typeof value.renewalInformationStatus === 'string' &&
+    typeof value.dnsCleanupStatus === 'string'
+}
+
+function directFileCertificate(value: unknown): boolean {
+  return isRecord(value) && typeof value.name === 'string' &&
+    typeof value.activeContentRevision === 'string' && typeof value.expiresAt === 'string' &&
+    nullableString(value.lastOutcome) && nullableString(value.lastErrorCode)
+}
+
+function auditStatus(value: unknown): boolean {
+  return isRecord(value) && enumValue(value.state, ['healthy', 'degraded', 'memory']) &&
+    typeof value.persistent === 'boolean' && typeof value.degraded === 'boolean' &&
+    safeInteger(value.recordCount) && safeInteger(value.bytes) && safeInteger(value.rotatedFiles) &&
+    safeInteger(value.maxRecords) && safeInteger(value.maxRecordBytes) &&
+    safeInteger(value.maxFileBytes) && safeInteger(value.maxTotalBytes) &&
+    safeInteger(value.maxRotatedFiles) && safeInteger(value.writeFailures) &&
+    safeInteger(value.corruptRecords) &&
+    (value.lastError === undefined || nullableString(value.lastError))
+}
+
+function statusCapabilities(value: unknown): boolean {
+  return isRecord(value) && integerInRange(value.schemaVersion, 0, 255) && supervisionCapability(value.supervision) &&
+    udpCapability(value.udp) && isRecord(value.http3) && h3Capability(value.http3.forward) &&
+    h3Capability(value.http3.reverse)
+}
+
+function supervisionCapability(value: unknown): boolean {
+  return isRecord(value) && enumValue(value.mode, ['direct', 'supervised']) &&
+    isRecord(value.descriptorAdoption) &&
+    enumValue(value.descriptorAdoption.status, ['negotiated', 'not_used']) &&
+    integerInRange(value.descriptorAdoption.manifestVersion, 0, 255) &&
+    typeof value.descriptorAdoption.datagram === 'boolean' &&
+    typeof value.descriptorAdoption.quic === 'boolean'
+}
+
+function udpCapability(value: unknown): boolean {
+  return isRecord(value) && enumValue(value.status, ['active', 'unconfigured', 'blocked']) &&
+    typeof value.supported === 'boolean' && stringArray(value.listeners) &&
+    stringArray(value.configuredListeners) && value.transport === 'udp' &&
+    value.drain === 'graceful' && value.fallback === 'none' && blockedReason(value.blockedReason)
+}
+
+function h3Capability(value: unknown): boolean {
+  return isRecord(value) && enumValue(value.status, ['active', 'unconfigured', 'blocked']) &&
+    typeof value.supported === 'boolean' && stringArray(value.listeners) &&
+    stringArray(value.configuredListeners) && value.transport === 'quic' &&
+    stringArray(value.alpn) && typeof value.tlsMinVersion === 'string' &&
+    value.zeroRtt === 'disabled' && value.migration === 'disabled' &&
+    value.goAway === 'graceful' && value.fallback === 'none' && stringArray(value.unsupported) &&
+    h3Limits(value.limits) && blockedReason(value.blockedReason)
+}
+
+function h3Limits(value: unknown): boolean {
+  return isRecord(value) && safeInteger(value.maxHandshakesAndConnections) &&
+    safeInteger(value.maxBidirectionalStreams) && safeInteger(value.maxUnidirectionalStreams) &&
+    safeInteger(value.maxFieldSectionBytes) && safeInteger(value.maxRequestBodyBytes) &&
+    safeInteger(value.maxResponseBodyBytes)
+}
+
+function blockedReason(value: unknown): boolean {
+  return value === null || enumValue(value, ['listener_runtime_failed', 'listener_stopped', 'listener_not_listening'])
+}
+
+function statusTlsProfile(value: unknown): boolean {
+  return isRecord(value) && typeof value.name === 'string' && isRecord(value.clientAuth) &&
+    typeof value.clientAuth.mode === 'string' && typeof value.clientAuth.caConfigured === 'boolean' &&
+    safeInteger(value.clientAuth.allowedDnsNameCount)
+}
+
+function stringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+}
+
+function enumValue(value: unknown, values: readonly string[]): value is string {
+  return typeof value === 'string' && values.includes(value)
 }
 
 function nullableRevision(value: unknown): value is string | null {

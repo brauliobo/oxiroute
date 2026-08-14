@@ -12,6 +12,44 @@ import { contractMonitoring } from './contractFixtures'
 
 export function managementStatus(): RuntimeStatus {
   const monitoring = contractMonitoring()
+  const audit = {
+    state: 'healthy' as const,
+    persistent: true,
+    degraded: false,
+    recordCount: 12,
+    bytes: 4_096,
+    rotatedFiles: 1,
+    maxRecords: 10_000,
+    maxRecordBytes: 4_096,
+    maxFileBytes: 1_048_576,
+    maxTotalBytes: 16_777_216,
+    maxRotatedFiles: 8,
+    writeFailures: 0,
+    corruptRecords: 0,
+  }
+  const h3 = {
+    status: 'unconfigured' as const,
+    supported: true,
+    listeners: [],
+    configuredListeners: [],
+    transport: 'quic' as const,
+    alpn: ['h3'],
+    tlsMinVersion: '1.3',
+    zeroRtt: 'disabled' as const,
+    migration: 'disabled' as const,
+    goAway: 'graceful' as const,
+    fallback: 'none' as const,
+    unsupported: [],
+    limits: {
+      maxHandshakesAndConnections: 128,
+      maxBidirectionalStreams: 128,
+      maxUnidirectionalStreams: 16,
+      maxFieldSectionBytes: 65_536,
+      maxRequestBodyBytes: 1_048_576,
+      maxResponseBodyBytes: 1_048_576,
+    },
+    blockedReason: null,
+  }
   return {
     schemaVersion: 1,
     buildVersion: 'test-build',
@@ -20,7 +58,44 @@ export function managementStatus(): RuntimeStatus {
     activeRevision: 'active-revision',
     previousRevision: 'previous-revision',
     degraded: false,
+    activeGenerationAgeMs: 0,
+    components: {
+      process: { state: 'healthy' as const, reason: null },
+      host: { state: 'healthy' as const, reason: null },
+      generation: { state: 'healthy' as const, reason: null },
+      audit,
+    },
+    certificates: {
+      certbot: [],
+      acmeManaged: [],
+      directFiles: [],
+    },
+    audit,
+    capabilities: {
+      schemaVersion: 1,
+      supervision: {
+        mode: 'direct' as const,
+        descriptorAdoption: {
+          status: 'not_used' as const,
+          manifestVersion: 1,
+          datagram: false,
+          quic: false,
+        },
+      },
+      udp: {
+        status: 'unconfigured' as const,
+        supported: false,
+        listeners: [],
+        configuredListeners: [],
+        transport: 'udp' as const,
+        drain: 'graceful' as const,
+        fallback: 'none' as const,
+        blockedReason: null,
+      },
+      http3: { reverse: h3, forward: h3 },
+    },
     listeners: monitoring.listeners,
+    tlsProfiles: [],
   }
 }
 
