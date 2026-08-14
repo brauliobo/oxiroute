@@ -1265,6 +1265,138 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    fn historical_descriptor_plan(
+        config: &ValidatedConfig,
+    ) -> io::Result<Vec<(ReservationKey, DescriptorSlot)>> {
+        let config = config.as_draft();
+        let count = config.listeners.len()
+            + usize::from(config.management.is_some())
+            + config
+                .stats
+                .as_ref()
+                .map_or(0, |stats| stats.binds.len() + stats.pages.len());
+        if count > MAX_DESCRIPTOR_COUNT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "worker configuration has {count} listener descriptors; maximum is {MAX_DESCRIPTOR_COUNT}"
+                ),
+            ));
+        }
+
+        let mut entries = Vec::with_capacity(count);
+        for listener in &config.listeners {
+            entries.push((
+                ListenerId::Traffic(listener.name.clone()),
+                DescriptorRole::Traffic(listener.name.clone()),
+                Some(listener.protocol),
+                listener.bind.clone(),
+            ));
+        }
+        if let Some(management) = &config.management {
+            entries.push((
+                ListenerId::Management,
+                DescriptorRole::Management,
+                None,
+                ListenerBind::Socket {
+                    address: management.bind,
+                },
+            ));
+        }
+        if let Some(stats) = &config.stats {
+            for (index, address) in stats.binds.iter().enumerate() {
+                entries.push((
+                    ListenerId::Stats(index),
+                    DescriptorRole::Stats(u16::try_from(index).expect("descriptor limit checked")),
+                    None,
+                    ListenerBind::Socket { address: *address },
+                ));
+            }
+            for (index, page) in stats.pages.iter().enumerate() {
+                entries.push((
+                    ListenerId::StatsPage(index),
+                    DescriptorRole::StatsPage(
+                        u16::try_from(index).expect("descriptor limit checked"),
+                    ),
+                    None,
+                    ListenerBind::Socket { address: page.bind },
+                ));
+            }
+        }
+
+        entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, (key, role, protocol, bind))| {
+                Ok((
+                    key,
+                    historical_descriptor_slot(
+                        SlotId(u16::try_from(index).expect("descriptor limit checked")),
+                        role,
+                        protocol,
+                        &bind,
+                    )?,
+                ))
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn historical_descriptor_slot(
+        id: SlotId,
+        role: DescriptorRole,
+        protocol: Option<Protocol>,
+        bind: &ListenerBind,
+    ) -> io::Result<DescriptorSlot> {
+        let (kind, bind, mode) = match bind {
+            ListenerBind::Socket { address } => (
+                DescriptorKind::TcpListener,
+                Some(BindIdentity::Tcp(*address)),
+                None,
+            ),
+            ListenerBind::Unix { path, mode } => (
+                DescriptorKind::UnixListener,
+                Some(BindIdentity::UnixPath(path.clone())),
+                *mode,
+            ),
+            ListenerBind::Udp { address } => {
+                let kind = match protocol {
+                    Some(Protocol::Udp) => DescriptorKind::DatagramListener,
+                    Some(Protocol::ForwardHttp3 | Protocol::Http3) => DescriptorKind::QuicListener,
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("UDP listener `{address}` has an unsupported protocol"),
+                        ));
+                    }
+                };
+                (kind, Some(BindIdentity::Tcp(*address)), None)
+            }
+        };
+        Ok(DescriptorSlot {
+            id,
+            role,
+            kind,
+            bind,
+            mode,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_historical_descriptor_plan_parity(config: &ValidatedConfig) {
+        let expected = historical_descriptor_plan(config).expect("historical descriptor plan");
+        let inventory = ListenerInventory::compile(config);
+        let slots = descriptor_slots(&inventory).expect("descriptor slots");
+        let actual = inventory
+            .entries()
+            .iter()
+            .map(|entry| entry.id.clone())
+            .zip(slots)
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -1391,6 +1523,7 @@ mod tests {
             expected_tcp_slot(12, DescriptorRole::StatsPage(0), 8_406),
         ];
         assert_inventory_and_slots(&config, &expected_inventory, &expected_slots);
+        assert_historical_descriptor_plan_parity(&config);
 
         let mut changed = config.to_draft();
         changed.listeners.swap(0, 8);
@@ -1521,6 +1654,12 @@ mod tests {
             &renamed_reordered_inventory,
             &renamed_reordered_slots,
         );
+        assert_historical_descriptor_plan_parity(&changed);
+
+        let mut policy_only = config.to_draft();
+        policy_only.listeners[0].max_connections = Some(70);
+        let policy_only = policy_only.validate().expect("valid policy-only change");
+        assert_historical_descriptor_plan_parity(&policy_only);
     }
 
     #[cfg(target_os = "linux")]
@@ -1534,6 +1673,12 @@ mod tests {
                 .len(),
             64
         );
+        assert_eq!(
+            historical_descriptor_plan(&sixty_four)
+                .expect("historical plan accepts 64 descriptors")
+                .len(),
+            64
+        );
 
         let sixty_five = many_listener_config(MAX_DESCRIPTOR_COUNT + 1);
         assert_eq!(ListenerInventory::compile(&sixty_five).entries().len(), 65);
@@ -1541,6 +1686,10 @@ mod tests {
             .expect_err("existing supervised oracle rejects 65 descriptors");
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("maximum is 64"));
+        let historical_error = historical_descriptor_plan(&sixty_five)
+            .expect_err("historical descriptor plan rejects 65 descriptors");
+        assert_eq!(historical_error.kind(), io::ErrorKind::InvalidInput);
+        assert!(historical_error.to_string().contains("maximum is 64"));
     }
 
     #[test]
