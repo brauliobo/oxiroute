@@ -9,16 +9,17 @@ use std::{
 };
 
 use crate::{
-    DashSegmentNaming, DestinationPolicyError, ExecEnvironment, ExecFilesystemPolicy, ExecLimits,
-    ExecMode, ExecNetworkPolicy, ExecProfile, ExecProfileError, ExecTrigger, HlsFragmentNaming,
-    HlsKeyConfig, HlsValueError, HlsVariant, LiveHub, LiveHubLimits, MediaApplication,
-    RecorderWorkerConfig, RecorderWorkerStartError, RecordingPathPolicy, RecordingStoreLimits,
-    RecordingStoreLimitsError, RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule, RtmpApplication,
-    RtmpAutoPushConfig, RtmpAutoPushConfigError, RtmpCallbackMethod, RtmpCallbackPolicy,
-    RtmpCallbackValueError, RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication,
-    RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpSessionCeilings,
-    RtmpSessionLimitError, RtmpSessionLimits, RtmpStreamPath, RtmpTokenPolicy, RtmpTransport,
-    VodApplication, VodLimits, VodSourceDefinition, VodValueError, validate_callback_url_intrinsic,
+    DashOutputConfig, DashSegmentNaming, DestinationPolicyError, ExecEnvironment,
+    ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecProfile, ExecProfileError,
+    ExecTrigger, HlsFragmentNaming, HlsKeyConfig, HlsValueError, HlsVariant, LiveHub,
+    LiveHubLimits, MediaApplication, RecorderWorkerConfig, RecorderWorkerStartError,
+    RecordingPathPolicy, RecordingStoreLimits, RecordingStoreLimitsError, RtmpAccessAction,
+    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpAutoPushConfig, RtmpAutoPushConfigError,
+    RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCallbackValueError, RtmpNetwork,
+    RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRecorderPolicy,
+    RtmpRecorderStart, RtmpSessionCeilings, RtmpSessionLimitError, RtmpSessionLimits,
+    RtmpStreamPath, RtmpTokenPolicy, RtmpTransport, VodApplication, VodLimits, VodSourceDefinition,
+    VodValueError, validate_callback_url_intrinsic,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -624,6 +625,20 @@ impl RtmpMediaPlan {
     #[must_use]
     pub const fn dash(&self) -> Option<&RtmpDashPlan> {
         self.dash.as_ref()
+    }
+
+    /// Combines acquired HLS and DASH outputs into one media application.
+    #[must_use]
+    pub fn combine_outputs(
+        hls: Option<Arc<MediaApplication>>,
+        dash: Option<Arc<DashOutputConfig>>,
+    ) -> Option<Arc<MediaApplication>> {
+        match (hls, dash) {
+            (None, None) => None,
+            (Some(hls), None) => Some(hls),
+            (None, Some(dash)) => Some(Arc::new(MediaApplication::new(None).with_dash(Some(dash)))),
+            (Some(hls), Some(dash)) => Some(Arc::new((*hls).clone().with_dash(Some(dash)))),
+        }
     }
 }
 
