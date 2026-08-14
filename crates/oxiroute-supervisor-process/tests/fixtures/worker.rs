@@ -154,6 +154,21 @@ fn descendant_mode(linger: bool) -> Result<ExitCode, Box<dyn std::error::Error>>
     Ok(ExitCode::SUCCESS)
 }
 
+fn escaped_descendant_mode() -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let _endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
+    let child = Command::new(env::current_exe()?)
+        .arg("escaped-descendant-sleep")
+        .spawn()?;
+    fs::write(
+        env::var_os("DESCENDANT_PID_FILE").ok_or("missing pid file")?,
+        child.id().to_string(),
+    )?;
+    if env::var_os("LINGER_AFTER_DESCENDANT").is_some() {
+        thread::sleep(Duration::from_secs(30));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mode = env::args().nth(1).unwrap_or_default();
     match mode.as_str() {
@@ -177,6 +192,7 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         "sentinel" => sentinel_mode(),
         "descendant" => descendant_mode(true),
         "descendant-exit" => descendant_mode(false),
+        "escaped-descendant-exit" => escaped_descendant_mode(),
         "linger" => {
             let _endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
             thread::sleep(Duration::from_secs(30));
@@ -192,6 +208,11 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         "wrong-nonce" | "wrong-generation" | "wrong-protocol" | "legacy-v1" | "wrong-instance" => {
             forged_ready(&mode)?;
+            thread::sleep(Duration::from_secs(30));
+            Ok(ExitCode::SUCCESS)
+        }
+        "escaped-descendant-sleep" => {
+            rustix::process::setsid()?;
             thread::sleep(Duration::from_secs(30));
             Ok(ExitCode::SUCCESS)
         }

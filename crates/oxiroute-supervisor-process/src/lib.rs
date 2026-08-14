@@ -6,14 +6,11 @@
 //! environment from argv and spawns the worker. Dynamic-loader variables therefore never affect
 //! the launcher itself.
 //!
-//! The launcher remains the dedicated process-group leader and supervises the actual worker. Group
-//! signaling is permitted only while the parent still owns the unreaped launcher [`Child`]; reaping
-//! atomically invalidates the numeric PGID. This covers ordinary descendants that remain in that
-//! group. It cannot contain a descendant that deliberately calls `setsid` or moves to another
-//! process group; cgroup-backed containment is intentionally deferred to a later integration slice.
-//! If the launcher is killed alone rather than through this API, it cannot perform its normal group
-//! cleanup; observing and reaping that launcher deliberately invalidates the PGID instead of risking
-//! a signal to a reused group, so surviving processes then require an external cgroup owner.
+//! On Linux, a writable delegated cgroup-v2 root gives each worker a bounded, insertion-identified
+//! cgroup. The launcher attaches itself before creating the worker, so all descendants inherit the
+//! cgroup even if they later escape the process group. Forced cleanup uses `cgroup.kill`; pinned
+//! process-group signaling remains the fallback when delegation is unavailable or a cgroup write
+//! fails. Non-Linux behavior is unchanged.
 //!
 //! A shared reaper thread is started before any launcher is spawned. `Drop` sends the pinned group
 //! `SIGKILL`, invalidates its PGID, and transfers the launcher [`Child`] to that thread without
@@ -63,7 +60,8 @@ pub use cgroup::{
     probe_cgroup_v2, probe_cgroup_v2_at, probe_cgroup_v2_at_with_controllers,
 };
 
-use reaper::{ensure_reaper, submit_to_reaper};
+use cgroup::WorkerCgroupLease;
+use reaper::{ensure_reaper, submit_cgroup_to_reaper, submit_to_reaper};
 
 #[cfg(target_os = "linux")]
 pub mod launcher;
@@ -74,7 +72,7 @@ const AUTH_PREFIX_SIZE: usize = 34;
 const REAP_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const CHILD_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const CHANNEL_CLOSE_EXIT_GRACE: Duration = Duration::from_millis(100);
-const WORKER_METADATA_VERSION: &str = "v1";
+const WORKER_METADATA_VERSION: &str = "v2";
 
 /// Maximum worker argument count encoded for the launcher.
 pub const MAX_WORKER_ARGUMENTS: usize = 128;
@@ -221,6 +219,7 @@ impl WorkerCommand {
         self,
         launcher: &Path,
         endpoint: SeqpacketEndpoint,
+        cgroup_path: Option<&Path>,
     ) -> Result<Command, WorkerMetadataError> {
         let metadata = WorkerMetadata::new(self.args, self.env)?;
         let (arguments, environment) = metadata.into_parts();
@@ -228,6 +227,21 @@ impl WorkerCommand {
         command
             .arg(self.program)
             .arg(WORKER_METADATA_VERSION)
+            .arg(if cgroup_path.is_some() { "1" } else { "0" });
+        if let Some(path) = cgroup_path {
+            let bytes = path.as_os_str().as_bytes();
+            if bytes.len() > MAX_WORKER_METADATA_ITEM_BYTES {
+                return Err(WorkerMetadataError::ItemTooLarge {
+                    actual: bytes.len(),
+                    maximum: MAX_WORKER_METADATA_ITEM_BYTES,
+                });
+            }
+            if bytes.contains(&0) {
+                return Err(WorkerMetadataError::InvalidEnvironmentOrArgument);
+            }
+            command.arg(encode_hex(bytes));
+        }
+        command
             .arg(arguments.len().to_string())
             .args(arguments.iter().map(|value| encode_hex(value.as_bytes())))
             .arg(environment.len().to_string());
@@ -249,6 +263,7 @@ impl WorkerCommand {
 pub struct WorkerSpawner {
     launcher: PathBuf,
     handshake_timeout: Duration,
+    cgroup_root: PathBuf,
 }
 
 impl WorkerSpawner {
@@ -268,7 +283,18 @@ impl WorkerSpawner {
         Ok(Self {
             launcher: resolve_executable(launcher.as_ref())?,
             handshake_timeout,
+            cgroup_root: PathBuf::from(DEFAULT_CGROUP_V2_ROOT),
         })
+    }
+
+    /// Overrides the delegated cgroup-v2 root used for worker containment.
+    ///
+    /// If the root does not expose a writable delegated hierarchy, spawning retains process-group
+    /// containment without creating or writing any cgroup.
+    #[must_use]
+    pub fn with_cgroup_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.cgroup_root = root.into();
+        self
     }
 
     /// Spawns a dedicated process group and authenticates its direct worker process.
@@ -288,11 +314,16 @@ impl WorkerSpawner {
         ensure_reaper()?;
         let nonce = generate_nonce()?;
         let (mut parent_endpoint, child_endpoint) = SeqpacketEndpoint::pair()?;
+        let cgroup = WorkerCgroupLease::try_create(&self.cgroup_root).unwrap_or_default();
         let child = command
-            .into_launcher_command(&self.launcher, child_endpoint)?
+            .into_launcher_command(
+                &self.launcher,
+                child_endpoint,
+                cgroup.as_ref().map(WorkerCgroupLease::path),
+            )?
             .spawn()?;
         let pgid = child_pid(child.id())?;
-        let mut starting = StartingChild::new(child, pgid);
+        let mut starting = StartingChild::new(child, pgid, cgroup);
 
         if let Err(error) = parent_endpoint.send(
             CHALLENGE,
@@ -313,11 +344,11 @@ impl WorkerSpawner {
         let worker_pid = verify_startup_ready(&frame, starting.id(), pgid, identity, &nonce)?;
         let worker_pid_u32 = u32::try_from(worker_pid).map_err(|_| SpawnError::InvalidChildPid)?;
 
-        let child = starting.disarm();
+        let (child, cgroup) = starting.disarm();
         Ok(WorkerProcess {
             worker_pid: worker_pid_u32,
             expected_worker_pid: worker_pid,
-            leader: LeaderState::new(child, pgid),
+            leader: LeaderState::new(child, pgid, cgroup),
             endpoint: Some(parent_endpoint),
             identity,
             nonce,
@@ -480,6 +511,12 @@ impl WorkerProcess {
             .and_then(|pgid| u32::try_from(pgid.as_raw_pid()).ok())
     }
 
+    /// Returns the owned worker cgroup path when delegated containment was acquired.
+    #[must_use]
+    pub fn cgroup_path(&self) -> Option<&Path> {
+        self.leader.cgroup.as_ref().map(WorkerCgroupLease::path)
+    }
+
     /// Borrows the only parent-side channel interface.
     ///
     /// The channel authenticates every received frame and closes itself once direct-child exit is
@@ -580,8 +617,8 @@ impl WorkerProcess {
 impl Drop for WorkerProcess {
     fn drop(&mut self) {
         let _ = self.leader.signal_group(Signal::KILL);
-        if let Some(child) = self.leader.take_child_and_invalidate_group() {
-            submit_to_reaper(child);
+        if let Some((child, cgroup)) = self.leader.take_child_and_invalidate_group() {
+            submit_to_reaper(child, cgroup);
         }
     }
 }
@@ -953,15 +990,17 @@ pub enum AuthenticatedChannelError {
 struct LeaderState {
     child: Option<Child>,
     pgid: Option<Pid>,
+    cgroup: Option<WorkerCgroupLease>,
     status: Option<ExitStatus>,
     event_reported: bool,
 }
 
 impl LeaderState {
-    fn new(child: Child, pgid: Pid) -> Self {
+    fn new(child: Child, pgid: Pid, cgroup: Option<WorkerCgroupLease>) -> Self {
         Self {
             child: Some(child),
             pgid: Some(pgid),
+            cgroup,
             status: None,
             event_reported: false,
         }
@@ -978,6 +1017,7 @@ impl LeaderState {
             self.status = Some(status);
             self.child = None;
             self.pgid = None;
+            self.release_cgroup();
         }
         Ok(self.status)
     }
@@ -1000,6 +1040,7 @@ impl LeaderState {
             self.status = Some(child.wait()?);
             self.child = None;
             self.pgid = None;
+            self.release_cgroup();
         }
         self.poll_event()
     }
@@ -1009,28 +1050,46 @@ impl LeaderState {
     }
 
     fn signal_group(&self, signal: Signal) -> io::Result<()> {
-        match (&self.child, self.pgid) {
+        let cgroup_result = if signal == Signal::KILL {
+            self.cgroup.as_ref().map_or(Ok(()), WorkerCgroupLease::kill)
+        } else {
+            Ok(())
+        };
+        let group_result = match (&self.child, self.pgid) {
             (Some(_), Some(pgid)) => signal_group(pgid, signal),
             _ => Ok(()),
-        }
+        };
+        cgroup_result.and(group_result)
     }
 
-    fn take_child_and_invalidate_group(&mut self) -> Option<Child> {
+    fn take_child_and_invalidate_group(&mut self) -> Option<(Child, Option<WorkerCgroupLease>)> {
         self.pgid = None;
-        self.child.take()
+        self.child.take().map(|child| (child, self.cgroup.take()))
+    }
+
+    fn release_cgroup(&mut self) {
+        let Some(mut cgroup) = self.cgroup.take() else {
+            return;
+        };
+        let _ = cgroup.kill();
+        if !matches!(cgroup.cleanup(), Ok(true)) {
+            submit_cgroup_to_reaper(cgroup);
+        }
     }
 }
 
 struct StartingChild {
     child: Option<Child>,
     pgid: Option<Pid>,
+    cgroup: Option<WorkerCgroupLease>,
 }
 
 impl StartingChild {
-    fn new(child: Child, pgid: Pid) -> Self {
+    fn new(child: Child, pgid: Pid, cgroup: Option<WorkerCgroupLease>) -> Self {
         Self {
             child: Some(child),
             pgid: Some(pgid),
+            cgroup,
         }
     }
 
@@ -1045,21 +1104,30 @@ impl StartingChild {
         if let Some(status) = child.try_wait()? {
             self.child = None;
             self.pgid = None;
+            if let Some(cgroup) = self.cgroup.take() {
+                submit_cgroup_to_reaper(cgroup);
+            }
             return Ok(Some(status));
         }
         Ok(None)
     }
 
-    fn disarm(mut self) -> Child {
-        self.child.take().expect("armed child guard")
+    fn disarm(mut self) -> (Child, Option<WorkerCgroupLease>) {
+        (
+            self.child.take().expect("armed child guard"),
+            self.cgroup.take(),
+        )
     }
 }
 
 impl Drop for StartingChild {
     fn drop(&mut self) {
         if let (Some(child), Some(pgid)) = (self.child.take(), self.pgid.take()) {
+            if let Some(cgroup) = self.cgroup.as_ref() {
+                let _ = cgroup.kill();
+            }
             let _ = signal_group(pgid, Signal::KILL);
-            submit_to_reaper(child);
+            submit_to_reaper(child, self.cgroup.take());
         }
     }
 }
@@ -1305,7 +1373,11 @@ mod tests {
         let program = command.program.clone();
         let (_parent_endpoint, child_endpoint) = SeqpacketEndpoint::pair().unwrap();
         let launcher = command
-            .into_launcher_command(Path::new("/bin/true"), child_endpoint)
+            .into_launcher_command(
+                Path::new("/bin/true"),
+                child_endpoint,
+                Some(Path::new("/cg/w")),
+            )
             .unwrap();
         let encoded = launcher
             .get_args()
@@ -1316,7 +1388,9 @@ mod tests {
             encoded,
             [
                 program.as_os_str().as_bytes(),
-                b"v1",
+                b"v2",
+                b"1",
+                b"2f63672f77",
                 b"1",
                 b"6d6f6465",
                 b"1",
