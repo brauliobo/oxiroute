@@ -29,6 +29,10 @@ import {
 } from './decoders'
 import { ApiError, apiErrorMessage, request } from './transport'
 import type {
+  GenerationResponse as GeneratedGenerationResponse,
+  GenerationStatusDto as GeneratedGenerationStatus,
+} from './generated/controlPlane'
+import type {
   AdministrativeState,
   EndpointHealthState,
   HealthFailure,
@@ -721,25 +725,8 @@ export interface EventStreamClient {
   closed: Promise<void>
 }
 
-export interface GenerationStatus {
-  buildVersion: string
-  diskRevision: string | null
-  candidateRevision: string | null
-  activeRevision: string | null
-  previousRevision: string | null
-  quarantinedRevision: string | null
-  activeAccepting: boolean
-  degraded: boolean
-  lastFailure: string | null
-  prepares: number
-  activations: number
-  failures: number
-  rollbacks: number
-}
-
-export interface GenerationResponse {
-  generation: GenerationStatus
-}
+export type GenerationStatus = GeneratedGenerationStatus
+export type GenerationResponse = GeneratedGenerationResponse
 
 export interface MutationResponse {
   outcome: string

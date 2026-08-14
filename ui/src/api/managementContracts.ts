@@ -1,15 +1,29 @@
 import type { UpstreamAlgorithm } from '../config'
+import type {
+  AdministrativeStateDto,
+  CacheDto,
+  EndpointDto,
+  EndpointHealthStateDto,
+  HealthFailureDto,
+  HealthOverrideDto,
+  HttpOperationDto,
+  LatencyDto,
+  ListenerDto,
+  ListenerInventoryResponse as GeneratedListenerInventoryResponse,
+  ListenerRuntimeStateDto,
+  PoolDto,
+  PoolInventoryResponse as GeneratedPoolInventoryResponse,
+  ProxyProtocolDto,
+  ServerInventoryEntry as GeneratedServerInventoryEntry,
+  ServerInventoryResponse as GeneratedServerInventoryResponse,
+  StatusResponse,
+  TcpRelayDto,
+} from './generated/controlPlane'
 
-export interface MonitoringTraffic {
-  acceptedConnections: string
-  rejectedConnections: string
-  activeConnections: number
-  bytesReceived: string
-  bytesSent: string
-}
+export type MonitoringTraffic = Pick<ListenerDto, 'acceptedConnections' | 'rejectedConnections' | 'activeConnections' | 'bytesReceived' | 'bytesSent'>
 
-export type ListenerRuntimeState = 'configured' | 'listening' | 'stopped' | 'failed'
-export type AdministrativeState = 'ready' | 'drain' | 'maintenance'
+export type ListenerRuntimeState = ListenerRuntimeStateDto
+export type AdministrativeState = AdministrativeStateDto
 export type MonitoringListenerProtocol =
   | 'http'
   | 'tcp'
@@ -47,39 +61,19 @@ export type MonitoringProxyProtocolResult =
   | 'mismatch'
   | 'io_error'
 
-export interface MonitoringLatency {
-  buckets: Array<{ upperBoundMs: number | null; count: string }>
-  count: string
-  sumMs: string
-}
+export type MonitoringLatency = LatencyDto
 
-export interface MonitoringHttpOperations {
-  outcomes: Array<{ result: MonitoringHttpOperationResult; count: string }>
-  latency: MonitoringLatency
-}
+export type MonitoringHttpOperations = HttpOperationDto
 
-export interface MonitoringTcpRelays {
-  outcomes: Array<{ result: MonitoringTcpRelayResult; count: string }>
-  latency: MonitoringLatency
-}
+export type MonitoringTcpRelays = TcpRelayDto
 
-export interface MonitoringProxyProtocol {
-  outcomes: Array<{ result: MonitoringProxyProtocolResult; count: string }>
-}
+export type MonitoringProxyProtocol = ProxyProtocolDto
 
-export interface MonitoringCache {
-  hits: string
-  misses: string
-  admissions: string
-  evictions: string
-}
+export type MonitoringCache = CacheDto
 
-export interface MonitoringListener extends MonitoringTraffic {
+export type MonitoringListener = Omit<ListenerDto, 'administrativeState' | 'protocol' | 'state' | 'httpOperations' | 'tcpRelays' | 'proxyProtocol' | 'cache'> & {
   administrativeState: AdministrativeState
-  name: string
   protocol: MonitoringListenerProtocol
-  bind: string
-  maxConnections: number | null
   state: ListenerRuntimeState
   httpOperations: MonitoringHttpOperations | null
   tcpRelays: MonitoringTcpRelays | null
@@ -87,83 +81,41 @@ export interface MonitoringListener extends MonitoringTraffic {
   cache: MonitoringCache | null
 }
 
-export type EndpointHealthState = 'unchecked' | 'unknown' | 'healthy' | 'unhealthy'
-export type HealthFailure = 'timeout' | 'connect_failed' | 'unexpected_status' | 'protocol_error'
-export type HealthOverride = 'auto' | 'up' | 'down'
+export type EndpointHealthState = EndpointHealthStateDto
+export type HealthFailure = HealthFailureDto
+export type HealthOverride = HealthOverrideDto
 export type MonitoringUpstreamAlgorithm = Extract<UpstreamAlgorithm, string> | 'weighted_round_robin'
 
-export interface MonitoringPoolEndpoint {
-  activeConnections: string
+export type MonitoringPoolEndpoint = Omit<EndpointDto, 'administrativeState' | 'healthOverride' | 'state' | 'lastFailure' | 'passiveEjectionReason'> & {
   administrativeState: AdministrativeState
-  address: string
-  checksEnabled: boolean
-  checksRunning: boolean
-  configuredMaxConnections: number | null
   healthOverride: HealthOverride
-  maxConnections: number | null
-  name: string
   state: EndpointHealthState
-  lastCheckedAtUnixMs: number | null
-  lastTransitionAtUnixMs: number | null
-  successfulChecks: string
-  failedChecks: string
-  consecutiveSuccesses: string
-  consecutiveFailures: string
   lastFailure: HealthFailure | null
-  weight: number
-  passiveEjected: boolean
-  passiveFailureCount: string
-  passiveConsecutiveFailures: string
-  passiveEjectionCount: string
   passiveEjectionReason: HealthFailure | null
-  passiveEjectedAtUnixMs: number | null
-  passiveEjectionUntilUnixMs: number | null
-  passiveRecoveryCount: string
-  passiveLastRecoveryAtUnixMs: number | null
 }
 
-export interface MonitoringPool {
-  name: string
+export type MonitoringPool = Omit<PoolDto, 'algorithm' | 'endpoints'> & {
   algorithm: MonitoringUpstreamAlgorithm
-  availableEndpoints: number
-  totalEndpoints: number
-  unavailableSelections: string
-  queued: number
-  queuedTotal: string
-  queueTimeouts: string
-  queueCancellations: string
   endpoints: MonitoringPoolEndpoint[]
 }
 
-export interface RuntimeStatus {
-  schemaVersion: 1
-  buildVersion: string
-  diskRevision: string | null
-  candidateRevision: string | null
-  activeRevision: string | null
-  previousRevision: string | null
-  degraded: boolean
+export type RuntimeStatus = Omit<StatusResponse, 'listeners'> & { listeners: MonitoringListener[] }
+
+export type ListenerInventoryResponse = Omit<GeneratedListenerInventoryResponse, 'listeners'> & {
   listeners: MonitoringListener[]
 }
 
-export interface ListenerInventoryResponse {
-  listeners: MonitoringListener[]
+export type PoolInventoryResponse = Omit<GeneratedPoolInventoryResponse, 'pools'> & { pools: MonitoringPool[] }
+
+export type ServerInventoryEntry = Omit<GeneratedServerInventoryEntry, 'server'> & {
+  server: MonitoringPoolEndpoint
 }
 
-export interface PoolInventoryResponse {
-  pools: MonitoringPool[]
+export type ServerInventoryResponse = Omit<GeneratedServerInventoryResponse, 'servers'> & {
+  servers: ServerInventoryEntry[]
 }
 
 export interface ServerTarget {
   pool: string
   server: string
-}
-
-export interface ServerInventoryEntry {
-  pool: string
-  server: MonitoringPoolEndpoint
-}
-
-export interface ServerInventoryResponse {
-  servers: ServerInventoryEntry[]
 }

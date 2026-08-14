@@ -6,6 +6,7 @@ import {
   fetchMonitoring,
   fetchPools,
   fetchServers,
+  fetchStatus,
 } from './api'
 import {
   contractMonitoring,
@@ -16,6 +17,7 @@ import {
   managementListeners,
   managementPools,
   managementServers,
+  managementStatus,
 } from './test/managementFixtures'
 
 const token = 'phase6-ui-management-token'
@@ -27,6 +29,17 @@ afterEach(() => {
 })
 
 describe('Phase 6 management response characterization', () => {
+  it('parses the complete generated status contract and rejects incomplete status metadata', async () => {
+    const expected = managementStatus()
+    stubJson(expected)
+    await expect(fetchStatus(token)).resolves.toEqual(expected)
+
+    const missingAudit = structuredClone(expected) as unknown as JsonRecord
+    delete missingAudit.audit
+    stubJson(missingAudit)
+    await expect(fetchStatus(token)).rejects.toThrow('invalid response payload')
+  })
+
   it('parses the generation and inventory DTO envelopes with decimal counters and nulls intact', async () => {
     const expectedGeneration = managementGeneration()
     stubJson(expectedGeneration)
