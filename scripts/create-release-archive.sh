@@ -19,21 +19,12 @@ export SOURCE_DATE_EPOCH=${source_date_epoch}
 temporary_archive=$(mktemp "${archive}.XXXXXX")
 trap 'rm -f -- "${temporary_archive}"' EXIT
 
-git -C "${repo_dir}" ls-files -z -- \
+git -C "${repo_dir}" archive \
+  --format=tar \
+  --prefix="oxiroute-${version}/" \
+  HEAD -- \
   . \
-  "${RELEASE_ARCHIVE_EXCLUDES[@]}" | \
-  tar \
-    --directory="${repo_dir}" \
-    --null \
-    --files-from=- \
-    --sort=name \
-    --mtime="@${source_date_epoch}" \
-    --owner=0 \
-    --group=0 \
-    --numeric-owner \
-    --transform="s|^|oxiroute-${version}/|" \
-    --create \
-    --file=- | gzip -n >"${temporary_archive}"
+  "${RELEASE_ARCHIVE_EXCLUDES[@]}" | gzip -n >"${temporary_archive}"
 
 "${repo_dir}/scripts/verify-release-archive.sh" "${temporary_archive}" "${version}" --compare-worktree
 mv -- "${temporary_archive}" "${archive}"

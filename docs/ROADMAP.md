@@ -9,7 +9,7 @@ the UI edits the same model through a revisioned API.
 The priorities are safe reloads, correct protocol behavior, diagnostics, and observable
 limits. Feature count comes after those invariants.
 
-The package currently declares `0.5.0`. This roadmap describes the current pre-alpha working
+The package currently declares `0.5.1`. This roadmap describes the current pre-alpha working
 release line, not a 1.0 commitment.
 
 Roadmap status is not current support. `stable` means part of the current narrow release
@@ -105,7 +105,7 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
 
 The original Milestone 1 boundary explicitly excluded UDP, forward proxying, caching, HTTP/3,
 native config importers, transparent interception, firewall management, and remote multi-user
-administration. The current `0.5.0` working release has partial HTTP/1 forward proxying, H2/H3
+administration. The current `0.5.1` working release has partial HTTP/1 forward proxying, H2/H3
 classic CONNECT, reverse H3, UDP relay, bounded HTTP caching, and bounded nginx, HAProxy, Apache,
 Squid, and Varnish import paths;
 that progress does not promote those subsets to complete compatibility or make foundations active

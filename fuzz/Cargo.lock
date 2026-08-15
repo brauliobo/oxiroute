@@ -794,6 +794,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
 name = "either"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2187,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2226,6 +2232,7 @@ dependencies = [
  "rustix",
  "rustls",
  "rustls-native-certs",
+ "schemars",
  "serde",
  "serde_json",
  "signal-hook",
@@ -2239,9 +2246,10 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-acme"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64",
+ "hickory-resolver",
  "http",
  "httpdate",
  "openssl",
@@ -2251,12 +2259,13 @@ dependencies = [
  "sha2",
  "thiserror 2.0.19",
  "time",
+ "tokio",
  "zeroize",
 ]
 
 [[package]]
 name = "oxiroute-cache"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -2270,7 +2279,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono-tz",
  "http",
@@ -2280,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config-source"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "hocon-parser",
  "kdl",
@@ -2294,7 +2303,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-forward-proxy"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2325,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-import"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "http",
  "openssl",
@@ -2341,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-rtmp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "bytes",
  "chrono",
@@ -2357,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "serde",
  "thiserror 2.0.19",
@@ -2365,7 +2374,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision-unix"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "oxiroute-supervision",
  "rustix",
@@ -2376,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-master"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "oxiroute-supervision",
  "oxiroute-supervision-unix",
@@ -2387,7 +2396,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-process"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "close_fds",
  "oxiroute-supervision",
@@ -2961,6 +2970,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-cast"
+version = "1.0.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "216e8f773d7923bcba9ceb86a86c93cabb3903a11872fc3f138c49630e50b96d"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c9283685feec7d69af75fb0e858d5e7378f33fe4fc699383b2916ab9273e03c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3182,6 +3211,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d98c67716b46af2f0b8cf752abc930f6f9aecfbf671ecfb531db8a31dbe4e2ba"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3250,6 +3304,17 @@ name = "serde_derive"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",

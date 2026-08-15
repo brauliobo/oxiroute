@@ -188,7 +188,7 @@ complete Squid parity while such entries remain.
 
 ## Release definition
 
-The package currently declares version `0.5.0`. The current release line is pre-alpha, not a 1.0
+The package currently declares version `0.5.1`. The current release line is pre-alpha, not a 1.0
 stability claim. The compatibility matrix records the supported narrow paths for this working
 release line, while the roadmap records work that is not yet available.
 
