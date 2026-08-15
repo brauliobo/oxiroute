@@ -991,10 +991,25 @@ fn run_cleanup(receiver: &Receiver<CleanupCommand>) {
     let mut reapers = Vec::new();
     let mut disconnected = false;
     loop {
-        match receiver.recv_timeout(REAPER_POLL_INTERVAL) {
-            Ok(command) => retain_cleanup_command(command, &mut tasks, &mut reapers),
-            Err(mpsc::RecvTimeoutError::Disconnected) => disconnected = true,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        let command = if tasks.is_empty() && reapers.is_empty() {
+            if let Ok(command) = receiver.recv() {
+                Some(command)
+            } else {
+                disconnected = true;
+                None
+            }
+        } else {
+            match receiver.recv_timeout(REAPER_POLL_INTERVAL) {
+                Ok(command) => Some(command),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    disconnected = true;
+                    None
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+            }
+        };
+        if let Some(command) = command {
+            retain_cleanup_command(command, &mut tasks, &mut reapers);
         }
         while let Ok(command) = receiver.try_recv() {
             retain_cleanup_command(command, &mut tasks, &mut reapers);
@@ -1346,18 +1361,35 @@ fn run_reaper(
     let mut shutting_down = false;
     let mut shutdown_deadline: Option<Instant> = None;
     loop {
-        match receiver.recv_timeout(REAPER_POLL_INTERVAL) {
-            Ok(ReaperCommand::Reap(task)) => tasks.push(task),
-            Ok(ReaperCommand::Shutdown { deadline }) => {
+        if shutting_down && tasks.is_empty() {
+            return;
+        }
+        let command = if tasks.is_empty() {
+            if let Ok(command) = receiver.recv() {
+                Some(command)
+            } else {
+                shutting_down = true;
+                None
+            }
+        } else {
+            match receiver.recv_timeout(REAPER_POLL_INTERVAL) {
+                Ok(command) => Some(command),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    shutting_down = true;
+                    None
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+            }
+        };
+        match command {
+            Some(ReaperCommand::Reap(task)) => tasks.push(task),
+            Some(ReaperCommand::Shutdown { deadline }) => {
                 shutting_down = true;
                 shutdown_deadline = earliest_deadline(shutdown_deadline, deadline);
             }
             #[cfg(test)]
-            Ok(ReaperCommand::Panic) => panic!("injected recorder reaper panic"),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                shutting_down = true;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Some(ReaperCommand::Panic) => panic!("injected recorder reaper panic"),
+            None => {}
         }
         loop {
             match receiver.try_recv() {

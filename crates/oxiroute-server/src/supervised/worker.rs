@@ -39,7 +39,7 @@ const REJECT_UNSUPPORTED: u8 = 5;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 // Keep worker lifecycle work below the master's ten-second quiesce/drain deadlines.
 const LIFECYCLE_PHASE_TIMEOUT: Duration = Duration::from_secs(9);
-const POLL_INTERVAL: Duration = Duration::from_millis(5);
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const STATUS_INTERVAL: Duration = Duration::from_millis(250);
 const TEST_RUNTIME_FAILURE_ENV: &str = "OXIROUTE_INTERNAL_TEST_RUNTIME_FAILURE";
 
