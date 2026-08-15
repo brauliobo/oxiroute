@@ -67,10 +67,10 @@ Keep all three aligned.
 
 ## Package Path
 
-`scripts/create-release-archive.sh` creates a deterministic source archive from Git-tracked files,
+`scripts/create-release-archive.sh` creates a deterministic source archive from committed `HEAD`,
 excluding the Arch recipe and benchmark report artifacts. `scripts/verify-release-archive.sh` checks
 the root prefix, every committed lock/license input, forbidden artifact and secret-shaped paths,
-private-key and high-signal credential content, and optional worktree file-list equality.
+private-key and high-signal credential content, and optional committed file-list equality.
 `packaging/arch/build-local.sh` reuses those checks before invoking `makepkg`; it still checks the
 recipe checksum. The package installs the daemon, management client, importer, service metadata,
 examples, and documentation but does not enable or start systemd automatically.
@@ -78,9 +78,9 @@ examples, and documentation but does not enable or start systemd automatically.
 Before creating an archive, verify the version metadata and release notes:
 
 ```sh
-./scripts/verify-release-version.sh 0.5.0
-./scripts/create-release-archive.sh /tmp/oxiroute-0.5.0.tar.gz 0.5.0
-./scripts/verify-release-archive.sh /tmp/oxiroute-0.5.0.tar.gz 0.5.0 --compare-worktree
+./scripts/verify-release-version.sh 0.5.1
+./scripts/create-release-archive.sh /tmp/oxiroute-0.5.1.tar.gz 0.5.1
+./scripts/verify-release-archive.sh /tmp/oxiroute-0.5.1.tar.gz 0.5.1 --compare-worktree
 ```
 
 Read [packaging/arch/README.md](../../packaging/arch/README.md) before changing service permissions,

@@ -90,18 +90,18 @@ restart; they are not silently applied by reload.
 ## Release source
 
 `PKGBUILD` expects the checksum-pinned release asset
-`https://github.com/brauliobo/oxiroute/releases/download/v0.5.0/oxiroute-0.5.0.tar.gz`. The asset is a
-deterministic archive of Git-tracked files with the `oxiroute-0.5.0/` prefix and without this
+`https://github.com/brauliobo/oxiroute/releases/download/v0.5.1/oxiroute-0.5.1.tar.gz`. The asset is a
+deterministic archive of committed files with the `oxiroute-0.5.1/` prefix and without this
 `packaging/arch` directory. Excluding untracked and ignored files prevents local build or benchmark
 artifacts from entering a release. Excluding the AUR recipe avoids making the source checksum depend
 on the checksum recorded inside the recipe.
 
-The v0.5.0 archive includes the supervised launcher and related workspace crates. Publish the release
+The v0.5.1 archive includes the supervised launcher and related workspace crates. Publish the release
 archive before using the recipe, then keep the source checksum synchronized with that exact asset and
 regenerate `.SRCINFO`.
 
 From this repository, `../../scripts/verify-release-version.sh` checks aligned release metadata and
-`../../scripts/create-release-archive.sh` recreates an archive from the current worktree. The archive
+`../../scripts/create-release-archive.sh` recreates an archive from committed `HEAD`. The archive
 verifier excludes benchmark reports and build artifacts, then `./build-local.sh` checks it against the
 PKGBUILD checksum before invoking `makepkg`. Until the next release archive is published, the
 generated archive may intentionally not match the currently pinned checksum. Pass an existing matching
@@ -112,7 +112,7 @@ Examples:
 
 ```sh
 ./build-local.sh
-./build-local.sh /path/to/oxiroute-0.5.0.tar.gz --cleanbuild
+./build-local.sh /path/to/oxiroute-0.5.1.tar.gz --cleanbuild
 ```
 
 Build products and source archives are written below `.makepkg/`, which is ignored by Git. Cargo's

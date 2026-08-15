@@ -45,8 +45,9 @@ entries=$(mktemp)
 sorted_entries=$(mktemp)
 expected_entries=$(mktemp)
 sorted_expected=$(mktemp)
+archive_files=$(mktemp)
 secret_entries=$(mktemp)
-trap 'rm -f -- "${entries}" "${sorted_entries}" "${expected_entries}" "${sorted_expected}" "${secret_entries}"' EXIT
+trap 'rm -f -- "${entries}" "${sorted_entries}" "${expected_entries}" "${sorted_expected}" "${archive_files}" "${secret_entries}"' EXIT
 
 tar -tzf "${archive}" >"${entries}"
 [[ -s "${entries}" ]] || {
@@ -62,6 +63,7 @@ for path in "${RELEASE_REQUIRED_PATHS[@]}"; do required_paths["${path}"]=false; 
 for path in "${RELEASE_ALLOWED_SECRET_PATHS[@]}"; do allowed_secret_paths["${path}"]=true; done
 while IFS= read -r entry; do
   case "${entry}" in
+    "${root}/") continue ;;
     "${root}"/*) relative=${entry#"${root}/"} ;;
     *)
       printf 'archive entry is outside %s/: %s\n' "${root}" "${entry}" >&2
@@ -121,15 +123,20 @@ for path in "${RELEASE_REQUIRED_PATHS[@]}"; do
 done
 
 if [[ "${compare_worktree}" == true ]]; then
-  while IFS= read -r -d '' path; do
-    printf '%s/%s\n' "${root}" "${path}"
-  done < <(
-    git -C "${repo_dir}" ls-files -z -- \
+  git -C "${repo_dir}" archive \
+    --format=tar \
+    --prefix="${root}/" \
+    HEAD -- \
       . \
-      "${RELEASE_ARCHIVE_EXCLUDES[@]}"
-  ) >"${expected_entries}"
+      "${RELEASE_ARCHIVE_EXCLUDES[@]}" | tar -tf - | \
+    while IFS= read -r entry; do
+      [[ "${entry}" == */ ]] || printf '%s\n' "${entry}"
+    done >"${expected_entries}"
+  while IFS= read -r entry; do
+    [[ "${entry}" == */ ]] || printf '%s\n' "${entry}"
+  done <"${sorted_entries}" >"${archive_files}"
   LC_ALL=C sort "${expected_entries}" >"${sorted_expected}"
-  if ! diff -u "${sorted_expected}" "${sorted_entries}"; then
+  if ! diff -u "${sorted_expected}" "${archive_files}"; then
     printf 'release archive file list does not match Git-tracked release inputs\n' >&2
     exit 1
   fi

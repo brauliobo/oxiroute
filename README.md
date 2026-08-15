@@ -5,7 +5,7 @@ services from one typed configuration. It is built on [Cloudflare Pingora](https
 and is designed around explicit behavior, bounded inputs, observable runtime state, and safe
 configuration changes.
 
-**Current release line:** `0.5.0` (pre-alpha; `v0.5.0` is the current repository release)<br>
+**Current release line:** `0.5.1` (pre-alpha; `v0.5.1` is the current repository release)<br>
 **Project status:** pre-alpha; read the [compatibility matrix](docs/COMPATIBILITY.md) before using it
 for production traffic.<br>
 **Toolchain status:** the checked-in workspace and CI use Rust `1.97.1` as the active MSRV.<br>
@@ -242,7 +242,7 @@ failure-path, observable-state, and interoperability coverage as part of support
 - [Developer guides](docs/developer/README.md)
 - [Reference index](docs/reference/README.md)
 - [Compatibility matrix](docs/COMPATIBILITY.md)
-- [Release notes](docs/RELEASE_NOTES_0.5.0.md)
+- [Release notes](docs/RELEASE_NOTES_0.5.1.md)
 
 ## License
 
