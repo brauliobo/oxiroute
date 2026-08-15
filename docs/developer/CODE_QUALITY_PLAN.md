@@ -27,8 +27,8 @@ The remaining decisions are intentional:
   coordinated `0.5` boundary: owned validation, proof-only rendering/planning/TLS/listener APIs,
   importer candidate capability state, authored/effective revisions, and the final `ConfigDraft`
   rename are mechanically inventoried from baseline commit `2d9c5fe`.
-- Reducing public RTMP recording types is deferred to the `0.5` semver decision; the current `0.4.1`
-  public surface was not narrowed during behavior-neutral decomposition.
+- Reducing public RTMP recording types remains deferred beyond `0.5.0`; this release does not narrow
+  the public surface during behavior-neutral decomposition.
 - Disk-cache, recording-store, and ACME pinned directories have different symlink, locking,
   recovery, and durability contracts. Varnish source and include paths likewise retain product-
   specific semantics. Neither area was generalized merely because paths look structurally similar.
@@ -680,7 +680,7 @@ Encapsulation tasks within these splits:
 
 - [ ] Review public RTMP recording re-exports in `rtmp/src/lib.rs:74-83`; keep policy/controller APIs
   public and make low-level leases, commits, files, and workers crate-private only after a semver
-  review. **Deferred:** decide the visibility break for `0.5`; do not narrow the `0.4.1` surface.
+  review. **Deferred:** decide a later visibility break; do not narrow the `0.5.0` surface.
 - [ ] Keep secure pinned-directory behavior separate across disk cache, recording store, and ACME state
   until their symlink, locking, recovery, and durability threat models are documented. Do not create a
   shared filesystem crate merely because the code looks similar. **Deferred:** these directory

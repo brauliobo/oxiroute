@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       CARGO_INCREMENTAL: 0
-      CARGO_BUILD_JOBS: 4
+      CARGO_BUILD_JOBS: 3
     steps:
       - name: Check out release ref
         uses: actions/checkout@v4
@@ -35,6 +35,8 @@ jobs:
 
       - name: Install Rust 1.97.1
         uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
