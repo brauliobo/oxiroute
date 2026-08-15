@@ -194,5 +194,5 @@ if ((failures > 0)); then
 fi
 
 cargo +1.97.1 fmt --manifest-path "${repo_dir}/fuzz/Cargo.toml" --check
-cargo +1.97.1 check --manifest-path "${repo_dir}/fuzz/Cargo.toml" --locked --jobs 4
+cargo +1.97.1 check --manifest-path "${repo_dir}/fuzz/Cargo.toml" --locked --jobs 3
 printf 'verified %d bounded fuzz targets and %d corpus seeds\n' "${#expected_targets[@]}" "${corpus_files}"
