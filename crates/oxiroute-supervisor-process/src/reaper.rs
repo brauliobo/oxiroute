@@ -30,12 +30,19 @@ fn reaper() -> &'static Reaper {
             .spawn(move || {
                 let mut children = Vec::<ReaperEntry>::new();
                 loop {
-                    match receiver.recv_timeout(REAP_POLL_INTERVAL) {
-                        Ok(child) => children.push(child),
-                        Err(mpsc::RecvTimeoutError::Disconnected) if children.is_empty() => break,
-                        Err(
-                            mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected,
-                        ) => {}
+                    if children.is_empty() {
+                        let Ok(child) = receiver.recv() else {
+                            break;
+                        };
+                        children.push(child);
+                    } else {
+                        match receiver.recv_timeout(REAP_POLL_INTERVAL) {
+                            Ok(child) => children.push(child),
+                            Err(
+                                mpsc::RecvTimeoutError::Timeout
+                                | mpsc::RecvTimeoutError::Disconnected,
+                            ) => {}
+                        }
                     }
                     while let Ok(child) = receiver.try_recv() {
                         children.push(child);
