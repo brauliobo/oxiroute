@@ -24,10 +24,11 @@ use oxiroute_config::{
     HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipMinimumVersion,
     HttpGzipPolicy, HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPathRewrite,
     HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-    HttpResponseHeaderMutation, HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction,
-    HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
-    HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersionPolicy, Listener,
-    Protocol, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryTarget,
+    HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpSameSite, HttpService,
+    HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
+    HttpUpstreamHost, HttpVersionPolicy, Listener, Protocol, UpstreamAlgorithm, UpstreamEndpoint,
+    UpstreamPool, UpstreamServer,
 };
 use oxiroute_import::nginx::{
     NginxDefaultErrorPageOverlay, NginxImportOptions, import_root_with_options,
@@ -3139,6 +3140,111 @@ async fn retries_when_an_upstream_response_times_out() {
     })
     .await
     .expect("response timeout retry test timed out");
+}
+
+#[tokio::test]
+async fn retries_a_buffered_json_post_after_an_upstream_response_timeout() {
+    timeout(Duration::from_secs(6), async {
+        let silent = Origin::start_silent().await;
+        let healthy_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("healthy origin bind");
+        let healthy_address = healthy_listener
+            .local_addr()
+            .expect("healthy origin address");
+        let expected_body = b"{\"message\":\"retry\"}";
+        let healthy = tokio::spawn(async move {
+            let (mut stream, _) = healthy_listener.accept().await.expect("healthy origin accept");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut chunk).await.expect("healthy origin request");
+                assert_ne!(read, 0, "healthy origin request ended early");
+                request.extend_from_slice(&chunk[..read]);
+                if request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .is_some_and(|header_end| request.len() >= header_end + 4 + expected_body.len())
+                {
+                    break;
+                }
+            }
+            assert!(request.starts_with(b"POST /v1/chat HTTP/1.1\r\n"));
+            assert!(request.ends_with(expected_body), "request: {request:?}");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nreplayed")
+                .await
+                .expect("healthy origin response");
+        });
+        let mut retry_route = route(None, "/", &[], "retry");
+        retry_route.policy.read_timeout_ms = 50;
+        retry_route.policy.request_buffering = true;
+        let HttpRouteAction::Proxy { policy, .. } = &mut retry_route.action else {
+            panic!("proxy route");
+        };
+        policy.retry.triggers = vec![HttpRetryTrigger::ResponseTimeout];
+        policy.retry.method_safety = HttpRetryMethodSafety::All;
+        policy.retry.body_safety = HttpRetryBodySafety::Buffered;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[silent.address, healthy_address])],
+            vec![retry_route],
+            1,
+            1,
+        )
+        .await;
+
+        let request = [
+            format!(
+                "POST /v1/chat HTTP/1.1\r\nHost: retry.test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                expected_body.len()
+            )
+            .into_bytes(),
+            expected_body.to_vec(),
+        ]
+        .concat();
+        let response = proxy.request_bytes(&request).await;
+
+        assert_origin_response(&response, "replayed");
+        healthy.await.expect("healthy origin task");
+        proxy.finish().await;
+        silent.finish().await;
+    })
+    .await
+    .expect("buffered JSON response timeout retry test timed out");
+}
+
+#[tokio::test]
+async fn does_not_retry_a_default_json_post_after_an_upstream_response_timeout() {
+    timeout(Duration::from_secs(6), async {
+        let silent = Origin::start_silent().await;
+        let unused = Origin::start("must-not-receive", 1).await;
+        let mut retry_route = route(None, "/", &[], "retry");
+        retry_route.policy.read_timeout_ms = 50;
+        let HttpRouteAction::Proxy { policy, .. } = &mut retry_route.action else {
+            panic!("proxy route");
+        };
+        policy.retry.triggers = vec![HttpRetryTrigger::ResponseTimeout];
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[silent.address, unused.address])],
+            vec![retry_route],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request_bytes(
+                b"POST /v1/chat HTTP/1.1\r\nHost: retry.test\r\nContent-Type: application/json\r\nContent-Length: 19\r\nConnection: close\r\n\r\n{\"message\":\"retry\"}",
+            )
+            .await;
+
+        assert_eq!(response.status, 502, "response: {}", response.text());
+        proxy.finish().await;
+        silent.finish().await;
+        unused.assert_not_contacted().await;
+    })
+    .await
+    .expect("default JSON response timeout retry test timed out");
 }
 
 #[tokio::test]
