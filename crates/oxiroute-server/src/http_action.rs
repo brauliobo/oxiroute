@@ -16,10 +16,8 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bytes::Bytes;
-#[cfg(test)]
-use http::Method;
 use http::{
-    HeaderMap, HeaderName, HeaderValue,
+    HeaderMap, HeaderName, HeaderValue, Method,
     header::{
         AUTHORIZATION, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE, IF_UNMODIFIED_SINCE,
         RANGE,
@@ -34,8 +32,8 @@ use oxiroute_config::{
     AccessLogPolicy, HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
     HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpProxyPathRewrite,
     HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-    HttpResponseHeaderMutation, HttpRetryTarget, HttpRetryTrigger, HttpRoutePolicy,
-    HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
+    HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryTarget,
+    HttpRetryTrigger, HttpRoutePolicy, HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
 };
 use rustix::{
     fd::OwnedFd,
@@ -345,6 +343,8 @@ pub(crate) struct ProxyPolicyPlan {
     pub(crate) max_retries: u8,
     pub(crate) retry_triggers: Box<[HttpRetryTrigger]>,
     pub(crate) retry_response_statuses: Box<[u16]>,
+    pub(crate) retry_method_safety: HttpRetryMethodSafety,
+    pub(crate) retry_body_safety: HttpRetryBodySafety,
     pub(crate) retry_target: HttpRetryTarget,
     pub(crate) retry_delay: Duration,
     pub(crate) final_redispatch: bool,
@@ -372,6 +372,8 @@ impl ProxyPolicyPlan {
             max_retries: self.max_retries,
             retry_triggers: self.retry_triggers.clone(),
             retry_response_statuses: self.retry_response_statuses.clone(),
+            retry_method_safety: self.retry_method_safety,
+            retry_body_safety: self.retry_body_safety,
             retry_target: self.retry_target,
             retry_delay: self.retry_delay,
             final_redispatch: self.final_redispatch,
@@ -439,6 +441,8 @@ impl ProxyPolicyPlan {
             max_retries: policy.retry.max_retries,
             retry_triggers: policy.retry.triggers.clone().into_boxed_slice(),
             retry_response_statuses: policy.retry.response_statuses.clone().into_boxed_slice(),
+            retry_method_safety: policy.retry.method_safety,
+            retry_body_safety: policy.retry.body_safety,
             retry_target: policy.retry.target,
             retry_delay: Duration::from_millis(policy.retry.delay_ms),
             final_redispatch: policy.retry.final_redispatch,
@@ -449,6 +453,21 @@ impl ProxyPolicyPlan {
 
     pub(crate) fn retries_on(&self, trigger: HttpRetryTrigger) -> bool {
         self.retry_triggers.contains(&trigger)
+    }
+
+    pub(crate) fn request_is_replay_safe(
+        &self,
+        method: &Method,
+        body_is_empty: bool,
+        request_buffered: bool,
+    ) -> bool {
+        let method_safe = match self.retry_method_safety {
+            HttpRetryMethodSafety::GetHead => matches!(*method, Method::GET | Method::HEAD),
+            HttpRetryMethodSafety::All => true,
+        };
+        let body_safe = body_is_empty
+            || (self.retry_body_safety == HttpRetryBodySafety::Buffered && request_buffered);
+        method_safe && body_safe
     }
 
     pub(crate) fn retries_on_status(&self, status: u16) -> bool {
@@ -2661,6 +2680,31 @@ mod static_request_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn replay_safety_requires_the_explicit_buffered_all_methods_policy() {
+        let default_policy = ProxyPolicyPlan::compile(&HttpProxyPolicy::default());
+        assert!(default_policy.request_is_replay_safe(&Method::GET, true, false));
+        assert!(!default_policy.request_is_replay_safe(&Method::GET, false, true));
+        assert!(!default_policy.request_is_replay_safe(&Method::POST, true, true));
+
+        let replay_policy = ProxyPolicyPlan::compile(&HttpProxyPolicy {
+            retry: oxiroute_config::HttpRetryPolicy {
+                method_safety: HttpRetryMethodSafety::All,
+                body_safety: HttpRetryBodySafety::Buffered,
+                ..oxiroute_config::HttpRetryPolicy::default()
+            },
+            ..HttpProxyPolicy::default()
+        });
+        assert!(replay_policy.request_is_replay_safe(&Method::POST, true, false));
+        assert!(!replay_policy.request_is_replay_safe(&Method::POST, false, false));
+        assert!(replay_policy.request_is_replay_safe(&Method::POST, false, true));
     }
 }
 
