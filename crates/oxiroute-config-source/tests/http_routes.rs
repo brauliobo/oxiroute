@@ -1103,6 +1103,25 @@ fn validates_explicit_retry_triggers_and_safety_rules() {
     let loaded = load_lua(&config(&route, endpoint)).expect("final redispatch policy");
     let rendered = render_lua(&loaded).expect("render final redispatch");
     assert!(rendered.contains("final_redispatch = true"));
+
+    let route = proxy_route(
+        "          policy = { request_buffering = true },",
+        r#"              retry = {
+                max_retries = 2,
+                target = "next_server",
+                triggers = { "response_timeout" },
+                method_safety = "all",
+                body_safety = "buffered",
+              },"#,
+    );
+    let loaded = load_lua(&config(&route, endpoint)).expect("buffered idempotent retry policy");
+    let rendered = render_lua(&loaded).expect("render buffered idempotent retry policy");
+    assert!(rendered.contains("method_safety = \"all\""));
+    assert!(rendered.contains("body_safety = \"buffered\""));
+    assert_eq!(
+        load_lua(&rendered).expect("buffered idempotent retry roundtrip"),
+        loaded
+    );
 }
 
 #[test]

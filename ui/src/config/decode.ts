@@ -437,7 +437,8 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
       (value.retry.max_retries > 0 && value.retry.target === 'same_server')) &&
     isHttpRetryStatuses(responseStatuses ?? []) &&
     isHttpRetryTriggers(value.retry.triggers, hasResponseStatuses || value.retry.max_retries === 0) &&
-    value.retry.method_safety === 'get_head' && value.retry.body_safety === 'empty' &&
+    ((value.retry.method_safety === 'get_head' && value.retry.body_safety === 'empty') ||
+      (value.retry.method_safety === 'all' && value.retry.body_safety === 'buffered')) &&
     (value.cache === null || isHttpCachePolicy(value.cache))
 }
 

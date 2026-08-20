@@ -149,14 +149,15 @@
         label.field(data-field="http_services[].routes[].action.policy.retry.delay_ms")
           span Delay (milliseconds)
           input(type="number" min="0" max="60000" step="1" v-model.number="action.policy.retry.delay_ms")
-        label.field(data-field="http_services[].routes[].action.policy.retry.method_safety")
-          span Method safety
-          select(v-model="action.policy.retry.method_safety" disabled title="Request replays are restricted to GET and HEAD; pre-send connection retries do not replay a request.")
-            option(value="get_head") GET and HEAD only
-        label.field(data-field="http_services[].routes[].action.policy.retry.body_safety")
-          span Body safety
-          select(v-model="action.policy.retry.body_safety" disabled title="Request replays require an empty request body; pre-send connection retries do not replay a body.")
-            option(value="empty") Empty body only
+        label.enable-row(data-field="http_services[].routes[].action.policy.retry.method_safety")
+          input(
+            type="checkbox"
+            :checked="allowsBufferedIdempotentRetries"
+            @change="setBufferedIdempotentRetries"
+          )
+          span Allow replay of buffered idempotent requests, including POST
+        small.field-hint
+          | Enable only when every request handled by this route is idempotent. OxiRoute buffers the complete request body before replaying it.
         label.enable-row(data-field="http_services[].routes[].action.policy.retry.final_redispatch")
           input(
             type="checkbox"
@@ -198,9 +199,12 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import type {
   HttpProxyActionConfig,
   HttpRequestHeaderValueConfig,
+  HttpRoutePolicyConfig,
   HttpRetryTrigger,
 } from '../config'
 import { HTTP_RETRY_TRIGGERS, defaultUpstreamHost } from './httpDefaults'
@@ -209,10 +213,16 @@ import NumberListField from './NumberListField.vue'
 
 const props = defineProps<{
   action: HttpProxyActionConfig
+  routePolicy: HttpRoutePolicyConfig
   poolNames: string[]
   cacheStoreNames: string[]
 }>()
 const emit = defineEmits<{ changed: [] }>()
+
+const allowsBufferedIdempotentRetries = computed(() =>
+  props.action.policy.retry.method_safety === 'all' &&
+  props.action.policy.retry.body_safety === 'buffered',
+)
 
 const retryTriggerLabels: Record<HttpRetryTrigger, string> = {
   connect_failure: 'Connection failure',
@@ -239,6 +249,20 @@ function setRetryTarget(event: Event): void {
 function normalizeFinalRedispatch(): void {
   if (props.action.policy.retry.target !== 'same_server' || props.action.policy.retry.max_retries <= 0) {
     props.action.policy.retry.final_redispatch = false
+  }
+}
+
+function setBufferedIdempotentRetries(event: Event): void {
+  if ((event.target as HTMLInputElement).checked) {
+    if (props.routePolicy.max_request_body_bytes === null) {
+      props.routePolicy.max_request_body_bytes = 10_485_760
+    }
+    props.routePolicy.request_buffering = true
+    props.action.policy.retry.method_safety = 'all'
+    props.action.policy.retry.body_safety = 'buffered'
+  } else {
+    props.action.policy.retry.method_safety = 'get_head'
+    props.action.policy.retry.body_safety = 'empty'
   }
 }
 

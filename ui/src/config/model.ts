@@ -384,8 +384,8 @@ export interface HttpRetryPolicyConfig {
   final_redispatch: boolean
   triggers: HttpRetryTrigger[]
   response_statuses?: number[]
-  method_safety: 'get_head'
-  body_safety: 'empty'
+  method_safety: 'get_head' | 'all'
+  body_safety: 'empty' | 'buffered'
 }
 
 export interface HttpProxyPolicyConfig {
@@ -524,19 +524,21 @@ export type HttpRouteActionConfig =
   | HttpRedirectActionConfig
   | HttpStaticFilesActionConfig
 
+export interface HttpRoutePolicyConfig {
+  max_request_body_bytes: number | null
+  connect_timeout_ms: number
+  read_timeout_ms: number
+  write_timeout_ms: number
+  request_buffering: boolean
+  response_buffering: boolean
+}
+
 export interface HttpRouteConfig {
   host: HttpHostSelectorConfig | null
   path: HttpPathSelectorConfig
   methods: string[]
   access_policy: HttpAccessPolicyConfig | null
-  policy: {
-    max_request_body_bytes: number | null
-    connect_timeout_ms: number
-    read_timeout_ms: number
-    write_timeout_ms: number
-    request_buffering: boolean
-    response_buffering: boolean
-  }
+  policy: HttpRoutePolicyConfig
   action: HttpRouteActionConfig
 }
 

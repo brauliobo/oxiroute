@@ -92,6 +92,8 @@ stale-if-error, purge, and bounded-admission policy.
 - Pools select only eligible, healthy, administratively ready, and capacity-available endpoints.
 - Route precedence is exact host, wildcard host, catch-all; then longest segment path and source order.
 - HTTP retry budgets are bounded to three additional attempts and obey method/body/connection safety.
+  The default is bodyless `GET`/`HEAD`; an explicit `all`/`buffered` pair is available only for routes
+  whose operator guarantees idempotency, including an intentionally idempotent `POST` API.
 - Unix paths, recording roots, certificate files, token files, and static roots have descriptor-safe
   and ownership/mode checks.
 

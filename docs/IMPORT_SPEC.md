@@ -87,6 +87,10 @@ activation of standalone import reports. Restricted Lua cannot declare native re
   names remain canonical and are not resolved during import. A positive `use_backend` condition may
   combine exactly one exact `hdr(host)` ACL, optionally with `-i`, and one case-sensitive `path_beg` ACL;
   the conjunction lowers to one canonical route with both selectors and retains both ACL references.
+- HAProxy imports remain conservative about replay safety: native `retry-on` directives never infer
+  the canonical `method_safety = "all"`/`body_safety = "buffered"` opt-in. Imported routes retain
+  the bodyless `GET`/`HEAD` safety policy until an operator explicitly authorizes buffered,
+  idempotent-request replay in canonical configuration.
 - The strict HTTP subset also preserves HAProxy's default three connection retries, exact
   `path -i` ACLs used by conditional fixed health responses; those lower to an ASCII case-insensitive
   exact canonical path selector ahead of the proxy fallback, and `hdr(host) -i` as an ASCII

@@ -453,9 +453,15 @@ Current constraints:
   the unbounded policy as explicit `null`.
 - `max_retries` is the number of additional connection attempts after the first, defaults to `0`,
   and MUST be at most `3`. A transient connection-establishment failure before any request bytes are
-  sent may retry any non-upgrade request because no request is replayed. A refused HTTP/2 stream is
-  replayed only for bodyless `GET` and `HEAD` requests; `method_safety = "get_head"` and
-  `body_safety = "empty"` express that replay boundary. Every retry also requires the configured
+  sent may retry any non-upgrade request because no request is replayed. By default, a refused HTTP/2
+  stream or response failure is replayed only for bodyless `GET` and `HEAD` requests;
+  `method_safety = "get_head"` and `body_safety = "empty"` express that boundary. An explicit paired
+  opt-in, `method_safety = "all"` with `body_safety = "buffered"`, permits replay after OxiRoute has
+  fully buffered, bounded request body (`request_buffering = true` and a positive
+  `max_request_body_bytes`). It is for routes where the operator guarantees every accepted request
+  is idempotent, including intentionally idempotent `POST` APIs; it MUST NOT be used for
+  requests that can create a duplicate side effect. The values are a pair: mixed `get_head`/`buffered`
+  or `all`/`empty` policies fail validation. Every retry also requires the configured
   `target` to be selectable. `target = "next_server"` requires a distinct named server;
   `target = "same_server"` reselects the same named server. `delay_ms` defaults to `0`, is bounded to
   `60000`, and is applied before each route retry. `response_statuses` optionally lists unique 5xx
@@ -464,7 +470,7 @@ Current constraints:
   pre-body response failures. Trying alternate addresses for one DNS endpoint is transport fallback
   and does not consume `max_retries`; route retry begins only after that bounded address set is
   exhausted. Established-connection errors other than configured response/error triggers, upgrades,
-  and unsafe or body-bearing request replays are never retried. Each
+  and requests outside the configured replay-safety policy are never retried. Each
   attempt is clamped to the remaining total request deadline, whose default upper bound is the
   service `upstream_io_timeout_ms` and which is reduced by the listener's active request timeout.
   `final_redispatch = true` changes only the last configured retry from `same_server` to

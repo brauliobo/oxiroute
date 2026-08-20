@@ -752,12 +752,14 @@ impl Renderer {
             "method_safety",
             match retry.method_safety {
                 HttpRetryMethodSafety::GetHead => "get_head",
+                HttpRetryMethodSafety::All => "all",
             },
         );
         self.string_field(
             "body_safety",
             match retry.body_safety {
                 HttpRetryBodySafety::Empty => "empty",
+                HttpRetryBodySafety::Buffered => "buffered",
             },
         );
     }

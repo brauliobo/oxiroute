@@ -77,7 +77,7 @@ article.route-card.http-route-card
         option(value="redirect") Redirect
         option(value="static_files") Static files
 
-    HttpProxyActionEditor(v-if="route.action.type === 'proxy'" :action="route.action" :pool-names="poolNames" :cache-store-names="cacheStoreNames" @changed="$emit('changed')")
+    HttpProxyActionEditor(v-if="route.action.type === 'proxy'" :action="route.action" :route-policy="route.policy" :pool-names="poolNames" :cache-store-names="cacheStoreNames" @changed="$emit('changed')")
     HttpFixedResponseEditor(v-else-if="route.action.type === 'fixed_response'" :action="route.action" @changed="$emit('changed')")
     HttpRedirectEditor(v-else-if="route.action.type === 'redirect'" :action="route.action")
     HttpStaticFilesEditor(v-else :action="route.action" @changed="$emit('changed')")
