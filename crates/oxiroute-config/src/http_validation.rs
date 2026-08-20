@@ -77,6 +77,7 @@ pub(crate) fn validate_http_services(
                 &service.name,
                 route_index,
                 &mut route.action,
+                route.policy,
                 &pools,
                 cache_stores,
             )?;
@@ -441,6 +442,7 @@ fn validate_action(
     service: &str,
     route_index: usize,
     action: &mut HttpRouteAction,
+    route_policy: crate::model::HttpRoutePolicy,
     pools: &HashMap<&str, &UpstreamPool>,
     cache_stores: &HashMap<String, crate::cache_validation::CacheStoreBounds>,
 ) -> Result<(), ConfigError> {
@@ -456,7 +458,14 @@ fn validate_action(
                     pool: upstream_pool.clone(),
                 }
             })?;
-            validate_proxy_policy(service, route_index, policy, pool, cache_stores)
+            validate_proxy_policy(
+                service,
+                route_index,
+                policy,
+                route_policy,
+                pool,
+                cache_stores,
+            )
         }
         HttpRouteAction::FixedResponse {
             status,
@@ -497,6 +506,7 @@ fn validate_proxy_policy(
     service: &str,
     route_index: usize,
     policy: &mut HttpProxyPolicy,
+    route_policy: crate::model::HttpRoutePolicy,
     pool: &UpstreamPool,
     cache_stores: &HashMap<String, crate::cache_validation::CacheStoreBounds>,
 ) -> Result<(), ConfigError> {
@@ -536,7 +546,7 @@ fn validate_proxy_policy(
     validate_response_mutations(service, route_index, &mut policy.response_headers)?;
     validate_cookie_rewrites(service, route_index, &policy.response_cookie_path_rewrites)?;
     validate_cookie_attributes(service, route_index, &mut policy.response_cookie_attributes)?;
-    validate_retry(service, route_index, &mut policy.retry)?;
+    validate_retry(service, route_index, &mut policy.retry, route_policy)?;
     if let Some(cache) = &mut policy.cache {
         crate::cache_validation::validate_cache_policy(service, route_index, cache, cache_stores)?;
     }
@@ -1012,6 +1022,7 @@ fn validate_retry(
     service: &str,
     route_index: usize,
     retry: &mut HttpRetryPolicy,
+    route_policy: crate::model::HttpRoutePolicy,
 ) -> Result<(), ConfigError> {
     if retry.max_retries > MAX_HTTP_RETRIES {
         return Err(invalid_route(
@@ -1037,6 +1048,32 @@ fn validate_retry(
             route_index,
             "action.policy.retry.final_redispatch",
             "final redispatch requires at least one same-server retry",
+        ));
+    }
+    let all_methods = retry.method_safety == crate::model::HttpRetryMethodSafety::All;
+    let buffered_body = retry.body_safety == crate::model::HttpRetryBodySafety::Buffered;
+    if all_methods != buffered_body {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry",
+            "all-method retries require buffered request bodies, and buffered request bodies require all-method retries",
+        ));
+    }
+    if buffered_body && !route_policy.request_buffering {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.body_safety",
+            "buffered request-body retries require request_buffering",
+        ));
+    }
+    if buffered_body && route_policy.max_request_body_bytes.is_none() {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.body_safety",
+            "buffered request-body retries require a positive max_request_body_bytes bound",
         ));
     }
     if retry.triggers.is_empty() && retry.max_retries != 0 && retry.response_statuses.is_empty() {
@@ -1097,6 +1134,51 @@ fn validate_retry(
     }
     retry.response_statuses.sort_unstable();
     Ok(())
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use crate::model::{HttpRetryBodySafety, HttpRetryMethodSafety, HttpRoutePolicy};
+
+    fn buffered_retry() -> HttpRetryPolicy {
+        HttpRetryPolicy {
+            method_safety: HttpRetryMethodSafety::All,
+            body_safety: HttpRetryBodySafety::Buffered,
+            ..HttpRetryPolicy::default()
+        }
+    }
+
+    #[test]
+    fn buffered_retries_require_the_complete_explicit_opt_in() {
+        let mut retry = HttpRetryPolicy {
+            method_safety: HttpRetryMethodSafety::All,
+            ..HttpRetryPolicy::default()
+        };
+        assert!(validate_retry("service", 0, &mut retry, HttpRoutePolicy::default()).is_err());
+
+        let mut retry = HttpRetryPolicy {
+            body_safety: HttpRetryBodySafety::Buffered,
+            ..HttpRetryPolicy::default()
+        };
+        assert!(validate_retry("service", 0, &mut retry, HttpRoutePolicy::default()).is_err());
+    }
+
+    #[test]
+    fn buffered_retries_require_bounded_request_buffering() {
+        let mut retry = buffered_retry();
+        assert!(validate_retry("service", 0, &mut retry, HttpRoutePolicy::default()).is_err());
+
+        let mut route = HttpRoutePolicy::default();
+        route.request_buffering = true;
+        route.max_request_body_bytes = None;
+        assert!(validate_retry("service", 0, &mut retry, route).is_err());
+
+        let mut retry = buffered_retry();
+        let mut route = HttpRoutePolicy::default();
+        route.request_buffering = true;
+        validate_retry("service", 0, &mut retry, route).expect("explicit buffered retry opt-in");
+    }
 }
 
 fn validate_fixed_response(

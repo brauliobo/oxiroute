@@ -1600,8 +1600,11 @@ async fn execute_route_action(
                 ctx.connection_retryable =
                     proxy.policy.max_retries > 0 && !session.is_upgrade_req();
                 ctx.replay_retryable = proxy.policy.max_retries > 0
-                    && (method == Method::GET || method == Method::HEAD)
-                    && (session.is_body_empty() || route.policy.request_buffering)
+                    && proxy.policy.request_is_replay_safe(
+                        &method,
+                        session.is_body_empty(),
+                        route.policy.request_buffering,
+                    )
                     && !session.is_upgrade_req();
                 ctx.pool = Some(Arc::clone(&proxy.pool));
                 return Ok(false);

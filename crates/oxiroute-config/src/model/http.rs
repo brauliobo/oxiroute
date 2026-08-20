@@ -697,6 +697,7 @@ pub enum HttpRetryTrigger {
 pub enum HttpRetryMethodSafety {
     #[default]
     GetHead,
+    All,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -704,6 +705,7 @@ pub enum HttpRetryMethodSafety {
 pub enum HttpRetryBodySafety {
     #[default]
     Empty,
+    Buffered,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
