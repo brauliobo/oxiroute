@@ -168,7 +168,11 @@ allowed only when the authoritative root is non-compositional. If `templates`, `
 typed object. `config compose` is the explicit operator-controlled flattening path.
 
 The configuration UI mirrors all canonical statistics-page fields, the ASCII case-insensitive exact
-authority selector, retry budgets through three, and final redispatch. It preserves these values
+authority selector, retry budgets through three, final redispatch, and an explicit acknowledgement
+for buffered idempotent-request retries. That acknowledgement sets the canonical
+`method_safety = "all"`/`body_safety = "buffered"` pair and warns that the route must accept only
+idempotent requests, including intentionally idempotent `POST` APIs. It enables request buffering
+and restores the default 10 MiB route body bound when the route had been explicitly unbounded. It preserves these values
 when loading, validating, and saving an editable imported/flattened canonical configuration; the
 final-redispatch control is enabled only for a positive same-server retry budget. Compositional
 native-reference roots remain read-only as described above.

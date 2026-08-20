@@ -108,10 +108,25 @@ describe('canonical HTTP route editors', () => {
         },
       },
     })
-    expect(field('http_services[].routes[].action.policy.retry.method_safety').get('select').attributes('title'))
-      .toContain('GET and HEAD')
-    expect(field('http_services[].routes[].action.policy.retry.body_safety').get('select').attributes('title'))
-      .toContain('empty request body')
+    const bufferedRetries = field('http_services[].routes[].action.policy.retry.method_safety').get('input')
+    expect((bufferedRetries.element as HTMLInputElement).checked).toBe(false)
+    expect(field('http_services[].routes[].action.policy.retry').text())
+      .toContain('every request handled by this route is idempotent')
+    await bufferedRetries.setValue(true)
+    expect(model.routes[0]?.policy.request_buffering).toBe(true)
+    expect(model.routes[0]?.action).toMatchObject({
+      policy: { retry: { method_safety: 'all', body_safety: 'buffered' } },
+    })
+    await bufferedRetries.setValue(false)
+    expect(model.routes[0]?.action).toMatchObject({
+      policy: { retry: { method_safety: 'get_head', body_safety: 'empty' } },
+    })
+    model.routes[0]!.policy.max_request_body_bytes = null
+    await bufferedRetries.setValue(true)
+    expect(model.routes[0]?.policy).toMatchObject({
+      max_request_body_bytes: 10_485_760,
+      request_buffering: true,
+    })
   })
 
   it('edits ASCII case-insensitive authority matching and gates final redispatch', async () => {

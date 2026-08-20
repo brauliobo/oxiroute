@@ -379,6 +379,13 @@ describe('canonical field registry', () => {
     }
 
     expect(isCanonicalConfig(config)).toBe(true)
+    route.action.policy.retry.method_safety = 'all'
+    route.action.policy.retry.body_safety = 'buffered'
+    expect(isCanonicalConfig(config)).toBe(true)
+    route.action.policy.retry.body_safety = 'empty'
+    expect(isCanonicalConfig(config)).toBe(false)
+    route.action.policy.retry.method_safety = 'get_head'
+    expect(isCanonicalConfig(config)).toBe(true)
     config.upstream_pools[0]!.passive_health = {
       observe: 'layer7',
       on_error: 'count',
