@@ -2,7 +2,7 @@
 
 pkgname=oxiroute
 pkgver=0.5.2
-pkgrel=1
+pkgrel=2
 pkgdesc='Pingora-based HTTP, TCP, and RTMP proxy runtime'
 arch=('x86_64')
 url='https://github.com/brauliobo/oxiroute'
@@ -30,7 +30,7 @@ sha256sums=('f737753b1ca3bc6320141cbafeee280e9a780265a43a3413cd92aaade2d2ad77'
              'c87c9ef586bbb68f69f5abc1c4616de35783fe5d5d2b07b0b6b4011b2b892f44'
             '57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9'
             'f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564'
-             '9d30b8da9ba57f2a5cd28155e79694854aa3d788a208b437aaf5329cc2ef8d93')
+             'f25bdbd2acba1d7b420540630e3c29c2e2825a477e2a111435861e1359d7bb56')
 
 prepare() {
   cd "oxiroute-${pkgver}"
