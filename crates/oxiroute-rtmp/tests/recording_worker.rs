@@ -138,7 +138,7 @@ fn every_rotation_gets_a_fresh_deterministic_extension_preserving_name() {
         RecorderWorkerConfig {
             max_queue_messages: 64,
             max_queue_bytes: 1024 * 1024,
-            rotation_interval: Some(Duration::from_millis(1)),
+            max_frames: Some(1),
             shutdown_timeout: Duration::from_secs(1),
             video_codec: None,
             ..RecorderWorkerConfig::default()
