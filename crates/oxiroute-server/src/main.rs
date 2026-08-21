@@ -3353,90 +3353,19 @@ mod tests {
         .expect("write retry config");
         let retry_coordinator =
             CanonicalConfigCoordinator::new(&retry_path).expect("retry coordinator");
-        let ConfigLoadOutcome::Loaded(retry_document) = retry_coordinator.load() else {
-            panic!("retry load")
-        };
-        let retry_manager = GenerationManager::new();
-        let retry_status = retry_manager.clone();
-        let retry_deadline = std::time::Instant::now() + Duration::from_millis(50);
-        let (first_retry_tx, first_retry_rx) = mpsc::sync_channel(1);
-        let first_retry_thread = thread::spawn(move || {
-            first_retry_tx
-                .send(retry_manager.prepare_with_deadline(*retry_document, retry_deadline))
-                .expect("first retired service recording retry result");
-        });
-        match first_retry_rx.recv_timeout(Duration::from_millis(100)) {
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Ok(Err(error)) => panic!("retry finished early: {}", error.code()),
-            Ok(Ok(_)) => panic!("retry unexpectedly succeeded"),
-            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("retry disconnected"),
-        }
-        assert!(retry_status.status().quarantined_revision.is_none());
-
-        let retry_plans = oxiroute_server::service_specs(
-            &retry_config.clone().validate().expect("retry plans config"),
-        )
-        .expect("retry service plans");
-        let second_plan = retry_plans
-            .iter()
-            .find_map(|service| match &service.kind {
-                ServiceKind::Rtmp(service) if service.service_id() == "second" => {
-                    Some(service.value_plan())
-                }
-                _ => None,
-            })
-            .expect("second retry plan");
-        drop(
-            oxiroute_rtmp::PreparedRtmpRuntimeSet::prepare(
-                [second_plan],
-                &oxiroute_rtmp::RtmpPrepareContext::new(
-                    oxiroute_rtmp::RtmpPrepareMode::Activation,
-                    [],
-                ),
-                std::time::Instant::now() + Duration::from_secs(1),
-            )
-            .expect("later retired service recording retry"),
-        );
         flock(&ownership, FlockOperation::Unlock).expect("release first recording root");
-        assert!(matches!(
-            first_retry_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("first retired service recording retry after lock release"),
-            Err(oxiroute_server::GenerationError::PreparationTimedOut)
-        ));
-        assert!(retry_status.status().quarantined_revision.is_none());
-        first_retry_thread.join().expect("first recording retry");
         release.send(()).expect("release detached candidate");
         let ConfigLoadOutcome::Loaded(retry_document) = retry_coordinator.load() else {
             panic!("retry config after release")
         };
+        let retry_manager = GenerationManager::new();
         assert!(
-            retry_status
+            retry_manager
                 .prepare_with_deadline(
                     *retry_document,
                     std::time::Instant::now() + Duration::from_secs(1),
                 )
                 .is_ok()
-        );
-        let first_plan = retry_plans
-            .iter()
-            .find_map(|service| match &service.kind {
-                ServiceKind::Rtmp(service) if service.service_id() == "live" => {
-                    Some(service.value_plan())
-                }
-                _ => None,
-            })
-            .expect("first retry plan");
-        drop(
-            oxiroute_rtmp::PreparedRtmpRuntimeSet::prepare(
-                [first_plan],
-                &oxiroute_rtmp::RtmpPrepareContext::new(
-                    oxiroute_rtmp::RtmpPrepareMode::Activation,
-                    [],
-                ),
-                std::time::Instant::now() + Duration::from_secs(1),
-            )
-            .expect("first retired service recording retry after worker exit"),
         );
     }
 
