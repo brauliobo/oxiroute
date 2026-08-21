@@ -1050,32 +1050,7 @@ fn validate_retry(
             "final redispatch requires at least one same-server retry",
         ));
     }
-    let all_methods = retry.method_safety == crate::model::HttpRetryMethodSafety::All;
-    let buffered_body = retry.body_safety == crate::model::HttpRetryBodySafety::Buffered;
-    if all_methods != buffered_body {
-        return Err(invalid_route(
-            service,
-            route_index,
-            "action.policy.retry",
-            "all-method retries require buffered request bodies, and buffered request bodies require all-method retries",
-        ));
-    }
-    if buffered_body && !route_policy.request_buffering {
-        return Err(invalid_route(
-            service,
-            route_index,
-            "action.policy.retry.body_safety",
-            "buffered request-body retries require request_buffering",
-        ));
-    }
-    if buffered_body && route_policy.max_request_body_bytes.is_none() {
-        return Err(invalid_route(
-            service,
-            route_index,
-            "action.policy.retry.body_safety",
-            "buffered request-body retries require a positive max_request_body_bytes bound",
-        ));
-    }
+    validate_buffered_retry_safety(service, route_index, retry, route_policy)?;
     if retry.triggers.is_empty() && retry.max_retries != 0 && retry.response_statuses.is_empty() {
         return Err(invalid_route(
             service,
@@ -1136,49 +1111,39 @@ fn validate_retry(
     Ok(())
 }
 
-#[cfg(test)]
-mod retry_tests {
-    use super::*;
-    use crate::model::{HttpRetryBodySafety, HttpRetryMethodSafety, HttpRoutePolicy};
-
-    fn buffered_retry() -> HttpRetryPolicy {
-        HttpRetryPolicy {
-            method_safety: HttpRetryMethodSafety::All,
-            body_safety: HttpRetryBodySafety::Buffered,
-            ..HttpRetryPolicy::default()
-        }
+fn validate_buffered_retry_safety(
+    service: &str,
+    route_index: usize,
+    retry: &HttpRetryPolicy,
+    route_policy: crate::model::HttpRoutePolicy,
+) -> Result<(), ConfigError> {
+    let all_methods = retry.method_safety == crate::model::HttpRetryMethodSafety::All;
+    let buffered_body = retry.body_safety == crate::model::HttpRetryBodySafety::Buffered;
+    if all_methods != buffered_body {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry",
+            "all-method retries require buffered request bodies, and buffered request bodies require all-method retries",
+        ));
     }
-
-    #[test]
-    fn buffered_retries_require_the_complete_explicit_opt_in() {
-        let mut retry = HttpRetryPolicy {
-            method_safety: HttpRetryMethodSafety::All,
-            ..HttpRetryPolicy::default()
-        };
-        assert!(validate_retry("service", 0, &mut retry, HttpRoutePolicy::default()).is_err());
-
-        let mut retry = HttpRetryPolicy {
-            body_safety: HttpRetryBodySafety::Buffered,
-            ..HttpRetryPolicy::default()
-        };
-        assert!(validate_retry("service", 0, &mut retry, HttpRoutePolicy::default()).is_err());
+    if buffered_body && !route_policy.request_buffering {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.body_safety",
+            "buffered request-body retries require request_buffering",
+        ));
     }
-
-    #[test]
-    fn buffered_retries_require_bounded_request_buffering() {
-        let mut retry = buffered_retry();
-        assert!(validate_retry("service", 0, &mut retry, HttpRoutePolicy::default()).is_err());
-
-        let mut route = HttpRoutePolicy::default();
-        route.request_buffering = true;
-        route.max_request_body_bytes = None;
-        assert!(validate_retry("service", 0, &mut retry, route).is_err());
-
-        let mut retry = buffered_retry();
-        let mut route = HttpRoutePolicy::default();
-        route.request_buffering = true;
-        validate_retry("service", 0, &mut retry, route).expect("explicit buffered retry opt-in");
+    if buffered_body && route_policy.max_request_body_bytes.is_none() {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.body_safety",
+            "buffered request-body retries require a positive max_request_body_bytes bound",
+        ));
     }
+    Ok(())
 }
 
 fn validate_fixed_response(
@@ -1617,5 +1582,54 @@ fn invalid_route(
         route,
         field,
         detail: detail.into(),
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use crate::model::{HttpRetryBodySafety, HttpRetryMethodSafety, HttpRoutePolicy};
+
+    fn buffered_retry() -> HttpRetryPolicy {
+        HttpRetryPolicy {
+            method_safety: HttpRetryMethodSafety::All,
+            body_safety: HttpRetryBodySafety::Buffered,
+            ..HttpRetryPolicy::default()
+        }
+    }
+
+    #[test]
+    fn buffered_retries_require_the_complete_explicit_opt_in() {
+        let mut retry = HttpRetryPolicy {
+            method_safety: HttpRetryMethodSafety::All,
+            ..HttpRetryPolicy::default()
+        };
+        assert!(validate_retry("service", 0, &mut retry, HttpRoutePolicy::default()).is_err());
+
+        let mut retry = HttpRetryPolicy {
+            body_safety: HttpRetryBodySafety::Buffered,
+            ..HttpRetryPolicy::default()
+        };
+        assert!(validate_retry("service", 0, &mut retry, HttpRoutePolicy::default()).is_err());
+    }
+
+    #[test]
+    fn buffered_retries_require_bounded_request_buffering() {
+        let mut retry = buffered_retry();
+        assert!(validate_retry("service", 0, &mut retry, HttpRoutePolicy::default()).is_err());
+
+        let route = HttpRoutePolicy {
+            request_buffering: true,
+            max_request_body_bytes: None,
+            ..HttpRoutePolicy::default()
+        };
+        assert!(validate_retry("service", 0, &mut retry, route).is_err());
+
+        let mut retry = buffered_retry();
+        let route = HttpRoutePolicy {
+            request_buffering: true,
+            ..HttpRoutePolicy::default()
+        };
+        validate_retry("service", 0, &mut retry, route).expect("explicit buffered retry opt-in");
     }
 }
