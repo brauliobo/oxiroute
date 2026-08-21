@@ -150,11 +150,12 @@
           span Delay (milliseconds)
           input(type="number" min="0" max="60000" step="1" v-model.number="action.policy.retry.delay_ms")
         label.enable-row(data-field="http_services[].routes[].action.policy.retry.method_safety")
-          input(
-            type="checkbox"
-            :checked="allowsBufferedIdempotentRetries"
-            @change="setBufferedIdempotentRetries"
-          )
+          span(data-field="http_services[].routes[].action.policy.retry.body_safety")
+            input(
+              type="checkbox"
+              :checked="allowsBufferedIdempotentRetries"
+              @change="setBufferedIdempotentRetries"
+            )
           span Allow replay of buffered idempotent requests, including POST
         small.field-hint
           | Enable only when every request handled by this route is idempotent. OxiRoute buffers the complete request body before replaying it.
