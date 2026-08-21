@@ -90,6 +90,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-1.97.1-
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+        working-directory: ui
+
       - name: Run locked Rust 1.97.1 tests
         run: cargo +1.97.1 test --workspace --locked --jobs 4
 
