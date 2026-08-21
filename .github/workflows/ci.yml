@@ -44,6 +44,22 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+        working-directory: ui
+
       - name: Verify control-plane OpenAPI artifact
         run: ./scripts/verify-control-plane-contract.sh
 
@@ -133,6 +149,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ui-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ui-
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -148,6 +178,9 @@ jobs:
       - name: Install UI dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
         working-directory: ui
+
+      - name: Build management process for API integration tests
+        run: nice cargo +1.97.1 build -p oxiroute --bin oxiroute --locked --jobs 4
 
       - name: Run UI tests
         run: pnpm test -- --maxWorkers=4 --minWorkers=1
@@ -192,6 +225,10 @@ jobs:
 
       - name: Type-check browser tests
         run: pnpm typecheck:browser
+        working-directory: ui
+
+      - name: Build UI
+        run: pnpm build
         working-directory: ui
 
       - name: Install Chromium and Linux dependencies

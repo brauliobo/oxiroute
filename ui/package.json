@@ -6,9 +6,11 @@
   "packageManager": "pnpm@11.3.0",
   "scripts": {
     "build": "vue-tsc --noEmit && vite build",
+    "build:management": "cd .. && nice cargo +1.97.1 build -p oxiroute --bin oxiroute --locked --jobs 4",
     "dev": "vite",
     "generate:control-plane": "node ../scripts/generate-control-plane-types.mjs",
     "verify:control-plane": "node ../scripts/generate-control-plane-types.mjs --check",
+    "pretest": "pnpm run build:management",
     "test": "vitest run",
     "test:browser": "playwright test",
     "test:browser:install": "playwright install --with-deps chromium",

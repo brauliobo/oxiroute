@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -38,15 +38,6 @@ let origin = ''
 let stderr = ''
 
 beforeAll(async () => {
-  const build = spawnSync('cargo', ['+1.97.1', 'build', '-p', 'oxiroute', '--bin', 'oxiroute'], {
-    cwd: workspaceRoot,
-    encoding: 'utf8',
-    env: { ...process.env, CARGO_INCREMENTAL: '0' },
-  })
-  if (build.status !== 0) {
-    throw new Error(`server build failed:\n${build.stdout}\n${build.stderr}`)
-  }
-
   const port = await reservePort()
   directory = await mkdtemp(join(tmpdir(), 'oxiroute-ui-process-'))
   const configPath = join(directory, 'oxiroute.lua')
