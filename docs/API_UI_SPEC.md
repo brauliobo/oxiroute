@@ -152,11 +152,13 @@ startup ownership lock and clean owned stale partials, but it does not create a 
 daemon preparation reacquires and retains each resource and can still fail if it changes after validation.
 
 `PUT /api/v1/config` requires the same body plus `If-Config-Revision`. It performs the same complete
-preflight before opening the write transaction. Restart classification is mode-aware: direct mode
-classifies an active same-path Unix-listener mode change without attempting to rebind the active
-path, while supervised mode classifies any incompatible listener/control-listener descriptor
-topology. Both validate the complete runtime plan and remain restart-required when the candidate
-contains other changes. A `422`
+preflight before opening the write transaction. Restart classification is the same in both runtime
+modes: only an active same-path Unix-listener mode change is restart-required, and it is classified
+without attempting to rebind the active path. Added, removed and moved listeners (including
+control listeners) are reloadable in direct and supervised mode alike. Validation and save add an
+`I_LISTENER_CHANGES` diagnostic when a candidate adds or removes a bound address, and the complete
+runtime plan is validated either way; a candidate that also changes a Unix listener mode remains
+restart-required. A `422`
 preflight failure cannot mutate the canonical file. The
 save then re-reads and compares the authoritative disk bytes, writes mode
 `0600`, synchronizes, atomically replaces, and synchronizes the parent directory.
@@ -184,15 +186,21 @@ three exact outcomes:
   `restartRequired` is `false` while the watcher starts the prepared generation.
 - `unchanged_active`: the candidate revision equals the active generation, `activationState` is `active`, and
   `restartRequired` is `false`.
-- `saved_restart_required`: a valid durable candidate requires a process restart because direct
-  mode changed an active Unix listener mode or supervised mode changed listener/control-listener
-  descriptor topology. `activationState` is `restart_required`, and `restartRequired` is `true`.
-  The active generation remains unchanged until a process restart applies the complete saved candidate.
+- `saved_restart_required`: a valid durable candidate requires a process restart because it changed
+  the mode of an active Unix listener. `activationState` is `restart_required`, and
+  `restartRequired` is `true`. The active generation remains unchanged until a process restart
+  applies the complete saved candidate.
 
-The warning remains schema-v1 `I_RESTART_REQUIRED`. Direct Unix mode changes retain path
-`/config/listeners` and the shipped Unix-specific message. Supervised descriptor incompatibility
-uses `/config/listeners` with a topology-neutral listener/control-listener message. UI lifecycle
-messaging displays this backend diagnostic rather than inferring a Unix cause.
+The warning remains schema-v1 `I_RESTART_REQUIRED` with path `/config/listeners` and the shipped
+Unix-specific message; the supervised topology message of earlier releases is no longer produced.
+UI lifecycle messaging displays this backend diagnostic rather than inferring a Unix cause.
+
+A candidate that adds or removes listeners also carries an `I_LISTENER_CHANGES` diagnostic (schema
+v1, severity `warning`, stage `activation`, path `/config/listeners`). Its `message` describes the
+effect and its `listeners` object holds three string arrays, `added`, `removed` and `kept`, with
+entries shaped `name (transport address)` such as `analysis (tcp 127.0.0.1:8195)`. In a save
+response it precedes the activation-state diagnostic, which stays last. It is informational: it never
+sets `restartRequired`.
 
 There is no `202` API response. For a changed save, the canonical configuration watcher observes the durable
 replacement, prepares a candidate, and the generation supervisor publishes it only after the new
@@ -469,7 +477,7 @@ non-compositional. It consumes `configPreview` and `configFormat` for KDL, Lua, 
 uses `compositional` plus `dependencyCount` to make compositional roots inspectable and
 server-validatable but read-only. It preserves dirty drafts across refresh failures and `409`
  conflicts. The save response distinguishes pending activation from restart-required Unix listener
-  changes; generation status is authoritative for publication completion. The UI consumes bounded
+  mode changes and lists added and removed listeners in `I_LISTENER_CHANGES`; generation status is authoritative for publication completion. The UI consumes bounded
   SSE for event-driven refresh and exposes the bounded event history, but neither the SSE ring nor
   the event workspace history is durable. Durable audit history is browsable through its separate
   authenticated workspace. Native import reports are browsable as redacted evidence, but native-file

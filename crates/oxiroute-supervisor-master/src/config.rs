@@ -3,6 +3,8 @@ use std::time::Duration;
 use thiserror::Error;
 
 const MAX_TIMEOUT: Duration = Duration::from_hours(1);
+/// A retired worker may keep serving its in-flight connections for up to a day.
+const MAX_DRAIN_TIMEOUT: Duration = Duration::from_hours(24);
 
 /// Validated deadlines used by the master state machine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,7 +21,8 @@ impl MasterConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error when any timeout is zero or exceeds one hour.
+    /// Returns an error when any timeout is zero or exceeds one hour, or when the drain timeout
+    /// exceeds one day.
     pub fn new(
         adoption_timeout: Duration,
         quiesce_timeout: Duration,
@@ -27,18 +30,15 @@ impl MasterConfig {
         drain_timeout: Duration,
         shutdown_timeout: Duration,
     ) -> Result<Self, ConfigError> {
-        for (phase, timeout) in [
-            ("listener adoption", adoption_timeout),
-            ("quiesce", quiesce_timeout),
-            ("activation", activation_timeout),
-            ("drain", drain_timeout),
-            ("shutdown", shutdown_timeout),
+        for (phase, timeout, maximum) in [
+            ("listener adoption", adoption_timeout, MAX_TIMEOUT),
+            ("quiesce", quiesce_timeout, MAX_TIMEOUT),
+            ("activation", activation_timeout, MAX_TIMEOUT),
+            ("drain", drain_timeout, MAX_DRAIN_TIMEOUT),
+            ("shutdown", shutdown_timeout, MAX_TIMEOUT),
         ] {
-            if timeout.is_zero() || timeout > MAX_TIMEOUT {
-                return Err(ConfigError::InvalidTimeout {
-                    phase,
-                    maximum: MAX_TIMEOUT,
-                });
+            if timeout.is_zero() || timeout > maximum {
+                return Err(ConfigError::InvalidTimeout { phase, maximum });
             }
         }
         Ok(Self {

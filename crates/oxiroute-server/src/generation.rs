@@ -656,22 +656,37 @@ impl RuntimeGeneration {
         self.inventory.complete_listener_count()
     }
 
-    pub(crate) fn listener_restart_required(
-        &self,
-        mode: crate::RuntimeMode,
-        candidate: &ValidatedConfig,
-    ) -> bool {
+    pub(crate) fn listener_restart_required(&self, candidate: &ValidatedConfig) -> bool {
         self.inventory
-            .restart_required(mode, &ListenerInventory::compile(candidate))
+            .restart_required(&ListenerInventory::compile(candidate))
+    }
+
+    /// Describes what activating `candidate` would do to the listener sockets this generation owns.
+    pub(crate) fn listener_changes(
+        &self,
+        candidate: &ValidatedConfig,
+    ) -> Option<crate::listener_inventory::ListenerChangeSummary> {
+        crate::listener_reservation::listener_changes(
+            &self.inventory,
+            &ListenerInventory::compile(candidate),
+        )
+    }
+
+    /// Whether `candidate` needs other sockets than this generation owns.
+    ///
+    /// A supervised worker only adopts sockets, so only the supervising master can apply it.
+    pub(crate) fn listener_set_changed(&self, candidate: &ValidatedConfig) -> bool {
+        !self
+            .inventory
+            .same_descriptor_topology(&ListenerInventory::compile(candidate))
     }
 
     pub(crate) fn listener_restart_reason(
         &self,
-        mode: crate::RuntimeMode,
         candidate: &ValidatedConfig,
     ) -> Option<crate::listener_inventory::ListenerRestartReason> {
         self.inventory
-            .restart_reason(mode, &ListenerInventory::compile(candidate))
+            .restart_reason(&ListenerInventory::compile(candidate))
     }
 
     #[must_use]

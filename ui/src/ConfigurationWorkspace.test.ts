@@ -1641,6 +1641,44 @@ describe('ConfigurationWorkspace', () => {
     expect(wrapper.get('.revision-banner.pending').text()).toContain('active Unix listener mode')
   })
 
+  it('lists the added and removed listeners of a candidate that reloads without a restart', async () => {
+    const listenerChanges: ConfigDiagnostic = {
+      code: 'I_LISTENER_CHANGES',
+      severity: 'warning',
+      stage: 'activation',
+      path: '/config/listeners',
+      message: 'activation adds analysis (tcp 127.0.0.1:8195) (the supervising master binds them before traffic switches) and removes old (tcp 127.0.0.1:8190) (they stop accepting once the new revision is active and close when their connections finish); every other listener keeps serving without interruption',
+    }
+    installConfigFetch(() => jsonResponse({
+      diskRevision: 'disk-listener-changes',
+      candidateRevision: 'candidate-listener-changes',
+      activeRevision,
+      outcome: 'saved_pending_activation',
+      activationState: 'pending',
+      restartRequired: false,
+      diagnostics: [listenerChanges, {
+        code: 'I_ACTIVATION_PENDING',
+        severity: 'warning',
+        stage: 'activation',
+        message: 'configuration was saved and queued for generation activation',
+      }],
+    }), 200, configSnapshot(), false, [listenerChanges])
+    const wrapper = await mountUnlocked()
+
+    await findButton(wrapper, 'Validate candidate').trigger('click')
+    await flushPromises()
+    const diagnostics = wrapper.get('.diagnostics-section').text()
+    expect(diagnostics).toContain('I_LISTENER_CHANGES')
+    expect(diagnostics).toContain('adds analysis (tcp 127.0.0.1:8195)')
+    expect(diagnostics).toContain('removes old (tcp 127.0.0.1:8190)')
+    await findButton(wrapper, 'Review save').trigger('click')
+    expect(wrapper.get('.review-warning').text()).toContain('no process restart is required')
+    await findButton(wrapper, 'Save canonical configuration').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.revision-banner.pending').text()).not.toContain('restart required')
+  })
+
   it('renders a supervised topology restart explanation without Unix wording', async () => {
     installConfigFetch(() => jsonResponse({
       diskRevision: 'disk-topology-restart',

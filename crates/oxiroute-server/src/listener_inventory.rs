@@ -1,6 +1,6 @@
 use oxiroute_config::{ListenerBind, Protocol, ValidatedConfig};
 
-use crate::{MetricsError, RuntimeMode};
+use crate::MetricsError;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ListenerId {
@@ -41,8 +41,25 @@ pub(crate) enum ListenerMetricPolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ListenerRestartReason {
-    DirectUnixModeChange,
-    SupervisedDescriptorTopology,
+    /// A Unix socket keeps its path and changes its mode, which a running socket cannot do.
+    UnixModeChange,
+}
+
+/// What a reload does to the listener sockets, as operator-facing labels.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ListenerChangeSummary {
+    /// Listeners bound before traffic switches.
+    pub(crate) added: Vec<String>,
+    /// Listeners that stop accepting and close once their connections finish.
+    pub(crate) removed: Vec<String>,
+    /// Listeners whose sockets carry over without interruption.
+    pub(crate) kept: Vec<String>,
+}
+
+impl ListenerChangeSummary {
+    pub(crate) fn changes_listeners(&self) -> bool {
+        !self.added.is_empty() || !self.removed.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -183,6 +200,10 @@ impl ListenerInventory {
         self.entries.len()
     }
 
+    /// Returns whether both inventories need exactly the same descriptors in the same order.
+    ///
+    /// A supervised worker only adopts sockets, so it cannot apply a listener-set change on its
+    /// own: the supervising master binds the new sockets and closes the removed ones.
     pub(crate) fn same_descriptor_topology(&self, candidate: &Self) -> bool {
         self.entries.len() == candidate.entries.len()
             && self
@@ -198,39 +219,38 @@ impl ListenerInventory {
                 })
     }
 
-    pub(crate) fn restart_reason(
-        &self,
-        mode: RuntimeMode,
-        candidate: &Self,
-    ) -> Option<ListenerRestartReason> {
-        match mode {
-            RuntimeMode::Direct => candidate
-                .entries
-                .iter()
-                .any(|candidate| {
-                    let ListenerBind::Unix {
-                        path: candidate_path,
-                        mode: candidate_mode,
-                    } = &candidate.bind
-                    else {
-                        return false;
-                    };
-                    self.entries.iter().any(|active| {
-                        matches!(
-                            &active.bind,
-                            ListenerBind::Unix { path, mode }
-                                if path == candidate_path && mode != candidate_mode
-                        )
-                    })
+    /// Returns why `candidate` cannot replace this inventory by a reload.
+    ///
+    /// Listeners that are added, removed, renamed, reordered or given another protocol or TLS
+    /// profile never need a restart: a reload binds the new sockets, carries over the sockets whose
+    /// bind address is unchanged and closes the removed ones after draining. Only a Unix socket
+    /// that keeps its path and changes its mode is refused, because the new socket would need the
+    /// path the running one owns.
+    pub(crate) fn restart_reason(&self, candidate: &Self) -> Option<ListenerRestartReason> {
+        candidate
+            .entries
+            .iter()
+            .any(|candidate| {
+                let ListenerBind::Unix {
+                    path: candidate_path,
+                    mode: candidate_mode,
+                } = &candidate.bind
+                else {
+                    return false;
+                };
+                self.entries.iter().any(|active| {
+                    matches!(
+                        &active.bind,
+                        ListenerBind::Unix { path, mode }
+                            if path == candidate_path && mode != candidate_mode
+                    )
                 })
-                .then_some(ListenerRestartReason::DirectUnixModeChange),
-            RuntimeMode::Supervised => (!self.same_descriptor_topology(candidate))
-                .then_some(ListenerRestartReason::SupervisedDescriptorTopology),
-        }
+            })
+            .then_some(ListenerRestartReason::UnixModeChange)
     }
 
-    pub(crate) fn restart_required(&self, mode: RuntimeMode, candidate: &Self) -> bool {
-        self.restart_reason(mode, candidate).is_some()
+    pub(crate) fn restart_required(&self, candidate: &Self) -> bool {
+        self.restart_reason(candidate).is_some()
     }
 
     pub(crate) fn complete_listener_count(&self) -> usize {
@@ -262,7 +282,10 @@ mod tests {
 
     use oxiroute_config::{ConfigDraft, ListenerBind, Management, Protocol, Stats, StatsPage};
 
-    use super::{ListenerDescriptorKind, ListenerInventory, ListenerMetricPolicy, descriptor_kind};
+    use super::{
+        ListenerDescriptorKind, ListenerInventory, ListenerMetricPolicy, ListenerRestartReason,
+        descriptor_kind,
+    };
 
     #[test]
     fn inventory_core_is_platform_independent_and_unbounded() {
@@ -339,6 +362,8 @@ mod tests {
         let active = ListenerInventory::compile(&active);
         assert!(active.same_descriptor_topology(&ListenerInventory::compile(&policy_change)));
         assert!(!active.same_descriptor_topology(&ListenerInventory::compile(&rename)));
+        // Neither change needs a restart: a reload applies listener changes.
+        assert!(!active.restart_required(&ListenerInventory::compile(&rename)));
         assert_eq!(active.complete_listener_count(), 1);
         assert_eq!(
             active.entries()[0].metric_policy,
@@ -347,74 +372,75 @@ mod tests {
     }
 
     #[test]
-    fn restart_requirement_matrix_is_mode_aware_and_complete() {
+    fn only_a_unix_socket_that_keeps_its_path_and_changes_its_mode_needs_a_restart() {
         let active = matrix_config();
-        let assert_modes = |candidate: oxiroute_config::ValidatedConfig,
-                            direct: bool,
-                            supervised: bool| {
+        let assert_restart = |candidate: oxiroute_config::ValidatedConfig, expected: bool| {
             let active_inventory = ListenerInventory::compile(&active);
             let candidate_inventory = ListenerInventory::compile(&candidate);
             assert_eq!(
-                active_inventory.restart_required(crate::RuntimeMode::Direct, &candidate_inventory),
-                direct,
+                active_inventory.restart_required(&candidate_inventory),
+                expected,
             );
             assert_eq!(
-                active_inventory
-                    .restart_required(crate::RuntimeMode::Supervised, &candidate_inventory),
-                supervised,
+                active_inventory.restart_reason(&candidate_inventory),
+                expected.then_some(ListenerRestartReason::UnixModeChange),
             );
         };
         let validated = |draft: ConfigDraft| draft.validate().expect("valid matrix candidate");
 
-        assert_modes(active.clone(), false, false);
+        assert_restart(active.clone(), false);
 
         let mut policy = active.to_draft();
         policy.listeners[0].max_connections = Some(99);
         policy.http_services[0].max_request_body_bytes = Some(32_768);
-        assert_modes(validated(policy), false, false);
+        assert_restart(validated(policy), false);
 
         let mut renamed = active.to_draft();
         renamed.listeners[0].name = "renamed-http".into();
-        assert_modes(validated(renamed), false, true);
+        assert_restart(validated(renamed), false);
 
         let mut reordered = active.to_draft();
         reordered.listeners.swap(0, 1);
-        assert_modes(validated(reordered), false, true);
+        assert_restart(validated(reordered), false);
 
         let mut protocol = active.to_draft();
         protocol.listeners[4].protocol = Protocol::Http;
         protocol.listeners[4].service = Some("web".into());
-        assert_modes(validated(protocol), false, true);
+        assert_restart(validated(protocol), false);
 
         let mut bind = active.to_draft();
         bind.listeners[0].bind = ListenerBind::Socket {
             address: "127.0.0.1:8090".parse().unwrap(),
         };
-        assert_modes(validated(bind), false, true);
+        assert_restart(validated(bind), false);
 
         let mut unix_mode = active.to_draft();
         let ListenerBind::Unix { mode, .. } = &mut unix_mode.listeners[5].bind else {
             panic!("Unix fixture")
         };
         *mode = Some(0o660);
-        assert_modes(validated(unix_mode), true, true);
+        assert_restart(validated(unix_mode), true);
+
+        let mut removed_listener = active.to_draft();
+        removed_listener.listeners.remove(0);
+        assert_restart(validated(removed_listener), false);
 
         let mut no_management = active.to_draft();
         no_management.management = None;
-        assert_modes(validated(no_management.clone()), false, true);
+        assert_restart(validated(no_management.clone()), false);
         let no_management = validated(no_management);
-        assert!(ListenerInventory::compile(&no_management).restart_required(
-            crate::RuntimeMode::Supervised,
-            &ListenerInventory::compile(&active),
-        ));
+        assert!(
+            !ListenerInventory::compile(&no_management)
+                .restart_required(&ListenerInventory::compile(&active))
+        );
 
         let mut stats_reordered = active.to_draft();
         stats_reordered.stats.as_mut().unwrap().binds.swap(0, 1);
-        assert_modes(validated(stats_reordered), false, true);
+        assert_restart(validated(stats_reordered), false);
 
         let mut no_stats = active.to_draft();
         no_stats.stats = None;
-        assert_modes(validated(no_stats), false, true);
+        assert_restart(validated(no_stats), false);
 
         let mut stats_page_added = active.to_draft();
         let second_page = StatsPage {
@@ -431,25 +457,25 @@ mod tests {
             .unwrap()
             .pages
             .push(second_page);
-        assert_modes(validated(stats_page_added.clone()), false, true);
+        assert_restart(validated(stats_page_added.clone()), false);
         let two_pages = validated(stats_page_added);
         let mut pages_reordered = two_pages.to_draft();
         pages_reordered.stats.as_mut().unwrap().pages.swap(0, 1);
-        assert!(ListenerInventory::compile(&two_pages).restart_required(
-            crate::RuntimeMode::Supervised,
-            &ListenerInventory::compile(&validated(pages_reordered)),
-        ));
+        assert!(
+            !ListenerInventory::compile(&two_pages)
+                .restart_required(&ListenerInventory::compile(&validated(pages_reordered)))
+        );
 
         let mut udp = active.to_draft();
         udp.listeners[6].bind = ListenerBind::Udp {
             address: "127.0.0.1:8101".parse().unwrap(),
         };
-        assert_modes(validated(udp), false, true);
+        assert_restart(validated(udp), false);
 
         let mut h3 = active.to_draft();
         h3.listeners[7].protocol = Protocol::ForwardHttp3;
         h3.listeners[7].service = Some("forward".into());
-        assert_modes(validated(h3), false, true);
+        assert_restart(validated(h3), false);
     }
 
     #[test]

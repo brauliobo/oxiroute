@@ -5,7 +5,7 @@ services from one typed configuration. It is built on [Cloudflare Pingora](https
 and is designed around explicit behavior, bounded inputs, observable runtime state, and safe
 configuration changes.
 
-**Current release line:** `0.5.2` (pre-alpha; `v0.5.2` is the current repository release)<br>
+**Current release line:** `0.5.3` (pre-alpha; `v0.5.3` is the current repository release)<br>
 **Project status:** pre-alpha; read the [compatibility matrix](docs/COMPATIBILITY.md) before using it
 for production traffic.<br>
 **Toolchain status:** the checked-in workspace and CI use Rust `1.97.1` as the active MSRV.<br>
@@ -64,6 +64,8 @@ goal. These are the current building blocks:
   launcher slice for typed listener adoption. On Linux, `oxiroute serve` uses supervision when the
   fixed launcher is installed and the listener topology is eligible. The Arch package installs that
   launcher; unsupported topologies, unpackaged installs without it, and non-Linux builds run direct.
+  A configuration reload adds, removes and moves listeners in either runtime without a restart or
+  dropped connections; see the operations guide.
 
 ## Five-Minute Local Run
 
@@ -242,7 +244,7 @@ failure-path, observable-state, and interoperability coverage as part of support
 - [Developer guides](docs/developer/README.md)
 - [Reference index](docs/reference/README.md)
 - [Compatibility matrix](docs/COMPATIBILITY.md)
-- [Release notes](docs/RELEASE_NOTES_0.5.2.md)
+- [Release notes](docs/RELEASE_NOTES_0.5.3.md)
 
 ## License
 
