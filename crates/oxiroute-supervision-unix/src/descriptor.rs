@@ -211,6 +211,136 @@ impl DescriptorManifest {
                 all.union(slot.kind.capability())
             })
     }
+
+    /// Compares this manifest with the next one by the kernel socket each slot stands for.
+    ///
+    /// Two slots refer to the same socket when their kind, bind identity and Unix mode are equal,
+    /// whatever their slot identifier or role (a renamed listener keeps its socket). A slot without
+    /// a bind identity is matched by role instead. Slots are paired in manifest order, so a
+    /// manifest that repeats one identity pairs the repeats one to one.
+    #[must_use]
+    pub fn diff(&self, next: &Self) -> ManifestDiff {
+        let mut unmatched = vec![true; next.slots.len()];
+        let mut diff = ManifestDiff::default();
+        for current in &self.slots {
+            let partner =
+                next.slots.iter().enumerate().find(|(index, candidate)| {
+                    unmatched[*index] && same_socket(current, candidate)
+                });
+            if let Some((index, candidate)) = partner {
+                unmatched[index] = false;
+                diff.kept.push((current.id, candidate.id));
+            } else {
+                diff.removed.push(current.id);
+            }
+        }
+        diff.added = next
+            .slots
+            .iter()
+            .zip(unmatched)
+            .filter_map(|(slot, unmatched)| unmatched.then_some(slot.id))
+            .collect();
+        diff
+    }
+}
+
+impl DescriptorManifest {
+    /// Describes what moving from this manifest to `next` does to the listeners, for operators.
+    ///
+    /// Each entry is a [`DescriptorSlot::label`]. A kept listener is labelled as the next manifest
+    /// names it, so a renamed listener shows its new name.
+    #[must_use]
+    pub fn changes(&self, next: &Self) -> ListenerChanges {
+        let diff = self.diff(next);
+        let label = |manifest: &Self, ids: &mut dyn Iterator<Item = SlotId>| {
+            ids.filter_map(|id| manifest.slots.iter().find(|slot| slot.id == id))
+                .map(DescriptorSlot::label)
+                .collect::<Vec<_>>()
+        };
+        ListenerChanges {
+            added: label(next, &mut diff.added.iter().copied()),
+            removed: label(self, &mut diff.removed.iter().copied()),
+            kept: label(next, &mut diff.kept.iter().map(|(_, next)| *next)),
+        }
+    }
+}
+
+impl DescriptorSlot {
+    /// Returns a label such as `web (tcp 127.0.0.1:8080)` or `@management (unix /run/m.sock)`.
+    #[must_use]
+    pub fn label(&self) -> String {
+        let name = match &self.role {
+            DescriptorRole::Traffic(name) => name.clone(),
+            DescriptorRole::Management => "@management".to_owned(),
+            DescriptorRole::Stats(index) => format!("@stats-{index}"),
+            DescriptorRole::StatsPage(index) => format!("@stats-page-{index}"),
+            DescriptorRole::State => "@state".to_owned(),
+            DescriptorRole::Control => "@control".to_owned(),
+        };
+        let kind = match self.kind {
+            DescriptorKind::TcpListener => "tcp",
+            DescriptorKind::UnixListener => "unix",
+            DescriptorKind::DatagramListener => "udp",
+            DescriptorKind::QuicListener => "quic",
+            DescriptorKind::Opaque => "opaque",
+        };
+        match &self.bind {
+            Some(BindIdentity::Tcp(address)) => format!("{name} ({kind} {address})"),
+            Some(BindIdentity::UnixPath(path)) => format!("{name} ({kind} {})", path.display()),
+            Some(BindIdentity::UnixAbstract(abstract_name)) => {
+                format!(
+                    "{name} ({kind} @{})",
+                    String::from_utf8_lossy(abstract_name)
+                )
+            }
+            None => name,
+        }
+    }
+}
+
+/// Operator-facing summary of a listener replacement, as [`DescriptorSlot::label`] strings.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ListenerChanges {
+    /// Listeners the replacement binds.
+    pub added: Vec<String>,
+    /// Listeners the replacement stops accepting on and closes after draining.
+    pub removed: Vec<String>,
+    /// Listeners whose sockets the replacement carries over untouched.
+    pub kept: Vec<String>,
+}
+
+impl ListenerChanges {
+    /// Returns whether the replacement adds or removes any listener.
+    #[must_use]
+    pub fn changes_listeners(&self) -> bool {
+        !self.added.is_empty() || !self.removed.is_empty()
+    }
+}
+
+fn same_socket(left: &DescriptorSlot, right: &DescriptorSlot) -> bool {
+    left.kind == right.kind
+        && left.bind == right.bind
+        && left.mode == right.mode
+        && (left.bind.is_some() || left.role == right.role)
+}
+
+/// Difference between two listener manifests, expressed in slot identifiers.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ManifestDiff {
+    /// `(current, next)` slot pairs that stand for the same socket.
+    pub kept: Vec<(SlotId, SlotId)>,
+    /// Slots of the next manifest whose socket the current manifest does not own.
+    pub added: Vec<SlotId>,
+    /// Slots of the current manifest whose socket the next manifest no longer lists.
+    pub removed: Vec<SlotId>,
+}
+
+impl ManifestDiff {
+    /// Returns whether both manifests list exactly the same sockets.
+    #[must_use]
+    pub fn is_unchanged(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
 }
 
 impl TryFrom<Vec<DescriptorSlot>> for DescriptorManifest {
@@ -526,4 +656,246 @@ fn validate_unix_bind(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tcp(id: u16, name: &str, address: &str) -> DescriptorSlot {
+        DescriptorSlot {
+            id: SlotId(id),
+            role: DescriptorRole::Traffic(name.into()),
+            kind: DescriptorKind::TcpListener,
+            bind: Some(BindIdentity::Tcp(address.parse().expect("socket address"))),
+            mode: None,
+        }
+    }
+
+    fn unix(id: u16, name: &str, path: &str, mode: Option<u16>) -> DescriptorSlot {
+        DescriptorSlot {
+            id: SlotId(id),
+            role: DescriptorRole::Traffic(name.into()),
+            kind: DescriptorKind::UnixListener,
+            bind: Some(BindIdentity::UnixPath(path.into())),
+            mode,
+        }
+    }
+
+    fn manifest(slots: Vec<DescriptorSlot>) -> DescriptorManifest {
+        DescriptorManifest::new(slots).expect("valid manifest")
+    }
+
+    #[test]
+    fn identical_manifests_keep_every_socket() {
+        let current = manifest(vec![
+            tcp(0, "web", "127.0.0.1:8080"),
+            tcp(1, "api", "127.0.0.1:8081"),
+        ]);
+        let diff = current.diff(&current.clone());
+        assert!(diff.is_unchanged());
+        assert_eq!(diff.kept, [(SlotId(0), SlotId(0)), (SlotId(1), SlotId(1))]);
+    }
+
+    #[test]
+    fn an_added_listener_is_reported_with_its_next_slot() {
+        let current = manifest(vec![tcp(0, "web", "127.0.0.1:8080")]);
+        let next = manifest(vec![
+            tcp(0, "web", "127.0.0.1:8080"),
+            tcp(1, "analysis", "127.0.0.1:8195"),
+        ]);
+        let diff = current.diff(&next);
+        assert_eq!(diff.kept, [(SlotId(0), SlotId(0))]);
+        assert_eq!(diff.added, [SlotId(1)]);
+        assert!(diff.removed.is_empty());
+        assert!(!diff.is_unchanged());
+    }
+
+    #[test]
+    fn a_removed_listener_is_reported_with_its_current_slot() {
+        let current = manifest(vec![
+            tcp(0, "web", "127.0.0.1:8080"),
+            tcp(1, "analysis", "127.0.0.1:8195"),
+        ]);
+        let next = manifest(vec![tcp(0, "web", "127.0.0.1:8080")]);
+        let diff = current.diff(&next);
+        assert_eq!(diff.kept, [(SlotId(0), SlotId(0))]);
+        assert_eq!(diff.removed, [SlotId(1)]);
+        assert!(diff.added.is_empty());
+    }
+
+    #[test]
+    fn a_changed_address_is_one_removal_and_one_addition() {
+        let current = manifest(vec![tcp(0, "web", "127.0.0.1:8080")]);
+        let next = manifest(vec![tcp(0, "web", "127.0.0.1:9090")]);
+        let diff = current.diff(&next);
+        assert!(diff.kept.is_empty());
+        assert_eq!(diff.removed, [SlotId(0)]);
+        assert_eq!(diff.added, [SlotId(0)]);
+    }
+
+    #[test]
+    fn a_renamed_or_renumbered_listener_keeps_its_socket() {
+        let current = manifest(vec![
+            tcp(0, "web", "127.0.0.1:8080"),
+            tcp(1, "api", "127.0.0.1:8081"),
+        ]);
+        let next = manifest(vec![
+            tcp(0, "api-renamed", "127.0.0.1:8081"),
+            tcp(1, "web", "127.0.0.1:8080"),
+        ]);
+        let diff = current.diff(&next);
+        assert!(diff.is_unchanged());
+        assert_eq!(diff.kept, [(SlotId(0), SlotId(1)), (SlotId(1), SlotId(0))]);
+    }
+
+    #[test]
+    fn the_same_address_with_another_socket_kind_is_a_different_socket() {
+        let current = manifest(vec![tcp(0, "web", "127.0.0.1:8080")]);
+        let mut udp = tcp(0, "web", "127.0.0.1:8080");
+        udp.kind = DescriptorKind::DatagramListener;
+        let diff = current.diff(&manifest(vec![udp]));
+        assert!(diff.kept.is_empty());
+        assert_eq!(diff.removed, [SlotId(0)]);
+        assert_eq!(diff.added, [SlotId(0)]);
+    }
+
+    #[test]
+    fn a_unix_socket_matches_by_path_and_mode() {
+        let current = manifest(vec![unix(0, "local", "/run/a.sock", Some(0o660))]);
+        let same = manifest(vec![unix(5, "local", "/run/a.sock", Some(0o660))]);
+        assert_eq!(current.diff(&same).kept, [(SlotId(0), SlotId(5))]);
+        let other_mode = manifest(vec![unix(0, "local", "/run/a.sock", Some(0o600))]);
+        let diff = current.diff(&other_mode);
+        assert!(diff.kept.is_empty());
+        assert_eq!(diff.removed, [SlotId(0)]);
+        assert_eq!(diff.added, [SlotId(0)]);
+        let other_path = manifest(vec![unix(0, "local", "/run/b.sock", Some(0o660))]);
+        assert!(current.diff(&other_path).kept.is_empty());
+    }
+
+    #[test]
+    fn repeated_identities_pair_one_to_one() {
+        let current = manifest(vec![
+            tcp(0, "a", "127.0.0.1:8080"),
+            tcp(1, "b", "127.0.0.1:8080"),
+        ]);
+        let next = manifest(vec![tcp(0, "a", "127.0.0.1:8080")]);
+        let diff = current.diff(&next);
+        assert_eq!(diff.kept, [(SlotId(0), SlotId(0))]);
+        assert_eq!(diff.removed, [SlotId(1)]);
+    }
+
+    #[test]
+    fn slots_without_a_bind_match_by_role() {
+        let opaque = |id, role| DescriptorSlot {
+            id: SlotId(id),
+            role,
+            kind: DescriptorKind::Opaque,
+            bind: None,
+            mode: None,
+        };
+        let current = manifest(vec![opaque(0, DescriptorRole::State)]);
+        assert!(
+            current
+                .diff(&manifest(vec![opaque(3, DescriptorRole::State)]))
+                .is_unchanged()
+        );
+        assert!(
+            !current
+                .diff(&manifest(vec![opaque(0, DescriptorRole::Control)]))
+                .is_unchanged()
+        );
+    }
+
+    #[test]
+    fn changes_name_listeners_for_operators() {
+        let current = manifest(vec![
+            tcp(0, "web", "127.0.0.1:8080"),
+            tcp(1, "old", "127.0.0.1:8081"),
+            unix(2, "local", "/run/a.sock", None),
+        ]);
+        let next = manifest(vec![
+            tcp(0, "web-renamed", "127.0.0.1:8080"),
+            tcp(1, "analysis", "127.0.0.1:8195"),
+            unix(2, "local", "/run/a.sock", None),
+        ]);
+        let changes = current.changes(&next);
+        assert_eq!(changes.added, ["analysis (tcp 127.0.0.1:8195)"]);
+        assert_eq!(changes.removed, ["old (tcp 127.0.0.1:8081)"]);
+        assert_eq!(
+            changes.kept,
+            [
+                "web-renamed (tcp 127.0.0.1:8080)",
+                "local (unix /run/a.sock)"
+            ]
+        );
+        assert!(changes.changes_listeners());
+        assert!(!current.changes(&current.clone()).changes_listeners());
+    }
+
+    #[test]
+    fn labels_cover_every_role_and_bind_shape() {
+        let slot = |role, kind, bind| DescriptorSlot {
+            id: SlotId(0),
+            role,
+            kind,
+            bind,
+            mode: None,
+        };
+        let address = || Some(BindIdentity::Tcp("[::1]:9".parse().unwrap()));
+        assert_eq!(
+            slot(
+                DescriptorRole::Management,
+                DescriptorKind::TcpListener,
+                address()
+            )
+            .label(),
+            "@management (tcp [::1]:9)"
+        );
+        assert_eq!(
+            slot(
+                DescriptorRole::Stats(1),
+                DescriptorKind::DatagramListener,
+                address()
+            )
+            .label(),
+            "@stats-1 (udp [::1]:9)"
+        );
+        assert_eq!(
+            slot(
+                DescriptorRole::StatsPage(2),
+                DescriptorKind::QuicListener,
+                address()
+            )
+            .label(),
+            "@stats-page-2 (quic [::1]:9)"
+        );
+        assert_eq!(
+            slot(
+                DescriptorRole::Traffic("a".into()),
+                DescriptorKind::UnixListener,
+                Some(BindIdentity::UnixAbstract(b"name".to_vec())),
+            )
+            .label(),
+            "a (unix @name)"
+        );
+        assert_eq!(
+            slot(DescriptorRole::State, DescriptorKind::Opaque, None).label(),
+            "@state"
+        );
+        assert_eq!(
+            slot(DescriptorRole::Control, DescriptorKind::Opaque, None).label(),
+            "@control"
+        );
+    }
+
+    #[test]
+    fn an_empty_manifest_adds_and_removes_everything() {
+        let empty = manifest(Vec::new());
+        let one = manifest(vec![tcp(0, "web", "127.0.0.1:8080")]);
+        assert_eq!(empty.diff(&one).added, [SlotId(0)]);
+        assert_eq!(one.diff(&empty).removed, [SlotId(0)]);
+        assert!(empty.diff(&empty).is_unchanged());
+    }
 }

@@ -13,7 +13,7 @@ use std::{
 };
 
 use oxiroute_supervision::GenerationId;
-use oxiroute_supervision_unix::{DescriptorSet, InstanceToken, SlotId};
+use oxiroute_supervision_unix::{DescriptorKind, DescriptorSet, InstanceToken, SlotId};
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, WorkerAdministrativeState,
     WorkerControl, WorkerEventRecord, WorkerGenerationStatus, WorkerLifecycle, WorkerStatus,
@@ -255,22 +255,32 @@ struct Serving {
 
 impl Serving {
     fn new(mut listeners: DescriptorSet, generation: u64) -> io::Result<Self> {
-        let tcp = TcpListener::from(listeners.take(SlotId(1)).map_err(io::Error::other)?);
-        let unix = UnixListener::from(listeners.take(SlotId(2)).map_err(io::Error::other)?);
         let active = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let response = generation.to_be_bytes();
-        let tcp_active = Arc::clone(&active);
-        let tcp_stop = Arc::clone(&stop);
-        let tcp_thread = thread::spawn(move || serve_tcp(&tcp, &tcp_active, &tcp_stop, &response));
-        let unix_active = Arc::clone(&active);
-        let unix_stop = Arc::clone(&stop);
-        let unix_thread =
-            thread::spawn(move || serve_unix(&unix, &unix_active, &unix_stop, &response));
+        let mut threads = Vec::new();
+        for id in (1..=8).map(SlotId) {
+            let Some(kind) = listeners.slot(id).map(|slot| slot.kind) else {
+                continue;
+            };
+            let descriptor = listeners.take(id).map_err(io::Error::other)?;
+            let (active, stop) = (Arc::clone(&active), Arc::clone(&stop));
+            threads.push(match kind {
+                DescriptorKind::TcpListener => {
+                    let listener = TcpListener::from(descriptor);
+                    thread::spawn(move || serve_tcp(&listener, &active, &stop, &response))
+                }
+                DescriptorKind::UnixListener => {
+                    let listener = UnixListener::from(descriptor);
+                    thread::spawn(move || serve_unix(&listener, &active, &stop, &response))
+                }
+                _ => return Err(io::Error::other("fixture serves stream listeners only")),
+            });
+        }
         Ok(Self {
             active,
             stop,
-            threads: vec![tcp_thread, unix_thread],
+            threads,
         })
     }
 

@@ -25,7 +25,7 @@ use crate::{
         ConfigLoadOutcome, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
         EffectiveRevision, NativeImportSourceOutcome, PersistableConfigCandidate,
     },
-    listener_inventory::ListenerRestartReason,
+    listener_inventory::{ListenerChangeSummary, ListenerRestartReason},
     service_plan::validation_plan,
 };
 
@@ -275,6 +275,8 @@ impl ConfigApiState {
         let mut diagnostics = diagnostics_json(candidate.draft.diagnostics(), false);
         if let Some(reason) = candidate.restart_reason {
             diagnostics.push(restart_required_diagnostic(reason));
+        } else if let Some(changes) = &candidate.listener_changes {
+            diagnostics.push(listener_changes_diagnostic(self.mode, changes));
         }
         typed_json_response(
             200,
@@ -325,23 +327,26 @@ impl ConfigApiState {
         let PreparedCandidate {
             draft: candidate,
             restart_reason,
+            listener_changes,
             ..
         } = candidate;
+        let activation = Activation {
+            restart_reason,
+            listener_changes,
+        };
 
         match self.coordinator.save(expected, *candidate) {
             ConfigSaveOutcome::Saved(document) => self.saved_response(
                 &document.authored_revision,
                 &document.effective_revision,
                 diagnostics_json(&document.diagnostics, false),
-                restart_reason,
+                &activation,
             ),
             ConfigSaveOutcome::Conflict(conflict) => self.conflict_response(&conflict),
             ConfigSaveOutcome::InvalidDraft(rejection) => {
                 ApiResponse::json(422, &json!({ "diagnostics": rejection.diagnostics }))
             }
-            ConfigSaveOutcome::Failed(failure) => {
-                self.failed_save_response(&failure, restart_reason)
-            }
+            ConfigSaveOutcome::Failed(failure) => self.failed_save_response(&failure, &activation),
         }
     }
 
@@ -366,19 +371,22 @@ impl ConfigApiState {
                 &json!({ "diagnostics": [preparation_diagnostic(error)] }),
             )
         })?;
-        let restart_reason = mutation.map_or_else(
+        let inspect = |generation: &crate::RuntimeGeneration| {
+            (
+                generation.listener_restart_reason(candidate.validated_config()),
+                generation
+                    .listener_changes(candidate.validated_config())
+                    .filter(ListenerChangeSummary::changes_listeners),
+            )
+        };
+        let (restart_reason, listener_changes) = mutation.map_or_else(
             || {
-                self.generations.as_ref().and_then(|generations| {
-                    generations.active().and_then(|active| {
-                        active.listener_restart_reason(self.mode, candidate.validated_config())
-                    })
-                })
+                self.generations
+                    .as_ref()
+                    .and_then(GenerationManager::active)
+                    .map_or((None, None), |active| inspect(&active))
             },
-            |mutation| {
-                mutation
-                    .generation()
-                    .listener_restart_reason(self.mode, candidate.validated_config())
-            },
+            |mutation| inspect(mutation.generation()),
         );
         if let Some(generations) = &self.generations {
             let disk_revision = match self.coordinator.load() {
@@ -415,6 +423,7 @@ impl ConfigApiState {
             topology: candidate_topology(&plan.topology, now_unix_ms),
             draft: candidate,
             restart_reason,
+            listener_changes,
         })
     }
 
@@ -423,11 +432,18 @@ impl ConfigApiState {
         disk_revision: &AuthoredRevision,
         candidate_revision: &EffectiveRevision,
         mut diagnostics: Vec<Value>,
-        restart_reason: Option<ListenerRestartReason>,
+        activation: &Activation,
     ) -> ApiResponse {
         let active_revision = self.active_revision();
         let unchanged_active = *candidate_revision == active_revision;
+        let restart_reason = activation.restart_reason;
         if !unchanged_active {
+            // The activation state stays the last diagnostic, as clients read it.
+            if restart_reason.is_none()
+                && let Some(changes) = &activation.listener_changes
+            {
+                diagnostics.push(listener_changes_diagnostic(self.mode, changes));
+            }
             diagnostics.push(if let Some(reason) = restart_reason {
                 restart_required_diagnostic(reason)
             } else {
@@ -463,7 +479,7 @@ impl ConfigApiState {
     fn failed_save_response(
         &self,
         failure: &ConfigSaveFailure,
-        restart_reason: Option<ListenerRestartReason>,
+        activation: &Activation,
     ) -> ApiResponse {
         let preview_disk_revision = AuthoredRevision::from_bytes(failure.config_preview.as_bytes());
         if failure.disk_revision.as_ref() == Some(&preview_disk_revision) {
@@ -471,7 +487,7 @@ impl ConfigApiState {
                 &preview_disk_revision,
                 &failure.candidate_revision,
                 diagnostics_json(&failure.diagnostics, true),
-                restart_reason,
+                activation,
             );
         }
         ApiResponse::json(
@@ -564,7 +580,14 @@ enum ConfigPreparationError {
 struct PreparedCandidate {
     draft: Box<PersistableConfigCandidate>,
     restart_reason: Option<ListenerRestartReason>,
+    listener_changes: Option<ListenerChangeSummary>,
     topology: Value,
+}
+
+/// How a saved configuration reaches the running process.
+struct Activation {
+    restart_reason: Option<ListenerRestartReason>,
+    listener_changes: Option<ListenerChangeSummary>,
 }
 
 fn parse_config_request(body: &[u8]) -> Result<ConfigDraft, ApiResponse> {
@@ -664,22 +687,53 @@ fn activation_pending_diagnostic() -> Value {
 }
 
 fn restart_required_diagnostic(reason: ListenerRestartReason) -> Value {
-    let (path, message) = match reason {
-        ListenerRestartReason::DirectUnixModeChange => (
-            "/config/listeners",
-            "an active Unix listener mode changed; the saved configuration takes effect after a process restart",
-        ),
-        ListenerRestartReason::SupervisedDescriptorTopology => (
-            "/config/listeners",
-            "the supervised listener or control-listener topology changed; the saved configuration takes effect after a process restart",
-        ),
+    let message = match reason {
+        ListenerRestartReason::UnixModeChange => {
+            "an active Unix listener mode changed; the saved configuration takes effect after a process restart"
+        }
     };
     json!({
         "code": "I_RESTART_REQUIRED",
         "severity": "warning",
         "stage": "activation",
-        "path": path,
+        "path": "/config/listeners",
         "message": message,
+    })
+}
+
+fn listener_changes_diagnostic(mode: RuntimeMode, changes: &ListenerChangeSummary) -> Value {
+    let binder = match mode {
+        RuntimeMode::Supervised => "the supervising master binds",
+        RuntimeMode::Direct => "the process binds",
+    };
+    let mut clauses = Vec::with_capacity(2);
+    if !changes.added.is_empty() {
+        clauses.push(format!(
+            "adds {} ({binder} them before traffic switches)",
+            changes.added.join(", ")
+        ));
+    }
+    if !changes.removed.is_empty() {
+        clauses.push(format!(
+            "removes {} (they stop accepting once the new revision is active and close when their connections finish)",
+            changes.removed.join(", ")
+        ));
+    }
+    let message = format!(
+        "activation {}; every other listener keeps serving without interruption",
+        clauses.join(" and ")
+    );
+    json!({
+        "code": "I_LISTENER_CHANGES",
+        "severity": "warning",
+        "stage": "activation",
+        "path": "/config/listeners",
+        "message": message,
+        "listeners": {
+            "added": changes.added,
+            "removed": changes.removed,
+            "kept": changes.kept,
+        },
     })
 }
 

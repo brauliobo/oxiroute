@@ -45,8 +45,16 @@ struct Harness<E: ActionExecutor = SystemActionExecutor> {
     listener_targets: Vec<PathBuf>,
     tcp_address: SocketAddr,
     unix_path: PathBuf,
+    kept: KeptListeners,
     factory: WorkerSpawner,
     master: Master<E>,
+}
+
+/// Test-side handles on the sockets the master owns, so a later listener set can keep them.
+struct KeptListeners {
+    tcp: TcpListener,
+    unix: UnixListener,
+    path_guard: Arc<UnixPathGuard>,
 }
 
 impl Harness<SystemActionExecutor> {
@@ -69,7 +77,7 @@ impl<E: ActionExecutor> Harness<E> {
     }
 
     fn launch_input_with_executor(active: WorkerInput<WorkerCommand>, executor: E) -> Self {
-        let (temporary, listeners, listener_targets, tcp_address, unix_path) = listeners();
+        let (temporary, listeners, listener_targets, tcp_address, unix_path, kept) = listeners();
         let config = MasterConfig::new(
             Duration::from_millis(300),
             Duration::from_millis(300),
@@ -97,6 +105,7 @@ impl<E: ActionExecutor> Harness<E> {
             listener_targets,
             tcp_address,
             unix_path,
+            kept,
             factory,
             master,
         };
@@ -114,6 +123,18 @@ impl<E: ActionExecutor> Harness<E> {
             .replace(
                 &mut self.factory,
                 worker("b", generation, behavior),
+                Instant::now(),
+            )
+            .unwrap();
+    }
+
+    fn replace_with_listeners(&mut self, behavior: &str, generation: u64, next: NextSet) {
+        let listeners = self.kept.next_set(self.tcp_address, &self.unix_path, next);
+        self.master
+            .replace_with_listeners(
+                &mut self.factory,
+                worker("b", generation, behavior),
+                listeners,
                 Instant::now(),
             )
             .unwrap();
@@ -283,6 +304,168 @@ fn replaces_a_with_b_using_the_same_tcp_and_unix_listener_identities() {
     );
 }
 
+fn committed_as_b(master: &Master<SystemActionExecutor>) -> bool {
+    master.state() == MasterState::Running
+        && master
+            .active_instance()
+            .is_some_and(|id| id.as_str() == "b")
+}
+
+#[test]
+fn a_replacement_that_adds_a_listener_serves_it_once_committed() {
+    let mut harness = Harness::launch("normal");
+    let added = TcpListener::bind("127.0.0.1:0").unwrap();
+    let added_address = added.local_addr().unwrap();
+    harness.replace_with_listeners(
+        "normal",
+        2,
+        NextSet {
+            keep_tcp: true,
+            keep_unix: true,
+            add_tcp: Some(added),
+        },
+    );
+    assert_eq!(harness.master.listener_manifest().slots().len(), 2);
+    harness.until(committed_as_b);
+    assert_eq!(harness.master.listener_manifest().slots().len(), 3);
+    assert_served_by(&harness, 2);
+    assert_eq!(probe_tcp(added_address), 2);
+    harness.shutdown();
+}
+
+#[test]
+fn a_replacement_that_removes_a_tcp_listener_refuses_new_connections_and_keeps_the_rest() {
+    let mut harness = Harness::launch("normal");
+    harness.replace_with_listeners(
+        "normal",
+        2,
+        NextSet {
+            keep_tcp: false,
+            keep_unix: true,
+            add_tcp: None,
+        },
+    );
+    harness.until(committed_as_b);
+    assert_eq!(harness.master.listener_manifest().slots().len(), 1);
+    // The test and the retired worker still hold descriptors of the removed socket; it stops
+    // listening anyway because the shutdown applies to the socket, not to one descriptor.
+    assert!(TcpStream::connect(harness.tcp_address).is_err());
+    assert_eq!(probe_unix(&harness.unix_path), 2);
+    harness.shutdown();
+}
+
+#[test]
+fn a_replacement_that_removes_a_unix_listener_refuses_new_connections_and_keeps_the_rest() {
+    let mut harness = Harness::launch("normal");
+    harness.replace_with_listeners(
+        "normal",
+        2,
+        NextSet {
+            keep_tcp: true,
+            keep_unix: false,
+            add_tcp: None,
+        },
+    );
+    harness.until(committed_as_b);
+    assert!(UnixStream::connect(&harness.unix_path).is_err());
+    assert_eq!(probe_tcp(harness.tcp_address), 2);
+    harness.shutdown();
+}
+
+#[test]
+fn a_replacement_that_changes_nothing_keeps_every_listener_serving() {
+    let mut harness = Harness::launch("normal");
+    harness.replace_with_listeners(
+        "normal",
+        2,
+        NextSet {
+            keep_tcp: true,
+            keep_unix: true,
+            add_tcp: None,
+        },
+    );
+    harness.until(committed_as_b);
+    assert_served_by(&harness, 2);
+    harness.shutdown();
+}
+
+#[test]
+fn a_rolled_back_replacement_discards_the_listeners_it_added() {
+    let mut harness = Harness::launch("normal");
+    let manifest = harness.master.listener_manifest().clone();
+    let added = TcpListener::bind("127.0.0.1:0").unwrap();
+    let added_socket = descriptor_target(&added);
+    harness.replace_with_listeners(
+        "reject-activate",
+        2,
+        NextSet {
+            keep_tcp: true,
+            keep_unix: true,
+            add_tcp: Some(added),
+        },
+    );
+    let events = harness.until(|master| master.state() == MasterState::Running);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MasterEvent::RollbackCompleted { .. })),
+        "events: {events:?}"
+    );
+    assert_eq!(harness.master.listener_manifest(), &manifest);
+    assert_served_by(&harness, 1);
+    // The candidate that adopted the added socket is gone, and the master dropped its own copy.
+    let started = Instant::now();
+    while socket_is_open_in_any_process(&added_socket) {
+        harness.master.poll(Instant::now()).unwrap();
+        assert!(
+            started.elapsed() < TEST_TIMEOUT,
+            "the added listener outlived the rolled back replacement"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    harness.shutdown();
+}
+
+#[test]
+fn a_replacement_that_fails_to_spawn_discards_the_listeners_it_brought() {
+    let mut harness = Harness::launch("normal");
+    let added = TcpListener::bind("127.0.0.1:0").unwrap();
+    let added_socket = descriptor_target(&added);
+    let listeners = harness.kept.next_set(
+        harness.tcp_address,
+        &harness.unix_path,
+        NextSet {
+            keep_tcp: true,
+            keep_unix: true,
+            add_tcp: Some(added),
+        },
+    );
+    let mut failing = FailingFactory::default();
+    let result = harness.master.replace_with_listeners(
+        &mut failing,
+        worker("b", 2, "normal"),
+        listeners,
+        Instant::now(),
+    );
+    assert!(result.is_err() || failing.calls == 1);
+    harness.until(|master| master.state() == MasterState::Running);
+    assert_eq!(harness.master.listener_manifest().slots().len(), 2);
+    assert!(!socket_is_open_in_any_process(&added_socket));
+    assert_served_by(&harness, 1);
+    harness.shutdown();
+}
+
+#[test]
+fn the_drain_window_may_last_a_day_while_other_phases_stay_within_an_hour() {
+    let second = Duration::from_secs(1);
+    let config = |drain, shutdown| MasterConfig::new(second, second, second, drain, shutdown);
+    assert!(config(Duration::from_hours(24), second).is_ok());
+    assert!(config(Duration::from_hours(24) + second, second).is_err());
+    assert!(config(second, Duration::from_hours(1)).is_ok());
+    assert!(config(second, Duration::from_hours(1) + second).is_err());
+    assert!(config(Duration::ZERO, second).is_err());
+}
+
 #[test]
 fn authenticated_worker_status_is_retained_without_creating_a_command_path() {
     let harness = Harness::launch("normal");
@@ -357,7 +540,7 @@ fn initial_adoption_and_activation_fail_closed() {
         ("reject-adopt", FailurePhase::ListenerAdoption),
         ("reject-activate", FailurePhase::Activation),
     ] {
-        let (_temporary, listeners, _, _, _) = listeners();
+        let (_temporary, listeners, _, _, _, _) = listeners();
         let mut factory = factory();
         let mut master = Master::launch(
             config(),
@@ -520,7 +703,8 @@ fn candidate_crash_rolls_back_and_active_crash_fails_closed() {
 fn failed_candidates_do_not_leak_parent_descriptors() {
     let mut harness = Harness::launch("normal");
     let baseline = matching_descriptor_count(&harness.listener_targets);
-    assert_eq!(baseline, 2);
+    // The master's two originals plus the two handles the harness keeps for later listener sets.
+    assert_eq!(baseline, 4);
     for generation in 2..=5 {
         harness.replace("reject-adopt", generation);
         harness.until(|master| master.state() == MasterState::Running);
@@ -993,7 +1177,7 @@ fn initial_duplicate_and_send_faults_fail_closed_without_synchronous_reap() {
     ] {
         let mut executor = FaultExecutor::default();
         executor.fail(fault);
-        let (_temporary, listeners, _, _, _) = listeners();
+        let (_temporary, listeners, _, _, _, _) = listeners();
         let mut factory = factory();
         let mut master = Master::launch_with_executor(
             config(),
@@ -1394,6 +1578,7 @@ fn listeners() -> (
     Vec<PathBuf>,
     SocketAddr,
     PathBuf,
+    KeptListeners,
 ) {
     let temporary = tempfile::tempdir().unwrap();
     let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1423,14 +1608,72 @@ fn listeners() -> (
         },
     ])
     .unwrap();
+    let kept = KeptListeners {
+        tcp: tcp.try_clone().unwrap(),
+        unix: unix.try_clone().unwrap(),
+        path_guard: Arc::new(UnixPathGuard(unix_path.clone())),
+    };
     let originals = vec![OwnedFd::from(tcp), OwnedFd::from(unix)];
-    let listeners = StableListeners::new(
-        manifest,
-        originals,
-        Arc::new(UnixPathGuard(unix_path.clone())),
-    )
-    .unwrap();
-    (temporary, listeners, targets, tcp_address, unix_path)
+    let listeners =
+        StableListeners::new(manifest, originals, Arc::clone(&kept.path_guard)).unwrap();
+    (temporary, listeners, targets, tcp_address, unix_path, kept)
+}
+
+/// The sockets a replacement keeps from the launch set and the ones it adds.
+struct NextSet {
+    keep_tcp: bool,
+    keep_unix: bool,
+    add_tcp: Option<TcpListener>,
+}
+
+impl KeptListeners {
+    /// Builds the next listener set: slot 1 is the launch TCP socket, slot 2 the launch Unix
+    /// socket and slot 3 an added TCP socket. Kept sockets are duplicates of the launch ones.
+    fn next_set(
+        &self,
+        tcp_address: SocketAddr,
+        unix_path: &Path,
+        next: NextSet,
+    ) -> StableListeners {
+        let mut slots = Vec::new();
+        let mut originals = Vec::new();
+        if next.keep_tcp {
+            slots.push(DescriptorSlot {
+                id: SlotId(1),
+                role: DescriptorRole::Traffic(String::from("tcp")),
+                kind: DescriptorKind::TcpListener,
+                bind: Some(BindIdentity::Tcp(tcp_address)),
+                mode: None,
+            });
+            originals.push(OwnedFd::from(self.tcp.try_clone().unwrap()));
+        }
+        if next.keep_unix {
+            slots.push(DescriptorSlot {
+                id: SlotId(2),
+                role: DescriptorRole::Traffic(String::from("unix")),
+                kind: DescriptorKind::UnixListener,
+                bind: Some(BindIdentity::UnixPath(unix_path.to_path_buf())),
+                mode: None,
+            });
+            originals.push(OwnedFd::from(self.unix.try_clone().unwrap()));
+        }
+        if let Some(added) = next.add_tcp {
+            slots.push(DescriptorSlot {
+                id: SlotId(3),
+                role: DescriptorRole::Traffic(String::from("added")),
+                kind: DescriptorKind::TcpListener,
+                bind: Some(BindIdentity::Tcp(added.local_addr().unwrap())),
+                mode: None,
+            });
+            originals.push(OwnedFd::from(added));
+        }
+        StableListeners::new(
+            DescriptorManifest::new(slots).unwrap(),
+            originals,
+            Arc::clone(&self.path_guard),
+        )
+        .unwrap()
+    }
 }
 
 #[derive(Debug)]
@@ -1492,6 +1735,23 @@ fn contained_worker(
     let mut input = worker(name, generation, behavior);
     input.command = input.command.arg(pid_file.as_os_str());
     input
+}
+
+fn descriptor_target(descriptor: &impl AsRawFd) -> PathBuf {
+    fs::read_link(format!("/proc/self/fd/{}", descriptor.as_raw_fd())).unwrap()
+}
+
+/// Whether any process this user can inspect still holds a descriptor on the socket `target`
+/// (a `socket:[inode]` link), which does not depend on which port a parallel test binds next.
+fn socket_is_open_in_any_process(target: &Path) -> bool {
+    fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().as_bytes().iter().all(u8::is_ascii_digit))
+        .filter_map(|entry| fs::read_dir(entry.path().join("fd")).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|descriptor| fs::read_link(descriptor.path()).is_ok_and(|link| link == target))
 }
 
 fn matching_descriptor_count(targets: &[PathBuf]) -> usize {
