@@ -411,6 +411,8 @@ enum Stage {
 pub struct Master<E: ActionExecutor = SystemActionExecutor> {
     config: MasterConfig,
     listeners: StableListeners,
+    /// Listeners the candidate adopts; they replace `listeners` when the candidate commits.
+    pending_listeners: Option<StableListeners>,
     executor: E,
     supervisor: Option<ReplacementSupervisor>,
     active: Option<ManagedWorker>,
@@ -472,6 +474,7 @@ impl<E: ActionExecutor> Master<E> {
         let mut master = Self {
             config,
             listeners,
+            pending_listeners: None,
             executor,
             supervisor: None,
             active: Some(ManagedWorker::new(
@@ -515,10 +518,54 @@ impl<E: ActionExecutor> Master<E> {
         candidate: WorkerInput<F::Command>,
         now: Instant,
     ) -> Result<(), MasterError> {
+        let result = self.begin_replacement(factory, candidate, None, now);
+        self.release_unused_pending_listeners();
+        result
+    }
+
+    /// Starts one replacement whose candidate adopts `listeners` instead of the current ones.
+    ///
+    /// The new set may keep, add and drop listeners relative to the current one (see
+    /// [`oxiroute_supervision_unix::DescriptorManifest::diff`]). The current set stays in force
+    /// until the candidate commits: a failed replacement rolls back to the active worker and
+    /// discards `listeners`, so the sockets that set added close with it. At commit the master
+    /// adopts `listeners` as its stable set and stops the stream listeners the new set dropped, so
+    /// they refuse new connections while their accepted connections drain in the retired worker.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::replace`].
+    pub fn replace_with_listeners<F: WorkerFactory>(
+        &mut self,
+        factory: &mut F,
+        candidate: WorkerInput<F::Command>,
+        listeners: StableListeners,
+        now: Instant,
+    ) -> Result<(), MasterError> {
+        let result = self.begin_replacement(factory, candidate, Some(listeners), now);
+        self.release_unused_pending_listeners();
+        result
+    }
+
+    /// Keeps the pending listener set only while a candidate that may adopt it exists.
+    fn release_unused_pending_listeners(&mut self) {
+        if self.candidate.is_none() {
+            self.pending_listeners = None;
+        }
+    }
+
+    fn begin_replacement<F: WorkerFactory>(
+        &mut self,
+        factory: &mut F,
+        candidate: WorkerInput<F::Command>,
+        listeners: Option<StableListeners>,
+        now: Instant,
+    ) -> Result<(), MasterError> {
         if self.state() != MasterState::Running {
             return Err(MasterError::InvalidState(self.state()));
         }
         validate_identity(candidate.identity)?;
+        self.pending_listeners = listeners;
         let instance = Instance {
             instance_id: candidate.instance_id.clone(),
             generation_id: candidate.identity.generation,
@@ -618,6 +665,7 @@ impl<E: ActionExecutor> Master<E> {
             self.handle_observation(role, item.observation, now)?;
         }
         self.finish_terminal_states();
+        self.release_unused_pending_listeners();
         Ok(self.events.drain(..).collect())
     }
 
@@ -816,6 +864,19 @@ impl<E: ActionExecutor> Master<E> {
         }
     }
 
+    /// The candidate adopts the pending set when a replacement brings one; every other worker
+    /// adopts the current set.
+    const fn adoption_listeners<'a>(
+        role: WorkerRole,
+        current: &'a StableListeners,
+        pending: &'a Option<StableListeners>,
+    ) -> &'a StableListeners {
+        match (role, pending) {
+            (WorkerRole::Candidate, Some(pending)) => pending,
+            _ => current,
+        }
+    }
+
     fn issue_adoption(&mut self, role: WorkerRole, now: Instant) -> Result<(), MasterError> {
         let request = self.prepare_request(
             role,
@@ -824,9 +885,10 @@ impl<E: ActionExecutor> Master<E> {
             self.config.adoption_timeout(),
             true,
         )?;
+        let listeners = Self::adoption_listeners(role, &self.listeners, &self.pending_listeners);
         let duplicates = self
             .executor
-            .duplicate_listeners(role, &self.listeners)
+            .duplicate_listeners(role, listeners)
             .map_err(|source| MasterError::Action {
                 action: ActionKind::DuplicateListeners,
                 source,
@@ -891,7 +953,9 @@ impl<E: ActionExecutor> Master<E> {
         self.prepare_step(role, phase, PreparationStep::Encoding)?;
         self.prepare_step(role, phase, PreparationStep::Allocation)?;
         let payload = if adoption {
-            encode_adopt_request(request_id, self.listeners.manifest()).map_err(|source| {
+            let listeners =
+                Self::adoption_listeners(role, &self.listeners, &self.pending_listeners);
+            encode_adopt_request(request_id, listeners.manifest()).map_err(|source| {
                 let step = if matches!(source, ControlProtocolError::Allocation) {
                     PreparationStep::Allocation
                 } else {
@@ -1417,6 +1481,10 @@ impl<E: ActionExecutor> Master<E> {
             .ok_or(MasterError::MissingWorker(WorkerRole::Candidate))?;
         self.active = Some(promoted);
         self.retired = Some(old);
+        if let Some(next) = self.pending_listeners.take() {
+            self.listeners.stop_listening_unless_kept(next.manifest());
+            self.listeners = next;
+        }
         self.events.push_back(MasterEvent::ReplacementCommitted {
             active: candidate,
             retired: retired_id.clone(),
