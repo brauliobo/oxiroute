@@ -1,6 +1,8 @@
 use std::{fmt, io, os::fd::OwnedFd, sync::Arc};
 
-use oxiroute_supervision_unix::{DescriptorError, DescriptorManifest, DescriptorSet};
+use oxiroute_supervision_unix::{
+    DescriptorError, DescriptorKind, DescriptorManifest, DescriptorSet,
+};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 use thiserror::Error;
 
@@ -85,6 +87,28 @@ impl StableListeners {
 
     pub(crate) fn duplicates(&self) -> Result<Vec<OwnedFd>, ListenerOwnershipError> {
         duplicate_all(&self.originals)
+    }
+
+    /// Stops the stream listeners that `next` no longer lists, so they refuse new connections now.
+    ///
+    /// `shutdown(2)` on a listening stream socket makes the kernel refuse new connections and wake
+    /// blocked accepts, while connections already accepted keep working. The shutdown applies to the
+    /// open file description, so descriptors that workers still hold stop listening too and the
+    /// address is free to bind again. Datagram and QUIC listeners are left to close when their
+    /// last holder exits. Shutdown failures are ignored because the descriptor is closed with its
+    /// last holder either way.
+    pub(crate) fn stop_listening_unless_kept(&self, next: &DescriptorManifest) {
+        let removed = self.manifest.diff(next).removed;
+        for (slot, original) in self.manifest.slots().iter().zip(&self.originals) {
+            if removed.contains(&slot.id)
+                && matches!(
+                    slot.kind,
+                    DescriptorKind::TcpListener | DescriptorKind::UnixListener
+                )
+            {
+                let _ = rustix::net::shutdown(original, rustix::net::Shutdown::Both);
+            }
+        }
     }
 }
 
