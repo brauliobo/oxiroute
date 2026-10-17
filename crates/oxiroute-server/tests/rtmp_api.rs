@@ -1700,7 +1700,7 @@ async fn saving_the_active_generation_is_truthfully_idempotent() {
 }
 
 #[tokio::test]
-async fn config_api_projects_exact_mode_aware_restart_outcomes() {
+async fn config_api_applies_an_added_listener_in_both_runtime_modes_without_a_restart() {
     for (mode, restart_required, outcome, activation_state, diagnostic) in [
         (
             RuntimeMode::Direct,
@@ -1711,10 +1711,10 @@ async fn config_api_projects_exact_mode_aware_restart_outcomes() {
         ),
         (
             RuntimeMode::Supervised,
-            true,
-            "saved_restart_required",
-            "restart_required",
-            "I_RESTART_REQUIRED",
+            false,
+            "saved_pending_activation",
+            "pending",
+            "I_ACTIVATION_PENDING",
         ),
     ] {
         let active = editable_config();
@@ -1736,16 +1736,20 @@ async fn config_api_projects_exact_mode_aware_restart_outcomes() {
             .await;
         assert_eq!(preview.status, 200);
         assert_eq!(preview.json()["restartRequired"], restart_required);
-        if restart_required {
-            assert_eq!(
-                preview.json()["diagnostics"]
-                    .as_array()
-                    .unwrap()
-                    .last()
-                    .unwrap()["code"],
-                diagnostic
-            );
-        }
+        let expected_added = serde_json::json!(["candidate (tcp 127.0.0.1:1935)"]);
+        let preview_changes = preview.json()["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|diagnostic| diagnostic["code"] == "I_LISTENER_CHANGES")
+            .cloned()
+            .unwrap_or_else(|| panic!("{mode:?}: preview lists the listener changes"));
+        assert_eq!(preview_changes["listeners"]["added"], expected_added);
+        assert_eq!(
+            preview_changes["listeners"]["removed"],
+            serde_json::json!([])
+        );
+        assert_eq!(preview_changes["path"], "/config/listeners");
 
         let saved = harness
             .request(
@@ -1759,19 +1763,18 @@ async fn config_api_projects_exact_mode_aware_restart_outcomes() {
         assert_eq!(saved.json()["outcome"], outcome);
         assert_eq!(saved.json()["activationState"], activation_state);
         assert_eq!(saved.json()["restartRequired"], restart_required);
-        assert_eq!(
-            saved.json()["diagnostics"]
-                .as_array()
-                .unwrap()
-                .last()
-                .unwrap()["code"],
-            diagnostic,
-        );
+        let diagnostics = saved.json()["diagnostics"].as_array().unwrap().clone();
+        assert_eq!(diagnostics.last().unwrap()["code"], diagnostic);
+        let saved_changes = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic["code"] == "I_LISTENER_CHANGES")
+            .unwrap_or_else(|| panic!("{mode:?}: save lists the listener changes"));
+        assert_eq!(saved_changes["listeners"]["added"], expected_added);
     }
 }
 
 #[tokio::test]
-async fn supervised_config_api_uses_topology_neutral_diagnostics_for_descriptor_changes() {
+async fn supervised_config_api_reports_descriptor_changes_as_listener_changes_not_restarts() {
     for change in ["bind", "protocol", "control"] {
         let mut active = candidate_config(&editable_config(), "active");
         let active_address = reserve_tcp_address();
@@ -1833,18 +1836,46 @@ async fn supervised_config_api_uses_topology_neutral_diagnostics_for_descriptor_
                 .await;
             assert_eq!(response.status, 200, "{change}: {}", response.text());
             let response = response.json();
-            assert_eq!(response["restartRequired"], true);
-            let diagnostic = response["diagnostics"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|diagnostic| diagnostic["code"] == "I_RESTART_REQUIRED")
-                .expect("supervised restart diagnostic");
-            assert_eq!(diagnostic["path"], "/config/listeners");
-            assert_eq!(
-                diagnostic["message"],
-                "the supervised listener or control-listener topology changed; the saved configuration takes effect after a process restart"
+            assert_eq!(response["restartRequired"], false, "{change}");
+            let diagnostics = response["diagnostics"].as_array().unwrap();
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic["code"] != "I_RESTART_REQUIRED"),
+                "{change}: {diagnostics:?}"
             );
+            let found = diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic["code"] == "I_LISTENER_CHANGES");
+            if change == "protocol" {
+                // The socket keeps its address, so the worker re-serves it with the new protocol
+                // and no listener is added or removed.
+                assert!(found.is_none(), "{change}: {diagnostics:?}");
+                continue;
+            }
+            let diagnostic =
+                found.unwrap_or_else(|| panic!("{change}: listener changes diagnostic"));
+            assert_eq!(diagnostic["path"], "/config/listeners");
+            assert!(
+                diagnostic["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("the supervising master binds"),
+                "{change}: {diagnostic}"
+            );
+            let listeners = &diagnostic["listeners"];
+            match change {
+                // The old address stops accepting and the new one is bound before the switch.
+                "bind" => {
+                    assert_eq!(listeners["added"].as_array().unwrap().len(), 1);
+                    assert_eq!(listeners["removed"].as_array().unwrap().len(), 1);
+                }
+                "control" => {
+                    assert_eq!(listeners["added"].as_array().unwrap().len(), 1);
+                    assert!(listeners["removed"].as_array().unwrap().is_empty());
+                }
+                _ => unreachable!(),
+            }
         }
     }
 }

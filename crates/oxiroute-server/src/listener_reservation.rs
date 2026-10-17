@@ -15,7 +15,8 @@ use oxiroute_supervision_unix::{
 use oxiroute_supervisor_master::StableListeners;
 
 use crate::listener_inventory::{
-    ListenerDescriptorKind, ListenerDescriptorRole, ListenerId, ListenerInventory,
+    ListenerChangeSummary, ListenerDescriptorKind, ListenerDescriptorRole, ListenerId,
+    ListenerInventory,
 };
 
 #[derive(Clone)]
@@ -678,12 +679,12 @@ impl ListenerReservations {
     #[doc(hidden)]
     #[must_use]
     pub fn listener_restart_required(
-        mode: crate::RuntimeMode,
+        _mode: crate::RuntimeMode,
         active: &ValidatedConfig,
         candidate: &ValidatedConfig,
     ) -> bool {
-        ListenerInventory::compile(active)
-            .restart_required(mode, &ListenerInventory::compile(candidate))
+        // Both runtimes apply listener changes on reload; the mode is kept for API stability.
+        ListenerInventory::compile(active).restart_required(&ListenerInventory::compile(candidate))
     }
 
     #[doc(hidden)]
@@ -692,7 +693,8 @@ impl ListenerReservations {
         active: &ValidatedConfig,
         candidate: &ValidatedConfig,
     ) -> bool {
-        !Self::listener_restart_required(crate::RuntimeMode::Supervised, active, candidate)
+        ListenerInventory::compile(active)
+            .same_descriptor_topology(&ListenerInventory::compile(candidate))
     }
 
     #[doc(hidden)]
@@ -704,6 +706,33 @@ impl ListenerReservations {
         }
         Ok(())
     }
+}
+
+/// Describes what a reload from `active` to `candidate` does to the listener sockets.
+///
+/// Returns `None` when either inventory cannot be described as a descriptor manifest (for example
+/// above the descriptor limit); validation reports that separately.
+#[cfg(target_os = "linux")]
+pub(crate) fn listener_changes(
+    active: &ListenerInventory,
+    candidate: &ListenerInventory,
+) -> Option<ListenerChangeSummary> {
+    let current = DescriptorManifest::new(descriptor_slots(active).ok()?).ok()?;
+    let next = DescriptorManifest::new(descriptor_slots(candidate).ok()?).ok()?;
+    let changes = current.changes(&next);
+    Some(ListenerChangeSummary {
+        added: changes.added,
+        removed: changes.removed,
+        kept: changes.kept,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn listener_changes(
+    _active: &ListenerInventory,
+    _candidate: &ListenerInventory,
+) -> Option<ListenerChangeSummary> {
+    None
 }
 
 fn legacy_reservation_key(name: &str) -> Option<ReservationKey> {
