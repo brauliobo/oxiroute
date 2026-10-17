@@ -1114,16 +1114,20 @@ restricted Lua, UCI, or HOCON.
 - Validation and writes prepare the complete candidate runtime, management UI assets, and Certbot
   watcher prerequisites before any disk mutation. The sole live-reservation exception is an
   explicitly detected active Unix-listener mode change: the plan is validated without rebinding the
-  active path and the complete candidate is marked restart-required.
+  active path and the complete candidate is marked restart-required. Every other listener change
+  (added, removed or moved bind addresses, and changed protocol, service or TLS profile) is
+  validated by binding the addresses the active generation does not already own and then releasing
+  them, and is reported in an `I_LISTENER_CHANGES` diagnostic.
 - Writes use a unique same-directory temporary file, complete write, permission setting,
   file sync, atomic rename, and parent-directory sync.
 - A changed save normally returns `saved_pending_activation`; an idempotent save of the active
   generation returns `unchanged_active`. The parent-directory watcher and generation supervisor
-  prepare, start, and atomically publish reloadable changed generations in-process. A candidate that
-  changes the mode of an active Unix listener instead returns `saved_restart_required`,
-  `activationState = "restart_required"`, and `restartRequired = true`; candidate preparation does
-  not mutate or silently reuse the active socket, and the complete candidate is applied on process
-  restart.
+  prepare, start, and atomically publish reloadable changed generations in-process, binding added
+  listeners before publication and closing removed listeners after their accepted connections drain.
+  A candidate that changes the mode of an active Unix listener instead returns
+  `saved_restart_required`, `activationState = "restart_required"`, and `restartRequired = true`;
+  candidate preparation does not mutate or silently reuse the active socket, and the complete
+  candidate is applied on process restart.
 - The watcher debounces root-directory and resolved-native dependency events, watches exact resolved
   files plus include/glob parent directories, rebuilds that set after each successful resolution, and
   periodically re-resolves the root and native references. Invalid edits are rejected while the last

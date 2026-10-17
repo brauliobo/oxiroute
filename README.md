@@ -64,6 +64,8 @@ goal. These are the current building blocks:
   launcher slice for typed listener adoption. On Linux, `oxiroute serve` uses supervision when the
   fixed launcher is installed and the listener topology is eligible. The Arch package installs that
   launcher; unsupported topologies, unpackaged installs without it, and non-Linux builds run direct.
+  A configuration reload adds, removes and moves listeners in either runtime without a restart or
+  dropped connections; see the operations guide.
 
 ## Five-Minute Local Run
 

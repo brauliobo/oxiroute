@@ -80,12 +80,16 @@ The CLI's default-path discovery is a client convenience and does not change tha
 
 `systemctl reload oxiroute.service` sends `SIGHUP` to the active runtime. On the supervised path, the
 master re-reads the canonical configuration, watches and re-resolves imported native dependencies,
-and performs an authenticated replacement when the listener descriptor manifest is unchanged. On
-the direct path, the existing generation watcher is woken to apply the same configuration update.
+and performs an authenticated replacement. Listeners the new configuration adds are bound before
+traffic switches, listeners it removes stop accepting and drain the connections they already
+accepted (bounded by `OXIROUTE_RELOAD_DRAIN_SECONDS`, default 3 hours), and unchanged listeners keep
+serving. If a new listener cannot be bound, the current generation stays active and the master logs
+the reason. On the direct path, the existing generation watcher is woken to apply the same
+configuration update.
 Candidate activation is asynchronous, so use `oxiroute generation status` to confirm the new
 generation is active. A rejected candidate leaves the current generation active and available for
-`oxiroute generation rollback`. Listener bind or descriptor-topology changes require a service
-restart; they are not silently applied by reload.
+`oxiroute generation rollback`. Only a Unix listener that keeps its path and changes its filesystem
+mode requires a service restart; it is not silently applied by reload.
 
 ## Release source
 
