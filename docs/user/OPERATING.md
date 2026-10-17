@@ -70,17 +70,30 @@ The file watcher observes rename-based replacements through the parent directory
 reconciles effective revisions, including strict native references. Use generation status as the
 authority for completion; a durable configuration save may first report `saved_pending_activation`.
 
-Restart compatibility depends on the runtime mode. In direct mode, changing the filesystem mode of
-an active Unix listener at the same path is valid but `restartRequired` and is not published as a
-live rebind. Other ordinary listener topology changes remain eligible for in-process activation.
+Listener changes apply on reload in both runtimes, so adding, removing or moving a listener does
+not need a restart and does not interrupt traffic:
 
-In supervised mode, an incompatible change to the complete listener or control-listener descriptor
-topology is `restartRequired`. This includes descriptor identity, order, role, kind, bind, Unix mode,
-protocol, or count. Policy and service-only changes remain eligible for in-process activation.
+- A new bind address is bound before traffic moves to the new revision.
+- A listener that keeps its bind address keeps its socket, and its policy, service, protocol and TLS
+  profile can change at the same time.
+- A listener whose address is removed (or moved) stops accepting once the new revision is active;
+  requests, streams and relay connections it already accepted finish normally, and the address is
+  free again straight away.
+- If a new address cannot be bound, the whole reload is rejected and the running revision keeps
+  serving unchanged. The log names the listener, and the same revision is retried within 30 seconds
+  (or on `systemctl reload oxiroute`) once the address is free.
 
-Validation exposes the backend `I_RESTART_REQUIRED` diagnostic before the write. A successful save
-returns `saved_restart_required`: the canonical file is durable, the active generation remains
-unchanged, and the saved configuration takes effect after the next process restart.
+Validation and a save report the effect in an `I_LISTENER_CHANGES` diagnostic that lists the added,
+removed and kept listeners. In supervised mode the old worker may keep serving long-lived
+connections for up to three hours (`OXIROUTE_RELOAD_DRAIN_SECONDS` in `/etc/oxiroute/oxiroute.env`
+changes the limit), and a further reload waits until it has finished.
+
+Only one change still needs a restart, in either runtime: a Unix listener that keeps its path and
+changes its filesystem mode is valid but `restartRequired`, because the new socket would need the
+path the running one owns. Validation exposes the backend `I_RESTART_REQUIRED` diagnostic before the
+write. A successful save returns `saved_restart_required`: the canonical file is durable, the active
+generation remains unchanged, and the saved configuration takes effect after the next process
+restart.
 
 ## Manage Pool State
 

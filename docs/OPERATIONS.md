@@ -145,11 +145,50 @@ applies the saved candidate when the process is restarted. Unix listeners retain
 `<socket>.oxiroute.lock` ownership marker so abnormal termination can safely reclaim unchanged
 stale sockets that reject connection attempts. Permission-denied sockets fail closed because their
 liveness cannot be proven.
-In supervised mode, any incompatible listener/control-listener descriptor topology also produces
-`saved_restart_required`; this includes identity, order, role, transport kind, bind, Unix mode,
-protocol, or count changes across traffic, management, statistics, statistics-page, UDP, and HTTP/3
-listeners. The `I_RESTART_REQUIRED` diagnostic uses `/config/listeners` and explains whether the
-cause is the direct Unix mode case or supervised topology, while API status/outcome fields and
-audit/event behavior remain unchanged.
+Every other listener change is a live reload in both runtimes, including adding, removing, moving
+and re-protocoling traffic, management, statistics, statistics-page, UDP, and HTTP/3 listeners, and
+changing a listener's TLS profile. Since 0.5.3 a supervised reload no longer retains the old
+revision for a listener change.
+
+### Listener changes on reload
+
+A reload compares the sockets of the running revision with those of the new one. A socket is
+identified by its transport and bind address (and, for a Unix socket, its path and mode), not by the
+listener's name, position or protocol.
+
+- **Kept**: the same bind address. The socket is never closed or re-bound, so connections already
+  queued on it are accepted by the new revision. A kept listener may change its protocol, service,
+  TLS profile, limits and timeouts at the same time; the new revision applies them to every new
+  connection while connections accepted earlier finish under the old revision.
+- **Added**: a new bind address. It is bound before any traffic moves to the new revision.
+- **Removed**: a bind address the new revision no longer lists. Once the new revision is active the
+  socket stops accepting (new connections are refused and the address is free to bind again) while
+  the requests, streams, WebSocket and relay connections it already accepted keep running in the
+  old worker until they finish.
+- **Moved**: a changed address is an add plus a remove.
+
+If the new revision lists an address that cannot be bound (in use, permission denied, or a Unix
+path owned by another process) the reload is rejected as a whole. The running revision, its
+listeners and its connections are untouched, the master logs one warning that names the listener
+(`supervised master kept revision ... because the configuration reload could not bind its
+listeners`), and the same revision is tried again at the next reconciliation (at most 30 seconds
+later, or immediately on `SIGHUP`, which is what `systemctl reload oxiroute` sends). The configuration API reports
+such an address when it validates the candidate, so a failed bind normally surfaces before the file
+is written.
+
+The configuration API describes the effect of a change before and after saving through the
+`I_LISTENER_CHANGES` diagnostic (path `/config/listeners`), which lists the `added`, `removed` and
+`kept` listeners as `name (transport address)`.
+
+In supervised mode the old worker keeps serving its accepted connections for up to the reload
+drain window, `3 hours` by default so that it outlasts the 2 hour read timeouts of long-lived
+streaming upstreams. Set `OXIROUTE_RELOAD_DRAIN_SECONDS` (1 to 86400) in `/etc/oxiroute/oxiroute.env` to
+change it; connections still open when the window ends are closed. The old worker exits as soon as
+its last connection ends, which is also when the master returns to idle. Only one old worker is
+drained at a time, so a reload requested while one is draining waits for it (the master applies
+the newest saved revision afterwards without further action).
+
+One case still needs a process restart: a Unix socket that keeps its path and changes its mode,
+because the new socket would need the path the running one owns.
 The socket directory must be owned by the effective service user or be sticky, and no path ancestor
 may be group/world writable unless it has the sticky bit.
