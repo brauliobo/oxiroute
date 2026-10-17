@@ -383,7 +383,7 @@ impl ConfigApiState {
             || {
                 self.generations
                     .as_ref()
-                    .and_then(|generations| generations.active())
+                    .and_then(GenerationManager::active)
                     .map_or((None, None), |active| inspect(&active))
             },
             |mutation| inspect(mutation.generation()),
@@ -702,27 +702,27 @@ fn restart_required_diagnostic(reason: ListenerRestartReason) -> Value {
 }
 
 fn listener_changes_diagnostic(mode: RuntimeMode, changes: &ListenerChangeSummary) -> Value {
-    let mut message = String::from("activation ");
     let binder = match mode {
         RuntimeMode::Supervised => "the supervising master binds",
         RuntimeMode::Direct => "the process binds",
     };
+    let mut clauses = Vec::with_capacity(2);
     if !changes.added.is_empty() {
-        message.push_str(&format!(
+        clauses.push(format!(
             "adds {} ({binder} them before traffic switches)",
             changes.added.join(", ")
         ));
     }
     if !changes.removed.is_empty() {
-        if !changes.added.is_empty() {
-            message.push_str(" and ");
-        }
-        message.push_str(&format!(
+        clauses.push(format!(
             "removes {} (they stop accepting once the new revision is active and close when their connections finish)",
             changes.removed.join(", ")
         ));
     }
-    message.push_str("; every other listener keeps serving without interruption");
+    let message = format!(
+        "activation {}; every other listener keeps serving without interruption",
+        clauses.join(" and ")
+    );
     json!({
         "code": "I_LISTENER_CHANGES",
         "severity": "warning",

@@ -869,7 +869,7 @@ impl<E: ActionExecutor> Master<E> {
     const fn adoption_listeners<'a>(
         role: WorkerRole,
         current: &'a StableListeners,
-        pending: &'a Option<StableListeners>,
+        pending: Option<&'a StableListeners>,
     ) -> &'a StableListeners {
         match (role, pending) {
             (WorkerRole::Candidate, Some(pending)) => pending,
@@ -885,7 +885,8 @@ impl<E: ActionExecutor> Master<E> {
             self.config.adoption_timeout(),
             true,
         )?;
-        let listeners = Self::adoption_listeners(role, &self.listeners, &self.pending_listeners);
+        let listeners =
+            Self::adoption_listeners(role, &self.listeners, self.pending_listeners.as_ref());
         let duplicates = self
             .executor
             .duplicate_listeners(role, listeners)
@@ -954,7 +955,7 @@ impl<E: ActionExecutor> Master<E> {
         self.prepare_step(role, phase, PreparationStep::Allocation)?;
         let payload = if adoption {
             let listeners =
-                Self::adoption_listeners(role, &self.listeners, &self.pending_listeners);
+                Self::adoption_listeners(role, &self.listeners, self.pending_listeners.as_ref());
             encode_adopt_request(request_id, listeners.manifest()).map_err(|source| {
                 let step = if matches!(source, ControlProtocolError::Allocation) {
                     PreparationStep::Allocation
