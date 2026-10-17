@@ -23,14 +23,14 @@ source=("oxiroute-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/oxiroute
         'oxiroute.kdl'
         'oxiroute.lua'
         'README.md')
-sha256sums=('f737753b1ca3bc6320141cbafeee280e9a780265a43a3413cd92aaade2d2ad77'
+sha256sums=('a44e6b976c240e1071054b0449c5093d37f9ca70202955be0a4c1fabedc2cad3'
              '574eab59174656b0813499ed1c9bca8be5a6e2cf69a98e8327f376e1c0b83b1b'
             'ece087105e74910e9d4a6c3551082828378ac5c62fc15e97a755a3bc93020e72'
              '502dbc96a4f316ff7375cf90da32457b6003723a744825f04cec8a624974a356'
-             'c87c9ef586bbb68f69f5abc1c4616de35783fe5d5d2b07b0b6b4011b2b892f44'
+             'b49aa5926da828b2ace7b2dfdb4b983d4f3828c459ccee2a931cf9b2d3d3bd37'
             '57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9'
             'f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564'
-             'f25bdbd2acba1d7b420540630e3c29c2e2825a477e2a111435861e1359d7bb56')
+             '2039a00f9d0ed8f5fff74661fed4c08e947f7d367068a0d2221b11551b4edc43')
 
 prepare() {
   cd "oxiroute-${pkgver}"
