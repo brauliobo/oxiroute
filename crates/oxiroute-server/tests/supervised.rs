@@ -2506,7 +2506,7 @@ fn reload_keeps_a_long_lived_relay_connection_alive_past_the_old_phase_limit() {
             "the retired worker exited while its relay connection was open: {events:?}"
         );
         rounds += 1;
-        if rounds % 100 == 0 {
+        if rounds.is_multiple_of(100) {
             echo(&mut stream, b"during the drain").expect("echo during the drain");
         }
         thread::sleep(POLL_INTERVAL * 4);
