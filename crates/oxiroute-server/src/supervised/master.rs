@@ -27,7 +27,7 @@ use oxiroute_supervision::{
     CatalogError, GenerationId, GenerationLaunchDocument, GenerationRole, InstanceId,
     SupervisedGenerationCatalog,
 };
-use oxiroute_supervision_unix::InstanceToken;
+use oxiroute_supervision_unix::{DescriptorManifest, InstanceToken, ListenerChanges};
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, Master, MasterConfig, MasterEvent, MasterState, WorkerInput,
 };
@@ -54,6 +54,9 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
 const CONFIG_RELOAD_DEBOUNCE: Duration = Duration::from_millis(250);
 const CONFIG_RELOAD_MAX_DEBOUNCE: Duration = Duration::from_secs(2);
 const CONFIG_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
+const RELOAD_DRAIN_ENV: &str = "OXIROUTE_RELOAD_DRAIN_SECONDS";
+const DEFAULT_RELOAD_DRAIN: Duration = Duration::from_hours(3);
+const MAX_RELOAD_DRAIN: Duration = Duration::from_hours(24);
 
 /// Runs the production master for one eligible canonical configuration.
 pub(crate) fn run_master(config_path: &Path) -> Result<(), Box<dyn Error>> {
@@ -239,7 +242,8 @@ impl MasterRunner {
     ) -> Result<(), Box<dyn Error>> {
         let config = &document.validated_config;
         let reservations = ListenerReservations::prepare(config, None)?;
-        let listeners = reservations.into_stable_listeners(config)?;
+        let listeners = reservations.clone().into_stable_listeners(config)?;
+        let mut book = ListenerBook::new(reservations, listeners.manifest().clone());
         let token = generate_instance_token()?;
         let (instance_id, identity) = worker_identity(token)?;
         let active = self.build_launch_document(
@@ -271,6 +275,7 @@ impl MasterRunner {
                 catalog,
                 &mut factory,
                 &mut reload,
+                &mut book,
             ),
             Err(error) => Err(error.into()),
         };
@@ -351,6 +356,7 @@ impl MasterRunner {
         mut catalog: GenerationCatalog,
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
+        book: &mut ListenerBook,
     ) -> Result<(), Box<dyn Error>> {
         let result = self.drive_inner(
             master,
@@ -360,6 +366,7 @@ impl MasterRunner {
             &mut catalog,
             factory,
             reload,
+            book,
         );
         if result.is_err() && !matches!(master.state(), MasterState::Stopped | MasterState::Failed)
         {
@@ -378,6 +385,7 @@ impl MasterRunner {
         catalog: &mut GenerationCatalog,
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
+        book: &mut ListenerBook,
     ) -> Result<(), Box<dyn Error>> {
         while master.state() != MasterState::Running {
             if master.state() == MasterState::Failed {
@@ -399,12 +407,12 @@ impl MasterRunner {
                     let now = Instant::now();
                     let events = master.poll(now)?;
                     log_master_events(&events);
-                    apply_catalog_events(catalog, &events)?;
+                    apply_catalog_events(catalog, &events, book)?;
                     let forced_reload = catalog.candidate().is_none()
                         && reload_requested.swap(false, Ordering::AcqRel);
                     if catalog.candidate().is_none() && (forced_reload || reload.next_trigger(now))
                     {
-                        self.reconcile(master, coordinator, catalog, factory, reload)?;
+                        self.reconcile(master, coordinator, catalog, factory, reload, book)?;
                     }
                     thread::sleep(MASTER_POLL_INTERVAL);
                 }
@@ -415,7 +423,7 @@ impl MasterRunner {
                 _ => {
                     let events = master.poll(Instant::now())?;
                     log_master_events(&events);
-                    apply_catalog_events(catalog, &events)?;
+                    apply_catalog_events(catalog, &events, book)?;
                     thread::sleep(MASTER_POLL_INTERVAL);
                 }
             }
@@ -429,6 +437,7 @@ impl MasterRunner {
         catalog: &mut GenerationCatalog,
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
+        book: &mut ListenerBook,
     ) -> Result<(), Box<dyn Error>> {
         let document = match coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => document,
@@ -465,15 +474,50 @@ impl MasterRunner {
                 revision,
             )?;
             catalog.record_restart_required(restart_required)?;
-            warn!("supervised master retained a configuration reload that changes listeners");
+            warn!(
+                "supervised master retained a configuration reload that changes the mode of a \
+                 unix listener socket; restart the service to apply it"
+            );
             return Ok(());
         }
+
+        // Bind every new listener before any traffic moves. A listener that cannot be bound keeps
+        // the running revision in force and leaves every socket as it was.
+        let new_config = &document.validated_config;
+        let reservations = match ListenerReservations::prepare(new_config, Some(&book.active)) {
+            Ok(reservations) => reservations,
+            Err(error) => {
+                if book.note_rejected(&revision) {
+                    warn!(
+                        "supervised master kept revision {} because the configuration reload \
+                         could not bind its listeners: {error}",
+                        catalog.active().revision()
+                    );
+                }
+                return Ok(());
+            }
+        };
+        let listeners = match reservations.clone().into_stable_listeners(new_config) {
+            Ok(listeners) => listeners,
+            Err(error) => {
+                if book.note_rejected(&revision) {
+                    warn!(
+                        "supervised master kept revision {} because the configuration reload \
+                         could not export its listeners: {error}",
+                        catalog.active().revision()
+                    );
+                }
+                return Ok(());
+            }
+        };
+        let changes = book.active_manifest.changes(listeners.manifest());
+        let manifest = listeners.manifest().clone();
 
         let candidate = self.next_launch_document(
             catalog,
             coordinator.canonical_path(),
-            document.validated_config.clone(),
-            revision,
+            new_config.clone(),
+            revision.clone(),
         )?;
         catalog.begin_candidate(candidate)?;
         let candidate = worker_input(
@@ -481,7 +525,11 @@ impl MasterRunner {
                 .candidate()
                 .expect("candidate was inserted immediately before launch"),
         );
-        if let Err(error) = master.replace(factory, candidate, Instant::now()) {
+        book.begin(reservations, manifest, &changes, &revision);
+        if let Err(error) =
+            master.replace_with_listeners(factory, candidate, listeners, Instant::now())
+        {
+            book.discard();
             if master.state() != MasterState::Running {
                 return Err(error.into());
             }
@@ -541,20 +589,87 @@ fn has_restart_required_revision(
         .is_some_and(|retained| retained.revision() == revision)
 }
 
+/// The listener reservations behind the master's stable listener set.
+///
+/// `active` mirrors the sockets the committed workers serve, so the next reload reuses the ones
+/// it keeps and binds only the ones it adds. A candidate's reservations wait in `pending` until
+/// its replacement commits and are dropped, closing the sockets they added, when it does not.
+struct ListenerBook {
+    active: ListenerReservations,
+    active_manifest: DescriptorManifest,
+    pending: Option<(ListenerReservations, DescriptorManifest)>,
+    rejected: Option<EffectiveRevision>,
+}
+
+impl ListenerBook {
+    const fn new(active: ListenerReservations, active_manifest: DescriptorManifest) -> Self {
+        Self {
+            active,
+            active_manifest,
+            pending: None,
+            rejected: None,
+        }
+    }
+
+    /// Remembers that `revision` was rejected and reports whether this is the first time.
+    ///
+    /// A rejected revision is tried again on every reconciliation, so only the first rejection is
+    /// worth a log line.
+    fn note_rejected(&mut self, revision: &EffectiveRevision) -> bool {
+        if self.rejected.as_ref() == Some(revision) {
+            return false;
+        }
+        self.rejected = Some(revision.clone());
+        true
+    }
+
+    fn begin(
+        &mut self,
+        reservations: ListenerReservations,
+        manifest: DescriptorManifest,
+        changes: &ListenerChanges,
+        revision: &EffectiveRevision,
+    ) {
+        self.rejected = None;
+        self.pending = Some((reservations, manifest));
+        info!(
+            "supervised master starts configuration revision {revision}: listeners added {:?}, \
+             removed {:?}, kept {}",
+            changes.added,
+            changes.removed,
+            changes.kept.len()
+        );
+    }
+
+    fn commit(&mut self) {
+        if let Some((reservations, manifest)) = self.pending.take() {
+            self.active = reservations;
+            self.active_manifest = manifest;
+        }
+    }
+
+    fn discard(&mut self) {
+        self.pending = None;
+    }
+}
+
 fn apply_catalog_events(
     catalog: &mut GenerationCatalog,
     events: &[MasterEvent],
+    book: &mut ListenerBook,
 ) -> Result<(), CatalogSyncError> {
     for event in events {
         match event {
             MasterEvent::SpawnFailed { instance_id } => {
                 expect_catalog_instance(catalog, GenerationRole::Candidate, instance_id)?;
                 catalog.quarantine_candidate()?;
+                book.discard();
             }
             MasterEvent::ReplacementCommitted { active, retired } => {
                 expect_catalog_instance(catalog, GenerationRole::Candidate, active)?;
                 expect_catalog_instance(catalog, GenerationRole::Active, retired)?;
                 catalog.commit_candidate()?;
+                book.commit();
             }
             MasterEvent::ReplacementCompleted { active }
             | MasterEvent::RollbackCompleted { active } => {
@@ -563,6 +678,7 @@ fn apply_catalog_events(
             MasterEvent::RollbackStarted { candidate, .. } => {
                 expect_catalog_instance(catalog, GenerationRole::Candidate, candidate)?;
                 catalog.quarantine_candidate()?;
+                book.discard();
             }
             _ => {}
         }
@@ -684,13 +800,47 @@ impl ConfigReloadMonitor {
 }
 
 fn master_config() -> Result<MasterConfig, Box<dyn Error>> {
+    master_config_with_environment(|key: &str| std::env::var_os(key))
+}
+
+fn master_config_with_environment(
+    environment: impl Fn(&str) -> Option<OsString>,
+) -> Result<MasterConfig, Box<dyn Error>> {
     Ok(MasterConfig::new(
         Duration::from_secs(10),
         Duration::from_secs(10),
         Duration::from_secs(10),
-        Duration::from_secs(10),
+        reload_drain_window(environment(RELOAD_DRAIN_ENV).as_deref())?,
         Duration::from_secs(6),
     )?)
+}
+
+/// Returns how long a replaced worker may keep serving the connections it already accepted.
+///
+/// The default outlasts the 2 hour read timeouts of long-lived streaming upstreams. The retired
+/// worker exits as soon as its last connection ends, so the window only bounds the slowest one.
+fn reload_drain_window(value: Option<&std::ffi::OsStr>) -> Result<Duration, io::Error> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_RELOAD_DRAIN);
+    };
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{RELOAD_DRAIN_ENV} must be a whole number of seconds from 1 to {}",
+                MAX_RELOAD_DRAIN.as_secs()
+            ),
+        )
+    };
+    let seconds = value
+        .to_str()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .ok_or_else(invalid)?;
+    let window = Duration::from_secs(seconds);
+    if window.is_zero() || window > MAX_RELOAD_DRAIN {
+        return Err(invalid());
+    }
+    Ok(window)
 }
 
 fn worker_identity(token: InstanceToken) -> Result<(InstanceId, WorkerIdentity), Box<dyn Error>> {
@@ -1178,6 +1328,7 @@ mod tests {
         let retired = catalog.active().instance_id().clone();
         let active = add_candidate(&runner, &mut catalog, 'b');
 
+        let mut book = pending_book(8081);
         apply_catalog_events(
             &mut catalog,
             &[
@@ -1189,12 +1340,35 @@ mod tests {
                     active: active.clone(),
                 },
             ],
+            &mut book,
         )
         .expect("ordered replacement events");
 
         assert_eq!(catalog.active().instance_id(), &active);
         assert_eq!(catalog.previous().unwrap().instance_id(), &retired);
         assert!(catalog.candidate().is_none());
+        assert!(book.pending.is_none());
+        assert_eq!(book.active_manifest, manifest_on(8081));
+    }
+
+    fn manifest_on(port: u16) -> DescriptorManifest {
+        DescriptorManifest::new(vec![oxiroute_supervision_unix::DescriptorSlot {
+            id: oxiroute_supervision_unix::SlotId(0),
+            role: oxiroute_supervision_unix::DescriptorRole::Traffic("web".into()),
+            kind: oxiroute_supervision_unix::DescriptorKind::TcpListener,
+            bind: Some(oxiroute_supervision_unix::BindIdentity::Tcp(
+                SocketAddr::from(([127, 0, 0, 1], port)),
+            )),
+            mode: None,
+        }])
+        .expect("one-slot manifest")
+    }
+
+    /// A book serving port 8080 with a replacement to `port` waiting for its outcome.
+    fn pending_book(port: u16) -> ListenerBook {
+        let mut book = ListenerBook::new(ListenerReservations::default(), manifest_on(8080));
+        book.pending = Some((ListenerReservations::default(), manifest_on(port)));
+        book
     }
 
     #[test]
@@ -1202,6 +1376,7 @@ mod tests {
         let (runner, mut rollback_catalog) = launch_catalog();
         let active = rollback_catalog.active().instance_id().clone();
         let rollback = add_candidate(&runner, &mut rollback_catalog, 'b');
+        let mut rollback_book = pending_book(8081);
         apply_catalog_events(
             &mut rollback_catalog,
             &[
@@ -1211,8 +1386,11 @@ mod tests {
                 },
                 MasterEvent::RollbackCompleted { active },
             ],
+            &mut rollback_book,
         )
         .expect("rollback events");
+        assert!(rollback_book.pending.is_none());
+        assert_eq!(rollback_book.active_manifest, manifest_on(8080));
         assert_eq!(
             rollback_catalog.quarantined().unwrap().instance_id(),
             &rollback
@@ -1221,13 +1399,17 @@ mod tests {
 
         let (runner, mut spawn_catalog) = launch_catalog();
         let failed = add_candidate(&runner, &mut spawn_catalog, 'c');
+        let mut spawn_book = pending_book(8081);
         apply_catalog_events(
             &mut spawn_catalog,
             &[MasterEvent::SpawnFailed {
                 instance_id: failed.clone(),
             }],
+            &mut spawn_book,
         )
         .expect("spawn failure event");
+        assert!(spawn_book.pending.is_none());
+        assert_eq!(spawn_book.active_manifest, manifest_on(8080));
         assert_eq!(spawn_catalog.quarantined().unwrap().instance_id(), &failed);
         assert!(spawn_catalog.candidate().is_none());
     }
@@ -1263,6 +1445,62 @@ mod tests {
             &EffectiveRevision::from_str(&"e".repeat(64)).expect("other revision")
         ));
         assert_eq!(catalog.allocate_generation(), Ok(GenerationId(3)));
+    }
+
+    #[test]
+    fn rejected_revision_is_reported_once_until_a_replacement_starts() {
+        let mut book = ListenerBook::new(ListenerReservations::default(), manifest_on(8080));
+        let first = EffectiveRevision::from_str(&"a".repeat(64)).expect("revision");
+        let second = EffectiveRevision::from_str(&"b".repeat(64)).expect("revision");
+
+        assert!(book.note_rejected(&first));
+        assert!(!book.note_rejected(&first));
+        assert!(book.note_rejected(&second));
+
+        let changes = manifest_on(8080).changes(&manifest_on(8081));
+        book.begin(
+            ListenerReservations::default(),
+            manifest_on(8081),
+            &changes,
+            &second,
+        );
+        assert_eq!(changes.added.len(), 1);
+        assert_eq!(changes.removed.len(), 1);
+        assert!(book.note_rejected(&second));
+    }
+
+    #[test]
+    fn reload_drain_window_defaults_above_the_longest_stream_and_is_bounded() {
+        use std::ffi::OsStr;
+
+        assert_eq!(
+            reload_drain_window(None).expect("default"),
+            Duration::from_hours(3)
+        );
+        assert!(reload_drain_window(None).expect("default") > Duration::from_hours(2));
+        assert_eq!(
+            reload_drain_window(Some(OsStr::new(" 90 "))).expect("seconds"),
+            Duration::from_secs(90)
+        );
+        assert_eq!(
+            reload_drain_window(Some(OsStr::new("86400"))).expect("one day"),
+            Duration::from_hours(24)
+        );
+        for invalid in ["0", "86401", "-1", "1h", "", "1.5"] {
+            let error = reload_drain_window(Some(OsStr::new(invalid))).expect_err(invalid);
+            assert!(error.to_string().contains(RELOAD_DRAIN_ENV), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn master_config_reads_the_drain_window_from_the_environment() {
+        let config = master_config_with_environment(|key: &str| {
+            (key == RELOAD_DRAIN_ENV).then(|| OsString::from("120"))
+        })
+        .expect("configured drain");
+        assert_eq!(config.drain_timeout(), Duration::from_secs(120));
+        assert_eq!(config.quiesce_timeout(), Duration::from_secs(10));
+        assert!(master_config_with_environment(|_: &str| Some(OsString::from("x"))).is_err());
     }
 
     #[test]

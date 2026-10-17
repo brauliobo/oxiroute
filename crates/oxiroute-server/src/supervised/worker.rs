@@ -106,6 +106,9 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     };
     let stop = Arc::new(AtomicBool::new(false));
     let mut quiesced = None;
+    // The drain request stays open until every in-flight connection and stream has finished, so
+    // the master's drain deadline, not this worker, bounds how long a retired generation serves.
+    let mut draining = None;
     let mut process = match GenerationProcess::start(
         Arc::clone(&generation),
         coordinator,
@@ -178,7 +181,20 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         let request = match control.try_receive() {
             Ok(Some(request)) => request,
             Ok(None) => {
-                if last_status.elapsed() >= STATUS_INTERVAL {
+                if draining.is_some() && generation.drained() {
+                    let request = draining.take().expect("a drain request is pending");
+                    control.acknowledge(&request, ControlOutcome::Accepted)?;
+                    report_status(
+                        &mut control,
+                        &mut status_sequence,
+                        &mut event_cursor,
+                        identity.generation,
+                        &generation,
+                        &manager,
+                        lifecycle,
+                    )?;
+                    last_status = Instant::now();
+                } else if last_status.elapsed() >= STATUS_INTERVAL {
                     report_status(
                         &mut control,
                         &mut status_sequence,
@@ -293,10 +309,9 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                     lifecycle,
                 )?;
             }
-            ControlPhase::Drain => {
+            ControlPhase::Drain if draining.is_none() && start_drain(&manager) => {
                 lifecycle = WorkerLifecycle::Draining;
-                let outcome = drain_active(&manager);
-                control.acknowledge(&request, outcome)?;
+                draining = Some(request);
                 report_status(
                     &mut control,
                     &mut status_sequence,
@@ -325,7 +340,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                     lifecycle,
                 )?;
             }
-            ControlPhase::AdoptListeners | ControlPhase::Activate => {
+            ControlPhase::AdoptListeners | ControlPhase::Activate | ControlPhase::Drain => {
                 control.acknowledge(&request, ControlOutcome::Rejected(REJECT_INVALID_STATE))?;
                 report_status(
                     &mut control,
@@ -648,15 +663,12 @@ fn quiesce_active(
     }
 }
 
-fn drain_active(manager: &GenerationManager) -> ControlOutcome {
-    let Some(generation) = manager.active() else {
-        return ControlOutcome::Rejected(REJECT_RUNTIME);
-    };
-    if generation.drain(LIFECYCLE_PHASE_TIMEOUT) {
-        ControlOutcome::Accepted
-    } else {
-        ControlOutcome::Rejected(REJECT_RUNTIME)
-    }
+/// Stops the active generation from accepting and reports whether there is one to drain.
+fn start_drain(manager: &GenerationManager) -> bool {
+    manager.active().is_some_and(|generation| {
+        generation.stop_accepting();
+        true
+    })
 }
 
 fn reactivate_active(quiesced: &mut Option<AcceptGateClose>) -> ControlOutcome {
@@ -718,10 +730,7 @@ mod tests {
             quiesce_active(&manager, &mut quiesced),
             ControlOutcome::Rejected(REJECT_RUNTIME)
         ));
-        assert!(matches!(
-            drain_active(&manager),
-            ControlOutcome::Rejected(REJECT_RUNTIME)
-        ));
+        assert!(!start_drain(&manager));
         assert!(matches!(
             reactivate_active(&mut quiesced),
             ControlOutcome::Rejected(REJECT_RUNTIME)

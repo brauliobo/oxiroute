@@ -268,8 +268,13 @@ fn reconcile_with_preparation_timeout(
             let status = generations.status();
             generations.observe_disk_revision(document.authored_revision.clone());
             let revision = &document.effective_revision;
+            // A supervised process only adopts sockets: the master applies a listener-set change,
+            // so this watcher leaves such a candidate alone there. Every process refuses a change
+            // that no reload can apply.
             let restart_required = generations.active().is_some_and(|active| {
-                active.listener_restart_required(mode, &document.validated_config)
+                active.listener_restart_required(&document.validated_config)
+                    || (mode == RuntimeMode::Supervised
+                        && active.listener_set_changed(&document.validated_config))
             });
             let preparation = if status.active_revision.as_ref() != Some(revision)
                 && status.candidate_revision.as_ref() != Some(revision)

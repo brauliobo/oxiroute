@@ -244,6 +244,79 @@ impl DescriptorManifest {
     }
 }
 
+impl DescriptorManifest {
+    /// Describes what moving from this manifest to `next` does to the listeners, for operators.
+    ///
+    /// Each entry is a [`DescriptorSlot::label`]. A kept listener is labelled as the next manifest
+    /// names it, so a renamed listener shows its new name.
+    #[must_use]
+    pub fn changes(&self, next: &Self) -> ListenerChanges {
+        let diff = self.diff(next);
+        let label = |manifest: &Self, ids: &mut dyn Iterator<Item = SlotId>| {
+            ids.filter_map(|id| manifest.slots.iter().find(|slot| slot.id == id))
+                .map(DescriptorSlot::label)
+                .collect::<Vec<_>>()
+        };
+        ListenerChanges {
+            added: label(next, &mut diff.added.iter().copied()),
+            removed: label(self, &mut diff.removed.iter().copied()),
+            kept: label(next, &mut diff.kept.iter().map(|(_, next)| *next)),
+        }
+    }
+}
+
+impl DescriptorSlot {
+    /// Returns a label such as `web (tcp 127.0.0.1:8080)` or `@management (unix /run/m.sock)`.
+    #[must_use]
+    pub fn label(&self) -> String {
+        let name = match &self.role {
+            DescriptorRole::Traffic(name) => name.clone(),
+            DescriptorRole::Management => "@management".to_owned(),
+            DescriptorRole::Stats(index) => format!("@stats-{index}"),
+            DescriptorRole::StatsPage(index) => format!("@stats-page-{index}"),
+            DescriptorRole::State => "@state".to_owned(),
+            DescriptorRole::Control => "@control".to_owned(),
+        };
+        let kind = match self.kind {
+            DescriptorKind::TcpListener => "tcp",
+            DescriptorKind::UnixListener => "unix",
+            DescriptorKind::DatagramListener => "udp",
+            DescriptorKind::QuicListener => "quic",
+            DescriptorKind::Opaque => "opaque",
+        };
+        match &self.bind {
+            Some(BindIdentity::Tcp(address)) => format!("{name} ({kind} {address})"),
+            Some(BindIdentity::UnixPath(path)) => format!("{name} ({kind} {})", path.display()),
+            Some(BindIdentity::UnixAbstract(abstract_name)) => {
+                format!(
+                    "{name} ({kind} @{})",
+                    String::from_utf8_lossy(abstract_name)
+                )
+            }
+            None => name,
+        }
+    }
+}
+
+/// Operator-facing summary of a listener replacement, as [`DescriptorSlot::label`] strings.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ListenerChanges {
+    /// Listeners the replacement binds.
+    pub added: Vec<String>,
+    /// Listeners the replacement stops accepting on and closes after draining.
+    pub removed: Vec<String>,
+    /// Listeners whose sockets the replacement carries over untouched.
+    pub kept: Vec<String>,
+}
+
+impl ListenerChanges {
+    /// Returns whether the replacement adds or removes any listener.
+    #[must_use]
+    pub fn changes_listeners(&self) -> bool {
+        !self.added.is_empty() || !self.removed.is_empty()
+    }
+}
+
 fn same_socket(left: &DescriptorSlot, right: &DescriptorSlot) -> bool {
     left.kind == right.kind
         && left.bind == right.bind
@@ -732,6 +805,88 @@ mod tests {
             !current
                 .diff(&manifest(vec![opaque(0, DescriptorRole::Control)]))
                 .is_unchanged()
+        );
+    }
+
+    #[test]
+    fn changes_name_listeners_for_operators() {
+        let current = manifest(vec![
+            tcp(0, "web", "127.0.0.1:8080"),
+            tcp(1, "old", "127.0.0.1:8081"),
+            unix(2, "local", "/run/a.sock", None),
+        ]);
+        let next = manifest(vec![
+            tcp(0, "web-renamed", "127.0.0.1:8080"),
+            tcp(1, "analysis", "127.0.0.1:8195"),
+            unix(2, "local", "/run/a.sock", None),
+        ]);
+        let changes = current.changes(&next);
+        assert_eq!(changes.added, ["analysis (tcp 127.0.0.1:8195)"]);
+        assert_eq!(changes.removed, ["old (tcp 127.0.0.1:8081)"]);
+        assert_eq!(
+            changes.kept,
+            [
+                "web-renamed (tcp 127.0.0.1:8080)",
+                "local (unix /run/a.sock)"
+            ]
+        );
+        assert!(changes.changes_listeners());
+        assert!(!current.changes(&current.clone()).changes_listeners());
+    }
+
+    #[test]
+    fn labels_cover_every_role_and_bind_shape() {
+        let slot = |role, kind, bind| DescriptorSlot {
+            id: SlotId(0),
+            role,
+            kind,
+            bind,
+            mode: None,
+        };
+        let address = || Some(BindIdentity::Tcp("[::1]:9".parse().unwrap()));
+        assert_eq!(
+            slot(
+                DescriptorRole::Management,
+                DescriptorKind::TcpListener,
+                address()
+            )
+            .label(),
+            "@management (tcp [::1]:9)"
+        );
+        assert_eq!(
+            slot(
+                DescriptorRole::Stats(1),
+                DescriptorKind::DatagramListener,
+                address()
+            )
+            .label(),
+            "@stats-1 (udp [::1]:9)"
+        );
+        assert_eq!(
+            slot(
+                DescriptorRole::StatsPage(2),
+                DescriptorKind::QuicListener,
+                address()
+            )
+            .label(),
+            "@stats-page-2 (quic [::1]:9)"
+        );
+        assert_eq!(
+            slot(
+                DescriptorRole::Traffic("a".into()),
+                DescriptorKind::UnixListener,
+                Some(BindIdentity::UnixAbstract(b"name".to_vec())),
+            )
+            .label(),
+            "a (unix @name)"
+        );
+        assert_eq!(
+            slot(DescriptorRole::State, DescriptorKind::Opaque, None).label(),
+            "@state"
+        );
+        assert_eq!(
+            slot(DescriptorRole::Control, DescriptorKind::Opaque, None).label(),
+            "@control"
         );
     }
 
