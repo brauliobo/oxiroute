@@ -282,7 +282,7 @@ impl Harness {
                 return seen;
             }
             assert!(
-                started.elapsed() < Duration::from_secs(60),
+                started.elapsed() < Duration::from_mins(1),
                 "master remained in {:?}; events: {seen:?}",
                 self.master.state()
             );
@@ -2475,7 +2475,7 @@ fn reload_keeps_a_long_lived_relay_connection_alive_past_the_old_phase_limit() {
             origin: None,
             body: "v1",
         },
-        Duration::from_secs(120),
+        Duration::from_mins(2),
     );
     let mut stream = TcpStream::connect(relay).expect("relay connection");
     echo(&mut stream, b"before the reload").expect("echo before the reload");
