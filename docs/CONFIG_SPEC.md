@@ -464,7 +464,12 @@ Current constraints:
   or `all`/`empty` policies fail validation. Every retry also requires the configured
   `target` to be selectable. `target = "next_server"` requires a distinct named server;
   `target = "same_server"` reselects the same named server. `delay_ms` defaults to `0`, is bounded to
-  `60000`, and is applied before each route retry. `response_statuses` optionally lists unique 5xx
+  `60000`, and is applied before each route retry. A `503` that carries the
+  `x-oxiroute-pool-unavailable` header, which an OxiRoute node adds when no server of its own pool is
+  selectable (for example every server is drained), was never forwarded, so it is redispatched to
+  the next server of the pool like a connection failure: any non-upgrade request, within
+  `max_retries`, and whatever the triggers, `response_statuses`, `target` and replay-safety policy
+  say. `response_statuses` optionally lists unique 5xx
   statuses that trigger bounded retries; a status-only policy is valid when its trigger list is
   empty. The `empty_response`, `response_timeout`, and `junk_response` triggers cover bounded
   pre-body response failures. Trying alternate addresses for one DNS endpoint is transport fallback
