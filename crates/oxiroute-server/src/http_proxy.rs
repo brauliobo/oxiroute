@@ -26,7 +26,10 @@ use pingora::{
     Error, ErrorSource, ErrorType,
     modules::http::{HttpModule, HttpModuleBuilder, HttpModules, Module},
     protocols::Digest,
-    protocols::http::compression::{Algorithm, ResponseCompressionCtx},
+    protocols::http::{
+        ServerSession,
+        compression::{Algorithm, ResponseCompressionCtx},
+    },
     proxy::{FailToProxy, PreparedUpstreamRequest, ProxyHttp, Session},
     upstreams::peer::HttpPeer,
 };
@@ -50,7 +53,8 @@ use crate::{
         normalized_redirect_host, normalized_request_host,
     },
     upstream_peer::{
-        SelectedEndpoint, UpstreamPlan, enforce_http_version, validate_tls_connection,
+        POOL_UNAVAILABLE, POOL_UNAVAILABLE_HEADER, SelectedEndpoint, UpstreamPlan,
+        enforce_http_version, is_pool_unavailable, validate_tls_connection,
     },
 };
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
@@ -537,8 +541,9 @@ impl ProxyHttp for HttpReverseProxy {
         }
         ctx.release_lease();
         let policy = proxy_policy(ctx);
+        let refused = is_pool_unavailable(&error);
         let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
-        let retry_target = policy.target_for_retry(ctx.attempted_upstreams.len());
+        let retry_target = retry_target_for(ctx, refused);
         let target_available = match retry_target {
             HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
             HttpRetryTarget::NextServer => ctx
@@ -546,10 +551,14 @@ impl ProxyHttp for HttpReverseProxy {
                 .as_ref()
                 .is_some_and(|pool| pool.has_unattempted(&ctx.attempted_upstreams)),
         };
-        let retry = ctx.replay_retryable
+        let eligible = if refused {
+            ctx.connection_retryable
+        } else {
+            ctx.replay_retryable && retryable_upstream_error(&error, session, policy)
+        };
+        let retry = eligible
             && request_body_replayable(session)
             && response_is_retryable(session)
-            && retryable_upstream_error(&error, session, policy)
             && has_budget
             && target_available
             && ctx.remaining(true).is_ok();
@@ -634,7 +643,7 @@ impl ProxyHttp for HttpReverseProxy {
                 warn!("failed to send nginx proxy error response downstream: {write_error}");
             }
         } else if code > 0
-            && let Err(write_error) = session.respond_error(code).await
+            && let Err(write_error) = respond_error(session, code, error).await
         {
             warn!("failed to send error response downstream: {write_error}");
         }
@@ -772,9 +781,16 @@ impl ProxyHttp for HttpReverseProxy {
             .get_write_timeout()
             .map_or(remaining, |timeout| timeout.min(remaining));
         session.set_write_timeout(Some(write_timeout));
-        let retries_on_status = proxy_policy(ctx).retries_on_status(response.status.as_u16());
-        if retries_on_status && response_status_retryable(session, ctx) {
-            let mut error = Error::new_up(ErrorType::HTTPStatus(response.status.as_u16()));
+        let refused = response.status == StatusCode::SERVICE_UNAVAILABLE
+            && response.headers.contains_key(POOL_UNAVAILABLE_HEADER);
+        let retries_on_status =
+            refused || proxy_policy(ctx).retries_on_status(response.status.as_u16());
+        if retries_on_status && response_status_retryable(session, ctx, refused) {
+            let mut error = if refused {
+                Error::new_up(POOL_UNAVAILABLE)
+            } else {
+                Error::new_up(ErrorType::HTTPStatus(response.status.as_u16()))
+            };
             error.set_retry(true);
             return Err(error);
         }
@@ -1826,9 +1842,19 @@ async fn execute_route_action(
     }
 }
 
+async fn respond_error(session: &mut Session, code: u16, error: &Error) -> pingora::Result<()> {
+    if !is_pool_unavailable(error) {
+        return session.respond_error(code).await;
+    }
+    let mut response = ServerSession::generate_error(code);
+    response.insert_header(POOL_UNAVAILABLE_HEADER, "1")?;
+    session.write_error_response(response, Bytes::new()).await
+}
+
 fn proxy_error_status(error: &Error) -> u16 {
     match error.etype() {
         ErrorType::HTTPStatus(code) => *code,
+        _ if is_pool_unavailable(error) => 503,
         _ => match error.esource() {
             ErrorSource::Upstream => 502,
             ErrorSource::Downstream => match error.etype() {
@@ -2366,8 +2392,23 @@ fn connect_retry_trigger(error: &Error) -> Option<HttpRetryTrigger> {
     }
 }
 
-fn response_status_retryable(session: &Session, ctx: &HttpRequestContext) -> bool {
-    if !ctx.replay_retryable
+/// A refused request was never forwarded, so it may move to the next server whatever its method or
+/// body, within the retry budget.
+fn retry_target_for(ctx: &HttpRequestContext, refused: bool) -> HttpRetryTarget {
+    if refused {
+        HttpRetryTarget::NextServer
+    } else {
+        proxy_policy(ctx).target_for_retry(ctx.attempted_upstreams.len())
+    }
+}
+
+fn response_status_retryable(session: &Session, ctx: &HttpRequestContext, refused: bool) -> bool {
+    let eligible = if refused {
+        ctx.connection_retryable
+    } else {
+        ctx.replay_retryable
+    };
+    if !eligible
         || !request_body_replayable(session)
         || session.was_upgraded()
         || !response_is_retryable(session)
@@ -2376,7 +2417,7 @@ fn response_status_retryable(session: &Session, ctx: &HttpRequestContext) -> boo
     }
     let policy = proxy_policy(ctx);
     let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
-    let retry_target = policy.target_for_retry(ctx.attempted_upstreams.len());
+    let retry_target = retry_target_for(ctx, refused);
     let target_available = match retry_target {
         HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
         HttpRetryTarget::NextServer => ctx
@@ -2435,6 +2476,7 @@ fn passive_failure_for_error(error: &Error) -> Option<HealthFailure> {
             HealthFailure::ConnectFailed
         }
         ErrorType::HTTPStatus(_) => HealthFailure::UnexpectedStatus,
+        _ if is_pool_unavailable(error) => HealthFailure::UnexpectedStatus,
         _ => HealthFailure::ProtocolError,
     })
 }

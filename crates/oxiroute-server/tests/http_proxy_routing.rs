@@ -34,8 +34,8 @@ use oxiroute_import::nginx::{
     NginxDefaultErrorPageOverlay, NginxImportOptions, import_root_with_options,
 };
 use oxiroute_server::{
-    HttpDownstreamPolicyApp, HttpOperationResult, HttpReverseProxy, MAX_HTTP_ATTEMPTS,
-    MonitoredHttpApp, RoundRobinPool, RuntimeMetrics, ServiceKind,
+    AdministrativeState, HttpDownstreamPolicyApp, HttpOperationResult, HttpReverseProxy,
+    MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RoundRobinPool, RuntimeMetrics, ServiceKind,
 };
 use pingora::{
     apps::ServerApp,
@@ -3298,6 +3298,94 @@ async fn does_not_retry_an_upstream_error_status() {
     })
     .await
     .expect("status retry test timed out");
+}
+
+const TTS_POST: &[u8] = b"POST /tts HTTP/1.1\r\nHost: cluster.test\r\nContent-Type: application/json\r\nContent-Length: 19\r\nConnection: close\r\n\r\n{\"message\":\"retry\"}";
+
+/// A node whose only local worker pool is fully drained, like `oxiroute server drain` on every server.
+async fn drained_node(worker: &Origin) -> ProxyHarness {
+    let node = ProxyHarness::start(
+        vec![UpstreamPool {
+            connection_reuse: oxiroute_config::UpstreamConnectionReuse::Never,
+            ..pool("workers", &[worker.address])
+        }],
+        vec![route(None, "/", &[], "workers")],
+        1024,
+        1,
+    )
+    .await;
+    node.pools[0].set_administrative_state(AdministrativeState::Drain);
+    node
+}
+
+fn first_cluster(nodes: &[SocketAddr]) -> UpstreamPool {
+    UpstreamPool {
+        connection_reuse: oxiroute_config::UpstreamConnectionReuse::Never,
+        ..endpoint_pool(
+            "nodes",
+            nodes.iter().copied().map(socket_endpoint).collect(),
+            UpstreamAlgorithm::First,
+        )
+    }
+}
+
+#[tokio::test]
+async fn redispatches_a_post_from_a_node_with_every_local_server_drained_to_the_next_cluster_node()
+{
+    timeout(TEST_TIMEOUT, async {
+        let worker = Origin::start("must-not-receive", 1).await;
+        let drained = drained_node(&worker).await;
+        let healthy = Origin::start("node-b", 1).await;
+        let cluster = ProxyHarness::start_with_retries(
+            vec![first_cluster(&[drained.address, healthy.address])],
+            vec![route(None, "/", &[], "nodes")],
+            1,
+            1,
+        )
+        .await;
+
+        let response = cluster.request_bytes(TTS_POST).await;
+
+        assert_origin_response(&response, "node-b");
+        cluster.finish().await;
+        drained.finish().await;
+        healthy.finish().await;
+        worker.assert_not_contacted().await;
+    })
+    .await
+    .expect("drained node redispatch test timed out");
+}
+
+#[tokio::test]
+async fn answers_503_when_every_cluster_node_has_every_local_server_drained() {
+    timeout(TEST_TIMEOUT, async {
+        let workers = [
+            Origin::start("must-not-receive", 1).await,
+            Origin::start("must-not-receive", 1).await,
+        ];
+        let first = drained_node(&workers[0]).await;
+        let second = drained_node(&workers[1]).await;
+        let cluster = ProxyHarness::start_with_retries(
+            vec![first_cluster(&[first.address, second.address])],
+            vec![route(None, "/", &[], "nodes")],
+            1,
+            1,
+        )
+        .await;
+
+        let response = cluster.request_bytes(TTS_POST).await;
+
+        assert_eq!(response.status, 503, "response: {}", response.text());
+        assert_eq!(response.header("x-oxiroute-pool-unavailable"), Some("1"));
+        cluster.finish().await;
+        first.finish().await;
+        second.finish().await;
+        for worker in workers {
+            worker.assert_not_contacted().await;
+        }
+    })
+    .await
+    .expect("all drained nodes test timed out");
 }
 
 #[tokio::test]

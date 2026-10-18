@@ -7,13 +7,23 @@ use std::{
     time::Duration,
 };
 
-use http::Version;
+use http::{HeaderName, Version};
 use oxiroute_config::{HttpVersion, UpstreamConnectionReuse};
 use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
 use tokio::time::Instant;
 
 use crate::routing::EndpointObservation;
 use crate::{EndpointLease, H3UpstreamPlan, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
+
+/// Marks the 503 of a node that refused a request because none of its pool's servers can take it.
+/// Such a request was never forwarded, so a cluster pool may safely redispatch it to the next node.
+pub(crate) const POOL_UNAVAILABLE_HEADER: HeaderName =
+    HeaderName::from_static("x-oxiroute-pool-unavailable");
+pub(crate) const POOL_UNAVAILABLE: ErrorType = ErrorType::Custom("PoolUnavailable");
+
+pub(crate) fn is_pool_unavailable(error: &Error) -> bool {
+    error.etype() == &POOL_UNAVAILABLE
+}
 
 #[derive(Debug)]
 pub(crate) struct UpstreamPlan {
@@ -109,7 +119,7 @@ impl UpstreamPlan {
         };
         lease
             .map(SelectedEndpoint::new)
-            .ok_or_else(|| Error::new_up(ErrorType::HTTPStatus(503)))
+            .ok_or_else(|| Error::new_up(POOL_UNAVAILABLE))
     }
 
     pub(crate) async fn select_server_endpoint(
@@ -125,7 +135,7 @@ impl UpstreamPlan {
         };
         lease
             .map(SelectedEndpoint::new)
-            .ok_or_else(|| Error::new_up(ErrorType::HTTPStatus(503)))
+            .ok_or_else(|| Error::new_up(POOL_UNAVAILABLE))
     }
 
     pub(crate) fn has_unattempted(&self, attempted: &[String]) -> bool {
