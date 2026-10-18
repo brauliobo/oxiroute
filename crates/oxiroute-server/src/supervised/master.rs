@@ -1498,7 +1498,7 @@ mod tests {
             (key == RELOAD_DRAIN_ENV).then(|| OsString::from("120"))
         })
         .expect("configured drain");
-        assert_eq!(config.drain_timeout(), Duration::from_secs(120));
+        assert_eq!(config.drain_timeout(), Duration::from_mins(2));
         assert_eq!(config.quiesce_timeout(), Duration::from_secs(10));
         assert!(master_config_with_environment(|_: &str| Some(OsString::from("x"))).is_err());
     }
