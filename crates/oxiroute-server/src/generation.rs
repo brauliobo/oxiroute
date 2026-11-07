@@ -21,7 +21,7 @@ use serde::Serialize;
 
 use crate::generation_resources::GenerationResources;
 use crate::generation_retirement::{
-    PendingApply, RetiredGenerationStatus, RetiredGenerations, RetirementCounters,
+    PendingApply, RemoteRetired, RetiredGenerationStatus, RetiredGenerations, RetirementCounters,
 };
 use crate::listener_inventory::{ListenerId, ListenerInventory};
 use crate::routing::ServerAdminState;
@@ -33,6 +33,7 @@ use crate::{
     RuntimePlan, ServiceKind,
     config_coordinator::{
         AuthoredRevision, ConfigRejection, EffectiveRevision, ResolvedConfigDocument,
+        RevisionParseError,
     },
     runtime_plan,
     service_plan::validation_plan,

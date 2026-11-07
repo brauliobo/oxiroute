@@ -741,3 +741,35 @@ async fn supervised_relay_outlives_a_second_apply_within_the_deadline() {
     .await;
     instance.stop();
 }
+
+#[tokio::test]
+async fn supervised_retired_worker_is_listed_by_the_active_worker_until_it_drains() {
+    let _guard = process_test_guard().await;
+    let mut instance = Instance::start_tcp(Retirement::default(), true).await;
+    let mut relay = open_relay(&instance).await;
+    let old_revision = instance.generation().await["activeRevision"].clone();
+    instance.apply().await;
+
+    let status = wait_until("the retired worker is listed", || async {
+        let status = instance.generation().await;
+        (!status["retiredGenerations"].as_array()?.is_empty()).then_some(status)
+    })
+    .await;
+    let retired = &status["retiredGenerations"][0];
+    assert_eq!(retired["revision"], old_revision, "{status}");
+    assert_eq!(retired["state"], "draining");
+    assert!(retired["inFlight"].as_u64().unwrap() >= 1, "{status}");
+    assert!(retired["deadlineRemainingSeconds"].as_u64().unwrap() > 10_000);
+
+    assert_echo(&mut relay, b"still served").await;
+    drop(relay);
+    wait_until("the retired worker leaves the list", || async {
+        let status = instance.generation().await;
+        status["retiredGenerations"]
+            .as_array()?
+            .is_empty()
+            .then_some(())
+    })
+    .await;
+    instance.stop();
+}

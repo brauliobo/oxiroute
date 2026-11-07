@@ -39,7 +39,7 @@ Implemented and recognized endpoints:
 | `PUT` | `/api/v1/servers/max-connections` | Revision-checked server capacity override or reset. |
 | `PUT` | `/api/v1/servers/weight` | Revision-checked server weight override (1 to 100) or reset (`weight: null`). |
 | `POST` | `/api/v1/servers/refresh-dns` | Resolve every prevalidated target and report explicit non-atomic per-server outcomes. |
-| `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state, plus `retiredGenerations` (draining replaced generations, oldest first: `revision`, `state`, `ageSeconds`, `deadlineRemainingSeconds`, `inFlight`, `inFlightByKind`), `maxRetiredGenerations` and `pendingApply` (`revision`, `reason` `retired_cap`). The direct runtime fills the list; the supervising master drains one worker at a time and leaves it empty. |
+| `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state, plus `retiredGenerations` (draining replaced generations, oldest first: `revision`, `state`, `ageSeconds`, `deadlineRemainingSeconds`, `inFlight`, `inFlightByKind`), `maxRetiredGenerations` and `pendingApply` (`revision`, `reason` `retired_cap`). The supervising master drains one worker at a time and reports it to the active worker, so the list has at most one entry there and its `inFlightByKind` is a single `connections` total. |
 | `POST` | `/api/v1/generations/reload`, `/api/v1/generations/rollback`, `/api/v1/generations/drain` | Revision-checked generation preparation, rollback, and drain operations. |
 | `GET` | `/api/v1/tls` | Redacted certificate, managed ACME, and Certbot watcher status. |
 | `POST` | `/api/v1/tls/reconcile` | Revision-checked reconciliation of externally owned Certbot lineages. |

@@ -18,7 +18,7 @@ use log::{info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
-    ListenerReservations, RuntimeMode,
+    ListenerReservations, RemoteRetired, RuntimeMode, WorkerNotice,
     config_coordinator::{
         AuthoredRevision, CanonicalConfigCoordinator, ConfigDiagnostic, ConfigDiagnosticSeverity,
         ConfigDiagnosticStage, ConfigLoadOutcome, ConfigRejection, EffectiveRevision,
@@ -32,6 +32,7 @@ use oxiroute_supervision::{
 use oxiroute_supervision_unix::{DescriptorManifest, InstanceToken, ListenerChanges};
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, Master, MasterConfig, MasterEvent, MasterState, WorkerInput,
+    WorkerRole, WorkerStatus,
 };
 use oxiroute_supervisor_process::{
     CgroupV2ProbeStatus, WorkerCommand, WorkerIdentity, WorkerSpawner, probe_cgroup_v2,
@@ -101,6 +102,7 @@ pub(crate) fn run_if_supported(config_path: &Path) -> Result<(), Box<dyn Error>>
 mod catalog;
 mod monitors;
 mod plan;
+mod retired;
 mod runner;
 mod setup;
 
@@ -110,6 +112,8 @@ use catalog::*;
 use monitors::*;
 #[allow(clippy::wildcard_imports)]
 use plan::*;
+#[allow(clippy::wildcard_imports)]
+use retired::*;
 #[allow(clippy::wildcard_imports)]
 use runner::*;
 pub(super) use setup::retirement_window;
