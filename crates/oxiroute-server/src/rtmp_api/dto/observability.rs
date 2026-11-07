@@ -17,6 +17,7 @@ use crate::{
 mod certificates;
 mod enums;
 mod monitoring;
+mod requests;
 mod status;
 
 use certificates::{
@@ -29,6 +30,7 @@ use enums::{
     RelayPhaseDto, TransportOutcomeDto,
 };
 pub(crate) use monitoring::*;
+pub(crate) use requests::RequestListResponse;
 pub(crate) use status::*;
 
 #[cfg(test)]

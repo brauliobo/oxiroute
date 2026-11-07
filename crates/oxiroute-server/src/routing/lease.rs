@@ -81,9 +81,18 @@ pub(super) struct EndpointLeaseInner {
     health: Arc<PoolHealthState>,
     queue: Arc<PoolQueue>,
     server: Arc<PoolEndpoint>,
-    waiting: AtomicBool,
+    wait: LeaseWait,
     /// Set while this lease's pooled connection waits idle for a request to reuse it.
     idle: AtomicBool,
+}
+
+/// A lease that has to wait for capacity counts as queued from its first wait until it is acquired or dropped.
+#[derive(Debug, Default)]
+struct LeaseWait {
+    observer: Mutex<Option<Arc<AtomicU64>>>,
+    ticket: Mutex<Option<WaitTicket>>,
+    waited_ms: AtomicU64,
+    position: AtomicU64,
 }
 
 impl EndpointLease {
@@ -100,7 +109,7 @@ impl EndpointLease {
                 health,
                 queue,
                 server,
-                waiting: AtomicBool::new(false),
+                wait: LeaseWait::default(),
                 idle: AtomicBool::new(false),
             }),
         }
@@ -121,7 +130,7 @@ impl EndpointLease {
                 health,
                 queue,
                 server,
-                waiting: AtomicBool::new(false),
+                wait: LeaseWait::default(),
                 idle: AtomicBool::new(false),
             }),
         }
@@ -135,6 +144,36 @@ impl EndpointLease {
     #[must_use]
     pub fn server_name(&self) -> &str {
         &self.inner.server.name
+    }
+
+    /// Reports this lease's place in the pool queue to `cell` while it waits for capacity.
+    pub(crate) fn observe_queue_position(&self, cell: Arc<AtomicU64>) {
+        *self
+            .inner
+            .wait
+            .observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cell);
+    }
+
+    /// Records where a selector wait started, for leases that were not bound before waiting.
+    pub(super) fn note_selector_position(&self, position: u64) {
+        self.inner.wait.position.store(position, Ordering::Relaxed);
+    }
+
+    /// The request has its connection: a reused one never acquires this lease, so the wait ends here.
+    pub(crate) fn end_queue_wait(&self) {
+        self.inner.leave_queue(false);
+    }
+
+    /// Time this lease spent waiting for capacity so far.
+    pub(crate) fn queue_wait(&self) -> Duration {
+        Duration::from_millis(self.inner.wait.waited_ms.load(Ordering::Relaxed))
+    }
+
+    /// How many requests were waiting when this one joined, itself included; 0 if it never waited.
+    pub(crate) fn queue_position(&self) -> u64 {
+        self.inner.wait.position.load(Ordering::Relaxed)
     }
 
     pub(crate) fn observation(&self) -> EndpointObservation {
@@ -167,12 +206,52 @@ impl EndpointLease {
 }
 
 impl EndpointLeaseInner {
-    /// Counts this lease once in the pool queue while it waits for a permit of its bound server.
-    fn mark_waiting(&self) {
-        if !self.waiting.swap(true, Ordering::AcqRel) {
-            self.queue.queued.fetch_add(1, Ordering::Relaxed);
-            self.queue.queued_total.fetch_add(1, Ordering::Relaxed);
+    fn ticket(&self) -> std::sync::MutexGuard<'_, Option<WaitTicket>> {
+        self.wait
+            .ticket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn observe_position(&self, position: u64) {
+        let observer = self
+            .wait
+            .observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cell) = observer.as_ref() {
+            cell.store(position, Ordering::Relaxed);
         }
+    }
+
+    fn join_queue(&self) {
+        let mut ticket = self.ticket();
+        if ticket.is_some() {
+            return;
+        }
+        let joined = self.queue.ledger.join();
+        self.wait.position.store(joined.position, Ordering::Relaxed);
+        self.observe_position(joined.position);
+        self.queue.queued.fetch_add(1, Ordering::Relaxed);
+        self.queue.queued_total.fetch_add(1, Ordering::Relaxed);
+        *ticket = Some(joined);
+    }
+
+    fn leave_queue(&self, cancelled: bool) {
+        let Some(ticket) = self.ticket().take() else {
+            return;
+        };
+        let waited = self.queue.ledger.leave(ticket);
+        self.observe_position(0);
+        decrement_queue_count(&self.queue.queued);
+        if cancelled {
+            self.queue.cancellations.fetch_add(1, Ordering::Relaxed);
+        }
+        let millis = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX);
+        self.wait.waited_ms.fetch_add(millis, Ordering::Relaxed);
+        crate::upstream_stats::upstream_stats()
+            .pool(&self.health.pool_name)
+            .record_queue_wait(waited);
     }
 
     fn set_idle(&self, idle: bool) {
@@ -184,22 +263,12 @@ impl EndpointLeaseInner {
             }
         }
     }
-
-    fn clear_waiting(&self) -> bool {
-        let was_waiting = self.waiting.swap(false, Ordering::AcqRel);
-        if was_waiting {
-            decrement_queue_count(&self.queue.queued);
-        }
-        was_waiting
-    }
 }
 
 impl Drop for EndpointLeaseInner {
     fn drop(&mut self) {
         self.set_idle(false);
-        if self.clear_waiting() {
-            self.queue.cancellations.fetch_add(1, Ordering::Relaxed);
-        }
+        self.leave_queue(true);
         if !self.acquired.load(Ordering::Acquire) {
             return;
         }
@@ -221,7 +290,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
             return Ok(false);
         }
         self.acquired.store(true, Ordering::Release);
-        self.clear_waiting();
+        self.leave_queue(false);
         Ok(true)
     }
 
@@ -233,9 +302,9 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
         let Some(deadline) = self.deadline else {
             return Err(pingora::Error::new_up(pingora::ErrorType::HTTPStatus(503)));
         };
+        self.join_queue();
         #[cfg(test)]
         let _waiting = LifetimeWaitGuard::new(&self.queue.lifetime_waiters);
-        self.mark_waiting();
         loop {
             if self.queue.generation.load(Ordering::Acquire) != generation {
                 return Ok(());
@@ -247,8 +316,8 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
                 return Ok(());
             }
             if timeout_at(deadline, notified).await.is_err() {
-                self.clear_waiting();
                 self.queue.timeouts.fetch_add(1, Ordering::Relaxed);
+                self.leave_queue(false);
                 return Err(pingora::Error::new_up(pingora::ErrorType::HTTPStatus(503)));
             }
         }

@@ -401,6 +401,7 @@ fn test_proxy_policy() -> HttpProxyPolicy {
             pool: Some("web-backends".into()),
         }),
         cache: None,
+        queue_headers: true,
     }
 }
 
@@ -523,6 +524,7 @@ fn test_http_services() -> Vec<HttpService> {
                         timeouts: HttpProxyTimeouts::default(),
                         rescue: None,
                         cache: None,
+                        queue_headers: false,
                     },
                 },
             }],

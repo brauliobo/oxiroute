@@ -10,7 +10,7 @@ pub(super) async fn respond_error(
 ) -> pingora::Result<()> {
     let pool_unavailable = is_pool_unavailable(error);
     if !pool_unavailable && reason.is_none() {
-        return session.respond_error(code).await;
+        return respond_status(session, code).await;
     }
     let mut response = ServerSession::generate_error(code);
     // Pingora's error responder carries a placeholder Date that only the automatic headers replace.
@@ -25,6 +25,35 @@ pub(super) async fn respond_error(
             body = unavailable_body(session, &mut response, plan.unavailable_response())?;
         }
     }
+    stamp_request_id(session, &mut response)?;
+    session.write_error_response(response, body).await
+}
+
+/// Error responses bypass Pingora's response modules, so they copy the id the request filter set.
+fn stamp_request_id(
+    session: &Session,
+    response: &mut pingora::http::ResponseHeader,
+) -> pingora::Result<()> {
+    if let Some(id) = session.req_header().headers.get(&REQUEST_ID_HEADER) {
+        response.insert_header(REQUEST_ID_HEADER, id.clone())?;
+    }
+    Ok(())
+}
+
+pub(super) async fn respond_status(session: &mut Session, code: u16) -> pingora::Result<()> {
+    respond_status_with_body(session, code, Bytes::new()).await
+}
+
+pub(super) async fn respond_status_with_body(
+    session: &mut Session,
+    code: u16,
+    body: Bytes,
+) -> pingora::Result<()> {
+    let mut response = ServerSession::generate_error(code);
+    if !body.is_empty() {
+        response.set_content_length(body.len())?;
+    }
+    stamp_request_id(session, &mut response)?;
     session.write_error_response(response, body).await
 }
 
@@ -103,6 +132,66 @@ pub(super) fn timeout_reason(
         ErrorType::ReadTimedout if response_started(session) => Some(TimeoutReason::UpstreamIdle),
         ErrorType::ReadTimedout => Some(TimeoutReason::UpstreamHeader),
         _ => None,
+    }
+}
+
+/// The single bounded reason an access log line gives for a request that did not end well.
+pub(super) fn failure_reason(
+    error: &Error,
+    ctx: &HttpRequestContext,
+    session: &Session,
+) -> &'static str {
+    if ctx.trace.budget_spent.load(Ordering::Relaxed) {
+        return "retry_budget_spent";
+    }
+    if let Some(reason) = timeout_reason(error, ctx, session) {
+        return reason.as_str();
+    }
+    if is_pool_unavailable(error) {
+        return "pool_unavailable";
+    }
+    match (error.esource(), error.etype()) {
+        (ErrorSource::Downstream, _) => "client_closed",
+        (_, ErrorType::HTTPStatus(503)) => "queue_timeout",
+        (
+            _,
+            ErrorType::ConnectRefused
+            | ErrorType::ConnectNoRoute
+            | ErrorType::ConnectError
+            | ErrorType::ConnectProxyFailure
+            | ErrorType::TLSHandshakeFailure
+            | ErrorType::HandshakeError
+            | ErrorType::InvalidCert,
+        ) => "connect_failed",
+        (_, ErrorType::ConnectionClosed | ErrorType::ReadError | ErrorType::WriteError) => {
+            "upstream_reset"
+        }
+        _ => "protocol_error",
+    }
+}
+
+pub(super) fn attempt_outcome(error: &Error) -> AttemptOutcome {
+    match (error.esource(), error.etype()) {
+        (ErrorSource::Downstream, _) => AttemptOutcome::ClientClosed,
+        (
+            _,
+            ErrorType::ConnectTimedout
+            | ErrorType::TLSHandshakeTimedout
+            | ErrorType::ReadTimedout
+            | ErrorType::WriteTimedout,
+        ) => AttemptOutcome::Timeout,
+        (
+            _,
+            ErrorType::ConnectRefused
+            | ErrorType::ConnectNoRoute
+            | ErrorType::ConnectError
+            | ErrorType::ConnectProxyFailure
+            | ErrorType::TLSHandshakeFailure
+            | ErrorType::HandshakeError
+            | ErrorType::InvalidCert,
+        ) => AttemptOutcome::ConnectFailed,
+        (_, ErrorType::HTTPStatus(_)) => AttemptOutcome::StatusRetry,
+        _ => AttemptOutcome::ProtocolError,
     }
 }
 

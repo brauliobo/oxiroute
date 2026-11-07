@@ -451,6 +451,7 @@ export interface HttpProxyPolicyConfig {
   timeouts: HttpProxyTimeoutsConfig
   rescue: HttpRescuePolicyConfig | null
   cache: HttpCachePolicyConfig | null
+  queue_headers?: boolean
 }
 
 export type CacheKeyComponentConfig =

@@ -468,7 +468,8 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
     ((value.retry.method_safety === 'get_head' && value.retry.body_safety === 'empty') ||
       (value.retry.method_safety === 'all' && value.retry.body_safety === 'buffered')) &&
     isHttpProxyTimeouts(value.timeouts) && isHttpRescue(value.rescue) &&
-    (value.cache === null || isHttpCachePolicy(value.cache))
+    (value.cache === null || isHttpCachePolicy(value.cache)) &&
+    (value.queue_headers === undefined || typeof value.queue_headers === 'boolean')
 }
 
 function isHttpRetryBudget(value: unknown): boolean {
