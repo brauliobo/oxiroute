@@ -7,8 +7,9 @@ use oxiroute_config::{
     AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, ConfigDraft, ConfigError,
     DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HealthStartup,
     HttpAccessPolicy, HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector,
-    HttpProxyPathRewrite, HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation,
-    HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety,
+    HttpProxyPathRewrite, HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation,
+    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpRescuePolicy, HttpRescueTarget,
+    HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryBudget, HttpRetryMethodSafety,
     HttpRetryPolicy, HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction,
     HttpRoutePolicy, HttpService, HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost,
     HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management,
@@ -357,8 +358,25 @@ fn test_proxy_policy() -> HttpProxyPolicy {
             body_safety: HttpRetryBodySafety::Empty,
             target: HttpRetryTarget::SameServer,
             delay_ms: 25,
+            jitter_percent: 40,
             final_redispatch: false,
+            idempotency_header: None,
+            budget: Some(HttpRetryBudget {
+                per_second: Some(20),
+                ratio_percent: Some(25),
+            }),
         },
+        timeouts: HttpProxyTimeouts {
+            connect_ms: Some(500),
+            header_ms: Some(2_000),
+            idle_ms: Some(1_500),
+            total_ms: Some(9_000),
+        },
+        rescue: Some(HttpRescuePolicy {
+            statuses: vec![404, 503],
+            target: HttpRescueTarget::Pool,
+            pool: Some("web-backends".into()),
+        }),
         cache: None,
     }
 }
@@ -479,6 +497,8 @@ fn test_http_services() -> Vec<HttpService> {
                         response_cookie_path_rewrites: Vec::new(),
                         response_cookie_attributes: Vec::new(),
                         retry: HttpRetryPolicy::default(),
+                        timeouts: HttpProxyTimeouts::default(),
+                        rescue: None,
                         cache: None,
                     },
                 },
@@ -1292,6 +1312,7 @@ fn service_mutations() -> Vec<Mutation> {
                 panic!("proxy action");
             };
             *upstream_pool = "web-backends".into();
+            policy.rescue = None;
             policy.retry.max_retries = 1;
         }),
         ("L4 service order", |config| config.l4_services.reverse()),

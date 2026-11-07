@@ -317,7 +317,52 @@ pub struct HttpProxyPolicy {
     #[serde(default)]
     pub retry: HttpRetryPolicy,
     #[serde(default)]
+    pub timeouts: HttpProxyTimeouts,
+    #[serde(default)]
+    pub rescue: Option<HttpRescuePolicy>,
+    #[serde(default)]
     pub cache: Option<Box<HttpCachePolicy>>,
+}
+
+/// Replays a request that a backend answered with one of `statuses` (any status, for example a 404
+/// from a node that lacks a model) on another server, spending the route retry budget. When no
+/// candidate is left, the client receives the last backend response unchanged.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpRescuePolicy {
+    pub statuses: Vec<u16>,
+    #[serde(default)]
+    pub target: HttpRescueTarget,
+    /// The pool replayed to when `target` is `pool`; otherwise null.
+    #[serde(default)]
+    pub pool: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpRescueTarget {
+    #[default]
+    NextServer,
+    Pool,
+}
+
+/// Optional per-phase upstream timeouts of one proxy route; an omitted phase falls back to the
+/// pool `connect_timeout_ms`/`server_timeout_ms`, then the route policy, then the service.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpProxyTimeouts {
+    /// Per attempt, until the upstream connection is established.
+    #[serde(default)]
+    pub connect_ms: Option<u64>,
+    /// Per attempt, from the sent request until the first response byte.
+    #[serde(default)]
+    pub header_ms: Option<u64>,
+    /// Between upstream response body chunks.
+    #[serde(default)]
+    pub idle_ms: Option<u64>,
+    /// Whole request including retries; defaults to the service `upstream_io_timeout_ms`.
+    #[serde(default)]
+    pub total_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -597,8 +642,29 @@ pub struct HttpRetryPolicy {
     pub target: HttpRetryTarget,
     #[serde(default)]
     pub delay_ms: u64,
+    /// Extra random delay, up to this percentage of `delay_ms`, added before each retry.
+    #[serde(default)]
+    pub jitter_percent: u8,
     #[serde(default)]
     pub final_redispatch: bool,
+    /// A request that is not `GET` or `HEAD` is replayed after a response-phase failure only when it
+    /// carries this header. Requires `method_safety = "all"`.
+    #[serde(default)]
+    pub idempotency_header: Option<String>,
+    /// Caps the retries of the route so that they cannot amplify an outage.
+    #[serde(default)]
+    pub budget: Option<HttpRetryBudget>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpRetryBudget {
+    /// Retries allowed per second.
+    #[serde(default)]
+    pub per_second: Option<u32>,
+    /// Retries allowed as a percentage of the requests of the last 10 seconds, rounded up.
+    #[serde(default)]
+    pub ratio_percent: Option<u8>,
 }
 
 fn deserialize_http_retry_triggers<'de, D>(
@@ -668,7 +734,10 @@ impl Default for HttpRetryPolicy {
             body_safety: HttpRetryBodySafety::default(),
             target: HttpRetryTarget::default(),
             delay_ms: 0,
+            jitter_percent: 0,
             final_redispatch: false,
+            idempotency_header: None,
+            budget: None,
         }
     }
 }

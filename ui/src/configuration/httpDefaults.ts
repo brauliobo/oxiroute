@@ -77,12 +77,17 @@ export function defaultHttpProxyPolicy(): HttpProxyPolicyConfig {
       max_retries: 0,
       target: 'next_server',
       delay_ms: 0,
+      jitter_percent: 0,
       final_redispatch: false,
+      idempotency_header: null,
+      budget: null,
       triggers: [...HTTP_RETRY_TRIGGERS],
       response_statuses: [],
       method_safety: 'get_head',
       body_safety: 'empty',
     },
+    timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
+    rescue: null,
     cache: null,
   }
 }

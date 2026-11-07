@@ -1229,9 +1229,12 @@ where
     let mut attempted = Vec::new();
     let mut retry_server: Option<String> = None;
     let max_attempts = usize::from(proxy.policy.max_retries).saturating_add(1);
-    let retry_safe = proxy
-        .policy
-        .request_is_replay_safe(request.method(), body.is_empty(), true);
+    let retry_safe = proxy.policy.request_is_replay_safe(
+        request.method(),
+        request.headers(),
+        body.is_empty(),
+        true,
+    );
     let mut last_error = H3UpstreamError::Connect;
 
     for attempt in 0..max_attempts {
@@ -1345,7 +1348,7 @@ where
                     && target_available
                     && Instant::now() < deadline;
                 if retry {
-                    let delay = proxy.policy.retry_delay;
+                    let delay = proxy.policy.next_retry_delay();
                     if !delay.is_zero() {
                         if delay > deadline.saturating_duration_since(Instant::now()) {
                             return send_h3_upstream_response(
@@ -1404,7 +1407,7 @@ where
         if !retry {
             break;
         }
-        let delay = proxy.policy.retry_delay;
+        let delay = proxy.policy.next_retry_delay();
         if !delay.is_zero() {
             if delay > deadline.saturating_duration_since(Instant::now()) {
                 break;

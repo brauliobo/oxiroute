@@ -404,6 +404,8 @@ impl Renderer {
             response_cookie_path_rewrites,
             response_cookie_attributes,
             retry,
+            timeouts,
+            rescue,
             cache,
         } = policy;
         self.begin_table_field("upstream_host");
@@ -440,6 +442,17 @@ impl Renderer {
         self.begin_table_field("retry");
         self.http_retry_policy(retry);
         self.end_table();
+        self.begin_table_field("timeouts");
+        self.http_proxy_timeouts(timeouts);
+        self.end_table();
+        match rescue {
+            Some(rescue) => {
+                self.begin_table_field("rescue");
+                self.http_rescue_policy(rescue);
+                self.end_table();
+            }
+            None => self.nil_field("rescue"),
+        }
         match cache {
             Some(cache) => {
                 self.begin_table_field("cache");
@@ -449,6 +462,25 @@ impl Renderer {
             None => self.nil_field("cache"),
         }
         Ok(())
+    }
+
+    fn http_rescue_policy(&mut self, rescue: &HttpRescuePolicy) {
+        self.integer_list_field("statuses", &rescue.statuses);
+        self.string_field(
+            "target",
+            match rescue.target {
+                HttpRescueTarget::NextServer => "next_server",
+                HttpRescueTarget::Pool => "pool",
+            },
+        );
+        self.optional_string_field("pool", rescue.pool.as_deref());
+    }
+
+    fn http_proxy_timeouts(&mut self, timeouts: &HttpProxyTimeouts) {
+        self.optional_integer_field("connect_ms", timeouts.connect_ms);
+        self.optional_integer_field("header_ms", timeouts.header_ms);
+        self.optional_integer_field("idle_ms", timeouts.idle_ms);
+        self.optional_integer_field("total_ms", timeouts.total_ms);
     }
 
     fn http_cookie_attribute(&mut self, policy: &HttpCookieAttributePolicy) {
@@ -729,7 +761,18 @@ impl Renderer {
             },
         );
         self.integer_field("delay_ms", retry.delay_ms);
+        self.integer_field("jitter_percent", retry.jitter_percent);
         self.boolean_field("final_redispatch", retry.final_redispatch);
+        self.optional_string_field("idempotency_header", retry.idempotency_header.as_deref());
+        match &retry.budget {
+            Some(budget) => {
+                self.begin_table_field("budget");
+                self.optional_integer_field("per_second", budget.per_second);
+                self.optional_integer_field("ratio_percent", budget.ratio_percent);
+                self.end_table();
+            }
+            None => self.nil_field("budget"),
+        }
         self.string_list_field(
             "triggers",
             &retry

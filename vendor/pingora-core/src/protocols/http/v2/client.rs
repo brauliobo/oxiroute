@@ -48,6 +48,8 @@ pub struct Http2Session {
     /// The timeout is reset on every read. This is not a timeout on the overall duration of the
     /// response.
     pub read_timeout: Option<Duration>,
+    /// Replaces `read_timeout` once the response header has been read.
+    pub body_read_timeout: Option<Duration>,
     /// The write timeout which will be applied to writing request body.
     /// The timeout is reset on every write. This is not a timeout on the overall duration of the
     /// request.
@@ -75,6 +77,7 @@ impl Http2Session {
             response_header: None,
             response_body_reader: None,
             read_timeout: None,
+            body_read_timeout: None,
             write_timeout: None,
             conn,
             ended: false,
@@ -193,6 +196,7 @@ impl Http2Session {
         let (resp, body_reader) = res.map_err(handle_read_header_error)?.into_parts();
         self.response_header = Some(resp.into());
         self.response_body_reader = Some(body_reader);
+        self.read_timeout = self.body_read_timeout.or(self.read_timeout);
 
         Ok(())
     }
