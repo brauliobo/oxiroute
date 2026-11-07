@@ -690,6 +690,11 @@
             "minimum": 0,
             "type": "integer"
           },
+          "generation": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "lastFailure": {
             "type": [
               "string",
@@ -736,6 +741,7 @@
           "activeRevision",
           "previousRevision",
           "quarantinedRevision",
+          "generation",
           "activeAccepting",
           "degraded",
           "lastFailure",

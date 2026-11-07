@@ -117,6 +117,11 @@ oxiroute server max-connections reset --pool web endpoint-1
 oxiroute server refresh-dns --pool web endpoint-1
 ```
 
+These settings are runtime state, not configuration. They stay on the server (matched by pool and
+server name) when the configuration file changes or you reload, apply or roll back a generation, so
+a drained server stays drained. A server removed from the file loses its state, and a server added
+to it starts ready. A restart of the process resets them.
+
 DNS refresh is explicitly non-atomic because resolution is external. Inspect every returned outcome
 before treating a partial result as a successful rollout.
 

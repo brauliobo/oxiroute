@@ -20,6 +20,7 @@ use serde::Serialize;
 
 use crate::generation_resources::GenerationResources;
 use crate::listener_inventory::{ListenerId, ListenerInventory};
+use crate::routing::ServerAdminState;
 use crate::rtmp_generation_runtime::{RtmpRetirement, RtmpRetirementRegistry};
 #[cfg(test)]
 use crate::service_plan::acquire_runtime_services;
@@ -583,6 +584,20 @@ impl RuntimeGeneration {
     }
 
     #[must_use]
+    pub fn administrative_states(&self) -> Vec<ServerAdminState> {
+        self.pools()
+            .iter()
+            .flat_map(|pool| pool.administrative_states())
+            .collect()
+    }
+
+    pub fn restore_administrative_states(&self, states: &[ServerAdminState]) {
+        for pool in self.pools() {
+            pool.restore_administrative_states(states);
+        }
+    }
+
+    #[must_use]
     pub const fn tls(&self) -> &crate::PreparedTls {
         self.resources.tls()
     }
@@ -935,6 +950,12 @@ impl Drop for GenerationReference {
     }
 }
 
+/// What a supervised worker knows of the worker it replaced.
+struct SupervisedLineage {
+    generation: u64,
+    replaced: Option<EffectiveRevision>,
+}
+
 #[derive(Default)]
 struct GenerationState {
     active: Option<Arc<RuntimeGeneration>>,
@@ -943,6 +964,7 @@ struct GenerationState {
     last_failure: Option<&'static str>,
     last_rejection: Option<ConfigRejection>,
     previous: Option<Arc<RuntimeGeneration>>,
+    supervised_lineage: Option<SupervisedLineage>,
     quarantined_revision: Option<EffectiveRevision>,
     shutdown_generations: Vec<Arc<RuntimeGeneration>>,
     shutting_down: bool,
@@ -1621,6 +1643,7 @@ impl GenerationManager {
         state.starting_candidate = None;
         let active = Arc::clone(&candidate.generation);
         if let Some(previous) = state.active.replace(Arc::clone(&active)) {
+            active.restore_administrative_states(&previous.administrative_states());
             let evicted = state.previous.replace(previous);
             if let Some(evicted) = &evicted {
                 let mut retirements = self
@@ -1986,6 +2009,18 @@ impl GenerationManager {
         true
     }
 
+    /// Records the supervised generation number this worker serves and the revision it replaced,
+    /// which a worker cannot observe itself because each one hosts a single generation.
+    pub fn set_supervised_lineage(&self, generation: u64, replaced: Option<EffectiveRevision>) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .supervised_lineage = Some(SupervisedLineage {
+            generation,
+            replaced,
+        });
+    }
+
     /// Forgets the recorded refusal because the configuration on disk is acceptable again.
     pub fn accept_configuration(&self) {
         self.state
@@ -2167,7 +2202,12 @@ impl GenerationManager {
             previous_revision: state
                 .previous
                 .as_ref()
-                .map(|previous| previous.revision.candidate.clone()),
+                .map(|previous| previous.revision.candidate.clone())
+                .or_else(|| state.supervised_lineage.as_ref()?.replaced.clone()),
+            generation: state.supervised_lineage.as_ref().map_or_else(
+                || self.counters.activations.load(Ordering::Relaxed),
+                |lineage| lineage.generation,
+            ),
             quarantined_revision: state.quarantined_revision.clone(),
             active_accepting: state
                 .active
@@ -2255,6 +2295,8 @@ pub struct GenerationStatus {
     pub active_revision: Option<EffectiveRevision>,
     pub previous_revision: Option<EffectiveRevision>,
     pub quarantined_revision: Option<EffectiveRevision>,
+    /// Number of the live generation: the activation count, or the master's generation id.
+    pub generation: u64,
     pub active_accepting: bool,
     pub degraded: bool,
     pub last_failure: Option<&'static str>,

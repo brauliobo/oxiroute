@@ -210,6 +210,67 @@ fn administrative_drain_rejects_new_work_without_revoking_existing_leases() {
 }
 
 #[test]
+fn administrative_state_moves_to_another_pool_by_pool_and_server_name() {
+    let pool = |servers: &[&str]| {
+        RoundRobinPool::new_named_servers(
+            "api".into(),
+            servers
+                .iter()
+                .zip(3000..)
+                .map(|(name, port)| runtime_server(name, port, None)),
+            UpstreamAlgorithm::RoundRobin,
+            Some(HealthStartup::Healthy),
+            None,
+        )
+        .expect("pool")
+    };
+    let previous = pool(&["one", "two", "gone"]);
+    assert!(previous.administrative_states().is_empty());
+    previous
+        .set_server_administrative_state("one", AdministrativeState::Drain)
+        .expect("drain");
+    previous
+        .set_server_health_override("one", HealthOverride::Down)
+        .expect("override");
+    previous
+        .set_server_max_connections("one", Some(4))
+        .expect("limit");
+    previous
+        .set_server_checks_enabled("one", false)
+        .expect("checks");
+    previous
+        .set_server_administrative_state("gone", AdministrativeState::Maintenance)
+        .expect("maintenance");
+
+    let next = pool(&["one", "two", "new"]);
+    next.restore_administrative_states(&previous.administrative_states());
+
+    let states = next.administrative_states();
+    assert_eq!(states.len(), 1, "{states:?}");
+    assert_eq!(states[0].server, "one");
+    assert_eq!(states[0].administrative, AdministrativeState::Drain);
+    assert_eq!(states[0].health, HealthOverride::Down);
+    assert_eq!(states[0].max_connections, Some(4));
+    assert!(!states[0].checks_enabled);
+    let snapshot = next.health_snapshot();
+    assert_eq!(snapshot.endpoints[0].max_connections, Some(4));
+    assert_eq!(
+        snapshot.endpoints[2].administrative_state,
+        AdministrativeState::Ready
+    );
+    let other_pool = RoundRobinPool::new_named_servers(
+        "web".into(),
+        [runtime_server("one", 3000, None)],
+        UpstreamAlgorithm::RoundRobin,
+        Some(HealthStartup::Healthy),
+        None,
+    )
+    .expect("pool");
+    other_pool.restore_administrative_states(&previous.administrative_states());
+    assert!(other_pool.administrative_states().is_empty());
+}
+
+#[test]
 fn maintenance_suspends_checks_while_drain_keeps_checks_running() {
     let pool = RoundRobinPool::new_named_servers(
         "api".into(),

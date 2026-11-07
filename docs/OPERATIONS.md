@@ -53,7 +53,14 @@ and all listener reservations before publication. It does not write the canonica
 listener reservations are process-owned and reused by later generations.
 
 Activation swaps active and previous generation references under one lock, closes the old logical
-accept gate, and retains the previous generation for explicit rollback. HTTP/1, HTTP/2, WebSocket,
+accept gate, and retains the previous generation for explicit rollback. Before the new generation
+accepts, the runtime administrative state of the old one (drain, maintenance, health override,
+check switch, max-connections override) is copied to the servers with the same pool and server
+name, so a drained server never takes traffic across a file write, reload, apply or rollback.
+Servers that no longer exist lose their state and new servers start ready. In supervised mode the
+old worker reports that state at quiesce and the master hands it to the replacement at activation;
+a state too large for the control channel (over 48 KiB, hundreds of non-default servers) refuses
+the replacement and the old worker keeps serving. HTTP/1, HTTP/2, WebSocket,
 TCP, UDP pseudo-sessions, QUIC/H3 connections, and RTMP references are counted independently and
 drained under a caller-supplied deadline. Failed candidates are dropped without changing active
 state. Canonical management writes remain revision-checked and invalid drafts do not alter disk.

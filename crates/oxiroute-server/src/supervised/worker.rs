@@ -12,7 +12,7 @@ use std::{
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
     AdministrativeState, GenerationManager, ListenerRuntimeState, RuntimeGeneration,
-    RuntimeSnapshot,
+    RuntimeSnapshot, ServerAdminState,
     config_coordinator::{
         CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRejection, EffectiveRevision,
     },
@@ -27,6 +27,7 @@ use oxiroute_supervisor_master::{
 };
 use oxiroute_supervisor_process::WorkerIdentity;
 use pingora::apps::AcceptGateClose;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     GenerationProcess, finish_candidate_generation_process, shutdown_generation_processes,
@@ -226,7 +227,18 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         };
         match request.phase() {
             ControlPhase::Activate if startup.is_some() => {
-                let activation = startup.take().expect("activation is pending").activate();
+                let pending = startup.take().expect("activation is pending");
+                let activation = HandOver::decode(request.attachment())
+                    .map_err(Box::<dyn Error>::from)
+                    .and_then(|previous| {
+                        generation.restore_administrative_states(&previous.servers);
+                        let replaced = previous.revision.map(|revision| revision.parse());
+                        manager.set_supervised_lineage(
+                            identity.generation.get(),
+                            replaced.transpose()?,
+                        );
+                        pending.activate().map_err(Into::into)
+                    });
                 match activation {
                     Ok(_) => {
                         lifecycle = WorkerLifecycle::Active;
@@ -300,6 +312,11 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             ControlPhase::Quiesce => {
                 lifecycle = WorkerLifecycle::Quiescing;
                 let outcome = quiesce_active(&manager, &mut quiesced);
+                let outcome = if matches!(outcome, ControlOutcome::Accepted) {
+                    hand_over(&mut control, &manager, &generation)
+                } else {
+                    outcome
+                };
                 control.acknowledge(&request, outcome)?;
                 report_status(
                     &mut control,
@@ -360,6 +377,44 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
 }
 
 /// Records what the master decided about the configuration file, or forgets it when accepted.
+/// What the active worker passes to its replacement at activation.
+#[derive(Default, Deserialize, Serialize)]
+struct HandOver {
+    revision: Option<String>,
+    servers: Vec<ServerAdminState>,
+}
+
+impl HandOver {
+    fn decode(attachment: &[u8]) -> Result<Self, serde_json::Error> {
+        if attachment.is_empty() {
+            return Ok(Self::default());
+        }
+        serde_json::from_slice(attachment)
+    }
+}
+
+/// Reports the revision and runtime administrative state the next worker starts with. State too
+/// large for the control channel refuses the replacement, so the old generation keeps serving
+/// with its state.
+fn hand_over(
+    control: &mut WorkerControl,
+    manager: &GenerationManager,
+    generation: &RuntimeGeneration,
+) -> ControlOutcome {
+    let state = serde_json::to_vec(&HandOver {
+        revision: manager
+            .status()
+            .active_revision
+            .map(|revision| revision.to_string()),
+        servers: generation.administrative_states(),
+    })
+    .expect("hand-over serializes");
+    match control.report_state(&state) {
+        Ok(_) => ControlOutcome::Accepted,
+        Err(_) => ControlOutcome::Rejected(REJECT_RUNTIME),
+    }
+}
+
 fn apply_config_notice(
     manager: &GenerationManager,
     notice: &[u8],

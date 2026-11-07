@@ -1152,6 +1152,11 @@ errors). `422` responses of `config validate`, `config apply` and `generation re
 check`, and startup failures print them the same way, for example a root without `version 1`
 reports `/version` and "add `version 1`" instead of a generic rejection.
 
+Runtime administrative state is not part of the configuration and survives every accepted file: a
+server keeps its drain/maintenance state, health override, check switch and max-connections
+override when the next generation has a server with the same pool and server name. Removed servers
+drop their state and added servers start ready.
+
 ## Diagnostics
 
 Offline native import reports retain rich evidence: stable code, severity, stage, source range,

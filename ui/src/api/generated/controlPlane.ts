@@ -156,6 +156,7 @@ export interface GenerationStatusDto {
   degraded: boolean
   diskRevision: string | null
   failures: number
+  generation: number
   lastFailure: string | null
   lastRejection: ConfigRejectionDto | null
   prepares: number
