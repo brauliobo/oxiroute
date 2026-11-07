@@ -343,6 +343,10 @@ async fn check_requests_the_canary_url_and_reports_unknown_for_what_it_cannot_ju
         bad_option.code, 3,
         "usage errors of check are UNKNOWN, not clap's 2"
     );
+    assert_eq!(
+        bad_option.stdout,
+        "OXIROUTE UNKNOWN - unexpected argument '--no-such-option' found (see `oxiroute check --help`)"
+    );
     let unreachable = run_cli(vec![
         "--endpoint".into(),
         format!("http://{}", reserve_tcp_address()),

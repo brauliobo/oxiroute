@@ -653,10 +653,7 @@ impl Cli {
         match Self::try_parse_from(&arguments) {
             Ok(cli) => Self::normalize(cli),
             Err(error) if error.use_stderr() && check::is_invocation(&arguments) => {
-                eprintln!(
-                    "OXIROUTE UNKNOWN - {}",
-                    error.render().to_string().trim_end()
-                );
+                println!("{}", check::usage_line(&error));
                 std::process::exit(i32::from(check::EXIT_UNKNOWN));
             }
             Err(error) => error.exit(),
