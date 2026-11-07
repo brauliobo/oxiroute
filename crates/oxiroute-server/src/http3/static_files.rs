@@ -20,7 +20,7 @@ enum H3StaticErrorAction {
 }
 
 async fn h3_static_error_action(
-    files: &crate::http_action::StaticFilesPlan,
+    files: &crate::http::action::StaticFilesPlan,
     status: u16,
 ) -> H3StaticErrorAction {
     match files.error_document(status).await {
@@ -40,7 +40,7 @@ async fn h3_static_error_action(
 #[allow(clippy::too_many_lines)]
 pub(super) async fn send_h3_static_request<S>(
     stream: &mut h3::server::RequestStream<S, Bytes>,
-    files: &crate::http_action::StaticFilesPlan,
+    files: &crate::http::action::StaticFilesPlan,
     request: &Request<()>,
     deadline: Instant,
 ) -> Option<u16>
@@ -241,7 +241,7 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn apply_h3_static_error<S>(
     stream: &mut h3::server::RequestStream<S, Bytes>,
-    files: &crate::http_action::StaticFilesPlan,
+    files: &crate::http::action::StaticFilesPlan,
     status: u16,
     head: bool,
     path: &mut String,
@@ -299,7 +299,7 @@ where
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn send_h3_static_file<S>(
     stream: &mut h3::server::RequestStream<S, Bytes>,
-    files: &crate::http_action::StaticFilesPlan,
+    files: &crate::http::action::StaticFilesPlan,
     file: StaticFile,
     status: StatusCode,
     range: Option<(u64, u64)>,

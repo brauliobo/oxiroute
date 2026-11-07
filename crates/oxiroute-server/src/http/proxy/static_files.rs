@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) async fn write_static_error(
     session: &mut Session,
-    files: &crate::http_action::StaticFilesPlan,
+    files: &crate::http::action::StaticFilesPlan,
     status: u16,
     head: bool,
     extra_headers: &[(HeaderName, HeaderValue)],
@@ -46,7 +46,7 @@ pub(super) async fn write_static_error(
 
 pub(super) async fn write_static_file(
     session: &mut Session,
-    files: &crate::http_action::StaticFilesPlan,
+    files: &crate::http::action::StaticFilesPlan,
     file: StaticFile,
     head: bool,
 ) -> pingora::Result<Option<Vec<(HeaderName, HeaderValue)>>> {
@@ -84,7 +84,7 @@ pub(super) async fn write_static_file(
 
 pub(super) async fn write_static_file_with_status(
     session: &mut Session,
-    files: &crate::http_action::StaticFilesPlan,
+    files: &crate::http::action::StaticFilesPlan,
     file: StaticFile,
     status: u16,
     head: bool,
@@ -142,7 +142,7 @@ pub(super) async fn write_static_file_with_status(
 }
 
 fn static_validator_headers(
-    files: &crate::http_action::StaticFilesPlan,
+    files: &crate::http::action::StaticFilesPlan,
     file: &StaticFile,
 ) -> Vec<(HeaderName, HeaderValue)> {
     let mut headers = Vec::with_capacity(usize::from(files.etag_enabled()) + 1);

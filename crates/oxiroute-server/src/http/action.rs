@@ -46,7 +46,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     RoundRobinPool,
-    http_cache::HttpCachePlan,
+    http::cache::HttpCachePlan,
     secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
     upstream_peer::UpstreamPlan,
 };

@@ -38,16 +38,16 @@ use crate::routing::{EndpointObservation, QueueTag};
 use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
-    http_action::{
+    http::action::{
         AccessLog, AffinityRequest, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan,
         ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget, StaticFile,
         StaticRequestDecision, StaticServeError, StaticTarget,
     },
-    http_cache::{
+    http::cache::{
         CacheFailureClass, CacheRequest, CacheStart, CacheStartFailure, CacheTransaction,
         HttpCachePlan,
     },
-    http_policy::{
+    http::policy::{
         RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
         ResponseHeaderDecision, ResponsePolicyError, decide_request_header,
         decide_response_headers, expand_redirect_location, nginx_request_host,
@@ -60,8 +60,8 @@ use crate::{
 };
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
-use crate::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};
-use crate::request_id::{REQUEST_ID_HEADER, RequestIdBuilder};
+use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};
+use crate::http::request_id::{REQUEST_ID_HEADER, RequestIdBuilder};
 use crate::upstream_stats::{AttemptOutcome, ServerStats, upstream_stats};
 
 pub struct HttpReverseProxy {

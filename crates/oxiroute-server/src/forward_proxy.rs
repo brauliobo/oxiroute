@@ -62,8 +62,8 @@ use tokio_openssl::SslStream;
 use crate::{
     H3UpstreamError, H3UpstreamPlan,
     capsule::relay_udp,
-    http_action::BasicHtpasswdAccess,
-    http_cache::{
+    http::action::BasicHtpasswdAccess,
+    http::cache::{
         CacheBackendError, CacheFailureClass, CacheRequest, CacheStart, CacheStartFailure,
         CacheTransaction, HttpCachePlan,
     },

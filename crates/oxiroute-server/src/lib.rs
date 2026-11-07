@@ -7,14 +7,9 @@ mod forward_proxy;
 mod generation;
 mod health;
 mod html;
+mod http;
 mod http3;
 mod http3_upstream;
-mod http_action;
-mod http_cache;
-mod http_policy;
-mod http_proxy;
-mod http_server_app;
-mod inflight;
 mod l4;
 mod lifecycle_control;
 mod listener;
@@ -23,7 +18,6 @@ mod monitoring;
 mod operational_event;
 mod prometheus;
 mod registry;
-mod request_id;
 mod routing;
 mod rtmp;
 mod runtime_policy;
@@ -54,11 +48,11 @@ pub use generation::{
     PreparedGeneration, RuntimeGeneration, RuntimeReferenceKind,
 };
 pub use health::{HealthBuildError, HealthSupervisor};
-pub use http_proxy::{HttpRequestContext, HttpReverseProxy};
-pub use http_server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp};
+pub use http::inflight::live_requests;
+pub use http::proxy::{HttpRequestContext, HttpReverseProxy};
+pub use http::server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp};
 pub use http3::Http3Runtime;
 pub(crate) use http3_upstream::{H3UpstreamBuildError, H3UpstreamError, H3UpstreamPlan};
-pub use inflight::live_requests;
 pub use l4::proxy_protocol::{
     AcceptedProxyStream, MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES, MAX_V2_PAYLOAD_BYTES,
     ParsedProxyHeader, PrefixedStream, ProxyProtocolError, ProxyProtocolErrorKind,

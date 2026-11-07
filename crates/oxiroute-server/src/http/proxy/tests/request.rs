@@ -54,7 +54,7 @@ async fn unix_downstream_preserves_existing_x_forwarded_for_without_an_ip_peer()
     );
     let route = HttpRoutePlan {
         access: None,
-        action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
+        action: HttpActionPlan::Proxy(crate::http::action::ProxyActionPlan {
             pool: Arc::new(UpstreamPlan::with_policy(
                 selector,
                 None,
@@ -66,7 +66,7 @@ async fn unix_downstream_preserves_existing_x_forwarded_for_without_an_ip_peer()
             select: None,
             policy,
         }),
-        policy: crate::http_action::RoutePolicyPlan::compile(
+        policy: crate::http::action::RoutePolicyPlan::compile(
             oxiroute_config::HttpRoutePolicy::default(),
         ),
         route_id: "unix-xff".into(),
@@ -236,11 +236,11 @@ async fn pingora_join_bounds_include_inserted_separators() {
         .unwrap();
 
     assert_eq!(
-        crate::http_policy::join_header_values(&session.req_header().headers, &name, 5),
+        crate::http::policy::join_header_values(&session.req_header().headers, &name, 5),
         Ok(Some(b"abc, ".to_vec()))
     );
     assert_eq!(
-        crate::http_policy::join_header_values(&session.req_header().headers, &name, 4),
+        crate::http::policy::join_header_values(&session.req_header().headers, &name, 4),
         Err(RequestPolicyError::SourceTooLarge)
     );
 }

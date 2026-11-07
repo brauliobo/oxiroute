@@ -459,7 +459,7 @@ fn server_histograms_drop_out_above_the_server_limit_but_counters_stay() {
 
 #[test]
 fn exposition_counts_live_requests_per_pool_and_flags_overdue_ones() {
-    use crate::inflight::{InflightArrival, Phase, registry};
+    use crate::http::inflight::{InflightArrival, Phase, registry};
 
     let arrival = |id: &str, deadline: std::time::Duration| InflightArrival {
         request_id: id.into(),
