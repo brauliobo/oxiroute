@@ -16,7 +16,7 @@ use crate::{
     auto_push::AutoPushCoordinator,
     exec::ExecProfile,
     exec_worker::ExecProfileSet,
-    recording_runtime::{
+    recording::runtime::{
         RecorderController, RecorderReaperHandle, RecorderReaperOwner, RecorderShutdownControl,
         RtmpRecorderShutdown,
     },

@@ -781,7 +781,9 @@ impl RecorderFixture {
         }
     }
 
-    fn prepare_publication(&self) -> Arc<crate::recording_store::RecordingPublicationGate> {
+    fn prepare_publication(
+        &self,
+    ) -> Arc<crate::recording::recording_store::RecordingPublicationGate> {
         assert_eq!(
             self.controller.try_enqueue(
                 MediaEvent::audio(0, Arc::<[u8]>::from(&b"audio"[..])).expect("audio event"),

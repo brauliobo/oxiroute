@@ -22,10 +22,7 @@ mod media_parser;
 mod media_segmenter;
 mod media_snapshot;
 mod media_storage;
-mod recording_path;
-mod recording_runtime;
-mod recording_store;
-mod recording_worker;
+mod recording;
 mod relay;
 mod runtime_handles;
 mod segment_window;
@@ -84,27 +81,27 @@ pub use media_segmenter::{
 };
 pub use media_storage::{MAX_MEDIA_PATH_BYTES, MediaStoreError, MediaStoreLimits, MediaStoreStats};
 pub(crate) use media_storage::{MediaStore, RtmpMediaStoreRegistry};
-pub use recording_path::{
+pub use recording::path::{
     MAX_RECORDING_FILENAME_BYTES, MAX_RECORDING_SUFFIX_TEMPLATE_BYTES, RecordingDateTime,
     RecordingPathError, RecordingPathPolicy, RecordingSegmentNaming, RecordingTimeBasis,
     RecordingTimezone,
 };
-pub use recording_runtime::{RtmpRecorderPolicy, RtmpRecorderShutdown, RtmpRecorderStart};
-pub(crate) use recording_store::{
+pub(crate) use recording::recording_store::{
     RecorderLease, RecordingCommit, RecordingFile, RecordingStore, RtmpRecorderStoreRegistry,
 };
-pub use recording_store::{
+pub use recording::recording_store::{
     RecordingQuotaScope, RecordingStoreError, RecordingStoreLimits, RecordingStoreLimitsError,
     RecordingStoreStats,
 };
 #[cfg(test)]
-pub(crate) use recording_worker::RecorderShutdown;
-pub use recording_worker::{
+pub(crate) use recording::recording_worker::RecorderShutdown;
+pub use recording::recording_worker::{
     RecorderEnqueueResult, RecorderFailure, RecorderMediaMask, RecorderNotification,
     RecorderVideoCodec, RecorderWorkerConfig, RecorderWorkerPhase, RecorderWorkerStartError,
     RecorderWorkerStatus,
 };
-pub(crate) use recording_worker::{RecorderWorker, RecorderWorkerSupervisor};
+pub(crate) use recording::recording_worker::{RecorderWorker, RecorderWorkerSupervisor};
+pub use recording::runtime::{RtmpRecorderPolicy, RtmpRecorderShutdown, RtmpRecorderStart};
 pub use relay::{
     RtmpDestination, RtmpDestinationResolver, RtmpDestinationResolverError, RtmpDnsRefreshFailure,
     RtmpDnsResolver, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRelayConfig,

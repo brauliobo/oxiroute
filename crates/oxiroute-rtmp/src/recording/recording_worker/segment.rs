@@ -11,7 +11,7 @@ pub(super) struct Segment {
 
 pub(super) struct PreparedSegment {
     file: CountedRecordingFile,
-    pub(super) finalizer: crate::recording_store::RecordingFinalizerAuthority,
+    pub(super) finalizer: crate::recording::recording_store::RecordingFinalizerAuthority,
     pub(super) partial_relative_name: String,
     pub(super) partial_exists: Arc<AtomicBool>,
 }

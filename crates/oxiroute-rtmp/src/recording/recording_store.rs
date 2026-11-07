@@ -19,7 +19,7 @@ use rustix::{
 use uuid::Uuid;
 
 use crate::{
-    MAX_RECORDING_FILENAME_BYTES, RtmpPrepareMode, recording_path::collision_recording_filename,
+    MAX_RECORDING_FILENAME_BYTES, RtmpPrepareMode, recording::path::collision_recording_filename,
 };
 
 mod commit;

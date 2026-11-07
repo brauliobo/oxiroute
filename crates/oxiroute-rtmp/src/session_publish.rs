@@ -12,7 +12,7 @@ use crate::{
     auto_push::AutoPushPublisher,
     exec_worker::{ExecProfileSet, ExecWorker},
     media_snapshot::MediaSnapshotAccumulator,
-    recording_runtime::RecorderController,
+    recording::runtime::RecorderController,
     relay::RtmpRelayController,
 };
 
