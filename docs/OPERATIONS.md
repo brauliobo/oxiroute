@@ -131,7 +131,7 @@ is healthy on Linux x86_64 and aarch64; other platforms keep status available wi
 
 Every recognized `/api/v1` or `/api/v2` route, including monitoring, topology, RTMP, listener/pool/server,
 generation, TLS, process, configuration, audit, and event routes, requires exactly one management Bearer
-token. The only public recognized API probes are exact `GET /ready` and `GET /metrics`. Event
+token. The only public recognized API probes are exact `GET /ready`, `GET /metrics` and `GET /status.json`. Event
 operations preserve their shipped v1 polling/SSE contract at `/api/v1/events` and
 `/api/v1/events/stream`. The corrected contract is at `/api/v2/events` and
 `/api/v2/events/stream`; both versions also negotiate SSE on their page path with
@@ -144,7 +144,47 @@ pool (including fail-open selections), server, queue, health, retry, certificate
 relay/recording, generation, and bounded audit persistence families in Prometheus text format.
 Unsupported process/host samples are omitted rather than exported as zeroes.
 `/stats` provides a compact
-read-only HAProxy-oriented pool/server view. `/metrics` and `/ready` are public on a configured
+read-only HAProxy-oriented pool/server view.
+
+`GET /status.json` is a public, secret-free summary for dashboards and the future `oxiroute check`:
+`state` (`ok`, `warning`, `critical`), the generation age and whether the last configuration file
+was refused, one entry per pool (`state`, `available`, `total`, `ejected`, `failOpen`, `queued`,
+`oldestQueueWaitMs`, `inflight`, `oldestInflightMs`), and the number of overdue and stuck requests.
+A pool with no available server is critical; a pool with a server missing, or whose oldest queued
+request has waited over five seconds, is a warning; an overdue request makes the whole status
+critical.
+
+### Request tracing and in-flight requests
+
+`oxiroute requests list` (`GET /api/v1/requests`) shows every request currently inside the router
+with its request id, route, pool, server, phase, age and attempts, so a request that is lost can be
+told from one that never arrived. The same id is in the access log (`requestId`) and in the
+`x-request-id` header of the response and of every backend attempt. A request that is quiet for 60
+seconds is logged once as stuck and counted in `oxiroute_http_stuck_requests_total{pool,phase}`.
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `oxiroute_http_inflight_requests` | `pool` | requests inside the router |
+| `oxiroute_http_inflight_oldest_age_seconds` | `pool` | age of the oldest one |
+| `oxiroute_http_inflight_overdue` | none | requests older than their deadline plus 5 s; should always be 0 |
+| `oxiroute_http_stuck_requests_total` | `pool`, `phase` | requests quiet for 60 s, counted once |
+| `oxiroute_pool_queue_depth` | `pool` | requests waiting for capacity on every wait path |
+| `oxiroute_pool_queue_oldest_wait_seconds` | `pool` | wait of the oldest queued request |
+| `oxiroute_pool_queue_wait_milliseconds` | `pool` | histogram of time spent waiting, 1 ms to 600 s |
+| `oxiroute_server_responses_total` | `pool`, `server`, `class` | backend responses by `1xx`..`5xx` or `none` |
+| `oxiroute_server_attempts_total` | `pool`, `server`, `outcome` | `ok`, `connect_failed`, `timeout`, `protocol_error`, `status_retry`, `rescued`, `client_closed` |
+| `oxiroute_server_request_duration_milliseconds` | `pool`, `server` | histogram, request sent to last byte |
+| `oxiroute_server_header_duration_milliseconds` | `pool`, `server` | histogram, request sent to first response byte |
+| `oxiroute_server_bytes_sent_total`, `oxiroute_server_bytes_received_total` | `pool`, `server` | bytes towards and from the backend |
+| `oxiroute_server_max_connections` | `pool`, `server` | effective connection limit |
+| `oxiroute_generation_info` | `generation`, `revision` | value 1 for the serving generation |
+
+The per-server histograms are exported only while at most 256 servers are configured; above that
+only the counters are. Labels are limited to configured names, never a path, client or request id.
+
+Alerts worth having: `oxiroute_http_inflight_overdue > 0`, `oxiroute_pool_available_servers == 0`,
+`histogram_quantile(0.95, rate(oxiroute_pool_queue_wait_milliseconds_bucket[5m]))` above the callers'
+patience, and `increase(oxiroute_http_stuck_requests_total[10m]) > 0`. `/metrics` and `/ready` are public on a configured
 statistics bind; `/stats` and `/api/v1/status` require a loopback peer and the statistics Bearer
 token.
 
