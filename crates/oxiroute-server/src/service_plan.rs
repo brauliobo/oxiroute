@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub use crate::planning_errors::ServicePlanError;
+pub use crate::service_plan::errors::ServicePlanError;
 use crate::{
     ForwardHttp1ServicePlan, ForwardHttp2ServicePlan, HealthSupervisor, L4ServicePlan,
     PassiveFailurePolicy, PoolError, PreparedTls, RelayPolicy, RoundRobinPool, RouteTable,
@@ -24,7 +24,7 @@ use crate::{
 };
 use crate::{
     generation::compiler::GenerationCompiler,
-    planning_types::{
+    service_plan::types::{
         CachePolicyBlueprint, CacheStoreBlueprint, HttpActionBlueprint, HttpRouteBlueprint,
         HttpServiceBlueprint, L4ServiceBlueprint, ListenerBlueprint, PoolBlueprint, RtmpSpec,
         ServiceReference,
@@ -54,8 +54,10 @@ impl From<ServicePlanError> for RuntimeAcquisitionError {
 mod compile_http;
 mod compile_services;
 mod disk_registry;
+pub(crate) mod errors;
 mod runtime_plan;
 mod spec;
+pub(crate) mod types;
 
 #[allow(clippy::wildcard_imports)]
 use compile_http::*;

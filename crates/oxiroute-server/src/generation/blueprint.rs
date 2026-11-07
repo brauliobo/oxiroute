@@ -1,1 +1,1 @@
-pub(crate) use crate::planning_types::CachePolicyBlueprint;
+pub(crate) use crate::service_plan::types::CachePolicyBlueprint;
