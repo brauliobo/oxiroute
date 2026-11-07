@@ -237,6 +237,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                             identity.generation.get(),
                             replaced.transpose()?,
                         );
+                        manager.set_registry_writer(true);
                         pending.activate().map_err(Into::into)
                     });
                 match activation {
@@ -258,6 +259,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                         }
                     }
                     Err(error) => {
+                        manager.set_registry_writer(false);
                         lifecycle = WorkerLifecycle::Failed;
                         control.acknowledge(&request, ControlOutcome::Rejected(REJECT_RUNTIME))?;
                         let _ = report_status(
@@ -312,6 +314,9 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             ControlPhase::Quiesce => {
                 lifecycle = WorkerLifecycle::Quiescing;
                 let outcome = quiesce_active(&manager, &mut quiesced);
+                if matches!(outcome, ControlOutcome::Accepted) {
+                    manager.set_registry_writer(false);
+                }
                 let outcome = if matches!(outcome, ControlOutcome::Accepted) {
                     hand_over(&mut control, &manager, &generation)
                 } else {
@@ -343,6 +348,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             }
             ControlPhase::Reactivate => {
                 let outcome = reactivate_active(&mut quiesced);
+                manager.set_registry_writer(matches!(outcome, ControlOutcome::Accepted));
                 control.acknowledge(&request, outcome)?;
                 lifecycle = if matches!(outcome, ControlOutcome::Accepted) {
                     WorkerLifecycle::Active

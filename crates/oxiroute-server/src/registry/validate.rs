@@ -4,7 +4,7 @@ use oxiroute_config::PoolRegistration;
 
 use super::{
     error::RegistryError,
-    record::{AnnouncedState, HeartbeatRequest, Registration, RegistrationRequest},
+    record::{HeartbeatRequest, Registration, RegistrationRequest},
 };
 use crate::AdministrativeState;
 
