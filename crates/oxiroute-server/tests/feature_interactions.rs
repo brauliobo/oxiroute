@@ -51,6 +51,7 @@ struct Proxy {
 }
 
 impl Proxy {
+    #[allow(clippy::too_many_lines)]
     /// A proxy that accepts `connections` client connections; the service deadline is one second.
     async fn start(
         upstream_pools: Vec<UpstreamPool>,
@@ -312,11 +313,11 @@ fn unprobed_pool(address: SocketAddr, resilience: PoolResilience) -> UpstreamPoo
     }
 }
 
-fn passive_limit_one() -> Option<PassiveHealthPolicy> {
-    Some(PassiveHealthPolicy {
+fn passive_limit_one() -> PassiveHealthPolicy {
+    PassiveHealthPolicy {
         error_limit: 1,
         ..PassiveHealthPolicy::default()
-    })
+    }
 }
 
 fn route(pool: &str) -> HttpRoute {
@@ -603,7 +604,7 @@ async fn the_rescue_pool_tries_each_of_its_servers_once_even_when_they_all_answe
 
 fn resilient_pool(name: &str, first: &Origin, second: &Origin) -> UpstreamPool {
     UpstreamPool {
-        passive_health: passive_limit_one(),
+        passive_health: Some(passive_limit_one()),
         resilience: PoolResilience {
             fail_open: true,
             min_members: Some(1),
@@ -676,7 +677,7 @@ async fn a_lone_server_answering_the_rescue_status_returns_it_unchanged_and_stay
         let only = Origin::start(404, "only").await;
         let proxy = Proxy::start(
             vec![UpstreamPool {
-                passive_health: passive_limit_one(),
+                passive_health: Some(passive_limit_one()),
                 resilience: PoolResilience {
                     fail_open: true,
                     min_members: Some(1),
@@ -738,7 +739,7 @@ async fn the_pool_503_keeps_its_body_retry_after_and_date_on_a_route_with_timeou
         assert_eq!(head.status, 503);
         assert_eq!(head.header("retry-after"), Some("7"));
         assert_eq!(head.header("content-length"), Some("24"));
-        assert!(head.body().is_empty());
+        assert_eq!(head.body(), b"");
         assert_valid_date(&head);
         proxy.finish().await;
     })
@@ -792,7 +793,7 @@ fn jittered(route: &mut HttpRoute, target: HttpRetryTarget, per_second: u32) {
 
 fn lone_fail_open_pool(address: SocketAddr) -> UpstreamPool {
     UpstreamPool {
-        passive_health: passive_limit_one(),
+        passive_health: Some(passive_limit_one()),
         resilience: PoolResilience {
             fail_open: true,
             ..PoolResilience::default()
