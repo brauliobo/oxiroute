@@ -293,6 +293,13 @@ impl SelectedEndpoint {
         self.lease.queue_wait()
     }
 
+    pub(crate) fn observe_queue_position(
+        &self,
+        cell: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) {
+        self.lease.observe_queue_position(cell);
+    }
+
     pub(crate) fn queue_position(&self) -> u64 {
         self.lease.queue_position()
     }

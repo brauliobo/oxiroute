@@ -31,7 +31,8 @@ pub(crate) use mutation::{
     ServerChecksRequest, ServerHealthRequest, ServerStateRequest,
 };
 pub(crate) use observability::{
-    CapabilitiesResponse, MonitoringResponse, ReadinessResponse, StatusResponse,
+    CapabilitiesResponse, MonitoringResponse, ReadinessResponse, RequestListResponse,
+    StatusResponse,
 };
 pub(crate) use rtmp::{
     RtmpCatalogResponse, RtmpClientStatsResponse, RtmpGlobalStatsResponse, RtmpLiveStatsResponse,

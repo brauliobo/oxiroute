@@ -5,6 +5,7 @@ pub(super) enum EndpointId {
     Pools,
     Servers,
     Generations,
+    Requests,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,6 +25,7 @@ pub(super) enum SuccessSchema {
     Pools,
     Servers,
     Generations,
+    Requests,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,7 +39,7 @@ pub(super) struct EndpointSpec {
     pub(super) success_schema: SuccessSchema,
 }
 
-const ENDPOINTS: [EndpointSpec; 5] = [
+const ENDPOINTS: [EndpointSpec; 6] = [
     EndpointSpec {
         id: EndpointId::Status,
         operation_id: "getStatus",
@@ -83,9 +85,18 @@ const ENDPOINTS: [EndpointSpec; 5] = [
         response: ResponseMode::Json,
         success_schema: SuccessSchema::Generations,
     },
+    EndpointSpec {
+        id: EndpointId::Requests,
+        operation_id: "getRequests",
+        path: "/api/v1/requests",
+        method: "GET",
+        auth: AuthPolicy::ManagementBearer,
+        response: ResponseMode::Json,
+        success_schema: SuccessSchema::Requests,
+    },
 ];
 
-pub(super) fn all() -> &'static [EndpointSpec; 5] {
+pub(super) fn all() -> &'static [EndpointSpec; 6] {
     &ENDPOINTS
 }
 
@@ -109,7 +120,7 @@ mod tests {
 
     #[test]
     fn registry_owns_the_protected_read_only_management_endpoints() {
-        assert_eq!(all().len(), 5);
+        assert_eq!(all().len(), 6);
         for (endpoint, expected) in all().iter().zip([
             (
                 EndpointId::Status,
@@ -141,6 +152,12 @@ mod tests {
                 "/api/v1/generations",
                 SuccessSchema::Generations,
             ),
+            (
+                EndpointId::Requests,
+                "getRequests",
+                "/api/v1/requests",
+                SuccessSchema::Requests,
+            ),
         ]) {
             assert_eq!(
                 (endpoint.id, endpoint.operation_id, endpoint.path),
@@ -164,8 +181,13 @@ mod tests {
             match_path_and_query("/api/v1/generations?limit=5"),
             Some(EndpointId::Generations)
         );
+        assert_eq!(
+            match_path_and_query("/api/v1/requests?pool=farm&limit=5"),
+            Some(EndpointId::Requests)
+        );
         for path in [
             "/api/v1/status/",
+            "/api/v1/requests/abc",
             "/api/v1/listeners/administrative-state",
             "/api/v1/topology",
             "/api/v1/events",

@@ -965,6 +965,102 @@
         ],
         "type": "string"
       },
+      "InflightView": {
+        "properties": {
+          "ageMs": {
+            "type": "string"
+          },
+          "attempts": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "clientIp": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "host": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "listener": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "overdue": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/Phase"
+          },
+          "pool": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "queuePosition": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "server": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "startedAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "waitedMs": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "requestId",
+          "listener",
+          "route",
+          "pool",
+          "server",
+          "method",
+          "host",
+          "path",
+          "clientIp",
+          "phase",
+          "startedAtUnixMs",
+          "ageMs",
+          "attempts",
+          "overdue"
+        ],
+        "type": "object"
+      },
       "LatencyBucketDto": {
         "properties": {
           "count": {
@@ -1138,6 +1234,17 @@
         ],
         "type": "string"
       },
+      "Phase": {
+        "enum": [
+          "routed",
+          "queued",
+          "connecting",
+          "awaiting_headers",
+          "streaming",
+          "retry_wait"
+        ],
+        "type": "string"
+      },
       "PoolDto": {
         "properties": {
           "algorithm": {
@@ -1299,6 +1406,28 @@
           "code",
           "stage",
           "message"
+        ],
+        "type": "object"
+      },
+      "RequestListResponse": {
+        "properties": {
+          "requests": {
+            "items": {
+              "$ref": "#/components/schemas/InflightView"
+            },
+            "type": "array"
+          },
+          "total": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "total",
+          "truncated",
+          "requests"
         ],
         "type": "object"
       },
@@ -1819,6 +1948,87 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PoolInventoryResponse"
+                }
+              }
+            },
+            "description": "Successful response",
+            "headers": {
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication is required.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "Bearer authentication challenge.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The HTTP method is not allowed.",
+            "headers": {
+              "Allow": {
+                "description": "Allowed HTTP methods.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Correlation-Id": {
+                "description": "Request correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "managementBearer": []
+          }
+        ],
+        "tags": [
+          "Management"
+        ]
+      }
+    },
+    "/api/v1/requests": {
+      "get": {
+        "operationId": "getRequests",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestListResponse"
                 }
               }
             },

@@ -13,6 +13,37 @@ use format::{
     render_latency_histogram, render_transport_latency_histogram, sample,
 };
 
+fn render_inflight(output: &mut String) -> Result<(), PrometheusError> {
+    let inflight = crate::inflight::registry().totals();
+    for (pool, live) in &inflight.pools {
+        let pool = [("pool", pool.as_str())];
+        labels(
+            output,
+            "oxiroute_http_inflight_requests",
+            &pool,
+            live.requests,
+        )?;
+        let oldest = live.oldest_age_ms as f64 / 1_000.0;
+        labels(
+            output,
+            "oxiroute_http_inflight_oldest_age_seconds",
+            &pool,
+            oldest,
+        )?;
+    }
+    sample(output, "oxiroute_http_inflight_overdue", inflight.overdue)?;
+    for ((pool, phase), count) in &inflight.stuck {
+        let series = [("pool", pool.as_str()), ("phase", *phase)];
+        labels(
+            output,
+            "oxiroute_http_stuck_requests_total",
+            &series,
+            *count,
+        )?;
+    }
+    Ok(())
+}
+
 /// Per-server latency histograms cost about 18 series each, so they stop above this many servers.
 const SERVER_HISTOGRAM_LIMIT: usize = 256;
 
@@ -529,6 +560,8 @@ fn render_prometheus_snapshot(
             )?;
         }
     }
+
+    render_inflight(&mut output)?;
 
     for certificate in &runtime.certbot_certificates {
         labels(

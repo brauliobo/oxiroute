@@ -1719,6 +1719,7 @@ struct EndpointLeaseInner {
 /// A lease that has to wait for capacity counts as queued from its first wait until it is acquired or dropped.
 #[derive(Debug, Default)]
 struct LeaseWait {
+    observer: Mutex<Option<Arc<AtomicU64>>>,
     ticket: Mutex<Option<WaitTicket>>,
     waited_ms: AtomicU64,
     position: AtomicU64,
@@ -1773,6 +1774,16 @@ impl EndpointLease {
         &self.inner.server.name
     }
 
+    /// Reports this lease's place in the pool queue to `cell` while it waits for capacity.
+    pub(crate) fn observe_queue_position(&self, cell: Arc<AtomicU64>) {
+        *self
+            .inner
+            .wait
+            .observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cell);
+    }
+
     /// Time this lease spent waiting for capacity so far.
     pub(crate) fn queue_wait(&self) -> Duration {
         Duration::from_millis(self.inner.wait.waited_ms.load(Ordering::Relaxed))
@@ -1816,6 +1827,17 @@ impl EndpointLeaseInner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    fn observe_position(&self, position: u64) {
+        let observer = self
+            .wait
+            .observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cell) = observer.as_ref() {
+            cell.store(position, Ordering::Relaxed);
+        }
+    }
+
     fn join_queue(&self) {
         let mut ticket = self.ticket();
         if ticket.is_some() {
@@ -1823,6 +1845,7 @@ impl EndpointLeaseInner {
         }
         let joined = self.queue.ledger.join();
         self.wait.position.store(joined.position, Ordering::Relaxed);
+        self.observe_position(joined.position);
         self.queue.queued.fetch_add(1, Ordering::Relaxed);
         self.queue.queued_total.fetch_add(1, Ordering::Relaxed);
         *ticket = Some(joined);
@@ -1833,6 +1856,7 @@ impl EndpointLeaseInner {
             return;
         };
         let waited = self.queue.ledger.leave(ticket);
+        self.observe_position(0);
         decrement_queue_count(&self.queue.queued);
         if cancelled {
             self.queue.cancellations.fetch_add(1, Ordering::Relaxed);
