@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::{
-    HealthFailure,
+    EndpointHealthState, HealthFailure,
     operational_event::{EventName, EventOutcome, EventPage, OperationalEvent},
 };
 
@@ -156,6 +156,7 @@ impl From<EventName> for V1EventNameDto {
             | EventName::CertificateAccountRollover
             | EventName::CertificateJobControl
             | EventName::GenerationRetire
+            | EventName::UpstreamEndpointHealth
             | EventName::Unknown => Self::Unknown,
         }
     }
@@ -190,6 +191,7 @@ pub(crate) enum V2EventNameDto {
     CertificateJobControl,
     UpstreamEndpointEjection,
     UpstreamEndpointRecovery,
+    UpstreamEndpointHealth,
     Unknown,
 }
 
@@ -222,6 +224,7 @@ impl From<EventName> for V2EventNameDto {
             EventName::CertificateJobControl => Self::CertificateJobControl,
             EventName::UpstreamEndpointEjection => Self::UpstreamEndpointEjection,
             EventName::UpstreamEndpointRecovery => Self::UpstreamEndpointRecovery,
+            EventName::UpstreamEndpointHealth => Self::UpstreamEndpointHealth,
             EventName::Unknown => Self::Unknown,
         }
     }
@@ -233,6 +236,7 @@ enum EventOutcomeDto {
     Simple(SimpleEventOutcomeDto),
     Ejected(EjectedOutcomeDto),
     Recovered(RecoveredOutcomeDto),
+    HealthChanged(HealthChangedOutcomeDto),
 }
 
 impl From<&EventOutcome> for EventOutcomeDto {
@@ -282,6 +286,22 @@ impl From<&EventOutcome> for EventOutcomeDto {
                 recovery_count: *recovery_count,
                 recovered_at_unix_ms: *recovered_at_unix_ms,
             }),
+            EventOutcome::HealthChanged {
+                pool,
+                server,
+                previous,
+                next,
+                reason,
+                changed_at_unix_ms,
+            } => Self::HealthChanged(HealthChangedOutcomeDto {
+                r#type: "health_changed",
+                pool: pool.clone(),
+                server: server.clone(),
+                previous: (*previous).into(),
+                next: (*next).into(),
+                reason: reason.map(Into::into),
+                changed_at_unix_ms: *changed_at_unix_ms,
+            }),
         }
     }
 }
@@ -325,6 +345,38 @@ struct RecoveredOutcomeDto {
     reason: Option<HealthFailureDto>,
     recovery_count: u64,
     recovered_at_unix_ms: u64,
+}
+
+#[derive(JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HealthChangedOutcomeDto {
+    r#type: &'static str,
+    pool: String,
+    server: String,
+    previous: HealthStateDto,
+    next: HealthStateDto,
+    reason: Option<HealthFailureDto>,
+    changed_at_unix_ms: u64,
+}
+
+#[derive(JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum HealthStateDto {
+    Unchecked,
+    Unknown,
+    Healthy,
+    Unhealthy,
+}
+
+impl From<EndpointHealthState> for HealthStateDto {
+    fn from(state: EndpointHealthState) -> Self {
+        match state {
+            EndpointHealthState::Unchecked => Self::Unchecked,
+            EndpointHealthState::Unknown => Self::Unknown,
+            EndpointHealthState::Healthy => Self::Healthy,
+            EndpointHealthState::Unhealthy => Self::Unhealthy,
+        }
+    }
 }
 
 #[derive(JsonSchema, Serialize)]

@@ -196,3 +196,52 @@ async fn probes_share_a_global_concurrency_bound() {
     probes.await.expect("bounded probes");
     assert_eq!(check.started.load(Ordering::SeqCst), 33);
 }
+
+#[test]
+fn active_check_transitions_are_reported_as_events() {
+    let endpoint = RuntimeEndpoint::from(std::net::SocketAddr::from(([127, 0, 0, 1], 3_001)));
+    let pool = RoundRobinPool::new_named(
+        "health-events".into(),
+        [endpoint],
+        oxiroute_config::UpstreamAlgorithm::First,
+        true,
+    )
+    .expect("health pool");
+    let before = crate::operational_event::current_cursor();
+
+    pool.record_health(0, false, Some(HealthFailure::Timeout), Some(1), 1, 1);
+    pool.record_health(0, false, Some(HealthFailure::Timeout), Some(2), 1, 1);
+    pool.record_health(0, true, None, Some(3), 1, 1);
+
+    let outcomes: Vec<_> = crate::operational_event::page(before, 100)
+        .events
+        .into_iter()
+        .filter(|event| event.event.as_str() == "upstream_endpoint_health")
+        .map(|event| serde_json::to_value(event.outcome).expect("outcome JSON"))
+        .filter(|outcome| outcome["pool"] == "health-events")
+        .collect();
+    assert_eq!(
+        outcomes.len(),
+        2,
+        "only state changes are events: {outcomes:?}"
+    );
+    let down = &outcomes[0];
+    assert_eq!(
+        (
+            down["type"].as_str(),
+            down["previous"].as_str(),
+            down["next"].as_str()
+        ),
+        (Some("health_changed"), Some("unknown"), Some("unhealthy"))
+    );
+    assert_eq!(down["reason"], "timeout");
+    let up = &outcomes[1];
+    assert_eq!(
+        (
+            up["previous"].as_str(),
+            up["next"].as_str(),
+            up["reason"].is_null()
+        ),
+        (Some("unhealthy"), Some("healthy"), true)
+    );
+}

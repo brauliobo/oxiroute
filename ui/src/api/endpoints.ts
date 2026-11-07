@@ -642,6 +642,7 @@ export type OperationalEventName =
   | OperationalEventSimpleName
   | 'upstream_endpoint_ejection'
   | 'upstream_endpoint_recovery'
+  | 'upstream_endpoint_health'
 
 export type OperationalEventSimpleOutcome = OperationalEventSimpleOutcomes[OperationalEventSimpleName]
 
@@ -665,10 +666,23 @@ export interface OperationalEndpointRecoveryOutcome {
   recoveredAtUnixMs: number
 }
 
+export type EndpointHealthStateName = 'unchecked' | 'unknown' | 'healthy' | 'unhealthy'
+
+export interface OperationalEndpointHealthOutcome {
+  type: 'health_changed'
+  pool: string
+  server: string
+  previous: EndpointHealthStateName
+  next: EndpointHealthStateName
+  reason: HealthFailure | null
+  changedAtUnixMs: number
+}
+
 export type OperationalEventOutcome =
   | OperationalEventSimpleOutcome
   | OperationalEndpointEjectionOutcome
   | OperationalEndpointRecoveryOutcome
+  | OperationalEndpointHealthOutcome
 
 interface OperationalEventBase {
   cursor: number
@@ -685,6 +699,10 @@ export type OperationalEvent =
   | OperationalEventBase & {
     event: 'upstream_endpoint_recovery'
     outcome: OperationalEndpointRecoveryOutcome
+  }
+  | OperationalEventBase & {
+    event: 'upstream_endpoint_health'
+    outcome: OperationalEndpointHealthOutcome
   }
   | {
     [Event in OperationalEventSimpleName]: OperationalEventBase & {
@@ -1120,6 +1138,7 @@ const OPERATIONAL_EVENT_NAMES: readonly OperationalEventName[] = [
   'certificate_job_control',
   'upstream_endpoint_ejection',
   'upstream_endpoint_recovery',
+  'upstream_endpoint_health',
   'unknown',
 ]
 const OPERATIONAL_EVENT_OUTCOMES: {
@@ -1253,6 +1272,11 @@ function parseOperationalEvent(
   }
   if (event === 'upstream_endpoint_recovery') {
     return typeof outcome !== 'string' && outcome.type === 'recovered'
+      ? { ...common, event, outcome }
+      : null
+  }
+  if (event === 'upstream_endpoint_health') {
+    return typeof outcome !== 'string' && outcome.type === 'health_changed'
       ? { ...common, event, outcome }
       : null
   }
@@ -1523,12 +1547,32 @@ function parseOperationalEventOutcome(
       recoveredAtUnixMs: value.recoveredAtUnixMs,
     }
   }
+  if (event === 'upstream_endpoint_health' && isRecord(value) &&
+    typeof value.pool === 'string' && typeof value.server === 'string' &&
+    value.type === 'health_changed' && isEndpointHealthState(value.previous) &&
+    isEndpointHealthState(value.next) && (value.reason === null || isHealthFailure(value.reason)) &&
+    safeInteger(value.changedAtUnixMs)
+  ) {
+    return {
+      type: 'health_changed',
+      pool: value.pool,
+      server: value.server,
+      previous: value.previous,
+      next: value.next,
+      reason: value.reason,
+      changedAtUnixMs: value.changedAtUnixMs,
+    }
+  }
   if (event === 'upstream_endpoint_ejection' || event === 'upstream_endpoint_recovery' ||
-    typeof value !== 'string'
+    event === 'upstream_endpoint_health' || typeof value !== 'string'
   ) return null
   return (OPERATIONAL_EVENT_OUTCOMES[event] as readonly string[]).includes(value)
     ? value as OperationalEventSimpleOutcome
     : null
+}
+
+function isEndpointHealthState(value: unknown): value is EndpointHealthStateName {
+  return typeof value === 'string' && ['unchecked', 'unknown', 'healthy', 'unhealthy'].includes(value)
 }
 
 function isHealthFailure(value: unknown): value is HealthFailure {

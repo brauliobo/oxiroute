@@ -648,6 +648,7 @@ impl ProxyHttp for HttpReverseProxy {
             response.append_header(name.clone(), value.clone())?;
         }
         apply_response_policy(response, proxy_policy(ctx), remove_hop_by_hop)?;
+        ctx.stamp_queue_headers(response)?;
         ctx.response_buffer = None;
         if ctx
             .cache_transaction
