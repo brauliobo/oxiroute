@@ -2843,6 +2843,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("directory");
         let path = directory.path().join("oxiroute.kdl");
         let config = ConfigDraft {
+            retirement: None,
             version: 1,
             max_connections: None,
             management: None,
@@ -3113,6 +3114,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("directory");
         let path = directory.path().join("oxiroute.kdl");
         let config = ConfigDraft {
+            retirement: None,
             version: 1,
             max_connections: None,
             management: None,
@@ -3423,6 +3425,7 @@ mod tests {
         recording_root: &Path,
     ) -> ConfigDraft {
         ConfigDraft {
+            retirement: None,
             version: 1,
             max_connections: None,
             management: None,
@@ -3594,6 +3597,7 @@ mod tests {
             .expect("ingress bind");
         let ingress_address = ingress.local_addr().expect("ingress address");
         let config = ConfigDraft {
+            retirement: None,
             version: 1,
             max_connections: None,
             management: None,
@@ -3634,6 +3638,7 @@ mod tests {
             forward_proxy_services: Vec::new(),
             rtmp_services: Vec::new(),
             l4_services: vec![L4Service {
+                drain_deadline_ms: None,
                 name: "database".into(),
                 upstream_pool: "database".into(),
                 connect_timeout_ms: 100,

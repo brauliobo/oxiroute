@@ -1787,6 +1787,7 @@ return {
         application.relay.connect_timeout_ms = 30_000;
         application.relay.handshake_timeout_ms = 30_000;
         let maximum = ConfigDraft {
+            retirement: None,
             rtmp_services: vec![service],
             ..draft
         }

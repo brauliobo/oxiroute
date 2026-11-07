@@ -201,6 +201,7 @@ fn udp_passive_failure_count(generation: &RuntimeGeneration) -> u64 {
 #[cfg(unix)]
 fn udp_config(listener: SocketAddr, upstream: SocketAddr) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -237,6 +238,7 @@ fn udp_config(listener: SocketAddr, upstream: SocketAddr) -> ConfigDraft {
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: vec![L4Service {
+            drain_deadline_ms: None,
             name: "relay".into(),
             upstream_pool: "upstream".into(),
             connect_timeout_ms: 1_000,

@@ -14,6 +14,7 @@ impl Renderer {
         let ConfigDraft {
             version,
             max_connections,
+            retirement,
             management,
             stats,
             certificates,
@@ -34,6 +35,7 @@ impl Renderer {
             Some(limit) => self.integer_field("max_connections", limit),
             None => self.null_field("max_connections"),
         }
+        self.optional_table_field("retirement", retirement.as_ref(), Self::retirement);
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;
         self.fallible_optional_table_field("stats", stats.as_ref(), Self::stats)?;
         self.fallible_table_list_field("certificates", certificates, Self::certificate)?;
@@ -52,6 +54,11 @@ impl Renderer {
         self.indent = 0;
         self.output.push_str("}\n");
         Ok(())
+    }
+
+    fn retirement(&mut self, retirement: &Retirement) {
+        self.optional_integer_field("drain_deadline_ms", retirement.drain_deadline_ms);
+        self.integer_field("max_retired_generations", retirement.max_retired_generations);
     }
 
     fn management(&mut self, management: &Management) -> Result<(), ConfigError> {

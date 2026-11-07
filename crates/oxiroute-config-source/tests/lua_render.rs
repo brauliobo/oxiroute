@@ -385,6 +385,7 @@ fn test_proxy_policy() -> HttpProxyPolicy {
 fn test_http_services() -> Vec<HttpService> {
     vec![
         HttpService {
+            drain_deadline_ms: None,
             name: "web".into(),
             routes: vec![
                 HttpRoute {
@@ -476,6 +477,7 @@ fn test_http_services() -> Vec<HttpService> {
             access_log: None,
         },
         HttpService {
+            drain_deadline_ms: None,
             name: "fallback".into(),
             routes: vec![HttpRoute {
                 host: Some(HttpHostSelector::NormalizedHost {
@@ -515,6 +517,7 @@ fn test_http_services() -> Vec<HttpService> {
 fn test_l4_services() -> Vec<L4Service> {
     vec![
         L4Service {
+            drain_deadline_ms: None,
             name: "database".into(),
             upstream_pool: "database-backends".into(),
             connect_timeout_ms: MAX_SAFE_INTEGER - 2,
@@ -530,6 +533,7 @@ fn test_l4_services() -> Vec<L4Service> {
             }),
         },
         L4Service {
+            drain_deadline_ms: None,
             name: "database-short-lived".into(),
             upstream_pool: "database-backends".into(),
             connect_timeout_ms: 1_000,
@@ -625,6 +629,7 @@ fn test_rtmp_services() -> Vec<RtmpService> {
 
 fn complete_config() -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: Some(MAX_SAFE_INTEGER),
         management: Some(Management {
@@ -646,6 +651,7 @@ fn complete_config() -> ConfigDraft {
 
 fn minimal_config() -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -1109,6 +1115,7 @@ fn emits_defaults_empty_vectors_and_options_explicitly_as_data_only_lua() {
         r"return {
   version = 1,
   max_connections = null,
+  retirement = nil,
   management = nil,
   stats = nil,
   certificates = {

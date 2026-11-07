@@ -520,6 +520,7 @@ fn management(address: SocketAddr) -> Management {
 
 fn management_config_only(address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(management(address)),
         ..empty_config()
     }
@@ -531,6 +532,7 @@ fn http_config(
     body: &str,
 ) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {
             name: "http".into(),
@@ -543,6 +545,7 @@ fn http_config(
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
         }],
         http_services: vec![HttpService {
+            drain_deadline_ms: None,
             name: "web".into(),
             routes: vec![HttpRoute {
                 host: None,
@@ -573,6 +576,7 @@ fn forward_h2_config(
     private_key_path: &Path,
 ) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(management(management_address)),
         certificates: vec![Certificate {
             name: "downstream".into(),
@@ -591,6 +595,7 @@ fn forward_h2_config(
             policy: oxiroute_config::TlsPolicy::default(),
         }],
         forward_proxy_services: vec![ForwardProxyService {
+            drain_deadline_ms: None,
             name: "forward".into(),
             enabled_versions: vec![ForwardHttpVersion::H2],
             allow_absolute_form: false,
@@ -637,6 +642,7 @@ fn tcp_config(
     upstream_address: SocketAddr,
 ) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {
             name: "tcp".into(),
@@ -664,6 +670,7 @@ fn tcp_config(
             resilience: oxiroute_config::PoolResilience::default(),
         }],
         l4_services: vec![L4Service {
+            drain_deadline_ms: None,
             name: "relay".into(),
             upstream_pool: "upstream".into(),
             connect_timeout_ms: 1_000,
@@ -678,6 +685,7 @@ fn tcp_config(
 
 fn rtmp_config(management_address: SocketAddr, listener_address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {
             name: "rtmp".into(),

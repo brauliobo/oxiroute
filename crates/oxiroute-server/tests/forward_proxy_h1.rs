@@ -91,6 +91,7 @@ async fn downstream_tls_h1_forwards_absolute_form_and_connect_on_a_real_listener
         policy: oxiroute_config::TlsPolicy::default(),
     });
     config.forward_proxy_services.push(ForwardProxyService {
+        drain_deadline_ms: None,
         name: "forward".into(),
         enabled_versions: vec![ForwardHttpVersion::H1],
         allow_absolute_form: true,
@@ -361,6 +362,7 @@ async fn basic_authenticated_absolute_form_and_connect_cross_the_runtime_listene
     let mut config = config_support::empty_config();
     config.max_connections = None;
     config.forward_proxy_services.push(ForwardProxyService {
+        drain_deadline_ms: None,
         name: "forward".into(),
         enabled_versions: vec![ForwardHttpVersion::H1],
         allow_absolute_form: true,
@@ -642,6 +644,7 @@ async fn static_peers_retry_in_order_and_receive_absolute_form() {
     let proxy_address = process_support::reserve_tcp_address();
     let mut config = config_support::empty_config();
     config.forward_proxy_services.push(ForwardProxyService {
+        drain_deadline_ms: None,
         name: "forward".into(),
         enabled_versions: vec![ForwardHttpVersion::H1],
         allow_absolute_form: true,
@@ -728,6 +731,7 @@ async fn failed_static_peer_can_fall_back_to_direct_http() {
     let proxy_address = process_support::reserve_tcp_address();
     let mut config = config_support::empty_config();
     config.forward_proxy_services.push(ForwardProxyService {
+        drain_deadline_ms: None,
         name: "forward".into(),
         enabled_versions: vec![ForwardHttpVersion::H1],
         allow_absolute_form: true,
@@ -1504,6 +1508,7 @@ async fn connect_udp_upgrade_relays_capsule_datagrams_on_a_real_listener() {
     let proxy_address = process_support::reserve_tcp_address();
     let mut config = config_support::empty_config();
     config.forward_proxy_services.push(ForwardProxyService {
+        drain_deadline_ms: None,
         name: "forward".into(),
         enabled_versions: vec![ForwardHttpVersion::H1],
         allow_absolute_form: true,

@@ -285,6 +285,7 @@ impl Lowerer {
                 downstream_timeouts,
             },
             service: HttpService {
+                drain_deadline_ms: None,
                 name: service_name,
                 routes,
                 automatic_response_headers: true,

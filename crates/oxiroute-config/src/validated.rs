@@ -1,6 +1,10 @@
 use serde::Serialize;
 
-use crate::{ConfigDraft, ConfigError, validation::validate_config_in_place};
+use crate::{
+    ConfigDraft, ConfigError,
+    defaults::{DEFAULT_DRAIN_DEADLINE_MS, MAX_DRAIN_DEADLINE_MS, default_max_retired_generations},
+    validation::validate_config_in_place,
+};
 
 /// An immutable configuration that completed canonical validation and normalization.
 ///
@@ -62,7 +66,69 @@ impl ConfigDraft {
     }
 }
 
+impl ConfigDraft {
+    /// Milliseconds a replaced generation may keep draining its in-flight work.
+    ///
+    /// An unset `retirement.drain_deadline_ms` follows the longest HTTP request deadline so no
+    /// request is cut before its own timeout; per service deadlines only raise the result.
+    #[must_use]
+    pub fn retirement_deadline_ms(&self) -> u64 {
+        let longest_request = self
+            .http_services
+            .iter()
+            .map(|service| service.upstream_io_timeout_ms)
+            .fold(DEFAULT_DRAIN_DEADLINE_MS, u64::max);
+        let general = self
+            .retirement
+            .as_ref()
+            .and_then(|retirement| retirement.drain_deadline_ms)
+            .unwrap_or(longest_request)
+            .min(MAX_DRAIN_DEADLINE_MS);
+        let services = self
+            .http_services
+            .iter()
+            .map(|service| service.drain_deadline_ms);
+        let forward = self
+            .forward_proxy_services
+            .iter()
+            .map(|service| service.drain_deadline_ms);
+        let l4 = self
+            .l4_services
+            .iter()
+            .map(|service| service.drain_deadline_ms);
+        services
+            .chain(forward)
+            .chain(l4)
+            .flatten()
+            .fold(general, u64::max)
+    }
+
+    /// Replaced generations that may drain at once.
+    #[must_use]
+    pub fn retired_generation_limit(&self) -> usize {
+        self.retirement
+            .as_ref()
+            .map_or_else(default_max_retired_generations, |retirement| {
+                retirement.max_retired_generations
+            })
+            .try_into()
+            .expect("validated retirement cap fits usize")
+    }
+}
+
 impl ValidatedConfig {
+    /// See [`ConfigDraft::retirement_deadline_ms`].
+    #[must_use]
+    pub fn retirement_deadline_ms(&self) -> u64 {
+        self.0.retirement_deadline_ms()
+    }
+
+    /// See [`ConfigDraft::retired_generation_limit`].
+    #[must_use]
+    pub fn retired_generation_limit(&self) -> usize {
+        self.0.retired_generation_limit()
+    }
+
     /// Borrows the normalized draft without granting mutation.
     #[must_use]
     pub const fn as_draft(&self) -> &ConfigDraft {

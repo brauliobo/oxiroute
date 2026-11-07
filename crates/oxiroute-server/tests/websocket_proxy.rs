@@ -200,6 +200,7 @@ async fn upgrade_preserves_request_body_before_101_and_tunnel_bytes_after_101() 
 
 fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         listeners: vec![Listener {
             name: "websocket".into(),
             bind: socket_bind(proxy_address),
@@ -226,6 +227,7 @@ fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> Co
             resilience: oxiroute_config::PoolResilience::default(),
         }],
         http_services: vec![HttpService {
+            drain_deadline_ms: None,
             name: "websocket".into(),
             routes: vec![HttpRoute {
                 host: None,

@@ -66,6 +66,7 @@ pub fn proxy_config(
     let directory = TempDir::new().expect("proxy config private-key directory");
     let private_key_path = copy_private_key_fixture(directory.path(), "proxy-a-key.pem");
     let config = ConfigDraft {
+        retirement: None,
         certificates: vec![Certificate {
             name: "downstream".into(),
             dns_names: vec![PROXY_SERVER_NAME.into()],
@@ -108,6 +109,7 @@ pub fn proxy_config(
             resilience: oxiroute_config::PoolResilience::default(),
         }],
         http_services: vec![HttpService {
+            drain_deadline_ms: None,
             name: "wire".into(),
             routes: vec![HttpRoute {
                 host: None,

@@ -433,6 +433,11 @@ pub enum ConfigError {
         "statistics must configure between one and eight total unique IPv4/IPv6 listener binds"
     )]
     InvalidStatsBinds,
+    #[error("retirement setting `{pointer}` is invalid: {detail}")]
+    InvalidRetirement {
+        pointer: String,
+        detail: &'static str,
+    },
     #[error("statistics page {page} has invalid `{field}`: {detail}")]
     InvalidStatsPage {
         page: usize,
@@ -449,6 +454,7 @@ impl ConfigError {
     pub fn pointer(&self) -> Option<String> {
         let pointer = match self {
             Self::UnsupportedVersion(_) => "/version".to_owned(),
+            Self::InvalidRetirement { pointer, .. } => pointer.clone(),
             Self::EmptyUpstreamEndpoints { pool }
             | Self::TooManyUpstreamEndpoints { pool }
             | Self::DuplicateUpstreamEndpoint { pool, .. }

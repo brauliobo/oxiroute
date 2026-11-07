@@ -333,6 +333,7 @@ impl Lowerer<'_> {
             },
         };
         self.draft.http_services.push(HttpService {
+            drain_deadline_ms: None,
             name: service_name.clone(),
             routes: vec![route],
             automatic_response_headers: false,
