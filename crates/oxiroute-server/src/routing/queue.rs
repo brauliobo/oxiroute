@@ -161,7 +161,7 @@ impl Drop for QueueWaitGuard {
     }
 }
 
-fn decrement_queue_count(counter: &AtomicU64) {
+pub(super) fn decrement_queue_count(counter: &AtomicU64) {
     let released = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
         queued.checked_sub(1)
     });

@@ -650,6 +650,62 @@ pub struct PassiveHealthPolicy {
     pub max_backoff_ms: u64,
     #[serde(default = "default_passive_recovery_threshold")]
     pub recovery_threshold: u16,
+    /// Keeps an ejected server out of rotation until an active probe succeeds, instead of
+    /// letting live requests test it when the ejection time ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readmission: Option<Readmission>,
+    /// Takes a server out of rotation when too large a share of its recent requests fail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circuit_breaker: Option<CircuitBreaker>,
+}
+
+/// Failure-ratio circuit breaker of one server, distinct from consecutive-failure ejection.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CircuitBreaker {
+    /// Sliding window of recent outcomes.
+    #[serde(default = "default_breaker_window_ms")]
+    pub window_ms: u64,
+    /// Requests the window needs before the ratio is judged.
+    #[serde(default = "default_breaker_min_requests")]
+    pub min_requests: u32,
+    #[serde(default = "default_breaker_failure_ratio_percent")]
+    pub failure_ratio_percent: u8,
+    /// How long the server stays out before trial requests are allowed.
+    #[serde(default = "default_breaker_open_ms")]
+    pub open_ms: u64,
+    /// Concurrent trial requests while half-open.
+    #[serde(default = "default_breaker_half_open_max")]
+    pub half_open_max: u16,
+    /// Consecutive trial successes that close the breaker.
+    #[serde(default = "default_breaker_half_open_successes")]
+    pub half_open_successes: u16,
+}
+
+/// Probe-based re-admission of a passively ejected server.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Readmission {
+    /// Consecutive successful probes that put the server back into rotation.
+    #[serde(default = "default_readmission_successes")]
+    pub successes: u16,
+    #[serde(default = "default_readmission_interval_ms")]
+    pub interval_ms: u64,
+    #[serde(default = "default_readmission_timeout_ms")]
+    pub timeout_ms: u64,
+    /// An HTTP probe; absent means a TCP connect.
+    #[serde(default)]
+    pub probe: Option<ReadmissionProbe>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReadmissionProbe {
+    pub path: String,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub expected_status: Option<u16>,
 }
 
 impl Default for PassiveHealthPolicy {
@@ -663,6 +719,8 @@ impl Default for PassiveHealthPolicy {
             initial_backoff_ms: default_passive_initial_backoff_ms(),
             max_backoff_ms: default_passive_max_backoff_ms(),
             recovery_threshold: default_passive_recovery_threshold(),
+            readmission: None,
+            circuit_breaker: None,
         }
     }
 }
@@ -776,6 +834,7 @@ pub enum UpstreamAlgorithm {
         weights: Vec<u16>,
     },
     LeastConnections,
+    PowerOfTwoChoices,
     First,
 }
 
@@ -787,6 +846,7 @@ impl Serialize for UpstreamAlgorithm {
         match self {
             Self::RoundRobin => serializer.serialize_str("round_robin"),
             Self::LeastConnections => serializer.serialize_str("least_connections"),
+            Self::PowerOfTwoChoices => serializer.serialize_str("power_of_two_choices"),
             Self::First => serializer.serialize_str("first"),
             Self::WeightedRoundRobin { weights } => {
                 use serde::ser::SerializeStruct as _;
@@ -812,6 +872,7 @@ impl<'de> Deserialize<'de> for UpstreamAlgorithm {
             UpstreamAlgorithmRepr::Name(name) => match name.as_str() {
                 "round_robin" => Ok(Self::RoundRobin),
                 "least_connections" => Ok(Self::LeastConnections),
+                "power_of_two_choices" => Ok(Self::PowerOfTwoChoices),
                 "first" => Ok(Self::First),
                 "weighted_round_robin" => Ok(Self::WeightedRoundRobin {
                     weights: Vec::new(),

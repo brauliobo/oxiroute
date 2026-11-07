@@ -79,6 +79,14 @@ pub(crate) struct ServerCapacityRequest {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ServerWeightRequest {
+    #[serde(flatten)]
+    pub(crate) change: ServerChange,
+    pub(crate) weight: Option<u16>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RevisionRequest {
     pub(crate) expected_active_revision: String,
 }
