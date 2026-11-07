@@ -176,3 +176,27 @@ fn the_retirement_block_survives_a_validate_round_trip() {
         json!({"drain_deadline_ms": 90_000, "max_retired_generations": 2})
     );
 }
+
+#[test]
+fn a_deployment_default_replaces_only_the_derived_deadline() {
+    let config = validate(json!({})).unwrap();
+    assert_eq!(
+        config.retirement_deadline_ms_with_default(Some(90_000)),
+        90_000
+    );
+
+    let explicit = validate(retirement(120_000, 4)).unwrap();
+    assert_eq!(
+        explicit.retirement_deadline_ms_with_default(Some(90_000)),
+        120_000
+    );
+
+    let raised = validate(json!({"http_services": [
+        service("render", json!({"drain_deadline_ms": 7_200_000})),
+    ]}))
+    .unwrap();
+    assert_eq!(
+        raised.retirement_deadline_ms_with_default(Some(90_000)),
+        7_200_000
+    );
+}

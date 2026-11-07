@@ -73,7 +73,14 @@ impl ConfigDraft {
     /// request is cut before its own timeout; per service deadlines only raise the result.
     #[must_use]
     pub fn retirement_deadline_ms(&self) -> u64 {
-        let longest_request = self
+        self.retirement_deadline_ms_with_default(None)
+    }
+
+    /// Like [`Self::retirement_deadline_ms`] with `fallback` standing in for the derived default,
+    /// for a deployment-wide setting that an explicit `retirement.drain_deadline_ms` overrides.
+    #[must_use]
+    pub fn retirement_deadline_ms_with_default(&self, fallback: Option<u64>) -> u64 {
+        let derived = self
             .http_services
             .iter()
             .map(|service| service.upstream_io_timeout_ms)
@@ -82,7 +89,8 @@ impl ConfigDraft {
             .retirement
             .as_ref()
             .and_then(|retirement| retirement.drain_deadline_ms)
-            .unwrap_or(longest_request)
+            .or(fallback)
+            .unwrap_or(derived)
             .min(MAX_DRAIN_DEADLINE_MS);
         let services = self
             .http_services
@@ -121,6 +129,12 @@ impl ValidatedConfig {
     #[must_use]
     pub fn retirement_deadline_ms(&self) -> u64 {
         self.0.retirement_deadline_ms()
+    }
+
+    /// See [`ConfigDraft::retirement_deadline_ms_with_default`].
+    #[must_use]
+    pub fn retirement_deadline_ms_with_default(&self, fallback: Option<u64>) -> u64 {
+        self.0.retirement_deadline_ms_with_default(fallback)
     }
 
     /// See [`ConfigDraft::retired_generation_limit`].

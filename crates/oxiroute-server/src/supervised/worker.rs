@@ -747,6 +747,7 @@ fn quiesce_active(
 fn start_drain(manager: &GenerationManager) -> bool {
     manager.active().is_some_and(|generation| {
         generation.stop_accepting();
+        generation.mark_retired();
         true
     })
 }

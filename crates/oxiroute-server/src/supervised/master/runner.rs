@@ -355,6 +355,15 @@ impl MasterRunner {
         book.begin(reservations, manifest, &changes, &revision);
         reports.candidate_file = Some(file.clone());
         reports.accept(master);
+        let window = retirement_window(
+            &catalog.active().payload().config,
+            std::env::var_os(RELOAD_DRAIN_ENV).as_deref(),
+        );
+        info!(
+            "supervised master lets the replaced worker drain for up to {} seconds",
+            window.as_secs()
+        );
+        master.set_retirement_deadline(window);
         if let Err(error) =
             master.replace_with_listeners(factory, candidate, listeners, Instant::now())
         {

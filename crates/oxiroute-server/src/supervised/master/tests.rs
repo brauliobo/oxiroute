@@ -506,6 +506,33 @@ fn reload_drain_window_defaults_above_the_longest_stream_and_is_bounded() {
 }
 
 #[test]
+fn the_retiring_generation_sets_its_own_drain_window() {
+    use std::ffi::OsStr;
+
+    let plain = validated(&ConfigDraft {
+        retirement: None,
+        ..config()
+    });
+    assert_eq!(retirement_window(&plain, None), Duration::from_hours(3));
+    assert_eq!(
+        retirement_window(&plain, Some(OsStr::new("90"))),
+        Duration::from_secs(90)
+    );
+
+    let mut explicit = config();
+    explicit.retirement = Some(oxiroute_config::Retirement {
+        drain_deadline_ms: Some(45_000),
+        max_retired_generations: 4,
+    });
+    let explicit = validated(&explicit);
+    assert_eq!(
+        retirement_window(&explicit, Some(OsStr::new("90"))),
+        Duration::from_secs(45),
+        "an explicit key wins over the environment"
+    );
+}
+
+#[test]
 fn master_config_reads_the_drain_window_from_the_environment() {
     let config = master_config_with_environment(|key: &str| {
         (key == RELOAD_DRAIN_ENV).then(|| OsString::from("120"))
