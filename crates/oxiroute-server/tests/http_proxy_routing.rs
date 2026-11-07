@@ -1780,6 +1780,154 @@ async fn proxy_path_replacement_rewrites_the_origin_path_and_preserves_the_query
     .expect("path rewrite test timed out");
 }
 
+async fn capturing_origin(
+    response_head: &'static str,
+) -> (SocketAddr, oneshot::Receiver<String>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("capturing origin bind");
+    let address = listener.local_addr().expect("capturing origin address");
+    let (seen_tx, seen_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("capturing origin accept");
+        let request = read_request_head_bytes(&mut stream)
+            .await
+            .expect("capturing origin request");
+        let _ = seen_tx.send(String::from_utf8(request).expect("request UTF-8"));
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n{response_head}Content-Length: 2\r\nConnection: close\r\n\r\nok"
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("capturing origin response");
+    });
+    (address, seen_rx, task)
+}
+
+fn request_id_of(request: &str) -> Vec<&str> {
+    request
+        .lines()
+        .filter(|line| line.to_ascii_lowercase().starts_with("x-request-id:"))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_valid_incoming_request_id_reaches_the_origin_and_the_client() {
+    timeout(TEST_TIMEOUT, async {
+        let (origin, seen, task) = capturing_origin("").await;
+        let proxy = ProxyHarness::start(
+            vec![pool("rid", &[origin])],
+            vec![route(None, "/", &[], "rid")],
+            1024,
+            1,
+        )
+        .await;
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: rid.test\r\nX-Request-Id: client-42\r\n")
+            .await;
+        assert_eq!(response.status, 200, "response: {}", response.text());
+        assert_eq!(response.header("x-request-id"), Some("client-42"));
+        let request = seen.await.expect("origin request");
+        assert_eq!(
+            request_id_of(&request),
+            ["x-request-id: client-42"],
+            "{request}"
+        );
+        proxy.finish().await;
+        task.await.expect("origin task");
+    })
+    .await
+    .expect("request id test timed out");
+}
+
+#[tokio::test]
+async fn a_missing_or_malformed_request_id_is_replaced_by_a_generated_one() {
+    timeout(TEST_TIMEOUT, async {
+        for incoming in ["", "X-Request-Id: bad id;value\r\n"] {
+            let (origin, seen, task) = capturing_origin("").await;
+            let proxy = ProxyHarness::start(
+                vec![pool("rid", &[origin])],
+                vec![route(None, "/", &[], "rid")],
+                1024,
+                1,
+            )
+            .await;
+            let response = proxy
+                .request(&format!("GET / HTTP/1.1\r\nHost: rid.test\r\n{incoming}"))
+                .await;
+            let echoed = response
+                .header("x-request-id")
+                .expect("echoed id")
+                .to_owned();
+            assert!(echoed.starts_with("rq-"), "echoed: {echoed}");
+            let request = seen.await.expect("origin request");
+            assert_eq!(request_id_of(&request), [format!("x-request-id: {echoed}")]);
+            proxy.finish().await;
+            task.await.expect("origin task");
+        }
+    })
+    .await
+    .expect("generated request id test timed out");
+}
+
+#[tokio::test]
+async fn an_id_the_origin_already_returns_is_kept_as_the_upstream_request_id() {
+    timeout(TEST_TIMEOUT, async {
+        let (origin, _seen, task) = capturing_origin("X-Request-Id: origin-side\r\n").await;
+        let proxy = ProxyHarness::start(
+            vec![pool("rid", &[origin])],
+            vec![route(None, "/", &[], "rid")],
+            1024,
+            1,
+        )
+        .await;
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: rid.test\r\nX-Request-Id: client-1\r\n")
+            .await;
+        assert_eq!(response.header("x-request-id"), Some("client-1"));
+        assert_eq!(
+            response.header("x-upstream-request-id"),
+            Some("origin-side")
+        );
+        proxy.finish().await;
+        task.await.expect("origin task");
+    })
+    .await
+    .expect("upstream request id test timed out");
+}
+
+#[tokio::test]
+async fn locally_generated_responses_carry_the_request_id() {
+    timeout(TEST_TIMEOUT, async {
+        let refused = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve port");
+        let dead = refused.local_addr().expect("dead address");
+        drop(refused);
+        let proxy = ProxyHarness::start(
+            vec![pool("dead", &[dead])],
+            vec![route(Some("rid.test"), "/", &[], "dead")],
+            1024,
+            2,
+        )
+        .await;
+        let unrouted = proxy
+            .request("GET / HTTP/1.1\r\nHost: other.test\r\nX-Request-Id: nr-1\r\n")
+            .await;
+        assert_eq!(unrouted.status, 404);
+        assert_eq!(unrouted.header("x-request-id"), Some("nr-1"));
+        let failed = proxy
+            .request("GET / HTTP/1.1\r\nHost: rid.test\r\nX-Request-Id: bad-gw\r\n")
+            .await;
+        assert_eq!(failed.status, 502, "response: {}", failed.text());
+        assert_eq!(failed.header("x-request-id"), Some("bad-gw"));
+        proxy.finish().await;
+    })
+    .await
+    .expect("local response request id test timed out");
+}
+
 #[tokio::test]
 async fn returns_404_without_contacting_an_origin_when_no_route_matches() {
     timeout(TEST_TIMEOUT, async {
@@ -6133,6 +6281,192 @@ async fn structured_access_log_omits_authorization_cookies_and_query_tokens() {
     })
     .await
     .expect("access log test timed out");
+}
+
+async fn access_log_events(path: &Path) -> Vec<serde_json::Value> {
+    for _ in 0..50 {
+        let contents = fs::read_to_string(path).unwrap_or_default();
+        if !contents.is_empty() {
+            return contents
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("access event"))
+                .collect();
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    panic!("access log stayed empty");
+}
+
+#[tokio::test]
+async fn access_log_names_request_pool_server_attempts_and_hashes_the_idempotency_key() {
+    timeout(TEST_TIMEOUT, async {
+        let directory = tempfile::tempdir().expect("access log directory");
+        let path = directory.path().join("access.jsonl");
+        let (origin, _seen, task) = capturing_origin("").await;
+        let proxy = ProxyHarness::start_with_features(
+            vec![pool("traced", &[origin])],
+            vec![route(None, "/", &[], "traced")],
+            Some(1024),
+            true,
+            100,
+            0,
+            false,
+            1,
+            None,
+            Some(AccessLogPolicy::File { path: path.clone() }),
+            DownstreamTimeoutPolicy::default(),
+        )
+        .await;
+        let response = proxy
+            .request(
+                "GET / HTTP/1.1\r\nHost: log.test\r\nX-Request-Id: trace-me\r\nIdempotency-Key: order-8841-secret\r\n",
+            )
+            .await;
+        assert_eq!(response.status, 200);
+        proxy.finish().await;
+        task.await.expect("origin task");
+
+        let events = access_log_events(&path).await;
+        let event = &events[0];
+        assert_eq!(event["requestId"], "trace-me");
+        assert_eq!(event["correlationId"], "trace-me");
+        assert_eq!(event["pool"], "traced");
+        assert_eq!(event["server"], "endpoint-1");
+        assert_eq!(event["servers"], "endpoint-1");
+        assert_eq!(event["attempts"], 1);
+        assert_eq!(event["reason"], "");
+        assert_eq!(event["rescued"], false);
+        assert!(event["queueWaitMs"].is_string() && event["headerMs"].is_string());
+        let tag = event["idemKey"].as_str().expect("idempotency tag");
+        assert_eq!(tag.len(), 8);
+        assert!(!fs::read_to_string(&path).expect("log").contains("order-8841"));
+    })
+    .await
+    .expect("traced access log test timed out");
+}
+
+#[tokio::test]
+async fn access_log_gives_the_reason_a_request_failed() {
+    timeout(TEST_TIMEOUT, async {
+        let directory = tempfile::tempdir().expect("access log directory");
+        let path = directory.path().join("access.jsonl");
+        let refused = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve port");
+        let dead = refused.local_addr().expect("dead address");
+        drop(refused);
+        let proxy = ProxyHarness::start_with_features(
+            vec![pool("dead", &[dead])],
+            vec![route(None, "/", &[], "dead")],
+            Some(1024),
+            true,
+            100,
+            0,
+            false,
+            1,
+            None,
+            Some(AccessLogPolicy::File { path: path.clone() }),
+            DownstreamTimeoutPolicy::default(),
+        )
+        .await;
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: log.test\r\nX-Request-Id: doomed\r\n")
+            .await;
+        assert_eq!(response.status, 502, "response: {}", response.text());
+        proxy.finish().await;
+
+        let events = access_log_events(&path).await;
+        let event = &events[0];
+        assert_eq!(event["requestId"], "doomed");
+        assert_eq!(event["status"], 502);
+        assert_eq!(event["reason"], "connect_failed");
+        assert_eq!(event["pool"], "dead");
+        assert_eq!(event["attempts"], 1);
+    })
+    .await
+    .expect("failed access log test timed out");
+}
+
+async fn wait_for_live_request(id: &str, present: bool) -> Option<String> {
+    for _ in 0..200 {
+        let found = oxiroute_server::live_requests()
+            .into_iter()
+            .find(|(live, _)| live == id)
+            .map(|(_, phase)| phase);
+        if found.is_some() == present {
+            return found;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("request {id} presence never became {present}");
+}
+
+#[tokio::test]
+async fn a_request_is_visible_while_it_waits_for_the_origin_and_gone_when_it_ends() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let origin = listener.local_addr().expect("origin address");
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("origin accept");
+            read_request_head_bytes(&mut stream).await.expect("origin request");
+            release_rx.await.expect("release");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .expect("origin response");
+        });
+        let proxy = ProxyHarness::start(
+            vec![pool("live", &[origin])],
+            vec![route(None, "/", &[], "live")],
+            1024,
+            1,
+        )
+        .await;
+        let address = proxy.address;
+        let client = tokio::spawn(async move {
+            raw_http_request(
+                address,
+                b"GET / HTTP/1.1\r\nHost: live.test\r\nX-Request-Id: live-1\r\nConnection: close\r\n\r\n",
+            )
+            .await
+        });
+        let phase = wait_for_live_request("live-1", true).await;
+        assert_eq!(phase.as_deref(), Some("awaiting_headers"));
+        release_tx.send(()).expect("release origin");
+        assert_eq!(client.await.expect("client").status, 200);
+        wait_for_live_request("live-1", false).await;
+        proxy.finish().await;
+        task.await.expect("origin task");
+    })
+    .await
+    .expect("live request test timed out");
+}
+
+#[tokio::test]
+async fn a_request_that_fails_leaves_the_registry_too() {
+    timeout(TEST_TIMEOUT, async {
+        let refused = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve port");
+        let dead = refused.local_addr().expect("dead address");
+        drop(refused);
+        let proxy = ProxyHarness::start(
+            vec![pool("dead", &[dead])],
+            vec![route(None, "/", &[], "dead")],
+            1024,
+            1,
+        )
+        .await;
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: live.test\r\nX-Request-Id: live-fail\r\n")
+            .await;
+        assert_eq!(response.status, 502);
+        wait_for_live_request("live-fail", false).await;
+        proxy.finish().await;
+    })
+    .await
+    .expect("failed live request test timed out");
 }
 
 #[tokio::test]

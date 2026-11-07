@@ -1,6 +1,6 @@
 use super::*;
 
-async fn wait_for_queued(pool: &EndpointPool, expected: u64) {
+pub(super) async fn wait_for_queued(pool: &EndpointPool, expected: u64) {
     tokio::time::timeout(Duration::from_secs(1), async {
         while pool.health_snapshot().queued != expected {
             tokio::task::yield_now().await;
@@ -61,7 +61,7 @@ async fn queue_disabled_selection_ignores_a_transient_fifo_registration() {
         None,
     )
     .expect("immediate pool");
-    let _concurrent_front = QueueWaitGuard::new(Arc::clone(&pool.queue));
+    let _concurrent_front = QueueWaitGuard::new(Arc::clone(&pool.queue), "fifo");
 
     let acquired = pool
         .select_wait()

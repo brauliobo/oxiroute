@@ -541,7 +541,7 @@ impl EndpointPool {
             return (attempt.lease, unavailable);
         };
         let deadline = Instant::now() + queue_timeout;
-        let mut waiting = QueueWaitGuard::new(Arc::clone(&self.queue));
+        let mut waiting = QueueWaitGuard::new(Arc::clone(&self.queue), &self.name);
         loop {
             let waiter = Arc::clone(&waiting.waiter);
             let notified = waiter.notify.notified();
@@ -633,6 +633,11 @@ impl EndpointPool {
                     .iter()
                     .any(|server| server.selectable_at(now_unix_ms))
             })
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     #[must_use]
@@ -962,6 +967,8 @@ impl EndpointPool {
             unavailable_selections: self.unavailable_selections.load(Ordering::Relaxed),
             fail_open_selections: self.fail_open_selections.load(Ordering::Relaxed),
             queued: self.queue.queued.load(Ordering::Relaxed),
+            oldest_queue_wait_ms: u64::try_from(self.queue.ledger.oldest().as_millis())
+                .unwrap_or(u64::MAX),
             queued_total: self.queue.queued_total.load(Ordering::Relaxed),
             queue_timeouts: self.queue.timeouts.load(Ordering::Relaxed),
             queue_cancellations: self.queue.cancellations.load(Ordering::Relaxed),
