@@ -184,7 +184,8 @@ fn compile_pool_blueprints(
                 .passive_health
                 .as_ref()
                 .map(PassiveFailurePolicy::from_config)
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .with_ejection_jitter_percent(pool.resilience.ejection_jitter_percent);
             let health = pool
                 .health_check
                 .as_ref()
@@ -227,6 +228,10 @@ fn compile_pool_blueprints(
                 endpoints,
                 health,
                 passive_health,
+                resilience: crate::routing::PoolResiliencePolicy::from_config(&pool.resilience),
+                unavailable: crate::upstream_peer::UnavailableResponse::from_config(
+                    &pool.resilience,
+                ),
                 upstream_tls,
                 min_http_version: pool.http_versions.min,
                 queue_timeout: pool.queue_timeout_ms.map(Duration::from_millis),
@@ -358,17 +363,26 @@ fn compile_http_route_blueprint(
             upstream_pool,
             policy,
         } => {
-            let pool = config
-                .upstream_pools
-                .iter()
-                .position(|pool| pool.name == *upstream_pool)
-                .ok_or_else(|| ServicePlanError::UnknownHttpPool {
-                    service: service.name.clone(),
-                    route: route_index,
-                    pool: upstream_pool.clone(),
-                })?;
+            let pool_index = |name: &String| {
+                config
+                    .upstream_pools
+                    .iter()
+                    .position(|pool| pool.name == *name)
+                    .ok_or_else(|| ServicePlanError::UnknownHttpPool {
+                        service: service.name.clone(),
+                        route: route_index,
+                        pool: name.clone(),
+                    })
+            };
+            let rescue_pool = policy
+                .rescue
+                .as_ref()
+                .and_then(|rescue| rescue.pool.as_ref())
+                .map(pool_index)
+                .transpose()?;
             HttpActionBlueprint::Proxy {
-                pool,
+                pool: pool_index(upstream_pool)?,
+                rescue_pool,
                 policy: ProxyPolicyPlan::compile(policy),
                 cache: compile_cache_policy_blueprint(config, service, route_index, route, policy)?,
             }

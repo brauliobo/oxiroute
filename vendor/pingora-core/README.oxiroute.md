@@ -57,6 +57,12 @@ HTTP/2 test lifecycle correction, and stage-1 connection-pool experiments:
   while custom L4 connections retain descriptor fallback. Transport and HTTP/2 checkout use that
   opt-in identity before the existing descriptor syscall without changing readiness, pool keys,
   release behavior, or retained connection objects.
+- `protocols/l4/stream.rs` constructs accepted TCP, Unix, and virtual streams with one-byte read and
+  write buffers instead of zero-capacity ones, which tokio 1.54 rejects. Both sizes stay below every
+  read and write, so the streams remain unbuffered until `set_buffer`.
+- `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
+  `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
+  stays at `0.10` because later releases change the parser and integer APIs used by compression.
 
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.

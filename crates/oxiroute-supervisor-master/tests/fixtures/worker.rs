@@ -382,7 +382,7 @@ fn decode_token(encoded: &str) -> Result<[u8; 16], Box<dyn std::error::Error>> {
         return Err("instance token must contain 32 hexadecimal digits".into());
     }
     let mut token = [0_u8; 16];
-    for (target, pair) in token.iter_mut().zip(encoded.as_bytes().chunks_exact(2)) {
+    for (target, pair) in token.iter_mut().zip(encoded.as_bytes().as_chunks::<2>().0) {
         *target = (nibble(pair[0])? << 4) | nibble(pair[1])?;
     }
     Ok(token)

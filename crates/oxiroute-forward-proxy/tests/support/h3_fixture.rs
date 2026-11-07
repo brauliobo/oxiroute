@@ -19,10 +19,10 @@ pub fn endpoints() -> H3Endpoints {
 }
 
 pub fn endpoints_with_alpn(server_alpn: Vec<Vec<u8>>, client_alpn: Vec<Vec<u8>>) -> H3Endpoints {
-    let CertifiedKey { cert, key_pair } =
+    let CertifiedKey { cert, signing_key } =
         generate_simple_self_signed(vec!["localhost".into()]).expect("test certificate");
     let certificate = cert.der().clone();
-    let key = PrivatePkcs8KeyDer::from(key_pair.serialize_der());
+    let key = PrivatePkcs8KeyDer::from(signing_key.serialize_der());
 
     let mut server_crypto = rustls::ServerConfig::builder()
         .with_no_client_auth()

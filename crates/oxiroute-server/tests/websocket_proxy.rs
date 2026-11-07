@@ -223,6 +223,7 @@ fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> Co
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+            resilience: oxiroute_config::PoolResilience::default(),
         }],
         http_services: vec![HttpService {
             name: "websocket".into(),

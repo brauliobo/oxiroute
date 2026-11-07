@@ -74,9 +74,9 @@ pub use monitoring::{
     LatencyBucketSnapshot, LatencySnapshot, ListenerMetrics, ListenerRuntimeState,
     ListenerSnapshot, MetricsError, OPERATION_LATENCY_BUCKETS_MS, ObservedTransport,
     ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot, ProxyProtocolCountSnapshot,
-    ProxyProtocolSnapshot, RuntimeMetrics, RuntimeMode, RuntimeSnapshot, TcpRelayCountSnapshot,
-    TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot, TransportOperationCountSnapshot,
-    TransportOperationSnapshot, TransportOutcome,
+    ProxyProtocolSnapshot, RescueSnapshot, RuntimeMetrics, RuntimeMode, RuntimeSnapshot,
+    TcpRelayCountSnapshot, TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot,
+    TransportOperationCountSnapshot, TransportOperationSnapshot, TransportOutcome,
 };
 pub use operational_event::{WorkerEventPage, WorkerEventSnapshot, worker_event_page};
 pub use operational_event::{emit_certificate, emit_rtmp_access};

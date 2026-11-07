@@ -1154,6 +1154,9 @@
             },
             "type": "array"
           },
+          "failOpenSelections": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
           "name": {
             "type": "string"
           },
@@ -1186,6 +1189,7 @@
           "availableEndpoints",
           "totalEndpoints",
           "unavailableSelections",
+          "failOpenSelections",
           "queued",
           "queuedTotal",
           "queueTimeouts",

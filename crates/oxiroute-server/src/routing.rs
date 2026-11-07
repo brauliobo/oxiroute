@@ -1,7 +1,9 @@
 use std::{
     collections::VecDeque,
     error::Error,
-    fmt, io,
+    fmt,
+    hash::{BuildHasher as _, RandomState},
+    io,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::{
@@ -18,7 +20,7 @@ use http::{
 use oxiroute_config::{
     HealthStartup, HttpHostSelector, HttpPathSelector,
     PassiveHealthPolicy as ConfigPassiveHealthPolicy, PassiveObserve, PassiveOnError,
-    UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
+    PoolResilience, UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::{
@@ -584,6 +586,8 @@ const DEFAULT_PASSIVE_EJECTION_DURATION: Duration = Duration::from_secs(30);
 const DEFAULT_PASSIVE_MAX_EJECTION_DURATION: Duration = Duration::from_mins(5);
 const MAX_PASSIVE_FAILURE_THRESHOLD: u16 = 100;
 const MAX_PASSIVE_EJECTION_DURATION: Duration = Duration::from_hours(24);
+const MAX_EJECTION_JITTER_PERCENT: u8 = 50;
+const RECOVERY_POLL: Duration = Duration::from_millis(250);
 
 /// Bounded policy for passively ejecting endpoints after attributed upstream failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -592,6 +596,8 @@ pub struct PassiveFailurePolicy {
     pub consecutive_failure_threshold: u16,
     pub initial_ejection_duration: Duration,
     pub max_ejection_duration: Duration,
+    /// Each ejection lasts its backoff duration plus or minus up to this many percent.
+    pub ejection_jitter_percent: u8,
     pub observe: PassiveObserve,
     pub on_error: PassiveOnError,
     pub mark_down: bool,
@@ -611,6 +617,7 @@ impl PassiveFailurePolicy {
             consecutive_failure_threshold,
             initial_ejection_duration,
             max_ejection_duration,
+            ejection_jitter_percent: 0,
             observe: PassiveObserve::Layer7,
             on_error: PassiveOnError::Count,
             mark_down: false,
@@ -629,12 +636,19 @@ impl PassiveFailurePolicy {
             },
             initial_ejection_duration: Duration::from_millis(policy.initial_backoff_ms),
             max_ejection_duration: Duration::from_millis(policy.max_backoff_ms),
+            ejection_jitter_percent: 0,
             observe: policy.observe,
             on_error: policy.on_error,
             mark_down: policy.mark_down,
             mark_up: policy.mark_up,
             recovery_threshold: policy.recovery_threshold,
         }
+    }
+
+    #[must_use]
+    pub const fn with_ejection_jitter_percent(mut self, percent: u8) -> Self {
+        self.ejection_jitter_percent = percent;
+        self
     }
 
     fn observes(self, failure: HealthFailure) -> bool {
@@ -679,6 +693,11 @@ impl PassiveFailurePolicy {
                 detail: "maximum ejection duration must not exceed 24 hours",
             });
         }
+        if self.ejection_jitter_percent > MAX_EJECTION_JITTER_PERCENT {
+            return Err(PoolError::InvalidPassivePolicy {
+                detail: "ejection jitter must not exceed 50 percent",
+            });
+        }
         if self.recovery_threshold == 0 || self.recovery_threshold > MAX_PASSIVE_FAILURE_THRESHOLD {
             return Err(PoolError::InvalidPassivePolicy {
                 detail: "recovery threshold must be between 1 and 100",
@@ -687,14 +706,21 @@ impl PassiveFailurePolicy {
         Ok(())
     }
 
-    fn ejection_duration_for(self, backoff_step: u64) -> Duration {
+    /// The backoff duration for `backoff_step`, spread by the jitter percentage using `entropy`
+    /// and never longer than the maximum.
+    fn ejection_duration_for(self, backoff_step: u64, entropy: u64) -> Duration {
         let exponent = backoff_step.saturating_sub(1).min(31);
         let multiplier = 1_u32 << exponent;
-        self.initial_ejection_duration
+        let backoff = self
+            .initial_ejection_duration
             .checked_mul(multiplier)
             .map_or(self.max_ejection_duration, |duration| {
                 duration.min(self.max_ejection_duration)
-            })
+            });
+        let backoff_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX);
+        let spread_ms = backoff_ms / 100 * u64::from(self.ejection_jitter_percent);
+        let jittered_ms = backoff_ms - spread_ms + entropy % (2 * spread_ms + 1);
+        Duration::from_millis(jittered_ms).min(self.max_ejection_duration)
     }
 }
 
@@ -705,11 +731,36 @@ impl Default for PassiveFailurePolicy {
             consecutive_failure_threshold: DEFAULT_PASSIVE_FAILURE_THRESHOLD,
             initial_ejection_duration: DEFAULT_PASSIVE_EJECTION_DURATION,
             max_ejection_duration: DEFAULT_PASSIVE_MAX_EJECTION_DURATION,
+            ejection_jitter_percent: 0,
             observe: PassiveObserve::Layer7,
             on_error: PassiveOnError::Count,
             mark_down: false,
             mark_up: false,
             recovery_threshold: 1,
+        }
+    }
+}
+
+/// Pool-level availability options compiled from the `resilience` configuration.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PoolResiliencePolicy {
+    fail_open: bool,
+    /// Passive ejection leaves at least this many other servers selectable.
+    min_members: usize,
+    /// How long a request waits for a server to become selectable before the pool is unavailable.
+    unavailable_wait: Option<Duration>,
+}
+
+impl PoolResiliencePolicy {
+    pub(crate) fn from_config(resilience: &PoolResilience) -> Self {
+        Self {
+            fail_open: resilience.fail_open,
+            min_members: resilience
+                .min_members
+                .map_or_else(|| usize::from(resilience.fail_open), usize::from),
+            unavailable_wait: resilience
+                .queue_while_unavailable_ms
+                .map(Duration::from_millis),
         }
     }
 }
@@ -838,6 +889,22 @@ pub(crate) struct RuntimeServer {
     pub(crate) protected_addresses: Arc<[SocketAddr]>,
 }
 
+/// Why a server may take work: it is selectable, or its pool is failing open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Admission {
+    Selectable,
+    FailOpen,
+}
+
+impl Admission {
+    fn admits(self, server: &PoolEndpoint, now_unix_ms: u64) -> bool {
+        match self {
+            Self::Selectable => server.selectable_at(now_unix_ms),
+            Self::FailOpen => server.fail_open_eligible(),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct PoolEndpoint {
     active_work: AtomicU64,
@@ -919,11 +986,44 @@ impl PoolEndpoint {
     fn selectable_at(&self, now_unix_ms: u64) -> bool {
         self.administrative_state() == AdministrativeState::Ready
             && !self.passively_ejected_at(now_unix_ms)
-            && match self.health_override() {
-                HealthOverride::Auto => self.state().selectable(),
-                HealthOverride::Up => true,
-                HealthOverride::Down => false,
-            }
+            && self.health_permits()
+    }
+
+    fn health_permits(&self) -> bool {
+        match self.health_override() {
+            HealthOverride::Auto => self.state().selectable(),
+            HealthOverride::Up => true,
+            HealthOverride::Down => false,
+        }
+    }
+
+    /// Administrative drain, maintenance and a forced-down override stay honoured while failing open.
+    fn fail_open_eligible(&self) -> bool {
+        self.administrative_state() == AdministrativeState::Ready
+            && self.health_override() != HealthOverride::Down
+    }
+
+    /// Orders fail-open candidates: healthy but ejected soonest first, then the unhealthy with the
+    /// fewest consecutive failed checks.
+    fn fail_open_rank(&self) -> (bool, u64, u64) {
+        let ejected_until = self.passive_ejection_until_unix_ms.load(Ordering::Acquire);
+        if self.health_permits() {
+            (false, ejected_until, 0)
+        } else {
+            (
+                true,
+                self.consecutive_failures.load(Ordering::Acquire),
+                ejected_until,
+            )
+        }
+    }
+
+    fn admission(&self, now_unix_ms: u64, failing_open: bool) -> Option<Admission> {
+        if self.selectable_at(now_unix_ms) {
+            Some(Admission::Selectable)
+        } else {
+            (failing_open && self.fail_open_eligible()).then_some(Admission::FailOpen)
+        }
     }
 
     fn passively_ejected_at(&self, now_unix_ms: u64) -> bool {
@@ -960,13 +1060,14 @@ impl PoolEndpoint {
         self: &Arc<Self>,
         queue: &Arc<PoolQueue>,
         health: &Arc<PoolHealthState>,
+        admission: Admission,
         now_unix_ms: u64,
     ) -> Option<EndpointLease> {
-        if !self.selectable_at(now_unix_ms) {
+        if !admission.admits(self, now_unix_ms) {
             return None;
         }
-        self.try_acquire_capacity(now_unix_ms)?;
-        if !self.selectable_at(now_unix_ms) {
+        self.try_acquire_capacity(admission, now_unix_ms)?;
+        if !admission.admits(self, now_unix_ms) {
             self.release_capacity(queue);
             return None;
         }
@@ -977,10 +1078,10 @@ impl PoolEndpoint {
         ))
     }
 
-    fn try_acquire_capacity(&self, now_unix_ms: u64) -> Option<()> {
+    fn try_acquire_capacity(&self, admission: Admission, now_unix_ms: u64) -> Option<()> {
         self.active_work
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                if !self.selectable_at(now_unix_ms)
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                if !admission.admits(self, now_unix_ms)
                     || self.max_connections().is_some_and(|limit| active >= limit)
                 {
                     None
@@ -993,11 +1094,11 @@ impl PoolEndpoint {
     }
 
     fn release_capacity(&self, queue: &PoolQueue) {
-        let released =
-            self.active_work
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                    active.checked_sub(1)
-                });
+        let released = self
+            .active_work
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                active.checked_sub(1)
+            });
         debug_assert!(released.is_ok(), "endpoint lease counter underflow");
         queue.notify_capacity_waiters();
     }
@@ -1142,6 +1243,7 @@ impl PoolEndpoint {
         failure: HealthFailure,
         at_unix_ms: u64,
         policy: PassiveFailurePolicy,
+        may_eject: bool,
     ) -> Option<PassiveEjection> {
         if !policy.observes(failure) {
             return None;
@@ -1152,13 +1254,14 @@ impl PoolEndpoint {
             .store(failure as u8, Ordering::Relaxed);
         if self.passively_ejected_at(at_unix_ms)
             || consecutive < u64::from(policy.consecutive_failure_threshold)
+            || !may_eject
         {
             return None;
         }
 
         let ejection_count = increment_saturating(&self.passive_ejection_count);
         let backoff_step = increment_saturating(&self.passive_backoff_step);
-        let duration = policy.ejection_duration_for(backoff_step);
+        let duration = policy.ejection_duration_for(backoff_step, ejection_entropy(at_unix_ms));
         let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
         let ejection_until_unix_ms = at_unix_ms.saturating_add(duration_ms);
         self.passive_ejected.store(true, Ordering::Release);
@@ -1290,11 +1393,15 @@ const fn nonzero(value: u64) -> Option<u64> {
 
 fn increment_saturating(counter: &AtomicU64) -> u64 {
     counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             Some(value.saturating_add(1))
         })
         .unwrap_or(u64::MAX)
         .saturating_add(1)
+}
+
+fn ejection_entropy(salt: u64) -> u64 {
+    RandomState::new().hash_one(salt)
 }
 
 fn now_unix_ms() -> u64 {
@@ -1355,6 +1462,8 @@ pub struct PoolHealthSnapshot {
     pub total_endpoints: usize,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub unavailable_selections: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub fail_open_selections: u64,
     pub queued: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub queued_total: u64,
@@ -1428,22 +1537,43 @@ impl PoolQueue {
 
 #[derive(Debug)]
 struct PoolHealthState {
+    endpoints: Arc<[Arc<PoolEndpoint>]>,
     health_version: AtomicU64,
     health_writer: Mutex<()>,
     passive_policy: PassiveFailurePolicy,
     pool_name: String,
     queue: Arc<PoolQueue>,
+    resilience: PoolResiliencePolicy,
 }
 
 impl PoolHealthState {
-    fn new(pool_name: String, queue: Arc<PoolQueue>, passive_policy: PassiveFailurePolicy) -> Self {
+    fn new(
+        pool_name: String,
+        endpoints: Arc<[Arc<PoolEndpoint>]>,
+        queue: Arc<PoolQueue>,
+        passive_policy: PassiveFailurePolicy,
+        resilience: PoolResiliencePolicy,
+    ) -> Self {
         Self {
+            endpoints,
             health_version: AtomicU64::new(0),
             health_writer: Mutex::new(()),
             passive_policy,
             pool_name,
             queue,
+            resilience,
         }
+    }
+
+    /// Whether ejecting `server` still leaves the configured floor of other selectable servers.
+    fn may_eject(&self, server: &PoolEndpoint, at_unix_ms: u64) -> bool {
+        self.endpoints
+            .iter()
+            .filter(|other| {
+                !std::ptr::eq(other.as_ref(), server) && other.selectable_at(at_unix_ms)
+            })
+            .count()
+            >= self.resilience.min_members
     }
 
     fn record_passive_failure(&self, server: &PoolEndpoint, failure: HealthFailure) {
@@ -1462,7 +1592,12 @@ impl PoolHealthState {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.health_version.fetch_add(1, Ordering::AcqRel);
-            let ejection = server.record_passive_failure(failure, at_unix_ms, self.passive_policy);
+            let ejection = server.record_passive_failure(
+                failure,
+                at_unix_ms,
+                self.passive_policy,
+                self.may_eject(server, at_unix_ms),
+            );
             self.health_version.fetch_add(1, Ordering::Release);
             ejection
         };
@@ -1527,13 +1662,15 @@ impl PoolHealthState {
 pub struct EndpointPool {
     algorithm: UpstreamAlgorithm,
     name: String,
-    endpoints: Box<[Arc<PoolEndpoint>]>,
+    endpoints: Arc<[Arc<PoolEndpoint>]>,
     weighted_schedule: Box<[usize]>,
     health: Arc<PoolHealthState>,
     selection: Mutex<SelectionState>,
     queue: Arc<PoolQueue>,
     queue_timeout: Option<std::time::Duration>,
+    resilience: PoolResiliencePolicy,
     unavailable_selections: AtomicU64,
+    fail_open_selections: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -1564,6 +1701,7 @@ impl EndpointObservation {
 #[derive(Debug)]
 struct EndpointLeaseInner {
     acquired: AtomicBool,
+    admission: Admission,
     deadline: Option<Instant>,
     health: Arc<PoolHealthState>,
     queue: Arc<PoolQueue>,
@@ -1579,6 +1717,7 @@ impl EndpointLease {
         Self {
             inner: Arc::new(EndpointLeaseInner {
                 acquired: AtomicBool::new(true),
+                admission: Admission::Selectable,
                 deadline: None,
                 health,
                 queue,
@@ -1592,10 +1731,12 @@ impl EndpointLease {
         queue: Arc<PoolQueue>,
         queue_timeout: Option<std::time::Duration>,
         health: Arc<PoolHealthState>,
+        admission: Admission,
     ) -> Self {
         Self {
             inner: Arc::new(EndpointLeaseInner {
                 acquired: AtomicBool::new(false),
+                admission,
                 deadline: queue_timeout.map(|timeout| Instant::now() + timeout),
                 health,
                 queue,
@@ -1654,7 +1795,11 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
         if self.acquired.load(Ordering::Acquire) {
             return Ok(true);
         }
-        if self.server.try_acquire_capacity(now_unix_ms()).is_none() {
+        if self
+            .server
+            .try_acquire_capacity(self.admission, now_unix_ms())
+            .is_none()
+        {
             return Ok(false);
         }
         self.acquired.store(true, Ordering::Release);
@@ -1713,7 +1858,7 @@ impl Drop for LifetimeWaitGuard<'_> {
     fn drop(&mut self) {
         let released = self
             .waiters
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |waiters| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |waiters| {
                 waiters.checked_sub(1)
             });
         debug_assert!(released.is_ok(), "lifetime waiter counter underflow");
@@ -1820,7 +1965,7 @@ impl Drop for QueueWaitGuard {
 }
 
 fn decrement_queue_count(counter: &AtomicU64) {
-    let released = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+    let released = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
         queued.checked_sub(1)
     });
     debug_assert!(released.is_ok(), "pool queue counter underflow");
@@ -1885,19 +2030,21 @@ impl EndpointPool {
         startup: Option<HealthStartup>,
         queue_timeout: Option<Duration>,
         passive_policy: PassiveFailurePolicy,
+        resilience: PoolResiliencePolicy,
         blueprint: &PoolConstructionBlueprint,
     ) -> Self {
         let endpoints = servers
             .into_iter()
             .zip(blueprint.weights.iter().copied())
             .map(|(server, weight)| Arc::new(PoolEndpoint::new(server, startup, weight)))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+            .collect::<Arc<[_]>>();
         let queue = Arc::new(PoolQueue::new(queue_timeout.is_some()));
         let health = Arc::new(PoolHealthState::new(
             name.clone(),
+            Arc::clone(&endpoints),
             Arc::clone(&queue),
             passive_policy,
+            resilience,
         ));
         Self {
             algorithm: blueprint.algorithm.clone(),
@@ -1908,7 +2055,9 @@ impl EndpointPool {
             selection: Mutex::new(SelectionState::default()),
             queue,
             queue_timeout,
+            resilience,
             unavailable_selections: AtomicU64::new(0),
+            fail_open_selections: AtomicU64::new(0),
         }
     }
 
@@ -2010,7 +2159,6 @@ impl EndpointPool {
         )
     }
 
-    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn new_named_servers_with_policy(
         name: String,
         servers: impl IntoIterator<Item = RuntimeServer>,
@@ -2018,6 +2166,27 @@ impl EndpointPool {
         startup: Option<HealthStartup>,
         queue_timeout: Option<std::time::Duration>,
         passive_policy: PassiveFailurePolicy,
+    ) -> Result<Self, PoolError> {
+        Self::new_named_servers_resilient(
+            name,
+            servers,
+            algorithm,
+            startup,
+            queue_timeout,
+            passive_policy,
+            PoolResiliencePolicy::default(),
+        )
+    }
+
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+    pub(crate) fn new_named_servers_resilient(
+        name: String,
+        servers: impl IntoIterator<Item = RuntimeServer>,
+        algorithm: UpstreamAlgorithm,
+        startup: Option<HealthStartup>,
+        queue_timeout: Option<std::time::Duration>,
+        passive_policy: PassiveFailurePolicy,
+        resilience: PoolResiliencePolicy,
     ) -> Result<Self, PoolError> {
         passive_policy.validate()?;
         let servers = servers.into_iter().collect::<Vec<_>>();
@@ -2031,8 +2200,78 @@ impl EndpointPool {
             startup,
             queue_timeout,
             passive_policy,
+            resilience,
             &blueprint,
         ))
+    }
+
+    /// Rotation-ordered `(cursor, index, active)` candidates and whether any server is selectable.
+    fn candidates(
+        &self,
+        start: usize,
+        excluded: &[String],
+        now_unix_ms: u64,
+    ) -> (Vec<(usize, usize, u64)>, bool) {
+        self.read_health(|endpoints| {
+            let pool_available = endpoints
+                .iter()
+                .any(|server| server.selectable_at(now_unix_ms));
+            let eligible =
+                |cursor: usize, index: usize| {
+                    let server = &endpoints[index];
+                    (server.selectable_at(now_unix_ms) && !excluded.contains(&server.name))
+                        .then_some((cursor, index, server.active_work.load(Ordering::Acquire)))
+                };
+            let candidates = if self.weighted_schedule.is_empty() {
+                (0..endpoints.len())
+                    .filter_map(|offset| {
+                        let index = (start + offset) % endpoints.len();
+                        eligible(index, index)
+                    })
+                    .collect()
+            } else {
+                (0..self.weighted_schedule.len())
+                    .filter_map(|offset| {
+                        let cursor = (start + offset) % self.weighted_schedule.len();
+                        eligible(cursor, self.weighted_schedule[cursor])
+                    })
+                    .collect()
+            };
+            (candidates, pool_available)
+        })
+    }
+
+    /// Servers a pool with nothing selectable may still serve, least bad first.
+    fn fail_open_ranking(&self, excluded: &[String]) -> Vec<Arc<PoolEndpoint>> {
+        let mut ranked = self.read_health(|endpoints| {
+            endpoints
+                .iter()
+                .filter(|server| server.fail_open_eligible() && !excluded.contains(&server.name))
+                .map(|server| (server.fail_open_rank(), Arc::clone(server)))
+                .collect::<Vec<_>>()
+        });
+        ranked.sort_by_key(|(rank, _)| *rank);
+        ranked.into_iter().map(|(_, server)| server).collect()
+    }
+
+    fn select_fail_open(&self, excluded: &[String]) -> SelectionAttempt {
+        let ranking = self.fail_open_ranking(excluded);
+        let lease = ranking.iter().find_map(|server| {
+            server.try_acquire(
+                &self.queue,
+                &self.health,
+                Admission::FailOpen,
+                now_unix_ms(),
+            )
+        });
+        if lease.is_some() {
+            self.fail_open_selections.fetch_add(1, Ordering::Relaxed);
+        }
+        SelectionAttempt {
+            lease,
+            pool_available: !ranking.is_empty(),
+            saturated: ranking.iter().all(|server| !server.has_capacity()),
+        }
     }
 
     fn select_server_excluding(&self, excluded: &[String]) -> SelectionAttempt {
@@ -2040,34 +2279,11 @@ impl EndpointPool {
             .selection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let start = selection.next;
         let now_unix_ms = now_unix_ms();
-        let (candidates, pool_available) = self.read_health(|endpoints| {
-            let pool_available = endpoints
-                .iter()
-                .any(|server| server.selectable_at(now_unix_ms));
-            let candidates = if self.weighted_schedule.is_empty() {
-                (0..endpoints.len())
-                    .filter_map(|offset| {
-                        let index = (start + offset) % endpoints.len();
-                        let server = &endpoints[index];
-                        (server.selectable_at(now_unix_ms) && !excluded.contains(&server.name))
-                            .then_some((index, index, server.active_work.load(Ordering::Acquire)))
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                (0..self.weighted_schedule.len())
-                    .filter_map(|offset| {
-                        let cursor = (start + offset) % self.weighted_schedule.len();
-                        let index = self.weighted_schedule[cursor];
-                        let server = &endpoints[index];
-                        (server.selectable_at(now_unix_ms) && !excluded.contains(&server.name))
-                            .then_some((cursor, index, server.active_work.load(Ordering::Acquire)))
-                    })
-                    .collect::<Vec<_>>()
-            };
-            (candidates, pool_available)
-        });
+        let (candidates, pool_available) = self.candidates(selection.next, excluded, now_unix_ms);
+        if !pool_available && self.resilience.fail_open {
+            return self.select_fail_open(excluded);
+        }
         let saturated = candidates
             .iter()
             .any(|(_, index, _)| !self.endpoints[*index].has_capacity());
@@ -2085,7 +2301,12 @@ impl EndpointPool {
         }
         let selected = ordered.into_iter().find_map(|(cursor, index, _)| {
             self.endpoints[index]
-                .try_acquire(&self.queue, &self.health, now_unix_ms)
+                .try_acquire(
+                    &self.queue,
+                    &self.health,
+                    Admission::Selectable,
+                    now_unix_ms,
+                )
                 .map(|lease| (lease, cursor, index))
         });
         let lease = selected.map(|(lease, cursor, index)| {
@@ -2105,38 +2326,46 @@ impl EndpointPool {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn select_connection_target_excluding(
         &self,
         excluded: &[String],
     ) -> Option<EndpointLease> {
+        let (lease, _) = self.connection_target(excluded);
+        if lease.is_none() {
+            self.note_unavailable_selection();
+        }
+        lease
+    }
+
+    /// Like [`Self::select_connection_target_excluding`], but waits up to the pool's
+    /// `queue_while_unavailable_ms` for a server to become selectable.
+    pub(crate) async fn select_connection_target_waiting(
+        &self,
+        excluded: &[String],
+    ) -> Option<EndpointLease> {
+        let recovery_deadline = self.recovery_deadline();
+        loop {
+            let (lease, pool_available) = self.connection_target(excluded);
+            if lease.is_some() || pool_available || !self.await_recovery(recovery_deadline).await {
+                if lease.is_none() {
+                    self.note_unavailable_selection();
+                }
+                return lease;
+            }
+        }
+    }
+
+    /// A connection target, and whether any server was selectable.
+    fn connection_target(&self, excluded: &[String]) -> (Option<EndpointLease>, bool) {
         let mut selection = self
             .selection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let start = selection.next;
-        let now_unix_ms = now_unix_ms();
-        let candidates = self.read_health(|endpoints| {
-            if self.weighted_schedule.is_empty() {
-                (0..endpoints.len())
-                    .filter_map(|offset| {
-                        let index = (start + offset) % endpoints.len();
-                        let server = &endpoints[index];
-                        (server.selectable_at(now_unix_ms) && !excluded.contains(&server.name))
-                            .then_some((index, index, server.active_work.load(Ordering::Acquire)))
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                (0..self.weighted_schedule.len())
-                    .filter_map(|offset| {
-                        let cursor = (start + offset) % self.weighted_schedule.len();
-                        let index = self.weighted_schedule[cursor];
-                        let server = &endpoints[index];
-                        (server.selectable_at(now_unix_ms) && !excluded.contains(&server.name))
-                            .then_some((cursor, index, server.active_work.load(Ordering::Acquire)))
-                    })
-                    .collect::<Vec<_>>()
-            }
-        });
+        let (candidates, pool_available) = self.candidates(selection.next, excluded, now_unix_ms());
+        if !pool_available && self.resilience.fail_open {
+            return (self.fail_open_connection_target(excluded), false);
+        }
         let available = candidates
             .iter()
             .copied()
@@ -2163,8 +2392,7 @@ impl EndpointPool {
                 .map(|(cursor, index, _)| (*cursor, *index)),
         };
         let Some((cursor, index)) = selected else {
-            self.note_unavailable_selection();
-            return None;
+            return (None, pool_available);
         };
         if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
             selection.next = if self.weighted_schedule.is_empty() {
@@ -2173,12 +2401,34 @@ impl EndpointPool {
                 (cursor + 1) % self.weighted_schedule.len()
             };
         }
-        Some(EndpointLease::pending(
-            Arc::clone(&self.endpoints[index]),
+        (
+            Some(self.pending_lease(index, Admission::Selectable)),
+            pool_available,
+        )
+    }
+
+    fn fail_open_connection_target(&self, excluded: &[String]) -> Option<EndpointLease> {
+        let ranking = self.fail_open_ranking(excluded);
+        let server = ranking
+            .iter()
+            .find(|server| server.has_capacity())
+            .or_else(|| ranking.first())?;
+        self.fail_open_selections.fetch_add(1, Ordering::Relaxed);
+        Some(self.pending_lease_for(server, Admission::FailOpen))
+    }
+
+    fn pending_lease(&self, index: usize, admission: Admission) -> EndpointLease {
+        self.pending_lease_for(&self.endpoints[index], admission)
+    }
+
+    fn pending_lease_for(&self, server: &Arc<PoolEndpoint>, admission: Admission) -> EndpointLease {
+        EndpointLease::pending(
+            Arc::clone(server),
             Arc::clone(&self.queue),
             self.queue_timeout,
             Arc::clone(&self.health),
-        ))
+            admission,
+        )
     }
 
     #[must_use]
@@ -2219,12 +2469,27 @@ impl EndpointPool {
         &self,
         mut select: impl FnMut() -> SelectionAttempt,
     ) -> Option<EndpointLease> {
+        let recovery_deadline = self.recovery_deadline();
+        loop {
+            let (lease, unavailable) = self.select_wait_once(&mut select).await;
+            if !unavailable || !self.await_recovery(recovery_deadline).await {
+                if unavailable {
+                    self.note_unavailable_selection();
+                }
+                return lease;
+            }
+        }
+    }
+
+    /// One queued selection; the flag reports that no server was selectable.
+    async fn select_wait_once(
+        &self,
+        select: &mut impl FnMut() -> SelectionAttempt,
+    ) -> (Option<EndpointLease>, bool) {
         let Some(queue_timeout) = self.queue_timeout else {
             let attempt = select();
-            if attempt.lease.is_none() && !attempt.pool_available {
-                self.note_unavailable_selection();
-            }
-            return attempt.lease;
+            let unavailable = attempt.lease.is_none() && !attempt.pool_available;
+            return (attempt.lease, unavailable);
         };
         let deadline = Instant::now() + queue_timeout;
         let mut waiting = QueueWaitGuard::new(Arc::clone(&self.queue));
@@ -2237,22 +2502,45 @@ impl EndpointPool {
                 let attempt = select();
                 if let Some(lease) = attempt.lease {
                     waiting.complete();
-                    return Some(lease);
+                    return (Some(lease), false);
                 }
                 if !attempt.pool_available || !attempt.saturated {
                     waiting.complete();
-                    if !attempt.pool_available {
-                        self.note_unavailable_selection();
-                    }
-                    return None;
+                    return (None, !attempt.pool_available);
                 }
             }
             waiting.mark_waiting();
             if timeout_at(deadline, notified).await.is_err() {
                 waiting.timeout();
-                return None;
+                return (None, false);
             }
         }
+    }
+
+    fn recovery_deadline(&self) -> Option<Instant> {
+        self.resilience
+            .unavailable_wait
+            .map(|wait| Instant::now() + wait)
+    }
+
+    /// Waits for a health change or the next poll, since ejections also end with time. Returns
+    /// false when the deadline has passed or no server could ever become selectable by itself.
+    async fn await_recovery(&self, deadline: Option<Instant>) -> bool {
+        let Some(deadline) = deadline else {
+            return false;
+        };
+        let now = Instant::now();
+        let recoverable = self
+            .read_health(|endpoints| endpoints.iter().any(|server| server.fail_open_eligible()));
+        if now >= deadline || !recoverable {
+            return false;
+        }
+        let _ = timeout_at(
+            (now + RECOVERY_POLL).min(deadline),
+            self.queue.notify.notified(),
+        )
+        .await;
+        true
     }
 
     fn select_named_server(&self, name: &str) -> SelectionAttempt {
@@ -2264,25 +2552,38 @@ impl EndpointPool {
             };
         };
         let now_unix_ms = now_unix_ms();
-        let pool_available = server.selectable_at(now_unix_ms);
-        let saturated = pool_available && !server.has_capacity();
+        let admission = server.admission(now_unix_ms, self.failing_open(now_unix_ms));
+        let lease = admission.and_then(|admission| {
+            server.try_acquire(&self.queue, &self.health, admission, now_unix_ms)
+        });
+        if lease.is_some() && admission == Some(Admission::FailOpen) {
+            self.fail_open_selections.fetch_add(1, Ordering::Relaxed);
+        }
         SelectionAttempt {
-            lease: server.try_acquire(&self.queue, &self.health, now_unix_ms),
-            pool_available,
-            saturated,
+            lease,
+            pool_available: admission.is_some(),
+            saturated: admission.is_some() && !server.has_capacity(),
         }
     }
 
     pub(crate) fn select_server_connection_target(&self, name: &str) -> Option<EndpointLease> {
         let server = self.endpoints.iter().find(|server| server.name == name)?;
-        server.selectable_at(now_unix_ms()).then(|| {
-            EndpointLease::pending(
-                Arc::clone(server),
-                Arc::clone(&self.queue),
-                self.queue_timeout,
-                Arc::clone(&self.health),
-            )
-        })
+        let now_unix_ms = now_unix_ms();
+        let admission = server.admission(now_unix_ms, self.failing_open(now_unix_ms))?;
+        if admission == Admission::FailOpen {
+            self.fail_open_selections.fetch_add(1, Ordering::Relaxed);
+        }
+        Some(self.pending_lease_for(server, admission))
+    }
+
+    /// Whether the pool serves its least-bad servers because none is selectable.
+    fn failing_open(&self, now_unix_ms: u64) -> bool {
+        self.resilience.fail_open
+            && self.read_health(|endpoints| {
+                !endpoints
+                    .iter()
+                    .any(|server| server.selectable_at(now_unix_ms))
+            })
     }
 
     #[must_use]
@@ -2292,20 +2593,20 @@ impl EndpointPool {
 
     #[must_use]
     pub fn has_unattempted(&self, attempted: &[RuntimeEndpoint]) -> bool {
-        let now_unix_ms = now_unix_ms();
-        self.read_health(|endpoints| {
-            endpoints.iter().any(|server| {
-                server.selectable_at(now_unix_ms) && !attempted.contains(&server.endpoint)
-            })
-        })
+        self.has_unattempted_by(|server| attempted.contains(&server.endpoint))
     }
 
     #[must_use]
     pub(crate) fn has_unattempted_servers(&self, attempted: &[String]) -> bool {
+        self.has_unattempted_by(|server| attempted.contains(&server.name))
+    }
+
+    fn has_unattempted_by(&self, attempted: impl Fn(&PoolEndpoint) -> bool) -> bool {
         let now_unix_ms = now_unix_ms();
+        let failing_open = self.failing_open(now_unix_ms);
         self.read_health(|endpoints| {
             endpoints.iter().any(|server| {
-                server.selectable_at(now_unix_ms) && !attempted.contains(&server.name)
+                !attempted(server) && server.admission(now_unix_ms, failing_open).is_some()
             })
         })
     }
@@ -2343,7 +2644,7 @@ impl EndpointPool {
     }
 
     pub fn set_administrative_state(&self, state: AdministrativeState) {
-        for server in &self.endpoints {
+        for server in &*self.endpoints {
             server
                 .administrative_state
                 .store(state as u8, Ordering::Release);
@@ -2582,6 +2883,7 @@ impl EndpointPool {
                 .count(),
             total_endpoints: endpoints.len(),
             unavailable_selections: self.unavailable_selections.load(Ordering::Relaxed),
+            fail_open_selections: self.fail_open_selections.load(Ordering::Relaxed),
             queued: self.queue.queued.load(Ordering::Relaxed),
             queued_total: self.queue.queued_total.load(Ordering::Relaxed),
             queue_timeouts: self.queue.timeouts.load(Ordering::Relaxed),

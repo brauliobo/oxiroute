@@ -7,13 +7,14 @@ use oxiroute_config::{
     AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, ConfigDraft, ConfigError,
     DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HealthStartup,
     HttpAccessPolicy, HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector,
-    HttpProxyPathRewrite, HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation,
-    HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety,
+    HttpProxyPathRewrite, HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation,
+    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpRescuePolicy, HttpRescueTarget,
+    HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryBudget, HttpRetryMethodSafety,
     HttpRetryPolicy, HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction,
     HttpRoutePolicy, HttpService, HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost,
     HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management,
-    PassiveHealthPolicy, PassiveObserve, PassiveOnError, Protocol, RtmpAccessPolicy,
-    RtmpApplication, RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode,
+    PassiveHealthPolicy, PassiveObserve, PassiveOnError, PoolResilience, Protocol,
+    RtmpAccessPolicy, RtmpApplication, RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode,
     RtmpExecNetworkPolicy, RtmpExecProfile, RtmpExecTrigger, RtmpRecorder,
     RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
     RtmpService, RtmpSessionCeilings, TlsClientAuthMode, TlsClientAuthPolicy, TlsPolicy,
@@ -195,6 +196,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: Some(10_000),
             server_timeout_ms: Some(30_000),
             connection_reuse: UpstreamConnectionReuse::Safe,
+            resilience: oxiroute_config::PoolResilience::default(),
         },
         UpstreamPool {
             name: "web-backends".into(),
@@ -236,6 +238,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Safe,
+            resilience: oxiroute_config::PoolResilience::default(),
         },
         UpstreamPool {
             name: "database-backends".into(),
@@ -268,6 +271,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Never,
+            resilience: oxiroute_config::PoolResilience::default(),
         },
         UpstreamPool {
             name: "unix-backends".into(),
@@ -287,6 +291,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Never,
+            resilience: oxiroute_config::PoolResilience::default(),
         },
     ]
 }
@@ -353,8 +358,25 @@ fn test_proxy_policy() -> HttpProxyPolicy {
             body_safety: HttpRetryBodySafety::Empty,
             target: HttpRetryTarget::SameServer,
             delay_ms: 25,
+            jitter_percent: 40,
             final_redispatch: false,
+            idempotency_header: None,
+            budget: Some(HttpRetryBudget {
+                per_second: Some(20),
+                ratio_percent: Some(25),
+            }),
         },
+        timeouts: HttpProxyTimeouts {
+            connect_ms: Some(500),
+            header_ms: Some(2_000),
+            idle_ms: Some(1_500),
+            total_ms: Some(9_000),
+        },
+        rescue: Some(HttpRescuePolicy {
+            statuses: vec![404, 503],
+            target: HttpRescueTarget::Pool,
+            pool: Some("web-backends".into()),
+        }),
         cache: None,
     }
 }
@@ -475,6 +497,8 @@ fn test_http_services() -> Vec<HttpService> {
                         response_cookie_path_rewrites: Vec::new(),
                         response_cookie_attributes: Vec::new(),
                         retry: HttpRetryPolicy::default(),
+                        timeouts: HttpProxyTimeouts::default(),
+                        rescue: None,
                         cache: None,
                     },
                 },
@@ -682,6 +706,85 @@ fn rejects_invalid_passive_health_bounds() {
 }
 
 #[test]
+fn round_trips_pool_resilience_options() {
+    let mut pool = test_upstream_pools().remove(0);
+    pool.resilience = PoolResilience {
+        fail_open: true,
+        min_members: Some(1),
+        ejection_jitter_percent: 25,
+        queue_while_unavailable_ms: Some(3_000),
+        unavailable_retry_after_seconds: Some(5),
+        unavailable_body: Some("down for maintenance".into()),
+    };
+    let mut config = minimal_config();
+    config.upstream_pools.push(pool.clone());
+
+    let (normalized, source) = normalized_round_trip(config);
+
+    assert_eq!(normalized.upstream_pools[0].resilience, pool.resilience);
+    assert!(source.contains("fail_open = true"));
+    assert!(source.contains("min_members = 1"));
+    assert!(source.contains("ejection_jitter_percent = 25"));
+    assert!(source.contains("queue_while_unavailable_ms = 3000"));
+    assert!(source.contains("unavailable_retry_after_seconds = 5"));
+    assert!(source.contains("unavailable_body = \"down for maintenance\""));
+}
+
+#[test]
+fn rejects_invalid_pool_resilience_bounds() {
+    for (resilience, field) in [
+        (
+            PoolResilience {
+                min_members: Some(99),
+                ..PoolResilience::default()
+            },
+            "resilience.min_members",
+        ),
+        (
+            PoolResilience {
+                ejection_jitter_percent: 51,
+                ..PoolResilience::default()
+            },
+            "resilience.ejection_jitter_percent",
+        ),
+        (
+            PoolResilience {
+                queue_while_unavailable_ms: Some(86_400_001),
+                ..PoolResilience::default()
+            },
+            "resilience.queue_while_unavailable_ms",
+        ),
+        (
+            PoolResilience {
+                unavailable_retry_after_seconds: Some(0),
+                ..PoolResilience::default()
+            },
+            "resilience.unavailable_retry_after_seconds",
+        ),
+        (
+            PoolResilience {
+                unavailable_body: Some(String::new()),
+                ..PoolResilience::default()
+            },
+            "resilience.unavailable_body",
+        ),
+    ] {
+        let mut pool = test_upstream_pools().remove(0);
+        pool.resilience = resilience;
+        let mut config = minimal_config();
+        config.upstream_pools.push(pool);
+
+        assert!(
+            matches!(
+                config.validate(),
+                Err(ConfigError::InvalidUpstreamServer { field: invalid, .. }) if invalid == field
+            ),
+            "{field}"
+        );
+    }
+}
+
+#[test]
 fn round_trips_rtmp_exec_profiles_as_data_only_lua() {
     let mut config = complete_config();
     config.rtmp_services[0].exec_profiles = vec![RtmpExecProfile {
@@ -762,6 +865,13 @@ const RENDERED_FIELDS: &[&str] = &[
     "algorithm",
     "health_check",
     "passive_health",
+    "resilience",
+    "fail_open",
+    "min_members",
+    "ejection_jitter_percent",
+    "queue_while_unavailable_ms",
+    "unavailable_retry_after_seconds",
+    "unavailable_body",
     "observe",
     "on_error",
     "error_limit",
@@ -1202,6 +1312,7 @@ fn service_mutations() -> Vec<Mutation> {
                 panic!("proxy action");
             };
             *upstream_pool = "web-backends".into();
+            policy.rescue = None;
             policy.retry.max_retries = 1;
         }),
         ("L4 service order", |config| config.l4_services.reverse()),

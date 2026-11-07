@@ -2581,6 +2581,7 @@ function projectMonitoringPool(value: MonitoringPool): MonitoringPool {
     availableEndpoints: value.availableEndpoints,
     totalEndpoints: value.totalEndpoints,
     unavailableSelections: value.unavailableSelections,
+    failOpenSelections: value.failOpenSelections,
     queued: value.queued,
     queuedTotal: value.queuedTotal,
     queueTimeouts: value.queueTimeouts,

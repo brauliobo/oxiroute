@@ -128,7 +128,7 @@ fn decode_item(encoded: Option<OsString>, total: &mut usize) -> LauncherResult<O
         return Err("invalid or oversized worker metadata item".into());
     }
     let mut decoded = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         decoded.push((decode_nibble(pair[0])? << 4) | decode_nibble(pair[1])?);
     }
     *total = total.saturating_add(decoded.len());
