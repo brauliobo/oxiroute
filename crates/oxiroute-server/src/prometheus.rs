@@ -8,6 +8,7 @@ use oxiroute_rtmp::{RtmpCatalogSnapshot, RtmpControlHandle};
 use crate::{GenerationManager, RuntimeMetrics};
 
 mod format;
+mod registry;
 use format::{
     component_state, endpoint_state, labels, listener_state, metric, render_histogram,
     render_latency_histogram, render_transport_latency_histogram, sample,
@@ -920,6 +921,9 @@ fn render_prometheus_snapshot(
                 audit.operation_counts[category.index()][result.index()],
             )?;
         }
+    }
+    if let Some(registry) = generations.registry() {
+        registry::render_registry(&mut output, &registry.metrics())?;
     }
     Ok(output)
 }
