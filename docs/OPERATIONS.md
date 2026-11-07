@@ -1,5 +1,8 @@
 # Operations
 
+Operator procedures for pools, drains, rollbacks and outages are in the
+[runbook](user/RUNBOOK.md).
+
 ## CLI
 
 `oxiroute serve CONFIG` starts the daemon. A lone positional `CONFIG` remains accepted for
