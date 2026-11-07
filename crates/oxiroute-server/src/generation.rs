@@ -19,8 +19,8 @@ use oxiroute_supervision_unix::DescriptorSet;
 use pingora::apps::{AcceptGate, AcceptGateClose, AcceptOwnership};
 use serde::Serialize;
 
-use crate::generation_resources::GenerationResources;
-use crate::generation_retirement::{
+use crate::generation::resources::GenerationResources;
+use crate::generation::retirement::{
     PendingApply, RemoteRetired, RetiredGenerationStatus, RetiredGenerations, RetirementCounters,
 };
 use crate::listener_inventory::{ListenerId, ListenerInventory};
@@ -108,10 +108,15 @@ pub struct GenerationRevision {
     pub candidate: EffectiveRevision,
 }
 
+pub(crate) mod blueprint;
+pub(crate) mod compiler;
 mod error;
 mod handles;
+pub(crate) mod health;
 mod manager;
 mod prepared;
+pub(crate) mod resources;
+pub(crate) mod retirement;
 mod runtime;
 mod transaction;
 

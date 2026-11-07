@@ -23,7 +23,7 @@ use crate::{
     upstream_peer::UpstreamPlan,
 };
 use crate::{
-    generation_compiler::GenerationCompiler,
+    generation::compiler::GenerationCompiler,
     planning_types::{
         CachePolicyBlueprint, CacheStoreBlueprint, HttpActionBlueprint, HttpRouteBlueprint,
         HttpServiceBlueprint, L4ServiceBlueprint, ListenerBlueprint, PoolBlueprint, RtmpSpec,
