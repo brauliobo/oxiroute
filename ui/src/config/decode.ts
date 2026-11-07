@@ -300,7 +300,7 @@ function isRegistryEndpoint(value: unknown): boolean {
 }
 
 function isUpstreamAlgorithm(value: unknown, serverCount: number): value is UpstreamAlgorithm {
-  if (['round_robin', 'least_connections', 'first'].includes(String(value))) return true
+  if (['round_robin', 'least_connections', 'power_of_two_choices', 'first'].includes(String(value))) return true
   return isRecord(value) && value.type === 'weighted_round_robin' &&
     Array.isArray(value.weights) && value.weights.length === serverCount &&
     value.weights.every((weight) => integerInRange(weight, UPSTREAM_WEIGHT_MIN, UPSTREAM_WEIGHT_MAX))

@@ -136,7 +136,7 @@ fn weighted_round_robin_is_deterministic_and_exposes_effective_weights() {
     assert_eq!(
         selected,
         [
-            "primary", "primary", "primary", "backup", "primary", "primary", "primary", "backup",
+            "primary", "primary", "backup", "primary", "primary", "primary", "backup", "primary",
         ]
     );
 

@@ -60,7 +60,7 @@ export function monitoringListener(value: unknown): value is MonitoringListener 
 export function monitoringPool(value: unknown): value is MonitoringPool {
   return isRecord(value) && typeof value.name === 'string' &&
     typeof value.algorithm === 'string' &&
-    ['first', 'round_robin', 'least_connections', 'weighted_round_robin'].includes(value.algorithm) &&
+    ['first', 'round_robin', 'least_connections', 'power_of_two_choices', 'weighted_round_robin'].includes(value.algorithm) &&
     safeInteger(value.availableEndpoints) && safeInteger(value.totalEndpoints) &&
     decimalString(value.unavailableSelections) && decimalString(value.failOpenSelections) &&
     safeInteger(value.queued) &&

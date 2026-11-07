@@ -70,7 +70,8 @@ pub(super) fn audited_api_operation(
         "/api/v1/servers/administrative-state"
         | "/api/v1/servers/health-override"
         | "/api/v1/servers/checks"
-        | "/api/v1/servers/max-connections" => ("server_control", AuditCategory::Control),
+        | "/api/v1/servers/max-connections"
+        | "/api/v1/servers/weight" => ("server_control", AuditCategory::Control),
         "/api/v1/servers/refresh-dns" => ("server_dns_refresh", AuditCategory::Control),
         _ => return None,
     };

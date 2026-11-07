@@ -13,15 +13,16 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use crate::health::ReadmissionProbe;
 use arc_swap::ArcSwap;
 use http::{
     Method, Uri,
     uri::{Authority, PathAndQuery},
 };
 use oxiroute_config::{
-    HealthStartup, HttpHostSelector, HttpPathSelector,
+    CircuitBreaker, HealthStartup, HttpHostSelector, HttpPathSelector,
     PassiveHealthPolicy as ConfigPassiveHealthPolicy, PassiveObserve, PassiveOnError,
-    PoolResilience, UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
+    PoolResilience, Readmission, UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::{
@@ -29,6 +30,7 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
+mod breaker;
 mod endpoint;
 mod health;
 mod lease;
@@ -38,6 +40,9 @@ mod queue;
 mod route;
 mod server;
 
+pub use breaker::CircuitBreakerPolicy;
+#[allow(clippy::wildcard_imports)]
+use breaker::{Breaker, BreakerTransition};
 pub use endpoint::*;
 pub use health::*;
 pub use lease::*;

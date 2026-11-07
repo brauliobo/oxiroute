@@ -16,9 +16,37 @@ pub struct EndpointPool {
     pub(super) fail_open_selections: AtomicU64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct SelectionState {
     pub(super) next: usize,
+    /// Smooth weighted round robin: each server's accumulated credit.
+    pub(super) credit: Vec<i64>,
+    random: u64,
+}
+
+impl SelectionState {
+    pub(super) fn new(servers: usize) -> Self {
+        Self {
+            next: 0,
+            credit: vec![0; servers],
+            random: ejection_entropy(0) | 1,
+        }
+    }
+
+    pub(super) fn next_random(&mut self) -> u64 {
+        self.random ^= self.random << 13;
+        self.random ^= self.random >> 7;
+        self.random ^= self.random << 17;
+        self.random
+    }
+}
+
+/// A selectable server and what the algorithms rank it by.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Candidate {
+    pub(super) index: usize,
+    pub(super) load: u64,
+    pub(super) weight: u16,
 }
 
 /// Compatibility name retained for monitoring and topology consumers during the pool transition.
@@ -39,6 +67,10 @@ impl EndpointObservation {
     pub(crate) fn record_passive_failure(&self, failure: HealthFailure) {
         self.health.record_passive_failure(&self.server, failure);
     }
+
+    pub(crate) fn record_passive_success(&self) {
+        self.health.record_passive_success(&self.server);
+    }
 }
 
 #[derive(Debug)]
@@ -49,6 +81,9 @@ pub(super) struct EndpointLeaseInner {
     health: Arc<PoolHealthState>,
     queue: Arc<PoolQueue>,
     server: Arc<PoolEndpoint>,
+    waiting: AtomicBool,
+    /// Set while this lease's pooled connection waits idle for a request to reuse it.
+    idle: AtomicBool,
 }
 
 impl EndpointLease {
@@ -65,6 +100,8 @@ impl EndpointLease {
                 health,
                 queue,
                 server,
+                waiting: AtomicBool::new(false),
+                idle: AtomicBool::new(false),
             }),
         }
     }
@@ -84,6 +121,8 @@ impl EndpointLease {
                 health,
                 queue,
                 server,
+                waiting: AtomicBool::new(false),
+                idle: AtomicBool::new(false),
             }),
         }
     }
@@ -111,6 +150,10 @@ impl EndpointLease {
             .record_passive_failure(&self.inner.server, failure);
     }
 
+    pub(crate) fn record_passive_success(&self) {
+        self.inner.health.record_passive_success(&self.inner.server);
+    }
+
     pub(crate) async fn resolve_addresses(&self) -> io::Result<Vec<SocketAddr>> {
         self.inner.server.resolve_addresses().await
     }
@@ -123,8 +166,40 @@ impl EndpointLease {
     }
 }
 
+impl EndpointLeaseInner {
+    /// Counts this lease once in the pool queue while it waits for a permit of its bound server.
+    fn mark_waiting(&self) {
+        if !self.waiting.swap(true, Ordering::AcqRel) {
+            self.queue.queued.fetch_add(1, Ordering::Relaxed);
+            self.queue.queued_total.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn set_idle(&self, idle: bool) {
+        if self.idle.swap(idle, Ordering::AcqRel) != idle {
+            if idle {
+                self.server.idle_permits.fetch_add(1, Ordering::AcqRel);
+            } else {
+                self.server.idle_permits.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+    }
+
+    fn clear_waiting(&self) -> bool {
+        let was_waiting = self.waiting.swap(false, Ordering::AcqRel);
+        if was_waiting {
+            decrement_queue_count(&self.queue.queued);
+        }
+        was_waiting
+    }
+}
+
 impl Drop for EndpointLeaseInner {
     fn drop(&mut self) {
+        self.set_idle(false);
+        if self.clear_waiting() {
+            self.queue.cancellations.fetch_add(1, Ordering::Relaxed);
+        }
         if !self.acquired.load(Ordering::Acquire) {
             return;
         }
@@ -146,6 +221,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
             return Ok(false);
         }
         self.acquired.store(true, Ordering::Release);
+        self.clear_waiting();
         Ok(true)
     }
 
@@ -159,6 +235,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
         };
         #[cfg(test)]
         let _waiting = LifetimeWaitGuard::new(&self.queue.lifetime_waiters);
+        self.mark_waiting();
         loop {
             if self.queue.generation.load(Ordering::Acquire) != generation {
                 return Ok(());
@@ -170,6 +247,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
                 return Ok(());
             }
             if timeout_at(deadline, notified).await.is_err() {
+                self.clear_waiting();
                 self.queue.timeouts.fetch_add(1, Ordering::Relaxed);
                 return Err(pingora::Error::new_up(pingora::ErrorType::HTTPStatus(503)));
             }
@@ -177,9 +255,14 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
     }
 
     fn notify_reusable(&self) {
+        self.set_idle(true);
         if self.queue.capacity_waiters_possible {
             self.queue.notify_capacity_waiters();
         }
+    }
+
+    fn notify_in_use(&self) {
+        self.set_idle(false);
     }
 }
 

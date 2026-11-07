@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use log::info;
 use oxiroute_config::{
-    HealthCheck as HealthCheckConfig, HealthCheckType, HealthHttpVersion,
+    HealthCheck as HealthCheckConfig, HealthCheckType, HealthHttpVersion, Readmission,
     validate_health_check_config,
 };
 use pingora::{
@@ -103,16 +103,87 @@ impl HealthTarget {
         &self,
         addresses: &[std::net::SocketAddr],
     ) -> Result<(), HealthFailure> {
-        let mut last_failure = HealthFailure::ConnectFailed;
-        for address in addresses {
-            let backend =
-                Backend::new(&address.to_string()).map_err(|_| HealthFailure::ProtocolError)?;
-            match self.check.check(&backend).await {
-                Ok(()) => return Ok(()),
-                Err(error) => last_failure = classify_probe_error(&error),
-            }
+        probe_addresses(self.check.as_ref(), addresses).await
+    }
+}
+
+async fn probe_addresses(
+    check: &(dyn HealthCheck + Send + Sync),
+    addresses: &[std::net::SocketAddr],
+) -> Result<(), HealthFailure> {
+    let mut last_failure = HealthFailure::ConnectFailed;
+    for address in addresses {
+        let backend =
+            Backend::new(&address.to_string()).map_err(|_| HealthFailure::ProtocolError)?;
+        match check.check(&backend).await {
+            Ok(()) => return Ok(()),
+            Err(error) => last_failure = classify_probe_error(&error),
         }
-        Err(last_failure)
+    }
+    Err(last_failure)
+}
+
+/// The active probe that decides when an ejected server may take traffic again.
+pub(crate) struct ReadmissionProbe {
+    check: Arc<dyn HealthCheck + Send + Sync>,
+    pub(crate) interval: Duration,
+    pub(crate) successes: u16,
+    timeout: Duration,
+}
+
+impl std::fmt::Debug for ReadmissionProbe {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReadmissionProbe")
+            .field("interval", &self.interval)
+            .field("successes", &self.successes)
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReadmissionProbe {
+    pub(crate) fn compile(config: &Readmission) -> Result<Self, HealthBuildError> {
+        let check = HealthCheckConfig {
+            kind: if config.probe.is_some() {
+                HealthCheckType::Http
+            } else {
+                HealthCheckType::Tcp
+            },
+            interval_ms: config.interval_ms,
+            timeout_ms: config.timeout_ms,
+            healthy_threshold: 1,
+            unhealthy_threshold: 1,
+            startup: oxiroute_config::HealthStartup::default(),
+            fast_interval_ms: None,
+            down_interval_ms: None,
+            host: config.probe.as_ref().and_then(|probe| probe.host.clone()),
+            path: config.probe.as_ref().map(|probe| probe.path.clone()),
+            expected_status: config
+                .probe
+                .as_ref()
+                .and_then(|probe| probe.expected_status),
+            http_version: None,
+        };
+        let blueprint = HealthCheckBlueprint::build(&check)?;
+        Ok(Self {
+            check: build_check(&blueprint),
+            interval: blueprint.interval,
+            successes: config.successes,
+            timeout: blueprint.timeout,
+        })
+    }
+
+    pub(crate) async fn probe(
+        &self,
+        addresses: &[std::net::SocketAddr],
+    ) -> Result<(), HealthFailure> {
+        timeout(
+            self.timeout,
+            probe_addresses(self.check.as_ref(), addresses),
+        )
+        .await
+        .unwrap_or(Err(HealthFailure::Timeout))
     }
 }
 
@@ -197,6 +268,10 @@ impl HealthCheckBlueprint {
         config: &HealthCheckConfig,
     ) -> Result<Self, HealthBuildError> {
         validate_health_check_config(name, config)?;
+        Self::build(config)
+    }
+
+    fn build(config: &HealthCheckConfig) -> Result<Self, HealthBuildError> {
         let kind = match config.kind {
             HealthCheckType::Tcp => HealthCheckKindBlueprint::Tcp,
             HealthCheckType::Http => {
@@ -437,8 +512,28 @@ pub(crate) fn acquire_health_group(
     pool: &Arc<RoundRobinPool>,
     blueprint: &HealthCheckBlueprint,
 ) -> HealthGroup {
+    let template = GroupTemplate {
+        check: build_check(blueprint),
+        down_interval: blueprint.down_interval,
+        fast_interval: blueprint.fast_interval,
+        healthy_threshold: blueprint.healthy_threshold,
+        interval: blueprint.interval,
+        pool: Arc::clone(pool),
+        pool_name: name.to_owned(),
+        timeout: blueprint.timeout,
+        unhealthy_threshold: blueprint.unhealthy_threshold,
+    };
+    let targets = pool
+        .endpoints()
+        .map(|(server, endpoint)| template.target(server, endpoint))
+        .collect();
+
+    HealthGroup { template, targets }
+}
+
+fn build_check(blueprint: &HealthCheckBlueprint) -> Arc<dyn HealthCheck + Send + Sync> {
     let timeout = blueprint.timeout;
-    let check: Arc<dyn HealthCheck + Send + Sync> = match &blueprint.kind {
+    match &blueprint.kind {
         HealthCheckKindBlueprint::Tcp => {
             let mut check = TcpHealthCheck::default();
             check.peer_template.options.connection_timeout = Some(timeout);
@@ -472,24 +567,7 @@ pub(crate) fn acquire_health_group(
             check.peer_template.options.write_timeout = Some(timeout);
             Arc::new(check)
         }
-    };
-    let template = GroupTemplate {
-        check,
-        down_interval: blueprint.down_interval,
-        fast_interval: blueprint.fast_interval,
-        healthy_threshold: blueprint.healthy_threshold,
-        interval: blueprint.interval,
-        pool: Arc::clone(pool),
-        pool_name: name.to_owned(),
-        timeout,
-        unhealthy_threshold: blueprint.unhealthy_threshold,
-    };
-    let targets = pool
-        .endpoints()
-        .map(|(server, endpoint)| template.target(server, endpoint))
-        .collect();
-
-    HealthGroup { template, targets }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

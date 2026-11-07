@@ -37,6 +37,7 @@ Implemented and recognized endpoints:
 | `POST` | `/api/v1/listeners/administrative-state`, `/api/v1/pools/administrative-state` | Revision-checked listener or pool admission state changes. |
 | `POST` | `/api/v1/servers/administrative-state`, `/api/v1/servers/health-override`, `/api/v1/servers/checks` | Revision-checked server state, observed-health override, or probe enablement changes. |
 | `PUT` | `/api/v1/servers/max-connections` | Revision-checked server capacity override or reset. |
+| `PUT` | `/api/v1/servers/weight` | Revision-checked server weight override (1 to 100) or reset (`weight: null`). |
 | `POST` | `/api/v1/servers/refresh-dns` | Resolve every prevalidated target and report explicit non-atomic per-server outcomes. |
 | `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state. |
 | `POST` | `/api/v1/generations/reload`, `/api/v1/generations/rollback`, `/api/v1/generations/drain` | Revision-checked generation preparation, rollback, and drain operations. |

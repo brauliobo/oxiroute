@@ -447,7 +447,7 @@ async fn administrative_state_survives_file_writes(supervised: bool) {
             body["targets"] = json!([{"pool": "public", "server": "origin-a"}]);
             let response = http_request(
                 management_address,
-                if path.ends_with("max-connections") {
+                if path.ends_with("max-connections") || path.ends_with("weight") {
                     "PUT"
                 } else {
                     "POST"
@@ -499,6 +499,7 @@ async fn administrative_state_survives_file_writes(supervised: bool) {
             "/api/v1/servers/max-connections",
             json!({"maxConnections": 7}),
         ),
+        ("/api/v1/servers/weight", json!({"weight": 5})),
         ("/api/v1/servers/checks", json!({"enabled": false})),
     ] {
         post(path, revision.clone(), body).await;
@@ -522,12 +523,14 @@ async fn administrative_state_survives_file_writes(supervised: bool) {
     assert_eq!(carried["administrativeState"], "drain");
     assert_eq!(carried["healthOverride"], "down");
     assert_eq!(carried["maxConnections"], 7);
+    assert_eq!(carried["weight"], 5);
     assert_eq!(carried["checksEnabled"], false);
     let added = server_state(&servers, "origin-b");
     assert_eq!(added["administrativeState"], "ready");
     assert_eq!(added["healthOverride"], "auto");
     assert_eq!(added["checksEnabled"], true);
     assert!(added["maxConnections"].is_null());
+    assert_eq!(added["weight"], 1);
 
     let origin_a = config.upstream_pools[0].servers.remove(0);
     write_config(
@@ -545,6 +548,7 @@ async fn administrative_state_survives_file_writes(supervised: bool) {
     assert_eq!(returned["administrativeState"], "ready");
     assert_eq!(returned["healthOverride"], "auto");
     assert!(returned["maxConnections"].is_null());
+    assert_eq!(returned["weight"], 1);
 
     server.shutdown();
 }

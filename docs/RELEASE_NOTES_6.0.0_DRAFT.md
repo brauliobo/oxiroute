@@ -54,12 +54,42 @@ A pool keeps serving when health checks or passive ejection would otherwise take
 - New `retry.budget` (`per_second`, `ratio_percent`) caps the retries of a route so that they cannot
   amplify an outage, and `retry.jitter_percent` spreads the same-server retry delay.
 
+## Load balancing and admission
+
+- A request that waits for a server no longer stays bound to the server the algorithm picked on
+  arrival. On every path (reusable HTTP included) the pool queue hands the oldest waiter whichever
+  server frees a slot, or has an idle pooled connection, first. With `algorithm = "first"` or
+  `round_robin`, mixed short and long jobs no longer pile up behind one busy worker while another
+  sits idle. On a scratch instance with one 3 s job and 24 short jobs on two single-slot workers,
+  the makespan went from 5.3 s (`first`) and 4.2 s (`round_robin`) to 3.0 s for the ideal 2.7 s.
+- Waiting requests are now counted in the pool queue depth, total, timeout and cancellation metrics
+  on the default reusable path too; `oxiroute_pool_queue_depth` no longer reads 0 while requests
+  wait.
+- `passive_health` counts consecutive failures: a successful response now clears the run, so
+  unrelated failures spread over time no longer eject a healthy server.
+- New `passive_health.readmission` returns an ejected server only after an active probe (HTTP path
+  or TCP connect) passes `successes` times in a row; a failed probe re-ejects it for the next
+  backoff step. Recovery no longer costs `error_limit` client-visible failures.
+- New `passive_health.circuit_breaker` takes a server out of rotation when its failure ratio over a
+  sliding window crosses a threshold, then admits limited trial requests before closing again.
+- New algorithm `power_of_two_choices`. `least_connections` now compares load per unit of capacity
+  (`max_connections`, else weight) instead of raw counts, and `weighted_round_robin` is smooth
+  (weights 3 and 1 give `a a b a`, not `a a a b`) and follows live weights.
+- New `oxiroute server weight set|reset --pool P SERVER [WEIGHT]` and `PUT /api/v1/servers/weight`
+  change a server weight (1 to 100) at runtime; like the other overrides it follows the server by
+  pool and server name through reloads.
+
 ## Operational Notes
 
 Fail-open applies to HTTP and L4 pools alike. Alerting on `oxiroute_pool_available_servers == 0`
 keeps working: the strict count does not include failed-open servers.
 
 ## Upgrade notes
+
+- Weighted round-robin selection order changed (smooth instead of clumped); the share per server is
+  the same.
+- A configuration that uses `passive_health.readmission`, `passive_health.circuit_breaker` or `power_of_two_choices` must drop them
+  before rolling back, because the previous release rejects unknown fields and algorithm names.
 
 - Requests that used to end with `502` because an upstream read, write or connect timeout fired now
   end with `504`.

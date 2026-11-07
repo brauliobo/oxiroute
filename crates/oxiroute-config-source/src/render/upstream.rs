@@ -33,6 +33,9 @@ impl Renderer {
             UpstreamAlgorithm::LeastConnections => {
                 self.string_field("algorithm", "least_connections");
             }
+            UpstreamAlgorithm::PowerOfTwoChoices => {
+                self.string_field("algorithm", "power_of_two_choices");
+            }
             UpstreamAlgorithm::First => self.string_field("algorithm", "first"),
         }
         self.optional_table_field("health_check", health_check.as_ref(), Self::health_check);
@@ -178,7 +181,10 @@ impl Renderer {
     fn pool_resilience(&mut self, resilience: &PoolResilience) {
         self.boolean_field("fail_open", resilience.fail_open);
         self.optional_integer_field("min_members", resilience.min_members);
-        self.integer_field("ejection_jitter_percent", resilience.ejection_jitter_percent);
+        self.integer_field(
+            "ejection_jitter_percent",
+            resilience.ejection_jitter_percent,
+        );
         self.optional_integer_field(
             "queue_while_unavailable_ms",
             resilience.queue_while_unavailable_ms,
@@ -212,6 +218,30 @@ impl Renderer {
         self.integer_field("initial_backoff_ms", policy.initial_backoff_ms);
         self.integer_field("max_backoff_ms", policy.max_backoff_ms);
         self.integer_field("recovery_threshold", policy.recovery_threshold);
+        if let Some(readmission) = &policy.readmission {
+            self.begin_table_field("readmission");
+            self.integer_field("successes", readmission.successes);
+            self.integer_field("interval_ms", readmission.interval_ms);
+            self.integer_field("timeout_ms", readmission.timeout_ms);
+            self.optional_table_field("probe", readmission.probe.as_ref(), Self::readmission_probe);
+            self.end_table();
+        }
+        if let Some(breaker) = &policy.circuit_breaker {
+            self.begin_table_field("circuit_breaker");
+            self.integer_field("window_ms", breaker.window_ms);
+            self.integer_field("min_requests", breaker.min_requests);
+            self.integer_field("failure_ratio_percent", breaker.failure_ratio_percent);
+            self.integer_field("open_ms", breaker.open_ms);
+            self.integer_field("half_open_max", breaker.half_open_max);
+            self.integer_field("half_open_successes", breaker.half_open_successes);
+            self.end_table();
+        }
+    }
+
+    fn readmission_probe(&mut self, probe: &ReadmissionProbe) {
+        self.string_field("path", &probe.path);
+        self.optional_string_field("host", probe.host.as_deref());
+        self.optional_integer_field("expected_status", probe.expected_status);
     }
 
     fn upstream_tls(&mut self, pool_name: &str, tls: &UpstreamTls) -> Result<(), ConfigError> {
