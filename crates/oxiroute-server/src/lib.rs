@@ -9,7 +9,6 @@ mod health;
 mod html;
 mod http;
 mod http3;
-mod http3_upstream;
 mod l4;
 mod lifecycle_control;
 mod listener;
@@ -52,7 +51,7 @@ pub use http::inflight::live_requests;
 pub use http::proxy::{HttpRequestContext, HttpReverseProxy};
 pub use http::server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp};
 pub use http3::Http3Runtime;
-pub(crate) use http3_upstream::{H3UpstreamBuildError, H3UpstreamError, H3UpstreamPlan};
+pub(crate) use http3::upstream_plan::{H3UpstreamBuildError, H3UpstreamError, H3UpstreamPlan};
 pub use l4::proxy_protocol::{
     AcceptedProxyStream, MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES, MAX_V2_PAYLOAD_BYTES,
     ParsedProxyHeader, PrefixedStream, ProxyProtocolError, ProxyProtocolErrorKind,
