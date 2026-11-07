@@ -1808,11 +1808,7 @@ async fn capturing_origin(
 fn request_id_of(request: &str) -> Vec<&str> {
     request
         .lines()
-        .filter_map(|line| {
-            line.to_ascii_lowercase()
-                .starts_with("x-request-id:")
-                .then_some(line)
-        })
+        .filter(|line| line.to_ascii_lowercase().starts_with("x-request-id:"))
         .collect()
 }
 

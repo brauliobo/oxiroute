@@ -114,7 +114,7 @@ mod tests {
         assert!(
             body["requests"][0]
                 .get("clientIp")
-                .is_some_and(|value| value.is_null())
+                .is_some_and(serde_json::Value::is_null)
         );
     }
 

@@ -241,6 +241,10 @@ pub(crate) struct InflightView {
     pub(crate) overdue: bool,
 }
 
+#[allow(
+    clippy::ref_option,
+    reason = "signature required by serde(serialize_with)"
+)]
 fn serialize_optional_u64_string<S: serde::Serializer>(
     value: &Option<u64>,
     serializer: S,
@@ -353,7 +357,7 @@ impl InflightRegistry {
         let key = self.next_key.fetch_add(1, Ordering::Relaxed);
         let started_unix_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| duration_ms(elapsed));
+            .map_or(0, duration_ms);
         let entry = Arc::new(InflightEntry {
             key,
             request_id: arrival.request_id,
@@ -394,7 +398,7 @@ impl InflightRegistry {
             .map(|entry| entry.view())
             .filter(|view| filter.accepts(view))
             .collect::<Vec<_>>();
-        views.sort_by(|left, right| right.age_ms.cmp(&left.age_ms));
+        views.sort_by_key(|view| std::cmp::Reverse(view.age_ms));
         let total = views.len();
         views.truncate(limit);
         InflightListing {
