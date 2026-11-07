@@ -367,6 +367,17 @@ Current constraints:
   maximum ejection backoff are bounded to one day, and `recovery_threshold` is bounded to 100.
   Missing passive policy retains the bounded runtime defaults; it does not disable failure
   accounting. Ejection and recovery remain generation-owned and never revoke an existing lease.
+- `resilience` is an optional per-pool object whose options all default to the strict behavior.
+  `fail_open = true` keeps a pool serving when health checks or passive ejection leave none of its
+  servers selectable: instead of answering `503`, it selects the least bad server that is not
+  drained, in maintenance or forced down (`set-health down`). Healthy servers that are passively
+  ejected come first, soonest to return first; then unhealthy servers with the fewest consecutive
+  failed checks. Per-server `max_connections` and `queue_timeout_ms` still apply, and retries still
+  skip servers already tried. This lets a single-server pool whose application fails its own health
+  path return the application's error page instead of an empty `503`. Servers that are selectable
+  are chosen exactly as without the option. Each fail-open selection increments
+  `oxiroute_pool_fail_open_selections_total` and the pool's `failOpenSelections` in the management
+  API; `availableEndpoints` and `oxiroute_pool_available_servers` keep reporting the strict count.
 - HTTP services MUST contain at least one route. Route pool references MUST resolve.
 - Forward HTTP/1 services support absolute-form requests and classic CONNECT only when H1 is enabled.
   Opt-in RFC 9298 CONNECT-UDP uses an HTTP/1.1 Upgrade request and bounded Capsule Protocol

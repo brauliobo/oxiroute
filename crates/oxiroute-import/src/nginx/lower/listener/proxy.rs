@@ -310,6 +310,7 @@ impl Lowerer {
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
                 connection_reuse: UpstreamConnectionReuse::Never,
+                resilience: oxiroute_config::PoolResilience::default(),
             },
             origin,
             endpoint_origins,

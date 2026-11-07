@@ -240,6 +240,7 @@ export function useConfigurationNavigation(
           connect_timeout_ms: null,
           server_timeout_ms: null,
           connection_reuse: 'safe',
+          resilience: { fail_open: false },
         })
         break
       case 'http_services':

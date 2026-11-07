@@ -573,6 +573,17 @@ pub struct UpstreamPool {
     pub server_timeout_ms: Option<u64>,
     #[serde(default)]
     pub connection_reuse: UpstreamConnectionReuse,
+    #[serde(default)]
+    pub resilience: PoolResilience,
+}
+
+/// Availability options of one pool. Every option defaults to the strict behaviour.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PoolResilience {
+    /// Serve the least-bad member when health or ejection leaves none selectable.
+    #[serde(default)]
+    pub fail_open: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

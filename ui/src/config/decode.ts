@@ -269,7 +269,8 @@ function isUpstreamPool(value: unknown): value is UpstreamPoolConfig {
     ['1.1', '2'].includes(String(value.http_versions.max)) &&
     nullableSafeInteger(value.queue_timeout_ms) && nullableSafeInteger(value.connect_timeout_ms) &&
     nullableSafeInteger(value.server_timeout_ms) &&
-    ['never', 'safe', 'always'].includes(String(value.connection_reuse))
+    ['never', 'safe', 'always'].includes(String(value.connection_reuse)) &&
+    isRecord(value.resilience) && typeof value.resilience.fail_open === 'boolean'
 }
 
 function isUpstreamAlgorithm(value: unknown, serverCount: number): value is UpstreamAlgorithm {

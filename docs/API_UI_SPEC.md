@@ -288,6 +288,7 @@ operators can distinguish a degraded sampler from a degraded runtime.
       "availableEndpoints": 1,
       "totalEndpoints": 2,
       "unavailableSelections": "3",
+      "failOpenSelections": "0",
       "endpoints": [
         {
           "address": "127.0.0.1:3000",
@@ -313,11 +314,12 @@ policy report selectable `unchecked` endpoints; health-enabled pools begin with 
 numbers or `null` before the corresponding event. `lastFailure` is `timeout`, `connect_failed`,
 `unexpected_status`, `protocol_error`, or `null`. To preserve every cumulative `u64` exactly in
 JavaScript, aggregate/listener accepted, rejected, and byte totals; endpoint leases/check totals;
-pool unavailable selections; RTMP media/recorder totals; and Certbot/direct-file watcher counters are base-10
+pool unavailable and fail-open selections; RTMP media/recorder totals; and Certbot/direct-file watcher counters are base-10
 integer strings. Current gauges, timestamps, and configuration-bounded counts remain JSON numbers.
 `activeLeases` counts
 currently held HTTP-request or L4-relay leases; `unavailableSelections` counts selection attempts
-made while the pool had no selectable endpoint. Endpoint `address` is the normalized canonical
+made while the pool had no selectable endpoint; `failOpenSelections` counts selections served by a
+`resilience.fail_open` pool while none was selectable. Endpoint `address` is the normalized canonical
 display identity: `IP:port`, `host:port`, or an absolute Unix path.
 
 Listener `bind` is a stable transport-qualified string, either `socket:<address>` or

@@ -292,6 +292,12 @@ fn render_prometheus_snapshot(
         )?;
         labels(
             &mut output,
+            "oxiroute_pool_fail_open_selections_total",
+            &[("pool", pool.name.as_str())],
+            pool.fail_open_selections,
+        )?;
+        labels(
+            &mut output,
             "oxiroute_pool_queue_depth",
             &[("pool", pool.name.as_str())],
             pool.queued,
@@ -792,7 +798,7 @@ mod tests {
         PreparedRtmpRuntimeSet, RtmpPrepareContext, RtmpPrepareMode, RtmpRuntimeSet,
     };
 
-    use crate::routing::RuntimeServer;
+    use crate::routing::{PoolResiliencePolicy, RuntimeServer};
     use crate::{HealthFailure, PassiveFailurePolicy, RoundRobinPool, RuntimeEndpoint};
 
     use super::*;
@@ -1015,7 +1021,7 @@ mod tests {
     fn exposition_contains_bounded_passive_endpoint_observability() {
         let metrics = RuntimeMetrics::new();
         let pool = Arc::new(
-            RoundRobinPool::new_named_servers_with_policy(
+            RoundRobinPool::new_named_servers_resilient(
                 "observability".into(),
                 [RuntimeServer {
                     name: "0".into(),
@@ -1036,12 +1042,16 @@ mod tests {
                     std::time::Duration::from_secs(30),
                     std::time::Duration::from_mins(5),
                 ),
+                PoolResiliencePolicy::from_config(&oxiroute_config::PoolResilience {
+                    fail_open: true,
+                }),
             )
             .expect("pool"),
         );
         for _ in 0..3 {
             pool.record_passive_failure(0, HealthFailure::ConnectFailed);
         }
+        assert!(pool.select().is_some(), "an ejected pool fails open");
         metrics
             .register_upstream_pools([Arc::clone(&pool)])
             .expect("upstream pools");
@@ -1059,6 +1069,9 @@ mod tests {
         assert!(output.contains(
             "oxiroute_server_passive_ejections_total{pool=\"observability\",server=\"0\"} 1"
         ));
+        assert!(
+            output.contains("oxiroute_pool_fail_open_selections_total{pool=\"observability\"} 1")
+        );
         assert!(output.contains("oxiroute_pool_queue_admissions_total{pool=\"observability\"} 0"));
         assert!(
             output.contains("oxiroute_pool_queue_cancellations_total{pool=\"observability\"} 0")

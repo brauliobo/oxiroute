@@ -246,6 +246,7 @@ export interface PoolDto {
   algorithm: string
   availableEndpoints: number
   endpoints: Array<EndpointDto>
+  failOpenSelections: DecimalCounter
   name: string
   queueCancellations: DecimalCounter
   queueTimeouts: DecimalCounter

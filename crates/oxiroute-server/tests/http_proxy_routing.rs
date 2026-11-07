@@ -1486,6 +1486,7 @@ async fn capped_first_pool_dispatches_queued_requests_fifo_to_the_next_available
                     connect_timeout_ms: None,
                     server_timeout_ms: None,
                     connection_reuse: oxiroute_config::UpstreamConnectionReuse::Never,
+                    resilience: oxiroute_config::PoolResilience::default(),
                 }],
                 vec![route(None, "/", &[], "workers")],
                 1024,
@@ -1842,6 +1843,54 @@ async fn returns_503_when_a_matched_pool_has_no_healthy_endpoint() {
     })
     .await
     .expect("unhealthy pool test timed out");
+}
+
+#[tokio::test]
+async fn fail_open_pool_passes_the_apps_own_500_through_when_its_health_path_fails_too() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = AppErrorOrigin::start().await;
+        let proxy = ProxyHarness::start_with_health(
+            vec![app_error_pool(origin.address, true)],
+            vec![route(None, "/", &[], "app")],
+            1,
+        )
+        .await;
+        assert_eq!(proxy.pools[0].health_snapshot().available_endpoints, 0);
+
+        let response = proxy.request("GET / HTTP/1.1\r\nHost: app.test\r\n").await;
+
+        assert_eq!(response.status, 500, "response: {}", response.text());
+        assert!(response.text().ends_with("app error"));
+        assert_eq!(response.header("x-oxiroute-pool-unavailable"), None);
+        let snapshot = proxy.pools[0].health_snapshot();
+        assert_eq!(snapshot.fail_open_selections, 1);
+        assert_eq!(snapshot.unavailable_selections, 0);
+        proxy.finish().await;
+    })
+    .await
+    .expect("fail-open test timed out");
+}
+
+#[tokio::test]
+async fn pool_without_fail_open_answers_an_empty_503_when_its_health_path_fails() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = AppErrorOrigin::start().await;
+        let proxy = ProxyHarness::start_with_health(
+            vec![app_error_pool(origin.address, false)],
+            vec![route(None, "/", &[], "app")],
+            1,
+        )
+        .await;
+
+        let response = proxy.request("GET / HTTP/1.1\r\nHost: app.test\r\n").await;
+
+        assert_eq!(response.status, 503, "response: {}", response.text());
+        assert_eq!(response.header("x-oxiroute-pool-unavailable"), Some("1"));
+        assert_eq!(proxy.pools[0].health_snapshot().fail_open_selections, 0);
+        proxy.finish().await;
+    })
+    .await
+    .expect("closed pool test timed out");
 }
 
 #[tokio::test]
@@ -6355,6 +6404,61 @@ fn pool(name: &str, endpoints: &[SocketAddr]) -> UpstreamPool {
     )
 }
 
+fn app_error_pool(address: SocketAddr, fail_open: bool) -> UpstreamPool {
+    UpstreamPool {
+        health_check: Some(HealthCheck {
+            kind: HealthCheckType::Http,
+            interval_ms: 1_000,
+            timeout_ms: 500,
+            healthy_threshold: 1,
+            unhealthy_threshold: 1,
+            startup: oxiroute_config::HealthStartup::default(),
+            fast_interval_ms: None,
+            down_interval_ms: None,
+            host: Some("app.test".into()),
+            path: Some("/up".into()),
+            expected_status: None,
+            http_version: None,
+        }),
+        resilience: oxiroute_config::PoolResilience { fail_open },
+        ..pool("app", &[address])
+    }
+}
+
+/// An origin whose every response, including its health path, is the application's own 500.
+struct AppErrorOrigin {
+    address: SocketAddr,
+    task: JoinHandle<()>,
+}
+
+impl AppErrorOrigin {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("origin accept");
+                read_request_head(&mut stream)
+                    .await
+                    .expect("origin request");
+                stream
+                    .write_all(
+                        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 9\r\nConnection: close\r\n\r\napp error",
+                    )
+                    .await
+                    .expect("origin response");
+            }
+        });
+        Self { address, task }
+    }
+}
+
+impl Drop for AppErrorOrigin {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 fn capped_pool(name: &str, address: SocketAddr, max_connections: u64) -> UpstreamPool {
     UpstreamPool {
         name: name.into(),
@@ -6374,6 +6478,7 @@ fn capped_pool(name: &str, address: SocketAddr, max_connections: u64) -> Upstrea
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
+        resilience: oxiroute_config::PoolResilience::default(),
     }
 }
 
@@ -6395,6 +6500,7 @@ fn endpoint_pool(
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        resilience: oxiroute_config::PoolResilience::default(),
     }
 }
 
