@@ -289,6 +289,10 @@ impl SelectedEndpoint {
         self.observation.clone()
     }
 
+    pub(crate) fn end_queue_wait(&self) {
+        self.lease.end_queue_wait();
+    }
+
     pub(crate) fn queue_wait(&self) -> Duration {
         self.lease.queue_wait()
     }

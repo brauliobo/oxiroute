@@ -309,6 +309,7 @@ impl HttpRequestContext {
 
     fn note_queue_wait(&mut self) {
         if let Some(selected) = &self.selected {
+            selected.end_queue_wait();
             self.trace.queue_wait += selected.queue_wait();
             self.trace.queue_position = self.trace.queue_position.max(selected.queue_position());
         }
