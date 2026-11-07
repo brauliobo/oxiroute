@@ -228,7 +228,10 @@ impl TcpRelayCore {
                 connect_upstream(&self.upstream),
             ) => {
                 match result {
-                    Ok(Ok(upstream)) => Ok(upstream),
+                    Ok(Ok(upstream)) => {
+                        self.upstream.record_passive_success();
+                        Ok(upstream)
+                    }
                     Ok(Err(source)) => {
                         Err(failure(
                             RelayFailureKind::Connect(source),

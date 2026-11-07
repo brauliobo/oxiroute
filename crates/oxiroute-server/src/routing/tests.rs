@@ -677,6 +677,34 @@ async fn reusable_notification_wakes_a_hidden_bounded_lifetime_waiter() {
     assert_eq!(pool.queue.lifetime_waiters.load(Ordering::Relaxed), 0);
 }
 
+#[test]
+fn a_live_success_resets_consecutive_passive_failures() {
+    let pool = RoundRobinPool::new_named_servers_with_policy(
+        "passive-success".into(),
+        [runtime_server("only", 3000, None)],
+        UpstreamAlgorithm::First,
+        Some(HealthStartup::Healthy),
+        None,
+        PassiveFailurePolicy::new(3, Duration::from_secs(60), Duration::from_secs(60)),
+    )
+    .expect("passive success pool");
+    let observation = pool.select().expect("lease").observation();
+
+    for _ in 0..2 {
+        pool.record_passive_failure(0, HealthFailure::Timeout);
+    }
+    observation.record_passive_success();
+    for _ in 0..2 {
+        pool.record_passive_failure(0, HealthFailure::Timeout);
+    }
+
+    let snapshot = pool.health_snapshot();
+    assert!(!snapshot.endpoints[0].passive_ejected);
+    assert_eq!(snapshot.endpoints[0].passive_consecutive_failures, 2);
+    pool.record_passive_failure(0, HealthFailure::Timeout);
+    assert!(pool.health_snapshot().endpoints[0].passive_ejected);
+}
+
 #[tokio::test]
 async fn capacity_overrides_preserve_wakes_in_both_directions() {
     let pool = Arc::new(

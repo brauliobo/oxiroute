@@ -1290,6 +1290,14 @@ impl PoolEndpoint {
         })
     }
 
+    /// A live success ends the run of consecutive failures.
+    fn record_passive_success(&self) {
+        if self.passive_consecutive_failures.load(Ordering::Relaxed) != 0 {
+            self.passive_consecutive_failures
+                .store(0, Ordering::Relaxed);
+        }
+    }
+
     fn recover_passive(
         &self,
         at_unix_ms: u64,
@@ -1696,6 +1704,10 @@ impl EndpointObservation {
     pub(crate) fn record_passive_failure(&self, failure: HealthFailure) {
         self.health.record_passive_failure(&self.server, failure);
     }
+
+    pub(crate) fn record_passive_success(&self) {
+        self.server.record_passive_success();
+    }
 }
 
 #[derive(Debug)]
@@ -1766,6 +1778,10 @@ impl EndpointLease {
         self.inner
             .health
             .record_passive_failure(&self.inner.server, failure);
+    }
+
+    pub(crate) fn record_passive_success(&self) {
+        self.inner.server.record_passive_success();
     }
 
     pub(crate) async fn resolve_addresses(&self) -> io::Result<Vec<SocketAddr>> {
