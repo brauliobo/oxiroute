@@ -194,6 +194,9 @@ fn management_dtos_match_the_version_one_golden_json() {
             "configRejections": 0,
             "failures": 3,
             "rollbacks": 4,
+            "retiredGenerations": [],
+            "maxRetiredGenerations": 4,
+            "pendingApply": null,
         })
     );
     assert_eq!(
@@ -547,6 +550,9 @@ fn generation() -> GenerationStatus {
         config_rejections: 0,
         failures: 3,
         rollbacks: 4,
+        retired_generations: Vec::new(),
+        max_retired_generations: 4,
+        pending_apply: None,
     }
 }
 

@@ -10,6 +10,7 @@ use super::{
 #[test]
 fn inventory_core_is_platform_independent_and_unbounded() {
     let config = ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -253,6 +254,7 @@ fn inventory_config(
     max_connections: Option<u64>,
 ) -> oxiroute_config::ValidatedConfig {
     let mut config = ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -287,6 +289,7 @@ fn inventory_config(
         resilience: oxiroute_config::PoolResilience::default(),
     });
     config.l4_services.push(oxiroute_config::L4Service {
+        drain_deadline_ms: None,
         name: "relay".into(),
         upstream_pool: "origin".into(),
         connect_timeout_ms: 1_000,

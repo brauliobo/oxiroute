@@ -37,19 +37,25 @@ pub(super) struct ConfigReports {
     pub(super) rejection: Option<ConfigRejection>,
     /// The file the replacement in progress was started from.
     pub(super) candidate_file: Option<AuthoredRevision>,
+    pub(super) retired: RetiredReports,
 }
 
 impl ConfigReports {
     pub(super) fn reject(&mut self, master: &mut Master, rejection: ConfigRejection) {
         if self.record(&rejection) {
             rejection.log();
-            notify_active(master, Some(&rejection));
+            send_notice(
+                master,
+                &WorkerNotice::Config {
+                    rejection: Some(rejection),
+                },
+            );
         }
     }
 
     pub(super) fn accept(&mut self, master: &mut Master) {
         if self.forget() {
-            notify_active(master, None);
+            send_notice(master, &WorkerNotice::Config { rejection: None });
         }
     }
 
@@ -77,12 +83,10 @@ impl ConfigReports {
     }
 }
 
-fn notify_active(master: &mut Master, rejection: Option<&ConfigRejection>) {
-    let notice = serde_json::to_vec(&rejection).expect("a configuration rejection serializes");
+pub(super) fn send_notice(master: &mut Master, notice: &WorkerNotice) {
+    let notice = serde_json::to_vec(notice).expect("a worker notice serializes");
     if let Err(error) = master.notify_active(&notice) {
-        warn!(
-            "supervised master could not tell the active worker about the configuration: {error}"
-        );
+        warn!("supervised master could not notify the active worker: {error}");
     }
 }
 

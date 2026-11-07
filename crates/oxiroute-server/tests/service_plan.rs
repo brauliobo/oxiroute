@@ -216,6 +216,7 @@ fn host-b_host-a_and_host-c_pool_shapes_compile_with_named_policy() {
         resilience: oxiroute_config::PoolResilience::default(),
     };
     let config = ConfigDraft {
+        retirement: None,
         max_connections: Some(4_096),
         upstream_pools: vec![
             pool(
@@ -728,6 +729,7 @@ fn compiles_a_bounded_udp_service_plan() {
         resilience: oxiroute_config::PoolResilience::default(),
     });
     config.l4_services.push(L4Service {
+        drain_deadline_ms: None,
         name: "dns".into(),
         upstream_pool: "dns".into(),
         connect_timeout_ms: 2_000,
@@ -1599,6 +1601,7 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
 #[allow(clippy::too_many_lines)]
 fn canonical_config() -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         listeners: vec![
             Listener {
                 name: "web".into(),
@@ -1676,6 +1679,7 @@ fn canonical_config() -> ConfigDraft {
             },
         ],
         http_services: vec![HttpService {
+            drain_deadline_ms: None,
             name: "api".into(),
             routes: vec![HttpRoute {
                 host: Some(HttpHostSelector::NormalizedHost {
@@ -1733,6 +1737,7 @@ fn canonical_config() -> ConfigDraft {
             }],
         }],
         l4_services: vec![L4Service {
+            drain_deadline_ms: None,
             name: "database".into(),
             upstream_pool: "database".into(),
             connect_timeout_ms: 5_000,

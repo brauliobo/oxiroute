@@ -599,6 +599,7 @@ export interface HttpRouteConfig {
 
 export interface HttpServiceConfig {
   name: string
+  drain_deadline_ms?: number | null
   routes: HttpRouteConfig[]
   automatic_response_headers: boolean
   upstream_io_timeout_ms: number
@@ -931,6 +932,7 @@ export interface ForwardResolverPolicyConfig {
 
 export interface ForwardProxyServiceConfig {
   name: string
+  drain_deadline_ms?: number | null
   enabled_versions: ForwardHttpVersion[]
   allow_absolute_form: boolean
   tls_required: boolean
@@ -954,6 +956,7 @@ export interface ForwardProxyServiceConfig {
 
 export interface L4ServiceConfig {
   name: string
+  drain_deadline_ms?: number | null
   upstream_pool: string
   connect_timeout_ms: number
   idle_timeout_ms: number
@@ -970,9 +973,15 @@ export interface UdpPolicyConfig {
   max_queue_bytes: number
 }
 
+export interface RetirementConfig {
+  drain_deadline_ms: number | null
+  max_retired_generations: number
+}
+
 export interface CanonicalConfig {
   version: number
   max_connections: number | null
+  retirement?: RetirementConfig
   management: ManagementConfig | null
   registry?: RegistryConfig | null
   stats?: StatsConfig | null

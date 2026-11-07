@@ -206,6 +206,7 @@ impl GenerationManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.shutting_down = true;
+        state.retired.close_for_shutdown();
         let mut generations = Vec::with_capacity(3);
         if let Some(active) = &state.active {
             push_unique_generation(&mut generations, active);

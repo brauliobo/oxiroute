@@ -115,6 +115,12 @@ export function managementGeneration(): GenerationResponse {
       activations: 2,
       failures: 0,
       rollbacks: 1,
+      configRejections: 0,
+      generation: 2,
+      lastRejection: null,
+      retiredGenerations: [],
+      maxRetiredGenerations: 4,
+      pendingApply: null,
     },
   }
 }

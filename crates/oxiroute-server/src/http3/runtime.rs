@@ -12,6 +12,7 @@ pub(crate) const H3_MAX_FIELD_SECTION_BYTES: u64 = 16 * 1024;
 pub(crate) const H3_MAX_REQUEST_BODY_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const H3_MAX_RESPONSE_BODY_BYTES: u64 = 64 * 1024 * 1024;
 const H3_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Bound for H3 work when the whole process is stopping.
 pub(super) const H3_GRACEFUL_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const H3_CLOSE_CODE: VarInt = VarInt::from_u32(0x100);
 
@@ -324,6 +325,19 @@ fn server_config(
     Ok(config)
 }
 
+/// How long H3 requests may keep running once their endpoint stops accepting: the generation's
+/// drain deadline, or the short process-stop bound when the whole process is stopping.
+pub(super) fn h3_drain_window(
+    generation: &RuntimeGeneration,
+    shutdown: &watch::Receiver<bool>,
+) -> Duration {
+    if *shutdown.borrow() {
+        H3_GRACEFUL_DRAIN_TIMEOUT
+    } else {
+        generation.retirement_deadline()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn serve_endpoint(
     listener_name: &str,
@@ -388,7 +402,8 @@ async fn serve_endpoint(
             }
         }
     };
-    finish_h3_connections(listener_name, &endpoint, &mut connections).await;
+    let window = h3_drain_window(&generation, &shutdown);
+    finish_h3_connections(listener_name, &endpoint, &mut connections, window).await;
     orderly
 }
 
@@ -458,7 +473,8 @@ async fn serve_reverse_endpoint(
             }
         }
     };
-    finish_h3_connections(listener_name, &endpoint, &mut connections).await;
+    let window = h3_drain_window(&generation, &shutdown);
+    finish_h3_connections(listener_name, &endpoint, &mut connections, window).await;
     orderly
 }
 
@@ -466,8 +482,9 @@ async fn finish_h3_connections(
     listener_name: &str,
     endpoint: &Endpoint,
     connections: &mut tokio::task::JoinSet<()>,
+    window: Duration,
 ) {
-    let deadline = Instant::now() + H3_GRACEFUL_DRAIN_TIMEOUT;
+    let deadline = Instant::now() + window;
     let mut timed_out = false;
     loop {
         match timeout_at(deadline, connections.join_next()).await {

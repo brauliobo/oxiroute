@@ -159,6 +159,10 @@ pub(crate) const MAX_HTTP_FILE_EXTENSION_BYTES: usize = 32;
 pub(crate) const MAX_HTTP_COOKIE_ATTRIBUTE_RULES: usize = 16;
 pub(crate) const MAX_HTTP_GZIP_TYPES: usize = 64;
 pub(crate) const MAX_HTTP_TIMEOUT_MS: u64 = 86_400_000;
+pub(crate) const MIN_DRAIN_DEADLINE_MS: u64 = 1_000;
+pub(crate) const MAX_DRAIN_DEADLINE_MS: u64 = 86_400_000;
+pub(crate) const DEFAULT_DRAIN_DEADLINE_MS: u64 = 10_800_000;
+pub(crate) const MAX_RETIRED_GENERATIONS: u64 = 16;
 pub(crate) const MAX_PROXY_PROTOCOL_TIMEOUT_MS: u64 = 86_400_000;
 pub(crate) const MAX_UDP_DATAGRAM_BYTES: u64 = 65_507;
 pub(crate) const MAX_UDP_SESSIONS: u64 = 100_000;
@@ -365,6 +369,10 @@ pub(crate) const fn default_rtmp_dash_max_active_streams() -> u64 {
 
 pub(crate) const fn default_self_signed_validity_days() -> u32 {
     7
+}
+
+pub(crate) const fn default_max_retired_generations() -> u64 {
+    crate::Retirement::DEFAULT_MAX_RETIRED_GENERATIONS
 }
 
 pub(crate) const fn default_upstream_io_timeout_ms() -> u64 {

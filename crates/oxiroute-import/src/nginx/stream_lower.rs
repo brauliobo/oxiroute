@@ -192,6 +192,7 @@ impl Lowerer {
         let idle_timeout_ms = server.idle_timeout_ms.unwrap_or(stream.idle_timeout_ms);
 
         self.draft.l4_services.push(L4Service {
+            drain_deadline_ms: None,
             name: service_name.clone(),
             upstream_pool: pool_name.clone(),
             connect_timeout_ms,

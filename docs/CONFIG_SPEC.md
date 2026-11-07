@@ -273,6 +273,14 @@ Current constraints:
 - `version` MUST be `1`.
 - Root `max_connections` is an optional aggregate process admission limit. Omission or explicit
   `null` means unbounded; a configured value MUST be a positive exact JSON integer.
+- `retirement` is optional and bounds how a replaced generation drains: `drain_deadline_ms`
+  (1000 to 86400000) is how long its in-flight work may continue after its accept gate closes,
+  and `max_retired_generations` (1 to 16, default 4) is how many replaced generations may drain at
+  once. An unset `drain_deadline_ms` is the larger of 3 hours and the longest HTTP
+  `upstream_io_timeout_ms`, so no request is cut before its own deadline. The optional
+  `drain_deadline_ms` of an HTTP, forward proxy or L4 service only raises that deadline and never
+  lowers it. The values are read from the generation being replaced when it retires; an apply
+  that introduces the keys retires a generation that has none and uses the defaults.
 - `management` is optional and MUST use a loopback IP with a nonzero port. The current
   configuration routes use bearer authentication, but the schema does not expose a remote
   management mode.

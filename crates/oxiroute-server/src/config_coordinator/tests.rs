@@ -39,6 +39,7 @@ fn socket_endpoint(value: &str) -> UpstreamEndpoint {
 
 fn minimal_config() -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -128,6 +129,7 @@ fn normalizable_config() -> ConfigDraft {
         resilience: oxiroute_config::PoolResilience::default(),
     });
     config.http_services.push(HttpService {
+        drain_deadline_ms: None,
         name: "web-service".into(),
         routes: vec![HttpRoute {
             host: Some(HttpHostSelector::NormalizedHost {

@@ -248,6 +248,7 @@ fn reverse_config(
         policy: client_auth_policy(mode, ca_bundle),
     });
     config.http_services.push(HttpService {
+        drain_deadline_ms: None,
         name: "web".into(),
         routes: vec![HttpRoute {
             host: None,
@@ -310,6 +311,7 @@ fn forward_config(
         policy: client_auth_policy(mode, ca_bundle),
     });
     config.forward_proxy_services.push(ForwardProxyService {
+        drain_deadline_ms: None,
         name: "forward".into(),
         enabled_versions: vec![ForwardHttpVersion::H3],
         allow_absolute_form: true,

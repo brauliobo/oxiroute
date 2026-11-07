@@ -74,6 +74,9 @@ pub(super) struct GenerationState {
     pub(super) last_failure: Option<&'static str>,
     pub(super) last_rejection: Option<ConfigRejection>,
     pub(super) previous: Option<Arc<RuntimeGeneration>>,
+    pub(super) retired: RetiredGenerations,
+    /// Retired workers of a supervising master, as it last reported them.
+    pub(super) remote_retired: Vec<(EffectiveRevision, RemoteRetired, Instant)>,
     pub(super) supervised_lineage: Option<SupervisedLineage>,
     pub(super) quarantined_revision: Option<EffectiveRevision>,
     pub(super) shutdown_generations: Vec<Arc<RuntimeGeneration>>,
