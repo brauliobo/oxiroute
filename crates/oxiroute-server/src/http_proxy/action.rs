@@ -53,6 +53,9 @@ pub(super) async fn execute_route_action(
                     }
                     None => &proxy.pool,
                 };
+                if let Some(inflight) = &ctx.inflight {
+                    inflight.set_pool(pool.selector().name());
+                }
                 ctx.pool = Some(Arc::clone(pool));
                 return Ok(false);
             }
@@ -73,7 +76,7 @@ pub(super) async fn execute_route_action(
                 let Some(location) =
                     redirect_location(&redirect.location, session, ctx.authority.as_ref(), &uri)
                 else {
-                    session.respond_error(400).await?;
+                    respond_status(session, 400).await?;
                     return Ok(true);
                 };
                 let mut headers = redirect.headers.to_vec();
@@ -251,7 +254,7 @@ pub(super) async fn execute_route_action(
                 request.method = method.clone();
                 request.uri = uri.clone();
                 let Some(next) = service.select_route(ctx.authority.as_ref(), &uri, &method) else {
-                    session.respond_error(404).await?;
+                    respond_status(session, 404).await?;
                     return Ok(true);
                 };
                 if let Some(access) = &next.access

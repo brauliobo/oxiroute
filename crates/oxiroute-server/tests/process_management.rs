@@ -83,10 +83,20 @@ async fn built_process_serves_readiness_status_and_redacted_metrics_on_multiple_
             .status,
         401
     );
+    let summary = http_request(ipv4_second, "GET", "/status.json", &[], &[]).await;
+    assert_eq!(summary.status, 200);
+    let summary = summary.json();
+    assert_eq!(summary["state"], "ok");
+    assert_eq!(summary["generation"]["degraded"], false);
+    assert_eq!(summary["overdueRequests"], 0);
+    assert!(summary["pools"].as_array().expect("pools").is_empty());
     let metrics = http_request(ipv4_first, "GET", "/metrics", &[], &[]).await;
     assert_eq!(metrics.status, 200);
     let metrics = String::from_utf8(metrics.body).expect("metrics UTF-8");
     assert!(metrics.contains("oxiroute_generation_activations_total 1"));
+    assert!(metrics.contains("oxiroute_http_inflight_overdue 0"));
+    assert!(metrics.contains("oxiroute_generation_info{generation=\"1\",revision=\""));
+    assert!(metrics.contains("oxiroute_generation_active_age_seconds"));
     assert!(!metrics.contains(&ipv4_first.to_string()));
     assert!(!metrics.contains(&ipv4_second.to_string()));
 
@@ -162,7 +172,13 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
         .and_then(|value| value.split('"').next())
         .expect("generation revision");
 
-    for path in ["/metrics", "/ready", "/api/v1/status", "/stats"] {
+    for path in [
+        "/metrics",
+        "/ready",
+        "/status.json",
+        "/api/v1/status",
+        "/stats",
+    ] {
         assert_eq!(
             http_request(page_address, "GET", path, &[], &[])
                 .await

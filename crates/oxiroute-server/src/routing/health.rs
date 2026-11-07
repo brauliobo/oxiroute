@@ -416,6 +416,8 @@ pub struct PoolHealthSnapshot {
     pub fail_open_selections: u64,
     pub queued: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub oldest_queue_wait_ms: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub queued_total: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub queue_timeouts: u64,
@@ -430,7 +432,7 @@ pub(super) struct PoolHealthState {
     pub(super) health_version: AtomicU64,
     pub(super) health_writer: Mutex<()>,
     passive_policy: PassiveFailurePolicy,
-    pool_name: String,
+    pub(super) pool_name: String,
     queue: Arc<PoolQueue>,
     readmission: Option<Arc<ReadmissionProbe>>,
     resilience: PoolResiliencePolicy,

@@ -31,11 +31,17 @@ obsolete, or not planned. Only forms with both runtime integration and failure c
 | Lifecycle | `generation status|reload|rollback|drain` | Prepare, publish, revert, or drain generations |
 | Configuration | `config check|compose|get|diff|validate|apply` | Inspect and change canonical configuration |
 | Events | `events list|follow` | Poll the bounded in-memory event ring |
+| Requests | `requests list|show` | Inspect the requests currently inside the router |
 | Runtime inventory | `listener`, `pool`, `server` | Read or safely mutate admission/health state |
 | TLS | `tls list|reconcile` | Inspect identities and invoke external-lineage reconciliation |
 | RTMP | `rtmp stream`, `rtmp recorder`, `rtmp relay` | Inspect live sessions and supported recorder actions |
 | Migration | `import nginx|haproxy|squid|apache|varnish` | Emit offline reports or finalized previews |
 | Build | `version` | Print the build version |
+
+`oxiroute requests list [--pool P] [--route R] [--older-than 30s] [--phase queued] [--limit N]` lists
+the requests currently inside the router, oldest first, and `oxiroute requests show REQUEST_ID`
+shows one. Phases are `routed`, `queued`, `connecting`, `awaiting_headers`, `streaming` and
+`retry_wait`. There is no command to cancel a request.
 
 ## Output And Exit Categories
 

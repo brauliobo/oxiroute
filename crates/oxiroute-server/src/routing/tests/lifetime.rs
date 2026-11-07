@@ -288,7 +288,7 @@ fn reload_keeps_each_old_connection_on_its_original_queue_timeout_invariant() {
 }
 
 #[tokio::test]
-async fn selector_and_bound_lifetime_waits_share_the_queue_counters() {
+async fn queue_counters_cover_lifetime_waits_and_selector_waits_exactly_once() {
     let pool = Arc::new(
         RoundRobinPool::new_named_servers(
             "counter-ownership".into(),
@@ -313,15 +313,8 @@ async fn selector_and_bound_lifetime_waits_share_the_queue_counters() {
 
     let selecting_pool = Arc::clone(&pool);
     let selector_waiter = tokio::spawn(async move { selecting_pool.select_wait().await });
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while pool.health_snapshot().queued != 2 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("selector waiter registration");
+    super::queue::wait_for_queued(&pool, 2).await;
     let combined_snapshot = pool.health_snapshot();
-    assert_eq!(combined_snapshot.queued, 2);
     assert_eq!(combined_snapshot.queued_total, 2);
     assert_eq!(combined_snapshot.queue_cancellations, 0);
 
@@ -333,7 +326,7 @@ async fn selector_and_bound_lifetime_waits_share_the_queue_counters() {
             .is_cancelled()
     );
     wait_for_lifetime_waiters(&pool, 0).await;
-    assert_eq!(pool.health_snapshot().queued, 1);
+    super::queue::wait_for_queued(&pool, 1).await;
     assert_eq!(pool.health_snapshot().queue_cancellations, 1);
 
     selector_waiter.abort();
@@ -347,6 +340,84 @@ async fn selector_and_bound_lifetime_waits_share_the_queue_counters() {
     assert_eq!(final_snapshot.queued, 0);
     assert_eq!(final_snapshot.queued_total, 2);
     assert_eq!(final_snapshot.queue_cancellations, 2);
+}
+
+#[tokio::test]
+async fn requests_waiting_on_the_default_reuse_path_show_as_queue_depth() {
+    let pool = Arc::new(
+        RoundRobinPool::new_named_servers(
+            "default-path-depth".into(),
+            [runtime_server("only", 3000, Some(1))],
+            UpstreamAlgorithm::First,
+            None,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("depth pool"),
+    );
+    let holder = connection_lifetime(&pool, "only");
+    assert!(holder.try_acquire().expect("capacity holder"));
+    let waiting = [
+        connection_lifetime(&pool, "only"),
+        connection_lifetime(&pool, "only"),
+    ];
+    let tasks = waiting
+        .into_iter()
+        .map(|lifetime| {
+            tokio::spawn(async move {
+                acquire_after_capacity_change(Arc::clone(&lifetime)).await;
+                lifetime
+            })
+        })
+        .collect::<Vec<_>>();
+    super::queue::wait_for_queued(&pool, 2).await;
+    assert!(pool.health_snapshot().oldest_queue_wait_ms < 1_000);
+
+    drop(holder);
+    pool.queue.notify_capacity_waiters();
+    super::queue::wait_for_queued(&pool, 1).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while tasks.iter().all(|task| !task.is_finished()) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("one waiter acquired the freed capacity");
+    for task in tasks {
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn a_lease_remembers_its_queue_position_and_wait() {
+    let pool = Arc::new(
+        RoundRobinPool::new_named_servers(
+            "lease-wait".into(),
+            [runtime_server("only", 3000, Some(1))],
+            UpstreamAlgorithm::First,
+            None,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("lease wait pool"),
+    );
+    let holder = connection_lifetime(&pool, "only");
+    assert!(holder.try_acquire().expect("capacity holder"));
+    let lease = pool
+        .select_server_connection_target("only")
+        .expect("pending lease");
+    assert_eq!(
+        (lease.queue_position(), lease.queue_wait()),
+        (0, Duration::ZERO)
+    );
+    let lifetime = Arc::clone(&lease.inner);
+    let waiter = tokio::spawn(acquire_after_capacity_change(Arc::clone(&lifetime)));
+    super::queue::wait_for_queued(&pool, 1).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    drop(holder);
+    pool.queue.notify_capacity_waiters();
+    waiter.await.expect("waiter acquired");
+    assert_eq!(lease.queue_position(), 1);
+    assert!(lease.queue_wait() >= Duration::from_millis(30));
+    assert_eq!(pool.health_snapshot().queued, 0);
 }
 
 #[tokio::test]
@@ -410,4 +481,36 @@ async fn cancelling_a_capacity_waiter_rolls_back_queue_state_once() {
     assert_eq!(snapshot.queue_cancellations, 1);
     assert_eq!(snapshot.queue_timeouts, 0);
     assert_eq!(snapshot.endpoints[0].active_connections, 0);
+}
+
+#[tokio::test]
+async fn a_wait_ended_by_a_reused_connection_is_not_a_cancellation() {
+    let pool = Arc::new(
+        RoundRobinPool::new_named_servers(
+            "reused-wait".into(),
+            [runtime_server("only", 3000, Some(1))],
+            UpstreamAlgorithm::First,
+            None,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("reused wait pool"),
+    );
+    let holder = connection_lifetime(&pool, "only");
+    assert!(holder.try_acquire().expect("capacity holder"));
+    let lease = pool
+        .select_server_connection_target("only")
+        .expect("pending lease");
+    let lifetime = Arc::clone(&lease.inner);
+    let generation = lifetime.capacity_generation();
+    let waiter = tokio::spawn(async move { lifetime.wait_for_capacity(generation).await });
+    super::queue::wait_for_queued(&pool, 1).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    lease.end_queue_wait();
+    assert!(lease.queue_wait() >= Duration::from_millis(20));
+    assert_eq!(pool.health_snapshot().queued, 0);
+    drop(lease);
+    waiter.abort();
+    let snapshot = pool.health_snapshot();
+    assert_eq!((snapshot.queued, snapshot.queue_cancellations), (0, 0));
 }

@@ -89,7 +89,7 @@ pub(super) async fn cache_request_filter(
             Ok(true)
         }
         CacheStart::OnlyIfCached => {
-            session.respond_error(504).await?;
+            respond_status(session, 504).await?;
             Ok(true)
         }
         CacheStart::MissLeader(transaction) | CacheStart::RevalidationLeader(transaction) => {
@@ -145,7 +145,7 @@ pub(super) async fn cache_purge_filter(
         (request_authority(request), request.headers.clone())
     };
     let Ok(Some(authority)) = authority_result else {
-        session.respond_error(400).await?;
+        respond_status(session, 400).await?;
         return Ok(true);
     };
     let scheme = if session
@@ -212,7 +212,7 @@ pub(super) async fn cache_purge_filter(
         Err(error) => {
             warn!("cache purge failed: {error}");
             let status = if error.is_invalid_request() { 400 } else { 503 };
-            session.respond_error(status).await?;
+            respond_status(session, status).await?;
         }
     }
     Ok(true)

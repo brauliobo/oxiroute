@@ -9,9 +9,102 @@ use crate::{GenerationManager, RuntimeMetrics};
 
 mod format;
 use format::{
-    component_state, endpoint_state, labels, listener_state, metric, render_latency_histogram,
-    render_transport_latency_histogram, sample,
+    component_state, endpoint_state, labels, listener_state, metric, render_histogram,
+    render_latency_histogram, render_transport_latency_histogram, sample,
 };
+
+#[allow(clippy::cast_precision_loss)]
+fn render_inflight(output: &mut String) -> Result<(), PrometheusError> {
+    let inflight = crate::inflight::registry().totals();
+    for (pool, live) in &inflight.pools {
+        let pool = [("pool", pool.as_str())];
+        labels(
+            output,
+            "oxiroute_http_inflight_requests",
+            &pool,
+            live.requests,
+        )?;
+        let oldest = live.oldest_age_ms as f64 / 1_000.0;
+        labels(
+            output,
+            "oxiroute_http_inflight_oldest_age_seconds",
+            &pool,
+            oldest,
+        )?;
+    }
+    sample(output, "oxiroute_http_inflight_overdue", inflight.overdue)?;
+    for ((pool, phase), count) in &inflight.stuck {
+        let series = [("pool", pool.as_str()), ("phase", *phase)];
+        labels(
+            output,
+            "oxiroute_http_stuck_requests_total",
+            &series,
+            *count,
+        )?;
+    }
+    Ok(())
+}
+
+/// Per-server latency histograms cost about 18 series each, so they stop above this many servers.
+const SERVER_HISTOGRAM_LIMIT: usize = 256;
+
+fn render_server_traffic(
+    output: &mut String,
+    pool: &str,
+    server: &crate::EndpointHealthSnapshot,
+    histograms: bool,
+) -> Result<(), PrometheusError> {
+    let stats = crate::upstream_stats::upstream_stats()
+        .server(pool, &server.name)
+        .snapshot();
+    let identity = [("pool", pool), ("server", server.name.as_str())];
+    let with = |label: (&'static str, &'static str)| [identity[0], identity[1], label];
+    for (class, count) in crate::upstream_stats::RESPONSE_CLASSES
+        .iter()
+        .zip(stats.responses)
+    {
+        labels(
+            output,
+            "oxiroute_server_responses_total",
+            &with(("class", *class)),
+            count,
+        )?;
+    }
+    for (outcome, count) in crate::upstream_stats::AttemptOutcome::ALL
+        .iter()
+        .zip(stats.attempts)
+    {
+        let outcome = outcome.as_str();
+        labels(
+            output,
+            "oxiroute_server_attempts_total",
+            &with(("outcome", outcome)),
+            count,
+        )?;
+    }
+    labels(
+        output,
+        "oxiroute_server_bytes_sent_total",
+        &identity,
+        stats.bytes_sent,
+    )?;
+    labels(
+        output,
+        "oxiroute_server_bytes_received_total",
+        &identity,
+        stats.bytes_received,
+    )?;
+    if let Some(limit) = server.max_connections {
+        labels(output, "oxiroute_server_max_connections", &identity, limit)?;
+    }
+    if histograms {
+        let request = "oxiroute_server_request_duration_milliseconds";
+        render_histogram(output, request, &identity, &stats.request_duration)?;
+        let header = "oxiroute_server_header_duration_milliseconds";
+        render_histogram(output, header, &identity, &stats.header_duration)?;
+    }
+    Ok(())
+}
 
 pub(crate) fn render_prometheus_control(
     metrics: &RuntimeMetrics,
@@ -299,6 +392,12 @@ fn render_prometheus_snapshot(
         }
     }
 
+    let server_histograms = runtime
+        .upstream_pools
+        .iter()
+        .map(|pool| pool.total_endpoints)
+        .sum::<usize>()
+        <= SERVER_HISTOGRAM_LIMIT;
     for pool in &runtime.upstream_pools {
         labels(
             &mut output,
@@ -323,6 +422,20 @@ fn render_prometheus_snapshot(
             "oxiroute_pool_queue_depth",
             &[("pool", pool.name.as_str())],
             pool.queued,
+        )?;
+        labels(
+            &mut output,
+            "oxiroute_pool_queue_oldest_wait_seconds",
+            &[("pool", pool.name.as_str())],
+            pool.oldest_queue_wait_ms as f64 / 1_000.0,
+        )?;
+        render_histogram(
+            &mut output,
+            "oxiroute_pool_queue_wait_milliseconds",
+            &[("pool", pool.name.as_str())],
+            &crate::upstream_stats::upstream_stats()
+                .pool(&pool.name)
+                .queue_wait(),
         )?;
         labels(
             &mut output,
@@ -382,6 +495,7 @@ fn render_prometheus_snapshot(
                 ],
                 server.failed_checks,
             )?;
+            render_server_traffic(&mut output, pool.name.as_str(), server, server_histograms)?;
             let passive_reason = server
                 .passive_ejection_reason
                 .map_or("none", crate::HealthFailure::as_str);
@@ -458,6 +572,8 @@ fn render_prometheus_snapshot(
             )?;
         }
     }
+
+    render_inflight(&mut output)?;
 
     for certificate in &runtime.certbot_certificates {
         labels(
@@ -763,6 +879,17 @@ fn render_prometheus_snapshot(
         "oxiroute_generation_degraded",
         u8::from(generation.degraded),
     )?;
+    if let Some(revision) = &generation.active_revision {
+        labels(
+            &mut output,
+            "oxiroute_generation_info",
+            &[
+                ("generation", &generation.generation.to_string()),
+                ("revision", revision.as_str()),
+            ],
+            1,
+        )?;
+    }
     labels(
         &mut output,
         "oxiroute_audit_component_state",
