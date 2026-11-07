@@ -598,7 +598,9 @@ impl ProxyHttp for HttpReverseProxy {
             error.set_retry(true);
             return Err(error);
         }
-        if retries_on_status && !rescued {
+        if !retries_on_status {
+            ctx.record_passive_success();
+        } else if !rescued {
             ctx.record_passive_failure(HealthFailure::UnexpectedStatus);
         }
         let had_uncacheable_framing = response.headers.contains_key(TRANSFER_ENCODING)
