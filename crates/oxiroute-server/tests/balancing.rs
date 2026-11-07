@@ -132,6 +132,7 @@ struct Balancer {
 }
 
 impl Balancer {
+    #[allow(clippy::too_many_lines)]
     async fn start(
         algorithm: UpstreamAlgorithm,
         reuse: UpstreamConnectionReuse,

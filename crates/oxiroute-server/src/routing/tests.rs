@@ -796,7 +796,7 @@ fn probed_pool(address: SocketAddr, successes: u16) -> RoundRobinPool {
             .expect("blueprint");
     let mut policy =
         PassiveFailurePolicy::new(1, Duration::from_millis(50), Duration::from_millis(200));
-    policy.probe_readmission = true;
+    policy.readmit_by = ReadmitBy::Probe;
     RoundRobinPool::acquire_compiled(
         "probed".into(),
         [RuntimeServer {
@@ -875,7 +875,7 @@ fn active_health_checks_cannot_bypass_probe_readmission() {
     let policy = {
         let mut policy =
             PassiveFailurePolicy::new(1, Duration::from_millis(10), Duration::from_millis(10));
-        policy.probe_readmission = true;
+        policy.readmit_by = ReadmitBy::Probe;
         policy
     };
     let pool = RoundRobinPool::new_named_servers_with_policy(
