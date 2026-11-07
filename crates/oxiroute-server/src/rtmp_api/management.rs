@@ -14,8 +14,9 @@ use super::{
         ListenerStateRequest, MutationResponse, PoolInventoryResponse, PoolStateRequest,
         ProcessMutationResponse, RevisionRequest, ServerCapacityRequest, ServerChange,
         ServerChecksRequest, ServerHealthRequest, ServerInventoryResponse, ServerStateRequest,
-        TlsActionResponse, TlsCertificateDto, TlsInventoryResponse, TlsJobControlResponse,
-        TlsReconcileOutcome, TlsReconcileResponse, TlsRenewResponse, TlsRequest, TlsRevokeRequest,
+        ServerWeightRequest, TlsActionResponse, TlsCertificateDto, TlsInventoryResponse,
+        TlsJobControlResponse, TlsReconcileOutcome, TlsReconcileResponse, TlsRenewResponse,
+        TlsRequest, TlsRevokeRequest,
     },
 };
 use crate::{
@@ -71,6 +72,7 @@ impl ManagementState {
             (Route::ServerHealth, "POST") => self.server_health(session).await,
             (Route::ServerChecks, "POST") => self.server_checks(session).await,
             (Route::ServerMaxConnections, "PUT") => self.server_max_connections(session).await,
+            (Route::ServerWeight, "PUT") => self.server_weight(session).await,
             (Route::ServerRefreshDns, "POST") => self.server_refresh_dns(session).await,
             (Route::Generations, "GET") => ApiResponse::json(
                 200,
@@ -118,7 +120,9 @@ impl ManagementState {
                 | Route::EventStream(_, _),
                 _,
             ) => ApiResponse::method_not_allowed("GET"),
-            (Route::ServerMaxConnections, _) => ApiResponse::method_not_allowed("PUT"),
+            (Route::ServerMaxConnections | Route::ServerWeight, _) => {
+                ApiResponse::method_not_allowed("PUT")
+            }
             _ => ApiResponse::method_not_allowed("POST"),
         }
     }

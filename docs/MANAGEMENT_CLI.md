@@ -68,7 +68,8 @@ Status meanings:
 | Server | health override auto/up/down | Supported | `server set-health`; override is separate from observed health and `auto` restores observed-health selection. |
 | Server | checks enable/disable | Supported | `server check`; maintenance still suspends enabled checks. |
 | Server | max-connections set/reset | Supported | Runtime override; reset restores configured capacity. |
-| Server | state across generations | Supported | Administrative state, health override, check switch and max-connections override follow a server by pool and server name through every generation change (file write, `generation reload`, `config apply`, rollback, supervised worker replacement). They are applied before the new generation accepts traffic. Servers that no longer exist lose their state; new servers start ready. |
+| Server | weight set/reset | Supported | Runtime override of the weight (1 to 100) used by `weighted_round_robin` and the load key; reset restores the configured weight. |
+| Server | state across generations | Supported | Administrative state, health override, check switch, max-connections and weight overrides follow a server by pool and server name through every generation change (file write, `generation reload`, `config apply`, rollback, supervised worker replacement). They are applied before the new generation accepts traffic. Servers that no longer exist lose their state; new servers start ready. |
 | Server | DNS refresh | Supported | `server refresh-dns`; resolves immediately and replaces startup-pinned addresses when applicable. Runtime-resolved endpoints are resolved and reported. |
 | Server | queue/counter visibility | Supported | Pool/server reads and `monitoring` expose active work, queue depth/totals/timeouts/cancellations, checks, and failures. |
 | Server | address, FQDN, check port, TLS, weight mutation | Config generation | These fields determine immutable endpoint/TLS/selection plans and require full preflight plus generation activation. |
@@ -117,7 +118,7 @@ operations and calls out cases that must use canonical generations or external o
 | `enable server B/S` | `server ready`; check enablement is separate via `server check ... enable`. |
 | `disable server B/S` | `server maintenance`; use `server check ... disable` when only probes should stop. |
 | `set maxconn server B/S N` | `oxiroute server max-connections set --pool B S N`; `reset` restores canonical capacity. |
-| `set weight B/S W` | Config generation. Weight is part of selection policy and is not represented as a mutable runtime field. |
+| `set weight B/S W` | `oxiroute server weight set --pool B S W`; `reset` restores the configured weight. |
 | `set server B/S addr A`, `fqdn F`, `check-port P`, `ssl` | Config generation. Endpoint identity, health targets, and upstream TLS are preflighted immutable plans. |
 | DNS resolver commands | `oxiroute server refresh-dns --pool B S`; no resolver hold/timeout mutation is exposed. |
 | `pause frontend F` | `oxiroute listener maintenance F`; rejects new admissions without closing established connections. |

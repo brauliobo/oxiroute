@@ -18,7 +18,7 @@ are migrated.
 | Native import reports | `GET /api/v1/import-reports`, `GET /api/v1/import-reports/{index}` | Management bearer token; bounded redacted evidence and read-only finalized KDL preview |
 | Observability | `GET /api/v1/monitoring`, `/topology`, `/status` | Management bearer token; redacted active state |
 | Inventory | `GET /api/v1/listeners`, `/pools`, `/servers`, `/generations`, `/tls` | Management bearer token |
-| Listener/pool/server actions | `POST /api/v1/listeners/administrative-state`, `/pools/administrative-state`, `/servers/administrative-state`, `/servers/health-override`, `/servers/checks`; `PUT /api/v1/servers/max-connections` | Management bearer token and active-generation revision |
+| Listener/pool/server actions | `POST /api/v1/listeners/administrative-state`, `/pools/administrative-state`, `/servers/administrative-state`, `/servers/health-override`, `/servers/checks`; `PUT /api/v1/servers/max-connections`, `PUT /api/v1/servers/weight` | Management bearer token and active-generation revision |
 | DNS | `POST /api/v1/servers/refresh-dns` | Management bearer token; validated target batch and explicit non-atomic outcomes |
 | Generation actions | `POST /api/v1/generations/reload|rollback|drain` | Management bearer token and active-generation revision |
 | TLS/process | `POST /api/v1/tls/reconcile`, `/process/drain`, `/process/shutdown` | Management bearer token and active-generation revision |

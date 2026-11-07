@@ -120,6 +120,32 @@ fn execute(cli: &Cli, client: &Client) -> Result<FollowOutcome, CliError> {
             None,
         ),
         Command::Server {
+            command:
+                ServerCommand::Weight {
+                    command: WeightCommand::Set { target, weight },
+                },
+        } => (
+            client.mutation_json(
+                "PUT",
+                "/api/v1/servers/weight",
+                &server_weight_body(target, Some(*weight)),
+            )?,
+            None,
+        ),
+        Command::Server {
+            command:
+                ServerCommand::Weight {
+                    command: WeightCommand::Reset(target),
+                },
+        } => (
+            client.mutation_json(
+                "PUT",
+                "/api/v1/servers/weight",
+                &server_weight_body(target, None),
+            )?,
+            None,
+        ),
+        Command::Server {
             command: ServerCommand::RefreshDns(target),
         } => (
             client.mutation_json(
@@ -429,6 +455,14 @@ fn server_capacity_body(target: &ServerTarget, limit: Option<u64>) -> Value {
     body.as_object_mut()
         .expect("object")
         .insert("maxConnections".into(), json!(limit));
+    body
+}
+
+fn server_weight_body(target: &ServerTarget, weight: Option<u16>) -> Value {
+    let mut body = server_body(target, None);
+    body.as_object_mut()
+        .expect("object")
+        .insert("weight".into(), json!(weight));
     body
 }
 

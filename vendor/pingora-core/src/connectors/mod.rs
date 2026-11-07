@@ -233,6 +233,17 @@ impl TransportConnector {
 
     /// Try to find a reusable connection to the given server [Peer]
     pub async fn reused_stream<P: Peer + Send + Sync>(&self, peer: &P) -> Option<Stream> {
+        let stream = self.take_reusable_stream(peer).await?;
+        if let Some(lifetime) = stream
+            .get_socket_digest()
+            .and_then(|digest| digest.connection_lifetime())
+        {
+            lifetime.notify_in_use();
+        }
+        Some(stream)
+    }
+
+    async fn take_reusable_stream<P: Peer + Send + Sync>(&self, peer: &P) -> Option<Stream> {
         match self.connection_pool.get(&peer.reuse_hash()) {
             Some(s) => {
                 debug!("find reusable stream, trying to acquire it");

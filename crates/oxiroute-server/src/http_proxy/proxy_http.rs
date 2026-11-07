@@ -629,7 +629,9 @@ impl ProxyHttp for HttpReverseProxy {
             error.set_retry(true);
             return Err(error);
         }
-        if retries_on_status && !rescued {
+        if !retries_on_status {
+            ctx.record_passive_success();
+        } else if !rescued {
             ctx.record_passive_failure(HealthFailure::UnexpectedStatus);
         }
         ctx.note_response(status);
