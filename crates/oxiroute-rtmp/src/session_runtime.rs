@@ -15,7 +15,7 @@ use crate::{
     RtmpRegistry, SessionId, StreamKey, VodApplication, VodError,
     auto_push::AutoPushCoordinator,
     exec::ExecProfile,
-    exec_worker::ExecProfileSet,
+    exec::worker::ExecProfileSet,
     recording::runtime::{
         RecorderController, RecorderReaperHandle, RecorderReaperOwner, RecorderShutdownControl,
         RtmpRecorderShutdown,

@@ -5,6 +5,8 @@ use std::{
     time::Duration,
 };
 
+pub(crate) mod worker;
+
 pub(crate) const MAX_EXEC_NAME_BYTES: usize = 64;
 pub(crate) const MAX_EXEC_ARGUMENTS: usize = 64;
 pub(crate) const MAX_EXEC_ARGUMENT_BYTES: usize = 4_096;
