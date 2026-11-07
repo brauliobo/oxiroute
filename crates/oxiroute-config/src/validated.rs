@@ -112,6 +112,10 @@ impl ConfigDraft {
     }
 
     /// Replaced generations that may drain at once.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the cap does not fit `usize`; validation bounds it to 16.
     #[must_use]
     pub fn retired_generation_limit(&self) -> usize {
         self.retirement

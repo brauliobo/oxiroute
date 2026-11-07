@@ -398,14 +398,15 @@ const fn result_for_outcome(outcome: &EventOutcome) -> AuditResult {
         | EventOutcome::Activated
         | EventOutcome::Applied
         | EventOutcome::Retiring
-        | EventOutcome::Drained => AuditResult::Succeeded,
+        | EventOutcome::Drained
+        | EventOutcome::Ejected { .. }
+        | EventOutcome::Recovered { .. } => AuditResult::Succeeded,
         EventOutcome::Requested | EventOutcome::CapReached => AuditResult::Requested,
         EventOutcome::Rejected => AuditResult::Rejected,
         EventOutcome::Failed
         | EventOutcome::ForcedClose
         | EventOutcome::Quarantined
         | EventOutcome::Unknown => AuditResult::Failed,
-        EventOutcome::Ejected { .. } | EventOutcome::Recovered { .. } => AuditResult::Succeeded,
     }
 }
 
