@@ -10,9 +10,9 @@ use std::{
 use crate::{
     MediaEvent, MediaEventKind, PublisherIncarnation, StreamKey,
     clock::unix_time_ms,
-    media_parser::{parse_aac_configuration, parse_avc_configuration},
-    media_storage::{MediaStore, MediaStoreError},
-    segment_window::SegmentWindowConfig,
+    media::parser::{parse_aac_configuration, parse_avc_configuration},
+    media::segment_window::SegmentWindowConfig,
+    media::storage::{MediaStore, MediaStoreError},
 };
 
 mod boxes;
