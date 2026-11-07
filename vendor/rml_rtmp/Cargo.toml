@@ -35,16 +35,16 @@ version = "1.3"
 version = "1"
 
 [dependencies.hmac]
-version = "0.10"
+version = "0.13"
 
 [dependencies.rand]
-version = "0.8"
+version = "0.10"
 
 [dependencies.rml_amf0]
 version = "0.3.0"
 
 [dependencies.sha2]
-version = "0.9"
+version = "0.11"
 
 [dependencies.thiserror]
 version = "1.0"
