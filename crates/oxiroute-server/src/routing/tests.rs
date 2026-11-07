@@ -1598,7 +1598,7 @@ fn weighted_round_robin_is_deterministic_and_exposes_effective_weights() {
     assert_eq!(
         selected,
         [
-            "primary", "primary", "primary", "backup", "primary", "primary", "primary", "backup",
+            "primary", "primary", "backup", "primary", "primary", "primary", "backup", "primary",
         ]
     );
 
@@ -1612,6 +1612,109 @@ fn weighted_round_robin_is_deterministic_and_exposes_effective_weights() {
             .collect::<Vec<_>>(),
         vec![3, 1]
     );
+}
+
+fn weighted_pair(algorithm: UpstreamAlgorithm) -> RoundRobinPool {
+    RoundRobinPool::new_named_servers(
+        "pair".into(),
+        [
+            runtime_server("a", 3000, None),
+            runtime_server("b", 3001, None),
+        ],
+        algorithm,
+        Some(HealthStartup::Healthy),
+        None,
+    )
+    .expect("pair pool")
+}
+
+fn picks(pool: &RoundRobinPool, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|_| pool.select().expect("lease").server_name().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_runtime_weight_changes_the_weighted_split_and_reset_restores_it() {
+    let pool = weighted_pair(UpstreamAlgorithm::WeightedRoundRobin {
+        weights: vec![1, 1],
+    });
+    let share = |names: &[String]| names.iter().filter(|name| *name == "b").count();
+
+    assert_eq!(share(&picks(&pool, 8)), 4);
+    pool.set_server_weight("b", Some(3)).expect("raise weight");
+    let snapshot = pool.health_snapshot();
+    assert_eq!(snapshot.endpoints[1].weight, 3);
+    assert_eq!(snapshot.endpoints[1].configured_weight, 1);
+    assert_eq!(share(&picks(&pool, 8)), 6);
+    pool.set_server_weight("b", None).expect("reset weight");
+    assert_eq!(pool.health_snapshot().endpoints[1].weight, 1);
+    assert_eq!(share(&picks(&pool, 8)), 4);
+}
+
+#[test]
+fn runtime_weights_are_bounded_and_carried_to_the_next_generation() {
+    let pool = weighted_pair(UpstreamAlgorithm::LeastConnections);
+    assert_eq!(
+        pool.set_server_weight("a", Some(0)),
+        Err(PoolAdminError::InvalidWeight)
+    );
+    assert_eq!(
+        pool.set_server_weight("a", Some(101)),
+        Err(PoolAdminError::InvalidWeight)
+    );
+    assert!(pool.set_server_weight("missing", Some(2)).is_err());
+    pool.set_server_weight("a", Some(7)).expect("weight");
+
+    let carried = pool.administrative_states();
+    assert_eq!(carried.len(), 1);
+    assert_eq!(carried[0].weight, Some(7));
+    let next = weighted_pair(UpstreamAlgorithm::LeastConnections);
+    next.restore_administrative_states(&carried);
+    assert_eq!(next.health_snapshot().endpoints[0].weight, 7);
+}
+
+#[test]
+fn least_connections_compares_load_per_unit_of_weight() {
+    let pool = weighted_pair(UpstreamAlgorithm::LeastConnections);
+    pool.set_server_weight("a", Some(3)).expect("weight");
+    let leases = (0..8)
+        .map(|_| pool.select().expect("lease"))
+        .collect::<Vec<_>>();
+    let on_a = leases
+        .iter()
+        .filter(|lease| lease.server_name() == "a")
+        .count();
+
+    assert_eq!(on_a, 6, "a weight-3 server carries three times the work");
+}
+
+#[test]
+fn power_of_two_choices_never_picks_the_busier_of_two_servers() {
+    let pool = RoundRobinPool::new_named_servers(
+        "p2c".into(),
+        [
+            runtime_server("s0", 3000, None),
+            runtime_server("s1", 3001, None),
+            runtime_server("s2", 3002, None),
+        ],
+        UpstreamAlgorithm::PowerOfTwoChoices,
+        Some(HealthStartup::Healthy),
+        None,
+    )
+    .expect("p2c pool");
+    let _busy = (0..5)
+        .map(|_| pool.select_named_server("s0").lease.expect("busy lease"))
+        .collect::<Vec<_>>();
+
+    let chosen = (0..200)
+        .map(|_| pool.select().expect("lease").server_name().to_owned())
+        .collect::<Vec<_>>();
+
+    assert!(chosen.iter().all(|name| name != "s0"));
+    assert!(chosen.iter().any(|name| name == "s1"));
+    assert!(chosen.iter().any(|name| name == "s2"));
+    assert_eq!(pool.health_snapshot().algorithm, "power_of_two_choices");
 }
 
 #[test]
@@ -1759,7 +1862,7 @@ fn passive_ejection_is_deterministic_and_active_health_reentry_preserves_weighti
         .collect::<Vec<_>>();
     assert_eq!(
         selected_after_recovery,
-        ["primary", "primary", "primary", "backup"]
+        ["primary", "primary", "backup", "primary"]
     );
 }
 

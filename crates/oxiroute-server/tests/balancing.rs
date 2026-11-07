@@ -403,6 +403,7 @@ fn algorithms() -> Vec<(&'static str, UpstreamAlgorithm)> {
             },
         ),
         ("least_connections", UpstreamAlgorithm::LeastConnections),
+        ("power_of_two_choices", UpstreamAlgorithm::PowerOfTwoChoices),
         ("first", UpstreamAlgorithm::First),
     ]
 }

@@ -32,6 +32,9 @@ impl Renderer {
             UpstreamAlgorithm::LeastConnections => {
                 self.string_field("algorithm", "least_connections");
             }
+            UpstreamAlgorithm::PowerOfTwoChoices => {
+                self.string_field("algorithm", "power_of_two_choices");
+            }
             UpstreamAlgorithm::First => self.string_field("algorithm", "first"),
         }
         self.optional_table_field("health_check", health_check.as_ref(), Self::health_check);
