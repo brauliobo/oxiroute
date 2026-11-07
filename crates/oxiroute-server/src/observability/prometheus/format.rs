@@ -98,10 +98,12 @@ pub(super) const fn endpoint_state(state: crate::EndpointHealthState) -> &'stati
     }
 }
 
-pub(super) const fn component_state(state: crate::monitoring::ComponentState) -> &'static str {
+pub(super) const fn component_state(
+    state: crate::observability::monitoring::ComponentState,
+) -> &'static str {
     match state {
-        crate::monitoring::ComponentState::Healthy => "healthy",
-        crate::monitoring::ComponentState::Degraded => "degraded",
-        crate::monitoring::ComponentState::Unsupported => "unsupported",
+        crate::observability::monitoring::ComponentState::Healthy => "healthy",
+        crate::observability::monitoring::ComponentState::Degraded => "degraded",
+        crate::observability::monitoring::ComponentState::Unsupported => "unsupported",
     }
 }

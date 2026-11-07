@@ -6,7 +6,7 @@ pub(super) const ACCESS_LOG_QUEUE_CAPACITY: usize = 1_024;
 pub(crate) struct AccessLog {
     pub(super) sender: Option<SyncSender<Vec<u8>>>,
     pub(super) service: String,
-    pub(super) rtmp_metrics: Option<Arc<crate::logging::RtmpAccessLogMetrics>>,
+    pub(super) rtmp_metrics: Option<Arc<crate::observability::logging::RtmpAccessLogMetrics>>,
     pub(super) worker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -62,14 +62,14 @@ impl AccessLog {
         Self::open_with_rtmp_metrics(
             service,
             policy,
-            Some(crate::logging::rtmp_access_log_metrics()),
+            Some(crate::observability::logging::rtmp_access_log_metrics()),
         )
     }
 
     fn open_with_rtmp_metrics(
         service: &str,
         policy: Option<&AccessLogPolicy>,
-        rtmp_metrics: Option<Arc<crate::logging::RtmpAccessLogMetrics>>,
+        rtmp_metrics: Option<Arc<crate::observability::logging::RtmpAccessLogMetrics>>,
     ) -> Result<Option<Self>, AccessPreflightError> {
         let Some(AccessLogPolicy::File { path }) = policy else {
             return Ok(None);
@@ -127,14 +127,14 @@ impl AccessLog {
     }
 
     pub(crate) fn write(&self, event: &serde_json::Value) -> std::io::Result<()> {
-        self.enqueue(serde_json::to_vec(&crate::logging::redact_access_record(
-            event,
-        ))?)
+        self.enqueue(serde_json::to_vec(
+            &crate::observability::logging::redact_access_record(event),
+        )?)
     }
 
     pub(crate) fn write_rtmp(&self, event: &serde_json::Value) -> std::io::Result<()> {
         self.enqueue(serde_json::to_vec(
-            &crate::logging::redact_rtmp_access_record(event),
+            &crate::observability::logging::redact_rtmp_access_record(event),
         )?)
     }
 

@@ -8,7 +8,8 @@ use super::dto::{
     StatusResponse, TopologyResponse,
 };
 use crate::{
-    GenerationManager, RuntimeMetrics, TopologySnapshot, prometheus::render_prometheus_control,
+    GenerationManager, RuntimeMetrics, TopologySnapshot,
+    observability::prometheus::render_prometheus_control,
 };
 
 #[derive(Clone, Copy)]
@@ -51,7 +52,9 @@ pub(super) fn handle(
         Route::Metrics => metrics_response(metrics, control, generations),
         Route::Readiness => readiness_response(metrics, generations),
         Route::Status => status_response(metrics, generations, topology),
-        Route::StatusJson => crate::status_summary::status_json_response(metrics, generations),
+        Route::StatusJson => {
+            crate::observability::status_summary::status_json_response(metrics, generations)
+        }
         Route::Capabilities => capabilities_response(metrics),
     }
 }
@@ -84,7 +87,7 @@ fn status_response(
         );
     };
     let generation = generations.map(GenerationManager::status);
-    let audit = crate::operational_event::audit_status();
+    let audit = crate::observability::operational_event::audit_status();
     let response = match StatusResponse::project(
         runtime,
         generation.as_ref(),

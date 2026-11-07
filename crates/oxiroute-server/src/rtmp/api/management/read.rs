@@ -155,7 +155,7 @@ impl ManagementState {
                 }
             }
         }
-        let page = crate::operational_event::page(after, limit);
+        let page = crate::observability::operational_event::page(after, limit);
         match version {
             EventApiVersion::V1 => dto_response(200, &EventPageV1Response::from(page)),
             EventApiVersion::V2 => dto_response(200, &EventPageV2Response::from(page)),

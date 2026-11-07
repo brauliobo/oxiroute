@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use http::{HeaderName, HeaderValue};
 use pingora::modules::http::{HttpModule, HttpModuleBuilder, Module};
 
-use crate::logging::valid_correlation_id;
+use crate::observability::logging::valid_correlation_id;
 
 pub(crate) const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 pub(crate) const UPSTREAM_REQUEST_ID_HEADER: HeaderName =

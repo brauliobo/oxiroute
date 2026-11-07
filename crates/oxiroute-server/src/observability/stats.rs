@@ -16,7 +16,7 @@ use crate::html::escape_html;
 use crate::{
     ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics,
     config_coordinator::EffectiveRevision,
-    prometheus::render_prometheus_control,
+    observability::prometheus::render_prometheus_control,
     rtmp::api::response::to_http_response,
     secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
 };
@@ -76,9 +76,10 @@ impl HaproxyStatsApi {
             }
             ("GET", "/metrics") => self.metrics_response(),
             ("GET", "/ready") => self.readiness_response(),
-            ("GET", "/status.json") => {
-                crate::status_summary::status_json_response(&self.metrics, Some(&self.generations))
-            }
+            ("GET", "/status.json") => crate::observability::status_summary::status_json_response(
+                &self.metrics,
+                Some(&self.generations),
+            ),
             ("GET", "/api/v1/status") => {
                 if self.authorized(peer_is_loopback, authorization) {
                     self.status_response()
@@ -181,7 +182,7 @@ impl HaproxyStatsApi {
         let listeners = runtime
             .as_ref()
             .map_or_else(Vec::new, |runtime| runtime.listeners.clone());
-        let audit = crate::operational_event::audit_status();
+        let audit = crate::observability::operational_event::audit_status();
         let components = runtime.as_ref().map_or_else(
             || {
                 serde_json::json!({

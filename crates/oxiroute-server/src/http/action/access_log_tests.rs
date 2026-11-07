@@ -137,7 +137,7 @@ fn access_log_queue_saturation_never_blocks_the_caller() {
 #[test]
 fn rtmp_access_log_queue_saturation_counts_nonblocking_drops() {
     let (sender, _receiver) = mpsc::sync_channel(1);
-    let metrics = Arc::new(crate::logging::RtmpAccessLogMetrics::default());
+    let metrics = Arc::new(crate::observability::logging::RtmpAccessLogMetrics::default());
     let access_log = AccessLog {
         sender: Some(sender),
         service: "test".into(),

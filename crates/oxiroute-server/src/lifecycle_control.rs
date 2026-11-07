@@ -135,7 +135,7 @@ impl DirectLifecycleControl {
             .metrics()
             .set_process_administrative_state(AdministrativeState::Drain);
         shutdown.store(true, Ordering::Release);
-        crate::operational_event::emit("process_shutdown", "requested", None);
+        crate::observability::operational_event::emit("process_shutdown", "requested", None);
         Ok(LifecycleOutcome::ShutdownRequested)
     }
 }

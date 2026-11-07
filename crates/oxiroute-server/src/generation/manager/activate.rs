@@ -247,7 +247,7 @@ impl GenerationManager {
         active.start_accepting();
         state.last_failure = None;
         self.counters.activations.fetch_add(1, Ordering::Relaxed);
-        crate::operational_event::emit(
+        crate::observability::operational_event::emit(
             "generation_activate",
             "activated",
             Some(&active.revision.candidate),

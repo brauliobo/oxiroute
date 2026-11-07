@@ -32,7 +32,8 @@ pub(super) struct PreparedGenerationTransaction {
     #[cfg(target_os = "linux")]
     pub(super) descriptors: Option<DescriptorSet>,
     pub(super) rtmp: Option<PreparedRtmpRuntimeSet>,
-    pub(super) listener_registration: Option<crate::monitoring::ListenerRegistrationTransaction>,
+    pub(super) listener_registration:
+        Option<crate::observability::monitoring::ListenerRegistrationTransaction>,
     pub(super) reservations: Option<ListenerReservations>,
     pub(super) acquired: Option<crate::service_plan::GenerationAcquisition>,
     pub(super) plan: Option<RuntimePlan>,

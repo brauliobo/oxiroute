@@ -22,7 +22,7 @@ use super::{
 use crate::{
     AdministrativeState, GenerationManager, RuntimeGeneration, RuntimeMetrics,
     lifecycle_control::{LifecycleError, LifecycleOutcome, LifecyclePort},
-    operational_event::{AuditCategory, AuditContext, AuditResult, AuditStore},
+    observability::operational_event::{AuditCategory, AuditContext, AuditResult, AuditStore},
 };
 
 const MAX_BATCH_TARGETS: usize = 256;
@@ -147,7 +147,7 @@ fn find_pool(active: &RuntimeGeneration, name: &str) -> Option<Arc<crate::RoundR
 }
 
 fn mutation_response(operation: &str, changed: usize) -> ApiResponse {
-    crate::operational_event::emit(operation, "applied", None);
+    crate::observability::operational_event::emit(operation, "applied", None);
     dto_response(200, &MutationResponse::applied(changed))
 }
 

@@ -175,8 +175,12 @@ fn exposition_uses_only_fixed_transport_outcome_labels() {
 
 #[test]
 fn exposition_includes_bounded_rtmp_and_acme_event_outcomes() {
-    crate::operational_event::emit_rtmp_access("publish", "accepted");
-    crate::operational_event::emit_certificate("certificate_renewal", "failed", "example.invalid");
+    crate::observability::operational_event::emit_rtmp_access("publish", "accepted");
+    crate::observability::operational_event::emit_certificate(
+        "certificate_renewal",
+        "failed",
+        "example.invalid",
+    );
     let metrics = RuntimeMetrics::new();
     let control = empty_rtmp_runtime().control();
 
@@ -343,7 +347,7 @@ fn exposition_has_queue_wait_histogram_and_oldest_wait_per_pool() {
         )
         .expect("pool"),
     );
-    crate::upstream_stats::upstream_stats()
+    crate::observability::upstream_stats::upstream_stats()
         .pool("queue-wait-series")
         .record_queue_wait(std::time::Duration::from_millis(30));
     metrics
@@ -389,10 +393,11 @@ fn exposition_has_per_server_responses_attempts_bytes_and_latency() {
         )
         .expect("pool"),
     );
-    let stats = crate::upstream_stats::upstream_stats().server("server-series", "gpu-1");
+    let stats =
+        crate::observability::upstream_stats::upstream_stats().server("server-series", "gpu-1");
     stats.record_response(Some(200));
     stats.record_response(Some(503));
-    stats.record_attempt(crate::upstream_stats::AttemptOutcome::Timeout);
+    stats.record_attempt(crate::observability::upstream_stats::AttemptOutcome::Timeout);
     stats.record_bytes(7, 11);
     stats.record_request_duration(std::time::Duration::from_millis(40));
     stats.record_header_duration(std::time::Duration::from_millis(8));

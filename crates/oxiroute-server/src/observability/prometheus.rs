@@ -55,12 +55,12 @@ fn render_server_traffic(
     server: &crate::EndpointHealthSnapshot,
     histograms: bool,
 ) -> Result<(), PrometheusError> {
-    let stats = crate::upstream_stats::upstream_stats()
+    let stats = crate::observability::upstream_stats::upstream_stats()
         .server(pool, &server.name)
         .snapshot();
     let identity = [("pool", pool), ("server", server.name.as_str())];
     let with = |label: (&'static str, &'static str)| [identity[0], identity[1], label];
-    for (class, count) in crate::upstream_stats::RESPONSE_CLASSES
+    for (class, count) in crate::observability::upstream_stats::RESPONSE_CLASSES
         .iter()
         .zip(stats.responses)
     {
@@ -71,7 +71,7 @@ fn render_server_traffic(
             count,
         )?;
     }
-    for (outcome, count) in crate::upstream_stats::AttemptOutcome::ALL
+    for (outcome, count) in crate::observability::upstream_stats::AttemptOutcome::ALL
         .iter()
         .zip(stats.attempts)
     {
@@ -139,8 +139,8 @@ fn render_prometheus_snapshot(
             generation.rtmp_auto_push_status()
         });
     let generation = generations.status();
-    let audit = crate::operational_event::audit_metrics();
-    let transport_events = crate::monitoring::transport_event_snapshots();
+    let audit = crate::observability::operational_event::audit_metrics();
+    let transport_events = crate::observability::monitoring::transport_event_snapshots();
     let mut output = String::with_capacity(16 * 1024);
 
     metric(
@@ -442,7 +442,7 @@ fn render_prometheus_snapshot(
             &mut output,
             "oxiroute_pool_queue_wait_milliseconds",
             &[("pool", pool.name.as_str())],
-            &crate::upstream_stats::upstream_stats()
+            &crate::observability::upstream_stats::upstream_stats()
                 .pool(&pool.name)
                 .queue_wait(),
         )?;
@@ -716,11 +716,11 @@ fn render_prometheus_snapshot(
     }
     sample(&mut output, "oxiroute_rtmp_streams", rtmp.streams.len())?;
     sample(&mut output, "oxiroute_rtmp_clients", rtmp_clients)?;
-    let access_log = crate::logging::rtmp_access_log_snapshot();
+    let access_log = crate::observability::logging::rtmp_access_log_snapshot();
     sample(
         &mut output,
         "oxiroute_rtmp_access_log_queue_capacity",
-        crate::logging::RTMP_ACCESS_LOG_QUEUE_CAPACITY,
+        crate::observability::logging::RTMP_ACCESS_LOG_QUEUE_CAPACITY,
     )?;
     sample(
         &mut output,
@@ -932,8 +932,8 @@ fn render_prometheus_snapshot(
         "oxiroute_audit_corrupt_records_total",
         audit.status.corrupt_records,
     )?;
-    for category in crate::operational_event::AuditCategory::ALL {
-        for result in crate::operational_event::AuditResult::ALL {
+    for category in crate::observability::operational_event::AuditCategory::ALL {
+        for result in crate::observability::operational_event::AuditResult::ALL {
             labels(
                 &mut output,
                 "oxiroute_audit_operations_total",

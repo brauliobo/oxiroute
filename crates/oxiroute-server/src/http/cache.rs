@@ -12,7 +12,7 @@ use tokio::sync::Semaphore;
 
 use crate::{
     ListenerMetrics,
-    monitoring::CacheEvent,
+    observability::monitoring::CacheEvent,
     secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
 };
 

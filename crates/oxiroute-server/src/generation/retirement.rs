@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use crate::{
     RuntimeGeneration,
     config_coordinator::{ConfigRejection, EffectiveRevision},
-    operational_event,
+    observability::operational_event,
 };
 
 /// A generation that was asked to close stays listed this long while its teardown finishes.

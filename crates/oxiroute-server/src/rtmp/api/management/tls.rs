@@ -193,7 +193,7 @@ impl ManagementState {
             );
         };
         let certificate_name = reconciler.status().certificate;
-        crate::operational_event::emit_certificate_with_context(
+        crate::observability::operational_event::emit_certificate_with_context(
             "certificate_renewal",
             "requested",
             &certificate_name,
@@ -210,7 +210,7 @@ impl ManagementState {
         match result {
             Ok(Ok(outcome)) => {
                 let status = reconciler.status();
-                crate::operational_event::emit_certificate_with_context(
+                crate::observability::operational_event::emit_certificate_with_context(
                     if outcome == crate::AcmeManagedOutcome::Activated {
                         "certificate_activated"
                     } else {
@@ -227,7 +227,7 @@ impl ManagementState {
                 dto_response(200, &TlsRenewResponse::new(status, outcome.code()))
             }
             Ok(Err(error)) => {
-                crate::operational_event::emit_certificate_with_context(
+                crate::observability::operational_event::emit_certificate_with_context(
                     "certificate_renewal",
                     "failed",
                     &certificate_name,
@@ -269,7 +269,7 @@ impl ManagementState {
             );
         };
         let certificate = reconciler.status().certificate;
-        crate::operational_event::emit_certificate_with_context(
+        crate::observability::operational_event::emit_certificate_with_context(
             "certificate_revocation",
             "requested",
             &certificate,
@@ -286,7 +286,7 @@ impl ManagementState {
         .await;
         match result {
             Ok(Ok((outcome, job_id))) => {
-                crate::operational_event::emit_certificate_with_context(
+                crate::observability::operational_event::emit_certificate_with_context(
                     "certificate_revocation",
                     "applied",
                     &certificate,
@@ -298,7 +298,7 @@ impl ManagementState {
                 )
             }
             Ok(Err(error)) => {
-                crate::operational_event::emit_certificate_with_context(
+                crate::observability::operational_event::emit_certificate_with_context(
                     "certificate_revocation",
                     "failed",
                     &certificate,
@@ -363,7 +363,7 @@ impl ManagementState {
             );
         };
         let certificate = certificate.to_owned();
-        crate::operational_event::emit_certificate_with_context(
+        crate::observability::operational_event::emit_certificate_with_context(
             "certificate_deletion",
             "requested",
             &certificate,
@@ -379,7 +379,7 @@ impl ManagementState {
         .await;
         match result {
             Ok(Ok((outcome, job_id))) => {
-                crate::operational_event::emit_certificate_with_context(
+                crate::observability::operational_event::emit_certificate_with_context(
                     "certificate_deletion",
                     "applied",
                     &certificate,
@@ -391,7 +391,7 @@ impl ManagementState {
                 )
             }
             Ok(Err(error)) => {
-                crate::operational_event::emit_certificate_with_context(
+                crate::observability::operational_event::emit_certificate_with_context(
                     "certificate_deletion",
                     "failed",
                     &certificate,
@@ -438,7 +438,7 @@ impl ManagementState {
             );
         };
         let certificate = reconciler.status().certificate;
-        crate::operational_event::emit_certificate_with_context(
+        crate::observability::operational_event::emit_certificate_with_context(
             "certificate_account_rollover",
             "requested",
             &certificate,
@@ -454,7 +454,7 @@ impl ManagementState {
         .await;
         match result {
             Ok(Ok((outcome, job_id))) => {
-                crate::operational_event::emit_certificate_with_context(
+                crate::observability::operational_event::emit_certificate_with_context(
                     "certificate_account_rollover",
                     "applied",
                     &certificate,
@@ -466,7 +466,7 @@ impl ManagementState {
                 )
             }
             Ok(Err(error)) => {
-                crate::operational_event::emit_certificate_with_context(
+                crate::observability::operational_event::emit_certificate_with_context(
                     "certificate_account_rollover",
                     "failed",
                     &certificate,
@@ -521,7 +521,7 @@ impl ManagementState {
         let certificate = reconciler.status().certificate;
         let result = match control {
             JobControl::Cancel => reconciler.cancel_job().map(|job_id| {
-                crate::operational_event::emit_certificate_with_context(
+                crate::observability::operational_event::emit_certificate_with_context(
                     "certificate_job_control",
                     "requested",
                     &certificate,
@@ -530,7 +530,7 @@ impl ManagementState {
                 TlsJobControlResponse::cancellation(certificate.clone(), job_id)
             }),
             JobControl::Pause => reconciler.pause().map(|job_id| {
-                crate::operational_event::emit_certificate_with_context(
+                crate::observability::operational_event::emit_certificate_with_context(
                     "certificate_job_control",
                     "applied",
                     &certificate,
@@ -539,7 +539,7 @@ impl ManagementState {
                 TlsJobControlResponse::paused(certificate.clone(), job_id)
             }),
             JobControl::Resume => reconciler.resume().map(|()| {
-                crate::operational_event::emit_certificate_with_context(
+                crate::observability::operational_event::emit_certificate_with_context(
                     "certificate_job_control",
                     "applied",
                     &certificate,

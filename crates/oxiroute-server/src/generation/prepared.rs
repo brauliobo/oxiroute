@@ -81,7 +81,7 @@ impl PreparedGeneration {
         tls: &crate::PreparedTls,
     ) -> Result<(), GenerationError> {
         let draft = config.as_draft();
-        crate::stats::preflight_admin_token(
+        crate::observability::stats::preflight_admin_token(
             draft
                 .stats
                 .as_ref()

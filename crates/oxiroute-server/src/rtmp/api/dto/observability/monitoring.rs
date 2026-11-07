@@ -260,7 +260,7 @@ impl RtmpMonitoringDto {
         let mut relay_payload_bytes_sent = 0_u64;
         let mut relays = Vec::new();
         let mut recorders = Vec::new();
-        let access_log = crate::logging::rtmp_access_log_snapshot();
+        let access_log = crate::observability::logging::rtmp_access_log_snapshot();
         for stream in &snapshot.streams {
             if stream.publisher.is_some() {
                 publishers = publishers.checked_add(1)?;
@@ -356,7 +356,7 @@ impl RtmpMonitoringDto {
             relay_events_dropped: relay_events_dropped.into(),
             relay_payload_bytes_sent: relay_payload_bytes_sent.into(),
             access_log: RtmpAccessLogMonitoringDto {
-                queue_capacity: crate::logging::RTMP_ACCESS_LOG_QUEUE_CAPACITY,
+                queue_capacity: crate::observability::logging::RTMP_ACCESS_LOG_QUEUE_CAPACITY,
                 queue_depth: access_log.queue_depth.into(),
                 enqueued: access_log.enqueued.into(),
                 written: access_log.written.into(),

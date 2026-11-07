@@ -16,8 +16,10 @@ use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use tokio::sync::Notify;
 
 use crate::config_coordinator::EffectiveRevision;
-use crate::logging::{next_correlation_id, redact_identifier, redact_text, valid_correlation_id};
-use crate::monitoring::{ObservedTransport, TransportOutcome};
+use crate::observability::logging::{
+    next_correlation_id, redact_identifier, redact_text, valid_correlation_id,
+};
+use crate::observability::monitoring::{ObservedTransport, TransportOutcome};
 use crate::routing::{EndpointHealthState, HealthFailure};
 
 pub(crate) const EVENT_CAPACITY: usize = 2_048;
