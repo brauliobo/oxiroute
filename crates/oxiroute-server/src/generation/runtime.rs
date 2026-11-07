@@ -1,0 +1,371 @@
+#[allow(clippy::wildcard_imports)]
+use super::*;
+
+pub struct RuntimeGeneration {
+    pub(super) accept_gate: AcceptGate,
+    pub(super) config: Arc<ValidatedConfig>,
+    pub(super) drain: (Mutex<()>, Condvar),
+    pub(super) metrics: RuntimeMetrics,
+    inventory: ListenerInventory,
+    resources: GenerationResources,
+    pub(super) references: [AtomicU64; 9],
+    pub(super) mutations: AtomicU64,
+    pub(super) revision: GenerationRevision,
+    runtime_lifecycle: AtomicU8,
+    runtime_failed: AtomicBool,
+}
+
+const RUNTIME_PREPARED: u8 = 0;
+const RUNTIME_START_CLAIMED: u8 = 1;
+const RUNTIME_STARTED: u8 = 2;
+const RUNTIME_CANCELLED: u8 = 3;
+
+impl RuntimeGeneration {
+    pub(super) fn activate(prepared: PreparedGeneration) -> Self {
+        Self {
+            accept_gate: AcceptGate::closed(),
+            config: prepared.config,
+            drain: (Mutex::new(()), Condvar::new()),
+            metrics: prepared.metrics,
+            inventory: prepared.inventory,
+            resources: prepared.resources,
+            references: std::array::from_fn(|_| AtomicU64::new(0)),
+            mutations: AtomicU64::new(0),
+            revision: prepared.revision,
+            runtime_lifecycle: AtomicU8::new(RUNTIME_PREPARED),
+            runtime_failed: AtomicBool::new(false),
+        }
+    }
+
+    #[must_use]
+    pub fn config(&self) -> &Arc<ValidatedConfig> {
+        &self.config
+    }
+
+    #[must_use]
+    pub const fn plan(&self) -> &RuntimePlan {
+        self.resources.plan()
+    }
+
+    #[must_use]
+    pub fn services(&self) -> &[crate::ServiceSpec] {
+        self.resources.services()
+    }
+
+    #[must_use]
+    pub fn health_supervisor(&self) -> Option<crate::HealthSupervisor> {
+        self.resources.health_supervisor()
+    }
+
+    #[must_use]
+    pub fn pools(&self) -> &[Arc<crate::RoundRobinPool>] {
+        self.resources.pools()
+    }
+
+    #[must_use]
+    pub fn administrative_states(&self) -> Vec<ServerAdminState> {
+        self.pools()
+            .iter()
+            .flat_map(|pool| pool.administrative_states())
+            .collect()
+    }
+
+    pub fn restore_administrative_states(&self, states: &[ServerAdminState]) {
+        for pool in self.pools() {
+            pool.restore_administrative_states(states);
+        }
+    }
+
+    #[must_use]
+    pub const fn tls(&self) -> &crate::PreparedTls {
+        self.resources.tls()
+    }
+
+    #[must_use]
+    pub fn rtmp_vod_catalog(&self) -> Arc<oxiroute_rtmp::VodCatalog> {
+        self.resources.rtmp_vod_catalog()
+    }
+
+    #[must_use]
+    pub fn rtmp_media_catalog(&self) -> Arc<oxiroute_rtmp::MediaCatalog> {
+        self.resources.rtmp_media_catalog()
+    }
+
+    #[must_use]
+    pub const fn metrics(&self) -> &RuntimeMetrics {
+        &self.metrics
+    }
+
+    fn listener_metrics(&self, id: &ListenerId) -> Result<ListenerMetrics, MetricsError> {
+        self.metrics
+            .inventory_listener(id)?
+            .ok_or_else(|| MetricsError::ListenerNotFound(format!("{id:?}")))
+    }
+
+    /// Returns the metrics handle for one exact traffic listener identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metrics state is unavailable or the listener is not registered.
+    pub fn traffic_listener_metrics(&self, name: &str) -> Result<ListenerMetrics, MetricsError> {
+        self.listener_metrics(&ListenerId::Traffic(name.to_owned()))
+    }
+
+    /// Returns the metrics handle for the management listener.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metrics state is unavailable or the listener is not registered.
+    pub fn management_listener_metrics(&self) -> Result<ListenerMetrics, MetricsError> {
+        self.listener_metrics(&ListenerId::Management)
+    }
+
+    /// Returns the metrics handle for one exact statistics listener index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metrics state is unavailable or the listener is not registered.
+    pub fn stats_listener_metrics(&self, index: usize) -> Result<ListenerMetrics, MetricsError> {
+        self.listener_metrics(&ListenerId::Stats(index))
+    }
+
+    /// Returns the metrics handle for one exact statistics-page listener index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metrics state is unavailable or the listener is not registered.
+    pub fn stats_page_listener_metrics(
+        &self,
+        index: usize,
+    ) -> Result<ListenerMetrics, MetricsError> {
+        self.listener_metrics(&ListenerId::StatsPage(index))
+    }
+
+    #[must_use]
+    pub const fn reservations(&self) -> &ListenerReservations {
+        self.resources.reservations()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn expected_runtime_listener_count(&self) -> usize {
+        self.inventory.complete_listener_count()
+    }
+
+    pub(crate) fn listener_restart_required(&self, candidate: &ValidatedConfig) -> bool {
+        self.inventory
+            .restart_required(&ListenerInventory::compile(candidate))
+    }
+
+    /// Describes what activating `candidate` would do to the listener sockets this generation owns.
+    pub(crate) fn listener_changes(
+        &self,
+        candidate: &ValidatedConfig,
+    ) -> Option<crate::listener_inventory::ListenerChangeSummary> {
+        crate::listener_reservation::listener_changes(
+            &self.inventory,
+            &ListenerInventory::compile(candidate),
+        )
+    }
+
+    /// Whether `candidate` needs other sockets than this generation owns.
+    ///
+    /// A supervised worker only adopts sockets, so only the supervising master can apply it.
+    pub(crate) fn listener_set_changed(&self, candidate: &ValidatedConfig) -> bool {
+        !self
+            .inventory
+            .same_descriptor_topology(&ListenerInventory::compile(candidate))
+    }
+
+    pub(crate) fn listener_restart_reason(
+        &self,
+        candidate: &ValidatedConfig,
+    ) -> Option<crate::listener_inventory::ListenerRestartReason> {
+        self.inventory
+            .restart_reason(&ListenerInventory::compile(candidate))
+    }
+
+    #[must_use]
+    pub fn revision(&self) -> &GenerationRevision {
+        &self.revision
+    }
+
+    #[must_use]
+    pub fn rtmp_control(&self) -> RtmpControlHandle {
+        self.resources.rtmp_control()
+    }
+
+    #[must_use]
+    pub fn rtmp_service(&self, service: &str) -> Option<RtmpServiceHandle> {
+        self.resources.rtmp_service(service)
+    }
+
+    #[must_use]
+    pub fn rtmp_auto_push_status(&self) -> RtmpAutoPushStatus {
+        self.resources.rtmp_auto_push_status()
+    }
+
+    pub fn initiate_rtmp_shutdown(&self, deadline: Instant) -> RtmpShutdown {
+        self.resources.initiate_rtmp_shutdown(deadline)
+    }
+
+    pub(super) fn rtmp_retirement(&self) -> RtmpRetirement {
+        self.resources.rtmp_retirement()
+    }
+
+    pub fn rtmp_shutdown(&self) -> RtmpShutdown {
+        self.resources.rtmp_shutdown()
+    }
+
+    pub(super) fn claim_runtime_start(&self) -> bool {
+        self.runtime_lifecycle
+            .compare_exchange(
+                RUNTIME_PREPARED,
+                RUNTIME_START_CLAIMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    pub(super) fn start_rtmp(&self) -> Result<(), GenerationError> {
+        self.resources.start_rtmp()
+    }
+
+    #[must_use]
+    pub fn mark_runtime_started(&self) -> bool {
+        self.runtime_lifecycle
+            .compare_exchange(
+                RUNTIME_START_CLAIMED,
+                RUNTIME_STARTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    #[must_use]
+    pub fn runtime_started(&self) -> bool {
+        self.runtime_lifecycle.load(Ordering::Acquire) == RUNTIME_STARTED
+    }
+
+    pub fn mark_runtime_failed(&self) {
+        self.runtime_failed.store(true, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn runtime_failed(&self) -> bool {
+        self.runtime_failed.load(Ordering::Acquire)
+    }
+
+    pub(super) fn cancel_runtime_start(&self) {
+        self.runtime_lifecycle
+            .store(RUNTIME_CANCELLED, Ordering::Release);
+        self.runtime_failed.store(true, Ordering::Release);
+    }
+
+    pub fn begin_reference(
+        self: &Arc<Self>,
+        kind: RuntimeReferenceKind,
+    ) -> Option<GenerationReference> {
+        if !self.accept_gate.accepting() {
+            return None;
+        }
+        let counter = &self.references[kind.index()];
+        counter.fetch_add(1, Ordering::AcqRel);
+        if !self.accept_gate.accepting() {
+            counter.fetch_sub(1, Ordering::AcqRel);
+            self.drain.1.notify_all();
+            return None;
+        }
+        Some(GenerationReference {
+            generation: Arc::clone(self),
+            kind,
+        })
+    }
+
+    #[must_use]
+    pub fn begin_owned_reference(
+        self: &Arc<Self>,
+        kind: RuntimeReferenceKind,
+    ) -> GenerationReference {
+        self.references[kind.index()].fetch_add(1, Ordering::AcqRel);
+        GenerationReference {
+            generation: Arc::clone(self),
+            kind,
+        }
+    }
+
+    pub fn begin_admission(self: &Arc<Self>) -> Option<GenerationAdmission> {
+        self.accept_gate
+            .claim()
+            .map(|ownership| GenerationAdmission {
+                generation: Arc::clone(self),
+                _ownership: ownership,
+            })
+    }
+
+    #[must_use]
+    pub fn accept_gate(&self) -> AcceptGate {
+        self.accept_gate.clone()
+    }
+
+    pub fn stop_accepting(&self) {
+        let _ = self.accept_gate.close_and_wait(Duration::ZERO);
+    }
+
+    pub(super) fn start_accepting(&self) {
+        self.metrics.activate_limits(self.plan().max_connections);
+        self.accept_gate.enable();
+    }
+
+    #[must_use]
+    pub fn accepting(&self) -> bool {
+        self.accept_gate.accepting()
+    }
+
+    #[must_use]
+    pub fn active_references(&self, kind: RuntimeReferenceKind) -> u64 {
+        self.references[kind.index()].load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub fn drained(&self) -> bool {
+        self.references
+            .iter()
+            .all(|counter| counter.load(Ordering::Acquire) == 0)
+    }
+
+    #[must_use]
+    pub fn drain(&self, timeout: Duration) -> bool {
+        let started = Instant::now();
+        if !self.accept_gate.close_and_wait(timeout) {
+            return false;
+        }
+        let timeout = timeout.saturating_sub(started.elapsed());
+        let deadline = Instant::now() + timeout;
+        let mut lock = self
+            .drain
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if self.drained() {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (next, wait) = self
+                .drain
+                .1
+                .wait_timeout(lock, deadline.saturating_duration_since(now))
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            lock = next;
+            if wait.timed_out() {
+                return self.drained();
+            }
+        }
+    }
+}
