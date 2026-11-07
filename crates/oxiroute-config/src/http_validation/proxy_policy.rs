@@ -59,6 +59,7 @@ pub(super) fn validate_proxy_policy(
     validate_rescue(service, route_index, policy, pool, pools)?;
     validate_select(service, route_index, policy, pool, pools)?;
     validate_affinity(service, route_index, policy, pool)?;
+    validate_queue_class(service, route_index, policy, pool, pools)?;
     if let Some(cache) = &mut policy.cache {
         crate::cache_validation::validate_cache_policy(service, route_index, cache, cache_stores)?;
     }
@@ -203,6 +204,40 @@ fn validate_select(
     }
     if http3(pool) {
         return Err(invalid("is not supported for HTTP/3 upstream pools"));
+    }
+    Ok(())
+}
+
+fn validate_queue_class(
+    service: &str,
+    route_index: usize,
+    policy: &HttpProxyPolicy,
+    pool: &UpstreamPool,
+    pools: &HashMap<&str, &UpstreamPool>,
+) -> Result<(), ConfigError> {
+    let Some(class) = &policy.queue_class else {
+        return Ok(());
+    };
+    let reachable = std::iter::once(pool).chain(
+        policy
+            .select
+            .iter()
+            .flat_map(|select| &select.rules)
+            .filter_map(|rule| pools.get(rule.pool.as_str()).copied()),
+    );
+    for pool in reachable {
+        let has_class = pool
+            .queue
+            .as_ref()
+            .is_some_and(|queue| queue.classes.iter().any(|other| &other.name == class));
+        if !has_class {
+            return Err(invalid_route(
+                service,
+                route_index,
+                "action.policy.queue_class",
+                format!("pool `{}` has no queue class `{class}`", pool.name),
+            ));
+        }
     }
     Ok(())
 }

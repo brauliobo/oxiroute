@@ -1489,6 +1489,7 @@ async fn capped_first_pool_dispatches_queued_requests_fifo_to_the_next_available
                     server_timeout_ms: None,
                     connection_reuse: oxiroute_config::UpstreamConnectionReuse::Never,
                     resilience: oxiroute_config::PoolResilience::default(),
+                    queue: None,
                 }],
                 vec![route(None, "/", &[], "workers")],
                 1024,
@@ -3474,6 +3475,65 @@ async fn latency_outlier_is_ejected_and_stops_receiving_requests() {
     })
     .await
     .expect("outlier test timed out");
+}
+
+#[tokio::test]
+async fn queue_classes_serve_interactive_requests_before_earlier_batch_requests() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = StatusOrigin::start_delayed(200, "worker", Duration::from_millis(250)).await;
+        let mut workers = capped_pool("workers", origin.address, 1);
+        workers.queue = Some(oxiroute_config::PoolQueuePolicy {
+            classes: ["interactive", "batch"]
+                .map(|name| oxiroute_config::PoolQueueClass {
+                    name: name.into(),
+                    weight: 1,
+                })
+                .to_vec(),
+            discipline: oxiroute_config::QueueDiscipline::Strict,
+            class_header: Some("x-priority".into()),
+            default_class: Some("batch".into()),
+            ..oxiroute_config::PoolQueuePolicy::default()
+        });
+        let proxy = Arc::new(
+            ProxyHarness::start(
+                vec![workers],
+                vec![route(None, "/", &[], "workers")],
+                1024,
+                3,
+            )
+            .await,
+        );
+        let finished = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut requests = Vec::new();
+        for (name, class) in [
+            ("first", "batch"),
+            ("batch", "batch"),
+            ("interactive", "interactive"),
+        ] {
+            let (proxy, finished) = (Arc::clone(&proxy), Arc::clone(&finished));
+            requests.push(tokio::spawn(async move {
+                let response = proxy
+                    .request(&format!(
+                        "GET /run HTTP/1.1\r\nHost: classes.test\r\nX-Priority: {class}\r\n"
+                    ))
+                    .await;
+                assert_eq!(response.status, 200, "{name}");
+                finished.lock().expect("finished").push(name);
+            }));
+            tokio::time::sleep(Duration::from_millis(60)).await;
+        }
+        for request in requests {
+            request.await.expect("request task");
+        }
+
+        assert_eq!(
+            *finished.lock().expect("finished"),
+            ["first", "interactive", "batch"]
+        );
+        Arc::into_inner(proxy).expect("proxy").finish().await;
+    })
+    .await
+    .expect("queue class test timed out");
 }
 
 const JSON_POST: &[u8] = b"POST /api/chat HTTP/1.1\r\nHost: rescue.test\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"model\":\"qwen\"}";
@@ -8275,6 +8335,7 @@ fn capped_pool(name: &str, address: SocketAddr, max_connections: u64) -> Upstrea
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
         resilience: oxiroute_config::PoolResilience::default(),
+        queue: None,
     }
 }
 
@@ -8297,6 +8358,7 @@ fn endpoint_pool(
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         resilience: oxiroute_config::PoolResilience::default(),
+        queue: None,
     }
 }
 

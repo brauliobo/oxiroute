@@ -1943,6 +1943,7 @@ fn reload_config(shape: &ReloadShape<'_>) -> ConfigDraft {
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::default(),
             resilience: oxiroute_config::PoolResilience::default(),
+            queue: None,
         }];
         config.http_services[0].upstream_io_timeout_ms = 120_000;
         config.http_services[0].routes[0].action = HttpRouteAction::Proxy {
@@ -2705,6 +2706,7 @@ fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::default(),
             resilience: oxiroute_config::PoolResilience::default(),
+            queue: None,
         }],
         http_services: Vec::new(),
         forward_proxy_services: Vec::new(),
@@ -2838,6 +2840,7 @@ fn h3_proxy_config(
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::default(),
         resilience: oxiroute_config::PoolResilience::default(),
+        queue: None,
     });
     config.http_services[0].routes[0].action = HttpRouteAction::Proxy {
         upstream_pool: "origin".into(),

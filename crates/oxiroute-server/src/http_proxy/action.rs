@@ -56,6 +56,10 @@ pub(super) async fn execute_route_action(
                 if let Some(inflight) = &ctx.inflight {
                     inflight.set_pool(pool.selector().name());
                 }
+                ctx.queue_tag = pool.selector().queue_tag(
+                    proxy.policy.queue_class.as_deref(),
+                    &session.req_header().headers,
+                );
                 ctx.pool = Some(Arc::clone(pool));
                 return Ok(false);
             }

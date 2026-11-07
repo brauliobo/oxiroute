@@ -14,14 +14,14 @@ use oxiroute_config::{
     HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpSelectInvalid,
     HttpSelectSpill, HttpService, HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost,
     HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management,
-    OutlierDetection, PassiveHealthPolicy, PassiveObserve, PassiveOnError, PoolResilience,
-    Protocol, Readmission, ReadmissionProbe, RtmpAccessPolicy, RtmpApplication,
-    RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy,
-    RtmpExecProfile, RtmpExecTrigger, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
-    RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings,
-    TlsClientAuthMode, TlsClientAuthPolicy, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion,
-    UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
-    UpstreamServer, UpstreamTls,
+    OutlierDetection, PassiveHealthPolicy, PassiveObserve, PassiveOnError, PoolQueueClass,
+    PoolQueuePolicy, PoolResilience, Protocol, QueueDiscipline, Readmission, ReadmissionProbe,
+    RtmpAccessPolicy, RtmpApplication, RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode,
+    RtmpExecNetworkPolicy, RtmpExecProfile, RtmpExecTrigger, RtmpRecorder,
+    RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
+    RtmpService, RtmpSessionCeilings, TlsClientAuthMode, TlsClientAuthPolicy, TlsPolicy,
+    TlsProfile, TlsSessionCache, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse,
+    UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
 };
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -223,6 +223,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             server_timeout_ms: Some(30_000),
             connection_reuse: UpstreamConnectionReuse::Safe,
             resilience: oxiroute_config::PoolResilience::default(),
+            queue: Some(test_queue_policy()),
         },
         UpstreamPool {
             name: "web-backends".into(),
@@ -260,11 +261,12 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             passive_health: None,
             tls: None,
             http_versions: HttpVersionPolicy::default(),
-            queue_timeout_ms: None,
+            queue_timeout_ms: Some(2_000),
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Safe,
             resilience: oxiroute_config::PoolResilience::default(),
+            queue: Some(test_queue_policy()),
         },
         UpstreamPool {
             name: "database-backends".into(),
@@ -298,6 +300,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Never,
             resilience: oxiroute_config::PoolResilience::default(),
+            queue: None,
         },
         UpstreamPool {
             name: "unix-backends".into(),
@@ -318,8 +321,30 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Never,
             resilience: oxiroute_config::PoolResilience::default(),
+            queue: None,
         },
     ]
+}
+
+fn test_queue_policy() -> PoolQueuePolicy {
+    PoolQueuePolicy {
+        classes: vec![
+            PoolQueueClass {
+                name: "interactive".into(),
+                weight: 8,
+            },
+            PoolQueueClass {
+                name: "batch".into(),
+                weight: 1,
+            },
+        ],
+        discipline: QueueDiscipline::Strict,
+        class_header: Some("x-priority".into()),
+        default_class: Some("batch".into()),
+        tenant_header: Some("x-tenant".into()),
+        max_tenants: 16,
+        aging_ms: Some(30_000),
+    }
 }
 
 fn test_proxy_policy() -> HttpProxyPolicy {
@@ -413,6 +438,7 @@ fn test_proxy_policy() -> HttpProxyPolicy {
             forward: true,
             spill: HttpSelectSpill::Up,
         }),
+        queue_class: Some("interactive".into()),
         affinity: Some(HttpAffinity::Cookie {
             name: "oxr_srv".into(),
             ttl_s: 600,
@@ -547,6 +573,7 @@ fn test_http_services() -> Vec<HttpService> {
                         rescue: None,
                         select: None,
                         affinity: None,
+                        queue_class: None,
                         cache: None,
                         queue_headers: false,
                     },
@@ -848,6 +875,96 @@ fn rejects_invalid_outlier_detection_bounds() {
             outlier_detection: Some(outlier),
             ..PassiveHealthPolicy::default()
         });
+        let mut config = minimal_config();
+        config.upstream_pools.push(pool);
+
+        assert!(
+            matches!(
+                config.validate(),
+                Err(ConfigError::InvalidUpstreamServer { field: found, .. }) if found == field
+            ),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_queue_policies() {
+    let class = |name: &str, weight| PoolQueueClass {
+        name: name.into(),
+        weight,
+    };
+    let valid = PoolQueuePolicy {
+        classes: vec![class("fast", 4), class("slow", 1)],
+        discipline: QueueDiscipline::Weighted,
+        class_header: Some("x-priority".into()),
+        default_class: Some("slow".into()),
+        tenant_header: Some("x-tenant".into()),
+        max_tenants: 8,
+        aging_ms: None,
+    };
+    for (queue, queue_timeout_ms, field) in [
+        (valid.clone(), None, "queue"),
+        (
+            PoolQueuePolicy {
+                classes: vec![class("fast", 4), class("fast", 1)],
+                ..valid.clone()
+            },
+            Some(1_000),
+            "queue.classes",
+        ),
+        (
+            PoolQueuePolicy {
+                classes: vec![class("Fast", 4)],
+                ..valid.clone()
+            },
+            Some(1_000),
+            "queue.classes",
+        ),
+        (
+            PoolQueuePolicy {
+                classes: vec![class("fast", 0)],
+                ..valid.clone()
+            },
+            Some(1_000),
+            "queue.classes",
+        ),
+        (
+            PoolQueuePolicy {
+                default_class: Some("gone".into()),
+                ..valid.clone()
+            },
+            Some(1_000),
+            "queue.default_class",
+        ),
+        (
+            PoolQueuePolicy {
+                class_header: Some("bad header".into()),
+                ..valid.clone()
+            },
+            Some(1_000),
+            "queue.class_header",
+        ),
+        (
+            PoolQueuePolicy {
+                max_tenants: 0,
+                ..valid.clone()
+            },
+            Some(1_000),
+            "queue.max_tenants",
+        ),
+        (
+            PoolQueuePolicy {
+                aging_ms: Some(1_000),
+                ..valid.clone()
+            },
+            Some(1_000),
+            "queue.aging_ms",
+        ),
+    ] {
+        let mut pool = test_upstream_pools().remove(0);
+        pool.queue_timeout_ms = queue_timeout_ms;
+        pool.queue = Some(queue);
         let mut config = minimal_config();
         config.upstream_pools.push(pool);
 

@@ -235,6 +235,7 @@ fn upstream_tls_plan(
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         resilience: oxiroute_config::PoolResilience::default(),
+        queue: None,
     };
     Arc::new(
         crate::tls::prepare_upstream_tls(&pool)

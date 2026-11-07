@@ -16,7 +16,8 @@ pub(super) struct PoolQueue {
     #[cfg(test)]
     pub(super) lifetime_waiters: AtomicU64,
     pub(super) timeouts: AtomicU64,
-    waiters: Mutex<VecDeque<Arc<PoolWaiter>>>,
+    waiters: Mutex<WaitQueue>,
+    pub(super) schedule: Option<Arc<QueueSchedule>>,
 }
 
 #[derive(Debug)]
@@ -25,7 +26,10 @@ pub(super) struct PoolWaiter {
 }
 
 impl PoolQueue {
-    pub(super) fn new(capacity_waiters_possible: bool) -> Self {
+    pub(super) fn new(
+        capacity_waiters_possible: bool,
+        schedule: Option<Arc<QueueSchedule>>,
+    ) -> Self {
         Self {
             capacity_waiters_possible,
             cancellations: AtomicU64::new(0),
@@ -39,7 +43,8 @@ impl PoolQueue {
             #[cfg(test)]
             lifetime_waiters: AtomicU64::new(0),
             timeouts: AtomicU64::new(0),
-            waiters: Mutex::new(VecDeque::new()),
+            waiters: Mutex::new(WaitQueue::new(schedule.clone())),
+            schedule,
         }
     }
 
@@ -56,7 +61,7 @@ impl PoolQueue {
             .waiters
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .front()
+            .head()
             .cloned();
         if let Some(waiter) = waiter {
             waiter.notify.notify_one();
@@ -74,7 +79,7 @@ pub(super) struct QueueWaitGuard {
 }
 
 impl QueueWaitGuard {
-    pub(super) fn new(queue: Arc<PoolQueue>, pool: &str) -> Self {
+    pub(super) fn new(queue: Arc<PoolQueue>, pool: &str, tag: QueueTag) -> Self {
         let waiter = Arc::new(PoolWaiter {
             notify: Notify::new(),
         });
@@ -82,7 +87,7 @@ impl QueueWaitGuard {
             .waiters
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_back(Arc::clone(&waiter));
+            .push(Arc::clone(&waiter), tag);
         Self {
             completed: false,
             queue,
@@ -98,8 +103,7 @@ impl QueueWaitGuard {
             .waiters
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .front()
-            .is_some_and(|waiter| Arc::ptr_eq(waiter, &self.waiter))
+            .is_head(&self.waiter)
     }
 
     pub(super) fn mark_waiting(&mut self) {
@@ -117,16 +121,22 @@ impl QueueWaitGuard {
         self.ticket.as_ref().map_or(0, |ticket| ticket.position)
     }
 
+    /// Leaves the queue without having been served.
     pub(super) fn complete(&mut self) {
-        self.finish(false);
+        self.finish(false, false);
+    }
+
+    /// Leaves the queue with a lease, which spends the waiter's turn.
+    pub(super) fn serve(&mut self) {
+        self.finish(false, true);
     }
 
     pub(super) fn timeout(&mut self) {
-        self.finish(true);
+        self.finish(true, false);
     }
 
-    fn finish(&mut self, timed_out: bool) {
-        let removed_front = self.remove();
+    fn finish(&mut self, timed_out: bool, served: bool) {
+        let removed_front = self.remove(served);
         if self.waiting {
             decrement_queue_count(&self.queue.queued);
             self.leave_ledger();
@@ -147,21 +157,12 @@ impl QueueWaitGuard {
         }
     }
 
-    fn remove(&self) -> bool {
-        let mut waiters = self
-            .queue
+    fn remove(&self, served: bool) -> bool {
+        self.queue
             .waiters
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(index) = waiters
-            .iter()
-            .position(|waiter| Arc::ptr_eq(waiter, &self.waiter))
-        else {
-            return false;
-        };
-        let removed_front = index == 0;
-        waiters.remove(index);
-        removed_front
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.waiter, served)
     }
 }
 
@@ -170,7 +171,7 @@ impl Drop for QueueWaitGuard {
         if self.completed {
             return;
         }
-        let removed_front = self.remove();
+        let removed_front = self.remove(false);
         if self.waiting {
             decrement_queue_count(&self.queue.queued);
             self.leave_ledger();
@@ -179,6 +180,25 @@ impl Drop for QueueWaitGuard {
         if removed_front {
             self.queue.notify_front();
         }
+    }
+}
+
+impl PoolQueue {
+    /// Waiting requests per class name; empty when the pool has no queue classes.
+    pub(super) fn depth_by_class(&self) -> Vec<(String, u64)> {
+        let Some(schedule) = &self.schedule else {
+            return Vec::new();
+        };
+        let depth = self
+            .waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .depth_by_class();
+        schedule
+            .class_names()
+            .map(str::to_owned)
+            .zip(depth)
+            .collect()
     }
 }
 

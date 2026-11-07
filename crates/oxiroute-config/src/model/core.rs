@@ -604,6 +604,69 @@ pub struct UpstreamPool {
     pub connection_reuse: UpstreamConnectionReuse,
     #[serde(default)]
     pub resilience: PoolResilience,
+    /// Orders the requests that wait for capacity by class and tenant; absent keeps first come first served.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<PoolQueuePolicy>,
+}
+
+/// How a saturated pool picks the next waiting request. Needs `queue_timeout_ms`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PoolQueuePolicy {
+    /// Priority classes, highest priority first for `strict`; empty means a single class.
+    #[serde(default)]
+    pub classes: Vec<PoolQueueClass>,
+    #[serde(default)]
+    pub discipline: QueueDiscipline,
+    /// Request header naming the class; ignored by routes that set `queue_class`. Clients control
+    /// it unless a trusted layer in front overwrites it.
+    #[serde(default)]
+    pub class_header: Option<String>,
+    /// Class of requests that name none or an unknown one; defaults to the last class.
+    #[serde(default)]
+    pub default_class: Option<String>,
+    /// Request header naming the tenant that shares a class fairly with the other tenants.
+    #[serde(default)]
+    pub tenant_header: Option<String>,
+    /// Distinct tenants tracked; further tenants share one `other` tenant.
+    #[serde(default = "default_queue_max_tenants")]
+    pub max_tenants: u16,
+    /// With `strict`, a request waiting this long is served ahead of higher classes.
+    #[serde(default)]
+    pub aging_ms: Option<u64>,
+}
+
+impl Default for PoolQueuePolicy {
+    fn default() -> Self {
+        Self {
+            classes: Vec::new(),
+            discipline: QueueDiscipline::default(),
+            class_header: None,
+            default_class: None,
+            tenant_header: None,
+            max_tenants: default_queue_max_tenants(),
+            aging_ms: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PoolQueueClass {
+    pub name: String,
+    /// Share of the capacity under `weighted`.
+    #[serde(default = "default_queue_class_weight")]
+    pub weight: u16,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueDiscipline {
+    /// Classes share the freed capacity in proportion to their weights.
+    #[default]
+    Weighted,
+    /// A lower class is served only when no higher class waits.
+    Strict,
 }
 
 /// Availability options of one pool. Every option defaults to the strict behaviour.

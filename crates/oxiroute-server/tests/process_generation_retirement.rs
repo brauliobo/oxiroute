@@ -414,6 +414,7 @@ fn tcp_config(
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::default(),
             resilience: oxiroute_config::PoolResilience::default(),
+            queue: None,
         }],
         l4_services: vec![L4Service {
             drain_deadline_ms: None,

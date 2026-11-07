@@ -14,6 +14,7 @@ impl Renderer {
             server_timeout_ms,
             connection_reuse,
             resilience,
+            queue,
         } = pool;
 
         self.string_field("name", name);
@@ -68,7 +69,31 @@ impl Renderer {
         self.begin_table_field("resilience");
         self.pool_resilience(resilience);
         self.end_table();
+        if let Some(queue) = queue {
+            self.begin_table_field("queue");
+            self.pool_queue(queue);
+            self.end_table();
+        }
         Ok(())
+    }
+
+    fn pool_queue(&mut self, queue: &PoolQueuePolicy) {
+        self.table_list_field("classes", &queue.classes, |writer, class| {
+            writer.string_field("name", &class.name);
+            writer.integer_field("weight", class.weight);
+        });
+        self.string_field(
+            "discipline",
+            match queue.discipline {
+                QueueDiscipline::Weighted => "weighted",
+                QueueDiscipline::Strict => "strict",
+            },
+        );
+        self.optional_string_field("class_header", queue.class_header.as_deref());
+        self.optional_string_field("default_class", queue.default_class.as_deref());
+        self.optional_string_field("tenant_header", queue.tenant_header.as_deref());
+        self.integer_field("max_tenants", queue.max_tenants);
+        self.optional_integer_field("aging_ms", queue.aging_ms);
     }
 
     fn upstream_server(

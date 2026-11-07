@@ -366,7 +366,7 @@ Current constraints:
   preparation and, for reusable HTTP, remains held by the physical upstream socket through idle
   pooling and later requests. Nonreusable HTTP and L4 attempts release it at transport teardown.
   When every eligible server is at capacity, `queue_timeout_ms` bounds the wait for a released slot.
-  Requests of every kind join one pool-level FIFO at scheduler admission; only its head claims
+  Requests of every kind join one pool-level queue at scheduler admission (FIFO unless the pool `queue` policy orders it); only its head claims
   whichever eligible server releases capacity (or an idle pooled connection) next, so a request is
   never bound to one busy server while another is free. Timeout and cancellation remove exactly one
   waiter and advance the next head. Reusable HTTP still reuses an idle pooled connection before it
@@ -399,6 +399,23 @@ Current constraints:
   connect. An active `health_check` no longer returns a passively ejected server on its own while
   `readmission` is set. Probing needs a socket or DNS endpoint; the first ejection behaves like
   today's, the probe only decides the return.
+- `queue` (optional, pool level, requires `queue_timeout_ms`) orders the requests that wait for
+  capacity instead of first come first served. `classes` (at most 8, each `{ name, weight }`,
+  names 1 through 32 bytes of `a-z`, `0-9`, `_`, `-`, weight 1 through 100 default 1) and
+  `discipline`: `weighted` (default) shares freed capacity between waiting classes in proportion
+  to their weights; `strict` serves a lower class only when no higher one (listed first) waits,
+  and `aging_ms` (strict only, 100 through 3600000) lets a request that waited that long overtake
+  higher classes so it cannot starve. A request's class comes from the route `policy.queue_class`
+  when set, else from the value of `class_header` when it names a class, else `default_class`
+  (default: the last class). Clients control `class_header`, so use it only behind a layer that
+  sets or strips it; prefer `queue_class` per route. `tenant_header` names a tenant: tenants of a
+  class take equal turns, so one tenant flooding the queue does not delay a smaller one; tenants
+  beyond `max_tenants` (default 64, 1 through 1024) share one `other` tenant. Idle classes and
+  tenants earn no credit, and only waiting requests are ordered: a request served at once never
+  queues. A retried or rescued request queues again at its class tail. Waiting requests per class
+  are exported as `oxiroute_pool_queue_class_depth{pool,class}`.
+- Proxy `policy.queue_class` (default absent) fixes the queue class of the route's requests; it must
+  name a class of every pool the route can reach (the route pool and `select` rule pools).
 - `passive_health.circuit_breaker` (optional) takes a server out of rotation when too large a share
   of its recent requests fail, independent of the consecutive-failure `error_limit`. Over a sliding
   `window_ms` (default 30000, 1000 through 3600000), once at least `min_requests` (default 20)

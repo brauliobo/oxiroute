@@ -203,6 +203,7 @@ fn many_listener_config(count: usize) -> ValidatedConfig {
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         resilience: oxiroute_config::PoolResilience::default(),
+        queue: None,
     });
     config.l4_services.push(oxiroute_config::L4Service {
         drain_deadline_ms: None,

@@ -299,6 +299,17 @@ export interface UpstreamPoolConfig {
   server_timeout_ms: number | null
   connection_reuse: 'never' | 'safe' | 'always'
   resilience: PoolResilienceConfig
+  queue?: PoolQueueConfig | null
+}
+
+export interface PoolQueueConfig {
+  classes: { name: string; weight: number }[]
+  discipline: 'weighted' | 'strict'
+  class_header: string | null
+  default_class: string | null
+  tenant_header: string | null
+  max_tenants: number
+  aging_ms: number | null
 }
 
 export type HttpHostKind =

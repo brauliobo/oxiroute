@@ -61,7 +61,8 @@ async fn queue_disabled_selection_ignores_a_transient_fifo_registration() {
         None,
     )
     .expect("immediate pool");
-    let _concurrent_front = QueueWaitGuard::new(Arc::clone(&pool.queue), "fifo");
+    let _concurrent_front =
+        QueueWaitGuard::new(Arc::clone(&pool.queue), "fifo", QueueTag::default());
 
     let acquired = pool
         .select_wait()
@@ -174,7 +175,11 @@ async fn timing_out_the_fifo_head_exposes_free_capacity_to_the_next_waiter() {
     );
     let primary = pool.select().expect("primary capacity");
     let old_pool = Arc::clone(&pool);
-    let old = tokio::spawn(async move { old_pool.select_server_wait("primary").await });
+    let old = tokio::spawn(async move {
+        old_pool
+            .select_server_wait("primary", QueueTag::default())
+            .await
+    });
     wait_for_queued(&pool, 1).await;
     tokio::time::sleep(Duration::from_millis(25)).await;
     let new_pool = Arc::clone(&pool);

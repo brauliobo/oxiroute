@@ -141,6 +141,7 @@ async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool() {
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         resilience: oxiroute_config::PoolResilience::default(),
+        queue: None,
     });
     config.http_services.push(HttpService {
         drain_deadline_ms: None,
@@ -336,6 +337,7 @@ async fn reverse_h3_cache_serves_a_second_get_without_origin_contact() {
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         resilience: oxiroute_config::PoolResilience::default(),
+        queue: None,
     });
     let proxy_policy = HttpProxyPolicy {
         cache: Some(Box::new(oxiroute_config::HttpCachePolicy {
@@ -1810,6 +1812,7 @@ fn h3_pool(address: SocketAddr) -> UpstreamPool {
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         resilience: oxiroute_config::PoolResilience::default(),
+        queue: None,
     }
 }
 

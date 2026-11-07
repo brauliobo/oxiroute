@@ -423,6 +423,9 @@ pub struct PoolHealthSnapshot {
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub fail_open_selections: u64,
     pub queued: u64,
+    /// Waiting requests per queue class; empty for pools without classes.
+    #[serde(skip)]
+    pub queued_by_class: Vec<(String, u64)>,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub oldest_queue_wait_ms: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]

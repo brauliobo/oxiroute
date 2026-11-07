@@ -44,6 +44,7 @@ async fn tcp_handler_closes_connections_when_its_pool_is_unavailable() {
             server_timeout_ms: None,
             connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
             resilience: oxiroute_config::PoolResilience::default(),
+            queue: None,
         }],
         http_services: Vec::new(),
         cache_stores: Vec::new(),

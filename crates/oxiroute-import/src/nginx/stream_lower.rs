@@ -418,6 +418,7 @@ impl Lowerer {
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Never,
             resilience: oxiroute_config::PoolResilience::default(),
+            queue: None,
         });
         let pool_path = format!("/upstream_pools/{pool_index}");
         self.record(pool_path.clone(), vec![origin.clone()]);

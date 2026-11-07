@@ -125,6 +125,7 @@ fn normalizable_config() -> ConfigDraft {
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         resilience: oxiroute_config::PoolResilience::default(),
+        queue: None,
     });
     config.http_services.push(HttpService {
         drain_deadline_ms: None,

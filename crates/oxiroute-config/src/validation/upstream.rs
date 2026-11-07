@@ -5,6 +5,7 @@ const MAX_EJECTION_JITTER_PERCENT: u8 = 50;
 const MAX_UNAVAILABLE_BODY_BYTES: usize = 1024;
 const MAX_READMISSION_INTERVAL_MS: u64 = 3_600_000;
 const MAX_BREAKER_MS: u64 = 3_600_000;
+const MAX_QUEUE_CLASSES: usize = 8;
 
 /// Validates upstream-pool identities, resources, endpoints, and health policies.
 ///
@@ -305,7 +306,85 @@ fn validate_upstream_pool_definition(
         });
     }
     validate_upstream_pool_timeouts(pool)?;
-    validate_pool_resilience(pool)
+    validate_pool_resilience(pool)?;
+    validate_pool_queue(pool)
+}
+
+fn validate_pool_queue(pool: &UpstreamPool) -> Result<(), ConfigError> {
+    let Some(queue) = &pool.queue else {
+        return Ok(());
+    };
+    let invalid = |field, detail| ConfigError::InvalidUpstreamServer {
+        pool: pool.name.clone(),
+        server: "<pool>".into(),
+        field,
+        detail,
+    };
+    if pool.queue_timeout_ms.is_none() {
+        return Err(invalid("queue", "requires queue_timeout_ms"));
+    }
+    if queue.classes.len() > MAX_QUEUE_CLASSES {
+        return Err(invalid("queue.classes", "must contain at most 8 classes"));
+    }
+    let name_ok = |name: &str| {
+        (1..=32).contains(&name.len())
+            && name.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte)
+            })
+    };
+    for (index, class) in queue.classes.iter().enumerate() {
+        if !name_ok(&class.name)
+            || queue.classes[..index]
+                .iter()
+                .any(|other| other.name == class.name)
+        {
+            return Err(invalid(
+                "queue.classes",
+                "class names must be unique, 1 through 32 bytes of a-z, 0-9, `_` or `-`",
+            ));
+        }
+        if !(1..=100).contains(&class.weight) {
+            return Err(invalid(
+                "queue.classes",
+                "class weight must be between 1 and 100",
+            ));
+        }
+    }
+    if let Some(default) = &queue.default_class
+        && !queue.classes.iter().any(|class| &class.name == default)
+    {
+        return Err(invalid(
+            "queue.default_class",
+            "must name one of the classes",
+        ));
+    }
+    for (field, header) in [
+        ("queue.class_header", &queue.class_header),
+        ("queue.tenant_header", &queue.tenant_header),
+    ] {
+        if header.as_ref().is_some_and(|name| {
+            name.len() > 64 || http::HeaderName::from_bytes(name.as_bytes()).is_err()
+        }) {
+            return Err(invalid(field, "must be a header name of at most 64 bytes"));
+        }
+    }
+    if queue.class_header.is_some() && queue.classes.is_empty() {
+        return Err(invalid("queue.class_header", "requires classes"));
+    }
+    if !(1..=1_024).contains(&queue.max_tenants) {
+        return Err(invalid("queue.max_tenants", "must be between 1 and 1024"));
+    }
+    match queue.aging_ms {
+        Some(_) if queue.discipline != crate::model::QueueDiscipline::Strict => Err(invalid(
+            "queue.aging_ms",
+            "applies only to the strict discipline",
+        )),
+        Some(aging) if !(100..=MAX_BREAKER_MS).contains(&aging) => Err(invalid(
+            "queue.aging_ms",
+            "must be between 100 and 3600000 milliseconds",
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn validate_pool_resilience(pool: &UpstreamPool) -> Result<(), ConfigError> {

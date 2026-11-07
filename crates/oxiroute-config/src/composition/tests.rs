@@ -142,6 +142,7 @@ fn tcp_config(name: &str, port: u16, upstream_port: u16) -> ConfigDraft {
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::default(),
         resilience: crate::PoolResilience::default(),
+        queue: None,
     });
     config.l4_services.push(L4Service {
         drain_deadline_ms: None,

@@ -199,6 +199,7 @@ impl Lowerer<'_> {
                 UpstreamConnectionReuse::Safe
             },
             resilience: oxiroute_config::PoolResilience::default(),
+            queue: None,
         });
         let pool_path = CanonicalPath::indexed("upstream_pools", pool_index);
         let mut sources = section_sources(section);

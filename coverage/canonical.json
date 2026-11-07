@@ -926,6 +926,106 @@
       "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
     },
     {
+      "id": "canonical.upstream-pools.queue",
+      "kind": "field",
+      "path": "upstream_pools[].queue",
+      "editability": "operator",
+      "normalization": ["absence keeps first come first served"],
+      "validation": ["requires queue_timeout_ms"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.queue.classes",
+      "kind": "field",
+      "path": "upstream_pools[].queue.classes[]",
+      "editability": "operator",
+      "normalization": ["default to one implicit class"],
+      "validation": ["at most 8 unique classes"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.queue.classes.name",
+      "kind": "field",
+      "path": "upstream_pools[].queue.classes[].name",
+      "editability": "operator",
+      "normalization": ["none"],
+      "validation": ["1 through 32 bytes of a-z, 0-9, underscore or hyphen"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.queue.classes.weight",
+      "kind": "field",
+      "path": "upstream_pools[].queue.classes[].weight",
+      "editability": "operator",
+      "normalization": ["default to 1"],
+      "validation": ["1 through 100"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.queue.discipline",
+      "kind": "field",
+      "path": "upstream_pools[].queue.discipline",
+      "editability": "operator",
+      "normalization": ["default to weighted"],
+      "validation": ["closed discipline set"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.queue.class-header",
+      "kind": "field",
+      "path": "upstream_pools[].queue.class_header",
+      "editability": "operator",
+      "normalization": ["default to null"],
+      "validation": ["a header name of at most 64 bytes; requires classes"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.queue.default-class",
+      "kind": "field",
+      "path": "upstream_pools[].queue.default_class",
+      "editability": "operator",
+      "normalization": ["default to the last class"],
+      "validation": ["one of the classes"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.queue.tenant-header",
+      "kind": "field",
+      "path": "upstream_pools[].queue.tenant_header",
+      "editability": "operator",
+      "normalization": ["default to null"],
+      "validation": ["a header name of at most 64 bytes"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.queue.max-tenants",
+      "kind": "field",
+      "path": "upstream_pools[].queue.max_tenants",
+      "editability": "operator",
+      "normalization": ["default to 64"],
+      "validation": ["1 through 1024"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.queue.aging-ms",
+      "kind": "field",
+      "path": "upstream_pools[].queue.aging_ms",
+      "editability": "operator",
+      "normalization": ["default to null"],
+      "validation": ["100 through 3600000 milliseconds; strict discipline only"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
       "id": "canonical.upstream-pools.tls",
       "kind": "field",
       "path": "upstream_pools[].tls",
@@ -1103,6 +1203,7 @@
     { "id": "canonical.http-services.routes.action.proxy.policy.select.on-invalid", "kind": "field", "path": "http_services[].routes[].action<proxy>.policy.select.on_invalid", "editability": "operator", "normalization": ["default to default"], "validation": ["closed invalid-value action"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration"] },
     { "id": "canonical.http-services.routes.action.proxy.policy.select.forward", "kind": "field", "path": "http_services[].routes[].action<proxy>.policy.select.forward", "editability": "operator", "normalization": ["default to false"], "validation": ["boolean"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration"] },
     { "id": "canonical.http-services.routes.action.proxy.policy.select.spill", "kind": "field", "path": "http_services[].routes[].action<proxy>.policy.select.spill", "editability": "operator", "normalization": ["default to none"], "validation": ["closed spill action"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration"] },
+    { "id": "canonical.http-services.routes.action.proxy.policy.queue-class", "kind": "field", "path": "http_services[].routes[].action<proxy>.policy.queue_class", "editability": "operator", "normalization": ["default to null"], "validation": ["a class of every pool the route can reach"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration"] },
     { "id": "canonical.http-services.routes.action.proxy.policy.affinity", "kind": "field", "path": "http_services[].routes[].action<proxy>.policy.affinity", "editability": "operator", "normalization": ["absence disables sticky sessions"], "validation": ["optional internally tagged affinity"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration"] },
     { "id": "canonical.http-services.routes.action.proxy.policy.affinity.cookie.name", "kind": "field", "path": "http_services[].routes[].action<proxy>.policy.affinity<cookie>.name", "editability": "operator", "normalization": ["none"], "validation": ["1..=64 byte cookie token"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration"] },
     { "id": "canonical.http-services.routes.action.proxy.policy.affinity.cookie.ttl-s", "kind": "field", "path": "http_services[].routes[].action<proxy>.policy.affinity<cookie>.ttl_s", "editability": "operator", "normalization": ["default to 3600"], "validation": ["1 through 31536000 seconds"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration"] },
@@ -1807,6 +1908,9 @@
     { "id": "canonical.enum.http-affinity.cookie", "kind": "variant", "path": "HttpAffinity::Cookie", "editability": "operator", "normalization": ["type token cookie"], "validation": ["opaque cookie names the server"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "integration"] },
     { "id": "canonical.enum.http-affinity.hash", "kind": "variant", "path": "HttpAffinity::Hash", "editability": "operator", "normalization": ["type token hash"], "validation": ["rendezvous hash of a request key"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "integration"] },
     { "id": "canonical.enum.http-affinity.header", "kind": "variant", "path": "HttpAffinity::Header", "editability": "operator", "normalization": ["type token header"], "validation": ["request header names the server"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "integration"] },
+    { "id": "canonical.enum.queue-discipline", "kind": "enum", "path": "QueueDiscipline", "editability": "fixed", "normalization": ["snake_case serde token", "default to weighted"], "validation": ["closed variant set"], "runtime": { "target": "schema", "disposition": "classified" }, "required_tests": ["decode", "validate", "failure"] },
+    { "id": "canonical.enum.queue-discipline.weighted", "kind": "variant", "path": "QueueDiscipline::Weighted", "editability": "operator", "normalization": ["token weighted"], "validation": ["classes share capacity by weight"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "integration"] },
+    { "id": "canonical.enum.queue-discipline.strict", "kind": "variant", "path": "QueueDiscipline::Strict", "editability": "operator", "normalization": ["token strict"], "validation": ["higher classes are served first"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "integration"] },
     { "id": "canonical.enum.http-select-invalid", "kind": "enum", "path": "HttpSelectInvalid", "editability": "fixed", "normalization": ["snake_case serde token", "default to default"], "validation": ["closed variant set"], "runtime": { "target": "schema", "disposition": "classified" }, "required_tests": ["decode", "validate", "failure"] },
     { "id": "canonical.enum.http-select-invalid.default", "kind": "variant", "path": "HttpSelectInvalid::Default", "editability": "operator", "normalization": ["token default"], "validation": ["use the route pool"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "integration"] },
     { "id": "canonical.enum.http-select-invalid.reject", "kind": "variant", "path": "HttpSelectInvalid::Reject", "editability": "operator", "normalization": ["token reject"], "validation": ["answer 400"], "runtime": { "target": "http.proxy", "disposition": "lowered" }, "required_tests": ["decode", "validate", "integration"] },
