@@ -344,7 +344,9 @@ impl RuntimeGeneration {
         *self.retired.borrow()
     }
 
-    pub(crate) fn mark_retired(&self) {
+    /// Records that a newer generation replaced this one; idle HTTP/1 connections end and busy
+    /// ones close after their response.
+    pub fn mark_retired(&self) {
         self.retired.send_replace(true);
     }
 

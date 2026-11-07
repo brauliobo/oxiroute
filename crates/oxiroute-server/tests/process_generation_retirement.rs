@@ -60,11 +60,15 @@ struct Instance {
 
 impl Instance {
     async fn start(retirement: Retirement) -> Self {
+        Self::start_tcp(retirement, false).await
+    }
+
+    async fn start_tcp(retirement: Retirement, supervised: bool) -> Self {
         let management = reserve_tcp_address();
         let listener = reserve_tcp_address();
         let (upstream_address, upstream) = start_echo_upstream().await;
         let config = tcp_config(management, listener, upstream_address, retirement);
-        let mut server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
+        let mut server = start_server(&config, supervised);
         server.wait_for_tcp(management).await;
         server.wait_for_tcp(listener).await;
         Self {
@@ -79,12 +83,16 @@ impl Instance {
     }
 
     async fn start_http(retirement: Retirement) -> Self {
+        Self::start_http_mode(retirement, false).await
+    }
+
+    async fn start_http_mode(retirement: Retirement, supervised: bool) -> Self {
         let management = reserve_tcp_address();
         let listener = reserve_tcp_address();
         let release = Arc::new(Semaphore::new(0));
         let (upstream_address, upstream) = start_held_http_upstream(Arc::clone(&release)).await;
         let config = http_config(management, listener, upstream_address, retirement);
-        let mut server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
+        let mut server = start_server(&config, supervised);
         server.wait_for_tcp(management).await;
         server.wait_for_tcp(listener).await;
         Self {
@@ -161,6 +169,15 @@ impl Instance {
     fn stop(self) {
         self.upstream.abort();
         self.server.shutdown();
+    }
+}
+
+fn start_server(config: &ConfigDraft, supervised: bool) -> ServerProcess {
+    let validated = config.clone().validate().unwrap();
+    if supervised {
+        ServerProcess::start_supervised(&validated, TOKEN)
+    } else {
+        ServerProcess::start(&validated, Some(TOKEN))
     }
 }
 
@@ -643,6 +660,84 @@ async fn an_in_flight_http_response_finishes_and_closes_the_connection() {
             .is_empty()
             .then_some(())
     })
+    .await;
+    instance.stop();
+}
+
+#[tokio::test]
+async fn supervised_idle_http_keepalive_is_closed_at_retirement() {
+    let _guard = process_test_guard().await;
+    let mut instance = Instance::start_http_mode(Retirement::default(), true).await;
+    let mut idle = TcpStream::connect(instance.listener)
+        .await
+        .expect("connection");
+    send_get(&mut idle, "/rev").await;
+    assert_eq!(read_response(&mut idle).await.body, b"revision-0");
+
+    instance.apply().await;
+    assert_closed(&mut idle).await;
+    // The retired worker leaves at once, so the next apply is not held up.
+    let started = Instant::now();
+    instance.apply().await;
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    instance.stop();
+}
+
+#[tokio::test]
+async fn supervised_relay_is_closed_when_the_drain_deadline_passes() {
+    let _guard = process_test_guard().await;
+    let mut instance = Instance::start_tcp(
+        Retirement {
+            drain_deadline_ms: Some(2_000),
+            max_retired_generations: 4,
+        },
+        true,
+    )
+    .await;
+    let mut relay = open_relay(&instance).await;
+    let applied = Instant::now();
+    instance.apply().await;
+    assert_echo(&mut relay, b"before the deadline").await;
+
+    let mut buffer = [0_u8; 16];
+    let closed = timeout(Duration::from_secs(10), relay.read(&mut buffer))
+        .await
+        .expect("the relay was never closed");
+    assert!(matches!(closed, Ok(0) | Err(_)), "{closed:?}");
+    let elapsed = applied.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(1_800),
+        "closed too early: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(8),
+        "closed too late: {elapsed:?}"
+    );
+    instance.stop();
+}
+
+#[tokio::test]
+async fn supervised_relay_outlives_a_second_apply_within_the_deadline() {
+    let _guard = process_test_guard().await;
+    let mut instance = Instance::start_tcp(Retirement::default(), true).await;
+    let mut relay = open_relay(&instance).await;
+    instance.apply().await;
+    assert_echo(&mut relay, b"first apply").await;
+    instance.write_next_revision();
+    sleep(Duration::from_secs(1)).await;
+    assert_echo(&mut relay, b"second apply waits").await;
+    drop(relay);
+    wait_until(
+        "the deferred apply activates once the worker drains",
+        || async {
+            let generation = instance.generation().await;
+            (generation["candidateRevision"].is_null()).then_some(())
+        },
+    )
     .await;
     instance.stop();
 }
