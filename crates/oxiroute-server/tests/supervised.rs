@@ -581,6 +581,7 @@ fn supervised_control_listeners_report_real_lifecycle_and_connection_counters_on
             bind: management,
             ui_dir: None,
         }),
+        registry: None,
         stats: Some(Stats {
             binds: vec![stats_address],
             admin_token_file: None,
@@ -666,6 +667,7 @@ fn supervised_control_listener_callback_failure_prevents_readiness() {
             bind: reserve_tcp_address(),
             ui_dir: None,
         }),
+        registry: None,
         stats: Some(Stats {
             binds: vec![reserve_tcp_address()],
             admin_token_file: None,
