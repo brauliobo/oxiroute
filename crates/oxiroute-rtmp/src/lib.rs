@@ -14,7 +14,6 @@ mod client;
 mod clock;
 mod composition;
 mod exec;
-mod exec_worker;
 mod flv;
 mod live;
 mod media;
@@ -53,13 +52,13 @@ pub use composition::{
     RtmpPullPlan, RtmpPushPlan, RtmpRecorderPlan, RtmpRelayPlan, RtmpServicePlan, RtmpTokenPlan,
     RtmpVodPlan,
 };
+pub use exec::worker::{
+    ExecEnqueueResult, ExecWorkerCorrelation, ExecWorkerFailure, ExecWorkerPhase,
+    ExecWorkerStartError, ExecWorkerStatus,
+};
 pub use exec::{
     ExecEnvironment, ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecProfile,
     ExecProfileError, ExecTrigger,
-};
-pub use exec_worker::{
-    ExecEnqueueResult, ExecWorkerCorrelation, ExecWorkerFailure, ExecWorkerPhase,
-    ExecWorkerStartError, ExecWorkerStatus,
 };
 pub use flv::{
     FlvMuxer, FlvMuxerError, FlvTagType, MAX_CACHED_CODEC_HEADER_SIZE, MAX_FLV_TAG_DATA_SIZE,
