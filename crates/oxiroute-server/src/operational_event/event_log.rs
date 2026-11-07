@@ -248,6 +248,27 @@ pub(crate) fn emit_upstream_endpoint_recovery(
     );
 }
 
+pub(crate) fn emit_upstream_endpoint_health(
+    pool: &str,
+    server: &str,
+    previous: EndpointHealthState,
+    next: EndpointHealthState,
+    reason: Option<HealthFailure>,
+    changed_at_unix_ms: u64,
+) {
+    emit_typed(
+        EventName::UpstreamEndpointHealth,
+        EventOutcome::HealthChanged {
+            pool: redact_identifier(pool),
+            server: redact_identifier(server),
+            previous,
+            next,
+            reason,
+            changed_at_unix_ms,
+        },
+    );
+}
+
 fn emit_typed(event: EventName, outcome: EventOutcome) {
     let context = AuditContext::generated();
     let category = category_for_event(event);
@@ -383,6 +404,7 @@ pub(super) const fn category_for_event(event: EventName) -> AuditCategory {
         | EventName::RtmpAccess
         | EventName::UpstreamEndpointEjection
         | EventName::UpstreamEndpointRecovery
+        | EventName::UpstreamEndpointHealth
         | EventName::Unknown => AuditCategory::Control,
     }
 }
@@ -397,7 +419,9 @@ const fn result_for_outcome(outcome: &EventOutcome) -> AuditResult {
         EventOutcome::Failed | EventOutcome::Quarantined | EventOutcome::Unknown => {
             AuditResult::Failed
         }
-        EventOutcome::Ejected { .. } | EventOutcome::Recovered { .. } => AuditResult::Succeeded,
+        EventOutcome::Ejected { .. }
+        | EventOutcome::Recovered { .. }
+        | EventOutcome::HealthChanged { .. } => AuditResult::Succeeded,
     }
 }
 

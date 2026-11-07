@@ -227,6 +227,11 @@
           span Total request deadline (ms)
           input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.total_ms ?? ''" @input="setTimeoutMs('total_ms', $event)")
 
+    label.enable-row(data-field="http_services[].routes[].action.policy.queue_headers")
+      input(type="checkbox" v-model="action.policy.queue_headers")
+      span Tell clients that waited for capacity their queue position and wait time
+    small.field-hint
+      | Adds x-oxiroute-queue-position and x-oxiroute-queue-wait-ms to those responses. Off by default because it reveals pool load.
     fieldset.object-block(data-field="http_services[].routes[].action.policy.rescue")
       legend Status rescue
       label.enable-row

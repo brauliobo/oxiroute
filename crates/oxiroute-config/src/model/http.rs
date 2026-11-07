@@ -322,6 +322,10 @@ pub struct HttpProxyPolicy {
     pub rescue: Option<HttpRescuePolicy>,
     #[serde(default)]
     pub cache: Option<Box<HttpCachePolicy>>,
+    /// Adds `x-oxiroute-queue-position` and `x-oxiroute-queue-wait-ms` to responses of requests that
+    /// had to wait for capacity. Off by default because it reveals how loaded the pool is.
+    #[serde(default)]
+    pub queue_headers: bool,
     /// Chooses the pool per request from a numeric header; absent routes every request to `upstream_pool`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub select: Option<HttpPoolSelect>,

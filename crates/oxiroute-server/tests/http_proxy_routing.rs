@@ -6667,6 +6667,101 @@ async fn structured_access_log_omits_authorization_cookies_and_query_tokens() {
     .expect("access log test timed out");
 }
 
+async fn queued_request_response(queue_headers: bool) -> (RawResponse, RawResponse) {
+    let origin = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+    let address = origin.local_addr().expect("origin address");
+    let (held_tx, held_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut held, _) = origin.accept().await.expect("held accept");
+        read_request_head_bytes(&mut held)
+            .await
+            .expect("held request");
+        held_tx.send(()).expect("held signal");
+        release_rx.await.expect("release");
+        let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+        held.write_all(reply).await.expect("held response");
+        let (mut queued, _) = origin.accept().await.expect("queued accept");
+        read_request_head_bytes(&mut queued)
+            .await
+            .expect("queued request");
+        queued.write_all(reply).await.expect("queued response");
+    });
+    let mut queue_route = route(None, "/", &[], "qh");
+    queue_route.action = HttpRouteAction::Proxy {
+        upstream_pool: "qh".into(),
+        policy: HttpProxyPolicy {
+            queue_headers,
+            ..HttpProxyPolicy::default()
+        },
+    };
+    let proxy = Arc::new(
+        ProxyHarness::start(
+            vec![capped_pool("qh", address, 1)],
+            vec![queue_route],
+            1024,
+            2,
+        )
+        .await,
+    );
+    let held_proxy = Arc::clone(&proxy);
+    let held = tokio::spawn(async move {
+        held_proxy
+            .request("GET /a HTTP/1.1\r\nHost: qh.test\r\n")
+            .await
+    });
+    held_rx.await.expect("held request reached the origin");
+    let queued_proxy = Arc::clone(&proxy);
+    let queued = tokio::spawn(async move {
+        queued_proxy
+            .request("GET /b HTTP/1.1\r\nHost: qh.test\r\n")
+            .await
+    });
+    wait_for_queued_requests(&proxy.pools[0], 1).await;
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    release_tx.send(()).expect("release capacity");
+    let responses = (
+        held.await.expect("held task"),
+        queued.await.expect("queued task"),
+    );
+    task.await.expect("origin task");
+    Arc::into_inner(proxy)
+        .expect("last proxy handle")
+        .finish()
+        .await;
+    responses
+}
+
+#[tokio::test]
+async fn opted_in_routes_tell_a_queued_client_its_position_and_wait() {
+    timeout(TEST_TIMEOUT, async {
+        let (held, queued) = queued_request_response(true).await;
+        assert_eq!(held.header("x-oxiroute-queue-position"), None);
+        assert_eq!(queued.status, 200, "response: {}", queued.text());
+        assert_eq!(queued.header("x-oxiroute-queue-position"), Some("1"));
+        let waited: u64 = queued
+            .header("x-oxiroute-queue-wait-ms")
+            .expect("wait header")
+            .parse()
+            .expect("numeric wait");
+        assert!(waited >= 30, "waited {waited} ms");
+    })
+    .await
+    .expect("queue headers test timed out");
+}
+
+#[tokio::test]
+async fn queue_headers_stay_off_unless_the_route_asks_for_them() {
+    timeout(TEST_TIMEOUT, async {
+        let (_, queued) = queued_request_response(false).await;
+        assert_eq!(queued.status, 200, "response: {}", queued.text());
+        assert_eq!(queued.header("x-oxiroute-queue-position"), None);
+        assert_eq!(queued.header("x-oxiroute-queue-wait-ms"), None);
+    })
+    .await
+    .expect("queue headers off test timed out");
+}
+
 async fn access_log_events(path: &Path) -> Vec<serde_json::Value> {
     for _ in 0..50 {
         let contents = fs::read_to_string(path).unwrap_or_default();

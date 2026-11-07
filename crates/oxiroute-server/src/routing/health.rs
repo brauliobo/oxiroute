@@ -643,6 +643,16 @@ impl PoolHealthState {
         if update.transition.is_some() || update.passive_recovery.is_some() {
             self.queue.notify_capacity_waiters();
         }
+        if let Some((previous, next)) = update.transition {
+            crate::operational_event::emit_upstream_endpoint_health(
+                &self.pool_name,
+                &server.name,
+                previous,
+                next,
+                failure,
+                at_unix_ms.unwrap_or_else(now_unix_ms),
+            );
+        }
         if let Some(recovery) = update.passive_recovery {
             crate::operational_event::emit_upstream_endpoint_recovery(
                 &self.pool_name,

@@ -649,6 +649,7 @@ impl ProxyHttp for HttpReverseProxy {
         }
         apply_response_policy(response, proxy_policy(ctx), remove_hop_by_hop)?;
         apply_affinity_cookie(session, ctx, response)?;
+        ctx.stamp_queue_headers(response)?;
         ctx.response_buffer = None;
         if ctx
             .cache_transaction

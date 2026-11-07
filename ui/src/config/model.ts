@@ -446,6 +446,7 @@ export interface HttpProxyPolicyConfig {
   cache: HttpCachePolicyConfig | null
   select?: HttpPoolSelectConfig | null
   affinity?: HttpAffinityConfig | null
+  queue_headers?: boolean
 }
 
 export type CacheKeyComponentConfig =

@@ -409,6 +409,7 @@ impl Renderer {
             cache,
             select,
             affinity,
+            queue_headers,
         } = policy;
         self.begin_table_field("upstream_host");
         self.http_upstream_host(upstream_host);
@@ -473,6 +474,7 @@ impl Renderer {
             self.http_affinity(affinity);
             self.end_table();
         }
+        self.boolean_field("queue_headers", *queue_headers);
         Ok(())
     }
 

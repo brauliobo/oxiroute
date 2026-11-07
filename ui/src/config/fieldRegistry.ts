@@ -230,6 +230,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].routes[].action.policy.affinity.secure', kind: 'boolean' },
   { path: 'http_services[].routes[].action.policy.affinity.http_only', kind: 'boolean' },
   { path: 'http_services[].routes[].action.policy.affinity.key', kind: 'string' },
+  { path: 'http_services[].routes[].action.policy.queue_headers', kind: 'boolean' },
   { path: 'http_services[].routes[].action.policy.cache', kind: 'object' },
   { path: 'http_services[].routes[].action.policy.cache.store', kind: 'reference' },
   { path: 'http_services[].routes[].action.policy.cache.methods', kind: 'string_list' },

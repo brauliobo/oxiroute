@@ -48,6 +48,7 @@ pub(crate) enum EventName {
     CertificateJobControl,
     UpstreamEndpointEjection,
     UpstreamEndpointRecovery,
+    UpstreamEndpointHealth,
     Unknown,
 }
 
@@ -88,6 +89,7 @@ impl EventName {
             "certificate_job_control" => Self::CertificateJobControl,
             "upstream_endpoint_ejection" => Self::UpstreamEndpointEjection,
             "upstream_endpoint_recovery" => Self::UpstreamEndpointRecovery,
+            "upstream_endpoint_health" => Self::UpstreamEndpointHealth,
             _ => Self::Unknown,
         }
     }
@@ -119,6 +121,7 @@ impl EventName {
             Self::CertificateJobControl => "certificate_job_control",
             Self::UpstreamEndpointEjection => "upstream_endpoint_ejection",
             Self::UpstreamEndpointRecovery => "upstream_endpoint_recovery",
+            Self::UpstreamEndpointHealth => "upstream_endpoint_health",
             Self::Unknown => "unknown",
         }
     }
@@ -130,7 +133,8 @@ pub(crate) const fn v1_serialized_event_name(event: EventName) -> &'static str {
         EventName::CertificateRevocation
         | EventName::CertificateDeletion
         | EventName::CertificateAccountRollover
-        | EventName::CertificateJobControl => "unknown",
+        | EventName::CertificateJobControl
+        | EventName::UpstreamEndpointHealth => "unknown",
         _ => event.as_str(),
     }
 }
@@ -179,6 +183,14 @@ pub(crate) enum EventOutcome {
         reason: Option<HealthFailure>,
         recovery_count: u64,
         recovered_at_unix_ms: u64,
+    },
+    HealthChanged {
+        pool: String,
+        server: String,
+        previous: EndpointHealthState,
+        next: EndpointHealthState,
+        reason: Option<HealthFailure>,
+        changed_at_unix_ms: u64,
     },
     Unknown,
 }
@@ -233,6 +245,24 @@ impl Serialize for EventOutcome {
                 value.serialize_field("recoveredAtUnixMs", recovered_at_unix_ms)?;
                 value.end()
             }
+            Self::HealthChanged {
+                pool,
+                server,
+                previous,
+                next,
+                reason,
+                changed_at_unix_ms,
+            } => {
+                let mut value = serializer.serialize_struct("EventOutcome", 7)?;
+                value.serialize_field("type", "health_changed")?;
+                value.serialize_field("pool", pool)?;
+                value.serialize_field("server", server)?;
+                value.serialize_field("previous", previous)?;
+                value.serialize_field("next", next)?;
+                value.serialize_field("reason", reason)?;
+                value.serialize_field("changedAtUnixMs", changed_at_unix_ms)?;
+                value.end()
+            }
         }
     }
 }
@@ -249,6 +279,7 @@ impl EventOutcome {
             Self::Failed => "failed",
             Self::Ejected { .. } => "ejected",
             Self::Recovered { .. } => "recovered",
+            Self::HealthChanged { .. } => "health_changed",
             Self::Unknown => "unknown",
         }
     }
