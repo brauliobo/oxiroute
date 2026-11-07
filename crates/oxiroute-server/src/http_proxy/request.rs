@@ -47,6 +47,51 @@ pub(super) fn proxy_action(ctx: &HttpRequestContext) -> &ProxyActionPlan {
     proxy
 }
 
+/// The server a sticky session pins the first attempt to; later attempts choose freely.
+pub(super) fn affinity_server(session: &Session, ctx: &HttpRequestContext) -> Option<String> {
+    if ctx.attempt_count() > 0 {
+        return None;
+    }
+    let request = session.req_header();
+    let client_ip = session
+        .client_addr()
+        .and_then(|address| address.as_inet())
+        .map(std::net::SocketAddr::ip);
+    proxy_policy(ctx).affinity.as_ref()?.preferred(
+        ctx.pool.as_ref()?.selector(),
+        &AffinityRequest {
+            headers: &request.headers,
+            client_ip,
+            path: request.uri.path(),
+        },
+    )
+}
+
+/// Pins the client to the server that answered, unless its cookie already names it.
+pub(super) fn apply_affinity_cookie(
+    session: &Session,
+    ctx: &HttpRequestContext,
+    response: &mut pingora::http::ResponseHeader,
+) -> pingora::Result<()> {
+    let (Some(affinity), Some(pool), Some(server)) = (
+        proxy_policy(ctx).affinity.as_ref(),
+        ctx.pool.as_ref(),
+        ctx.trace.servers.last(),
+    ) else {
+        return Ok(());
+    };
+    match affinity.set_cookie(
+        pool.selector().name(),
+        server,
+        &session.req_header().headers,
+    ) {
+        Some(cookie) => response
+            .append_header(http::header::SET_COOKIE, cookie)
+            .map(drop),
+        None => Ok(()),
+    }
+}
+
 pub(super) fn proxy_route(ctx: &HttpRequestContext) -> &HttpRoutePlan {
     ctx.route.as_ref().expect("proxy route context")
 }

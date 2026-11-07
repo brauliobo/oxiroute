@@ -92,6 +92,7 @@ fn exclude_nonintegrated_component_controls(
         "cache_stores",
         "http_services[].routes[].action.policy.cache",
         "http_services[].routes[].action.policy.select",
+        "http_services[].routes[].action.policy.affinity",
         "max_connections",
         "listeners[].bind.mode",
         "listeners[].downstream_timeouts",

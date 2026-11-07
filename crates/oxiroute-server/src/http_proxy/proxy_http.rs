@@ -205,7 +205,7 @@ impl ProxyHttp for HttpReverseProxy {
 
     async fn upstream_peer(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
         let remaining = ctx.remaining(true)?;
@@ -225,6 +225,8 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.enter_phase(Phase::Queued);
             let selection_started = Instant::now();
             let selected = if let Some(server) = ctx.retry_server.take() {
+                pool.select_server_endpoint(&server).await?
+            } else if let Some(server) = affinity_server(session, ctx) {
                 pool.select_server_endpoint(&server).await?
             } else {
                 let wait = ctx.remaining(true)?;
@@ -646,6 +648,7 @@ impl ProxyHttp for HttpReverseProxy {
             response.append_header(name.clone(), value.clone())?;
         }
         apply_response_policy(response, proxy_policy(ctx), remove_hop_by_hop)?;
+        apply_affinity_cookie(session, ctx, response)?;
         ctx.response_buffer = None;
         if ctx
             .cache_transaction

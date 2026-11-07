@@ -578,6 +578,19 @@ Current constraints:
   (entries are not keyed by pool) or HTTP/3 upstream pools. Selections are counted in
   `oxiroute_route_pool_selections_total{route,pool}`. Restrict the header to trusted listeners
   with an `access_policy` when a client claiming the largest capability could starve the big pool.
+- Proxy `policy.affinity` (default absent) makes sessions sticky within the route pool. The first
+  attempt goes to the preferred server when it is selectable (not drained, in maintenance, down or
+  ejected; a busy one still queues for it); otherwise, and for every retry or rescue attempt, the
+  pool algorithm chooses, so affinity never blocks a request. `type = "cookie"` (`name`, `ttl_s`
+  default 3600, `same_site` default `lax`, `secure` and `http_only` default `true`) pins the
+  client to the server that answered with an opaque cookie derived from the pool and server names,
+  stable across reloads and workers; the proxy sets it only when the request lacks it or names a
+  different server, so a stale value is ignored and rewritten. The cookie is not combined with
+  `cache` because `Set-Cookie` responses bypass it. `type = "hash"` takes `key = "header:<name>"`,
+  `"client_ip"` or `"path_prefix:<segments>"` (1 through 8) and maps it with weighted rendezvous
+  hashing over the selectable servers: the mapping is stateless, honors weights and, when a server
+  leaves, remaps only that server's keys. `type = "header"` reads `name` as a server name. Not
+  supported for HTTP/3 upstream pools.
 - Proxy `policy.timeouts` optionally refines the upstream timeouts of one route, each phase `null` by
   default and between `1` and `86400000` milliseconds: `connect_ms` (per attempt, until the upstream
   connection is established), `header_ms` (per attempt, from the sent request until the first
