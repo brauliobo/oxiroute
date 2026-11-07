@@ -1077,6 +1077,7 @@ pub struct GenerationManager {
     next_reservation_token: Arc<AtomicU64>,
     operations: Arc<OperationGate>,
     process: ProcessRuntime,
+    registry: Arc<crate::registry::host::RegistryHost>,
     state: Arc<Mutex<GenerationState>>,
 }
 
@@ -1153,6 +1154,7 @@ impl GenerationManager {
             next_reservation_token: Arc::new(AtomicU64::new(0)),
             operations: Arc::new(OperationGate::default()),
             process: ProcessRuntime::new(None),
+            registry: Arc::new(crate::registry::host::RegistryHost::new(true)),
             state: Arc::new(Mutex::new(GenerationState::default())),
         }
     }
@@ -1162,7 +1164,19 @@ impl GenerationManager {
     pub fn new_supervised() -> Self {
         let mut manager = Self::new();
         manager.process = ProcessRuntime::supervised(None);
+        manager.registry = Arc::new(crate::registry::host::RegistryHost::new(false));
         manager
+    }
+
+    /// The registration service, once a generation with a `registry` block has been activated.
+    #[must_use]
+    pub fn registry(&self) -> Option<Arc<crate::registry::service::RegistryService>> {
+        self.registry.service()
+    }
+
+    /// Lets this process persist and expire registrations, or only follow them.
+    pub fn set_registry_writer(&self, writer: bool) {
+        self.registry.set_writer(writer);
     }
 
     fn acquire_preparation_operation(
@@ -1653,6 +1667,7 @@ impl GenerationManager {
                 retirements.retire(evicted.rtmp_retirement());
             }
         }
+        self.registry.on_activate(&active);
         active.start_accepting();
         state.last_failure = None;
         self.counters.activations.fetch_add(1, Ordering::Relaxed);

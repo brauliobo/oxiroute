@@ -13,9 +13,10 @@ use oxiroute_config::{PoolRegistration, Registry, UpstreamAlgorithm};
 use serde::Serialize;
 
 use super::{
-    auth::Principal,
+    auth::{Principal, TokenStore},
     error::RegistryError,
     lease::{Clock, LeaseTable},
+    limits::RateLimiter,
     record::{HeartbeatRequest, Registration, RegistrationKey, RegistrationRequest},
     store::{Store, StoreError, StoredRegistry},
     validate::{Requester, apply_heartbeat, validate_name, validate_put},
@@ -26,6 +27,8 @@ use crate::{
 };
 
 const POLL: Duration = Duration::from_secs(1);
+const RATE_PER_SECOND: u32 = 20;
+const RATE_BURST: u32 = 40;
 
 /// One pool of one generation and what the registry may do to it.
 pub struct PoolBinding {
@@ -121,6 +124,8 @@ pub struct RegistryService {
     clock: Arc<dyn Clock>,
     writer: AtomicBool,
     store_errors: AtomicU64,
+    tokens: Option<Arc<TokenStore>>,
+    limiter: RateLimiter,
     state: Mutex<State>,
     wake: Condvar,
 }
@@ -132,7 +137,12 @@ impl RegistryService {
     ///
     /// Returns an error when the state directory cannot be created.
     pub fn open(registry: &Registry, clock: Arc<dyn Clock>) -> Result<Arc<Self>, StoreError> {
-        let service = Self::with_store(Store::open(&registry.state_dir)?, clock);
+        let tokens = registry.tokens_file.as_ref().and_then(|path| {
+            TokenStore::open(path)
+                .inspect_err(|error| log::error!("registry tokens unavailable: {error}"))
+                .ok()
+        });
+        let service = Self::with_store(Store::open(&registry.state_dir)?, clock, tokens);
         let weak = Arc::downgrade(&service);
         thread::Builder::new()
             .name("registry".into())
@@ -141,15 +151,57 @@ impl RegistryService {
         Ok(service)
     }
 
-    pub(crate) fn with_store(store: Store, clock: Arc<dyn Clock>) -> Arc<Self> {
+    pub(crate) fn with_store(
+        store: Store,
+        clock: Arc<dyn Clock>,
+        tokens: Option<Arc<TokenStore>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             store,
+            limiter: RateLimiter::new(Arc::clone(&clock), RATE_PER_SECOND, RATE_BURST),
+            tokens,
             clock,
             writer: AtomicBool::new(false),
             store_errors: AtomicU64::new(0),
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
         })
+    }
+
+    /// The credential behind a scoped bearer token, if the registry has a token file.
+    #[must_use]
+    pub fn authenticate(&self, secret: &[u8]) -> Option<Principal> {
+        self.tokens.as_ref()?.authenticate(secret)
+    }
+
+    /// Takes a rate-limit token for a caller, counting refusals.
+    ///
+    /// # Errors
+    ///
+    /// `RateLimited` with the wait until the next token.
+    pub fn check_rate(&self, caller: &str) -> Result<(), RegistryError> {
+        self.limiter.check(caller).map_err(|retry_after| {
+            *self
+                .lock()
+                .metrics
+                .rejections
+                .entry("rate_limited")
+                .or_default() += 1;
+            RegistryError::RateLimited { retry_after }
+        })
+    }
+
+    /// Members of the newest live generation's pool, static and registered.
+    #[must_use]
+    pub fn pool_snapshot(&self, pool: &str) -> Option<crate::PoolHealthSnapshot> {
+        let state = self.lock();
+        state
+            .bindings
+            .iter()
+            .rev()
+            .find(|binding| binding.name == pool)
+            .and_then(PoolBinding::live)
+            .map(|pool| pool.health_snapshot())
     }
 
     fn run(weak: &Weak<Self>) {

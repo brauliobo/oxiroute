@@ -1,4 +1,5 @@
 use super::*;
+use crate::registry::record::AnnouncedState;
 
 fn policy() -> PoolRegistration {
     PoolRegistration {

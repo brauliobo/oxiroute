@@ -49,7 +49,7 @@ fn harness() -> Harness {
     let dir = tempfile::tempdir().expect("dir");
     let clock = Arc::new(ManualClock::new());
     let service =
-        RegistryService::with_store(Store::open(dir.path()).expect("store"), clock.clone());
+        RegistryService::with_store(Store::open(dir.path()).expect("store"), clock.clone(), None);
     service.set_writer(true);
     Harness {
         dir,
@@ -370,8 +370,11 @@ fn a_restart_restores_members_with_a_full_lease() {
     h.clock.advance(Duration::from_secs(14));
     drop(h.service);
 
-    let restarted =
-        RegistryService::with_store(Store::open(h.dir.path()).expect("store"), h.clock.clone());
+    let restarted = RegistryService::with_store(
+        Store::open(h.dir.path()).expect("store"),
+        h.clock.clone(),
+        None,
+    );
     restarted.set_writer(true);
     let reborn = pool("render", &[]);
     restarted.attach(vec![binding(&reborn, Some(policy()))]);
@@ -391,8 +394,11 @@ fn only_the_writer_changes_registrations_and_followers_mirror_it() {
     let writer_pool = pool("render", &[]);
     h.service
         .attach(vec![binding(&writer_pool, Some(policy()))]);
-    let follower =
-        RegistryService::with_store(Store::open(h.dir.path()).expect("store"), h.clock.clone());
+    let follower = RegistryService::with_store(
+        Store::open(h.dir.path()).expect("store"),
+        h.clock.clone(),
+        None,
+    );
     let follower_pool = pool("render", &[]);
     follower.attach(vec![binding(&follower_pool, Some(policy()))]);
 

@@ -106,6 +106,7 @@ impl GenerationCompiler {
                         .copied()
                         .chain(stats.pages.iter().map(|page| page.bind))
                 }))
+                .chain(crate::registry::host::registry_binds(config))
                 .collect(),
             listener_specs: compile_listener_blueprints(config),
             pool_specs,

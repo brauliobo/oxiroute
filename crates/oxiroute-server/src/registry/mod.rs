@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod error;
+pub(crate) mod host;
 pub mod lease;
 pub mod limits;
 pub mod record;

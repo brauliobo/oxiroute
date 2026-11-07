@@ -2937,15 +2937,7 @@ impl EndpointPool {
             .map(|server| server.name.clone())
     }
 
-    /// Number of members that joined at runtime.
-    pub(crate) fn dynamic_count(&self) -> usize {
-        self.members()
-            .endpoints
-            .iter()
-            .filter(|server| server.origin == ServerOrigin::Dynamic)
-            .count()
-    }
-
+    #[cfg(test)]
     pub(crate) fn server_handle(&self, name: &str) -> Option<ServerHandle> {
         self.server_endpoint(name).map(ServerHandle)
     }
