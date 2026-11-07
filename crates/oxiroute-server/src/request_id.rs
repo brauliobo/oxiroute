@@ -15,6 +15,7 @@ use crate::logging::valid_correlation_id;
 pub(crate) const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 pub(crate) const UPSTREAM_REQUEST_ID_HEADER: HeaderName =
     HeaderName::from_static("x-upstream-request-id");
+const DEFAULT_IDEMPOTENCY_HEADER: HeaderName = HeaderName::from_static("idempotency-key");
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -49,6 +50,15 @@ pub(crate) fn resolve_request_id(incoming: Option<&HeaderValue>) -> String {
         .and_then(|value| value.to_str().ok())
         .filter(|value| valid_correlation_id(value))
         .map_or_else(generate_request_id, ToOwned::to_owned)
+}
+
+/// First 8 hex digits of a stable hash: correlates a client re-issue without logging the key.
+pub(crate) fn idempotency_tag(value: &[u8]) -> String {
+    format!("{:08x}", fnv1a(value) >> 32)
+}
+
+pub(crate) fn idempotency_header_or_default(configured: Option<&HeaderName>) -> HeaderName {
+    configured.cloned().unwrap_or(DEFAULT_IDEMPOTENCY_HEADER)
 }
 
 pub(crate) struct RequestIdBuilder;
@@ -136,5 +146,14 @@ mod tests {
         let parts: Vec<_> = first.split('-').collect();
         assert_eq!((parts[0], parts[1].len(), parts[2].len()), ("rq", 8, 12));
         assert!(valid_correlation_id(&first));
+    }
+
+    #[test]
+    fn idempotency_tags_are_short_stable_and_hide_the_key() {
+        let tag = idempotency_tag(b"order-8841-secret");
+        assert_eq!(tag.len(), 8);
+        assert_eq!(tag, idempotency_tag(b"order-8841-secret"));
+        assert_ne!(tag, idempotency_tag(b"order-8842-secret"));
+        assert!(!tag.contains("order"));
     }
 }

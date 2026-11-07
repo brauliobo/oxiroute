@@ -162,6 +162,17 @@ pub(crate) fn redact_access_record(value: &Value) -> Value {
         "result",
         "reason",
         "authenticated",
+        "requestId",
+        "idemKey",
+        "pool",
+        "server",
+        "servers",
+        "attempts",
+        "queueWaitMs",
+        "connectMs",
+        "headerMs",
+        "rescued",
+        "wasStuck",
     ];
 
     let mut record = Map::new();

@@ -1,5 +1,5 @@
 use std::{
-    sync::Arc,
+    sync::{Arc, atomic::Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -61,6 +61,9 @@ use crate::{
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 use crate::request_id::{REQUEST_ID_HEADER, RequestIdBuilder};
+use crate::upstream_stats::{AttemptOutcome, ServerStats, upstream_stats};
+
+mod access_record;
 
 pub struct HttpReverseProxy {
     challenge_store: Option<ChallengeStore>,
@@ -140,6 +143,34 @@ pub struct HttpRequestContext {
     cache_capture: Option<CacheCapture>,
     response_buffer: Option<ResponseBuffer>,
     cache_response_handled: bool,
+    trace: AttemptTrace,
+}
+
+/// What the access log and per-server counters need to know about the attempts of one request.
+#[derive(Default)]
+struct AttemptTrace {
+    servers: Vec<String>,
+    failure_reason: Option<&'static str>,
+    budget_spent: std::sync::atomic::AtomicBool,
+    queue_wait: Duration,
+    queue_position: u64,
+    attempt_started: Option<Instant>,
+    connect: Option<Duration>,
+    connected_at: Option<Instant>,
+    header: Option<Duration>,
+    stats: Option<Arc<ServerStats>>,
+    responded: bool,
+    pending_outcome: Option<AttemptOutcome>,
+}
+
+impl AttemptTrace {
+    /// Counts the attempt on its server and forgets the server until the next selection.
+    fn finish(&mut self, outcome: AttemptOutcome, status: Option<u16>) {
+        if let Some(stats) = self.stats.take() {
+            stats.record_attempt(outcome);
+            stats.record_response(status);
+        }
+    }
 }
 
 struct CacheCapture {
@@ -196,20 +227,79 @@ impl HttpRequestContext {
         self.listener.record_rescue(&route, status);
     }
 
+    /// A failed attempt is counted now when the request moves on, otherwise when the request ends.
+    fn settle_attempt(&mut self, error: &Error, retried: bool) {
+        let outcome = attempt_outcome(error);
+        if retried {
+            self.trace.finish(outcome, None);
+        } else {
+            self.trace.pending_outcome = Some(outcome);
+        }
+    }
+
     fn spend_retry_budget(&self) -> bool {
-        proxy_policy(self)
+        let spent = proxy_policy(self)
             .retry_budget
             .as_ref()
-            .is_none_or(|budget| budget.try_spend(Instant::now()))
+            .is_none_or(|budget| budget.try_spend(Instant::now()));
+        if !spent {
+            self.trace.budget_spent.store(true, Ordering::Relaxed);
+        }
+        spent
     }
 
     fn release_lease(&mut self) {
+        self.note_queue_wait();
         self.selected.take();
         self.selected_observation.take();
     }
 
     fn detach_lease(&mut self) {
+        self.note_queue_wait();
         self.selected.take();
+    }
+
+    /// Settles the last attempt and adds what the finished request sent and received to its server.
+    fn account_final_attempt(&mut self, session: &Session) {
+        if self.trace.responded {
+            if let (Some(stats), Some(connected)) = (&self.trace.stats, self.trace.connected_at) {
+                let bytes = |count: usize| u64::try_from(count).unwrap_or(u64::MAX);
+                stats.record_request_duration(connected.elapsed());
+                stats.record_bytes(
+                    bytes(session.body_bytes_read()),
+                    bytes(session.body_bytes_sent()),
+                );
+            }
+        } else {
+            let outcome = self.trace.pending_outcome.take().unwrap_or_else(|| {
+                match self.trace.failure_reason {
+                    Some("client_closed") => AttemptOutcome::ClientClosed,
+                    _ => AttemptOutcome::ProtocolError,
+                }
+            });
+            self.trace.finish(outcome, None);
+        }
+    }
+
+    /// The attempt produced the response the client gets.
+    fn note_response(&mut self, status: u16) {
+        let trace = &mut self.trace;
+        trace.responded = true;
+        trace.header = trace.connected_at.map(|connected| connected.elapsed());
+        if let Some(stats) = &trace.stats {
+            stats.record_attempt(AttemptOutcome::Ok);
+            stats.record_response(Some(status));
+            if let Some(header) = trace.header {
+                stats.record_header_duration(header);
+            }
+        }
+    }
+
+    fn note_queue_wait(&mut self) {
+        if let Some(selected) = &self.selected {
+            self.trace.queue_wait += selected.queue_wait();
+            self.trace.queue_position = self.trace.queue_position.max(selected.queue_position());
+        }
     }
 
     fn record_passive_failure(&mut self, failure: HealthFailure) {
@@ -339,6 +429,7 @@ impl ProxyHttp for HttpReverseProxy {
             cache_capture: None,
             response_buffer: None,
             cache_response_handled: false,
+            trace: AttemptTrace::default(),
         }
     }
 
@@ -507,6 +598,7 @@ impl ProxyHttp for HttpReverseProxy {
                 tokio::time::sleep(delay).await;
                 ctx.retry_delay_pending = false;
             }
+            let selection_started = Instant::now();
             let selected = if let Some(server) = ctx.retry_server.take() {
                 pool.select_server_endpoint(&server).await?
             } else {
@@ -515,6 +607,11 @@ impl ProxyHttp for HttpReverseProxy {
                     .await
                     .map_err(|_| Error::new_up(ErrorType::ReadTimedout))??
             };
+            ctx.trace.queue_wait += selection_started.elapsed();
+            ctx.trace.attempt_started = Some(Instant::now());
+            ctx.trace.servers.push(selected.server_name().to_owned());
+            ctx.trace.stats =
+                Some(upstream_stats().server(pool.selector().name(), selected.server_name()));
             ctx.selected_upstream_host = selected_upstream_host(
                 selected.endpoint(),
                 proxy_policy(ctx).upstream_host.clone(),
@@ -590,6 +687,9 @@ impl ProxyHttp for HttpReverseProxy {
             && ctx.spend_retry_budget();
         let retry = should_retry_connection(has_address_fallback, route_retry_allowed);
         error.set_retry(retry);
+        if !has_address_fallback {
+            ctx.settle_attempt(&error, retry);
+        }
         if retry {
             if !has_address_fallback {
                 if retry_target == HttpRetryTarget::SameServer {
@@ -640,6 +740,7 @@ impl ProxyHttp for HttpReverseProxy {
             && ctx.remaining(true).is_ok()
             && (prepaid || ctx.spend_retry_budget());
         error.set_retry(retry);
+        ctx.settle_attempt(&error, retry);
         if retry {
             if retry_target == HttpRetryTarget::SameServer {
                 ctx.retry_server = ctx.attempted_upstreams.last().cloned();
@@ -656,6 +757,7 @@ impl ProxyHttp for HttpReverseProxy {
         error: &Error,
         ctx: &mut Self::CTX,
     ) -> FailToProxy {
+        ctx.trace.failure_reason = failure_reason(error, ctx, session);
         if ctx.client_deadline_expired() {
             return FailToProxy {
                 error_code: 0,
@@ -879,6 +981,12 @@ impl ProxyHttp for HttpReverseProxy {
             && ctx.spend_retry_budget()
         {
             ctx.retry_prepaid = true;
+            let outcome = if rescued {
+                AttemptOutcome::Rescued
+            } else {
+                AttemptOutcome::StatusRetry
+            };
+            ctx.trace.finish(outcome, Some(status));
             if rescued {
                 ctx.begin_rescue(status);
             }
@@ -893,6 +1001,7 @@ impl ProxyHttp for HttpReverseProxy {
         if retries_on_status && !rescued {
             ctx.record_passive_failure(HealthFailure::UnexpectedStatus);
         }
+        ctx.note_response(status);
         let had_uncacheable_framing = response.headers.contains_key(TRANSFER_ENCODING)
             || response.headers.contains_key(TRAILER);
         let remove_hop_by_hop = response.status != http::StatusCode::SWITCHING_PROTOCOLS;
@@ -997,6 +1106,8 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
         ctx.remaining(true)?;
+        ctx.trace.connected_at = Some(Instant::now());
+        ctx.trace.connect = ctx.trace.attempt_started.map(|started| started.elapsed());
         let result =
             validate_tls_connection(ctx.pool.as_deref().and_then(UpstreamPlan::tls), digest);
         if result.is_err() {
@@ -1133,23 +1244,9 @@ impl ProxyHttp for HttpReverseProxy {
         }
         ctx.observe(session);
         ctx.release_lease();
+        ctx.account_final_attempt(session);
         if let Some(access_log) = self.service.access_log() {
-            let request = session.req_header();
-            let event = serde_json::json!({
-                "timestampUnixMs": SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .ok()
-                    .and_then(|duration| u64::try_from(duration.as_millis()).ok()),
-                "service": access_log.service(),
-                "route": ctx.route.as_ref().map(|route| route.route_id.as_str()),
-                "host": ctx.authority.as_ref().map(normalized_request_host),
-                "method": request.method.as_str(),
-                "status": response_status,
-                "bytesReceived": session.body_bytes_read().to_string(),
-                "bytesSent": session.body_bytes_sent().to_string(),
-                "durationMs": ctx.started_at.elapsed().as_millis().to_string(),
-                "clientIp": session.client_addr().and_then(|address| address.as_inet()).map(|address| address.ip().to_string()),
-            });
+            let event = access_record::build(ctx, session, response_status, access_log.service());
             if let Err(error) = access_log.write(&event) {
                 warn!("HTTP access log write failed: {error}");
             }
@@ -2075,6 +2172,66 @@ fn timeout_reason(
         ErrorType::ReadTimedout if response_started(session) => Some(TimeoutReason::UpstreamIdle),
         ErrorType::ReadTimedout => Some(TimeoutReason::UpstreamHeader),
         _ => None,
+    }
+}
+
+/// The single bounded reason an access log line gives for a request that did not end well.
+fn failure_reason(
+    error: &Error,
+    ctx: &HttpRequestContext,
+    session: &Session,
+) -> Option<&'static str> {
+    if ctx.trace.budget_spent.load(Ordering::Relaxed) {
+        return Some("retry_budget_spent");
+    }
+    if let Some(reason) = timeout_reason(error, ctx, session) {
+        return Some(reason.as_str());
+    }
+    if is_pool_unavailable(error) {
+        return Some("pool_unavailable");
+    }
+    Some(match (error.esource(), error.etype()) {
+        (ErrorSource::Downstream, _) => "client_closed",
+        (_, ErrorType::HTTPStatus(503)) => "queue_timeout",
+        (
+            _,
+            ErrorType::ConnectRefused
+            | ErrorType::ConnectNoRoute
+            | ErrorType::ConnectError
+            | ErrorType::ConnectProxyFailure
+            | ErrorType::TLSHandshakeFailure
+            | ErrorType::HandshakeError
+            | ErrorType::InvalidCert,
+        ) => "connect_failed",
+        (_, ErrorType::ConnectionClosed | ErrorType::ReadError | ErrorType::WriteError) => {
+            "upstream_reset"
+        }
+        _ => "protocol_error",
+    })
+}
+
+fn attempt_outcome(error: &Error) -> AttemptOutcome {
+    match (error.esource(), error.etype()) {
+        (ErrorSource::Downstream, _) => AttemptOutcome::ClientClosed,
+        (
+            _,
+            ErrorType::ConnectTimedout
+            | ErrorType::TLSHandshakeTimedout
+            | ErrorType::ReadTimedout
+            | ErrorType::WriteTimedout,
+        ) => AttemptOutcome::Timeout,
+        (
+            _,
+            ErrorType::ConnectRefused
+            | ErrorType::ConnectNoRoute
+            | ErrorType::ConnectError
+            | ErrorType::ConnectProxyFailure
+            | ErrorType::TLSHandshakeFailure
+            | ErrorType::HandshakeError
+            | ErrorType::InvalidCert,
+        ) => AttemptOutcome::ConnectFailed,
+        (_, ErrorType::HTTPStatus(_)) => AttemptOutcome::StatusRetry,
+        _ => AttemptOutcome::ProtocolError,
     }
 }
 
