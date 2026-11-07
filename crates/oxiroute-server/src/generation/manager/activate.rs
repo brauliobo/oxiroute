@@ -243,7 +243,7 @@ impl GenerationManager {
                 retirements.retire(evicted.rtmp_retirement());
             }
         }
-        self.registry.on_activate(&active);
+        self.registry.on_activate(&active, self);
         active.start_accepting();
         state.last_failure = None;
         self.counters.activations.fetch_add(1, Ordering::Relaxed);

@@ -12,14 +12,16 @@ use super::{
     lease::SystemClock,
     listener::RegistryListeners,
     service::{PoolBinding, RegistryService},
+    status_feed::StatusFeed,
 };
-use crate::RuntimeGeneration;
+use crate::{GenerationManager, RuntimeGeneration};
 
 /// Owns the process's registry service. It starts with the first generation whose configuration
 /// has a `registry` block, and every later generation is attached to the same service.
 pub(crate) struct RegistryHost {
     service: OnceLock<Arc<RegistryService>>,
     listeners: OnceLock<RegistryListeners>,
+    feed: OnceLock<Arc<StatusFeed>>,
     writer: AtomicBool,
 }
 
@@ -29,6 +31,7 @@ impl RegistryHost {
         Self {
             service: OnceLock::new(),
             listeners: OnceLock::new(),
+            feed: OnceLock::new(),
             writer: AtomicBool::new(writer),
         }
     }
@@ -45,7 +48,11 @@ impl RegistryHost {
     }
 
     /// Seeds the pools of a generation that is about to serve with the registered servers.
-    pub(crate) fn on_activate(&self, generation: &RuntimeGeneration) {
+    pub(crate) fn on_activate(
+        &self,
+        generation: &RuntimeGeneration,
+        generations: &GenerationManager,
+    ) {
         let config = generation.config().as_draft();
         let service = match (self.service.get(), &config.registry) {
             (Some(service), _) => Arc::clone(service),
@@ -53,7 +60,9 @@ impl RegistryHost {
                 match RegistryService::open(registry, Arc::new(SystemClock)) {
                     Ok(service) => {
                         service.set_writer(self.writer.load(Ordering::Acquire));
-                        self.start_listeners(&service, registry);
+                        let feed = Arc::new(StatusFeed::new(Arc::clone(&service)));
+                        self.start_listeners(&service, registry, &feed);
+                        drop(self.feed.set(feed));
                         Arc::clone(self.service.get_or_init(|| service))
                     }
                     Err(error) => {
@@ -64,12 +73,20 @@ impl RegistryHost {
             }
             (None, None) => return,
         };
+        if let Some(feed) = self.feed.get() {
+            feed.publish(generation.metrics().clone(), generations.without_registry());
+        }
         service.attach(bindings(generation, config));
         generation.restore_carried_states();
     }
 
-    fn start_listeners(&self, service: &Arc<RegistryService>, registry: &Registry) {
-        match RegistryListeners::start(service, &registry.endpoints) {
+    fn start_listeners(
+        &self,
+        service: &Arc<RegistryService>,
+        registry: &Registry,
+        feed: &Arc<StatusFeed>,
+    ) {
+        match RegistryListeners::start(service, feed, &registry.endpoints) {
             Ok(listeners) => drop(self.listeners.set(listeners)),
             Err(error) => log::error!("registry endpoints are not serving: {error}"),
         }

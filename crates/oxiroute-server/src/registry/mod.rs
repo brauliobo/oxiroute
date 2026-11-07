@@ -12,5 +12,6 @@ pub mod limits;
 pub(crate) mod listener;
 pub mod record;
 pub mod service;
+pub(crate) mod status_feed;
 pub mod store;
 pub mod validate;

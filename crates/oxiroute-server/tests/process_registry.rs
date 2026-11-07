@@ -694,6 +694,32 @@ async fn group_sockets_split_status_from_registration_without_tokens() {
 }
 
 #[tokio::test]
+async fn the_read_socket_serves_the_status_page_with_registry_leases() {
+    let farm = Farm::new();
+    let server = farm.start().await;
+    let (voice, _v) = stub("tts-1").await;
+    assert_eq!(farm.register("voice", "tts-1", voice, 2_000).await, 201);
+
+    let (status, page) = farm
+        .over_socket("read", "GET", "/status.json", &Value::Null)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(page["ready"], true);
+    assert_eq!(page["registry"]["leases"], 1);
+    assert_eq!(page["registry"]["degraded"], false);
+    let pool = page["pools"]
+        .as_array()
+        .and_then(|pools| pools.iter().find(|pool| pool["name"] == "voice"))
+        .expect("voice pool");
+    assert_eq!(pool["total"], 1);
+    let (status, _) = farm
+        .over_socket("register", "GET", "/status.json", &Value::Null)
+        .await;
+    assert_eq!(status, 404, "only the read socket serves the status page");
+    server.shutdown();
+}
+
+#[tokio::test]
 async fn the_lan_endpoint_needs_a_scoped_token_and_a_peer_in_range() {
     let farm = Farm::new();
     let server = farm.start().await;

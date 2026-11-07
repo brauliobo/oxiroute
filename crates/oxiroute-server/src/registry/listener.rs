@@ -1,6 +1,6 @@
 //! Registry-only listeners: group-permission unix sockets and a token-gated LAN endpoint.
 //!
-//! They serve the registry routes and `/ready` on the read socket, and nothing else, so a worker
+//! They serve the registry routes, and `/ready` and `/status.json` on the read socket, and nothing else, so a worker
 //! can register without ever reaching the management API.
 
 mod socket;
@@ -33,6 +33,7 @@ use super::{
     error::RegistryError,
     http::{self, MAX_BODY_BYTES, Reply, Route},
     service::RegistryService,
+    status_feed::StatusFeed,
 };
 
 const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -48,6 +49,7 @@ enum Access {
 
 struct Endpoint {
     service: Arc<RegistryService>,
+    feed: Arc<StatusFeed>,
     access: Access,
 }
 
@@ -77,6 +79,7 @@ impl RegistryListeners {
     /// Returns the first bind failure; nothing stays bound.
     pub(crate) fn start(
         service: &Arc<RegistryService>,
+        feed: &Arc<StatusFeed>,
         endpoints: &[RegistryEndpoint],
     ) -> io::Result<Self> {
         let runtime = Builder::new_current_thread().enable_all().build()?;
@@ -87,6 +90,7 @@ impl RegistryListeners {
             let access = access(endpoint);
             let context = Arc::new(Endpoint {
                 service: Arc::clone(service),
+                feed: Arc::clone(feed),
                 access,
             });
             match endpoint {
@@ -230,8 +234,12 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 impl Endpoint {
     async fn answer(&self, caller: &Caller, request: Request<Incoming>) -> Reply {
         let (parts, body) = request.into_parts();
-        if matches!(self.access, Access::Read) && parts.uri.path() == "/ready" {
-            return self.ready(&parts.method);
+        if matches!(self.access, Access::Read) {
+            match parts.uri.path() {
+                "/ready" => return self.ready(&parts.method),
+                "/status.json" => return self.status(&parts.method).await,
+                _ => {}
+            }
         }
         let principal = match self.authenticate(caller, &parts.headers) {
             Ok(principal) => principal,
@@ -246,6 +254,17 @@ impl Endpoint {
         tokio::task::spawn_blocking(move || execute(&service, &parts, &body, &principal, peer))
             .await
             .unwrap_or_else(|_| Reply::error(&RegistryError::RegistryUnavailable))
+    }
+
+    async fn status(&self, method: &hyper::Method) -> Reply {
+        if method != hyper::Method::GET {
+            return Reply::error(&RegistryError::RouteNotFound);
+        }
+        let feed = Arc::clone(&self.feed);
+        match tokio::task::spawn_blocking(move || feed.document()).await {
+            Ok(Some(document)) => Reply::json(200, &document),
+            _ => Reply::error(&RegistryError::RegistryUnavailable),
+        }
     }
 
     fn ready(&self, method: &hyper::Method) -> Reply {

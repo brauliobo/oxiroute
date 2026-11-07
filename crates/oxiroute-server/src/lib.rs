@@ -44,6 +44,7 @@ mod secure_bearer;
 mod service_plan;
 mod shutdown;
 mod stats;
+mod status_check;
 mod status_summary;
 mod tcp_relay;
 pub mod tls;
