@@ -365,8 +365,14 @@ Current constraints:
   first failure and `"mark_down"` applies the mark-down action after the error limit. `mark_down`
   controls whether ejection also marks the active health state down, and `mark_up` controls whether active recovery restores it. Initial and
   maximum ejection backoff are bounded to one day, and `recovery_threshold` is bounded to 100.
-  Missing passive policy retains the bounded runtime defaults; it does not disable failure
-  accounting. Ejection and recovery remain generation-owned and never revoke an existing lease.
+  Omitting `passive_health` disables passive failure accounting and ejection for the pool; a
+  configured block applies its defaults to omitted fields (`observe = "layer7"`,
+  `on_error = "count"`, `error_limit = 3`, `initial_backoff_ms = 30000`,
+  `max_backoff_ms = 300000`, `recovery_threshold = 1`, `mark_down` and `mark_up` false). A failed
+  connect, a timeout or a protocol error counts when observed; an HTTP status counts only when the
+  route's `retry.response_statuses` lists it, so a pool whose routes retry no status never ejects a
+  server for answering `500`. A server returns when its backoff expires. Ejection and recovery
+  remain generation-owned and never revoke an existing lease.
 - `resilience` is an optional per-pool object whose options all default to the strict behavior.
   `fail_open = true` keeps a pool serving when health checks or passive ejection leave none of its
   servers selectable: instead of answering `503`, it selects the least bad server that is not
