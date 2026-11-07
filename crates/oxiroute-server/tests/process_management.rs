@@ -95,6 +95,8 @@ async fn built_process_serves_readiness_status_and_redacted_metrics_on_multiple_
     let metrics = String::from_utf8(metrics.body).expect("metrics UTF-8");
     assert!(metrics.contains("oxiroute_generation_activations_total 1"));
     assert!(metrics.contains("oxiroute_http_inflight_overdue 0"));
+    assert!(metrics.contains("oxiroute_generation_info{generation=\"1\",revision=\""));
+    assert!(metrics.contains("oxiroute_generation_active_age_seconds"));
     assert!(!metrics.contains(&ipv4_first.to_string()));
     assert!(!metrics.contains(&ipv4_second.to_string()));
 

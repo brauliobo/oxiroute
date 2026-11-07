@@ -1412,6 +1412,15 @@ pub(crate) fn emit_api_operation(
     );
 }
 
+/// Hook for the dynamic server registry: a server joined, left or was changed in a pool.
+///
+/// It is reported as the existing `server_update` event so operators and the audit trail see it
+/// without a new event shape; the registry decides when to call it.
+#[allow(dead_code, reason = "called by the dynamic server registry")]
+pub(crate) fn emit_server_registration(context: &AuditContext) {
+    emit_with_context("server_update", "applied", None, context);
+}
+
 pub(crate) fn emit_upstream_endpoint_ejection(
     pool: &str,
     server: &str,
