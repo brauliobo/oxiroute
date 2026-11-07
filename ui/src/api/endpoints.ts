@@ -1574,7 +1574,7 @@ function isEndpointHealthState(value: unknown): value is EndpointHealthStateName
 
 function isHealthFailure(value: unknown): value is HealthFailure {
   return typeof value === 'string' &&
-    ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error'].includes(value)
+    ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error', 'slow'].includes(value)
 }
 
 function payloadIsReason(value: unknown, reason: string): boolean {
@@ -3345,7 +3345,7 @@ function topologyMetrics(value: unknown): boolean {
     ['lastCheckedAtUnixMs', 'lastTransitionAtUnixMs']
       .every((key) => value[key] === undefined || nullableSafeInteger(value[key])) &&
     (value.lastFailure === undefined || value.lastFailure === null ||
-      ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error'].includes(String(value.lastFailure)))
+      ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error', 'slow'].includes(String(value.lastFailure)))
 }
 
 function candidateTopology(value: unknown): value is CandidateTopologySnapshot {

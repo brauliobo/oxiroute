@@ -820,6 +820,7 @@ enum HealthFailureDto {
     ConnectFailed,
     UnexpectedStatus,
     ProtocolError,
+    Slow,
 }
 
 #[cfg(test)]

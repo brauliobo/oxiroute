@@ -100,6 +100,8 @@ A pool keeps serving when health checks or passive ejection would otherwise take
   server; counted in `oxiroute_route_pool_selections_total{route,pool}`.
 - New proxy `policy.affinity` (cookie, rendezvous hash or header) pins sessions to a server while it
   stays selectable.
+- New `passive_health.outlier_detection` ejects a server whose time to first byte on a route is far
+  above its peers (reason `slow`, a new `lastFailure`/`passiveEjectionReason` value in the API).
 - New algorithm `power_of_two_choices`. `least_connections` now compares load per unit of capacity
   (`max_connections`, else weight) instead of raw counts, and `weighted_round_robin` is smooth
   (weights 3 and 1 give `a a b a`, not `a a a b`) and follows live weights.
@@ -116,7 +118,7 @@ keeps working: the strict count does not include failed-open servers.
 
 - Weighted round-robin selection order changed (smooth instead of clumped); the share per server is
   the same.
-- A configuration that uses `passive_health.readmission`, `passive_health.circuit_breaker`, `policy.select`, `policy.affinity` or `power_of_two_choices` must drop them
+- A configuration that uses `passive_health.readmission`, `passive_health.circuit_breaker`, `passive_health.outlier_detection`, `policy.select`, `policy.affinity` or `power_of_two_choices` must drop them
   before rolling back, because the previous release rejects unknown fields and algorithm names.
 
 - Requests that used to end with `502` because an upstream read, write or connect timeout fired now

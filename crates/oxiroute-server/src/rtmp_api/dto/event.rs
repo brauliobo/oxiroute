@@ -375,6 +375,7 @@ enum HealthFailureDto {
     ConnectFailed,
     UnexpectedStatus,
     ProtocolError,
+    Slow,
 }
 
 impl From<HealthFailure> for HealthFailureDto {
@@ -384,6 +385,7 @@ impl From<HealthFailure> for HealthFailureDto {
             HealthFailure::ConnectFailed => Self::ConnectFailed,
             HealthFailure::UnexpectedStatus => Self::UnexpectedStatus,
             HealthFailure::ProtocolError => Self::ProtocolError,
+            HealthFailure::Slow => Self::Slow,
         }
     }
 }

@@ -876,6 +876,56 @@
       "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
     },
     {
+      "id": "canonical.upstream-pools.passive-health.outlier-detection",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.outlier_detection",
+      "editability": "operator",
+      "normalization": ["absence disables latency outlier detection"],
+      "validation": ["every field within its bounds"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.outlier-detection.factor-percent",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.outlier_detection.factor_percent",
+      "editability": "operator",
+      "normalization": ["default to 300"],
+      "validation": ["110 through 10000 percent"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.outlier-detection.min-samples",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.outlier_detection.min_samples",
+      "editability": "operator",
+      "normalization": ["default to 50"],
+      "validation": ["1 through 100000 responses"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.outlier-detection.interval-ms",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.outlier_detection.interval_ms",
+      "editability": "operator",
+      "normalization": ["default to 10000"],
+      "validation": ["100 through 3600000 milliseconds"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.outlier-detection.max-ejected-percent",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.outlier_detection.max_ejected_percent",
+      "editability": "operator",
+      "normalization": ["default to 30"],
+      "validation": ["1 through 100 percent"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
       "id": "canonical.upstream-pools.tls",
       "kind": "field",
       "path": "upstream_pools[].tls",

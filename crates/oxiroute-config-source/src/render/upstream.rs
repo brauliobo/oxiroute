@@ -225,6 +225,14 @@ impl Renderer {
             self.integer_field("half_open_successes", breaker.half_open_successes);
             self.end_table();
         }
+        if let Some(outlier) = &policy.outlier_detection {
+            self.begin_table_field("outlier_detection");
+            self.integer_field("factor_percent", outlier.factor_percent);
+            self.integer_field("min_samples", outlier.min_samples);
+            self.integer_field("interval_ms", outlier.interval_ms);
+            self.integer_field("max_ejected_percent", outlier.max_ejected_percent);
+            self.end_table();
+        }
     }
 
     fn readmission_probe(&mut self, probe: &ReadmissionProbe) {

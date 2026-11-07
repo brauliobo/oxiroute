@@ -76,6 +76,40 @@ fn validate_passive_health_config(
     if let Some(breaker) = &policy.circuit_breaker {
         validate_circuit_breaker(breaker, invalid)?;
     }
+    if let Some(outlier) = &policy.outlier_detection {
+        validate_outlier_detection(outlier, invalid)?;
+    }
+    Ok(())
+}
+
+fn validate_outlier_detection(
+    outlier: &crate::model::OutlierDetection,
+    invalid: impl Fn(&'static str, &'static str) -> ConfigError,
+) -> Result<(), ConfigError> {
+    if !(110..=10_000).contains(&outlier.factor_percent) {
+        return Err(invalid(
+            "passive_health.outlier_detection.factor_percent",
+            "factor must be between 110 and 10000 percent",
+        ));
+    }
+    if !(1..=100_000).contains(&outlier.min_samples) {
+        return Err(invalid(
+            "passive_health.outlier_detection.min_samples",
+            "minimum samples must be between 1 and 100000",
+        ));
+    }
+    if !(100..=MAX_BREAKER_MS).contains(&outlier.interval_ms) {
+        return Err(invalid(
+            "passive_health.outlier_detection.interval_ms",
+            "interval must be between 100 and 3600000 milliseconds",
+        ));
+    }
+    if !(1..=100).contains(&outlier.max_ejected_percent) {
+        return Err(invalid(
+            "passive_health.outlier_detection.max_ejected_percent",
+            "maximum ejected share must be between 1 and 100 percent",
+        ));
+    }
     Ok(())
 }
 

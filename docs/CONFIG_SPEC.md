@@ -399,6 +399,18 @@ Current constraints:
   through 3600000). It then goes half-open: at most `half_open_max` (default 1) trial requests run
   at once, `half_open_successes` (default 3) trial successes in a row close it, and one trial
   failure reopens it. Existing leases are never revoked.
+- `passive_health.outlier_detection` (optional) ejects a server that answers much slower than its
+  peers. The time to first byte of every successful (2xx) response feeds a moving average per route
+  and server; servers are compared per route only, because one route may mix short and very long
+  jobs, so keep the option off for a pool whose single route carries both kinds of work. Every
+  `interval_ms` (default 10000, 100 through 3600000) a server with at least `min_samples` (default
+  50, at most 100000) responses on a route in that interval is an outlier when its average exceeds
+  `factor_percent` (default 300, 110 through 10000) of the median average of the other judged
+  servers of that route, so it needs at least one judged peer. An outlier is ejected through the
+  passive machinery with reason `slow` (backoff, `readmission` and events as for failures), but
+  never beyond `max_ejected_percent` of the pool (default 30, 1 through 100, always allowing one
+  server) and never below the pool `min_members`. An ejected server's averages restart when it
+  returns.
 - `resilience` is an optional per-pool object whose options all default to the strict behavior.
   `fail_open = true` keeps a pool serving when health checks or passive ejection leave none of its
   servers selectable: instead of answering `503`, it selects the least bad server that is not

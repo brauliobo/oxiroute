@@ -628,6 +628,27 @@ pub struct PassiveHealthPolicy {
     /// Takes a server out of rotation when too large a share of its recent requests fail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub circuit_breaker: Option<CircuitBreaker>,
+    /// Ejects a server whose time to first byte is far above its peers on the same route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outlier_detection: Option<OutlierDetection>,
+}
+
+/// Latency outlier detection of a pool: servers are compared per route, never across routes whose
+/// jobs differ in duration.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OutlierDetection {
+    /// A server is an outlier above this percentage of the median of its peers (300 is three times).
+    #[serde(default = "default_outlier_factor_percent")]
+    pub factor_percent: u32,
+    /// Successful responses per route and server in one interval before a server is judged.
+    #[serde(default = "default_outlier_min_samples")]
+    pub min_samples: u32,
+    #[serde(default = "default_outlier_interval_ms")]
+    pub interval_ms: u64,
+    /// Upper share of the pool that may be ejected as outliers at once (at least one server).
+    #[serde(default = "default_outlier_max_ejected_percent")]
+    pub max_ejected_percent: u8,
 }
 
 /// Failure-ratio circuit breaker of one server, distinct from consecutive-failure ejection.
@@ -692,6 +713,7 @@ impl Default for PassiveHealthPolicy {
             recovery_threshold: default_passive_recovery_threshold(),
             readmission: None,
             circuit_breaker: None,
+            outlier_detection: None,
         }
     }
 }

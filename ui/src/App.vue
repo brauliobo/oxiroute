@@ -417,6 +417,7 @@ const healthFailureLabels: Record<HealthFailure, string> = {
   connect_failed: 'Connection failed',
   unexpected_status: 'Unexpected status',
   protocol_error: 'Protocol error',
+  slow: 'Slower than its peers',
 }
 const poolAlgorithmLabels: Record<MonitoringPool['algorithm'], string> = {
   round_robin:       'Round robin',

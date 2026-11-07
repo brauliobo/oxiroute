@@ -892,7 +892,8 @@
           "timeout",
           "connect_failed",
           "unexpected_status",
-          "protocol_error"
+          "protocol_error",
+          "slow"
         ],
         "type": "string"
       },

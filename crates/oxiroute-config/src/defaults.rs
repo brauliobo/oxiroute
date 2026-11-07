@@ -7,6 +7,10 @@ const DEFAULT_PASSIVE_INITIAL_BACKOFF_MS: u64 = 30_000;
 const DEFAULT_PASSIVE_MAX_BACKOFF_MS: u64 = 300_000;
 const DEFAULT_PASSIVE_RECOVERY_THRESHOLD: u16 = 1;
 const DEFAULT_READMISSION_SUCCESSES: u16 = 2;
+const DEFAULT_OUTLIER_FACTOR_PERCENT: u32 = 300;
+const DEFAULT_OUTLIER_MIN_SAMPLES: u32 = 50;
+const DEFAULT_OUTLIER_INTERVAL_MS: u64 = 10_000;
+const DEFAULT_OUTLIER_MAX_EJECTED_PERCENT: u8 = 30;
 const DEFAULT_BREAKER_WINDOW_MS: u64 = 30_000;
 const DEFAULT_BREAKER_MIN_REQUESTS: u32 = 20;
 const DEFAULT_BREAKER_FAILURE_RATIO_PERCENT: u8 = 50;
@@ -608,6 +612,22 @@ pub(crate) const fn default_passive_max_backoff_ms() -> u64 {
 
 pub(crate) const fn default_passive_recovery_threshold() -> u16 {
     DEFAULT_PASSIVE_RECOVERY_THRESHOLD
+}
+
+pub(crate) const fn default_outlier_factor_percent() -> u32 {
+    DEFAULT_OUTLIER_FACTOR_PERCENT
+}
+
+pub(crate) const fn default_outlier_min_samples() -> u32 {
+    DEFAULT_OUTLIER_MIN_SAMPLES
+}
+
+pub(crate) const fn default_outlier_interval_ms() -> u64 {
+    DEFAULT_OUTLIER_INTERVAL_MS
+}
+
+pub(crate) const fn default_outlier_max_ejected_percent() -> u8 {
+    DEFAULT_OUTLIER_MAX_EJECTED_PERCENT
 }
 
 pub(crate) const fn default_breaker_window_ms() -> u64 {

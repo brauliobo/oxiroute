@@ -82,12 +82,12 @@ export function monitoringPoolEndpoint(value: unknown): value is MonitoringPoolE
     decimalString(value.successfulChecks) && decimalString(value.failedChecks) &&
     decimalString(value.consecutiveSuccesses) && decimalString(value.consecutiveFailures) &&
     (value.lastFailure === null || (typeof value.lastFailure === 'string' &&
-      ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error'].includes(value.lastFailure))) &&
+      ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error', 'slow'].includes(value.lastFailure))) &&
     safeInteger(value.weight) && typeof value.passiveEjected === 'boolean' &&
     decimalString(value.passiveFailureCount) && decimalString(value.passiveConsecutiveFailures) &&
     decimalString(value.passiveEjectionCount) &&
     (value.passiveEjectionReason === null || (typeof value.passiveEjectionReason === 'string' &&
-      ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error'].includes(value.passiveEjectionReason))) &&
+      ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error', 'slow'].includes(value.passiveEjectionReason))) &&
     nullableSafeInteger(value.passiveEjectedAtUnixMs) && nullableSafeInteger(value.passiveEjectionUntilUnixMs) &&
     decimalString(value.passiveRecoveryCount) && nullableSafeInteger(value.passiveLastRecoveryAtUnixMs)
 }
