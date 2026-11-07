@@ -33,6 +33,8 @@ pub(super) struct PoolEndpoint {
     pub(super) active_work: AtomicU64,
     /// Pooled keep-alive connections that hold a permit but are not serving a request.
     pub(super) idle_permits: AtomicU64,
+    pub(super) breaker: Breaker,
+    breaker_policy: Option<CircuitBreakerPolicy>,
     pub(super) administrative_state: AtomicU8,
     pub(super) checks_enabled: AtomicBool,
     pub(super) health_override: AtomicU8,
@@ -68,7 +70,12 @@ pub(super) struct PoolEndpoint {
 }
 
 impl PoolEndpoint {
-    pub(super) fn new(server: RuntimeServer, startup: Option<HealthStartup>, weight: u16) -> Self {
+    pub(super) fn new(
+        server: RuntimeServer,
+        startup: Option<HealthStartup>,
+        weight: u16,
+        breaker_policy: Option<CircuitBreakerPolicy>,
+    ) -> Self {
         let state = match startup {
             None => EndpointHealthState::Unchecked,
             Some(HealthStartup::Healthy) => EndpointHealthState::Healthy,
@@ -78,6 +85,8 @@ impl PoolEndpoint {
         Self {
             active_work: AtomicU64::new(0),
             idle_permits: AtomicU64::new(0),
+            breaker: Breaker::default(),
+            breaker_policy,
             administrative_state: AtomicU8::new(AdministrativeState::Ready as u8),
             checks_enabled: AtomicBool::new(true),
             health_override: AtomicU8::new(HealthOverride::Auto as u8),
@@ -119,6 +128,7 @@ impl PoolEndpoint {
     pub(super) fn selectable_at(&self, now_unix_ms: u64) -> bool {
         self.administrative_state() == AdministrativeState::Ready
             && !self.passively_ejected_at(now_unix_ms)
+            && self.breaker_permits(now_unix_ms)
             && self.health_permits()
     }
 
@@ -180,7 +190,7 @@ impl PoolEndpoint {
     /// Work in flight per unit of capacity, so servers of different size compare fairly.
     pub(super) fn load(&self) -> u64 {
         let divisor = self
-            .max_connections()
+            .configured_limit()
             .unwrap_or_else(|| u64::from(self.weight()))
             .max(1);
         self.active_work
@@ -201,11 +211,29 @@ impl PoolEndpoint {
         HealthOverride::from_u8(self.health_override.load(Ordering::Acquire))
     }
 
-    fn max_connections(&self) -> Option<u64> {
+    /// The operator's limit: the runtime override, else the configured one.
+    fn configured_limit(&self) -> Option<u64> {
         match self.max_connections_override.load(Ordering::Acquire) {
             0 => self.configured_max_connections,
             limit => Some(limit),
         }
+    }
+
+    /// The limit that admits work now: a half-open breaker allows only its trial requests.
+    fn max_connections(&self) -> Option<u64> {
+        let limit = self.configured_limit();
+        match self.breaker_policy {
+            Some(policy) if self.breaker.is_half_open() => {
+                Some(limit.map_or(policy.half_open_max(), |limit| {
+                    limit.min(policy.half_open_max())
+                }))
+            }
+            _ => limit,
+        }
+    }
+
+    fn breaker_permits(&self, now_unix_ms: u64) -> bool {
+        self.breaker_policy.is_none() || self.breaker.permits(now_unix_ms)
     }
 
     pub(super) fn checks_running(&self) -> bool {
@@ -515,7 +543,7 @@ impl PoolEndpoint {
             checks_running: self.checks_running(),
             configured_max_connections: self.configured_max_connections,
             health_override: self.health_override(),
-            max_connections: self.max_connections(),
+            max_connections: self.configured_limit(),
             name: self.name.clone(),
             state: self.state(),
             configured_weight: self.configured_weight,

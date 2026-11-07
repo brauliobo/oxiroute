@@ -625,6 +625,32 @@ pub struct PassiveHealthPolicy {
     /// letting live requests test it when the ejection time ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readmission: Option<Readmission>,
+    /// Takes a server out of rotation when too large a share of its recent requests fail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circuit_breaker: Option<CircuitBreaker>,
+}
+
+/// Failure-ratio circuit breaker of one server, distinct from consecutive-failure ejection.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CircuitBreaker {
+    /// Sliding window of recent outcomes.
+    #[serde(default = "default_breaker_window_ms")]
+    pub window_ms: u64,
+    /// Requests the window needs before the ratio is judged.
+    #[serde(default = "default_breaker_min_requests")]
+    pub min_requests: u32,
+    #[serde(default = "default_breaker_failure_ratio_percent")]
+    pub failure_ratio_percent: u8,
+    /// How long the server stays out before trial requests are allowed.
+    #[serde(default = "default_breaker_open_ms")]
+    pub open_ms: u64,
+    /// Concurrent trial requests while half-open.
+    #[serde(default = "default_breaker_half_open_max")]
+    pub half_open_max: u16,
+    /// Consecutive trial successes that close the breaker.
+    #[serde(default = "default_breaker_half_open_successes")]
+    pub half_open_successes: u16,
 }
 
 /// Probe-based re-admission of a passively ejected server.
@@ -665,6 +691,7 @@ impl Default for PassiveHealthPolicy {
             max_backoff_ms: default_passive_max_backoff_ms(),
             recovery_threshold: default_passive_recovery_threshold(),
             readmission: None,
+            circuit_breaker: None,
         }
     }
 }

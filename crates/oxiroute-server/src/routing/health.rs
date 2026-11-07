@@ -59,6 +59,7 @@ pub struct PassiveFailurePolicy {
     pub mark_up: bool,
     pub recovery_threshold: u16,
     pub readmit_by: ReadmitBy,
+    pub circuit_breaker: Option<CircuitBreakerPolicy>,
 }
 
 /// What returns a passively ejected server to rotation.
@@ -90,6 +91,7 @@ impl PassiveFailurePolicy {
             mark_up: false,
             recovery_threshold: 1,
             readmit_by: ReadmitBy::Backoff,
+            circuit_breaker: None,
         }
     }
 
@@ -114,6 +116,10 @@ impl PassiveFailurePolicy {
             } else {
                 ReadmitBy::Backoff
             },
+            circuit_breaker: policy
+                .circuit_breaker
+                .as_ref()
+                .map(CircuitBreakerPolicy::from),
         }
     }
 
@@ -210,6 +216,7 @@ impl Default for PassiveFailurePolicy {
             mark_up: false,
             recovery_threshold: 1,
             readmit_by: ReadmitBy::Backoff,
+            circuit_breaker: None,
         }
     }
 }
@@ -490,6 +497,9 @@ impl PoolHealthState {
             self.health_version.fetch_add(1, Ordering::Release);
             ejection
         };
+        if self.passive_policy.observes(failure) {
+            self.record_outcome(server, false, at_unix_ms);
+        }
         if let Some(ejection) = ejection {
             self.queue.notify_capacity_waiters();
             crate::operational_event::emit_upstream_endpoint_ejection(
@@ -502,6 +512,38 @@ impl PoolHealthState {
                 ejection.ejection_until_unix_ms,
             );
             self.start_probing(server);
+        }
+    }
+
+    pub(super) fn record_passive_success(&self, server: &PoolEndpoint) {
+        server.record_passive_success();
+        self.record_outcome(server, true, now_unix_ms());
+    }
+
+    /// Feeds the server's circuit breaker; opening respects `min_members` like an ejection.
+    fn record_outcome(&self, server: &PoolEndpoint, ok: bool, at_unix_ms: u64) {
+        let Some(policy) = self.passive_policy.circuit_breaker else {
+            return;
+        };
+        let may_open = self.may_eject(server, at_unix_ms);
+        match server.breaker.record(ok, at_unix_ms, policy, may_open) {
+            Some(BreakerTransition::Opened) => {
+                self.queue.notify_capacity_waiters();
+                log::warn!(
+                    "upstream pool `{}` server `{}` circuit breaker opened",
+                    self.pool_name,
+                    server.name
+                );
+            }
+            Some(BreakerTransition::Closed) => {
+                self.queue.notify_capacity_waiters();
+                log::info!(
+                    "upstream pool `{}` server `{}` circuit breaker closed",
+                    self.pool_name,
+                    server.name
+                );
+            }
+            None => {}
         }
     }
 

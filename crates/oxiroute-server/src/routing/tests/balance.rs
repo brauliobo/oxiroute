@@ -351,3 +351,97 @@ fn power_of_two_choices_never_picks_the_busier_of_two_servers() {
     assert!(chosen.iter().any(|name| name == "s2"));
     assert_eq!(pool.health_snapshot().algorithm, "power_of_two_choices");
 }
+
+fn breaker_pool() -> RoundRobinPool {
+    let breaker = CircuitBreakerPolicy::from(&oxiroute_config::CircuitBreaker {
+        window_ms: 10_000,
+        min_requests: 10,
+        failure_ratio_percent: 50,
+        open_ms: 100,
+        half_open_max: 1,
+        half_open_successes: 3,
+    });
+    let mut policy =
+        PassiveFailurePolicy::new(100, Duration::from_secs(60), Duration::from_secs(60));
+    policy.circuit_breaker = Some(breaker);
+    RoundRobinPool::new_named_servers_with_policy(
+        "breaker".into(),
+        [
+            runtime_server("only", 3000, None),
+            runtime_server("other", 3001, None),
+        ],
+        UpstreamAlgorithm::First,
+        Some(HealthStartup::Healthy),
+        None,
+        policy,
+    )
+    .expect("breaker pool")
+}
+
+fn record(pool: &RoundRobinPool, ok: usize, failed: usize) {
+    let observation = pool.select().expect("lease").observation();
+    for _ in 0..ok {
+        observation.record_passive_success();
+    }
+    for _ in 0..failed {
+        pool.record_passive_failure(0, HealthFailure::Timeout);
+    }
+}
+
+fn first_server(pool: &RoundRobinPool) -> Option<String> {
+    pool.select().map(|lease| lease.server_name().to_owned())
+}
+
+#[test]
+fn a_failure_ratio_below_the_threshold_never_opens_the_breaker() {
+    let pool = breaker_pool();
+
+    record(&pool, 7, 3);
+
+    assert_eq!(first_server(&pool).as_deref(), Some("only"));
+}
+
+#[tokio::test]
+async fn a_failure_ratio_above_the_threshold_opens_then_closes_after_trial_successes() {
+    let pool = breaker_pool();
+    record(&pool, 4, 6);
+    assert_eq!(
+        first_server(&pool).as_deref(),
+        Some("other"),
+        "the open server is skipped"
+    );
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let trial = pool.select().expect("trial lease");
+    assert_eq!(trial.server_name(), "only", "half-open admits a trial");
+    assert_eq!(
+        pool.select().expect("second lease").server_name(),
+        "other",
+        "only one trial runs at a time"
+    );
+    drop(trial);
+    for _ in 0..3 {
+        let lease = pool.select().expect("trial lease");
+        assert_eq!(lease.server_name(), "only");
+        lease.observation().record_passive_success();
+    }
+
+    let leases = [pool.select(), pool.select()];
+    assert!(leases.iter().all(|lease| {
+        lease
+            .as_ref()
+            .is_some_and(|lease| lease.server_name() == "only")
+    }));
+}
+
+#[tokio::test]
+async fn a_failed_trial_reopens_the_breaker() {
+    let pool = breaker_pool();
+    record(&pool, 0, 10);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(first_server(&pool).as_deref(), Some("only"));
+
+    pool.record_passive_failure(0, HealthFailure::Timeout);
+
+    assert_eq!(first_server(&pool).as_deref(), Some("other"));
+}

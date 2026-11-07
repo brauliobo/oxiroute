@@ -70,6 +70,8 @@ A pool keeps serving when health checks or passive ejection would otherwise take
 - New `passive_health.readmission` returns an ejected server only after an active probe (HTTP path
   or TCP connect) passes `successes` times in a row; a failed probe re-ejects it for the next
   backoff step. Recovery no longer costs `error_limit` client-visible failures.
+- New `passive_health.circuit_breaker` takes a server out of rotation when its failure ratio over a
+  sliding window crosses a threshold, then admits limited trial requests before closing again.
 - New algorithm `power_of_two_choices`. `least_connections` now compares load per unit of capacity
   (`max_connections`, else weight) instead of raw counts, and `weighted_round_robin` is smooth
   (weights 3 and 1 give `a a b a`, not `a a a b`) and follows live weights.
@@ -86,7 +88,7 @@ keeps working: the strict count does not include failed-open servers.
 
 - Weighted round-robin selection order changed (smooth instead of clumped); the share per server is
   the same.
-- A configuration that uses `passive_health.readmission` or `power_of_two_choices` must drop them
+- A configuration that uses `passive_health.readmission`, `passive_health.circuit_breaker` or `power_of_two_choices` must drop them
   before rolling back, because the previous release rejects unknown fields and algorithm names.
 
 - Requests that used to end with `502` because an upstream read, write or connect timeout fired now

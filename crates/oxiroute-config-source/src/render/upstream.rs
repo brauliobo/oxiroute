@@ -215,6 +215,16 @@ impl Renderer {
             self.optional_table_field("probe", readmission.probe.as_ref(), Self::readmission_probe);
             self.end_table();
         }
+        if let Some(breaker) = &policy.circuit_breaker {
+            self.begin_table_field("circuit_breaker");
+            self.integer_field("window_ms", breaker.window_ms);
+            self.integer_field("min_requests", breaker.min_requests);
+            self.integer_field("failure_ratio_percent", breaker.failure_ratio_percent);
+            self.integer_field("open_ms", breaker.open_ms);
+            self.integer_field("half_open_max", breaker.half_open_max);
+            self.integer_field("half_open_successes", breaker.half_open_successes);
+            self.end_table();
+        }
     }
 
     fn readmission_probe(&mut self, probe: &ReadmissionProbe) {
