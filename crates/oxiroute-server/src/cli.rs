@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     GenerationManager,
-    config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
+    config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, RejectionDiagnostic},
 };
 
 #[cfg(test)]
@@ -639,8 +639,9 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
 
 fn check_config(path: &Path) -> Result<(), Box<dyn Error>> {
     let coordinator = CanonicalConfigCoordinator::new(path)?;
-    let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
-        return Err("canonical configuration was rejected".into());
+    let document = match coordinator.load() {
+        ConfigLoadOutcome::Loaded(document) => document,
+        ConfigLoadOutcome::Rejected(rejection) => return Err(rejection.message().into()),
     };
     GenerationManager::new()
         .validate_candidate(*document)
@@ -654,10 +655,11 @@ fn compose_config_files(paths: &[PathBuf], format: ConfigFormat) -> Result<Strin
     let mut configs = Vec::with_capacity(paths.len());
     for path in paths {
         let coordinator = CanonicalConfigCoordinator::new(path)?;
-        let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
-            return Err(
-                format!("canonical configuration `{}` was rejected", path.display()).into(),
-            );
+        let document = match coordinator.load() {
+            ConfigLoadOutcome::Loaded(document) => document,
+            ConfigLoadOutcome::Rejected(rejection) => {
+                return Err(format!("`{}`: {}", path.display(), rejection.message()).into());
+            }
         };
         configs.push(document.validated_config.to_draft());
     }
@@ -1996,9 +1998,13 @@ impl Response {
                 .map_or_else(|| format!("http_{}", self.status), str::to_owned);
             let code = value
                 .as_ref()
-                .and_then(|value| value.pointer("/diagnostics/0/code"))
-                .and_then(Value::as_str)
-                .map_or(code.clone(), |diagnostic| format!("{code}: {diagnostic}"));
+                .and_then(|value| value.pointer("/diagnostics/0"))
+                .and_then(|diagnostic| {
+                    serde_json::from_value::<RejectionDiagnostic>(diagnostic.clone()).ok()
+                })
+                .map_or(code.clone(), |diagnostic| {
+                    format!("{code}: {}", diagnostic.summary())
+                });
             Err(CliError::Status(self.status, code))
         }
     }

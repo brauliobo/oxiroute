@@ -226,6 +226,60 @@ fn chunked_interim_response_is_decoded_by_the_cli_process() {
 }
 
 #[test]
+fn config_check_names_what_is_wrong_with_a_rejected_file() {
+    let directory = TempDir::new().expect("directory");
+    let check = |name: &str, source: &str| {
+        let path = directory.path().join(name);
+        fs::write(&path, source).expect("source");
+        let output = cli()
+            .args(["config", "check", path.to_str().unwrap()])
+            .output()
+            .expect("config check");
+        assert!(!output.status.success());
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+
+    let no_version = check("no-version.kdl", "(array)listeners {\n}\n");
+    assert!(no_version.contains("E_INVALID_VALUE"), "{no_version}");
+    assert!(no_version.contains("`version`"), "{no_version}");
+    assert!(no_version.contains("version 1"), "{no_version}");
+    assert!(!no_version.contains("canonical configuration was rejected\n"));
+
+    let syntax = check("broken.kdl", "version 1\n(array)listeners {\n");
+    assert!(syntax.contains("E_SYNTAX"), "{syntax}");
+    assert!(syntax.contains("(line "), "{syntax}");
+}
+
+#[test]
+fn http_422_names_the_failing_setting_and_reason() {
+    let directory = TempDir::new().expect("directory");
+    let token_path = directory.path().join("management.token");
+    fs::write(&token_path, format!("{TOKEN}\n")).expect("token");
+    fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600)).expect("mode");
+    let endpoint = serve_once(
+        422,
+        r#"{"diagnostics":[{"code":"E_INVALID_VALUE","severity":"error","stage":"validation","message":"configuration values, composition, or references are invalid","path":"/upstream_pools/farm","detail":"upstream pool `farm` contains duplicate endpoint `127.0.0.1:8080`"}]}"#,
+    );
+    let output = cli()
+        .args([
+            "--endpoint",
+            &endpoint,
+            "--token-file",
+            token_path.to_str().unwrap(),
+            "server",
+            "list",
+        ])
+        .output()
+        .expect("CLI");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("E_INVALID_VALUE"), "{stderr}");
+    assert!(stderr.contains("/upstream_pools/farm"), "{stderr}");
+    assert!(stderr.contains("duplicate endpoint"), "{stderr}");
+}
+
+#[test]
 fn config_check_accepts_all_source_formats_and_compose_defaults_to_kdl() {
     let directory = TempDir::new().expect("directory");
     let config = empty_config().validate().expect("valid empty config");

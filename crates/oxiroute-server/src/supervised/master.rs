@@ -178,16 +178,7 @@ fn load_document(
     match coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => Ok(document),
         ConfigLoadOutcome::Rejected(rejection) => {
-            let message = rejection.diagnostics.first().map_or_else(
-                || "canonical configuration was rejected".to_owned(),
-                |diagnostic| {
-                    format!(
-                        "canonical configuration was rejected ({}): {}",
-                        diagnostic.code, diagnostic.message
-                    )
-                },
-            );
-            Err(io::Error::new(io::ErrorKind::InvalidData, message).into())
+            Err(io::Error::new(io::ErrorKind::InvalidData, rejection.message()).into())
         }
     }
 }

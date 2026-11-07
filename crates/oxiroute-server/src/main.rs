@@ -2250,16 +2250,7 @@ fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let config_document = match config_coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => document,
         ConfigLoadOutcome::Rejected(rejection) => {
-            let message = rejection.diagnostics.first().map_or_else(
-                || "canonical configuration was rejected".to_owned(),
-                |diagnostic| {
-                    format!(
-                        "canonical configuration was rejected ({}): {}",
-                        diagnostic.code, diagnostic.message
-                    )
-                },
-            );
-            return Err(io::Error::new(io::ErrorKind::InvalidData, message).into());
+            return Err(io::Error::new(io::ErrorKind::InvalidData, rejection.message()).into());
         }
     };
     if stop_supervisor.load(Ordering::Acquire) {

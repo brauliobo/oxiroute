@@ -148,6 +148,10 @@ overlap. Process drain state and process uptime are also process-owned and do no
 kept serving. `lastRejection` is cleared by the next file that is accepted, `degraded` is true while
 it is set, and `/ready` is not affected.
 
+`422` responses of `config validate`, `config apply` and `generation reload`, and `config check`,
+name each failing setting: `path` is a JSON pointer, `detail` the failed rule and `line` the KDL
+syntax-error line when known. The CLI prints the first one as `<code>: <path>: <detail>`.
+
 SIGTERM, SIGINT, and authenticated shutdown use one five-second process deadline. Startup waits and
 drain polling are cancellation-aware; after the deadline the daemon stops waiting rather than
 starting another independent timeout. Unexpected death of the active runtime is a daemon failure

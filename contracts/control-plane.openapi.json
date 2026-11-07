@@ -1271,6 +1271,7 @@
             ]
           },
           "message": {
+            "default": "",
             "type": "string"
           },
           "path": {
@@ -1280,6 +1281,7 @@
             ]
           },
           "stage": {
+            "default": "",
             "type": "string"
           }
         },

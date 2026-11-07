@@ -600,7 +600,7 @@ fn parse_config_request(body: &[u8]) -> Result<ConfigDraft, ApiResponse> {
     })?;
     serde_json::from_value::<ConfigRequest>(value)
         .map(ConfigRequest::into_config)
-        .map_err(|_| {
+        .map_err(|error| {
             ApiResponse::json(
                 422,
                 &json!({
@@ -610,6 +610,7 @@ fn parse_config_request(body: &[u8]) -> Result<ConfigDraft, ApiResponse> {
                         "stage": "parse",
                         "path": "/config",
                         "message": "the config field does not match the canonical configuration schema",
+                        "detail": crate::config_coordinator::without_values(&error.to_string()),
                     }],
                 }),
             )
