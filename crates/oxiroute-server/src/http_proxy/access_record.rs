@@ -51,6 +51,7 @@ pub(super) fn build(
         "servers": (!servers.is_empty()).then_some(servers),
         "attempts": ctx.attempt_count(),
         "rescued": ctx.rescued,
+        "wasStuck": ctx.inflight.as_ref().is_some_and(crate::inflight::InflightGuard::stuck),
         "queueWaitMs": millis(trace.queue_wait),
         "connectMs": trace.connect.map(millis),
         "headerMs": trace.header.map(millis),

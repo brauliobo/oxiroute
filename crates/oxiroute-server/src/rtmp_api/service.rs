@@ -461,6 +461,9 @@ impl RtmpManagementApi {
                     .handle(management::Route::Generations, method, session, context)
                     .await
             }
+            EndpointId::Requests => {
+                observability::requests(method, session.req_header().uri.query())
+            }
         }
     }
 

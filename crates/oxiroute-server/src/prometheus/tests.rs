@@ -434,3 +434,42 @@ fn server_histograms_drop_out_above_the_server_limit_but_counters_stay() {
     assert!(!output.contains("oxiroute_server_header_duration_milliseconds"));
     assert!(output.lines().count() < 20_000);
 }
+
+#[test]
+fn exposition_counts_live_requests_per_pool_and_flags_overdue_ones() {
+    use crate::inflight::{InflightArrival, Phase, registry};
+
+    let arrival = |id: &str, deadline: std::time::Duration| InflightArrival {
+        request_id: id.into(),
+        listener: "edge".into(),
+        method: "GET".into(),
+        host: None,
+        path: "/".into(),
+        client_ip: None,
+        deadline,
+        access_log: None,
+    };
+    let live = registry().register(arrival("prom-live", std::time::Duration::from_secs(30)));
+    live.set_pool("inflight-series");
+    let stuck = registry().register(arrival("prom-stuck", std::time::Duration::from_secs(30)));
+    stuck.set_pool("inflight-series");
+    stuck.set_phase(Phase::AwaitingHeaders);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert!(
+        !registry()
+            .report_stuck(std::time::Duration::from_millis(10))
+            .is_empty()
+    );
+    let metrics = RuntimeMetrics::new();
+    let control = empty_rtmp_runtime().control();
+
+    let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+        .expect("exposition");
+
+    assert!(output.contains("oxiroute_http_inflight_requests{pool=\"inflight-series\"} 2"));
+    assert!(output.contains("oxiroute_http_inflight_oldest_age_seconds{pool=\"inflight-series\"}"));
+    assert!(output.contains("oxiroute_http_inflight_overdue 0"));
+    assert!(output.contains(
+        "oxiroute_http_stuck_requests_total{pool=\"inflight-series\",phase=\"awaiting_headers\"} 1"
+    ));
+}

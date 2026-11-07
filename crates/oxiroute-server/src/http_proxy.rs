@@ -39,7 +39,7 @@ use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
-        HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan, ProxyPolicyPlan,
+        AccessLog, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan, ProxyPolicyPlan,
         RedirectLocationPlan, StaticErrorTarget, StaticFile, StaticRequestDecision,
         StaticServeError, StaticTarget,
     },
@@ -60,6 +60,7 @@ use crate::{
 };
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
+use crate::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};
 use crate::request_id::{REQUEST_ID_HEADER, RequestIdBuilder};
 use crate::upstream_stats::{AttemptOutcome, ServerStats, upstream_stats};
 
@@ -144,6 +145,7 @@ pub struct HttpRequestContext {
     response_buffer: Option<ResponseBuffer>,
     cache_response_handled: bool,
     trace: AttemptTrace,
+    inflight: Option<InflightGuard>,
 }
 
 /// What the access log and per-server counters need to know about the attempts of one request.
@@ -190,7 +192,42 @@ struct ResponseBuffer {
 }
 
 impl HttpRequestContext {
+    fn enter_phase(&self, phase: Phase) {
+        if let Some(inflight) = &self.inflight {
+            inflight.set_phase(phase);
+        }
+    }
+
+    fn register_inflight(&mut self, session: &Session, access_log: Option<&Arc<AccessLog>>) {
+        let request = session.req_header();
+        let header = |name| {
+            request
+                .headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.chars().take(inflight::MAX_PATH_BYTES).collect())
+        };
+        self.inflight = Some(
+            inflight::registry().register(InflightArrival {
+                request_id: header(&REQUEST_ID_HEADER).unwrap_or_default(),
+                listener: self.listener.name().to_owned(),
+                method: request.method.as_str().to_owned(),
+                host: header(&HOST),
+                path: bounded_path(request.uri.path()),
+                client_ip: session
+                    .client_addr()
+                    .and_then(|address| address.as_inet())
+                    .map(|address| address.ip().to_string()),
+                deadline: self.deadline.saturating_duration_since(self.started_at),
+                access_log: access_log.cloned(),
+            }),
+        );
+    }
+
     fn observe(&mut self, session: &Session) {
+        if let Some(inflight) = &self.inflight {
+            inflight.progress();
+        }
         observe_counter(
             &self.listener,
             session.body_bytes_read(),
@@ -334,6 +371,9 @@ impl HttpRequestContext {
         self.deadline = self.client_deadline.map_or(self.total_deadline, |client| {
             client.min(self.total_deadline)
         });
+        if let Some(inflight) = &self.inflight {
+            inflight.set_deadline(self.deadline.saturating_duration_since(self.started_at));
+        }
     }
 
     fn client_deadline_expired(&self) -> bool {
@@ -430,6 +470,7 @@ impl ProxyHttp for HttpReverseProxy {
             response_buffer: None,
             cache_response_handled: false,
             trace: AttemptTrace::default(),
+            inflight: None,
         }
     }
 
@@ -440,6 +481,7 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
         ctx.adopt_downstream_deadline(session);
+        ctx.register_inflight(session, self.service.access_log());
         let remaining = ctx.remaining(false)?;
         let write_timeout = session
             .get_write_timeout()
@@ -518,6 +560,9 @@ impl ProxyHttp for HttpReverseProxy {
             return Ok(true);
         };
         ctx.authority = authority;
+        if let Some(inflight) = &ctx.inflight {
+            inflight.set_route(&route.route_id);
+        }
         ctx.route = Some(Arc::clone(&route));
         session.set_total_drain_timeout(Some(ctx.remaining(false)?.min(route.policy.read_timeout)));
         if content_length
@@ -595,9 +640,11 @@ impl ProxyHttp for HttpReverseProxy {
                 if delay > remaining {
                     return Err(Error::new_up(ErrorType::ReadTimedout));
                 }
+                ctx.enter_phase(Phase::RetryWait);
                 tokio::time::sleep(delay).await;
                 ctx.retry_delay_pending = false;
             }
+            ctx.enter_phase(Phase::Queued);
             let selection_started = Instant::now();
             let selected = if let Some(server) = ctx.retry_server.take() {
                 pool.select_server_endpoint(&server).await?
@@ -612,6 +659,12 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.trace.servers.push(selected.server_name().to_owned());
             ctx.trace.stats =
                 Some(upstream_stats().server(pool.selector().name(), selected.server_name()));
+            if let Some(inflight) = &ctx.inflight {
+                inflight.set_pool(pool.selector().name());
+                inflight.set_server(selected.server_name());
+                selected.observe_queue_position(inflight.queue_cell());
+                inflight.set_phase(Phase::Connecting);
+            }
             ctx.selected_upstream_host = selected_upstream_host(
                 selected.endpoint(),
                 proxy_policy(ctx).upstream_host.clone(),
@@ -1002,6 +1055,7 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.record_passive_failure(HealthFailure::UnexpectedStatus);
         }
         ctx.note_response(status);
+        ctx.enter_phase(Phase::Streaming);
         let had_uncacheable_framing = response.headers.contains_key(TRANSFER_ENCODING)
             || response.headers.contains_key(TRAILER);
         let remove_hop_by_hop = response.status != http::StatusCode::SWITCHING_PROTOCOLS;
@@ -1106,6 +1160,7 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
         ctx.remaining(true)?;
+        ctx.enter_phase(Phase::AwaitingHeaders);
         ctx.trace.connected_at = Some(Instant::now());
         ctx.trace.connect = ctx.trace.attempt_started.map(|started| started.elapsed());
         let result =
@@ -1820,6 +1875,9 @@ async fn execute_route_action(
                 ctx.adopt_route_total(proxy.policy.timeouts.total_ms.map(Duration::from_millis));
                 if let Some(budget) = &proxy.policy.retry_budget {
                     budget.record_request(Instant::now());
+                }
+                if let Some(inflight) = &ctx.inflight {
+                    inflight.set_pool(proxy.pool.selector().name());
                 }
                 ctx.pool = Some(Arc::clone(&proxy.pool));
                 return Ok(false);

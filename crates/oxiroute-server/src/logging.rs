@@ -173,6 +173,8 @@ pub(crate) fn redact_access_record(value: &Value) -> Value {
         "headerMs",
         "rescued",
         "wasStuck",
+        "phase",
+        "ageMs",
     ];
 
     let mut record = Map::new();
