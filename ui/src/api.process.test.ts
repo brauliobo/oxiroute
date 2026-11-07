@@ -189,6 +189,7 @@ describe('production API client against the built management process', () => {
         version: 1,
         max_connections: null,
         management: { bind: origin.slice('http://'.length), ui_dir: null },
+        registry: null,
         stats: null,
         certificates: [],
         tls_profiles: [],
