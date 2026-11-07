@@ -15,17 +15,11 @@ use crate::{
     RtmpSessionControlAction, RtmpSessionRole, SessionId,
 };
 
-#[path = "session_identity.rs"]
 mod identity;
-#[path = "session_playback.rs"]
 mod playback;
-#[path = "session_publish.rs"]
 mod publish;
-#[path = "session_runtime.rs"]
 mod runtime;
-#[path = "session_status.rs"]
 mod status;
-#[path = "vod_playback.rs"]
 mod vod_playback;
 
 pub use playback::MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN;
@@ -37,9 +31,11 @@ pub use runtime::{
 };
 pub use status::RtmpSessionError;
 
-use crate::session_control::RtmpSessionControl;
+use crate::session::control::RtmpSessionControl;
 use runtime::SessionRole;
 use status::{CONNECT_REJECTION_CODE, Rejection};
+
+pub(crate) mod control;
 
 pub const MAX_INBOUND_CHUNK_SIZE: u32 = 1024 * 1024;
 pub const MAX_INBOUND_MESSAGE_SIZE: usize = 8 * 1024 * 1024;

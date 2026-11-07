@@ -10,9 +10,9 @@ use crate::{
     CatalogError, LiveHub, MediaEvent, PublisherLease, PublisherRegistration, RtmpCallbackEvent,
     RtmpRegistry, SessionId, StreamId, StreamKey,
     auto_push::AutoPushPublisher,
-    exec_worker::{ExecProfileSet, ExecWorker},
-    media_snapshot::MediaSnapshotAccumulator,
-    recording_runtime::RecorderController,
+    exec::worker::{ExecProfileSet, ExecWorker},
+    media::snapshot::MediaSnapshotAccumulator,
+    recording::runtime::RecorderController,
     relay::RtmpRelayController,
 };
 

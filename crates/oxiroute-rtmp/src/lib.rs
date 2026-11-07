@@ -13,24 +13,14 @@ mod catalog;
 mod client;
 mod clock;
 mod composition;
-mod dash_segmenter;
 mod exec;
-mod exec_worker;
 mod flv;
 mod live;
-mod media_parser;
-mod media_segmenter;
-mod media_snapshot;
-mod media_storage;
-mod recording_path;
-mod recording_runtime;
-mod recording_store;
-mod recording_worker;
+mod media;
+mod recording;
 mod relay;
 mod runtime_handles;
-mod segment_window;
 mod session;
-mod session_control;
 mod vod;
 
 pub use auto_push::{
@@ -61,14 +51,13 @@ pub use composition::{
     RtmpPullPlan, RtmpPushPlan, RtmpRecorderPlan, RtmpRelayPlan, RtmpServicePlan, RtmpTokenPlan,
     RtmpVodPlan,
 };
-pub use dash_segmenter::{DashOutputConfig, DashSegmentNaming};
+pub use exec::worker::{
+    ExecEnqueueResult, ExecWorkerCorrelation, ExecWorkerFailure, ExecWorkerPhase,
+    ExecWorkerStartError, ExecWorkerStatus,
+};
 pub use exec::{
     ExecEnvironment, ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecProfile,
     ExecProfileError, ExecTrigger,
-};
-pub use exec_worker::{
-    ExecEnqueueResult, ExecWorkerCorrelation, ExecWorkerFailure, ExecWorkerPhase,
-    ExecWorkerStartError, ExecWorkerStatus,
 };
 pub use flv::{
     FlvMuxer, FlvMuxerError, FlvTagType, MAX_CACHED_CODEC_HEADER_SIZE, MAX_FLV_TAG_DATA_SIZE,
@@ -78,33 +67,36 @@ pub use live::{
     LiveHubError, LiveHubLimits, LiveHubStats, MediaEvent, MediaEventError, MediaEventKind,
     PublishReport, PublisherIncarnation, VideoCodec, VideoCodecIdentifier,
 };
-pub use media_segmenter::{
+pub use media::dash::{DashOutputConfig, DashSegmentNaming};
+pub use media::segmenter::{
     HlsFragmentNaming, HlsKeyConfig, HlsOutputConfig, HlsValueError, HlsVariant, MediaApplication,
     MediaCatalog, MediaEnqueueResult, MediaObject, MediaOutputError, MediaPublisher,
 };
-pub use media_storage::{MAX_MEDIA_PATH_BYTES, MediaStoreError, MediaStoreLimits, MediaStoreStats};
-pub(crate) use media_storage::{MediaStore, RtmpMediaStoreRegistry};
-pub use recording_path::{
+pub use media::storage::{
+    MAX_MEDIA_PATH_BYTES, MediaStoreError, MediaStoreLimits, MediaStoreStats,
+};
+pub(crate) use media::storage::{MediaStore, RtmpMediaStoreRegistry};
+pub use recording::path::{
     MAX_RECORDING_FILENAME_BYTES, MAX_RECORDING_SUFFIX_TEMPLATE_BYTES, RecordingDateTime,
     RecordingPathError, RecordingPathPolicy, RecordingSegmentNaming, RecordingTimeBasis,
     RecordingTimezone,
 };
-pub use recording_runtime::{RtmpRecorderPolicy, RtmpRecorderShutdown, RtmpRecorderStart};
-pub(crate) use recording_store::{
+pub(crate) use recording::recording_store::{
     RecorderLease, RecordingCommit, RecordingFile, RecordingStore, RtmpRecorderStoreRegistry,
 };
-pub use recording_store::{
+pub use recording::recording_store::{
     RecordingQuotaScope, RecordingStoreError, RecordingStoreLimits, RecordingStoreLimitsError,
     RecordingStoreStats,
 };
 #[cfg(test)]
-pub(crate) use recording_worker::RecorderShutdown;
-pub use recording_worker::{
+pub(crate) use recording::recording_worker::RecorderShutdown;
+pub use recording::recording_worker::{
     RecorderEnqueueResult, RecorderFailure, RecorderMediaMask, RecorderNotification,
     RecorderVideoCodec, RecorderWorkerConfig, RecorderWorkerPhase, RecorderWorkerStartError,
     RecorderWorkerStatus,
 };
-pub(crate) use recording_worker::{RecorderWorker, RecorderWorkerSupervisor};
+pub(crate) use recording::recording_worker::{RecorderWorker, RecorderWorkerSupervisor};
+pub use recording::runtime::{RtmpRecorderPolicy, RtmpRecorderShutdown, RtmpRecorderStart};
 pub use relay::{
     RtmpDestination, RtmpDestinationResolver, RtmpDestinationResolverError, RtmpDnsRefreshFailure,
     RtmpDnsResolver, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRelayConfig,
@@ -115,6 +107,10 @@ pub use runtime_handles::{
     PreparedRtmpRuntimeSet, RtmpControlHandle, RtmpRuntimeSet, RtmpRuntimeSetError,
     RtmpServiceHandle, RtmpShutdown,
 };
+pub use session::control::{
+    MAX_RTMP_SESSION_CONTROLS, RtmpClientSnapshot, RtmpMessageStreamSnapshot,
+    RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome, RtmpSessionRole,
+};
 pub use session::{
     MAX_INBOUND_AMF0_CONTAINER_ENTRIES, MAX_INBOUND_AMF0_DEPTH, MAX_INBOUND_AMF0_STRING_BYTES,
     MAX_INBOUND_AMF0_VALUES, MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE,
@@ -124,10 +120,6 @@ pub use session::{
     RtmpSessionLimitError, RtmpSessionLimits, RtmpSessionPolicy, RtmpTokenPolicy,
 };
 pub(crate) use session::{RtmpRecorderLifecycle, RtmpServicePreparation, RtmpServiceRuntime};
-pub use session_control::{
-    MAX_RTMP_SESSION_CONTROLS, RtmpClientSnapshot, RtmpMessageStreamSnapshot,
-    RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome, RtmpSessionRole,
-};
 pub use vod::{
     MAX_VOD_EVENTS, MAX_VOD_HTTP_HEADER_BYTES, MAX_VOD_ORIGIN_BYTES, MAX_VOD_PATH_BYTES,
     MAX_VOD_REDIRECTS, MAX_VOD_SOURCE_NAME_BYTES, VodApplication, VodApplicationBlueprint,
@@ -139,10 +131,10 @@ pub use vod::{
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_media_configuration(payload: &[u8]) {
-    let _ = media_parser::parse_avc_configuration(payload);
-    let _ = media_parser::parse_aac_configuration(payload);
-    media_segmenter::fuzz_media_configuration(payload);
-    dash_segmenter::fuzz_media_configuration(payload);
+    let _ = media::parser::parse_avc_configuration(payload);
+    let _ = media::parser::parse_aac_configuration(payload);
+    media::segmenter::fuzz_media_configuration(payload);
+    media::dash::fuzz_media_configuration(payload);
 }
 
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
