@@ -42,6 +42,7 @@ fn minimal_config() -> ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
@@ -123,6 +124,7 @@ fn normalizable_config() -> ConfigDraft {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     });
     config.http_services.push(HttpService {

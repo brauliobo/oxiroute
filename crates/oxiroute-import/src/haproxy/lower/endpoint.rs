@@ -198,6 +198,7 @@ impl Lowerer<'_> {
             } else {
                 UpstreamConnectionReuse::Safe
             },
+            registration: None,
             resilience: oxiroute_config::PoolResilience::default(),
         });
         let pool_path = CanonicalPath::indexed("upstream_pools", pool_index);

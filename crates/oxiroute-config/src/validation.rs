@@ -65,16 +65,17 @@ use crate::{
         ConfigDraft, ConfigError, DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService,
         HealthCheck, HealthCheckType, HttpRequestHeaderMutation, HttpResponseHeaderMutation,
         HttpRouteAction, HttpService, HttpVersion, L4Service, Listener, ListenerBind, Management,
-        Protocol, ProxyProtocolVersion, RtmpAccessPolicy, RtmpAutoPushPolicy, RtmpCallbackConfig,
-        RtmpCredentialReference, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecProfile,
-        RtmpExecTrigger, RtmpOutboundPolicy, RtmpRecorder, RtmpRelayPolicy, RtmpRtmpsPolicy,
-        RtmpService, RtmpSessionCeilings, RtmpTokenSource, RtmpTransport, RtmpVodSource, Stats,
-        StatsPage, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint,
-        UpstreamPool,
+        Protocol, ProxyProtocolVersion, RegistryEndpoint, RtmpAccessPolicy, RtmpAutoPushPolicy,
+        RtmpCallbackConfig, RtmpCredentialReference, RtmpExecFilesystemPolicy, RtmpExecMode,
+        RtmpExecProfile, RtmpExecTrigger, RtmpOutboundPolicy, RtmpRecorder, RtmpRelayPolicy,
+        RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings, RtmpTokenSource, RtmpTransport,
+        RtmpVodSource, Stats, StatsPage, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
+        UpstreamEndpoint, UpstreamPool, cidr_contains,
     },
 };
 
 mod management;
+mod registry;
 mod rtmp;
 mod tls;
 mod upstream;
@@ -83,6 +84,7 @@ use management::{
     endpoint_exposes_management, validate_bind_conflicts, validate_h3_upstream_usage,
     validate_listeners, validate_management, validate_stats,
 };
+use registry::validate_registry;
 use rtmp::validate_rtmp_services;
 use tls::{validate_certificates, validate_tls_profiles};
 pub use upstream::{
@@ -111,6 +113,7 @@ pub(crate) fn validate_config_in_place(config: &mut ConfigDraft) -> Result<(), C
 
     validate_management(config.management.as_ref())?;
     validate_stats(config.stats.as_ref())?;
+    validate_registry(config)?;
     validate_certificates(&mut config.certificates)?;
     validate_tls_profiles(&mut config.tls_profiles, &config.certificates)?;
     let cache_stores = crate::cache_validation::validate_cache_stores(&mut config.cache_stores)?;

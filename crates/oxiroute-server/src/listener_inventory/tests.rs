@@ -13,6 +13,7 @@ fn inventory_core_is_platform_independent_and_unbounded() {
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
@@ -255,6 +256,7 @@ fn inventory_config(
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
@@ -281,6 +283,7 @@ fn inventory_config(
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     });
     config.l4_services.push(oxiroute_config::L4Service {

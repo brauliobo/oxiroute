@@ -2720,6 +2720,7 @@ return {{
             version: 1,
             max_connections,
             management: None,
+            registry: None,
             stats: None,
             certificates: Vec::new(),
             tls_profiles: Vec::new(),

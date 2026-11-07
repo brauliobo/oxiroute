@@ -353,6 +353,7 @@ fn validation_errors_point_at_the_failing_setting() {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     });
     let source = render_config(ConfigFormat::Kdl, &config.validate().unwrap())

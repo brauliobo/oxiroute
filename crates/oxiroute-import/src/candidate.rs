@@ -232,6 +232,7 @@ pub(crate) fn empty_config() -> ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),

@@ -587,6 +587,7 @@ fn topology_config(temp: &TempDir) -> ConfigDraft {
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
                 connection_reuse: oxiroute_config::UpstreamConnectionReuse::Never,
+                registration: None,
                 resilience: oxiroute_config::PoolResilience::default(),
             },
             UpstreamPool {
@@ -605,6 +606,7 @@ fn topology_config(temp: &TempDir) -> ConfigDraft {
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
                 connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+                registration: None,
                 resilience: oxiroute_config::PoolResilience::default(),
             },
         ],

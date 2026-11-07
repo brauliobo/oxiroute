@@ -470,6 +470,7 @@ impl Lowerer {
                     connect_timeout_ms: None,
                     server_timeout_ms: None,
                     connection_reuse: UpstreamConnectionReuse::default(),
+                    registration: None,
                     resilience: oxiroute_config::PoolResilience::default(),
                 };
                 (name, pool, vec![proxy_origin.clone()])
@@ -564,6 +565,7 @@ impl Lowerer {
                     connect_timeout_ms: None,
                     server_timeout_ms: None,
                     connection_reuse: UpstreamConnectionReuse::default(),
+                    registration: None,
                     resilience: oxiroute_config::PoolResilience::default(),
                 };
                 (pool_name, pool, pool_origins)

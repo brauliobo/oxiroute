@@ -6,6 +6,7 @@ pub(super) fn config_with_identity(files: &IdentityFiles) -> ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: vec![Certificate {
             name: "primary".into(),
@@ -195,6 +196,7 @@ pub(super) fn upstream_pool(
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     }
 }

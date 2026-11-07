@@ -354,6 +354,7 @@ async fn endpoints_in_one_pool_schedule_from_their_own_completion() {
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
                 connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+                registration: None,
                 resilience: oxiroute_config::PoolResilience::default(),
             }],
             ..empty_config()
@@ -431,6 +432,7 @@ async fn validation_enforces_programmatic_endpoint_cardinality() {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+            registration: None,
             resilience: oxiroute_config::PoolResilience::default(),
         }],
         ..empty_config()
@@ -558,6 +560,7 @@ fn pool(name: &str, endpoint: UpstreamEndpoint, health_check: HealthCheck) -> Up
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     }
 }

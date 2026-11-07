@@ -8,6 +8,7 @@ fn empty_topology() -> TopologySnapshot {
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
