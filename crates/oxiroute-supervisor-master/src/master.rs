@@ -23,7 +23,9 @@ use crate::{
     CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, ControlProtocolError, MasterConfig,
     StableListeners,
     listeners::ListenerOwnershipError,
-    protocol::{ControlAck, decode_ack, encode_adopt_request, encode_request},
+    protocol::{
+        ControlAck, MAX_ATTACHMENT_BYTES, decode_ack, encode_adopt_request, encode_request,
+    },
     status::{
         AggregatedWorkerEvent, SupervisorSnapshot, SupervisorSnapshotError,
         SupervisorSnapshotHistory, WorkerSnapshotSource, WorkerStatus, decode_status,

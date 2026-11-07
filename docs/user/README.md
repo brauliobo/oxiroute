@@ -9,6 +9,8 @@ configuration.
 1. [Getting started](GETTING_STARTED.md) runs a local HTTP path from origin to listener.
 2. [Dashboard](DASHBOARD.md) explains what is live telemetry and what is configuration state.
 3. [Operations](OPERATING.md) covers readiness, generations, drains, and runtime controls.
+   The [runbook](RUNBOOK.md) is the task-oriented version for GPU farms and worker pools: adding and
+   removing machines, drains, safe applies, rollbacks, outages, hardening and alerts.
 4. [Migration](MIGRATION.md) explains how to test native configuration without rewriting it.
 5. [RTMP](RTMP.md) covers live media and recorder-specific behavior.
 6. [Troubleshooting](TROUBLESHOOTING.md) gives evidence-first recovery steps.

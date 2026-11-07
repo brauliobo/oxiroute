@@ -26,6 +26,8 @@ pub(super) struct ManagedWorker {
     pub(super) channel_open: bool,
     pub(super) status: Option<WorkerStatus>,
     pub(super) last_event_cursor: u64,
+    /// Opaque state the worker last reported with `report_state`.
+    pub(super) reported_state: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -302,6 +304,43 @@ impl<E: ActionExecutor> Master<E> {
         Ok(self.events.drain(..).collect())
     }
 
+    /// Sends the active worker an opaque notice that it does not acknowledge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no worker is active, the notice is too large, or the send fails.
+    pub fn notify_active(&mut self, notice: &[u8]) -> Result<(), MasterError> {
+        let request_id = self
+            .take_request_id()
+            .map_err(|source| MasterError::Preparation {
+                step: PreparationStep::RequestId,
+                source,
+            })?;
+        let payload =
+            encode_request(request_id, ControlPhase::Notice, notice).map_err(|source| {
+                MasterError::Preparation {
+                    step: PreparationStep::Encoding,
+                    source: PreparationError::Protocol(source),
+                }
+            })?;
+        let worker = self
+            .active
+            .as_mut()
+            .ok_or(MasterError::MissingWorker(WorkerRole::Active))?;
+        self.executor
+            .send(
+                WorkerRole::Active,
+                &mut worker.process,
+                ControlPhase::Notice,
+                &payload,
+                &[],
+            )
+            .map_err(|source| MasterError::Action {
+                action: ActionKind::Send(ControlPhase::Notice),
+                source,
+            })
+    }
+
     /// Begins or advances bounded asynchronous shutdown without waiting for process exit.
     ///
     /// # Errors
@@ -388,6 +427,7 @@ impl ManagedWorker {
             channel_open: true,
             status: None,
             last_event_cursor: 0,
+            reported_state: Vec::new(),
         }
     }
 }
@@ -426,5 +466,6 @@ pub(super) const fn phase_failure(phase: ControlPhase) -> FailurePhase {
         ControlPhase::Drain => FailurePhase::Drain,
         ControlPhase::Reactivate => FailurePhase::Reactivation,
         ControlPhase::Shutdown => FailurePhase::Shutdown,
+        ControlPhase::Notice => FailurePhase::Protocol,
     }
 }

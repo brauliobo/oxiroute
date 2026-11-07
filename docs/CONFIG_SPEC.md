@@ -1209,7 +1209,26 @@ restricted Lua, UCI, or HOCON.
 - The watcher debounces root-directory and resolved-native dependency events, watches exact resolved
   files plus include/glob parent directories, rebuilds that set after each successful resolution, and
   periodically re-resolves the root and native references. Invalid edits are rejected while the last
-  active generation continues serving.
+  active generation continues serving. Every rejection of the file on disk, whether it fails to
+  load, validate or prepare, is logged once at error level on the `oxiroute::config` target with the
+  diagnostic code, the failing setting (a JSON pointer that names list items instead of indexing
+  them) and the line of a KDL syntax error; it also emits a `configuration_reload` event with the
+  outcome `rejected`, raises `oxiroute_config_rejections_total`, and is reported as `lastRejection`
+  (`atUnixMs`, `revision` of the refused file, `diagnostics`) by `generation status` until the next
+  file is accepted. While it is set `degraded` is true, but `/ready` is unaffected because the active
+  generation keeps serving. Diagnostics name settings and rules; they never quote the source or the
+  rejected value.
+
+Every diagnostic carries `code`, `stage`, `message` and, when known, `path` (the failing setting as
+a JSON pointer), `detail` (the rule that failed, with values stripped) and `line` (KDL syntax
+errors). `422` responses of `config validate`, `config apply` and `generation reload`, `config
+check`, and startup failures print them the same way, for example a root without `version 1`
+reports `/version` and "add `version 1`" instead of a generic rejection.
+
+Runtime administrative state is not part of the configuration and survives every accepted file: a
+server keeps its drain/maintenance state, health override, check switch and max-connections
+override when the next generation has a server with the same pool and server name. Removed servers
+drop their state and added servers start ready.
 
 ## Diagnostics
 

@@ -279,3 +279,96 @@ fn revision_parser_requires_lowercase_sha256_values() {
     assert!(upper.parse::<EffectiveRevision>().is_err());
     assert!("not-a-revision".parse::<AuthoredRevision>().is_err());
 }
+
+fn rejected_diagnostic(name: &str, source: &str) -> ConfigDiagnostic {
+    let directory = TempDir::new().unwrap();
+    let path = directory.path().join(name);
+    fs::write(&path, source).unwrap();
+    let ConfigLoadOutcome::Rejected(rejection) =
+        CanonicalConfigCoordinator::new(&path).unwrap().load()
+    else {
+        panic!("source was accepted")
+    };
+    assert_eq!(rejection.diagnostics.len(), 1);
+    rejection.diagnostics.into_iter().next().unwrap()
+}
+
+#[test]
+fn kdl_syntax_errors_report_the_line_without_quoting_the_source() {
+    let diagnostic = rejected_diagnostic(
+        "oxiroute.kdl",
+        "version 1\nlisteners {\n  name \"secret_external_value\" {{\n",
+    );
+
+    assert_eq!(diagnostic.code, "E_SYNTAX");
+    assert_eq!(diagnostic.line, Some(3));
+    assert!(!format!("{diagnostic:?}").contains("secret_external_value"));
+}
+
+#[test]
+fn a_missing_version_names_the_field() {
+    let diagnostic = rejected_diagnostic("oxiroute.kdl", "(array)listeners {\n}\n");
+
+    assert_eq!(diagnostic.code, "E_INVALID_VALUE", "{diagnostic:?}");
+    assert!(
+        diagnostic
+            .detail
+            .is_some_and(|detail| detail.contains("`version`"))
+    );
+}
+
+#[test]
+fn a_rejected_value_is_not_quoted_but_its_setting_is_named() {
+    let diagnostic = rejected_diagnostic(
+        "oxiroute.kdl",
+        "version 1\nmax_connections \"secret_external_value\"\n",
+    );
+    let detail = diagnostic.detail.expect("detail");
+
+    assert!(detail.contains("expected"));
+    assert!(!detail.contains("secret_external_value"));
+}
+
+#[test]
+fn validation_errors_point_at_the_failing_setting() {
+    let mut config = minimal_config();
+    config.upstream_pools.push(UpstreamPool {
+        name: "farm".into(),
+        servers: ["127.0.0.1:42021", "127.0.0.1:42022"]
+            .into_iter()
+            .map(|address| oxiroute_config::UpstreamServer {
+                name: format!("s{}", &address[10..]),
+                endpoint: socket_endpoint(address),
+                max_connections: None,
+                dns_resolution: oxiroute_config::DnsResolutionPolicy::OnConnect,
+            })
+            .collect(),
+        endpoints: Vec::new(),
+        algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: None,
+        passive_health: None,
+        tls: None,
+        http_versions: HttpVersionPolicy::default(),
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
+        resilience: oxiroute_config::PoolResilience::default(),
+    });
+    let source = render_config(ConfigFormat::Kdl, &config.validate().unwrap())
+        .unwrap()
+        .replace("127.0.0.1:42022", "127.0.0.1:42021");
+
+    let diagnostic = rejected_diagnostic("oxiroute.kdl", &source);
+
+    assert_eq!(
+        diagnostic.path.as_deref(),
+        Some("/upstream_pools/farm"),
+        "{diagnostic:?}"
+    );
+    assert!(
+        diagnostic
+            .detail
+            .is_some_and(|detail| detail.contains("duplicate endpoint"))
+    );
+}

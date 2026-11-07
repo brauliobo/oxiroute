@@ -70,6 +70,12 @@ The file watcher observes rename-based replacements through the parent directory
 reconciles effective revisions, including strict native references. Use generation status as the
 authority for completion; a durable configuration save may first report `saved_pending_activation`.
 
+A file written to disk that cannot be loaded, validated or prepared is not applied and does not
+stop the running configuration. It is logged as an error with the code and the failing setting (and
+line, for a syntax error), counted by `oxiroute_config_rejections_total`, listed by `events list`
+as `configuration_reload` / `rejected`, and shown by `generation status` as `lastRejection` with
+`degraded: true` until the next acceptable file replaces it.
+
 Listener changes apply on reload in both runtimes, so adding, removing or moving a listener does
 not need a restart and does not interrupt traffic:
 
@@ -110,6 +116,11 @@ oxiroute server max-connections set --pool web endpoint-1 200
 oxiroute server max-connections reset --pool web endpoint-1
 oxiroute server refresh-dns --pool web endpoint-1
 ```
+
+These settings are runtime state, not configuration. They stay on the server (matched by pool and
+server name) when the configuration file changes or you reload, apply or roll back a generation, so
+a drained server stays drained. A server removed from the file loses its state, and a server added
+to it starts ready. A restart of the process resets them.
 
 DNS refresh is explicitly non-atomic because resolution is external. Inspect every returned outcome
 before treating a partial result as a successful rollout.

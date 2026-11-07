@@ -734,6 +734,11 @@ fn render_prometheus_snapshot(
     )?;
     sample(
         &mut output,
+        "oxiroute_config_rejections_total",
+        generation.config_rejections,
+    )?;
+    sample(
+        &mut output,
         "oxiroute_generation_failures_total",
         generation.failures,
     )?;

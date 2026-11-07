@@ -10,10 +10,22 @@ use crate::native::{
     NativeDirective, decode_apache, decode_haproxy, decode_nginx, decode_squid, decode_varnish,
 };
 
+/// Reports the first KDL diagnostic: its static message and the line it points at, never the text.
+fn parse_error(error: &kdl::KdlError) -> ConfigSourceError {
+    let first = error.diagnostics.first();
+    let message = first
+        .and_then(|diagnostic| diagnostic.message.clone())
+        .unwrap_or_else(|| error.to_string());
+    let line = first.and_then(|diagnostic| {
+        let before = error.input.chars().take(diagnostic.span.offset());
+        u32::try_from(before.filter(|&character| character == '\n').count() + 1).ok()
+    });
+    ConfigSourceError::parse_at("KDL 2", message, line)
+}
+
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
     check_source_depth(source)?;
-    let document = KdlDocument::parse(source)
-        .map_err(|error| ConfigSourceError::parse("KDL 2", error.to_string()))?;
+    let document = KdlDocument::parse(source).map_err(|error| parse_error(&error))?;
     check_document(document.nodes())?;
     let mut nodes = 0;
     let value = Value::Object(decode_object(document.nodes(), 0, &mut nodes)?);
@@ -25,8 +37,7 @@ pub(crate) fn decode_with_directives(
     source: &str,
 ) -> Result<(Value, Vec<NativeDirective>), ConfigSourceError> {
     check_source_depth(source)?;
-    let document = KdlDocument::parse(source)
-        .map_err(|error| ConfigSourceError::parse("KDL 2", error.to_string()))?;
+    let document = KdlDocument::parse(source).map_err(|error| parse_error(&error))?;
     check_document(document.nodes())?;
     let mut generic_nodes = Vec::new();
     let mut directives = Vec::new();

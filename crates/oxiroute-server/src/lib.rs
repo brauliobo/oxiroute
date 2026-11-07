@@ -90,6 +90,7 @@ pub use routing::{
     AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
     HealthFailure, HealthOverride, PassiveFailurePolicy, PoolAdminError, PoolError,
     PoolHealthSnapshot, RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint,
+    ServerAdminState,
 };
 pub use rtmp_api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
 pub use service_plan::{

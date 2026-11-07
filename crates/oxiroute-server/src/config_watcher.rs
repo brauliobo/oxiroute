@@ -13,8 +13,11 @@ use std::{
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::{
-    GenerationManager, RuntimeMode,
-    config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
+    GenerationError, GenerationManager, RuntimeMode,
+    config_coordinator::{
+        CanonicalConfigCoordinator, ConfigDiagnostic, ConfigDiagnosticSeverity,
+        ConfigDiagnosticStage, ConfigLoadOutcome, ConfigRejection,
+    },
     generation::GENERATION_PREPARATION_TIMEOUT,
 };
 
@@ -266,7 +269,8 @@ fn reconcile_with_preparation_timeout(
         ConfigLoadOutcome::Loaded(document) => {
             let dependencies = document.dependencies.clone();
             let status = generations.status();
-            generations.observe_disk_revision(document.authored_revision.clone());
+            let disk_revision = document.authored_revision.clone();
+            generations.observe_disk_revision(disk_revision.clone());
             let revision = &document.effective_revision;
             // A supervised process only adopts sockets: the master applies a listener-set change,
             // so this watcher leaves such a candidate alone there. Every process refuses a change
@@ -276,9 +280,10 @@ fn reconcile_with_preparation_timeout(
                     || (mode == RuntimeMode::Supervised
                         && active.listener_set_changed(&document.validated_config))
             });
+            let quarantined = status.quarantined_revision.as_ref() == Some(revision);
             let preparation = if status.active_revision.as_ref() != Some(revision)
                 && status.candidate_revision.as_ref() != Some(revision)
-                && status.quarantined_revision.as_ref() != Some(revision)
+                && !quarantined
                 && !restart_required
             {
                 Some(
@@ -288,19 +293,49 @@ fn reconcile_with_preparation_timeout(
             } else {
                 None
             };
-            if preparation.is_some_and(|result| {
-                result.is_err_and(|error| {
-                    !matches!(error, crate::GenerationError::PreparationTimedOut)
-                })
-            }) {
-                counters.rejected.fetch_add(1, Ordering::Relaxed);
+            match preparation {
+                Some(Err(GenerationError::PreparationTimedOut)) => {}
+                Some(Err(error)) => {
+                    counters.rejected.fetch_add(1, Ordering::Relaxed);
+                    reject(
+                        generations,
+                        &ConfigRejection::new(
+                            Some(&disk_revision),
+                            &[preparation_diagnostic(&error)],
+                        ),
+                    );
+                }
+                _ if !quarantined => generations.accept_configuration(),
+                _ => {}
             }
             Some(dependencies)
         }
-        ConfigLoadOutcome::Rejected(_) => {
+        ConfigLoadOutcome::Rejected(rejection) => {
             counters.rejected.fetch_add(1, Ordering::Relaxed);
+            reject(
+                generations,
+                &ConfigRejection::new(rejection.disk_revision.as_ref(), &rejection.diagnostics),
+            );
             None
         }
+    }
+}
+
+fn reject(generations: &GenerationManager, rejection: &ConfigRejection) {
+    if generations.reject_configuration(rejection.clone()) {
+        rejection.log();
+    }
+}
+
+fn preparation_diagnostic(error: &GenerationError) -> ConfigDiagnostic {
+    ConfigDiagnostic {
+        code: error.code(),
+        severity: ConfigDiagnosticSeverity::Error,
+        stage: ConfigDiagnosticStage::Validation,
+        message: "the configuration cannot be prepared as a complete runtime generation",
+        path: None,
+        detail: None,
+        line: None,
     }
 }
 
@@ -763,6 +798,90 @@ mod tests {
         assert_ne!(added_revision, renamed_revision);
         assert!(watcher.status().events > 0);
         watcher.shutdown();
+    }
+
+    fn write_lua(path: &Path, config: &ConfigDraft) {
+        let config = config.clone().validate().expect("valid config");
+        fs::write(
+            path,
+            oxiroute_config_source::render_config(
+                oxiroute_config_source::ConfigFormat::Lua,
+                &config,
+            )
+            .expect("render"),
+        )
+        .expect("config");
+    }
+
+    fn activated(path: &Path) -> (CanonicalConfigCoordinator, GenerationManager) {
+        let coordinator = CanonicalConfigCoordinator::new(path).expect("coordinator");
+        let manager = GenerationManager::new();
+        let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
+            panic!("active load")
+        };
+        let candidate = manager.prepare(*document).expect("active prepare");
+        manager.activate(&candidate).expect("active generation");
+        (coordinator, manager)
+    }
+
+    #[test]
+    fn a_rejected_file_is_recorded_once_and_cleared_by_the_next_accepted_file() {
+        let directory = TempDir::new().expect("directory");
+        let path = directory.path().join("oxiroute.lua");
+        write_lua(&path, &empty_config());
+        let (coordinator, manager) = activated(&path);
+        let counters = WatcherCounters::default();
+        let reconcile = || reconcile(&coordinator, &manager, &counters, RuntimeMode::Direct);
+
+        fs::write(&path, "return {").expect("invalid edit");
+        assert!(reconcile().is_none());
+        assert!(reconcile().is_none());
+
+        let status = manager.status();
+        let rejection = status.last_rejection.expect("recorded rejection");
+        assert_eq!(rejection.diagnostics[0].code, "E_SYNTAX");
+        assert!(rejection.revision.is_some());
+        assert!(status.degraded);
+        assert_eq!(status.config_rejections, 1);
+        assert_eq!(counters.rejected.load(Ordering::Relaxed), 2);
+
+        write_lua(&path, &empty_config());
+        assert!(reconcile().is_some());
+
+        let status = manager.status();
+        assert!(status.last_rejection.is_none());
+        assert!(!status.degraded);
+        assert_eq!(status.config_rejections, 1);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_prepared_is_recorded_with_the_preparation_code() {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupied port");
+        let directory = TempDir::new().expect("directory");
+        let path = directory.path().join("oxiroute.lua");
+        write_lua(&path, &empty_config());
+        let (coordinator, manager) = activated(&path);
+        let counters = WatcherCounters::default();
+
+        let mut config = empty_config();
+        config.stats = Some(oxiroute_config::Stats {
+            binds: vec![occupied.local_addr().expect("occupied address")],
+            admin_token_file: None,
+            pages: Vec::new(),
+        });
+        write_lua(&path, &config);
+        assert!(reconcile(&coordinator, &manager, &counters, RuntimeMode::Direct).is_some());
+        assert!(reconcile(&coordinator, &manager, &counters, RuntimeMode::Direct).is_some());
+
+        let status = manager.status();
+        let rejection = status.last_rejection.expect("recorded rejection");
+        assert_eq!(rejection.diagnostics[0].code, "listener_reservation");
+        assert_eq!(status.config_rejections, 1);
+        assert!(status.quarantined_revision.is_some());
+
+        write_lua(&path, &empty_config());
+        assert!(reconcile(&coordinator, &manager, &counters, RuntimeMode::Direct).is_some());
+        assert!(manager.status().last_rejection.is_none());
     }
 
     fn haproxy_source(listener_port: u16, upstream_port: u16) -> String {

@@ -830,6 +830,35 @@ impl HealthOverride {
     }
 }
 
+/// Runtime administrative state of one server, keyed by pool and server name so it can move to the
+/// next generation. Only servers that differ from the defaults are carried.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ServerAdminState {
+    pub pool: String,
+    pub server: String,
+    #[serde(default)]
+    pub administrative: AdministrativeState,
+    #[serde(default)]
+    pub health: HealthOverride,
+    #[serde(default = "checks_enabled_by_default")]
+    pub checks_enabled: bool,
+    #[serde(default)]
+    pub max_connections: Option<u64>,
+}
+
+const fn checks_enabled_by_default() -> bool {
+    true
+}
+
+impl ServerAdminState {
+    fn is_default(&self) -> bool {
+        self.administrative == AdministrativeState::Ready
+            && self.health == HealthOverride::Auto
+            && self.checks_enabled
+            && self.max_connections.is_none()
+    }
+}
+
 impl HealthFailure {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
@@ -2674,6 +2703,48 @@ impl EndpointPool {
             .store(limit.unwrap_or(0), Ordering::Release);
         self.queue.notify_capacity_waiters();
         Ok(())
+    }
+
+    /// Administrative state that differs from a freshly started server's.
+    #[must_use]
+    pub fn administrative_states(&self) -> Vec<ServerAdminState> {
+        self.endpoints
+            .iter()
+            .map(|server| ServerAdminState {
+                pool: self.name.clone(),
+                server: server.name.clone(),
+                administrative: server.administrative_state(),
+                health: server.health_override(),
+                checks_enabled: server.checks_enabled.load(Ordering::Acquire),
+                max_connections: match server.max_connections_override.load(Ordering::Acquire) {
+                    0 => None,
+                    limit => Some(limit),
+                },
+            })
+            .filter(|state| !state.is_default())
+            .collect()
+    }
+
+    /// Applies carried state to the servers that still exist in this pool.
+    pub fn restore_administrative_states(&self, states: &[ServerAdminState]) {
+        for state in states.iter().filter(|state| state.pool == self.name) {
+            let Ok(server) = self.server(&state.server) else {
+                continue;
+            };
+            server
+                .administrative_state
+                .store(state.administrative as u8, Ordering::Release);
+            server
+                .health_override
+                .store(state.health as u8, Ordering::Release);
+            server
+                .checks_enabled
+                .store(state.checks_enabled, Ordering::Release);
+            server
+                .max_connections_override
+                .store(state.max_connections.unwrap_or(0), Ordering::Release);
+        }
+        self.queue.notify_capacity_waiters();
     }
 
     #[must_use]

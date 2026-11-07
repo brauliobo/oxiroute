@@ -74,6 +74,12 @@ export interface ComponentStatusDto {
   state: ComponentStateDto
 }
 
+export interface ConfigRejectionDto {
+  atUnixMs: number
+  diagnostics: Array<RejectionDiagnostic>
+  revision: string | null
+}
+
 export type DecimalCounter = string
 
 export interface DescriptorAdoptionDto {
@@ -146,10 +152,13 @@ export interface GenerationStatusDto {
   activeRevision: string | null
   buildVersion: string
   candidateRevision: string | null
+  configRejections: number
   degraded: boolean
   diskRevision: string | null
   failures: number
+  generation: number
   lastFailure: string | null
+  lastRejection: ConfigRejectionDto | null
   prepares: number
   previousRevision: string | null
   quarantinedRevision: string | null
@@ -272,6 +281,15 @@ export interface ProxyProtocolDto {
 export type ProxyProtocolResultDto = "accepted" | "sent" | "timeout" | "cancelled" | "malformed" | "unsupported" | "mismatch" | "io_error"
 
 export type QuicTransportDto = "quic"
+
+export interface RejectionDiagnostic {
+  code: string
+  detail?: string | null
+  line?: number | null
+  message: string
+  path?: string | null
+  stage: string
+}
 
 export type RuntimeModeDto = "direct" | "supervised"
 

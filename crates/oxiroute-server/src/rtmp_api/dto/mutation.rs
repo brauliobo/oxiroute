@@ -249,6 +249,12 @@ pub(crate) struct ConfigDiagnosticDto {
     severity: ConfigDiagnosticSeverityDto,
     stage: ConfigDiagnosticStageDto,
     message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<u32>,
 }
 
 impl From<ConfigDiagnostic> for ConfigDiagnosticDto {
@@ -258,6 +264,9 @@ impl From<ConfigDiagnostic> for ConfigDiagnosticDto {
             severity: diagnostic.severity.into(),
             stage: diagnostic.stage.into(),
             message: diagnostic.message,
+            path: diagnostic.path,
+            detail: diagnostic.detail,
+            line: diagnostic.line,
         }
     }
 }
