@@ -11,14 +11,14 @@
     "render": "pnpm run render:overview && pnpm run render:configuration"
   },
   "dependencies": {
-    "@remotion/cli": "4.0.505",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "remotion": "4.0.505"
+    "@remotion/cli": "4.0.541",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "remotion": "4.0.541"
   },
   "devDependencies": {
-    "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.4",
-    "typescript": "5.9.3"
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "7.0.2"
   }
 }
