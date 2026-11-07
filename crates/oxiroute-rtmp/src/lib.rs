@@ -131,10 +131,10 @@ pub use vod::{
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_media_configuration(payload: &[u8]) {
-    let _ = media_parser::parse_avc_configuration(payload);
-    let _ = media_parser::parse_aac_configuration(payload);
-    media_segmenter::fuzz_media_configuration(payload);
-    dash_segmenter::fuzz_media_configuration(payload);
+    let _ = media::parser::parse_avc_configuration(payload);
+    let _ = media::parser::parse_aac_configuration(payload);
+    media::segmenter::fuzz_media_configuration(payload);
+    media::dash::fuzz_media_configuration(payload);
 }
 
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
