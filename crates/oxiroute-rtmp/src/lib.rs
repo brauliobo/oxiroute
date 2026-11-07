@@ -21,7 +21,6 @@ mod recording;
 mod relay;
 mod runtime_handles;
 mod session;
-mod session_control;
 mod vod;
 
 pub use auto_push::{
@@ -108,6 +107,10 @@ pub use runtime_handles::{
     PreparedRtmpRuntimeSet, RtmpControlHandle, RtmpRuntimeSet, RtmpRuntimeSetError,
     RtmpServiceHandle, RtmpShutdown,
 };
+pub use session::control::{
+    MAX_RTMP_SESSION_CONTROLS, RtmpClientSnapshot, RtmpMessageStreamSnapshot,
+    RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome, RtmpSessionRole,
+};
 pub use session::{
     MAX_INBOUND_AMF0_CONTAINER_ENTRIES, MAX_INBOUND_AMF0_DEPTH, MAX_INBOUND_AMF0_STRING_BYTES,
     MAX_INBOUND_AMF0_VALUES, MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE,
@@ -117,10 +120,6 @@ pub use session::{
     RtmpSessionLimitError, RtmpSessionLimits, RtmpSessionPolicy, RtmpTokenPolicy,
 };
 pub(crate) use session::{RtmpRecorderLifecycle, RtmpServicePreparation, RtmpServiceRuntime};
-pub use session_control::{
-    MAX_RTMP_SESSION_CONTROLS, RtmpClientSnapshot, RtmpMessageStreamSnapshot,
-    RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome, RtmpSessionRole,
-};
 pub use vod::{
     MAX_VOD_EVENTS, MAX_VOD_HTTP_HEADER_BYTES, MAX_VOD_ORIGIN_BYTES, MAX_VOD_PATH_BYTES,
     MAX_VOD_REDIRECTS, MAX_VOD_SOURCE_NAME_BYTES, VodApplication, VodApplicationBlueprint,
