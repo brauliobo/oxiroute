@@ -23,6 +23,7 @@ use super::{
 };
 use crate::{
     AdministrativeState, HealthSupervisor, RoundRobinPool, RuntimeEndpoint, ServerOrigin,
+    operational_event::{AuditContext, emit_server_registration},
     routing::{DynamicServer, RuntimeServer},
 };
 
@@ -514,16 +515,14 @@ impl RegistryService {
                         if let Some(existing) = &existing {
                             record.operator_state = existing.operator_state;
                         }
-                        (
-                            stored.upsert(record.clone()),
-                            Ok((existing.is_none(), record)),
-                        )
+                        let changed = stored.upsert(record.clone());
+                        (changed, Ok((existing.is_none(), changed, record)))
                     }
                     Err(error) => (false, Err(error)),
                 }
             })
             .map_err(|error| self.store_error(&mut state, &error))?;
-        let (created, record) = verdict?;
+        let (created, changed, record) = verdict?;
         state
             .leases
             .grant(key, self.clock.now(), Duration::from_millis(record.ttl_ms));
@@ -536,6 +535,9 @@ impl RegistryService {
             record.name,
             record.pool
         );
+        if changed {
+            announce(&principal.id);
+        }
         self.wake.notify_all();
         Ok(PutOutcome {
             created,
@@ -689,6 +691,7 @@ impl RegistryService {
             .entry(("delete", "ok"))
             .or_default() += 1;
         log::info!("registry: deregistered `{name}` from pool `{pool}`");
+        announce(&principal.id);
         self.wake.notify_all();
         Ok(seq)
     }
@@ -722,6 +725,7 @@ impl RegistryService {
         let record = verdict?;
         state.applied_seq = seq;
         Self::apply_everywhere(&state, &record);
+        announce(&principal.id);
         Ok(seq)
     }
 
@@ -850,6 +854,7 @@ impl RegistryService {
             key.name,
             key.pool
         );
+        announce("lease_expiry");
     }
 
     fn retry_removals(&self, state: &mut State) {
@@ -881,6 +886,11 @@ impl RegistryService {
         state.applied_seq = stored.seq;
         state.degraded = None;
     }
+}
+
+/// Reports a membership change as the operational `server_update` event.
+fn announce(actor: &str) {
+    emit_server_registration(&AuditContext::registry(actor));
 }
 
 #[cfg(test)]
