@@ -162,6 +162,12 @@ told from one that never arrived. The same id is in the access log (`requestId`)
 `x-request-id` header of the response and of every backend attempt. A request that is quiet for 60
 seconds is logged once as stuck and counted in `oxiroute_http_stuck_requests_total{pool,phase}`.
 
+Every change of a server's health state reported by its active check is an event
+(`upstream_endpoint_health`, outcome `health_changed` with `pool`, `server`, `previous`, `next`, the
+failure `reason` when the server went down and `changedAtUnixMs`), next to the existing
+`upstream_endpoint_ejection` and `upstream_endpoint_recovery` events for passive ejection. Version 1
+of the events API reports it with the event name `unknown`; read it from `/api/v2/events` or `/api/v2/events/stream`.
+
 | Metric | Labels | Meaning |
 | --- | --- | --- |
 | `oxiroute_http_inflight_requests` | `pool` | requests inside the router |

@@ -73,6 +73,8 @@ A pool keeps serving when health checks or passive ejection would otherwise take
 - New public `GET /status.json` with an overall and per-pool `ok`/`warning`/`critical` state.
 - New per-route `policy.queue_headers` (default off) adds `x-oxiroute-queue-position` and
   `x-oxiroute-queue-wait-ms` to the responses of requests that waited for capacity.
+- Active health check transitions are events (`upstream_endpoint_health`), with the previous and next
+  state and the failure reason; they replace the bare log line.
 - Not yet in this draft: switching the request id off and `Server-Timing`.
 
 ## Load balancing and admission

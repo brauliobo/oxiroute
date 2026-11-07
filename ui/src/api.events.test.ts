@@ -257,6 +257,32 @@ describe('operational event stream client', () => {
     expect(JSON.stringify([ejection, recovery])).not.toContain('session-secret')
   })
 
+  it('projects active check health changes and rejects impossible outcomes', () => {
+    const changed = '{"type":"health_changed","pool":"backend","server":"primary","previous":"healthy","next":"unhealthy","reason":"timeout","changedAtUnixMs":3000,"cookie":"session-secret"}'
+    expect(operationalEvent('upstream_endpoint_health', changed)).toEqual({
+      type: 'operational',
+      event: {
+        cursor: 30,
+        timestampUnixMs: null,
+        event: 'upstream_endpoint_health',
+        outcome: {
+          type: 'health_changed',
+          pool: 'backend',
+          server: 'primary',
+          previous: 'healthy',
+          next: 'unhealthy',
+          reason: 'timeout',
+          changedAtUnixMs: 3000,
+        },
+        revision: null,
+      },
+    })
+    expect(operationalEvent('upstream_endpoint_health', changed.replace('"next":"unhealthy"', '"next":"sideways"'))).toBeNull()
+    expect(operationalEvent('upstream_endpoint_health', '"applied"')).toBeNull()
+    expect(operationalEvent('upstream_endpoint_health', RECOVERED_OUTCOME)).toBeNull()
+    expect(operationalEvent('upstream_endpoint_recovery', changed)).toBeNull()
+  })
+
   it('reconnects with the last event id after a bounded stream interruption', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(eventResponse([

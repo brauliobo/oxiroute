@@ -18,7 +18,7 @@ use tokio::sync::Notify;
 use crate::config_coordinator::EffectiveRevision;
 use crate::logging::{next_correlation_id, redact_identifier, redact_text, valid_correlation_id};
 use crate::monitoring::{ObservedTransport, TransportOutcome};
-use crate::routing::HealthFailure;
+use crate::routing::{EndpointHealthState, HealthFailure};
 
 pub(crate) const EVENT_CAPACITY: usize = 2_048;
 const AUDIT_ACTIVE_FILE: &str = "audit.ndjson";
