@@ -23,7 +23,9 @@ use crate::{
     CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, ControlProtocolError, MasterConfig,
     StableListeners,
     listeners::ListenerOwnershipError,
-    protocol::{ControlAck, decode_ack, encode_adopt_request, encode_request},
+    protocol::{
+        ControlAck, MAX_ATTACHMENT_BYTES, decode_ack, encode_adopt_request, encode_request,
+    },
     status::{
         AggregatedWorkerEvent, SupervisorSnapshot, SupervisorSnapshotError,
         SupervisorSnapshotHistory, WorkerSnapshotSource, WorkerStatus, decode_status,
@@ -393,6 +395,8 @@ struct ManagedWorker {
     channel_open: bool,
     status: Option<WorkerStatus>,
     last_event_cursor: u64,
+    /// Opaque state the worker last reported with `report_state`.
+    reported_state: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -667,6 +671,43 @@ impl<E: ActionExecutor> Master<E> {
         self.finish_terminal_states();
         self.release_unused_pending_listeners();
         Ok(self.events.drain(..).collect())
+    }
+
+    /// Sends the active worker an opaque notice that it does not acknowledge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no worker is active, the notice is too large, or the send fails.
+    pub fn notify_active(&mut self, notice: &[u8]) -> Result<(), MasterError> {
+        let request_id = self
+            .take_request_id()
+            .map_err(|source| MasterError::Preparation {
+                step: PreparationStep::RequestId,
+                source,
+            })?;
+        let payload =
+            encode_request(request_id, ControlPhase::Notice, notice).map_err(|source| {
+                MasterError::Preparation {
+                    step: PreparationStep::Encoding,
+                    source: PreparationError::Protocol(source),
+                }
+            })?;
+        let worker = self
+            .active
+            .as_mut()
+            .ok_or(MasterError::MissingWorker(WorkerRole::Active))?;
+        self.executor
+            .send(
+                WorkerRole::Active,
+                &mut worker.process,
+                ControlPhase::Notice,
+                &payload,
+                &[],
+            )
+            .map_err(|source| MasterError::Action {
+                action: ActionKind::Send(ControlPhase::Notice),
+                source,
+            })
     }
 
     /// Begins or advances bounded asynchronous shutdown without waiting for process exit.
@@ -968,16 +1009,13 @@ impl<E: ActionExecutor> Master<E> {
                 }
             })?
         } else {
-            let encoded = encode_request(request_id, phase);
-            let mut payload = Vec::new();
-            payload
-                .try_reserve_exact(encoded.len())
-                .map_err(|_| MasterError::Preparation {
-                    step: PreparationStep::Allocation,
-                    source: PreparationError::Allocation,
-                })?;
-            payload.extend_from_slice(&encoded);
-            payload
+            let attachment = self.attachment(role, phase);
+            encode_request(request_id, phase, attachment).map_err(|source| {
+                MasterError::Preparation {
+                    step: PreparationStep::Encoding,
+                    source: PreparationError::Protocol(source),
+                }
+            })?
         };
         Ok(PreparedRequest {
             pending: Pending {
@@ -987,6 +1025,17 @@ impl<E: ActionExecutor> Master<E> {
             },
             payload,
         })
+    }
+
+    /// The candidate starts from the state its predecessor reported when it quiesced.
+    fn attachment(&self, role: WorkerRole, phase: ControlPhase) -> &[u8] {
+        match (role, phase) {
+            (WorkerRole::Candidate, ControlPhase::Activate) => self
+                .active
+                .as_ref()
+                .map_or(&[], |active| active.reported_state.as_slice()),
+            _ => &[],
+        }
     }
 
     fn prepare_step(
@@ -1058,6 +1107,12 @@ impl<E: ActionExecutor> Master<E> {
                     Ok(status) => Some(Observation::Status(Box::new(status))),
                     Err(_) => Some(Observation::ProtocolFailure),
                 },
+                crate::status::STATE_MESSAGE
+                    if frame.payload().len() <= MAX_ATTACHMENT_BYTES
+                        && frame.descriptors().is_empty() =>
+                {
+                    Some(Observation::State(frame.payload().to_vec()))
+                }
                 _ => Some(Observation::ProtocolFailure),
             },
             Ok(None) => None,
@@ -1085,6 +1140,12 @@ impl<E: ActionExecutor> Master<E> {
         match observation {
             Observation::Ack(ack) => self.handle_ack(role, ack, now),
             Observation::Status(status) => self.handle_status(role, &status),
+            Observation::State(state) => {
+                self.worker_mut(role)
+                    .ok_or(MasterError::MissingWorker(role))?
+                    .reported_state = state;
+                Ok(())
+            }
             Observation::Exit(status) => self.handle_exit(role, status, now),
             Observation::Disconnected => self.handle_disconnect(role, now),
             Observation::ProtocolFailure => {
@@ -1949,6 +2010,7 @@ impl ManagedWorker {
             channel_open: true,
             status: None,
             last_event_cursor: 0,
+            reported_state: Vec::new(),
         }
     }
 }
@@ -1987,6 +2049,7 @@ const fn phase_failure(phase: ControlPhase) -> FailurePhase {
         ControlPhase::Drain => FailurePhase::Drain,
         ControlPhase::Reactivate => FailurePhase::Reactivation,
         ControlPhase::Shutdown => FailurePhase::Shutdown,
+        ControlPhase::Notice => FailurePhase::Protocol,
     }
 }
 

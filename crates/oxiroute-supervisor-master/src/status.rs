@@ -11,6 +11,7 @@ use thiserror::Error;
 use crate::CONTROL_PROTOCOL_VERSION;
 
 pub(crate) const STATUS_MESSAGE: MessageType = MessageType(0x181);
+pub(crate) const STATE_MESSAGE: MessageType = MessageType(0x182);
 /// Maximum encoded worker status bytes accepted by either endpoint.
 pub const MAX_STATUS_BYTES: usize = 60 * 1024;
 /// Maximum listener observations carried by one worker status.
