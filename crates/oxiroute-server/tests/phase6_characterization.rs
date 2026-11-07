@@ -71,7 +71,13 @@ async fn read_only_management_responses_preserve_dto_wire_shapes() {
     }
     assert!(generation["activeAccepting"].is_boolean());
     assert!(generation["degraded"].is_boolean());
-    for key in ["prepares", "activations", "failures", "rollbacks"] {
+    for key in [
+        "generation",
+        "prepares",
+        "activations",
+        "failures",
+        "rollbacks",
+    ] {
         assert!(generation[key].is_u64(), "generation counter {key}");
     }
 

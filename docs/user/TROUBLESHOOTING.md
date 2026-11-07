@@ -20,6 +20,7 @@ oxiroute --output json topology
 | Health remains `unknown` | Probe path, host, timeout, startup policy | Checks have not completed successfully enough to make the endpoint eligible |
 | Dashboard keeps old values | UI stale banner and management listener logs | The last valid sample is retained after a transient refresh failure |
 | `generation status` shows `lastRejection` | `diagnostics` in `lastRejection`, the `oxiroute::config` error log | The file on disk was refused and the previous configuration is still running; fix the named setting and save again |
+| A drained server takes traffic again | `server list`, `generation status` (`generation`, `activeRevision`) | Administrative state follows pool and server name; a server renamed in the file is a new server and starts ready, and a restart resets it |
 | Configuration save returns `409` | Disk and active revisions | Another writer changed the authoritative file; reconcile instead of overwriting |
 | Configuration save returns `422` | `path` and `detail` of each diagnostic (the failing setting and rule), compositional flag | Draft or runtime preflight failed, or a compositional root cannot be flattened |
 | Configuration save says restart required | Runtime mode and `/config/listeners` diagnostic | A Unix listener kept its path but changed its filesystem mode; the new socket would need the path the running one owns, so only a process restart applies it. Other listener changes reload live |
