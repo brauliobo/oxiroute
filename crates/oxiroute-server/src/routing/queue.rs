@@ -112,6 +112,11 @@ impl QueueWaitGuard {
         self.queue.queued_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// How many requests were waiting when this one joined, itself included; 0 if it never waited.
+    pub(super) fn position(&self) -> u64 {
+        self.ticket.as_ref().map_or(0, |ticket| ticket.position)
+    }
+
     pub(super) fn complete(&mut self) {
         self.finish(false);
     }

@@ -322,6 +322,10 @@ pub struct HttpProxyPolicy {
     pub rescue: Option<HttpRescuePolicy>,
     #[serde(default)]
     pub cache: Option<Box<HttpCachePolicy>>,
+    /// Adds `x-oxiroute-queue-position` and `x-oxiroute-queue-wait-ms` to responses of requests that
+    /// had to wait for capacity. Off by default because it reveals how loaded the pool is.
+    #[serde(default)]
+    pub queue_headers: bool,
 }
 
 /// Replays a request that a backend answered with one of `statuses` (any status, for example a 404

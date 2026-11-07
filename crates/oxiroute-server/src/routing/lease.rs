@@ -156,6 +156,11 @@ impl EndpointLease {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cell);
     }
 
+    /// Records where a selector wait started, for leases that were not bound before waiting.
+    pub(super) fn note_selector_position(&self, position: u64) {
+        self.inner.wait.position.store(position, Ordering::Relaxed);
+    }
+
     /// The request has its connection: a reused one never acquires this lease, so the wait ends here.
     pub(crate) fn end_queue_wait(&self) {
         self.inner.leave_queue(false);
