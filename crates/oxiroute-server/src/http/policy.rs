@@ -10,7 +10,7 @@ use http::{
 };
 use oxiroute_config::HttpSameSite;
 
-use crate::http_action::{
+use crate::http::action::{
     MAX_REDIRECT_LOCATION_BYTES, ProxyPolicyPlan, RedirectLocationPlan, RedirectTemplateSegment,
     RequestHeaderMutationPlan, RequestHeaderValuePlan, ResponseHeaderMutationPlan,
 };
@@ -155,7 +155,7 @@ pub(crate) fn decide_request_header(
 fn decide_x_forwarded_for(
     context: RequestPolicyContext<'_>,
     max_bytes: usize,
-    exceptions: &[crate::http_action::SourceCidr],
+    exceptions: &[crate::http::action::SourceCidr],
 ) -> Result<XForwardedForDecision, RequestPolicyError> {
     if context.client_ip.is_some_and(|client_ip| {
         exceptions
@@ -283,7 +283,7 @@ pub(crate) fn decide_response_headers(
                 name,
                 value,
                 always,
-            } if *always || crate::http_action::nginx_add_header_status(status.as_u16()) => {
+            } if *always || crate::http::action::nginx_add_header_status(status.as_u16()) => {
                 resulting.insert(name.clone(), value.clone());
                 decisions.push(ResponseHeaderDecision::Set {
                     name: name.clone(),
@@ -294,7 +294,7 @@ pub(crate) fn decide_response_headers(
                 name,
                 value,
                 always,
-            } if *always || crate::http_action::nginx_add_header_status(status.as_u16()) => {
+            } if *always || crate::http::action::nginx_add_header_status(status.as_u16()) => {
                 resulting.append(name.clone(), value.clone());
                 decisions.push(ResponseHeaderDecision::Add {
                     name: name.clone(),

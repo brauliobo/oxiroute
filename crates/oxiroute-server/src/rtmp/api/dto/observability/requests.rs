@@ -1,6 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::inflight::{InflightFilter, InflightView, Phase};
+use crate::http::inflight::{InflightFilter, InflightView, Phase};
 
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1_000;
@@ -60,7 +60,7 @@ impl RequestListResponse {
     /// Live requests, oldest first.
     pub(crate) fn current(query: Option<&str>) -> Result<Self, &'static str> {
         let query = RequestQuery::parse(query)?;
-        let mut listing = crate::inflight::registry().list(&query.filter, query.limit);
+        let mut listing = crate::http::inflight::registry().list(&query.filter, query.limit);
         if let Some(id) = &query.request_id {
             listing.requests.retain(|view| &view.request_id == id);
             listing.total = listing.requests.len();
@@ -78,9 +78,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::inflight::{InflightArrival, registry};
+    use crate::http::inflight::{InflightArrival, registry};
 
-    fn live(id: &str, pool: &str) -> crate::inflight::InflightGuard {
+    fn live(id: &str, pool: &str) -> crate::http::inflight::InflightGuard {
         let guard = registry().register(InflightArrival {
             request_id: id.into(),
             listener: "edge".into(),

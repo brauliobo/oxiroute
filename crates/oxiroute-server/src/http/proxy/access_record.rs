@@ -1,7 +1,7 @@
 use pingora::proxy::Session;
 
 use super::{HttpRequestContext, normalized_request_host};
-use crate::request_id::{REQUEST_ID_HEADER, idempotency_header_or_default, idempotency_tag};
+use crate::http::request_id::{REQUEST_ID_HEADER, idempotency_header_or_default, idempotency_tag};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn millis(duration: Duration) -> String {
@@ -51,7 +51,7 @@ pub(super) fn build(
         "servers": (!servers.is_empty()).then_some(servers),
         "attempts": ctx.attempt_count(),
         "rescued": ctx.rescued,
-        "wasStuck": ctx.inflight.as_ref().is_some_and(crate::inflight::InflightGuard::stuck),
+        "wasStuck": ctx.inflight.as_ref().is_some_and(crate::http::inflight::InflightGuard::stuck),
         "queueWaitMs": millis(trace.queue_wait),
         "connectMs": trace.connect.map(millis),
         "headerMs": trace.header.map(millis),

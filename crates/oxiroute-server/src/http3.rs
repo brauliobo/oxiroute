@@ -38,19 +38,19 @@ use crate::{
     AdmissionError, ForwardHttp1ServicePlan, H3UpstreamError, HealthFailure, HttpOperationResult,
     HttpServicePlan, ListenerMetrics, ListenerReservation, ListenerRuntime, ListenerRuntimeState,
     RuntimeGeneration, RuntimeMode, RuntimeReferenceKind, TlsProfilePlan,
-    http_action::{
+    http::action::{
         HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget,
         StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
     },
-    http_cache::{
+    http::cache::{
         CacheFailureClass, CacheRequest, CacheStart, CacheStartFailure, CacheTransaction,
         HttpCachePlan,
     },
-    http_policy::{
+    http::policy::{
         RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
         decide_request_header, expand_redirect_location, normalized_redirect_host,
     },
-    http_proxy::{
+    http::proxy::{
         apply_response_policy_map, cache_request_bypasses_cache, rewrite_upstream_path,
         selected_upstream_host,
     },

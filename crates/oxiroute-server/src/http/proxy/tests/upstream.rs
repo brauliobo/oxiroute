@@ -72,13 +72,13 @@ async fn http_falls_back_to_the_second_address_without_route_retry_budget() {
     assert_eq!(policy.max_retries, 0);
     let route = Arc::new(HttpRoutePlan {
         access: None,
-        action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
+        action: HttpActionPlan::Proxy(crate::http::action::ProxyActionPlan {
             pool: Arc::clone(&plan),
             rescue_pool: None,
             select: None,
             policy,
         }),
-        policy: crate::http_action::RoutePolicyPlan::compile(
+        policy: crate::http::action::RoutePolicyPlan::compile(
             oxiroute_config::HttpRoutePolicy::default(),
         ),
         route_id: "test".into(),

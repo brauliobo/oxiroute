@@ -16,7 +16,7 @@ use format::{
 
 #[allow(clippy::cast_precision_loss)]
 fn render_inflight(output: &mut String) -> Result<(), PrometheusError> {
-    let inflight = crate::inflight::registry().totals();
+    let inflight = crate::http::inflight::registry().totals();
     for (pool, live) in &inflight.pools {
         let pool = [("pool", pool.as_str())];
         labels(

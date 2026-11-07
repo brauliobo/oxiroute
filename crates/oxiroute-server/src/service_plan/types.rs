@@ -11,7 +11,7 @@ use oxiroute_rtmp::RtmpServicePlan;
 use crate::{
     PassiveFailurePolicy, Route,
     health::HealthCheckBlueprint,
-    http_action::{
+    http::action::{
         FixedResponsePlan, HttpGzipPlan, ProxyPolicyPlan, RedirectPlan, RoutePolicyPlan,
         StaticFilesBlueprint,
     },

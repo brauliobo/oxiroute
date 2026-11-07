@@ -17,7 +17,7 @@ use std::{
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::http_action::AccessLog;
+use crate::http::action::AccessLog;
 
 const SHARDS: usize = 16;
 pub(crate) const MAX_PATH_BYTES: usize = 128;

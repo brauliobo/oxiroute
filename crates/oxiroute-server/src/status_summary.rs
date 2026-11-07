@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::{
     ApiResponse, GenerationManager, GenerationStatus, PoolHealthSnapshot, RuntimeMetrics,
     RuntimeSnapshot,
-    inflight::{InflightTotals, PoolInflight, registry},
+    http::inflight::{InflightTotals, PoolInflight, registry},
 };
 
 /// A pool whose oldest request has waited longer than this is queueing for real, not just briefly.

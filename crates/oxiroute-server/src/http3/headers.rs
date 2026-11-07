@@ -59,7 +59,7 @@ pub(crate) fn request_content_length(headers: &HeaderMap) -> Result<Option<u64>,
 }
 
 pub(super) fn h3_static_validator_headers(
-    files: &crate::http_action::StaticFilesPlan,
+    files: &crate::http::action::StaticFilesPlan,
     file: &StaticFile,
 ) -> Vec<(HeaderName, HeaderValue)> {
     let mut headers = Vec::with_capacity(usize::from(files.etag_enabled()) + 1);

@@ -4,7 +4,7 @@ use oxiroute_config::{
 };
 
 use super::*;
-use crate::http_action::ProxyPolicyPlan;
+use crate::http::action::ProxyPolicyPlan;
 
 fn request_mutation(value: HttpRequestHeaderValue) -> ProxyPolicyPlan {
     ProxyPolicyPlan::compile(&HttpProxyPolicy {

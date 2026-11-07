@@ -14,11 +14,11 @@ use crate::{
     ForwardHttp1ServicePlan, ForwardHttp2ServicePlan, HealthSupervisor, L4ServicePlan,
     PassiveFailurePolicy, PoolError, PreparedTls, RelayPolicy, RoundRobinPool, RouteTable,
     RuntimeEndpoint, TlsProfilePlan, TopologySnapshot, health,
-    http_action::{
+    http::action::{
         AccessLog, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, PoolSelectPlan, ProxyActionPlan,
         ProxyPolicyPlan, RouteAccess, StaticFilesPlan,
     },
-    http_cache::{CachePurgeAccess, DiskBackend, HttpCacheBackend, HttpCachePlan},
+    http::cache::{CachePurgeAccess, DiskBackend, HttpCacheBackend, HttpCachePlan},
     routing::RuntimeServer,
     upstream_peer::UpstreamPlan,
 };

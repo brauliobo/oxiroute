@@ -84,13 +84,13 @@ async fn request_preparation_fixture(
     ));
     let route = Arc::new(HttpRoutePlan {
         access: None,
-        action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
+        action: HttpActionPlan::Proxy(crate::http::action::ProxyActionPlan {
             pool: Arc::clone(&plan),
             rescue_pool: None,
             select: None,
             policy: ProxyPolicyPlan::compile(&policy),
         }),
-        policy: crate::http_action::RoutePolicyPlan::compile(
+        policy: crate::http::action::RoutePolicyPlan::compile(
             oxiroute_config::HttpRoutePolicy::default(),
         ),
         route_id: "preparation".into(),
