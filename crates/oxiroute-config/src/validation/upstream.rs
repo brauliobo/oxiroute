@@ -6,6 +6,7 @@ const MAX_UNAVAILABLE_BODY_BYTES: usize = 1024;
 const MAX_READMISSION_INTERVAL_MS: u64 = 3_600_000;
 const MAX_BREAKER_MS: u64 = 3_600_000;
 const MAX_QUEUE_CLASSES: usize = 8;
+const MAX_CANARY_PATH_BYTES: usize = 1024;
 
 /// Validates upstream-pool identities, resources, endpoints, and health policies.
 ///
@@ -308,7 +309,73 @@ fn validate_upstream_pool_definition(
     validate_upstream_pool_timeouts(pool)?;
     validate_pool_resilience(pool)?;
     validate_pool_queue(pool)?;
+    validate_pool_canary(pool, has_unix_endpoint)?;
     validate_pool_registration(pool)
+}
+
+fn validate_pool_canary(pool: &UpstreamPool, has_unix_endpoint: bool) -> Result<(), ConfigError> {
+    let Some(canary) = &pool.canary else {
+        return Ok(());
+    };
+    let invalid = |field, detail| ConfigError::InvalidUpstreamServer {
+        pool: pool.name.clone(),
+        server: "<pool>".into(),
+        field,
+        detail,
+    };
+    if has_unix_endpoint {
+        return Err(invalid("canary", "does not support unix endpoints"));
+    }
+    if pool.tls.is_some() {
+        return Err(invalid("canary", "does not support upstream tls"));
+    }
+    if !canary.path.starts_with('/')
+        || canary.path.len() > MAX_CANARY_PATH_BYTES
+        || canary.path.bytes().any(|byte| !byte.is_ascii_graphic())
+    {
+        return Err(invalid(
+            "canary.path",
+            "must start with / and have at most 1024 visible ASCII bytes",
+        ));
+    }
+    if canary
+        .host
+        .as_ref()
+        .is_some_and(|host| host.is_empty() || !host.bytes().all(|byte| byte.is_ascii_graphic()))
+    {
+        return Err(invalid(
+            "canary.host",
+            "must be visible ASCII without spaces",
+        ));
+    }
+    if !(100..=599).contains(&canary.expected_status) {
+        return Err(invalid(
+            "canary.expected_status",
+            "must be between 100 and 599",
+        ));
+    }
+    if !(1_000..=MAX_HTTP_TIMEOUT_MS).contains(&canary.interval_ms) {
+        return Err(invalid(
+            "canary.interval_ms",
+            "must be between 1000 and 86400000",
+        ));
+    }
+    if !(100..=canary.interval_ms).contains(&canary.timeout_ms) {
+        return Err(invalid(
+            "canary.timeout_ms",
+            "must be between 100 and interval_ms",
+        ));
+    }
+    if canary
+        .max_latency_ms
+        .is_some_and(|latency| !(1..=canary.timeout_ms).contains(&latency))
+    {
+        return Err(invalid(
+            "canary.max_latency_ms",
+            "must be between 1 and timeout_ms",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_pool_queue(pool: &UpstreamPool) -> Result<(), ConfigError> {

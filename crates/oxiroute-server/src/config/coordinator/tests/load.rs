@@ -355,6 +355,7 @@ fn validation_errors_point_at_the_failing_setting() {
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
         registration: None,
+        canary: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     });

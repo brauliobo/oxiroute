@@ -199,6 +199,7 @@ impl Lowerer<'_> {
                 UpstreamConnectionReuse::Safe
             },
             registration: None,
+            canary: None,
             resilience: oxiroute_config::PoolResilience::default(),
             queue: None,
         });

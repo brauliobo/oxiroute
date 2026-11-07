@@ -68,6 +68,7 @@ fn api() -> (
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Safe,
             registration: None,
+            canary: None,
             resilience: oxiroute_config::PoolResilience::default(),
             queue: None,
         }],

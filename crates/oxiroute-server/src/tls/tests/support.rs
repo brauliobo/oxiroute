@@ -198,6 +198,7 @@ pub(super) fn upstream_pool(
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         registration: None,
+        canary: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     }

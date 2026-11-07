@@ -1945,6 +1945,7 @@ fn reload_config(shape: &ReloadShape<'_>) -> ConfigDraft {
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::default(),
             registration: None,
+            canary: None,
             resilience: oxiroute_config::PoolResilience::default(),
             queue: None,
         }];
@@ -2711,6 +2712,7 @@ fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::default(),
             registration: None,
+            canary: None,
             resilience: oxiroute_config::PoolResilience::default(),
             queue: None,
         }],
@@ -2847,6 +2849,7 @@ fn h3_proxy_config(
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::default(),
         registration: None,
+        canary: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     });

@@ -22,7 +22,7 @@ use oxiroute_config::{
     HttpRoutePolicy, HttpSameSite, HttpSelectInvalid, HttpSelectSpill, HttpService,
     HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
     HttpUpstreamHost, HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind,
-    Management, PassiveHealthPolicy, PassiveObserve, PassiveOnError, PoolQueuePolicy,
+    Management, PassiveHealthPolicy, PassiveObserve, PassiveOnError, PoolCanary, PoolQueuePolicy,
     PoolRegistration, PoolResilience, Protocol, ProxyProtocolPolicy, ProxyProtocolVersion,
     QueueDiscipline, ReadmissionProbe, Registry, RegistryEndpoint, RegistryRole, Retirement,
     RtmpAccessPolicy, RtmpAccessRule, RtmpAclAction, RtmpApplication, RtmpCallbackConfig,

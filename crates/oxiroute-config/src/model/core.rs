@@ -613,6 +613,29 @@ pub struct UpstreamPool {
     /// Opts the pool into servers that register themselves at runtime; absent means static only.
     #[serde(default)]
     pub registration: Option<PoolRegistration>,
+    /// A synthetic request through the pool at a fixed interval, reported as metrics and by `check`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canary: Option<PoolCanary>,
+}
+
+/// A request a client could make, sent through the pool's own server selection.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PoolCanary {
+    /// Absolute path of the `GET` request, query included.
+    pub path: String,
+    /// `Host` header the request carries; absent sends none.
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default = "default_canary_expected_status")]
+    pub expected_status: u16,
+    #[serde(default = "default_canary_interval_ms")]
+    pub interval_ms: u64,
+    #[serde(default = "default_canary_timeout_ms")]
+    pub timeout_ms: u64,
+    /// A correct answer slower than this counts as slow; absent does not judge latency.
+    #[serde(default)]
+    pub max_latency_ms: Option<u64>,
 }
 
 /// How a saturated pool picks the next waiting request. Needs `queue_timeout_ms`.
