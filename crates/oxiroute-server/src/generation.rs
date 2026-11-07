@@ -566,6 +566,7 @@ pub struct RuntimeGeneration {
     revision: GenerationRevision,
     runtime_lifecycle: AtomicU8,
     runtime_failed: AtomicBool,
+    retired: tokio::sync::watch::Sender<bool>,
 }
 
 const RUNTIME_PREPARED: u8 = 0;
@@ -587,6 +588,7 @@ impl RuntimeGeneration {
             revision: prepared.revision,
             runtime_lifecycle: AtomicU8::new(RUNTIME_PREPARED),
             runtime_failed: AtomicBool::new(false),
+            retired: tokio::sync::watch::channel(false).0,
         }
     }
 
@@ -880,6 +882,23 @@ impl RuntimeGeneration {
     #[must_use]
     pub fn active_references(&self, kind: RuntimeReferenceKind) -> u64 {
         self.references[kind.index()].load(Ordering::Acquire)
+    }
+
+    /// Whether a newer generation replaced this one. Unlike a closed accept gate, this never
+    /// reverts, and an operator drain of the active generation does not set it.
+    #[must_use]
+    pub fn retired(&self) -> bool {
+        *self.retired.borrow()
+    }
+
+    pub(crate) fn mark_retired(&self) {
+        self.retired.send_replace(true);
+    }
+
+    /// Resolves with `true` once this generation is replaced.
+    #[must_use]
+    pub fn retirement_signal(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.retired.subscribe()
     }
 
     /// Connections and streams admitted by this generation that have not ended.

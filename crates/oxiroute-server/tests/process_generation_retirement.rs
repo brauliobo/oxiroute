@@ -18,8 +18,9 @@ use std::{
 };
 
 use oxiroute_config::{
-    ConfigDraft, DownstreamTimeoutPolicy, HttpVersionPolicy, L4Service, Listener, Management,
-    Protocol, Retirement, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool,
+    ConfigDraft, DownstreamTimeoutPolicy, HttpPathSelector, HttpProxyPolicy, HttpRoute,
+    HttpRouteAction, HttpRoutePolicy, HttpService, HttpVersionPolicy, L4Service, Listener,
+    Management, Protocol, Retirement, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool,
 };
 use serde_json::Value;
 use tokio::{
@@ -53,6 +54,7 @@ struct Instance {
     listener: SocketAddr,
     config: ConfigDraft,
     upstream: JoinHandle<()>,
+    release: Arc<Semaphore>,
     sequence: u64,
 }
 
@@ -71,6 +73,27 @@ impl Instance {
             listener,
             config,
             upstream,
+            release: Arc::new(Semaphore::new(0)),
+            sequence: 0,
+        }
+    }
+
+    async fn start_http(retirement: Retirement) -> Self {
+        let management = reserve_tcp_address();
+        let listener = reserve_tcp_address();
+        let release = Arc::new(Semaphore::new(0));
+        let (upstream_address, upstream) = start_held_http_upstream(Arc::clone(&release)).await;
+        let config = http_config(management, listener, upstream_address, retirement);
+        let mut server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
+        server.wait_for_tcp(management).await;
+        server.wait_for_tcp(listener).await;
+        Self {
+            server,
+            management,
+            listener,
+            config,
+            upstream,
+            release,
             sequence: 0,
         }
     }
@@ -101,6 +124,14 @@ impl Instance {
     fn write_next_revision(&mut self) {
         self.sequence += 1;
         self.config.max_connections = Some(1_000 + self.sequence);
+        if let Some(HttpRouteAction::FixedResponse { body, .. }) = self
+            .config
+            .http_services
+            .first_mut()
+            .map(|service| &mut service.routes[0].action)
+        {
+            *body = format!("revision-{}", self.sequence);
+        }
         write_config(
             &self.server.config_path,
             &self.config.clone().validate().unwrap(),
@@ -417,4 +448,201 @@ async fn assert_echo(stream: &mut TcpStream, payload: &[u8]) {
         .unwrap_or_else(|_| panic!("relay response timeout for {payload:?}"))
         .expect("relay response");
     assert_eq!(response, payload);
+}
+
+fn http_config(
+    management_address: SocketAddr,
+    listener_address: SocketAddr,
+    upstream_address: SocketAddr,
+    retirement: Retirement,
+) -> ConfigDraft {
+    let route = |path: &str, action| HttpRoute {
+        host: None,
+        path: HttpPathSelector::Exact { value: path.into() },
+        methods: Vec::new(),
+        access_policy: None,
+        policy: HttpRoutePolicy::default(),
+        action,
+    };
+    let mut config = tcp_config(
+        management_address,
+        listener_address,
+        upstream_address,
+        retirement,
+    );
+    config.listeners[0].protocol = Protocol::Http;
+    config.listeners[0].service = Some("web".into());
+    config.l4_services = Vec::new();
+    config.http_services = vec![HttpService {
+        drain_deadline_ms: None,
+        name: "web".into(),
+        routes: vec![
+            route(
+                "/rev",
+                HttpRouteAction::FixedResponse {
+                    status: 200,
+                    body: "revision-0".into(),
+                    headers: Vec::new(),
+                },
+            ),
+            route(
+                "/held",
+                HttpRouteAction::Proxy {
+                    upstream_pool: "upstream".into(),
+                    policy: HttpProxyPolicy::default(),
+                },
+            ),
+        ],
+        automatic_response_headers: true,
+        upstream_io_timeout_ms: 30_000,
+        max_request_body_bytes: Some(1_024),
+        gzip: None,
+        access_log: None,
+    }];
+    config
+}
+
+/// Answers each request only after a permit is added to `release`.
+async fn start_held_http_upstream(release: Arc<Semaphore>) -> (SocketAddr, JoinHandle<()>) {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("held upstream bind");
+    let address = listener.local_addr().expect("held upstream address");
+    let task = tokio::spawn(async move {
+        let mut connections = JoinSet::new();
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (mut stream, _) = accepted.expect("held upstream accept");
+                    let release = Arc::clone(&release);
+                    connections.spawn(async move {
+                        let mut head = Vec::new();
+                        let mut byte = [0_u8; 1];
+                        while !head.ends_with(b"\r\n\r\n") {
+                            if stream.read_exact(&mut byte).await.is_err() {
+                                return;
+                            }
+                            head.push(byte[0]);
+                        }
+                        release.acquire().await.expect("release gate").forget();
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nheld")
+                            .await;
+                        let _ = stream.read(&mut byte).await;
+                    });
+                }
+                Some(_) = connections.join_next(), if !connections.is_empty() => {}
+            }
+        }
+    });
+    (address, task)
+}
+
+async fn send_get(stream: &mut TcpStream, path: &str) {
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.expect("request");
+}
+
+async fn read_response(stream: &mut TcpStream) -> http_support::HttpResponse {
+    let mut raw = Vec::new();
+    let mut byte = [0_u8; 1];
+    let (header_end, length) = loop {
+        timeout(WIRE_TIMEOUT, stream.read_exact(&mut byte))
+            .await
+            .expect("response timeout")
+            .expect("response byte");
+        raw.push(byte[0]);
+        if let Some(end) = raw.windows(4).position(|part| part == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&raw[..end]).to_ascii_lowercase();
+            let length = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            break (end + 4, length);
+        }
+    };
+    while raw.len() < header_end + length {
+        timeout(WIRE_TIMEOUT, stream.read_exact(&mut byte))
+            .await
+            .expect("body timeout")
+            .expect("body byte");
+        raw.push(byte[0]);
+    }
+    http_support::HttpResponse::parse(raw)
+}
+
+async fn assert_closed(stream: &mut TcpStream) {
+    let mut byte = [0_u8; 1];
+    let read = timeout(Duration::from_secs(3), stream.read(&mut byte))
+        .await
+        .expect("the connection stayed open");
+    assert!(
+        matches!(read, Ok(0) | Err(_)),
+        "unexpected data after retirement: {read:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_idle_http_keepalive_connection_is_closed_at_retirement() {
+    let _guard = process_test_guard().await;
+    let mut instance = Instance::start_http(Retirement::default()).await;
+    let mut idle = TcpStream::connect(instance.listener)
+        .await
+        .expect("connection");
+    send_get(&mut idle, "/rev").await;
+    assert_eq!(read_response(&mut idle).await.body, b"revision-0");
+
+    instance.apply().await;
+    assert_closed(&mut idle).await;
+    let mut fresh = TcpStream::connect(instance.listener)
+        .await
+        .expect("connection");
+    send_get(&mut fresh, "/rev").await;
+    assert_eq!(read_response(&mut fresh).await.body, b"revision-1");
+
+    let status = instance.apply().await;
+    assert!(
+        status["retiredGenerations"].as_array().unwrap().is_empty(),
+        "{status}"
+    );
+    assert!(status["pendingApply"].is_null());
+    assert_closed(&mut fresh).await;
+    instance.stop();
+}
+
+#[tokio::test]
+async fn an_in_flight_http_response_finishes_and_closes_the_connection() {
+    let _guard = process_test_guard().await;
+    let mut instance = Instance::start_http(Retirement::default()).await;
+    let mut busy = TcpStream::connect(instance.listener)
+        .await
+        .expect("connection");
+    send_get(&mut busy, "/held").await;
+    sleep(Duration::from_millis(300)).await;
+
+    let status = instance.apply().await;
+    let retired = &status["retiredGenerations"][0];
+    assert_eq!(retired["inFlight"], 1, "{status}");
+    assert_eq!(retired["inFlightByKind"]["http1"], 1);
+
+    instance.release.add_permits(1);
+    let response = read_response(&mut busy).await;
+    assert_eq!(response.body, b"held");
+    assert_eq!(
+        response.headers.get("connection").map(String::as_str),
+        Some("close")
+    );
+    assert_closed(&mut busy).await;
+    wait_until("the retired generation drains", || async {
+        let status = instance.generation().await;
+        status["retiredGenerations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+            .then_some(())
+    })
+    .await;
+    instance.stop();
 }
