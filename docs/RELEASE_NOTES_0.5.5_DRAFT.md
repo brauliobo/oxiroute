@@ -20,6 +20,10 @@ it to zero servers. The release remains pre-alpha and retains conservative compa
 - `oxiroute_pool_fail_open_selections_total` and the pool `failOpenSelections` field of the
   management API count the selections made this way.
 
+- The configuration reference now states what the runtime has done since 0.5.x: a pool without a
+  `passive_health` block does no passive failure accounting or ejection, and an HTTP status counts
+  as a passive failure only when the route's `retry.response_statuses` lists it.
+
 ## Operational Notes
 
 Fail-open applies to HTTP and L4 pools alike. Alerting on `oxiroute_pool_available_servers == 0`
