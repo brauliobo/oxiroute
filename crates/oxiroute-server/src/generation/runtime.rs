@@ -183,8 +183,8 @@ impl RuntimeGeneration {
     pub(crate) fn listener_changes(
         &self,
         candidate: &ValidatedConfig,
-    ) -> Option<crate::listener_inventory::ListenerChangeSummary> {
-        crate::listener_reservation::listener_changes(
+    ) -> Option<crate::listener::inventory::ListenerChangeSummary> {
+        crate::listener::reservation::listener_changes(
             &self.inventory,
             &ListenerInventory::compile(candidate),
         )
@@ -202,7 +202,7 @@ impl RuntimeGeneration {
     pub(crate) fn listener_restart_reason(
         &self,
         candidate: &ValidatedConfig,
-    ) -> Option<crate::listener_inventory::ListenerRestartReason> {
+    ) -> Option<crate::listener::inventory::ListenerRestartReason> {
         self.inventory
             .restart_reason(&ListenerInventory::compile(candidate))
     }

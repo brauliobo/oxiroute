@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use oxiroute_config::ListenerBind;
 
-use crate::listener_inventory::{ListenerEntry, ListenerId, ListenerMetricPolicy};
+use crate::listener::inventory::{ListenerEntry, ListenerId, ListenerMetricPolicy};
 use crate::{
     AcmeManagedReconciler, AdministrativeState, CertbotReconciler, CertbotWatcherMonitor,
     FileReconciler, FileWatcherMonitor, PoolHealthSnapshot, ProxyProtocolResult, RoundRobinPool,

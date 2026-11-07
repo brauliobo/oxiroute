@@ -14,7 +14,7 @@ use oxiroute_supervision_unix::{
 #[cfg(target_os = "linux")]
 use oxiroute_supervisor_master::StableListeners;
 
-use crate::listener_inventory::{
+use crate::listener::inventory::{
     ListenerChangeSummary, ListenerDescriptorKind, ListenerDescriptorRole, ListenerId,
     ListenerInventory,
 };

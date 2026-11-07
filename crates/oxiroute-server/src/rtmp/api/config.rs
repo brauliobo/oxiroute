@@ -25,7 +25,7 @@ use crate::{
         ConfigLoadOutcome, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
         EffectiveRevision, NativeImportSourceOutcome, PersistableConfigCandidate,
     },
-    listener_inventory::{ListenerChangeSummary, ListenerRestartReason},
+    listener::inventory::{ListenerChangeSummary, ListenerRestartReason},
     service_plan::validation_plan,
 };
 
