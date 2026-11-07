@@ -72,6 +72,9 @@ pub trait ConnectionLifetime: Debug + Send + Sync + 'static {
 
     /// Notify capacity waiters that this physical connection can serve another request.
     fn notify_reusable(&self) {}
+
+    /// Notify that this idle pooled connection was taken to serve a request.
+    fn notify_in_use(&self) {}
 }
 
 /// Interface to get TLS info

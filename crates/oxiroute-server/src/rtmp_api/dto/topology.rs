@@ -655,6 +655,7 @@ string_enum!(UpstreamAlgorithmDto {
     RoundRobin,
     WeightedRoundRobin,
     LeastConnections,
+    PowerOfTwoChoices,
     First,
 });
 

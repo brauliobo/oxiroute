@@ -58,6 +58,18 @@ pub struct PassiveFailurePolicy {
     pub mark_down: bool,
     pub mark_up: bool,
     pub recovery_threshold: u16,
+    pub readmit_by: ReadmitBy,
+    pub circuit_breaker: Option<CircuitBreakerPolicy>,
+}
+
+/// What returns a passively ejected server to rotation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ReadmitBy {
+    /// The ejection time ending.
+    #[default]
+    Backoff,
+    /// An active probe succeeding; the time only starts the probing.
+    Probe,
 }
 
 impl PassiveFailurePolicy {
@@ -78,6 +90,8 @@ impl PassiveFailurePolicy {
             mark_down: false,
             mark_up: false,
             recovery_threshold: 1,
+            readmit_by: ReadmitBy::Backoff,
+            circuit_breaker: None,
         }
     }
 
@@ -97,6 +111,15 @@ impl PassiveFailurePolicy {
             mark_down: policy.mark_down,
             mark_up: policy.mark_up,
             recovery_threshold: policy.recovery_threshold,
+            readmit_by: if policy.readmission.is_some() {
+                ReadmitBy::Probe
+            } else {
+                ReadmitBy::Backoff
+            },
+            circuit_breaker: policy
+                .circuit_breaker
+                .as_ref()
+                .map(CircuitBreakerPolicy::from),
         }
     }
 
@@ -192,6 +215,8 @@ impl Default for PassiveFailurePolicy {
             mark_down: false,
             mark_up: false,
             recovery_threshold: 1,
+            readmit_by: ReadmitBy::Backoff,
+            circuit_breaker: None,
         }
     }
 }
@@ -250,6 +275,8 @@ pub struct ServerAdminState {
     pub checks_enabled: bool,
     #[serde(default)]
     pub max_connections: Option<u64>,
+    #[serde(default)]
+    pub weight: Option<u16>,
 }
 
 const fn checks_enabled_by_default() -> bool {
@@ -262,6 +289,7 @@ impl ServerAdminState {
             && self.health == HealthOverride::Auto
             && self.checks_enabled
             && self.max_connections.is_none()
+            && self.weight.is_none()
     }
 }
 
@@ -347,6 +375,7 @@ pub struct EndpointHealthSnapshot {
     pub max_connections: Option<u64>,
     pub name: String,
     pub state: EndpointHealthState,
+    pub configured_weight: u16,
     pub weight: u16,
     pub last_checked_at_unix_ms: Option<u64>,
     pub last_transition_at_unix_ms: Option<u64>,
@@ -405,6 +434,7 @@ pub(super) struct PoolHealthState {
     passive_policy: PassiveFailurePolicy,
     pub(super) pool_name: String,
     queue: Arc<PoolQueue>,
+    readmission: Option<Arc<ReadmissionProbe>>,
     resilience: PoolResiliencePolicy,
 }
 
@@ -415,6 +445,7 @@ impl PoolHealthState {
         queue: Arc<PoolQueue>,
         passive_policy: PassiveFailurePolicy,
         resilience: PoolResiliencePolicy,
+        readmission: Option<Arc<ReadmissionProbe>>,
     ) -> Self {
         Self {
             endpoints,
@@ -423,6 +454,7 @@ impl PoolHealthState {
             passive_policy,
             pool_name,
             queue,
+            readmission,
             resilience,
         }
     }
@@ -438,13 +470,17 @@ impl PoolHealthState {
             >= self.resilience.min_members
     }
 
-    pub(super) fn record_passive_failure(&self, server: &PoolEndpoint, failure: HealthFailure) {
+    pub(super) fn record_passive_failure(
+        self: &Arc<Self>,
+        server: &Arc<PoolEndpoint>,
+        failure: HealthFailure,
+    ) {
         self.record_passive_failure_at(server, failure, now_unix_ms());
     }
 
     pub(super) fn record_passive_failure_at(
-        &self,
-        server: &PoolEndpoint,
+        self: &Arc<Self>,
+        server: &Arc<PoolEndpoint>,
         failure: HealthFailure,
         at_unix_ms: u64,
     ) {
@@ -463,6 +499,9 @@ impl PoolHealthState {
             self.health_version.fetch_add(1, Ordering::Release);
             ejection
         };
+        if self.passive_policy.observes(failure) {
+            self.record_outcome(server, false, at_unix_ms);
+        }
         if let Some(ejection) = ejection {
             self.queue.notify_capacity_waiters();
             crate::operational_event::emit_upstream_endpoint_ejection(
@@ -473,6 +512,104 @@ impl PoolHealthState {
                 ejection.ejection_count,
                 ejection.ejected_at_unix_ms,
                 ejection.ejection_until_unix_ms,
+            );
+            self.start_probing(server);
+        }
+    }
+
+    pub(super) fn record_passive_success(&self, server: &PoolEndpoint) {
+        server.record_passive_success();
+        self.record_outcome(server, true, now_unix_ms());
+    }
+
+    /// Feeds the server's circuit breaker; opening respects `min_members` like an ejection.
+    fn record_outcome(&self, server: &PoolEndpoint, ok: bool, at_unix_ms: u64) {
+        let Some(policy) = self.passive_policy.circuit_breaker else {
+            return;
+        };
+        let may_open = self.may_eject(server, at_unix_ms);
+        match server.breaker.record(ok, at_unix_ms, policy, may_open) {
+            Some(BreakerTransition::Opened) => {
+                self.queue.notify_capacity_waiters();
+                log::warn!(
+                    "upstream pool `{}` server `{}` circuit breaker opened",
+                    self.pool_name,
+                    server.name
+                );
+            }
+            Some(BreakerTransition::Closed) => {
+                self.queue.notify_capacity_waiters();
+                log::info!(
+                    "upstream pool `{}` server `{}` circuit breaker closed",
+                    self.pool_name,
+                    server.name
+                );
+            }
+            None => {}
+        }
+    }
+
+    /// Probes an ejected server until it passes, so live requests never have to test it.
+    fn start_probing(self: &Arc<Self>, server: &Arc<PoolEndpoint>) {
+        let Some(probe) = &self.readmission else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if !server.probing.swap(true, Ordering::AcqRel) {
+            runtime.spawn(probe_until_readmitted(
+                Arc::downgrade(self),
+                Arc::downgrade(server),
+                Arc::clone(probe),
+            ));
+        }
+    }
+
+    /// A failed probe ends the quiet period with the next, longer ejection step.
+    fn reject_probe(&self, server: &PoolEndpoint, failure: HealthFailure) {
+        let at_unix_ms = now_unix_ms();
+        let ejection = {
+            let _writer = self
+                .health_writer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.health_version.fetch_add(1, Ordering::AcqRel);
+            let failure_count = server.passive_failure_count.load(Ordering::Relaxed);
+            let ejection = server.eject(failure, failure_count, at_unix_ms, self.passive_policy);
+            self.health_version.fetch_add(1, Ordering::Release);
+            ejection
+        };
+        crate::operational_event::emit_upstream_endpoint_ejection(
+            &self.pool_name,
+            &server.name,
+            ejection.reason,
+            ejection.failure_count,
+            ejection.ejection_count,
+            ejection.ejected_at_unix_ms,
+            ejection.ejection_until_unix_ms,
+        );
+    }
+
+    fn readmit(&self, server: &PoolEndpoint) {
+        let recovery = {
+            let _writer = self
+                .health_writer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.health_version.fetch_add(1, Ordering::AcqRel);
+            let recovery = server.recover_passive(now_unix_ms(), self.passive_policy);
+            self.health_version.fetch_add(1, Ordering::Release);
+            recovery
+        };
+        if let Some(recovery) = recovery {
+            self.queue.notify_capacity_waiters();
+            crate::operational_event::emit_upstream_endpoint_recovery(
+                &self.pool_name,
+                &server.name,
+                recovery.reason,
+                recovery.recovery_count,
+                recovery.recovered_at_unix_ms,
             );
         }
     }
@@ -516,5 +653,60 @@ impl PoolHealthState {
             );
         }
         update
+    }
+}
+
+/// Waits out the ejection, then probes until `successes` in a row pass; a failed probe re-ejects.
+async fn probe_until_readmitted(
+    health: std::sync::Weak<PoolHealthState>,
+    server: std::sync::Weak<PoolEndpoint>,
+    probe: Arc<ReadmissionProbe>,
+) {
+    let mut streak = 0_u16;
+    loop {
+        let wait = {
+            let Some(server) = server.upgrade() else {
+                return;
+            };
+            if !server.passive_ejected.load(Ordering::Acquire) {
+                server.probing.store(false, Ordering::Release);
+                return;
+            }
+            let quiet = server
+                .passive_ejection_until_unix_ms
+                .load(Ordering::Acquire)
+                .saturating_sub(now_unix_ms());
+            if quiet > 0 {
+                Duration::from_millis(quiet)
+            } else {
+                probe.interval
+            }
+        };
+        tokio::time::sleep(wait).await;
+        let (Some(health), Some(server)) = (health.upgrade(), server.upgrade()) else {
+            return;
+        };
+        if !server.passive_ejected.load(Ordering::Acquire) {
+            server.probing.store(false, Ordering::Release);
+            return;
+        }
+        let result = match server.resolve_addresses().await {
+            Ok(addresses) => probe.probe(&addresses).await,
+            Err(_) => Err(HealthFailure::ConnectFailed),
+        };
+        match result {
+            Ok(()) => {
+                streak += 1;
+                if streak >= probe.successes {
+                    health.readmit(&server);
+                    server.probing.store(false, Ordering::Release);
+                    return;
+                }
+            }
+            Err(failure) => {
+                streak = 0;
+                health.reject_probe(&server, failure);
+            }
+        }
     }
 }

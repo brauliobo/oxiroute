@@ -1,6 +1,8 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+const MAX_SERVER_WEIGHT: u16 = 100;
+
 impl EndpointPool {
     pub(crate) fn acquire_compiled(
         name: String,
@@ -14,7 +16,14 @@ impl EndpointPool {
         let endpoints = servers
             .into_iter()
             .zip(blueprint.weights.iter().copied())
-            .map(|(server, weight)| Arc::new(PoolEndpoint::new(server, startup, weight)))
+            .map(|(server, weight)| {
+                Arc::new(PoolEndpoint::new(
+                    server,
+                    startup,
+                    weight,
+                    passive_policy.circuit_breaker,
+                ))
+            })
             .collect::<Arc<[_]>>();
         let queue = Arc::new(PoolQueue::new(queue_timeout.is_some()));
         let health = Arc::new(PoolHealthState::new(
@@ -23,14 +32,14 @@ impl EndpointPool {
             Arc::clone(&queue),
             passive_policy,
             resilience,
+            blueprint.readmission.clone(),
         ));
         Self {
             algorithm: blueprint.algorithm.clone(),
             name,
             endpoints,
-            weighted_schedule: blueprint.weighted_schedule.clone(),
             health,
-            selection: Mutex::new(SelectionState::default()),
+            selection: Mutex::new(SelectionState::new(blueprint.weights.len())),
             queue,
             queue_timeout,
             resilience,
@@ -171,7 +180,7 @@ impl EndpointPool {
         for server in &servers {
             server.endpoint.preflight()?;
         }
-        let blueprint = PoolConstructionBlueprint::compile(&algorithm, servers.len())?;
+        let blueprint = PoolConstructionBlueprint::compile(&algorithm, servers.len(), None)?;
         Ok(Self::acquire_compiled(
             name,
             servers,
@@ -183,40 +192,100 @@ impl EndpointPool {
         ))
     }
 
-    /// Rotation-ordered `(cursor, index, active)` candidates and whether any server is selectable.
+    /// Rotation-ordered candidates and whether any server is selectable.
     fn candidates(
         &self,
         start: usize,
         excluded: &[String],
         now_unix_ms: u64,
-    ) -> (Vec<(usize, usize, u64)>, bool) {
+    ) -> (Vec<Candidate>, bool) {
         self.read_health(|endpoints| {
             let pool_available = endpoints
                 .iter()
                 .any(|server| server.selectable_at(now_unix_ms));
-            let eligible =
-                |cursor: usize, index: usize| {
+            let candidates = (0..endpoints.len())
+                .filter_map(|offset| {
+                    let index = (start + offset) % endpoints.len();
                     let server = &endpoints[index];
-                    (server.selectable_at(now_unix_ms) && !excluded.contains(&server.name))
-                        .then_some((cursor, index, server.active_work.load(Ordering::Acquire)))
-                };
-            let candidates = if self.weighted_schedule.is_empty() {
-                (0..endpoints.len())
-                    .filter_map(|offset| {
-                        let index = (start + offset) % endpoints.len();
-                        eligible(index, index)
-                    })
-                    .collect()
-            } else {
-                (0..self.weighted_schedule.len())
-                    .filter_map(|offset| {
-                        let cursor = (start + offset) % self.weighted_schedule.len();
-                        eligible(cursor, self.weighted_schedule[cursor])
-                    })
-                    .collect()
-            };
+                    (server.selectable_at(now_unix_ms) && !excluded.contains(&server.name)).then(
+                        || Candidate {
+                            index,
+                            load: server.load(),
+                            weight: server.weight(),
+                        },
+                    )
+                })
+                .collect();
             (candidates, pool_available)
         })
+    }
+
+    /// Orders `candidates` by the algorithm's preference; the first is its pick.
+    fn rank(&self, selection: &mut SelectionState, candidates: &mut [Candidate]) {
+        match &self.algorithm {
+            UpstreamAlgorithm::RoundRobin => {}
+            UpstreamAlgorithm::First => candidates.sort_by_key(|candidate| candidate.index),
+            UpstreamAlgorithm::LeastConnections => {
+                candidates.sort_by_key(|candidate| candidate.load);
+            }
+            UpstreamAlgorithm::WeightedRoundRobin { .. } => {
+                candidates.sort_by_key(|candidate| {
+                    (
+                        std::cmp::Reverse(
+                            selection.credit[candidate.index] + i64::from(candidate.weight),
+                        ),
+                        candidate.index,
+                    )
+                });
+            }
+            UpstreamAlgorithm::PowerOfTwoChoices => {
+                if candidates.len() > 1 {
+                    let first =
+                        usize::try_from(selection.next_random()).unwrap_or(0) % candidates.len();
+                    let mut second = usize::try_from(selection.next_random()).unwrap_or(0)
+                        % (candidates.len() - 1);
+                    if second >= first {
+                        second += 1;
+                    }
+                    let (better, other) = if candidates[second].load < candidates[first].load {
+                        (second, first)
+                    } else {
+                        (first, second)
+                    };
+                    candidates.swap(0, better);
+                    let other = if other == 0 { better } else { other };
+                    candidates.swap(1, other);
+                }
+            }
+        }
+    }
+
+    /// Records that `chosen` was picked among `candidates`.
+    fn commit(&self, selection: &mut SelectionState, candidates: &[Candidate], chosen: usize) {
+        if matches!(
+            &self.algorithm,
+            UpstreamAlgorithm::WeightedRoundRobin { .. }
+        ) {
+            let total = candidates
+                .iter()
+                .map(|candidate| i64::from(candidate.weight))
+                .sum::<i64>();
+            for candidate in candidates {
+                selection.credit[candidate.index] += i64::from(candidate.weight);
+            }
+            selection.credit[chosen] -= total;
+        }
+        if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
+            selection.next = (chosen + 1) % self.endpoints.len();
+        }
+    }
+
+    /// Where candidates start: weighted rotation must not depend on the last pick.
+    fn rotation_start(&self, selection: &SelectionState) -> usize {
+        match &self.algorithm {
+            UpstreamAlgorithm::WeightedRoundRobin { .. } => 0,
+            _ => selection.next,
+        }
     }
 
     /// Servers a pool with nothing selectable may still serve, least bad first.
@@ -253,54 +322,67 @@ impl EndpointPool {
     }
 
     pub(super) fn select_server_excluding(&self, excluded: &[String]) -> SelectionAttempt {
+        self.select_attempt(excluded, false)
+    }
+
+    /// Acquires a permit of the best server. With `reuse_idle`, a server whose pooled connection
+    /// is idle also qualifies and gets a pending lease, since the connection serves the request
+    /// without a new permit.
+    fn select_attempt(&self, excluded: &[String], reuse_idle: bool) -> SelectionAttempt {
         let mut selection = self
             .selection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now_unix_ms = now_unix_ms();
-        let (candidates, pool_available) = self.candidates(selection.next, excluded, now_unix_ms);
+        let start = self.rotation_start(&selection);
+        let (candidates, pool_available) = self.candidates(start, excluded, now_unix_ms);
         if !pool_available && self.resilience.fail_open {
-            return self.select_fail_open(excluded);
+            return if reuse_idle {
+                SelectionAttempt {
+                    lease: self.fail_open_connection_target(excluded),
+                    pool_available: false,
+                    saturated: false,
+                }
+            } else {
+                self.select_fail_open(excluded)
+            };
         }
+        let usable = |server: &PoolEndpoint| {
+            server.has_capacity() || (reuse_idle && server.has_idle_connection())
+        };
         let saturated = candidates
             .iter()
-            .any(|(_, index, _)| !self.endpoints[*index].has_capacity());
+            .any(|candidate| !usable(&self.endpoints[candidate.index]));
+        let has_candidates = !candidates.is_empty();
         let mut ordered = candidates
-            .iter()
-            .filter(|(_, index, _)| self.endpoints[*index].has_capacity())
-            .copied()
+            .into_iter()
+            .filter(|candidate| usable(&self.endpoints[candidate.index]))
             .collect::<Vec<_>>();
-        match &self.algorithm {
-            UpstreamAlgorithm::LeastConnections => {
-                ordered.sort_by_key(|(_, _, active)| *active);
-            }
-            UpstreamAlgorithm::First => ordered.sort_by_key(|(_, index, _)| *index),
-            UpstreamAlgorithm::WeightedRoundRobin { .. } | UpstreamAlgorithm::RoundRobin => {}
-        }
-        let selected = ordered.into_iter().find_map(|(cursor, index, _)| {
-            self.endpoints[index]
+        let pool = ordered.clone();
+        self.rank(&mut selection, &mut ordered);
+        let selected = ordered.iter().find_map(|candidate| {
+            let server = &self.endpoints[candidate.index];
+            server
                 .try_acquire(
                     &self.queue,
                     &self.health,
                     Admission::Selectable,
                     now_unix_ms,
                 )
-                .map(|lease| (lease, cursor, index))
+                .or_else(|| {
+                    (reuse_idle && server.has_idle_connection())
+                        .then(|| self.pending_lease(candidate.index, Admission::Selectable))
+                })
+                .map(|lease| (lease, candidate.index))
         });
-        let lease = selected.map(|(lease, cursor, index)| {
-            if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
-                selection.next = if self.weighted_schedule.is_empty() {
-                    (index + 1) % self.endpoints.len()
-                } else {
-                    (cursor + 1) % self.weighted_schedule.len()
-                };
-            }
+        let lease = selected.map(|(lease, index)| {
+            self.commit(&mut selection, &pool, index);
             lease
         });
         SelectionAttempt {
             lease,
             pool_available,
-            saturated: saturated && !candidates.is_empty(),
+            saturated: saturated && has_candidates,
         }
     }
 
@@ -317,11 +399,18 @@ impl EndpointPool {
     }
 
     /// Like [`Self::select_connection_target_excluding`], but waits up to the pool's
-    /// `queue_while_unavailable_ms` for a server to become selectable.
+    /// `queue_while_unavailable_ms` for a server to become selectable. A pool with a queue also
+    /// holds the request there until any server frees a permit or an idle connection, so it is
+    /// never bound to one busy server while another is free.
     pub(crate) async fn select_connection_target_waiting(
         &self,
         excluded: &[String],
     ) -> Option<EndpointLease> {
+        if self.queue_timeout.is_some() {
+            return self
+                .select_wait_with(|| self.select_attempt(excluded, true))
+                .await;
+        }
         let recovery_deadline = self.recovery_deadline();
         loop {
             let (lease, pool_available) = self.connection_target(excluded);
@@ -340,47 +429,29 @@ impl EndpointPool {
             .selection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (candidates, pool_available) = self.candidates(selection.next, excluded, now_unix_ms());
+        let start = self.rotation_start(&selection);
+        let (candidates, pool_available) = self.candidates(start, excluded, now_unix_ms());
         if !pool_available && self.resilience.fail_open {
             return (self.fail_open_connection_target(excluded), false);
         }
         let available = candidates
             .iter()
             .copied()
-            .filter(|(_, index, _)| self.endpoints[*index].has_capacity())
+            .filter(|candidate| self.endpoints[candidate.index].has_capacity())
             .collect::<Vec<_>>();
-        let candidates = if available.is_empty() {
-            &candidates
+        let mut pool = if available.is_empty() {
+            candidates
         } else {
-            &available
+            available
         };
-        let selected = match &self.algorithm {
-            UpstreamAlgorithm::WeightedRoundRobin { .. } | UpstreamAlgorithm::RoundRobin => {
-                candidates
-                    .first()
-                    .map(|(cursor, index, _)| (*cursor, *index))
-            }
-            UpstreamAlgorithm::LeastConnections => candidates
-                .iter()
-                .min_by_key(|(_, _, active)| *active)
-                .map(|(cursor, index, _)| (*cursor, *index)),
-            UpstreamAlgorithm::First => candidates
-                .iter()
-                .min_by_key(|(_, index, _)| *index)
-                .map(|(cursor, index, _)| (*cursor, *index)),
-        };
-        let Some((cursor, index)) = selected else {
+        let pooled = pool.clone();
+        self.rank(&mut selection, &mut pool);
+        let Some(chosen) = pool.first().map(|candidate| candidate.index) else {
             return (None, pool_available);
         };
-        if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
-            selection.next = if self.weighted_schedule.is_empty() {
-                (index + 1) % self.endpoints.len()
-            } else {
-                (cursor + 1) % self.weighted_schedule.len()
-            };
-        }
+        self.commit(&mut selection, &pooled, chosen);
         (
-            Some(self.pending_lease(index, Admission::Selectable)),
+            Some(self.pending_lease(chosen, Admission::Selectable)),
             pool_available,
         )
     }
@@ -521,7 +592,7 @@ impl EndpointPool {
         true
     }
 
-    fn select_named_server(&self, name: &str) -> SelectionAttempt {
+    pub(super) fn select_named_server(&self, name: &str) -> SelectionAttempt {
         let Some(server) = self.endpoints.iter().find(|server| server.name == name) else {
             return SelectionAttempt {
                 lease: None,
@@ -688,6 +759,22 @@ impl EndpointPool {
         Ok(())
     }
 
+    /// Sets a runtime weight override, or restores the configured weight with `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a weight outside 1..=100 or an unknown exact server name.
+    pub fn set_server_weight(&self, name: &str, weight: Option<u16>) -> Result<(), PoolAdminError> {
+        if weight.is_some_and(|weight| !(1..=MAX_SERVER_WEIGHT).contains(&weight)) {
+            return Err(PoolAdminError::InvalidWeight);
+        }
+        self.server(name)?
+            .weight_override
+            .store(weight.unwrap_or(0), Ordering::Release);
+        self.queue.notify_capacity_waiters();
+        Ok(())
+    }
+
     /// Administrative state that differs from a freshly started server's.
     #[must_use]
     pub fn administrative_states(&self) -> Vec<ServerAdminState> {
@@ -702,6 +789,10 @@ impl EndpointPool {
                 max_connections: match server.max_connections_override.load(Ordering::Acquire) {
                     0 => None,
                     limit => Some(limit),
+                },
+                weight: match server.weight_override.load(Ordering::Acquire) {
+                    0 => None,
+                    weight => Some(weight),
                 },
             })
             .filter(|state| !state.is_default())
@@ -726,6 +817,9 @@ impl EndpointPool {
             server
                 .max_connections_override
                 .store(state.max_connections.unwrap_or(0), Ordering::Release);
+            server
+                .weight_override
+                .store(state.weight.unwrap_or(0), Ordering::Release);
         }
         self.queue.notify_capacity_waiters();
     }
