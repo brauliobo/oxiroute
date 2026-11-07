@@ -15,14 +15,13 @@ mod http_policy;
 mod http_proxy;
 mod http_server_app;
 mod inflight;
-mod l4_service;
+mod l4;
 mod lifecycle_control;
 mod listener;
 mod logging;
 mod monitoring;
 mod operational_event;
 mod prometheus;
-mod proxy_protocol;
 mod registry;
 mod request_id;
 mod routing;
@@ -33,10 +32,8 @@ mod service_plan;
 mod shutdown;
 mod stats;
 mod status_summary;
-mod tcp_relay;
 pub mod tls;
 mod topology;
-mod udp_relay;
 mod upstream_peer;
 mod upstream_stats;
 mod wire;
@@ -62,7 +59,17 @@ pub use http_server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHtt
 pub use http3::Http3Runtime;
 pub(crate) use http3_upstream::{H3UpstreamBuildError, H3UpstreamError, H3UpstreamPlan};
 pub use inflight::live_requests;
-pub use l4_service::L4ServicePlan;
+pub use l4::proxy_protocol::{
+    AcceptedProxyStream, MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES, MAX_V2_PAYLOAD_BYTES,
+    ParsedProxyHeader, PrefixedStream, ProxyProtocolError, ProxyProtocolErrorKind,
+    ProxyProtocolResult, ProxyProtocolTransport, accept_stream, encode_header, parse_header,
+};
+pub use l4::service::L4ServicePlan;
+pub use l4::tcp::{
+    RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
+    RelayStats, TcpRelayCore, relay_streams, select_upstream_with_shutdown,
+};
+pub use l4::udp::{UdpRelayStats, UdpRuntime};
 pub use listener::reservation::{ListenerReservation, ListenerReservations};
 pub use listener::runtime::{AdmissionError, ListenerRuntime, TrafficLease};
 pub use monitoring::{
@@ -80,11 +87,6 @@ pub use monitoring::{
 pub use operational_event::{WorkerEventPage, WorkerEventSnapshot, worker_event_page};
 pub use operational_event::{emit_certificate, emit_rtmp_access};
 pub use prometheus::PrometheusError;
-pub use proxy_protocol::{
-    AcceptedProxyStream, MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES, MAX_V2_PAYLOAD_BYTES,
-    ParsedProxyHeader, PrefixedStream, ProxyProtocolError, ProxyProtocolErrorKind,
-    ProxyProtocolResult, ProxyProtocolTransport, accept_stream, encode_header, parse_header,
-};
 pub use routing::{
     AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
     HealthFailure, HealthOverride, PassiveFailurePolicy, PoolAdminError, PoolError,
@@ -97,10 +99,6 @@ pub use service_plan::{
     runtime_plan, runtime_plan_with_passive_failure_policy, service_specs, validate_runtime_plan,
 };
 pub use stats::{HaproxyStatsApi, HaproxyStatsPage};
-pub use tcp_relay::{
-    RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
-    RelayStats, TcpRelayCore, relay_streams, select_upstream_with_shutdown,
-};
 pub use tls::{
     AcmeDnsCleanupRecovery, AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy,
     AcmeManagedReconciler, AcmeManagedStatus, ActiveCertificateGeneration,
@@ -118,6 +116,5 @@ pub use topology::{
     TOPOLOGY_SCHEMA_VERSION, TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind,
     TopologySnapshot,
 };
-pub use udp_relay::{UdpRelayStats, UdpRuntime};
 
 pub const MAX_HTTP_ATTEMPTS: usize = routing::MAX_RESOLVED_ENDPOINT_ADDRESSES * 4;
