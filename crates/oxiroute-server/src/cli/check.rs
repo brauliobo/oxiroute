@@ -16,6 +16,14 @@ pub(super) const EXIT_UNKNOWN: u8 = 3;
 #[cfg(test)]
 mod tests;
 
+/// The plugin line for a usage error: the first line of clap's message, since the line is one line.
+pub(super) fn usage_line(error: &clap::Error) -> String {
+    let message = error.render().to_string();
+    let reason = message.lines().next().unwrap_or_default();
+    let reason = reason.strip_prefix("error: ").unwrap_or(reason);
+    format!("OXIROUTE UNKNOWN - {reason} (see `oxiroute check --help`)")
+}
+
 /// Whether the arguments name `check`, even when they are otherwise invalid.
 pub(super) fn is_invocation(arguments: &[OsString]) -> bool {
     use clap::CommandFactory;
