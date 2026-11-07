@@ -30,10 +30,7 @@ mod proxy_protocol;
 mod registry;
 mod request_id;
 mod routing;
-mod rtmp_api;
-mod rtmp_generation_runtime;
-mod rtmp_value_mapping;
-mod rtmp_value_plan;
+mod rtmp;
 mod runtime_policy;
 mod secure_bearer;
 mod service_plan;
@@ -98,7 +95,7 @@ pub use routing::{
     PoolHealthSnapshot, RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint,
     ServerAdminState, ServerOrigin,
 };
-pub use rtmp_api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
+pub use rtmp::api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
 pub use service_plan::{
     HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
     runtime_plan, runtime_plan_with_passive_failure_policy, service_specs, validate_runtime_plan,

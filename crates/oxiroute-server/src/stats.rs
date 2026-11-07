@@ -17,7 +17,7 @@ use crate::{
     ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics,
     config_coordinator::EffectiveRevision,
     prometheus::render_prometheus_control,
-    rtmp_api::response::to_http_response,
+    rtmp::api::response::to_http_response,
     secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
 };
 use oxiroute_rtmp::RtmpControlHandle;
@@ -324,7 +324,7 @@ impl ServeHttp for HaproxyStatsApi {
             .is_some_and(|address| transport_ip_is_loopback(address.ip()));
         let response = if method == "POST" && path == "/stats/admin" {
             if content_type.as_deref() == Some("application/json") {
-                match crate::rtmp_api::read_config_body(session).await {
+                match crate::rtmp::api::read_config_body(session).await {
                     Ok(body) => match serde_json::from_slice::<StatsAdminTarget>(&body) {
                         Ok(target) => self.admin_response(
                             &target,

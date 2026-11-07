@@ -3,7 +3,7 @@ use std::time::Duration;
 use oxiroute_config::{ConfigDraft, RtmpAccessPolicy as ConfigRtmpAccessPolicy};
 use oxiroute_rtmp::RtmpSessionLimits;
 
-use crate::rtmp_value_mapping as rtmp_map;
+use crate::rtmp::value_mapping as rtmp_map;
 
 #[allow(clippy::too_many_lines)]
 pub(crate) fn compile_rtmp_value_plans_from_draft(
