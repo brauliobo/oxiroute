@@ -343,3 +343,94 @@ fn exposition_has_queue_wait_histogram_and_oldest_wait_per_pool() {
         assert!(output.contains(expected), "missing {expected}");
     }
 }
+
+#[test]
+fn exposition_has_per_server_responses_attempts_bytes_and_latency() {
+    let metrics = RuntimeMetrics::new();
+    let pool = Arc::new(
+        RoundRobinPool::new_named_servers(
+            "server-series".into(),
+            [RuntimeServer {
+                name: "gpu-1".into(),
+                endpoint: RuntimeEndpoint::from(
+                    "127.0.0.1:3000"
+                        .parse::<std::net::SocketAddr>()
+                        .expect("endpoint"),
+                ),
+                max_connections: Some(4),
+                pinned_addresses: None,
+                protected_addresses: Arc::from([]),
+            }],
+            UpstreamAlgorithm::RoundRobin,
+            None,
+            None,
+        )
+        .expect("pool"),
+    );
+    let stats = crate::upstream_stats::upstream_stats().server("server-series", "gpu-1");
+    stats.record_response(Some(200));
+    stats.record_response(Some(503));
+    stats.record_attempt(crate::upstream_stats::AttemptOutcome::Timeout);
+    stats.record_bytes(7, 11);
+    stats.record_request_duration(std::time::Duration::from_millis(40));
+    stats.record_header_duration(std::time::Duration::from_millis(8));
+    metrics
+        .register_upstream_pools([Arc::clone(&pool)])
+        .expect("upstream pools");
+    let control = empty_rtmp_runtime().control();
+
+    let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+        .expect("exposition");
+
+    for expected in [
+        "oxiroute_server_responses_total{pool=\"server-series\",server=\"gpu-1\",class=\"2xx\"} 1",
+        "oxiroute_server_responses_total{pool=\"server-series\",server=\"gpu-1\",class=\"5xx\"} 1",
+        "oxiroute_server_responses_total{pool=\"server-series\",server=\"gpu-1\",class=\"none\"} 0",
+        "oxiroute_server_attempts_total{pool=\"server-series\",server=\"gpu-1\",outcome=\"timeout\"} 1",
+        "oxiroute_server_bytes_sent_total{pool=\"server-series\",server=\"gpu-1\"} 7",
+        "oxiroute_server_bytes_received_total{pool=\"server-series\",server=\"gpu-1\"} 11",
+        "oxiroute_server_max_connections{pool=\"server-series\",server=\"gpu-1\"} 4",
+        "oxiroute_server_request_duration_milliseconds_bucket{pool=\"server-series\",server=\"gpu-1\",le=\"50\"} 1",
+        "oxiroute_server_header_duration_milliseconds_count{pool=\"server-series\",server=\"gpu-1\"} 1",
+    ] {
+        assert!(output.contains(expected), "missing {expected}");
+    }
+}
+
+#[test]
+fn server_histograms_drop_out_above_the_server_limit_but_counters_stay() {
+    let metrics = RuntimeMetrics::new();
+    let servers = (0..=SERVER_HISTOGRAM_LIMIT).map(|index| RuntimeServer {
+        name: format!("s{index}"),
+        endpoint: RuntimeEndpoint::from(std::net::SocketAddr::from(([127, 0, 0, 1], 3000))),
+        max_connections: None,
+        pinned_addresses: None,
+        protected_addresses: Arc::from([]),
+    });
+    let pool = Arc::new(
+        RoundRobinPool::new_named_servers(
+            "wide".into(),
+            servers,
+            UpstreamAlgorithm::RoundRobin,
+            None,
+            None,
+        )
+        .expect("wide pool"),
+    );
+    metrics
+        .register_upstream_pools([pool])
+        .expect("upstream pools");
+    let control = empty_rtmp_runtime().control();
+
+    let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+        .expect("exposition");
+
+    assert!(
+        output.contains(
+            "oxiroute_server_responses_total{pool=\"wide\",server=\"s0\",class=\"2xx\"} 0"
+        )
+    );
+    assert!(!output.contains("oxiroute_server_request_duration_milliseconds"));
+    assert!(!output.contains("oxiroute_server_header_duration_milliseconds"));
+    assert!(output.lines().count() < 20_000);
+}

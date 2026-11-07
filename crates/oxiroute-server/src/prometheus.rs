@@ -13,6 +13,67 @@ use format::{
     render_latency_histogram, render_transport_latency_histogram, sample,
 };
 
+/// Per-server latency histograms cost about 18 series each, so they stop above this many servers.
+const SERVER_HISTOGRAM_LIMIT: usize = 256;
+
+fn render_server_traffic(
+    output: &mut String,
+    pool: &str,
+    server: &crate::EndpointHealthSnapshot,
+    histograms: bool,
+) -> Result<(), PrometheusError> {
+    let stats = crate::upstream_stats::upstream_stats()
+        .server(pool, &server.name)
+        .snapshot();
+    let identity = [("pool", pool), ("server", server.name.as_str())];
+    let with = |label: (&'static str, &'static str)| [identity[0], identity[1], label];
+    for (class, count) in crate::upstream_stats::RESPONSE_CLASSES
+        .iter()
+        .zip(stats.responses)
+    {
+        labels(
+            output,
+            "oxiroute_server_responses_total",
+            &with(("class", *class)),
+            count,
+        )?;
+    }
+    for (outcome, count) in crate::upstream_stats::AttemptOutcome::ALL
+        .iter()
+        .zip(stats.attempts)
+    {
+        let outcome = outcome.as_str();
+        labels(
+            output,
+            "oxiroute_server_attempts_total",
+            &with(("outcome", outcome)),
+            count,
+        )?;
+    }
+    labels(
+        output,
+        "oxiroute_server_bytes_sent_total",
+        &identity,
+        stats.bytes_sent,
+    )?;
+    labels(
+        output,
+        "oxiroute_server_bytes_received_total",
+        &identity,
+        stats.bytes_received,
+    )?;
+    if let Some(limit) = server.max_connections {
+        labels(output, "oxiroute_server_max_connections", &identity, limit)?;
+    }
+    if histograms {
+        let request = "oxiroute_server_request_duration_milliseconds";
+        render_histogram(output, request, &identity, &stats.request_duration)?;
+        let header = "oxiroute_server_header_duration_milliseconds";
+        render_histogram(output, header, &identity, &stats.header_duration)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn render_prometheus_control(
     metrics: &RuntimeMetrics,
     control: &RtmpControlHandle,
@@ -288,6 +349,12 @@ fn render_prometheus_snapshot(
         }
     }
 
+    let server_histograms = runtime
+        .upstream_pools
+        .iter()
+        .map(|pool| pool.total_endpoints)
+        .sum::<usize>()
+        <= SERVER_HISTOGRAM_LIMIT;
     for pool in &runtime.upstream_pools {
         labels(
             &mut output,
@@ -385,6 +452,7 @@ fn render_prometheus_snapshot(
                 ],
                 server.failed_checks,
             )?;
+            render_server_traffic(&mut output, pool.name.as_str(), server, server_histograms)?;
             let passive_reason = server
                 .passive_ejection_reason
                 .map_or("none", crate::HealthFailure::as_str);

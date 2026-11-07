@@ -6287,6 +6287,110 @@ async fn structured_access_log_omits_authorization_cookies_and_query_tokens() {
     .expect("access log test timed out");
 }
 
+async fn access_log_events(path: &Path) -> Vec<serde_json::Value> {
+    for _ in 0..50 {
+        let contents = fs::read_to_string(path).unwrap_or_default();
+        if !contents.is_empty() {
+            return contents
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("access event"))
+                .collect();
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    panic!("access log stayed empty");
+}
+
+#[tokio::test]
+async fn access_log_names_request_pool_server_attempts_and_hashes_the_idempotency_key() {
+    timeout(TEST_TIMEOUT, async {
+        let directory = tempfile::tempdir().expect("access log directory");
+        let path = directory.path().join("access.jsonl");
+        let (origin, _seen, task) = capturing_origin("").await;
+        let proxy = ProxyHarness::start_with_features(
+            vec![pool("traced", &[origin])],
+            vec![route(None, "/", &[], "traced")],
+            Some(1024),
+            true,
+            100,
+            0,
+            false,
+            1,
+            None,
+            Some(AccessLogPolicy::File { path: path.clone() }),
+            DownstreamTimeoutPolicy::default(),
+        )
+        .await;
+        let response = proxy
+            .request(
+                "GET / HTTP/1.1\r\nHost: log.test\r\nX-Request-Id: trace-me\r\nIdempotency-Key: order-8841-secret\r\n",
+            )
+            .await;
+        assert_eq!(response.status, 200);
+        proxy.finish().await;
+        task.await.expect("origin task");
+
+        let events = access_log_events(&path).await;
+        let event = &events[0];
+        assert_eq!(event["requestId"], "trace-me");
+        assert_eq!(event["correlationId"], "trace-me");
+        assert_eq!(event["pool"], "traced");
+        assert_eq!(event["server"], "endpoint-1");
+        assert_eq!(event["servers"], "endpoint-1");
+        assert_eq!(event["attempts"], 1);
+        assert_eq!(event["reason"], "");
+        assert_eq!(event["rescued"], false);
+        assert!(event["queueWaitMs"].is_string() && event["headerMs"].is_string());
+        let tag = event["idemKey"].as_str().expect("idempotency tag");
+        assert_eq!(tag.len(), 8);
+        assert!(!fs::read_to_string(&path).expect("log").contains("order-8841"));
+    })
+    .await
+    .expect("traced access log test timed out");
+}
+
+#[tokio::test]
+async fn access_log_gives_the_reason_a_request_failed() {
+    timeout(TEST_TIMEOUT, async {
+        let directory = tempfile::tempdir().expect("access log directory");
+        let path = directory.path().join("access.jsonl");
+        let refused = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve port");
+        let dead = refused.local_addr().expect("dead address");
+        drop(refused);
+        let proxy = ProxyHarness::start_with_features(
+            vec![pool("dead", &[dead])],
+            vec![route(None, "/", &[], "dead")],
+            Some(1024),
+            true,
+            100,
+            0,
+            false,
+            1,
+            None,
+            Some(AccessLogPolicy::File { path: path.clone() }),
+            DownstreamTimeoutPolicy::default(),
+        )
+        .await;
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: log.test\r\nX-Request-Id: doomed\r\n")
+            .await;
+        assert_eq!(response.status, 502, "response: {}", response.text());
+        proxy.finish().await;
+
+        let events = access_log_events(&path).await;
+        let event = &events[0];
+        assert_eq!(event["requestId"], "doomed");
+        assert_eq!(event["status"], 502);
+        assert_eq!(event["reason"], "connect_failed");
+        assert_eq!(event["pool"], "dead");
+        assert_eq!(event["attempts"], 1);
+    })
+    .await
+    .expect("failed access log test timed out");
+}
+
 #[tokio::test]
 async fn automatic_response_headers_follow_service_policy_on_h1_wire() {
     timeout(TEST_TIMEOUT, async {

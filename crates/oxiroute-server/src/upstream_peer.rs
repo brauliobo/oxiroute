@@ -289,6 +289,14 @@ impl SelectedEndpoint {
         self.observation.clone()
     }
 
+    pub(crate) fn queue_wait(&self) -> Duration {
+        self.lease.queue_wait()
+    }
+
+    pub(crate) fn queue_position(&self) -> u64 {
+        self.lease.queue_position()
+    }
+
     #[cfg(test)]
     pub(crate) fn with_addresses(lease: EndpointLease, addresses: Vec<SocketAddr>) -> Self {
         let server_name = lease.server_name().to_owned();
