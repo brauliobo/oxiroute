@@ -5,11 +5,6 @@ mod config_watcher;
 mod encoding;
 mod forward_proxy;
 mod generation;
-mod generation_blueprint;
-mod generation_compiler;
-mod generation_health;
-mod generation_resources;
-mod generation_retirement;
 mod health;
 mod html;
 mod http3;
@@ -59,14 +54,14 @@ pub use forward_proxy::{
     ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, ForwardHttp2ServicePlan, ForwardProxyBody,
     challenge_response,
 };
+pub use generation::retirement::{
+    PendingApply, RemoteRetired, RetiredGenerationStatus, RetiredState, RetirementCounters,
+    WorkerNotice,
+};
 pub use generation::{
     GenerationAdmission, GenerationCandidate, GenerationError, GenerationManager,
     GenerationMutation, GenerationReference, GenerationRevision, GenerationStatus,
     PreparedGeneration, RuntimeGeneration, RuntimeReferenceKind,
-};
-pub use generation_retirement::{
-    PendingApply, RemoteRetired, RetiredGenerationStatus, RetiredState, RetirementCounters,
-    WorkerNotice,
 };
 pub use health::{HealthBuildError, HealthSupervisor};
 pub use http_proxy::{HttpRequestContext, HttpReverseProxy};

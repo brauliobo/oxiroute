@@ -11,7 +11,7 @@ use pingora::{apps::http_app::ServeHttp, protocols::http::ServerSession};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::generation_health::generation_component_status;
+use crate::generation::health::generation_component_status;
 use crate::html::escape_html;
 use crate::{
     ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics,
