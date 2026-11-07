@@ -1,16 +1,19 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-pub(super) struct Endpoint {
-    authority: String,
-    address: String,
+pub(super) enum Endpoint {
+    Tcp { authority: String, address: String },
+    Unix(PathBuf),
 }
 
 impl Endpoint {
     pub(super) fn parse(value: &str) -> Result<Self, CliError> {
+        if let Some(path) = value.strip_prefix("unix:") {
+            return Self::unix(path);
+        }
         let authority = value
             .strip_prefix("http://")
-            .ok_or_else(|| CliError::Local("endpoint must use http://".into()))?;
+            .ok_or_else(|| CliError::Local("endpoint must use http:// or unix:".into()))?;
         if authority.is_empty() || authority.contains('/') || authority.contains('@') {
             return Err(CliError::Local(
                 "endpoint must contain only an HTTP authority".into(),
@@ -31,10 +34,90 @@ impl Endpoint {
         } else {
             format!("{authority}:80")
         };
-        Ok(Self {
+        Ok(Self::Tcp {
             authority: authority.to_owned(),
             address,
         })
+    }
+
+    pub(super) fn unix(path: &str) -> Result<Self, CliError> {
+        if Path::new(path).is_absolute() {
+            Ok(Self::Unix(PathBuf::from(path)))
+        } else {
+            Err(CliError::Local(
+                "unix endpoint needs an absolute path".into(),
+            ))
+        }
+    }
+
+    /// Registry sockets authorize by file permission, so no token is read or sent.
+    pub(super) const fn is_unix(&self) -> bool {
+        matches!(self, Self::Unix(_))
+    }
+
+    fn connect(&self) -> Result<Stream, CliError> {
+        let timeout = Some(Duration::from_secs(10));
+        let connect = |error: io::Error| CliError::Connect(error.to_string());
+        match self {
+            Self::Tcp { address, .. } => {
+                let address = address
+                    .to_socket_addrs()
+                    .map_err(|_| CliError::Connect("endpoint could not be resolved".into()))?
+                    .next()
+                    .ok_or_else(|| {
+                        CliError::Connect("endpoint did not resolve to an address".into())
+                    })?;
+                let stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
+                    .map_err(|_| CliError::Connect("endpoint connection failed".into()))?;
+                stream.set_read_timeout(timeout).map_err(connect)?;
+                stream.set_write_timeout(timeout).map_err(connect)?;
+                Ok(Stream::Tcp(stream))
+            }
+            Self::Unix(path) => {
+                let stream = UnixStream::connect(path)
+                    .map_err(|_| CliError::Connect("endpoint connection failed".into()))?;
+                stream.set_read_timeout(timeout).map_err(connect)?;
+                stream.set_write_timeout(timeout).map_err(connect)?;
+                Ok(Stream::Unix(stream))
+            }
+        }
+    }
+
+    fn host(&self) -> &str {
+        match self {
+            Self::Tcp { authority, .. } => authority,
+            Self::Unix(_) => "localhost",
+        }
+    }
+}
+
+enum Stream {
+    Tcp(TcpStream),
+    Unix(UnixStream),
+}
+
+impl io::Read for Stream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.read(buffer),
+            Self::Unix(stream) => stream.read(buffer),
+        }
+    }
+}
+
+impl io::Write for Stream {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Tcp(stream) => stream.write(bytes),
+            Self::Unix(stream) => stream.write(bytes),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Tcp(stream) => stream.flush(),
+            Self::Unix(stream) => stream.flush(),
+        }
     }
 }
 
@@ -109,29 +192,15 @@ impl Client {
         if !path.starts_with('/') || path.contains(['\r', '\n']) {
             return Err(CliError::Local("request path is invalid".into()));
         }
-        let token = if authenticated {
+        let token = if authenticated && !self.endpoint.is_unix() {
             Some(self.token.as_deref().ok_or_else(|| {
                 CliError::Local("management token file is missing or unreadable".into())
             })?)
         } else {
             None
         };
-        let address = self
-            .endpoint
-            .address
-            .to_socket_addrs()
-            .map_err(|_| CliError::Connect("endpoint could not be resolved".into()))?
-            .next()
-            .ok_or_else(|| CliError::Connect("endpoint did not resolve to an address".into()))?;
-        let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
-            .map_err(|_| CliError::Connect("endpoint connection failed".into()))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .map_err(|error| CliError::Connect(error.to_string()))?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(10)))
-            .map_err(|error| CliError::Connect(error.to_string()))?;
-        write!(stream, "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n", self.endpoint.authority, body.len()).map_err(connect_io)?;
+        let mut stream = self.endpoint.connect()?;
+        write!(stream, "{method} {path} HTTP/1.1\r\nHost: {}\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n", self.endpoint.host(), body.len()).map_err(connect_io)?;
         if !body.is_empty() {
             stream
                 .write_all(b"Content-Type: application/json\r\n")
