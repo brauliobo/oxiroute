@@ -1,11 +1,12 @@
 use std::{collections::BTreeMap, net::SocketAddr};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::AdministrativeState;
 
 /// What the worker itself announces; `draining` is set before the worker stops.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnnouncedState {
     #[default]
@@ -61,7 +62,7 @@ impl RegistrationKey {
 }
 
 /// The body of `PUT /pools/{pool}/servers/{name}`.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RegistrationRequest {
     pub address: Option<SocketAddr>,
@@ -78,7 +79,7 @@ pub struct RegistrationRequest {
 }
 
 /// The optional body of a heartbeat.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct HeartbeatRequest {
     pub state: Option<AnnouncedState>,

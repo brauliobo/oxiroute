@@ -1,0 +1,1316 @@
+{
+  "components": {
+    "schemas": {
+      "AdministrativeStateDto": {
+        "enum": [
+          "ready",
+          "drain",
+          "maintenance"
+        ],
+        "type": "string"
+      },
+      "AnnouncedState": {
+        "description": "What the worker itself announces; `draining` is set before the worker stops.",
+        "enum": [
+          "ready",
+          "draining"
+        ],
+        "type": "string"
+      },
+      "AnnouncedStateDto": {
+        "enum": [
+          "ready",
+          "draining"
+        ],
+        "type": "string"
+      },
+      "ErrorBody": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "HealthStateDto": {
+        "enum": [
+          "unchecked",
+          "unknown",
+          "healthy",
+          "unhealthy"
+        ],
+        "type": "string"
+      },
+      "HeartbeatRequest": {
+        "additionalProperties": false,
+        "description": "The optional body of a heartbeat.",
+        "properties": {
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "metadata": true,
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnnouncedState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ttlMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "labels",
+          "metadata",
+          "ttlMs"
+        ],
+        "type": "object"
+      },
+      "HeartbeatResponse": {
+        "properties": {
+          "expiresInMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expiresInMs"
+        ],
+        "type": "object"
+      },
+      "OperatorStateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/AdministrativeStateDto"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
+      "OriginDto": {
+        "enum": [
+          "static",
+          "dynamic"
+        ],
+        "type": "string"
+      },
+      "PoolServerDto": {
+        "description": "A member of a pool, whether it comes from the file or from a registration.",
+        "properties": {
+          "activeConnections": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "administrativeState": {
+            "$ref": "#/components/schemas/AdministrativeStateDto"
+          },
+          "expiresInMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "maxConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/OriginDto"
+          },
+          "registration": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RegistrationDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/HealthStateDto"
+          },
+          "weight": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "origin",
+          "address",
+          "state",
+          "administrativeState",
+          "weight",
+          "maxConnections",
+          "activeConnections",
+          "expiresInMs",
+          "registration"
+        ],
+        "type": "object"
+      },
+      "PoolServersResponse": {
+        "properties": {
+          "pool": {
+            "type": "string"
+          },
+          "registryRevision": {
+            "type": "string"
+          },
+          "servers": {
+            "items": {
+              "$ref": "#/components/schemas/PoolServerDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "pool",
+          "servers",
+          "registryRevision"
+        ],
+        "type": "object"
+      },
+      "PutResponse": {
+        "properties": {
+          "expiresInMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "registryRevision": {
+            "type": "string"
+          },
+          "server": {
+            "$ref": "#/components/schemas/RegistrationDto"
+          },
+          "ttlMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "server",
+          "expiresInMs",
+          "ttlMs",
+          "registryRevision",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "RegistrationDto": {
+        "description": "A stored registration. `metadata` is withheld from register-only credentials.",
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "announcedState": {
+            "$ref": "#/components/schemas/AnnouncedStateDto"
+          },
+          "effectiveState": {
+            "$ref": "#/components/schemas/AdministrativeStateDto"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "maxConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "metadata": true,
+          "name": {
+            "type": "string"
+          },
+          "operatorState": {
+            "$ref": "#/components/schemas/AdministrativeStateDto"
+          },
+          "pool": {
+            "type": "string"
+          },
+          "priority": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "registeredBy": {
+            "type": "string"
+          },
+          "ttlMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "weight": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pool",
+          "name",
+          "address",
+          "weight",
+          "priority",
+          "maxConnections",
+          "labels",
+          "metadata",
+          "ttlMs",
+          "announcedState",
+          "operatorState",
+          "effectiveState",
+          "registeredBy"
+        ],
+        "type": "object"
+      },
+      "RegistrationEntryDto": {
+        "properties": {
+          "expiresInMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "registration": {
+            "$ref": "#/components/schemas/RegistrationDto"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RegistrationStatusDto"
+          }
+        },
+        "required": [
+          "registration",
+          "expiresInMs",
+          "status"
+        ],
+        "type": "object"
+      },
+      "RegistrationRequest": {
+        "additionalProperties": false,
+        "description": "The body of `PUT /pools/{pool}/servers/{name}`.",
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "type": "object"
+          },
+          "maxConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "metadata": {
+            "default": null
+          },
+          "priority": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/AnnouncedState",
+            "default": "ready"
+          },
+          "ttlMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "weight": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "address",
+          "weight",
+          "priority",
+          "maxConnections",
+          "labels",
+          "metadata",
+          "ttlMs",
+          "state"
+        ],
+        "type": "object"
+      },
+      "RegistrationStatusDto": {
+        "enum": [
+          "active",
+          "shadowed",
+          "orphaned"
+        ],
+        "type": "string"
+      },
+      "RegistrationsResponse": {
+        "properties": {
+          "degraded": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "registrations": {
+            "items": {
+              "$ref": "#/components/schemas/RegistrationEntryDto"
+            },
+            "type": "array"
+          },
+          "registryRevision": {
+            "type": "string"
+          },
+          "writer": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "registrations",
+          "registryRevision",
+          "writer",
+          "degraded"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "registryBearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Lease-based dynamic server registration. The same routes are served by the management API (root token), by the registry TCP endpoint (scoped tokens) and by the registry unix sockets (access is the file mode, so no token). Every other path returns 404 on the registry endpoints.",
+    "title": "OxiRoute Server Registry API",
+    "version": "0.5.4"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/pools/{pool}/servers": {
+      "get": {
+        "operationId": "listPoolServers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolServersResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request is invalid."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The credential does not cover this pool, server or operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such pool, registration or route."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name, address or lease conflicts with another."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body exceeds 4 KiB."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Rate limited; honour Retry-After."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The registry is unavailable."
+          }
+        },
+        "security": [
+          {
+            "registryBearer": []
+          }
+        ],
+        "summary": "Static and registered members of a pool.",
+        "tags": [
+          "Registry"
+        ],
+        "x-required-scope": "read"
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "pool",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/v1/pools/{pool}/servers/{name}": {
+      "delete": {
+        "operationId": "deletePoolServer",
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request is invalid."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The credential does not cover this pool, server or operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such pool, registration or route."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name, address or lease conflicts with another."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body exceeds 4 KiB."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Rate limited; honour Retry-After."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The registry is unavailable."
+          }
+        },
+        "security": [
+          {
+            "registryBearer": []
+          }
+        ],
+        "summary": "Remove a registration at once.",
+        "tags": [
+          "Registry"
+        ],
+        "x-required-scope": "register"
+      },
+      "get": {
+        "operationId": "getPoolServer",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolServersResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request is invalid."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The credential does not cover this pool, server or operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such pool, registration or route."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name, address or lease conflicts with another."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body exceeds 4 KiB."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Rate limited; honour Retry-After."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The registry is unavailable."
+          }
+        },
+        "security": [
+          {
+            "registryBearer": []
+          }
+        ],
+        "summary": "One member of a pool.",
+        "tags": [
+          "Registry"
+        ],
+        "x-required-scope": "read"
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "pool",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putPoolServer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistrationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request is invalid."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The credential does not cover this pool, server or operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such pool, registration or route."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name, address or lease conflicts with another."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body exceeds 4 KiB."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Rate limited; honour Retry-After."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The registry is unavailable."
+          }
+        },
+        "security": [
+          {
+            "registryBearer": []
+          }
+        ],
+        "summary": "Register a server or renew its registration; `?takeover=true` is admin only.",
+        "tags": [
+          "Registry"
+        ],
+        "x-required-scope": "register"
+      }
+    },
+    "/api/v1/pools/{pool}/servers/{name}/heartbeat": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "pool",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "heartbeatPoolServer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HeartbeatRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeartbeatResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request is invalid."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The credential does not cover this pool, server or operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such pool, registration or route."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name, address or lease conflicts with another."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body exceeds 4 KiB."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Rate limited; honour Retry-After."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The registry is unavailable."
+          }
+        },
+        "security": [
+          {
+            "registryBearer": []
+          }
+        ],
+        "summary": "Renew a lease, optionally announcing a state change; the body may be empty.",
+        "tags": [
+          "Registry"
+        ],
+        "x-required-scope": "register"
+      }
+    },
+    "/api/v1/pools/{pool}/servers/{name}/state": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "pool",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "setPoolServerState",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request is invalid."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The credential does not cover this pool, server or operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such pool, registration or route."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name, address or lease conflicts with another."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body exceeds 4 KiB."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Rate limited; honour Retry-After."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The registry is unavailable."
+          }
+        },
+        "security": [
+          {
+            "registryBearer": []
+          }
+        ],
+        "summary": "Record the operator's drain or maintenance decision.",
+        "tags": [
+          "Registry"
+        ],
+        "x-required-scope": "admin"
+      }
+    },
+    "/api/v1/registrations": {
+      "get": {
+        "operationId": "listRegistrations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrationsResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request is invalid."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "A valid bearer token is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The credential does not cover this pool, server or operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "No such pool, registration or route."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The name, address or lease conflicts with another."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body exceeds 4 KiB."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Rate limited; honour Retry-After."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The registry is unavailable."
+          }
+        },
+        "security": [
+          {
+            "registryBearer": []
+          }
+        ],
+        "summary": "Every registration with its lease and status.",
+        "tags": [
+          "Registry"
+        ],
+        "x-required-scope": "read"
+      }
+    }
+  }
+}
