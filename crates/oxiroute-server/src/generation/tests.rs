@@ -72,6 +72,7 @@ fn document_with_max_connections(max_connections: Option<u64>) -> ResolvedConfig
         version: 1,
         max_connections,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),

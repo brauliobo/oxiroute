@@ -307,7 +307,8 @@ fn validate_upstream_pool_definition(
     }
     validate_upstream_pool_timeouts(pool)?;
     validate_pool_resilience(pool)?;
-    validate_pool_queue(pool)
+    validate_pool_queue(pool)?;
+    validate_pool_registration(pool)
 }
 
 fn validate_pool_queue(pool: &UpstreamPool) -> Result<(), ConfigError> {
@@ -385,6 +386,45 @@ fn validate_pool_queue(pool: &UpstreamPool) -> Result<(), ConfigError> {
         )),
         _ => Ok(()),
     }
+}
+
+fn validate_pool_registration(pool: &UpstreamPool) -> Result<(), ConfigError> {
+    let Some(registration) = &pool.registration else {
+        return Ok(());
+    };
+    let invalid = |field, detail| ConfigError::InvalidUpstreamServer {
+        pool: pool.name.clone(),
+        server: "<pool>".into(),
+        field,
+        detail,
+    };
+    if !(1..=1024).contains(&registration.max_servers) {
+        return Err(invalid(
+            "registration.max_servers",
+            "must be between 1 and 1024",
+        ));
+    }
+    if registration.min_ttl_ms == 0
+        || registration.min_ttl_ms > registration.default_ttl_ms
+        || registration.default_ttl_ms > registration.max_ttl_ms
+        || registration.max_ttl_ms > MAX_HTTP_TIMEOUT_MS * 7
+    {
+        return Err(invalid(
+            "registration.default_ttl_ms",
+            "must satisfy 0 < min_ttl_ms <= default_ttl_ms <= max_ttl_ms <= 604800000",
+        ));
+    }
+    if registration
+        .allowed_cidrs
+        .iter()
+        .any(|cidr| cidr_contains(cidr, IpAddr::from([0, 0, 0, 0])).is_none())
+    {
+        return Err(invalid(
+            "registration.allowed_cidrs",
+            "entries must be `address/prefix`",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_pool_resilience(pool: &UpstreamPool) -> Result<(), ConfigError> {
@@ -471,7 +511,7 @@ fn validate_upstream_servers(
     pool: &UpstreamPool,
     management_bind: Option<SocketAddr>,
 ) -> Result<(), ConfigError> {
-    if pool.servers.is_empty() {
+    if pool.servers.is_empty() && pool.registration.is_none() {
         return Err(ConfigError::EmptyUpstreamEndpoints {
             pool: pool.name.clone(),
         });

@@ -1,6 +1,15 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+pub(super) fn nonempty<T>(items: impl IntoIterator<Item = T>) -> Result<Vec<T>, PoolError> {
+    let items = items.into_iter().collect::<Vec<_>>();
+    if items.is_empty() {
+        Err(PoolError::Empty)
+    } else {
+        Ok(items)
+    }
+}
+
 const MAX_SERVER_WEIGHT: u16 = 100;
 
 impl EndpointPool {
@@ -21,17 +30,19 @@ impl EndpointPool {
                     server,
                     startup,
                     weight,
+                    ServerOrigin::Static,
+                    0,
                     passive_policy.circuit_breaker,
                 ))
             })
-            .collect::<Arc<[_]>>();
+            .collect::<Vec<_>>();
         let queue = Arc::new(PoolQueue::new(
             queue_timeout.is_some(),
             blueprint.queue.clone(),
         ));
         let health = Arc::new(PoolHealthState::new(
             name.clone(),
-            Arc::clone(&endpoints),
+            Membership::new(endpoints),
             Arc::clone(&queue),
             passive_policy,
             resilience,
@@ -40,7 +51,7 @@ impl EndpointPool {
         Self {
             algorithm: blueprint.algorithm.clone(),
             name,
-            endpoints,
+            startup,
             health,
             selection: Mutex::new(SelectionState::new(blueprint.weights.len())),
             queue,
@@ -74,7 +85,7 @@ impl EndpointPool {
         endpoints: impl IntoIterator<Item = RuntimeEndpoint>,
         algorithm: UpstreamAlgorithm,
     ) -> Result<Self, PoolError> {
-        Self::new_named(String::new(), endpoints, algorithm, false)
+        Self::new_named(String::new(), nonempty(endpoints)?, algorithm, false)
     }
 
     /// Creates an unchecked pool with an immutable passive failure policy.
@@ -90,7 +101,7 @@ impl EndpointPool {
     ) -> Result<Self, PoolError> {
         Self::new_named_servers_with_policy(
             String::new(),
-            endpoints
+            nonempty(endpoints)?
                 .into_iter()
                 .enumerate()
                 .map(|(index, endpoint)| RuntimeServer {
@@ -195,14 +206,22 @@ impl EndpointPool {
         ))
     }
 
+    /// The current membership. Selection holds the selection lock, which membership changes also
+    /// take, so the snapshot it reads stays the pool's membership for the whole selection.
+    fn members(&self) -> Arc<Membership> {
+        self.health.members.load_full()
+    }
+
     /// Rotation-ordered candidates and whether any server is selectable.
     fn candidates(
         &self,
+        members: &Membership,
         start: usize,
         excluded: &[String],
         now_unix_ms: u64,
     ) -> (Vec<Candidate>, bool) {
-        self.read_health(|endpoints| {
+        self.read_health_of(members, |members| {
+            let endpoints = &members.endpoints;
             let pool_available = endpoints
                 .iter()
                 .any(|server| server.selectable_at(now_unix_ms));
@@ -264,7 +283,13 @@ impl EndpointPool {
     }
 
     /// Records that `chosen` was picked among `candidates`.
-    fn commit(&self, selection: &mut SelectionState, candidates: &[Candidate], chosen: usize) {
+    fn commit(
+        &self,
+        selection: &mut SelectionState,
+        members: &Membership,
+        candidates: &[Candidate],
+        chosen: usize,
+    ) {
         if matches!(
             &self.algorithm,
             UpstreamAlgorithm::WeightedRoundRobin { .. }
@@ -279,7 +304,7 @@ impl EndpointPool {
             selection.credit[chosen] -= total;
         }
         if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
-            selection.next = (chosen + 1) % self.endpoints.len();
+            selection.next = (chosen + 1) % members.endpoints.len();
         }
     }
 
@@ -293,8 +318,9 @@ impl EndpointPool {
 
     /// Servers a pool with nothing selectable may still serve, least bad first.
     fn fail_open_ranking(&self, excluded: &[String]) -> Vec<Arc<PoolEndpoint>> {
-        let mut ranked = self.read_health(|endpoints| {
-            endpoints
+        let mut ranked = self.read_health(|members| {
+            members
+                .endpoints
                 .iter()
                 .filter(|server| server.fail_open_eligible() && !excluded.contains(&server.name))
                 .map(|server| (server.fail_open_rank(), Arc::clone(server)))
@@ -336,9 +362,10 @@ impl EndpointPool {
             .selection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let members = self.members();
         let now_unix_ms = now_unix_ms();
         let start = self.rotation_start(&selection);
-        let (candidates, pool_available) = self.candidates(start, excluded, now_unix_ms);
+        let (candidates, pool_available) = self.candidates(&members, start, excluded, now_unix_ms);
         if !pool_available && self.resilience.fail_open {
             return if reuse_idle {
                 SelectionAttempt {
@@ -355,16 +382,16 @@ impl EndpointPool {
         };
         let saturated = candidates
             .iter()
-            .any(|candidate| !usable(&self.endpoints[candidate.index]));
+            .any(|candidate| !usable(&members.endpoints[candidate.index]));
         let has_candidates = !candidates.is_empty();
         let mut ordered = candidates
             .into_iter()
-            .filter(|candidate| usable(&self.endpoints[candidate.index]))
+            .filter(|candidate| usable(&members.endpoints[candidate.index]))
             .collect::<Vec<_>>();
         let pool = ordered.clone();
         self.rank(&mut selection, &mut ordered);
         let selected = ordered.iter().find_map(|candidate| {
-            let server = &self.endpoints[candidate.index];
+            let server = &members.endpoints[candidate.index];
             server
                 .try_acquire(
                     &self.queue,
@@ -373,13 +400,17 @@ impl EndpointPool {
                     now_unix_ms,
                 )
                 .or_else(|| {
-                    (reuse_idle && server.has_idle_connection())
-                        .then(|| self.pending_lease(candidate.index, Admission::Selectable))
+                    (reuse_idle && server.has_idle_connection()).then(|| {
+                        self.pending_lease_for(
+                            &members.endpoints[candidate.index],
+                            Admission::Selectable,
+                        )
+                    })
                 })
                 .map(|lease| (lease, candidate.index))
         });
         let lease = selected.map(|(lease, index)| {
-            self.commit(&mut selection, &pool, index);
+            self.commit(&mut selection, &members, &pool, index);
             lease
         });
         SelectionAttempt {
@@ -433,15 +464,17 @@ impl EndpointPool {
             .selection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let members = self.members();
         let start = self.rotation_start(&selection);
-        let (candidates, pool_available) = self.candidates(start, excluded, now_unix_ms());
+        let (candidates, pool_available) =
+            self.candidates(&members, start, excluded, now_unix_ms());
         if !pool_available && self.resilience.fail_open {
             return (self.fail_open_connection_target(excluded), false);
         }
         let available = candidates
             .iter()
             .copied()
-            .filter(|candidate| self.endpoints[candidate.index].has_capacity())
+            .filter(|candidate| members.endpoints[candidate.index].has_capacity())
             .collect::<Vec<_>>();
         let mut pool = if available.is_empty() {
             candidates
@@ -453,9 +486,9 @@ impl EndpointPool {
         let Some(chosen) = pool.first().map(|candidate| candidate.index) else {
             return (None, pool_available);
         };
-        self.commit(&mut selection, &pooled, chosen);
+        self.commit(&mut selection, &members, &pooled, chosen);
         (
-            Some(self.pending_lease(chosen, Admission::Selectable)),
+            Some(self.pending_lease_for(&members.endpoints[chosen], Admission::Selectable)),
             pool_available,
         )
     }
@@ -468,10 +501,6 @@ impl EndpointPool {
             .or_else(|| ranking.first())?;
         self.fail_open_selections.fetch_add(1, Ordering::Relaxed);
         Some(self.pending_lease_for(server, Admission::FailOpen))
-    }
-
-    fn pending_lease(&self, index: usize, admission: Admission) -> EndpointLease {
-        self.pending_lease_for(&self.endpoints[index], admission)
     }
 
     fn pending_lease_for(&self, server: &Arc<PoolEndpoint>, admission: Admission) -> EndpointLease {
@@ -492,6 +521,7 @@ impl EndpointPool {
     #[must_use]
     pub fn select_excluding(&self, excluded: &[RuntimeEndpoint]) -> Option<EndpointLease> {
         let names = self
+            .members()
             .endpoints
             .iter()
             .filter(|server| excluded.contains(&server.endpoint))
@@ -604,8 +634,12 @@ impl EndpointPool {
             return false;
         };
         let now = Instant::now();
-        let recoverable = self
-            .read_health(|endpoints| endpoints.iter().any(|server| server.fail_open_eligible()));
+        let recoverable = self.read_health(|members| {
+            members
+                .endpoints
+                .iter()
+                .any(|server| server.fail_open_eligible())
+        });
         if now >= deadline || !recoverable {
             return false;
         }
@@ -618,7 +652,7 @@ impl EndpointPool {
     }
 
     pub(super) fn select_named_server(&self, name: &str) -> SelectionAttempt {
-        let Some(server) = self.endpoints.iter().find(|server| server.name == name) else {
+        let Some(server) = self.server_endpoint(name) else {
             return SelectionAttempt {
                 lease: None,
                 pool_available: false,
@@ -641,20 +675,21 @@ impl EndpointPool {
     }
 
     pub(crate) fn select_server_connection_target(&self, name: &str) -> Option<EndpointLease> {
-        let server = self.endpoints.iter().find(|server| server.name == name)?;
+        let server = self.server_endpoint(name)?;
         let now_unix_ms = now_unix_ms();
         let admission = server.admission(now_unix_ms, self.failing_open(now_unix_ms))?;
         if admission == Admission::FailOpen {
             self.fail_open_selections.fetch_add(1, Ordering::Relaxed);
         }
-        Some(self.pending_lease_for(server, admission))
+        Some(self.pending_lease_for(&server, admission))
     }
 
     /// Whether the pool serves its least-bad servers because none is selectable.
     fn failing_open(&self, now_unix_ms: u64) -> bool {
         self.resilience.fail_open
-            && self.read_health(|endpoints| {
-                !endpoints
+            && self.read_health(|members| {
+                !members
+                    .endpoints
                     .iter()
                     .any(|server| server.selectable_at(now_unix_ms))
             })
@@ -683,8 +718,8 @@ impl EndpointPool {
     fn has_unattempted_by(&self, attempted: impl Fn(&PoolEndpoint) -> bool) -> bool {
         let now_unix_ms = now_unix_ms();
         let failing_open = self.failing_open(now_unix_ms);
-        self.read_health(|endpoints| {
-            endpoints.iter().any(|server| {
+        self.read_health(|members| {
+            members.endpoints.iter().any(|server| {
                 !attempted(server) && server.admission(now_unix_ms, failing_open).is_some()
             })
         })
@@ -693,8 +728,9 @@ impl EndpointPool {
     #[must_use]
     pub fn has_available(&self) -> bool {
         let now_unix_ms = now_unix_ms();
-        self.read_health(|endpoints| {
-            endpoints
+        self.read_health(|members| {
+            members
+                .endpoints
                 .iter()
                 .any(|server| server.selectable_at(now_unix_ms) && server.has_capacity())
         })
@@ -703,8 +739,9 @@ impl EndpointPool {
     /// Name and weight of every server that could be chosen now, in pool order.
     pub(crate) fn selectable_servers(&self) -> Vec<(String, u16)> {
         let now_unix_ms = now_unix_ms();
-        self.read_health(|endpoints| {
-            endpoints
+        self.read_health(|members| {
+            members
+                .endpoints
                 .iter()
                 .filter(|server| server.selectable_at(now_unix_ms))
                 .map(|server| (server.name.clone(), server.weight()))
@@ -716,8 +753,9 @@ impl EndpointPool {
     #[must_use]
     pub fn has_selectable(&self) -> bool {
         let now_unix_ms = now_unix_ms();
-        self.read_health(|endpoints| {
-            endpoints
+        self.read_health(|members| {
+            members
+                .endpoints
                 .iter()
                 .any(|server| server.selectable_at(now_unix_ms))
         })
@@ -746,7 +784,7 @@ impl EndpointPool {
     }
 
     pub fn set_administrative_state(&self, state: AdministrativeState) {
-        for server in &*self.endpoints {
+        for server in &*self.members().endpoints {
             server
                 .administrative_state
                 .store(state as u8, Ordering::Release);
@@ -826,7 +864,8 @@ impl EndpointPool {
     /// Administrative state that differs from a freshly started server's.
     #[must_use]
     pub fn administrative_states(&self) -> Vec<ServerAdminState> {
-        self.endpoints
+        self.members()
+            .endpoints
             .iter()
             .map(|server| ServerAdminState {
                 pool: self.name.clone(),
@@ -874,48 +913,79 @@ impl EndpointPool {
 
     #[must_use]
     pub fn has_server(&self, name: &str) -> bool {
-        self.endpoints.iter().any(|server| server.name == name)
+        self.server_endpoint(name).is_some()
     }
 
-    fn server(&self, name: &str) -> Result<&Arc<PoolEndpoint>, PoolAdminError> {
-        self.endpoints
-            .iter()
-            .find(|server| server.name == name)
+    fn server_endpoint(&self, name: &str) -> Option<Arc<PoolEndpoint>> {
+        let members = self.members();
+        members
+            .position(name)
+            .map(|index| Arc::clone(&members.endpoints[index]))
+    }
+
+    fn server(&self, name: &str) -> Result<Arc<PoolEndpoint>, PoolAdminError> {
+        self.server_endpoint(name)
             .ok_or_else(|| PoolAdminError::UnknownServer(name.to_owned()))
     }
 
-    pub(crate) fn endpoints(&self) -> impl Iterator<Item = (usize, RuntimeEndpoint)> + '_ {
-        self.endpoints
+    /// Origin and endpoint of the member with this name.
+    pub(crate) fn member(&self, name: &str) -> Option<(ServerOrigin, RuntimeEndpoint)> {
+        self.server_endpoint(name)
+            .map(|server| (server.origin, server.endpoint.clone()))
+    }
+
+    /// The member that already uses `endpoint`, if any.
+    pub(crate) fn member_at(&self, endpoint: &RuntimeEndpoint) -> Option<String> {
+        self.members()
+            .endpoints
             .iter()
-            .enumerate()
-            .map(|(index, server)| (index, server.endpoint.clone()))
+            .find(|server| server.endpoint == *endpoint)
+            .map(|server| server.name.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn server_handle(&self, name: &str) -> Option<ServerHandle> {
+        self.server_endpoint(name).map(ServerHandle)
+    }
+
+    pub(crate) fn endpoints(&self) -> impl Iterator<Item = (ServerHandle, RuntimeEndpoint)> {
+        self.members()
+            .endpoints
+            .iter()
+            .map(|server| (ServerHandle(Arc::clone(server)), server.endpoint.clone()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle(&self, index: usize) -> ServerHandle {
+        ServerHandle(Arc::clone(&self.members().endpoints[index]))
     }
 
     pub(crate) fn record_health(
         &self,
-        index: usize,
+        server: &ServerHandle,
         healthy: bool,
         failure: Option<HealthFailure>,
         at_unix_ms: Option<u64>,
         healthy_threshold: u16,
         unhealthy_threshold: u16,
     ) -> Option<(EndpointHealthState, EndpointHealthState)> {
-        let update = self.endpoints.get(index).map(|server| {
-            self.health.record_health(
-                server,
+        self.health
+            .record_health(
+                &server.0,
                 healthy,
                 failure,
                 at_unix_ms,
                 healthy_threshold,
                 unhealthy_threshold,
             )
-        });
-        update.and_then(|update| update.transition)
+            .transition
     }
 
     #[cfg(test)]
     pub(crate) fn record_passive_failure(&self, index: usize, failure: HealthFailure) {
-        if let Some(server) = self.endpoints.get(index) {
+        if let Some(server) = self.members().endpoints.get(index) {
             self.health.record_passive_failure(server, failure);
         }
     }
@@ -927,26 +997,10 @@ impl EndpointPool {
         failure: HealthFailure,
         at_unix_ms: u64,
     ) {
-        if let Some(server) = self.endpoints.get(index) {
+        if let Some(server) = self.members().endpoints.get(index) {
             self.health
                 .record_passive_failure_at(server, failure, at_unix_ms);
         }
-    }
-
-    pub(crate) fn health_state(&self, index: usize) -> Option<EndpointHealthState> {
-        self.endpoints.get(index).map(|server| server.state())
-    }
-
-    pub(crate) fn health_checks_running(&self, index: usize) -> bool {
-        self.endpoints
-            .get(index)
-            .is_some_and(|server| server.checks_running())
-    }
-
-    pub(crate) fn passive_ejected(&self, index: usize) -> bool {
-        self.endpoints
-            .get(index)
-            .is_some_and(|server| server.passively_ejected_at(now_unix_ms()))
     }
 
     /// Resolves one server immediately without mutating runtime state.
@@ -955,7 +1009,7 @@ impl EndpointPool {
     ///
     /// Returns an error for an unknown server or failed/empty DNS resolution.
     pub async fn resolve_server_dns(&self, name: &str) -> Result<Vec<SocketAddr>, PoolAdminError> {
-        let server = Arc::clone(self.server(name)?);
+        let server = self.server(name)?;
         server
             .resolve_fresh_dns()
             .await
@@ -979,19 +1033,17 @@ impl EndpointPool {
 
     pub(crate) async fn resolve_server_addresses(
         &self,
-        index: usize,
+        server: &ServerHandle,
     ) -> io::Result<Vec<SocketAddr>> {
-        let server = self.endpoints.get(index).cloned().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "upstream server index is invalid")
-        })?;
-        server.resolve_addresses().await
+        server.0.resolve_addresses().await
     }
 
     #[must_use]
     pub fn health_snapshot(&self) -> PoolHealthSnapshot {
         let now_unix_ms = now_unix_ms();
-        let endpoints = self.read_health(|endpoints| {
-            endpoints
+        let endpoints = self.read_health(|members| {
+            members
+                .endpoints
                 .iter()
                 .map(|server| server.snapshot(now_unix_ms))
                 .collect::<Vec<_>>()
@@ -1025,14 +1077,18 @@ impl EndpointPool {
         }
     }
 
-    fn read_health<T>(&self, read: impl Fn(&[Arc<PoolEndpoint>]) -> T) -> T {
+    fn read_health<T>(&self, read: impl Fn(&Membership) -> T) -> T {
+        self.read_health_of(&self.members(), read)
+    }
+
+    fn read_health_of<T>(&self, members: &Membership, read: impl Fn(&Membership) -> T) -> T {
         for _ in 0..8 {
             let version = self.health.health_version.load(Ordering::Acquire);
             if !version.is_multiple_of(2) {
                 std::thread::yield_now();
                 continue;
             }
-            let value = read(&self.endpoints);
+            let value = read(members);
             fence(Ordering::Acquire);
             if self.health.health_version.load(Ordering::Relaxed) == version {
                 return value;
@@ -1043,6 +1099,126 @@ impl EndpointPool {
             .health_writer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        read(&self.endpoints)
+        read(members)
+    }
+
+    /// Adds a server that registered at runtime. Static servers stay first in file order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a name already in the pool or an endpoint the runtime cannot represent.
+    pub(crate) fn add_server(
+        &self,
+        server: RuntimeServer,
+        spec: DynamicServer,
+    ) -> Result<ServerHandle, PoolMembershipError> {
+        server.endpoint.preflight()?;
+        let mut selection = self.lock_selection();
+        let current = self.members();
+        if current.position(&server.name).is_some() {
+            return Err(PoolMembershipError::DuplicateName(server.name));
+        }
+        let endpoint = Arc::new(PoolEndpoint::new(
+            server,
+            self.startup,
+            spec.weight,
+            ServerOrigin::Dynamic,
+            spec.priority,
+            self.health.breaker_policy(),
+        ));
+        let mut endpoints = current.endpoints.to_vec();
+        endpoints.insert(
+            current.dynamic_position(spec.priority, &endpoint.name),
+            Arc::clone(&endpoint),
+        );
+        self.install(&mut selection, &current, endpoints);
+        Ok(ServerHandle(endpoint))
+    }
+
+    /// Removes a server from selection. Leases it already handed out keep counting against it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pool has no server with that name.
+    pub(crate) fn remove_server(&self, name: &str) -> Result<ServerHandle, PoolMembershipError> {
+        let mut selection = self.lock_selection();
+        let current = self.members();
+        let at = current
+            .position(name)
+            .ok_or_else(|| PoolMembershipError::UnknownServer(name.to_owned()))?;
+        let removed = Arc::clone(&current.endpoints[at]);
+        let mut endpoints = current.endpoints.to_vec();
+        endpoints.remove(at);
+        self.install(&mut selection, &current, endpoints);
+        Ok(ServerHandle(removed))
+    }
+
+    /// Changes the weight, priority and registered capacity of a member without touching its
+    /// health, leases or administrative state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown name.
+    pub(crate) fn update_server(
+        &self,
+        name: &str,
+        spec: DynamicServer,
+        max_connections: Option<u64>,
+    ) -> Result<(), PoolMembershipError> {
+        let mut selection = self.lock_selection();
+        let current = self.members();
+        let server = self
+            .server_endpoint(name)
+            .ok_or_else(|| PoolMembershipError::UnknownServer(name.to_owned()))?;
+        server.set_configured_weight(spec.weight);
+        server.priority.store(spec.priority, Ordering::Release);
+        server
+            .configured_max_connections
+            .store(max_connections.unwrap_or(0), Ordering::Release);
+        let mut endpoints = current.endpoints.to_vec();
+        let statics = endpoints
+            .iter()
+            .filter(|member| member.origin == ServerOrigin::Static)
+            .count();
+        endpoints[statics..].sort_by(|a, b| (a.priority(), &a.name).cmp(&(b.priority(), &b.name)));
+        self.install(&mut selection, &current, endpoints);
+        Ok(())
+    }
+
+    fn lock_selection(&self) -> std::sync::MutexGuard<'_, SelectionState> {
+        self.selection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Publishes a new membership, keeping each surviving server's weighted credit and the
+    /// rotation cursor on the same server, and wakes everything that waits on the old one.
+    fn install(
+        &self,
+        selection: &mut SelectionState,
+        previous: &Membership,
+        endpoints: Vec<Arc<PoolEndpoint>>,
+    ) {
+        let position = |members: &[Arc<PoolEndpoint>], server: &Arc<PoolEndpoint>| {
+            members
+                .iter()
+                .position(|member| Arc::ptr_eq(member, server))
+        };
+        selection.credit = endpoints
+            .iter()
+            .map(|server| {
+                position(&previous.endpoints, server).map_or(0, |index| selection.credit[index])
+            })
+            .collect();
+        let next = previous
+            .endpoints
+            .get(selection.next)
+            .and_then(|server| position(&endpoints, server))
+            .unwrap_or(selection.next);
+        selection.next = next.checked_rem(endpoints.len()).unwrap_or(0);
+        self.health
+            .members
+            .store(Arc::new(Membership::new(endpoints)));
+        self.queue.notify_capacity_waiters();
     }
 }

@@ -495,3 +495,31 @@ fn exposition_counts_live_requests_per_pool_and_flags_overdue_ones() {
         "oxiroute_http_stuck_requests_total{pool=\"inflight-series\",phase=\"awaiting_headers\"} 1"
     ));
 }
+
+#[test]
+fn registry_series_cover_servers_operations_expiries_and_leases() {
+    let mut metrics = crate::registry::service::RegistryMetrics::default();
+    metrics.servers.insert(("render".into(), "active"), 2);
+    metrics.operations.insert(("put", "ok"), 5);
+    metrics.expirations.insert("render".into(), 1);
+    metrics.rejections.insert("rate_limited", 3);
+    metrics
+        .lease_remaining_ms
+        .insert(("render".into(), "gpu\"1".into()), 12_500);
+    metrics.revision = 9;
+
+    let mut output = String::new();
+    registry::render_registry(&mut output, &metrics).expect("exposition");
+
+    for line in [
+        "oxiroute_registry_servers{pool=\"render\",state=\"active\"} 2",
+        "oxiroute_registry_operations_total{op=\"put\",result=\"ok\"} 5",
+        "oxiroute_registry_expirations_total{pool=\"render\"} 1",
+        "oxiroute_registry_rejected_total{reason=\"rate_limited\"} 3",
+        "oxiroute_registry_lease_remaining_seconds{pool=\"render\",server=\"gpu\\\"1\"} 12.5",
+        "oxiroute_registry_store_errors_total 0",
+        "oxiroute_registry_revision 9",
+    ] {
+        assert!(output.contains(line), "missing `{line}` in\n{output}");
+    }
+}

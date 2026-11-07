@@ -61,6 +61,7 @@ fn typed_configs_render_in_every_supported_format() {
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),

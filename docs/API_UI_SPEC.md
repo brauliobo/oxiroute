@@ -38,6 +38,11 @@ Implemented and recognized endpoints:
 | `POST` | `/api/v1/servers/administrative-state`, `/api/v1/servers/health-override`, `/api/v1/servers/checks` | Revision-checked server state, observed-health override, or probe enablement changes. |
 | `PUT` | `/api/v1/servers/max-connections` | Revision-checked server capacity override or reset. |
 | `PUT` | `/api/v1/servers/weight` | Revision-checked server weight override (1 to 100) or reset (`weight: null`). |
+| `GET` | `/api/v1/registrations`, `/api/v1/pools/{pool}/servers`, `/api/v1/pools/{pool}/servers/{name}` | Registered servers with lease time left and status (`active`, `shadowed`, `orphaned`), and the static plus registered members of a pool, each with `origin`. Read scope. |
+| `PUT` | `/api/v1/pools/{pool}/servers/{name}` | Register a server in a pool that has `registration`, or renew and update it (`201` created, `200` updated). `?takeover=true` moves a name held at another address and is root-token only. Register scope for the pool. |
+| `POST` | `/api/v1/pools/{pool}/servers/{name}/heartbeat` | Renew a lease at no write cost; an optional body may announce `state: "draining"` or change labels, metadata or TTL. `404 registration_not_found` tells the worker to register again. |
+| `DELETE` | `/api/v1/pools/{pool}/servers/{name}` | Remove a registration at once (`204`). |
+| `POST` | `/api/v1/pools/{pool}/servers/{name}/state` | Record the operator's `ready`, `drain` or `maintenance` decision for a registered server (`204`). Root token only. |
 | `POST` | `/api/v1/servers/refresh-dns` | Resolve every prevalidated target and report explicit non-atomic per-server outcomes. |
 | `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state, plus `retiredGenerations` (draining replaced generations, oldest first: `revision`, `state`, `ageSeconds`, `deadlineRemainingSeconds`, `inFlight`, `inFlightByKind`), `maxRetiredGenerations` and `pendingApply` (`revision`, `reason` `retired_cap`). The supervising master drains one worker at a time and reports it to the active worker, so the list has at most one entry there and its `inFlightByKind` is a single `connections` total. |
 | `POST` | `/api/v1/generations/reload`, `/api/v1/generations/rollback`, `/api/v1/generations/drain` | Revision-checked generation preparation, rollback, and drain operations. |
@@ -62,7 +67,25 @@ Implemented and recognized endpoints:
 | `GET` | `/api/v1/rtmp/vod/{service}/{application}/{source}/{path}` | Read one bounded local/HTTP VOD object; one contiguous `Range` is accepted. |
 | `GET` | `/api/v1/rtmp/media/{service}/{application}/{stream}/{object}` | Read one bounded authenticated HLS or DASH playlist, fragment, key, or manifest object. |
 
-Every `/api/v1/...` and `/api/v2/...` route in this table requires the management bearer token. The only public
+Every `/api/v1/...` and `/api/v2/...` route in this table requires the management bearer token,
+with one extension: the registry routes (the five rows above for registrations and pool servers)
+are also served, and only they, by the `registry` endpoints from the configuration. A unix socket
+authorizes by file mode and group: the `read` role serves `GET` routes and `/ready`, the `register`
+role serves registration, heartbeat and deregistration for its pools, and neither accepts a token.
+The TCP endpoint takes scoped tokens from the registry tokens file (`read`, or `register` for named
+pools and an optional name prefix) and a peer address allow list, and never the root token. Errors
+use `{"error": {"code", "message"}}` with these codes: `invalid_request`, `invalid_name`,
+`invalid_address`, `invalid_ttl`, `invalid_metadata`, `unauthorized`, `scope_denied`,
+`address_not_allowed`, `peer_not_allowed`, `route_not_found`, `pool_not_found`,
+`registration_not_found`, `pool_not_dynamic`, `name_conflict`, `endpoint_conflict`, `lease_held`,
+`pool_full`, `generation_inactive` (the connection is closed; reconnect), `body_too_large`,
+`rate_limited` (with `Retry-After`), `registry_unavailable` and `generation_unavailable`. The
+contract is [`../contracts/registry.openapi.json`](../contracts/registry.openapi.json). The
+`GET /api/v1/servers` inventory reports `origin` (`static` or `dynamic`) for every server, and
+registered servers appear in the topology as endpoint nodes with `origin: "dynamic"` under their
+pool.
+
+Every other `/api/v1/...` and `/api/v2/...` route in this table requires the management bearer token. The only public
 recognized API probes are exact `GET /ready` and `GET /metrics`; wrong methods and unknown paths do
 not create an authentication bypass.
 

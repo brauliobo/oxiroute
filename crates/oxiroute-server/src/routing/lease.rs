@@ -1,12 +1,12 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-/// A health-aware selector over a fixed, nonempty named-server list.
+/// A health-aware selector over a named-server list that registered servers may join and leave.
 #[derive(Debug)]
 pub struct EndpointPool {
     pub(super) algorithm: UpstreamAlgorithm,
     pub(super) name: String,
-    pub(super) endpoints: Arc<[Arc<PoolEndpoint>]>,
+    pub(super) startup: Option<HealthStartup>,
     pub(super) health: Arc<PoolHealthState>,
     pub(super) selection: Mutex<SelectionState>,
     pub(super) queue: Arc<PoolQueue>,

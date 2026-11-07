@@ -4,7 +4,8 @@ use std::{
     fmt,
     fs::File,
     io::{self, BufRead, BufReader, Read as _, Write as _},
-    net::{IpAddr, TcpStream, ToSocketAddrs as _},
+    net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs as _},
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
     process::ExitCode,
     thread,
@@ -48,6 +49,9 @@ pub const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct Cli {
     #[arg(long, env = "OXIROUTE_ENDPOINT", default_value = DEFAULT_ENDPOINT)]
     endpoint: String,
+    /// Talk to a registry unix socket instead of the management API; no token is used.
+    #[arg(long, value_name = "PATH")]
+    socket: Option<PathBuf>,
     #[arg(long)]
     token_file: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = Output::Table)]
@@ -119,6 +123,11 @@ pub enum Command {
     Rtmp {
         #[command(subcommand)]
         command: RtmpCommand,
+    },
+    /// Manage the runtime server registry.
+    Registry {
+        #[command(subcommand)]
+        command: RegistryCommand,
     },
     /// Import a native configuration.
     Import {
@@ -312,7 +321,25 @@ fn requests_path(command: &RequestsCommand) -> String {
 
 #[derive(Subcommand)]
 pub enum ServerCommand {
-    List,
+    /// List servers; `--pool` also works against a registry read socket or a read token.
+    List {
+        #[arg(long = "pool", value_parser = nonempty_target)]
+        pool: Option<String>,
+        #[arg(long, value_enum)]
+        origin: Option<OriginFilter>,
+    },
+    /// Register a server in a pool that accepts registrations, or keep it registered.
+    Register(RegisterArgs),
+    /// Remove a registered server.
+    Deregister {
+        #[arg(long = "pool", required = true, value_parser = nonempty_target)]
+        pool: String,
+        #[arg(value_name = "SERVER", value_parser = nonempty_target)]
+        server: String,
+        /// Succeed when the server is not registered.
+        #[arg(long)]
+        missing_ok: bool,
+    },
     Show(ServerTarget),
     Ready(ServerTarget),
     Drain(ServerTarget),
@@ -346,6 +373,66 @@ pub struct ServerTarget {
     pools: Vec<String>,
     #[arg(value_name = "SERVER", value_parser = nonempty_target)]
     server: String,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum OriginFilter {
+    Static,
+    Dynamic,
+}
+
+#[derive(Args)]
+pub struct RegisterArgs {
+    #[arg(long = "pool", required = true, value_parser = nonempty_target)]
+    pool: String,
+    #[arg(value_name = "SERVER", value_parser = nonempty_target)]
+    server: String,
+    #[arg(long)]
+    address: SocketAddr,
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=100))]
+    weight: Option<u16>,
+    #[arg(long)]
+    priority: Option<u16>,
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    max_connections: Option<u64>,
+    /// Lease length such as `500ms`, `15s` or `2m`; the pool's default when omitted.
+    #[arg(long, value_parser = registry::parse_ttl)]
+    ttl: Option<Duration>,
+    #[arg(long = "label", value_name = "KEY=VALUE", value_parser = registry::parse_label)]
+    labels: Vec<(String, String)>,
+    /// JSON file with free-form metadata for read-only consumers.
+    #[arg(long, value_name = "FILE")]
+    metadata_file: Option<PathBuf>,
+    /// Stay in the foreground, renew the lease, and deregister on SIGTERM or SIGINT.
+    #[arg(long)]
+    heartbeat: bool,
+}
+
+#[derive(Subcommand)]
+pub enum RegistryCommand {
+    Token {
+        #[command(subcommand)]
+        command: RegistryTokenCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RegistryTokenCommand {
+    /// Append a scoped token to a tokens file and print its secret once.
+    Create {
+        #[arg(long, value_name = "FILE")]
+        tokens_file: PathBuf,
+        #[arg(long, value_parser = nonempty_target)]
+        id: String,
+        /// Pool the token may register servers in; repeat for several.
+        #[arg(long = "pool", required_unless_present = "read", value_parser = nonempty_target)]
+        pools: Vec<String>,
+        #[arg(long, requires = "pools")]
+        name_prefix: Option<String>,
+        /// Create a read-only token instead.
+        #[arg(long, conflicts_with = "pools")]
+        read: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -649,6 +736,7 @@ mod client;
 mod commands;
 mod offline;
 mod output;
+mod registry;
 mod token;
 
 #[allow(clippy::wildcard_imports)]

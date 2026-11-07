@@ -507,6 +507,9 @@
           "name": {
             "type": "string"
           },
+          "origin": {
+            "$ref": "#/components/schemas/ServerOrigin"
+          },
           "passiveConsecutiveFailures": {
             "$ref": "#/components/schemas/DecimalCounter"
           },
@@ -579,6 +582,7 @@
           "healthOverride",
           "maxConnections",
           "name",
+          "origin",
           "state",
           "weight",
           "lastCheckedAtUnixMs",
@@ -1548,6 +1552,14 @@
           "servers"
         ],
         "type": "object"
+      },
+      "ServerOrigin": {
+        "description": "Where a pool member comes from: the configuration file or a runtime registration.",
+        "enum": [
+          "static",
+          "dynamic"
+        ],
+        "type": "string"
       },
       "StatusCertificatesDto": {
         "properties": {

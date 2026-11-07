@@ -63,13 +63,16 @@ Status meanings:
 | Listener | capacity mutation | Config generation | Change `listeners[].max_connections`, validate, and activate. |
 | Pool | list/show | Supported | `oxiroute pool list|show NAME`; includes queue and availability counters. |
 | Pool | ready/drain | Supported | Batch changes every server in each exact pool. Drain keeps health checks running. |
-| Server | list/show | Supported | `oxiroute server list|show --pool POOL SERVER` |
+| Server | list/show | Supported | `oxiroute server list [--pool POOL] [--origin static|dynamic]` and `server show --pool POOL SERVER`. `list --pool` also works on a registry read socket or with a read token and adds the lease time left of registered servers. |
+| Server | register/renew | Supported | `oxiroute server register --pool POOL SERVER --address A [--weight N] [--priority N] [--max-connections N] [--ttl 15s] [--label K=V]... [--metadata-file F] [--heartbeat]` for pools with `registration`; `--heartbeat` stays in the foreground, renews at a third of the TTL, registers again if the lease was lost, and on SIGTERM or SIGINT announces `draining` and deregisters. |
+| Server | deregister | Supported | `oxiroute server deregister --pool POOL SERVER [--missing-ok]`; exit `6` when not registered unless `--missing-ok`. |
+| Registry | scoped tokens | Supported | `oxiroute registry token create --tokens-file FILE --id ID (--pool POOL... [--name-prefix P] | --read)` appends a digest line to the tokens file (mode `0640` when created) and prints the secret once; ids are never reused. Offline command: no daemon needed. |
 | Server | ready/drain/maintenance | Supported | Atomic administrative state. Drain rejects new selections while existing leases complete and checks continue; maintenance also suspends checks. |
 | Server | health override auto/up/down | Supported | `server set-health`; override is separate from observed health and `auto` restores observed-health selection. |
 | Server | checks enable/disable | Supported | `server check`; maintenance still suspends enabled checks. |
 | Server | max-connections set/reset | Supported | Runtime override; reset restores configured capacity. |
 | Server | weight set/reset | Supported | Runtime override of the weight (1 to 100) used by `weighted_round_robin` and the load key; reset restores the configured weight. |
-| Server | state across generations | Supported | Administrative state, health override, check switch, max-connections and weight overrides follow a server by pool and server name through every generation change (file write, `generation reload`, `config apply`, rollback, supervised worker replacement). They are applied before the new generation accepts traffic. Servers that no longer exist lose their state; new servers start ready. |
+| Server | state across generations | Supported | Administrative state, health override, check switch, max-connections and weight overrides follow a server by pool and server name through every generation change (file write, `generation reload`, `config apply`, rollback, supervised worker replacement). They are applied before the new generation accepts traffic. Servers that no longer exist lose their state; new servers start ready. Registered servers keep the same state; an operator's drain or maintenance on one is also stored with its registration, so it survives a restart. |
 | Server | DNS refresh | Supported | `server refresh-dns`; resolves immediately and replaces startup-pinned addresses when applicable. Runtime-resolved endpoints are resolved and reported. |
 | Server | queue/counter visibility | Supported | Pool/server reads and `monitoring` expose active work, queue depth/totals/timeouts/cancellations, checks, and failures. |
 | Server | address, FQDN, check port, TLS, weight mutation | Config generation | These fields determine immutable endpoint/TLS/selection plans and require full preflight plus generation activation. |
@@ -84,6 +87,23 @@ Status meanings:
 | Metrics | monitoring/topology | Supported | `oxiroute monitoring`, `oxiroute topology` |
 | Events | bounded list/follow | Supported | Cursor and limit are validated; follow polls and never requests an unbounded stream. |
 | Cache | purge | Configured HTTP route or forward service | Configured reverse HTTP routes and forward HTTP/1 services accept bearer-protected `PURGE` for an exact request key or configured surrogate tag. No separate CLI/API cache purge command is exposed. |
+
+## Registry endpoints
+
+`--socket PATH` (or `OXIROUTE_ENDPOINT=unix:/absolute/path`) talks to a registry unix socket
+instead of the management listener: no token is read or sent, because the socket's file mode and
+group are the authorization. A `register` socket accepts `server register`, `deregister` and
+heartbeats for its pools; a `read` socket accepts `server list --pool` and registry reads. Against a
+registry TCP endpoint, use `--endpoint http://HOST:PORT --token-file FILE` with a scoped token; the
+root management token is not accepted there. Exit codes are unchanged: a refused pool or scope is
+`5`, a missing registration `6`, a name, address or lease conflict `7`.
+
+```sh
+oxiroute registry token create --tokens-file /etc/oxiroute/registry.tokens --id gpu-7 --pool render
+oxiroute --socket /run/oxiroute/register.sock server register --pool render gpu-7 \
+  --address 192.0.2.17:9000 --ttl 15s --heartbeat
+oxiroute --socket /run/oxiroute/status.sock server list --pool render
+```
 
 All mutations carry the exact active-generation revision. The CLI reads that revision immediately
 before issuing a mutation; the server acquires a generation mutation permit before resolving any

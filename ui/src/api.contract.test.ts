@@ -638,6 +638,7 @@ function fullRustMonitoringPayload(): FullRustMonitoringPayload {
   for (const endpoint of monitoring.upstreamPools[0]!.endpoints) {
     Object.assign(endpoint, {
       weight: 1,
+      origin: 'static',
       passiveEjected: false,
       passiveFailureCount: '0',
       passiveConsecutiveFailures: '0',

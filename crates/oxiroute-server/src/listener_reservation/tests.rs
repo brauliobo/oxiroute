@@ -41,6 +41,7 @@ fn empty_config() -> ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
@@ -202,6 +203,7 @@ fn many_listener_config(count: usize) -> ValidatedConfig {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     });

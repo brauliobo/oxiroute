@@ -140,6 +140,7 @@ async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool() {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     });
@@ -336,6 +337,7 @@ async fn reverse_h3_cache_serves_a_second_get_without_origin_contact() {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     });
@@ -1811,6 +1813,7 @@ fn h3_pool(address: SocketAddr) -> UpstreamPool {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     }

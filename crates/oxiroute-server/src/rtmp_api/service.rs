@@ -306,6 +306,13 @@ impl RtmpManagementApi {
                 return response.with_correlation(AuditContext::generated().correlation_id);
             }
         };
+        if let Some(route) = crate::registry::http::match_route(&path) {
+            let response = self
+                .registry_response(route, &method, &path_and_query, session)
+                .await;
+            Self::audit_api_operation(&method, &path, &context, &response);
+            return response.with_correlation(context.correlation_id);
+        }
         if let Some(response) = self.authentication_error(&method, &path, &path_and_query, session)
         {
             Self::audit_api_operation(&method, &path, &context, &response);
@@ -413,6 +420,70 @@ impl RtmpManagementApi {
         response.with_correlation(context.correlation_id)
     }
 
+    /// Registry routes accept the root management token (admin) or a scoped registry token.
+    async fn registry_response(
+        &self,
+        route: crate::registry::http::Route<'_>,
+        method: &str,
+        path_and_query: &str,
+        session: &mut ServerSession,
+    ) -> ApiResponse {
+        use crate::registry::{auth::Principal, http};
+        let Some(service) = self
+            .generations
+            .as_ref()
+            .and_then(GenerationManager::registry)
+        else {
+            return ApiResponse::error(
+                404,
+                "registry_disabled",
+                "server registration is not configured",
+            );
+        };
+        let authorization = match single_header(&session.req_header().headers, &AUTHORIZATION) {
+            HeaderCardinality::Single(value) => Some(value.as_bytes().to_vec()),
+            HeaderCardinality::Missing => None,
+            HeaderCardinality::Duplicate => {
+                return ApiResponse::error(
+                    400,
+                    "duplicate_authorization",
+                    "multiple Authorization headers are not accepted",
+                );
+            }
+        };
+        let principal = if self
+            .auth
+            .as_ref()
+            .is_some_and(|auth| auth.authorized(session))
+        {
+            Principal::admin("root")
+        } else if let Some(principal) = authorization
+            .as_deref()
+            .and_then(http::bearer)
+            .and_then(|secret| service.authenticate(secret))
+        {
+            principal
+        } else {
+            return ApiResponse::unauthorized();
+        };
+        if let Err(error) = service.check_rate(&principal.id) {
+            return registry_reply(&http::Reply::error(&error));
+        }
+        let body = match config::read_config_body(session).await {
+            Ok(body) => body,
+            Err(response) => return response,
+        };
+        let query = path_and_query.split_once('?').map(|(_, query)| query);
+        let request = http::Request {
+            method,
+            query,
+            body: &body,
+            principal: &principal,
+            peer: None,
+        };
+        registry_reply(&http::handle(&service, route, &request))
+    }
+
     async fn handle_registered_endpoint(
         &self,
         endpoint: EndpointId,
@@ -487,6 +558,15 @@ impl RtmpManagementApi {
 }
 
 impl RtmpManagementHttpApp {}
+
+fn registry_reply(reply: &crate::registry::http::Reply) -> ApiResponse {
+    let mut response = match &reply.body {
+        Some(body) => ApiResponse::json(reply.status, body),
+        None => ApiResponse::bytes(reply.status, Vec::new(), "application/json"),
+    };
+    response.allow = reply.allow;
+    response
+}
 
 fn match_api_route(path: &str) -> Option<ApiRoute<'_>> {
     if endpoint_registry::match_path(path) == Some(EndpointId::Status) {

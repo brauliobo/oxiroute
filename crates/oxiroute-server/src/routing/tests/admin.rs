@@ -95,15 +95,15 @@ fn maintenance_suspends_checks_while_drain_keeps_checks_running() {
 
     pool.set_server_administrative_state("one", AdministrativeState::Drain)
         .expect("drain");
-    assert!(pool.health_checks_running(0));
+    assert!(pool.handle(0).checks_running());
     pool.set_server_administrative_state("one", AdministrativeState::Maintenance)
         .expect("maintenance");
-    assert!(!pool.health_checks_running(0));
+    assert!(!pool.handle(0).checks_running());
     pool.set_server_checks_enabled("one", false)
         .expect("disable checks");
     pool.set_server_administrative_state("one", AdministrativeState::Ready)
         .expect("ready");
-    assert!(!pool.health_checks_running(0));
+    assert!(!pool.handle(0).checks_running());
 }
 
 #[test]
@@ -116,7 +116,14 @@ fn health_override_is_independent_from_observed_health_and_resets_to_auto() {
         None,
     )
     .expect("pool");
-    pool.record_health(0, false, Some(HealthFailure::ConnectFailed), Some(1), 1, 1);
+    pool.record_health(
+        &pool.handle(0),
+        false,
+        Some(HealthFailure::ConnectFailed),
+        Some(1),
+        1,
+        1,
+    );
     assert!(pool.select().is_none());
 
     pool.set_server_health_override("one", HealthOverride::Up)
@@ -179,7 +186,14 @@ fn first_uses_the_first_healthy_administrative_server_with_capacity() {
     );
     drop(backup);
 
-    pool.record_health(0, false, Some(HealthFailure::ConnectFailed), Some(1), 1, 1);
+    pool.record_health(
+        &pool.handle(0),
+        false,
+        Some(HealthFailure::ConnectFailed),
+        Some(1),
+        1,
+        1,
+    );
     assert_eq!(
         pool.select().expect("healthy backup").server_name(),
         "backup"

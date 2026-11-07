@@ -427,6 +427,11 @@ pub enum ConfigError {
         field: &'static str,
         detail: &'static str,
     },
+    #[error("registry has invalid `{field}`: {detail}")]
+    InvalidRegistry {
+        field: &'static str,
+        detail: &'static str,
+    },
     #[error("management listener must use loopback, got `{0}`")]
     ManagementMustUseLoopback(SocketAddr),
     #[error(
@@ -454,6 +459,7 @@ impl ConfigError {
     pub fn pointer(&self) -> Option<String> {
         let pointer = match self {
             Self::UnsupportedVersion(_) => "/version".to_owned(),
+            Self::InvalidRegistry { field, .. } => format!("/registry/{field}"),
             Self::InvalidRetirement { pointer, .. } => pointer.clone(),
             Self::EmptyUpstreamEndpoints { pool }
             | Self::TooManyUpstreamEndpoints { pool }

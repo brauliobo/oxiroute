@@ -385,6 +385,7 @@ pub struct EndpointHealthSnapshot {
     pub state: EndpointHealthState,
     pub configured_weight: u16,
     pub weight: u16,
+    pub origin: ServerOrigin,
     pub last_checked_at_unix_ms: Option<u64>,
     pub last_transition_at_unix_ms: Option<u64>,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
@@ -439,7 +440,7 @@ pub struct PoolHealthSnapshot {
 
 #[derive(Debug)]
 pub(super) struct PoolHealthState {
-    endpoints: Arc<[Arc<PoolEndpoint>]>,
+    pub(super) members: ArcSwap<Membership>,
     pub(super) health_version: AtomicU64,
     pub(super) health_writer: Mutex<()>,
     passive_policy: PassiveFailurePolicy,
@@ -453,14 +454,14 @@ pub(super) struct PoolHealthState {
 impl PoolHealthState {
     pub(super) fn new(
         pool_name: String,
-        endpoints: Arc<[Arc<PoolEndpoint>]>,
+        members: Membership,
         queue: Arc<PoolQueue>,
         passive_policy: PassiveFailurePolicy,
         resilience: PoolResiliencePolicy,
         readmission: Option<Arc<ReadmissionProbe>>,
     ) -> Self {
         Self {
-            endpoints,
+            members: ArcSwap::from_pointee(members),
             health_version: AtomicU64::new(0),
             health_writer: Mutex::new(()),
             passive_policy,
@@ -472,9 +473,15 @@ impl PoolHealthState {
         }
     }
 
+    pub(super) fn breaker_policy(&self) -> Option<CircuitBreakerPolicy> {
+        self.passive_policy.circuit_breaker
+    }
+
     /// Whether ejecting `server` still leaves the configured floor of other selectable servers.
     fn may_eject(&self, server: &PoolEndpoint, at_unix_ms: u64) -> bool {
-        self.endpoints
+        self.members
+            .load()
+            .endpoints
             .iter()
             .filter(|other| {
                 !std::ptr::eq(other.as_ref(), server) && other.selectable_at(at_unix_ms)
@@ -554,41 +561,48 @@ impl PoolHealthState {
         let Some(policy) = self.passive_policy.outlier else {
             return;
         };
-        let Some(index) = self
+        let members = self.members.load();
+        let names = members
             .endpoints
             .iter()
-            .position(|other| Arc::ptr_eq(other, server))
-        else {
-            return;
-        };
+            .map(|member| member.name.as_str())
+            .collect::<Vec<_>>();
         let outliers = self.outliers.record(
             route,
-            index,
-            self.endpoints.len(),
+            &server.name,
+            &names,
             elapsed.as_secs_f64() * 1_000.0,
             at_unix_ms,
             policy,
         );
         for outlier in outliers {
-            self.eject_outlier(outlier, policy, at_unix_ms);
+            if let Some(index) = members.position(&outlier) {
+                self.eject_outlier(&members, index, policy, at_unix_ms);
+            }
         }
     }
 
     /// Ejects a latency outlier unless that would exceed the ejected share or the `min_members` floor.
-    fn eject_outlier(self: &Arc<Self>, index: usize, policy: OutlierPolicy, at_unix_ms: u64) {
-        let server = &self.endpoints[index];
+    fn eject_outlier(
+        self: &Arc<Self>,
+        members: &Membership,
+        index: usize,
+        policy: OutlierPolicy,
+        at_unix_ms: u64,
+    ) {
+        let server = &members.endpoints[index];
         let ejection = {
             let _writer = self
                 .health_writer
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let ejected = self
+            let ejected = members
                 .endpoints
                 .iter()
                 .filter(|other| other.passively_ejected_at(at_unix_ms))
                 .count();
             let limit =
-                (self.endpoints.len() * usize::from(policy.max_ejected_percent) / 100).max(1);
+                (members.endpoints.len() * usize::from(policy.max_ejected_percent) / 100).max(1);
             if ejected >= limit
                 || server.passively_ejected_at(at_unix_ms)
                 || !self.may_eject(server, at_unix_ms)
@@ -606,7 +620,7 @@ impl PoolHealthState {
             self.health_version.fetch_add(1, Ordering::Release);
             ejection
         };
-        self.outliers.forget(index);
+        self.outliers.forget(&server.name);
         self.announce_ejection(server, &ejection);
     }
 

@@ -15,10 +15,12 @@ fn selection_retries_across_a_pool_health_transition() {
         )
         .expect("checked pool"),
     );
-    pool.endpoints[0]
+    pool.handle(0)
+        .0
         .state
         .store(EndpointHealthState::Unhealthy as u8, Ordering::Relaxed);
-    pool.endpoints[1]
+    pool.handle(1)
+        .0
         .state
         .store(EndpointHealthState::Healthy as u8, Ordering::Relaxed);
     let writer = pool.health.health_writer.lock().expect("health writer");
@@ -44,10 +46,12 @@ fn selection_retries_across_a_pool_health_transition() {
             .is_err()
     );
 
-    pool.endpoints[0]
+    pool.handle(0)
+        .0
         .state
         .store(EndpointHealthState::Healthy as u8, Ordering::Relaxed);
-    pool.endpoints[1]
+    pool.handle(1)
+        .0
         .state
         .store(EndpointHealthState::Unhealthy as u8, Ordering::Relaxed);
     pool.health.health_version.store(2, Ordering::Release);
@@ -78,15 +82,15 @@ fn health_aware_selection_is_fair_across_available_endpoints() {
     )
     .expect("checked pool");
     pool.record_health(
-        0,
+        &pool.handle(0),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(100),
         1,
         1,
     );
-    pool.record_health(1, true, None, Some(100), 1, 1);
-    pool.record_health(2, true, None, Some(100), 1, 1);
+    pool.record_health(&pool.handle(1), true, None, Some(100), 1, 1);
+    pool.record_health(&pool.handle(2), true, None, Some(100), 1, 1);
 
     let selected = (0..6)
         .map(|_| pool.select().map(|lease| lease.endpoint().clone()))
@@ -164,7 +168,7 @@ fn weighted_round_robin_skips_unhealthy_endpoints_and_recovers_them() {
     )
     .expect("weighted health pool");
     pool.record_health(
-        1,
+        &pool.handle(1),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(100),
@@ -186,7 +190,7 @@ fn weighted_round_robin_skips_unhealthy_endpoints_and_recovers_them() {
         EndpointHealthState::Unhealthy
     );
 
-    pool.record_health(1, true, None, Some(200), 1, 1);
+    pool.record_health(&pool.handle(1), true, None, Some(200), 1, 1);
     let recovered = (0..4)
         .map(|_| {
             pool.select()
@@ -251,15 +255,15 @@ fn concurrent_health_aware_selection_distributes_every_available_turn() {
         .expect("checked pool"),
     );
     pool.record_health(
-        0,
+        &pool.handle(0),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(100),
         1,
         1,
     );
-    pool.record_health(1, true, None, Some(100), 1, 1);
-    pool.record_health(2, true, None, Some(100), 1, 1);
+    pool.record_health(&pool.handle(1), true, None, Some(100), 1, 1);
+    pool.record_health(&pool.handle(2), true, None, Some(100), 1, 1);
 
     let selected = (0..THREADS)
         .map(|_| {

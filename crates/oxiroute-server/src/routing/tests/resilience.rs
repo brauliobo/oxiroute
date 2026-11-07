@@ -23,7 +23,7 @@ fn fail_open_pool(servers: &[(&str, Option<u64>)], algorithm: UpstreamAlgorithm)
 fn mark_unhealthy(pool: &EndpointPool, index: usize, failed_checks: u64) {
     for _ in 0..failed_checks {
         pool.record_health(
-            index,
+            &pool.handle(index),
             false,
             Some(HealthFailure::UnexpectedStatus),
             None,
@@ -397,7 +397,7 @@ async fn requests_wait_for_a_recovering_server_instead_of_failing_at_once() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!waiter.is_finished());
 
-        pool.record_health(0, true, None, None, 1, 1);
+        pool.record_health(&pool.handle(0), true, None, None, 1, 1);
 
         assert_eq!(waiter.await.expect("waiter").as_deref(), Some("only"));
         assert_eq!(pool.health_snapshot().unavailable_selections, 0);
@@ -417,7 +417,7 @@ async fn connection_targets_wait_for_a_recovering_server() {
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    pool.record_health(0, true, None, None, 1, 1);
+    pool.record_health(&pool.handle(0), true, None, None, 1, 1);
 
     assert!(waiter.await.expect("waiter"));
 }

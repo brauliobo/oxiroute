@@ -1,5 +1,5 @@
 use std::{
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::{Duration, SystemTime},
 };
 
@@ -22,10 +22,11 @@ use pingora::{
 };
 use tokio::{
     sync::{Mutex, Semaphore},
+    task::JoinHandle,
     time::{sleep, timeout},
 };
 
-use crate::{HealthFailure, RoundRobinPool, RuntimeEndpoint};
+use crate::{HealthFailure, RoundRobinPool, RuntimeEndpoint, routing::ServerHandle};
 
 const MAX_CONCURRENT_PROBES: usize = 32;
 
@@ -34,7 +35,7 @@ struct HealthTarget {
     check: Arc<dyn HealthCheck + Send + Sync>,
     down_interval: Duration,
     endpoint: RuntimeEndpoint,
-    endpoint_index: usize,
+    server: ServerHandle,
     fast_interval: Duration,
     healthy_threshold: u16,
     interval: Duration,
@@ -48,7 +49,7 @@ struct HealthTarget {
 impl HealthTarget {
     async fn probe(self, semaphore: Arc<Semaphore>) {
         let _probe_guard = self.probe_lock.lock().await;
-        if !self.pool.health_checks_running(self.endpoint_index) {
+        if !self.server.checks_running() {
             return;
         }
         let Ok(_permit) = semaphore.acquire_owned().await else {
@@ -61,7 +62,7 @@ impl HealthTarget {
             Ok(Err(failure)) => (false, Some(failure)),
         };
         let transition = self.pool.record_health(
-            self.endpoint_index,
+            &self.server,
             healthy,
             failure,
             unix_time_ms(),
@@ -79,21 +80,22 @@ impl HealthTarget {
     async fn run_probe(&self) -> Result<(), HealthFailure> {
         let addresses = self
             .pool
-            .resolve_server_addresses(self.endpoint_index)
+            .resolve_server_addresses(&self.server)
             .await
             .map_err(|_| HealthFailure::ConnectFailed)?;
         self.run_probe_addresses(&addresses).await
     }
 
     fn next_interval(&self) -> Duration {
-        if self.pool.passive_ejected(self.endpoint_index) {
+        if self.server.passively_ejected() {
             return self.fast_interval;
         }
-        match self.pool.health_state(self.endpoint_index) {
-            Some(crate::EndpointHealthState::Unknown) => self.fast_interval,
-            Some(crate::EndpointHealthState::Unhealthy) => self.down_interval,
-            Some(crate::EndpointHealthState::Unchecked | crate::EndpointHealthState::Healthy)
-            | None => self.interval,
+        match self.server.state() {
+            crate::EndpointHealthState::Unknown => self.fast_interval,
+            crate::EndpointHealthState::Unhealthy => self.down_interval,
+            crate::EndpointHealthState::Unchecked | crate::EndpointHealthState::Healthy => {
+                self.interval
+            }
         }
     }
 
@@ -199,8 +201,42 @@ fn classify_probe_error(error: &pingora::Error) -> HealthFailure {
     }
 }
 
+/// What every target of one pool shares: its check, timing and pool.
+#[derive(Clone)]
+struct GroupTemplate {
+    check: Arc<dyn HealthCheck + Send + Sync>,
+    down_interval: Duration,
+    fast_interval: Duration,
+    healthy_threshold: u16,
+    interval: Duration,
+    pool: Arc<RoundRobinPool>,
+    pool_name: String,
+    timeout: Duration,
+    unhealthy_threshold: u16,
+}
+
+impl GroupTemplate {
+    fn target(&self, server: ServerHandle, endpoint: RuntimeEndpoint) -> HealthTarget {
+        HealthTarget {
+            check: Arc::clone(&self.check),
+            down_interval: self.down_interval,
+            endpoint,
+            server,
+            fast_interval: self.fast_interval,
+            healthy_threshold: self.healthy_threshold,
+            interval: self.interval,
+            pool: Arc::clone(&self.pool),
+            pool_name: self.pool_name.clone(),
+            probe_lock: Arc::new(Mutex::new(())),
+            timeout: self.timeout,
+            unhealthy_threshold: self.unhealthy_threshold,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct HealthGroup {
+    template: GroupTemplate,
     targets: Vec<HealthTarget>,
 }
 
@@ -277,34 +313,159 @@ impl HealthCheckBlueprint {
     }
 }
 
+/// Runs one probe loop per pool member. Members can be added and removed while it runs; each
+/// target owns exactly one task, which stops when the target is removed or on shutdown.
 #[derive(Clone)]
 pub struct HealthSupervisor {
-    groups: Vec<HealthGroup>,
+    inner: Arc<SupervisorInner>,
+}
+
+struct SupervisorInner {
     semaphore: Arc<Semaphore>,
+    state: StdMutex<SupervisorState>,
+}
+
+struct SupervisorState {
+    groups: Vec<GroupState>,
+    running: Option<(tokio::runtime::Handle, ShutdownWatch)>,
+}
+
+struct GroupState {
+    template: GroupTemplate,
+    targets: Vec<RunningTarget>,
+}
+
+struct RunningTarget {
+    target: HealthTarget,
+    task: Option<JoinHandle<()>>,
+}
+
+impl SupervisorState {
+    fn spawn(&self, target: &HealthTarget, semaphore: &Arc<Semaphore>) -> Option<JoinHandle<()>> {
+        let (runtime, shutdown) = self.running.as_ref()?;
+        Some(runtime.spawn(run_target(
+            target.clone(),
+            shutdown.clone(),
+            Arc::clone(semaphore),
+        )))
+    }
 }
 
 impl HealthSupervisor {
     pub(crate) fn new(groups: Vec<HealthGroup>) -> Self {
+        let groups = groups
+            .into_iter()
+            .map(|group| GroupState {
+                template: group.template,
+                targets: group
+                    .targets
+                    .into_iter()
+                    .map(|target| RunningTarget { target, task: None })
+                    .collect(),
+            })
+            .collect();
         Self {
-            groups,
-            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES)),
+            inner: Arc::new(SupervisorInner {
+                semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES)),
+                state: StdMutex::new(SupervisorState {
+                    groups,
+                    running: None,
+                }),
+            }),
         }
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.groups.is_empty()
+        self.state().groups.is_empty()
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, SupervisorState> {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub async fn probe_once(&self) {
-        run_targets(
-            self.groups
-                .iter()
-                .flat_map(|group| group.targets.iter().cloned())
-                .collect(),
-            Arc::clone(&self.semaphore),
-        )
-        .await;
+        let targets = self
+            .state()
+            .groups
+            .iter()
+            .flat_map(|group| group.targets.iter().map(|running| running.target.clone()))
+            .collect();
+        run_targets(targets, Arc::clone(&self.inner.semaphore)).await;
+    }
+
+    /// Starts checking a server that joined `pool`. A pool without health checks ignores it.
+    pub(crate) fn add_target(&self, pool: &str, server: ServerHandle, endpoint: RuntimeEndpoint) {
+        let mut state = self.state();
+        let Some(index) = state
+            .groups
+            .iter()
+            .position(|group| group.template.pool_name == pool)
+        else {
+            return;
+        };
+        let target = state.groups[index].template.target(server, endpoint);
+        let task = state.spawn(&target, &self.inner.semaphore);
+        state.groups[index]
+            .targets
+            .push(RunningTarget { target, task });
+    }
+
+    /// Stops the checks of a server that left `pool`.
+    pub(crate) fn remove_target(&self, pool: &str, server: &ServerHandle) {
+        let mut state = self.state();
+        for group in state
+            .groups
+            .iter_mut()
+            .filter(|group| group.template.pool_name == pool)
+        {
+            group.targets.retain_mut(|running| {
+                let keep = running.target.server != *server;
+                if !keep && let Some(task) = running.task.take() {
+                    task.abort();
+                }
+                keep
+            });
+        }
+    }
+
+    /// Runs every target until shutdown, then waits for their tasks.
+    async fn run(&self, shutdown: ShutdownWatch) {
+        {
+            let mut state = self.state();
+            let SupervisorState { groups, running } = &mut *state;
+            let (runtime, watch) =
+                running.insert((tokio::runtime::Handle::current(), shutdown.clone()));
+            for member in groups.iter_mut().flat_map(|group| group.targets.iter_mut()) {
+                member.task = Some(runtime.spawn(run_target(
+                    member.target.clone(),
+                    watch.clone(),
+                    Arc::clone(&self.inner.semaphore),
+                )));
+            }
+        }
+        let mut shutdown = shutdown;
+        while !*shutdown.borrow() && shutdown.changed().await.is_ok() {}
+        let tasks = {
+            let mut state = self.state();
+            state.running = None;
+            state
+                .groups
+                .iter_mut()
+                .flat_map(|group| {
+                    group
+                        .targets
+                        .iter_mut()
+                        .filter_map(|running| running.task.take())
+                })
+                .collect::<Vec<_>>()
+        };
+        for task in tasks {
+            let _ = task.await;
+        }
     }
 }
 
@@ -316,20 +477,8 @@ impl BackgroundService for HealthSupervisor {
         ready_notifier: ServiceReadyNotifier,
     ) {
         ready_notifier.notify_ready();
-        stream::iter(self.groups.iter().cloned())
-            .for_each_concurrent(None, |group| {
-                run_group(group, shutdown.clone(), Arc::clone(&self.semaphore))
-            })
-            .await;
+        self.run(shutdown).await;
     }
-}
-
-async fn run_group(group: HealthGroup, shutdown: ShutdownWatch, semaphore: Arc<Semaphore>) {
-    stream::iter(group.targets)
-        .for_each_concurrent(None, |target| {
-            run_target(target, shutdown.clone(), Arc::clone(&semaphore))
-        })
-        .await;
 }
 
 async fn run_target(target: HealthTarget, mut shutdown: ShutdownWatch, semaphore: Arc<Semaphore>) {
@@ -363,27 +512,23 @@ pub(crate) fn acquire_health_group(
     pool: &Arc<RoundRobinPool>,
     blueprint: &HealthCheckBlueprint,
 ) -> HealthGroup {
-    let timeout = blueprint.timeout;
-    let check = build_check(blueprint);
+    let template = GroupTemplate {
+        check: build_check(blueprint),
+        down_interval: blueprint.down_interval,
+        fast_interval: blueprint.fast_interval,
+        healthy_threshold: blueprint.healthy_threshold,
+        interval: blueprint.interval,
+        pool: Arc::clone(pool),
+        pool_name: name.to_owned(),
+        timeout: blueprint.timeout,
+        unhealthy_threshold: blueprint.unhealthy_threshold,
+    };
     let targets = pool
         .endpoints()
-        .map(|(endpoint_index, endpoint)| HealthTarget {
-            check: Arc::clone(&check),
-            down_interval: blueprint.down_interval,
-            endpoint,
-            endpoint_index,
-            fast_interval: blueprint.fast_interval,
-            healthy_threshold: blueprint.healthy_threshold,
-            interval: blueprint.interval,
-            pool: Arc::clone(pool),
-            pool_name: name.to_owned(),
-            probe_lock: Arc::new(Mutex::new(())),
-            timeout,
-            unhealthy_threshold: blueprint.unhealthy_threshold,
-        })
+        .map(|(server, endpoint)| template.target(server, endpoint))
         .collect();
 
-    HealthGroup { targets }
+    HealthGroup { template, targets }
 }
 
 fn build_check(blueprint: &HealthCheckBlueprint) -> Arc<dyn HealthCheck + Send + Sync> {

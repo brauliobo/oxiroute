@@ -32,6 +32,7 @@ mod planning_errors;
 mod planning_types;
 mod prometheus;
 mod proxy_protocol;
+mod registry;
 mod request_id;
 mod routing;
 mod rtmp_api;
@@ -100,7 +101,7 @@ pub use routing::{
     AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
     HealthFailure, HealthOverride, PassiveFailurePolicy, PoolAdminError, PoolError,
     PoolHealthSnapshot, RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint,
-    ServerAdminState,
+    ServerAdminState, ServerOrigin,
 };
 pub use rtmp_api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
 pub use service_plan::{

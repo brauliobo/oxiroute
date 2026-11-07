@@ -182,6 +182,7 @@ impl Balancer {
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
                 connection_reuse: reuse,
+                registration: None,
                 resilience: PoolResilience::default(),
                 queue: None,
             }],
