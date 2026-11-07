@@ -71,8 +71,9 @@ A pool keeps serving when health checks or passive ejection would otherwise take
   `oxiroute_pool_queue_wait_milliseconds`, per-server response, attempt, latency, byte and
   connection limit series, and `oxiroute_generation_info`.
 - New public `GET /status.json` with an overall and per-pool `ok`/`warning`/`critical` state.
-- Not yet in this draft: switching the request id off, active-check transition events, and the
-  opt-in queue position response headers.
+- New per-route `policy.queue_headers` (default off) adds `x-oxiroute-queue-position` and
+  `x-oxiroute-queue-wait-ms` to the responses of requests that waited for capacity.
+- Not yet in this draft: switching the request id off and `Server-Timing`.
 
 ## Load balancing and admission
 

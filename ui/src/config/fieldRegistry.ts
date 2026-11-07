@@ -214,6 +214,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].routes[].action.policy.rescue.statuses', kind: 'collection' },
   { path: 'http_services[].routes[].action.policy.rescue.target', kind: 'enum' },
   { path: 'http_services[].routes[].action.policy.rescue.pool', kind: 'reference' },
+  { path: 'http_services[].routes[].action.policy.queue_headers', kind: 'boolean' },
   { path: 'http_services[].routes[].action.policy.cache', kind: 'object' },
   { path: 'http_services[].routes[].action.policy.cache.store', kind: 'reference' },
   { path: 'http_services[].routes[].action.policy.cache.methods', kind: 'string_list' },
