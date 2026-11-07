@@ -92,6 +92,9 @@ describe('canonical HTTP route editors', () => {
             target: 'next_server',
             delay_ms: 0,
             final_redispatch: false,
+            jitter_percent: 0,
+            idempotency_header: null,
+            budget: null,
             triggers: [
               'connect_failure',
               'connect_timeout',

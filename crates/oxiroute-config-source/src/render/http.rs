@@ -761,7 +761,18 @@ impl Renderer {
             },
         );
         self.integer_field("delay_ms", retry.delay_ms);
+        self.integer_field("jitter_percent", retry.jitter_percent);
         self.boolean_field("final_redispatch", retry.final_redispatch);
+        self.optional_string_field("idempotency_header", retry.idempotency_header.as_deref());
+        match &retry.budget {
+            Some(budget) => {
+                self.begin_table_field("budget");
+                self.optional_integer_field("per_second", budget.per_second);
+                self.optional_integer_field("ratio_percent", budget.ratio_percent);
+                self.end_table();
+            }
+            None => self.nil_field("budget"),
+        }
         self.string_list_field(
             "triggers",
             &retry

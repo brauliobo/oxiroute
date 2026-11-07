@@ -550,6 +550,14 @@ fn validate_proxy_policy(
     validate_cookie_rewrites(service, route_index, &policy.response_cookie_path_rewrites)?;
     validate_cookie_attributes(service, route_index, &mut policy.response_cookie_attributes)?;
     validate_retry(service, route_index, &mut policy.retry, route_policy)?;
+    if policy.retry.budget.is_some() && pool.http_versions.max == crate::model::HttpVersion::Http3 {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.budget",
+            "is not supported for HTTP/3 upstream pools",
+        ));
+    }
     validate_proxy_timeouts(service, route_index, policy.timeouts)?;
     validate_rescue(service, route_index, policy, pool, pools)?;
     if let Some(cache) = &mut policy.cache {
@@ -1134,6 +1142,16 @@ fn validate_retry(
             "retry delay must not exceed 60000 milliseconds",
         ));
     }
+    if retry.jitter_percent > 100 {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.jitter_percent",
+            "jitter must not exceed 100 percent",
+        ));
+    }
+    validate_retry_idempotency_header(service, route_index, retry)?;
+    validate_retry_budget(service, route_index, retry.budget)?;
     if retry.final_redispatch
         && (retry.max_retries == 0 || retry.target != crate::model::HttpRetryTarget::SameServer)
     {
@@ -1202,6 +1220,61 @@ fn validate_retry(
         }
     }
     retry.response_statuses.sort_unstable();
+    Ok(())
+}
+
+fn validate_retry_idempotency_header(
+    service: &str,
+    route_index: usize,
+    retry: &mut HttpRetryPolicy,
+) -> Result<(), ConfigError> {
+    let Some(header) = &mut retry.idempotency_header else {
+        return Ok(());
+    };
+    normalize_header_name(header).map_err(|detail| {
+        invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.idempotency_header",
+            detail,
+        )
+    })?;
+    if retry.method_safety != crate::model::HttpRetryMethodSafety::All {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.idempotency_header",
+            "requires method_safety = \"all\"",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_retry_budget(
+    service: &str,
+    route_index: usize,
+    budget: Option<crate::model::HttpRetryBudget>,
+) -> Result<(), ConfigError> {
+    let Some(budget) = budget else {
+        return Ok(());
+    };
+    let invalid =
+        |detail| invalid_route(service, route_index, "action.policy.retry.budget", detail);
+    if budget.per_second.is_none() && budget.ratio_percent.is_none() {
+        return Err(invalid("requires per_second or ratio_percent"));
+    }
+    if budget
+        .per_second
+        .is_some_and(|rate| !(1..=100_000).contains(&rate))
+    {
+        return Err(invalid("per_second must be between 1 and 100000"));
+    }
+    if budget
+        .ratio_percent
+        .is_some_and(|ratio| !(1..=100).contains(&ratio))
+    {
+        return Err(invalid("ratio_percent must be between 1 and 100"));
+    }
     Ok(())
 }
 

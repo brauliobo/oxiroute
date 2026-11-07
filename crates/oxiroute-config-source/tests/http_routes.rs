@@ -1053,6 +1053,60 @@ fn validates_proxy_timeouts_and_roundtrips_them() {
 }
 
 #[test]
+fn validates_retry_budget_jitter_and_idempotency_header() {
+    let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
+    let route = proxy_route(
+        "          policy = { request_buffering = true },",
+        r#"              retry = {
+                max_retries = 2,
+                delay_ms = 100,
+                jitter_percent = 50,
+                method_safety = "all",
+                body_safety = "buffered",
+                idempotency_header = "Idempotency-Key",
+                budget = { per_second = 5, ratio_percent = 20 },
+              },"#,
+    );
+    let loaded = load_lua(&config(&route, endpoint)).expect("retry hardening");
+    let retry = &first_route(&config(&route, endpoint))["action"]["policy"]["retry"];
+    assert_eq!(retry["jitter_percent"], 50);
+    assert_eq!(retry["idempotency_header"], "idempotency-key");
+    assert_eq!(
+        retry["budget"],
+        json!({ "per_second": 5, "ratio_percent": 20 })
+    );
+    let rendered = render_lua(&loaded).expect("render retry hardening");
+    assert_eq!(
+        load_lua(&rendered).expect("retry hardening roundtrip"),
+        loaded
+    );
+
+    for (policy, expected) in [
+        ("retry = { jitter_percent = 101 },", "jitter_percent"),
+        (
+            "retry = { idempotency_header = \"x-key\" },",
+            "idempotency_header",
+        ),
+        (
+            "retry = { method_safety = \"all\", body_safety = \"buffered\", idempotency_header = \"Bad Name\" },",
+            "idempotency_header",
+        ),
+        ("retry = { budget = {} },", "budget"),
+        ("retry = { budget = { per_second = 0 } },", "budget"),
+        ("retry = { budget = { ratio_percent = 101 } },", "budget"),
+    ] {
+        let message = error(&config(
+            &proxy_route(
+                "          policy = { request_buffering = true },",
+                &format!("              {policy}"),
+            ),
+            endpoint,
+        ));
+        assert!(message.contains(expected), "{policy}: {message}");
+    }
+}
+
+#[test]
 fn validates_rescue_and_any_retry_status() {
     let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
     let rescue = proxy_route(

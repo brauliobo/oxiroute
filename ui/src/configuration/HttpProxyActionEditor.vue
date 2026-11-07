@@ -149,6 +149,9 @@
         label.field(data-field="http_services[].routes[].action.policy.retry.delay_ms")
           span Delay (milliseconds)
           input(type="number" min="0" max="60000" step="1" v-model.number="action.policy.retry.delay_ms")
+        label.field(data-field="http_services[].routes[].action.policy.retry.jitter_percent")
+          span Delay jitter (percent)
+          input(type="number" min="0" max="100" step="1" v-model.number="action.policy.retry.jitter_percent")
         label.enable-row(data-field="http_services[].routes[].action.policy.retry.method_safety")
           span(data-field="http_services[].routes[].action.policy.retry.body_safety")
             input(
@@ -159,6 +162,9 @@
           span Allow replay of buffered idempotent requests, including POST
         small.field-hint
           | Enable only when every request handled by this route is idempotent. OxiRoute buffers the complete request body before replaying it.
+        label.field(v-if="allowsBufferedIdempotentRetries" data-field="http_services[].routes[].action.policy.retry.idempotency_header")
+          span Replay non-GET requests only with header
+          input(type="text" :value="action.policy.retry.idempotency_header ?? ''" placeholder="Idempotency-Key" @input="setIdempotencyHeader")
         label.enable-row(data-field="http_services[].routes[].action.policy.retry.final_redispatch")
           input(
             type="checkbox"
@@ -167,6 +173,18 @@
             v-model="action.policy.retry.final_redispatch"
           )
           span Redispatch the final retry to another server
+      fieldset.object-block(data-field="http_services[].routes[].action.policy.retry.budget")
+        legend Retry budget
+        label.enable-row
+          input(type="checkbox" :checked="action.policy.retry.budget !== null" @change="toggleRetryBudget")
+          span Cap the retries of this route
+        .field-grid(v-if="action.policy.retry.budget")
+          label.field(data-field="http_services[].routes[].action.policy.retry.budget.per_second")
+            span Retries per second
+            input(type="number" min="1" max="100000" step="1" placeholder="unlimited" :value="action.policy.retry.budget.per_second ?? ''" @input="setBudgetLimit('per_second', $event)")
+          label.field(data-field="http_services[].routes[].action.policy.retry.budget.ratio_percent")
+            span Share of recent requests (percent)
+            input(type="number" min="1" max="100" step="1" placeholder="unlimited" :value="action.policy.retry.budget.ratio_percent ?? ''" @input="setBudgetLimit('ratio_percent', $event)")
       fieldset.retry-triggers(data-field="http_services[].routes[].action.policy.retry.triggers")
         legend Retry triggers
         label.enable-row(v-for="trigger in HTTP_RETRY_TRIGGERS" :key="trigger")
@@ -287,6 +305,23 @@ const retryTriggerLabels: Record<HttpRetryTrigger, string> = {
 function setTimeoutMs(key: keyof HttpProxyActionConfig['policy']['timeouts'], event: Event): void {
   const value = (event.target as HTMLInputElement).value
   props.action.policy.timeouts[key] = value === '' ? null : Number(value)
+}
+
+function setIdempotencyHeader(event: Event): void {
+  props.action.policy.retry.idempotency_header = (event.target as HTMLInputElement).value || null
+}
+
+function toggleRetryBudget(event: Event): void {
+  props.action.policy.retry.budget = (event.target as HTMLInputElement).checked
+    ? { per_second: 10, ratio_percent: null }
+    : null
+}
+
+function setBudgetLimit(key: 'per_second' | 'ratio_percent', event: Event): void {
+  const budget = props.action.policy.retry.budget
+  if (!budget) return
+  const value = (event.target as HTMLInputElement).value
+  budget[key] = value === '' ? null : Number(value)
 }
 
 function toggleRescue(event: Event): void {
