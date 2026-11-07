@@ -482,3 +482,35 @@ async fn cancelling_a_capacity_waiter_rolls_back_queue_state_once() {
     assert_eq!(snapshot.queue_timeouts, 0);
     assert_eq!(snapshot.endpoints[0].active_connections, 0);
 }
+
+#[tokio::test]
+async fn a_wait_ended_by_a_reused_connection_is_not_a_cancellation() {
+    let pool = Arc::new(
+        RoundRobinPool::new_named_servers(
+            "reused-wait".into(),
+            [runtime_server("only", 3000, Some(1))],
+            UpstreamAlgorithm::First,
+            None,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("reused wait pool"),
+    );
+    let holder = connection_lifetime(&pool, "only");
+    assert!(holder.try_acquire().expect("capacity holder"));
+    let lease = pool
+        .select_server_connection_target("only")
+        .expect("pending lease");
+    let lifetime = Arc::clone(&lease.inner);
+    let generation = lifetime.capacity_generation();
+    let waiter = tokio::spawn(async move { lifetime.wait_for_capacity(generation).await });
+    super::queue::wait_for_queued(&pool, 1).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    lease.end_queue_wait();
+    assert!(lease.queue_wait() >= Duration::from_millis(20));
+    assert_eq!(pool.health_snapshot().queued, 0);
+    drop(lease);
+    waiter.abort();
+    let snapshot = pool.health_snapshot();
+    assert_eq!((snapshot.queued, snapshot.queue_cancellations), (0, 0));
+}

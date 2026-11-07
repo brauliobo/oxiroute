@@ -121,6 +121,11 @@ impl EndpointLease {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cell);
     }
 
+    /// The request has its connection: a reused one never acquires this lease, so the wait ends here.
+    pub(crate) fn end_queue_wait(&self) {
+        self.inner.leave_queue(false);
+    }
+
     /// Time this lease spent waiting for capacity so far.
     pub(crate) fn queue_wait(&self) -> Duration {
         Duration::from_millis(self.inner.wait.waited_ms.load(Ordering::Relaxed))
