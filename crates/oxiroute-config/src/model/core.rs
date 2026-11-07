@@ -8,6 +8,9 @@ pub struct ConfigDraft {
     /// Aggregate process admission cap. Omitted or explicit null means unbounded.
     #[serde(default)]
     pub max_connections: Option<u64>,
+    /// Bounds on how long and how many replaced generations keep serving their in-flight work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retirement: Option<Retirement>,
     #[serde(default)]
     pub management: Option<Management>,
     /// Runtime server registration: state directory, tokens, and registry-only endpoints.
@@ -32,6 +35,32 @@ pub struct ConfigDraft {
     pub rtmp_services: Vec<RtmpService>,
     #[serde(default)]
     pub l4_services: Vec<L4Service>,
+}
+
+/// Lifetime of a replaced generation. Its accept gate closes at once; work already admitted
+/// continues until `drain_deadline_ms` has passed, then the generation is closed.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Retirement {
+    /// Defaults to three hours or the longest HTTP `upstream_io_timeout_ms`, whichever is larger.
+    #[serde(default)]
+    pub drain_deadline_ms: Option<u64>,
+    /// Replaced generations that may drain at once; a further apply waits for a free slot.
+    #[serde(default = "default_max_retired_generations")]
+    pub max_retired_generations: u64,
+}
+
+impl Retirement {
+    pub const DEFAULT_MAX_RETIRED_GENERATIONS: u64 = 4;
+}
+
+impl Default for Retirement {
+    fn default() -> Self {
+        Self {
+            drain_deadline_ms: None,
+            max_retired_generations: default_max_retired_generations(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1088,6 +1117,9 @@ pub struct L4Service {
     /// Optional bounded policy used when this service is attached to a UDP listener.
     #[serde(default)]
     pub udp: Option<UdpPolicy>,
+    /// Raises the generation drain deadline while this service is configured; never lowers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drain_deadline_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

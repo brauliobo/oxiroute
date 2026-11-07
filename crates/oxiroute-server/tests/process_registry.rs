@@ -188,6 +188,7 @@ impl Farm {
                 max_request_body_bytes: Some(64 * 1024),
                 gzip: None,
                 access_log: None,
+                drain_deadline_ms: None,
             }],
             ..empty_config()
         }

@@ -158,6 +158,7 @@ impl Balancer {
             })
             .collect();
         let config = ConfigDraft {
+            retirement: None,
             listeners: vec![Listener {
                 name: "http-loopback".into(),
                 bind: socket_bind(address),
@@ -185,6 +186,7 @@ impl Balancer {
                 resilience: PoolResilience::default(),
             }],
             http_services: vec![HttpService {
+                drain_deadline_ms: None,
                 name: "balance".into(),
                 routes: vec![HttpRoute {
                     host: None,

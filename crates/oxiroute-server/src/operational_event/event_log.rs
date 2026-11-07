@@ -157,6 +157,19 @@ pub(crate) fn emit_certificate_with_context(
     emit_inner(event, outcome, None, Some(certificate), context, None, None);
 }
 
+/// A retired generation was closed before its work ended; `reason` is `drain_deadline` or `shutdown`.
+pub(crate) fn emit_retire_forced_close(revision: &EffectiveRevision, reason: &str) {
+    emit_inner(
+        "generation_retire",
+        "forced_close",
+        Some(revision),
+        None,
+        &AuditContext::generated(),
+        Some(reason),
+        None,
+    );
+}
+
 pub(crate) fn emit_api_operation(
     operation: &str,
     category: AuditCategory,
@@ -382,6 +395,7 @@ pub(super) const fn category_for_event(event: EventName) -> AuditCategory {
         | EventName::GenerationActivate
         | EventName::GenerationRollback
         | EventName::GenerationDrain
+        | EventName::GenerationRetire
         | EventName::GenerationStart
         | EventName::ConfigurationReload => AuditCategory::Reload,
         EventName::ImportCompleted => AuditCategory::Import,
@@ -410,17 +424,20 @@ pub(super) const fn category_for_event(event: EventName) -> AuditCategory {
 
 const fn result_for_outcome(outcome: &EventOutcome) -> AuditResult {
     match outcome {
-        EventOutcome::Prepared | EventOutcome::Activated | EventOutcome::Applied => {
-            AuditResult::Succeeded
-        }
-        EventOutcome::Requested => AuditResult::Requested,
-        EventOutcome::Rejected => AuditResult::Rejected,
-        EventOutcome::Failed | EventOutcome::Quarantined | EventOutcome::Unknown => {
-            AuditResult::Failed
-        }
-        EventOutcome::Ejected { .. }
+        EventOutcome::Prepared
+        | EventOutcome::Activated
+        | EventOutcome::Applied
+        | EventOutcome::Retiring
+        | EventOutcome::Drained
+        | EventOutcome::Ejected { .. }
         | EventOutcome::Recovered { .. }
         | EventOutcome::HealthChanged { .. } => AuditResult::Succeeded,
+        EventOutcome::Requested | EventOutcome::CapReached => AuditResult::Requested,
+        EventOutcome::Rejected => AuditResult::Rejected,
+        EventOutcome::Failed
+        | EventOutcome::ForcedClose
+        | EventOutcome::Quarantined
+        | EventOutcome::Unknown => AuditResult::Failed,
     }
 }
 

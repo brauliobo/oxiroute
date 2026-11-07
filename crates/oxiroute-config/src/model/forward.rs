@@ -22,6 +22,8 @@ pub struct ForwardProxyService {
     pub max_connections: u64,
     pub resolver: ForwardResolverPolicy,
     pub audit_mode: ForwardAuditMode,
+    /// Raises the generation drain deadline while this service is configured; never lowers it.
+    pub drain_deadline_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -66,6 +68,8 @@ struct ForwardProxyServiceWire {
     resolver: ForwardResolverPolicy,
     #[serde(default)]
     audit_mode: ForwardAuditMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    drain_deadline_ms: Option<u64>,
 }
 
 impl<'de> Deserialize<'de> for ForwardProxyService {
@@ -96,6 +100,7 @@ impl<'de> Deserialize<'de> for ForwardProxyService {
             max_connections: wire.max_connections,
             resolver: wire.resolver,
             audit_mode: wire.audit_mode,
+            drain_deadline_ms: wire.drain_deadline_ms,
         })
     }
 }
@@ -128,6 +133,7 @@ impl Serialize for ForwardProxyService {
             max_connections: self.max_connections,
             resolver: self.resolver.clone(),
             audit_mode: self.audit_mode,
+            drain_deadline_ms: self.drain_deadline_ms,
         }
         .serialize(serializer)
     }

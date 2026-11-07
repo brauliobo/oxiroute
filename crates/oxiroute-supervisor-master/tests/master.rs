@@ -651,6 +651,47 @@ fn retired_drain_failure_keeps_the_committed_candidate_active() {
 }
 
 #[test]
+fn a_retiring_worker_that_outlasts_the_default_drain_window_is_failed() {
+    let mut harness = Harness::launch("slow-drain");
+    harness.replace("normal", 2);
+    let events = harness.until(|master| master.state() == MasterState::Running);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        MasterEvent::RetiredFailed {
+            phase: FailurePhase::Drain
+        }
+    )));
+    harness.shutdown();
+}
+
+#[test]
+fn the_retirement_deadline_of_a_replacement_replaces_the_default_drain_window() {
+    let mut harness = Harness::launch("slow-drain");
+    harness
+        .master
+        .set_retirement_deadline(Duration::from_secs(2));
+    harness.replace("normal", 2);
+    let events = harness.until(|master| {
+        master.state() == MasterState::Running
+            && master
+                .active_instance()
+                .is_some_and(|id| id.as_str() == "b")
+    });
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, MasterEvent::RetiredFailed { .. })),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, MasterEvent::ReplacementCompleted { .. }))
+    );
+    harness.shutdown();
+}
+
+#[test]
 fn failed_reactivation_fails_closed() {
     let mut harness = Harness::launch("reject-reactivate");
     harness.replace("reject-activate", 2);

@@ -880,6 +880,7 @@ fn render_prometheus_snapshot(
             1,
         )?;
     }
+    render_retirement(&mut output, generations, &generation)?;
     labels(
         &mut output,
         "oxiroute_audit_component_state",
@@ -938,3 +939,64 @@ pub enum PrometheusError {
 
 #[cfg(test)]
 mod tests;
+
+fn render_retirement(
+    output: &mut String,
+    generations: &crate::GenerationManager,
+    generation: &crate::GenerationStatus,
+) -> Result<(), PrometheusError> {
+    let retired = &generation.retired_generations;
+    sample(output, "oxiroute_generation_retired", retired.len())?;
+    for entry in retired {
+        let revision = revision_label(entry.revision.as_str());
+        metric(
+            output,
+            "oxiroute_generation_retired_age_seconds",
+            "revision",
+            revision,
+            entry.age_seconds,
+        )?;
+        let labels_for = [("revision", revision), ("role", "retired")];
+        labels(
+            output,
+            "oxiroute_generation_in_flight",
+            &labels_for,
+            entry.in_flight,
+        )?;
+    }
+    if let Some(active) = generations.active() {
+        let revision = revision_label(active.revision().candidate.as_str());
+        labels(
+            output,
+            "oxiroute_generation_in_flight",
+            &[("revision", revision), ("role", "active")],
+            active.in_flight(),
+        )?;
+    }
+    let counters = generations.retirement_counters();
+    metric(
+        output,
+        "oxiroute_generation_forced_close_total",
+        "reason",
+        "drain_deadline",
+        counters.forced_close_drain_deadline,
+    )?;
+    metric(
+        output,
+        "oxiroute_generation_forced_close_total",
+        "reason",
+        "shutdown",
+        counters.forced_close_shutdown,
+    )?;
+    sample(
+        output,
+        "oxiroute_generation_retired_cap_deferrals_total",
+        counters.cap_deferrals,
+    )?;
+    Ok(())
+}
+
+/// Revisions are 64 hex digits; the first twelve identify one in a label.
+fn revision_label(revision: &str) -> &str {
+    &revision[..revision.len().min(12)]
+}

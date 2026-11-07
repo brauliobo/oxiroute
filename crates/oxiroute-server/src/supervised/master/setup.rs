@@ -45,6 +45,19 @@ pub(super) fn reload_drain_window(value: Option<&std::ffi::OsStr>) -> Result<Dur
     Ok(window)
 }
 
+/// How long the worker retired by a replacement may keep serving its accepted connections: the
+/// retiring generation's own `retirement` keys, then the deprecated environment variable, then
+/// the default derived from its request deadlines.
+pub(in crate::supervised) fn retirement_window(
+    retiring: &ValidatedConfig,
+    environment: Option<&std::ffi::OsStr>,
+) -> Duration {
+    let fallback = environment
+        .and_then(|value| reload_drain_window(Some(value)).ok())
+        .and_then(|window| u64::try_from(window.as_millis()).ok());
+    Duration::from_millis(retiring.retirement_deadline_ms_with_default(fallback))
+}
+
 pub(super) fn worker_identity(
     token: InstanceToken,
 ) -> Result<(InstanceId, WorkerIdentity), Box<dyn Error>> {

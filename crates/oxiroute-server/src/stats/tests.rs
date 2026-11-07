@@ -37,6 +37,7 @@ fn api() -> (
     fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600)).expect("mode");
     let config_path = directory.path().join("oxiroute.lua");
     let config = ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,

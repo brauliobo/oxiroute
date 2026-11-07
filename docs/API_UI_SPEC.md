@@ -44,7 +44,7 @@ Implemented and recognized endpoints:
 | `DELETE` | `/api/v1/pools/{pool}/servers/{name}` | Remove a registration at once (`204`). |
 | `POST` | `/api/v1/pools/{pool}/servers/{name}/state` | Record the operator's `ready`, `drain` or `maintenance` decision for a registered server (`204`). Root token only. |
 | `POST` | `/api/v1/servers/refresh-dns` | Resolve every prevalidated target and report explicit non-atomic per-server outcomes. |
-| `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state. |
+| `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state, plus `retiredGenerations` (draining replaced generations, oldest first: `revision`, `state`, `ageSeconds`, `deadlineRemainingSeconds`, `inFlight`, `inFlightByKind`), `maxRetiredGenerations` and `pendingApply` (`revision`, `reason` `retired_cap`). The supervising master drains one worker at a time and reports it to the active worker, so the list has at most one entry there and its `inFlightByKind` is a single `connections` total. |
 | `POST` | `/api/v1/generations/reload`, `/api/v1/generations/rollback`, `/api/v1/generations/drain` | Revision-checked generation preparation, rollback, and drain operations. |
 | `GET` | `/api/v1/tls` | Redacted certificate, managed ACME, and Certbot watcher status. |
 | `POST` | `/api/v1/tls/reconcile` | Revision-checked reconciliation of externally owned Certbot lineages. |

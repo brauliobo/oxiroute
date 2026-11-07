@@ -107,6 +107,7 @@ pub(super) fn lower(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let service = ForwardProxyService {
+        drain_deadline_ms: None,
         name: service_name,
         enabled_versions: vec![ForwardHttpVersion::H1],
         allow_absolute_form: true,
@@ -134,6 +135,7 @@ pub(super) fn lower(
         audit_mode,
     };
     let draft = ConfigDraft {
+        retirement: None,
         listeners,
         forward_proxy_services: vec![service],
         ..empty_config()

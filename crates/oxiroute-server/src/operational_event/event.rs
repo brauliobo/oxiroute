@@ -27,6 +27,7 @@ pub(crate) enum EventName {
     GenerationActivate,
     GenerationRollback,
     GenerationDrain,
+    GenerationRetire,
     GenerationStart,
     ConfigurationReload,
     ImportCompleted,
@@ -68,6 +69,7 @@ impl EventName {
             "generation_activate" => Self::GenerationActivate,
             "generation_rollback" => Self::GenerationRollback,
             "generation_drain" => Self::GenerationDrain,
+            "generation_retire" => Self::GenerationRetire,
             "generation_start" => Self::GenerationStart,
             "configuration_reload" => Self::ConfigurationReload,
             "import_completed" => Self::ImportCompleted,
@@ -100,6 +102,7 @@ impl EventName {
             Self::GenerationActivate => "generation_activate",
             Self::GenerationRollback => "generation_rollback",
             Self::GenerationDrain => "generation_drain",
+            Self::GenerationRetire => "generation_retire",
             Self::GenerationStart => "generation_start",
             Self::ConfigurationReload => "configuration_reload",
             Self::ImportCompleted => "import_completed",
@@ -134,6 +137,7 @@ pub(crate) const fn v1_serialized_event_name(event: EventName) -> &'static str {
         | EventName::CertificateDeletion
         | EventName::CertificateAccountRollover
         | EventName::CertificateJobControl
+        | EventName::GenerationRetire
         | EventName::UpstreamEndpointHealth => "unknown",
         _ => event.as_str(),
     }
@@ -144,7 +148,8 @@ pub(crate) const fn v1_sse_event_name(event: EventName) -> &'static str {
         EventName::CertificateRevocation
         | EventName::CertificateDeletion
         | EventName::CertificateAccountRollover
-        | EventName::CertificateJobControl => "unknown",
+        | EventName::CertificateJobControl
+        | EventName::GenerationRetire => "unknown",
         _ => event.as_str(),
     }
 }
@@ -168,6 +173,10 @@ pub(crate) enum EventOutcome {
     Requested,
     Applied,
     Failed,
+    Retiring,
+    Drained,
+    ForcedClose,
+    CapReached,
     Ejected {
         pool: String,
         server: String,
@@ -208,6 +217,10 @@ impl Serialize for EventOutcome {
             Self::Requested => serializer.serialize_str("requested"),
             Self::Applied => serializer.serialize_str("applied"),
             Self::Failed => serializer.serialize_str("failed"),
+            Self::Retiring => serializer.serialize_str("retiring"),
+            Self::Drained => serializer.serialize_str("drained"),
+            Self::ForcedClose => serializer.serialize_str("forced_close"),
+            Self::CapReached => serializer.serialize_str("cap_reached"),
             Self::Unknown => serializer.serialize_str("unknown"),
             Self::Ejected {
                 pool,
@@ -277,6 +290,10 @@ impl EventOutcome {
             Self::Requested => "requested",
             Self::Applied => "applied",
             Self::Failed => "failed",
+            Self::Retiring => "retiring",
+            Self::Drained => "drained",
+            Self::ForcedClose => "forced_close",
+            Self::CapReached => "cap_reached",
             Self::Ejected { .. } => "ejected",
             Self::Recovered { .. } => "recovered",
             Self::HealthChanged { .. } => "health_changed",
@@ -293,6 +310,10 @@ impl EventOutcome {
             "requested" => Self::Requested,
             "applied" => Self::Applied,
             "failed" => Self::Failed,
+            "retiring" => Self::Retiring,
+            "drained" => Self::Drained,
+            "forced_close" => Self::ForcedClose,
+            "cap_reached" => Self::CapReached,
             _ => Self::Unknown,
         }
     }

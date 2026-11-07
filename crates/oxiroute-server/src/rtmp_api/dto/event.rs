@@ -155,6 +155,7 @@ impl From<EventName> for V1EventNameDto {
             | EventName::CertificateDeletion
             | EventName::CertificateAccountRollover
             | EventName::CertificateJobControl
+            | EventName::GenerationRetire
             | EventName::UpstreamEndpointHealth
             | EventName::Unknown => Self::Unknown,
         }
@@ -168,6 +169,7 @@ pub(crate) enum V2EventNameDto {
     GenerationActivate,
     GenerationRollback,
     GenerationDrain,
+    GenerationRetire,
     GenerationStart,
     ConfigurationReload,
     ImportCompleted,
@@ -200,6 +202,7 @@ impl From<EventName> for V2EventNameDto {
             EventName::GenerationActivate => Self::GenerationActivate,
             EventName::GenerationRollback => Self::GenerationRollback,
             EventName::GenerationDrain => Self::GenerationDrain,
+            EventName::GenerationRetire => Self::GenerationRetire,
             EventName::GenerationStart => Self::GenerationStart,
             EventName::ConfigurationReload => Self::ConfigurationReload,
             EventName::ImportCompleted => Self::ImportCompleted,
@@ -246,6 +249,10 @@ impl From<&EventOutcome> for EventOutcomeDto {
             EventOutcome::Requested => Self::Simple(SimpleEventOutcomeDto::Requested),
             EventOutcome::Applied => Self::Simple(SimpleEventOutcomeDto::Applied),
             EventOutcome::Failed => Self::Simple(SimpleEventOutcomeDto::Failed),
+            EventOutcome::Retiring => Self::Simple(SimpleEventOutcomeDto::Retiring),
+            EventOutcome::Drained => Self::Simple(SimpleEventOutcomeDto::Drained),
+            EventOutcome::ForcedClose => Self::Simple(SimpleEventOutcomeDto::ForcedClose),
+            EventOutcome::CapReached => Self::Simple(SimpleEventOutcomeDto::CapReached),
             EventOutcome::Unknown => Self::Simple(SimpleEventOutcomeDto::Unknown),
             EventOutcome::Ejected {
                 pool,
@@ -309,6 +316,10 @@ enum SimpleEventOutcomeDto {
     Requested,
     Applied,
     Failed,
+    Retiring,
+    Drained,
+    ForcedClose,
+    CapReached,
     Unknown,
 }
 

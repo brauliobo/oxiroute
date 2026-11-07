@@ -21,6 +21,10 @@ pub struct GenerationStatus {
     pub config_rejections: u64,
     pub failures: u64,
     pub rollbacks: u64,
+    /// Replaced generations still draining, oldest first.
+    pub retired_generations: Vec<RetiredGenerationStatus>,
+    pub max_retired_generations: usize,
+    pub pending_apply: Option<PendingApply>,
 }
 
 impl GenerationStatus {

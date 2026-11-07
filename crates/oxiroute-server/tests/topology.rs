@@ -541,6 +541,7 @@ fn topology_config(temp: &TempDir) -> ConfigDraft {
     let (certificate_chain_path, private_key_path) =
         write_test_identity(temp.path(), "topology-private-key-do-not-expose.pem");
     let mut config = ConfigDraft {
+        retirement: None,
         certificates: vec![Certificate {
             name: "public".into(),
             dns_names: vec!["proxy.example.test".into()],
@@ -611,6 +612,7 @@ fn topology_config(temp: &TempDir) -> ConfigDraft {
             },
         ],
         http_services: vec![HttpService {
+            drain_deadline_ms: None,
             name: "api".into(),
             routes: vec![HttpRoute {
                 host: Some(HttpHostSelector::NormalizedHost {
@@ -668,6 +670,7 @@ fn topology_config(temp: &TempDir) -> ConfigDraft {
             }],
         }],
         l4_services: vec![L4Service {
+            drain_deadline_ms: None,
             name: "database".into(),
             upstream_pool: "database".into(),
             connect_timeout_ms: 5_000,

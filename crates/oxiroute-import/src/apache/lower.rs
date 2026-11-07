@@ -757,6 +757,7 @@ impl Lowerer {
         }
         let service_index = self.draft.http_services.len();
         self.draft.http_services.push(HttpService {
+            drain_deadline_ms: None,
             name: service_name,
             routes,
             automatic_response_headers: false,

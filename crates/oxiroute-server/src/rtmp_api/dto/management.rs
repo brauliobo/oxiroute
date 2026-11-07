@@ -44,6 +44,27 @@ struct GenerationStatusDto {
     config_rejections: u64,
     failures: u64,
     rollbacks: u64,
+    retired_generations: Vec<RetiredGenerationDto>,
+    max_retired_generations: usize,
+    pending_apply: Option<PendingApplyDto>,
+}
+
+#[derive(JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RetiredGenerationDto {
+    revision: String,
+    state: &'static str,
+    age_seconds: u64,
+    deadline_remaining_seconds: u64,
+    in_flight: u64,
+    in_flight_by_kind: std::collections::BTreeMap<&'static str, u64>,
+}
+
+#[derive(JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingApplyDto {
+    revision: String,
+    reason: &'static str,
 }
 
 #[derive(JsonSchema, Serialize)]
@@ -83,6 +104,35 @@ impl From<GenerationStatus> for GenerationStatusDto {
             config_rejections: status.config_rejections,
             failures: status.failures,
             rollbacks: status.rollbacks,
+            retired_generations: status
+                .retired_generations
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            max_retired_generations: status.max_retired_generations,
+            pending_apply: status.pending_apply.map(Into::into),
+        }
+    }
+}
+
+impl From<crate::RetiredGenerationStatus> for RetiredGenerationDto {
+    fn from(retired: crate::RetiredGenerationStatus) -> Self {
+        Self {
+            revision: retired.revision.as_str().to_owned(),
+            state: retired.state.as_str(),
+            age_seconds: retired.age_seconds,
+            deadline_remaining_seconds: retired.deadline_remaining_seconds,
+            in_flight: retired.in_flight,
+            in_flight_by_kind: retired.in_flight_by_kind,
+        }
+    }
+}
+
+impl From<crate::PendingApply> for PendingApplyDto {
+    fn from(pending: crate::PendingApply) -> Self {
+        Self {
+            revision: pending.revision.as_str().to_owned(),
+            reason: pending.reason,
         }
     }
 }

@@ -78,6 +78,7 @@ impl Lowerer<'_> {
         deduplicate_sources(&mut sources);
         Some(LoweredHttpService {
             service: HttpService {
+                drain_deadline_ms: None,
                 name: name.to_owned(),
                 routes: routes.into_iter().map(|route| route.route).collect(),
                 automatic_response_headers: false,
@@ -167,6 +168,7 @@ impl Lowerer<'_> {
         deduplicate_sources(&mut sources);
         Some(LoweredHttpService {
             service: HttpService {
+                drain_deadline_ms: None,
                 name: name.to_owned(),
                 routes: routes.into_iter().map(|route| route.route).collect(),
                 automatic_response_headers: false,

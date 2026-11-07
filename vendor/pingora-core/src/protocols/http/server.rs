@@ -330,6 +330,11 @@ impl Session {
         }
     }
 
+    /// Whether an earlier request was already served on this H1 connection.
+    pub fn is_reused_connection(&self) -> bool {
+        matches!(self, Self::H1(session) if session.is_reused_connection())
+    }
+
     /// Get the keepalive timeout. None if keepalive is disabled. Not applicable for h2 or
     /// subrequest
     pub fn get_keepalive(&self) -> Option<u64> {

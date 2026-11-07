@@ -53,6 +53,7 @@ pub struct Master<E: ActionExecutor = SystemActionExecutor> {
     pub(super) active: Option<ManagedWorker>,
     pub(super) candidate: Option<ManagedWorker>,
     pub(super) retired: Option<ManagedWorker>,
+    pub(super) retirement_deadline: Option<Duration>,
     pub(super) deferred_active_exit: Option<ExitStatus>,
     pub(super) replacement_failure: Option<FailurePhase>,
     pub(super) stage: Stage,
@@ -119,6 +120,7 @@ impl<E: ActionExecutor> Master<E> {
             )),
             candidate: None,
             retired: None,
+            retirement_deadline: None,
             deferred_active_exit: None,
             replacement_failure: None,
             stage: Stage::BootAdopting,
@@ -136,6 +138,12 @@ impl<E: ActionExecutor> Master<E> {
             )?;
         }
         Ok(master)
+    }
+
+    /// Sets how long the worker retired by the next replacement may keep serving the connections
+    /// it accepted. Without it the configured drain timeout applies. It covers one replacement.
+    pub fn set_retirement_deadline(&mut self, deadline: Duration) {
+        self.retirement_deadline = Some(deadline);
     }
 
     /// Starts one replacement while the master is running.

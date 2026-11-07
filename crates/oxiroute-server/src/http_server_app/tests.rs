@@ -162,6 +162,7 @@ impl ServerApp for RejectingAdmissionApp {
 
 fn generation() -> Arc<RuntimeGeneration> {
     let config = ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
