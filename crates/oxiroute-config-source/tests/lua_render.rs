@@ -4,17 +4,17 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use lua_support::{load_lua, render_lua, render_lua_error};
 use oxiroute_config::{
-    AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, ConfigDraft, ConfigError,
-    DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HealthStartup,
-    HttpAccessPolicy, HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector,
-    HttpProxyPathRewrite, HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation,
-    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpRescuePolicy, HttpRescueTarget,
-    HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryBudget, HttpRetryMethodSafety,
-    HttpRetryPolicy, HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction,
-    HttpRoutePolicy, HttpService, HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost,
-    HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management,
-    PassiveHealthPolicy, PassiveObserve, PassiveOnError, PoolResilience, Protocol, Readmission,
-    ReadmissionProbe, RtmpAccessPolicy, RtmpApplication, RtmpExecEnvironment,
+    AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, CircuitBreaker, ConfigDraft,
+    ConfigError, DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType,
+    HealthStartup, HttpAccessPolicy, HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader,
+    HttpPathSelector, HttpProxyPathRewrite, HttpProxyPolicy, HttpProxyTimeouts,
+    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpRescuePolicy,
+    HttpRescueTarget, HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryBudget,
+    HttpRetryMethodSafety, HttpRetryPolicy, HttpRetryTarget, HttpRetryTrigger, HttpRoute,
+    HttpRouteAction, HttpRoutePolicy, HttpService, HttpStaticMimePolicy, HttpStaticPathMapping,
+    HttpUpstreamHost, HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind,
+    Management, PassiveHealthPolicy, PassiveObserve, PassiveOnError, PoolResilience, Protocol,
+    Readmission, ReadmissionProbe, RtmpAccessPolicy, RtmpApplication, RtmpExecEnvironment,
     RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy, RtmpExecProfile,
     RtmpExecTrigger, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
     RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings,
@@ -193,6 +193,14 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
                         host: None,
                         expected_status: Some(204),
                     }),
+                }),
+                circuit_breaker: Some(CircuitBreaker {
+                    window_ms: 20_000,
+                    min_requests: 10,
+                    failure_ratio_percent: 40,
+                    open_ms: 5_000,
+                    half_open_max: 2,
+                    half_open_successes: 4,
                 }),
             }),
             tls: Some(UpstreamTls {
@@ -763,6 +771,78 @@ fn rejects_invalid_readmission_bounds() {
     }
 }
 
+#[test]
+fn rejects_invalid_circuit_breaker_bounds() {
+    let valid = CircuitBreaker {
+        window_ms: 10_000,
+        min_requests: 10,
+        failure_ratio_percent: 50,
+        open_ms: 1_000,
+        half_open_max: 1,
+        half_open_successes: 2,
+    };
+    for (breaker, field) in [
+        (
+            CircuitBreaker {
+                window_ms: 5,
+                ..valid
+            },
+            "passive_health.circuit_breaker.window_ms",
+        ),
+        (
+            CircuitBreaker {
+                min_requests: 0,
+                ..valid
+            },
+            "passive_health.circuit_breaker.min_requests",
+        ),
+        (
+            CircuitBreaker {
+                failure_ratio_percent: 101,
+                ..valid
+            },
+            "passive_health.circuit_breaker.failure_ratio_percent",
+        ),
+        (
+            CircuitBreaker {
+                open_ms: 5,
+                ..valid
+            },
+            "passive_health.circuit_breaker.open_ms",
+        ),
+        (
+            CircuitBreaker {
+                half_open_max: 0,
+                ..valid
+            },
+            "passive_health.circuit_breaker.half_open_max",
+        ),
+        (
+            CircuitBreaker {
+                half_open_successes: 0,
+                ..valid
+            },
+            "passive_health.circuit_breaker.half_open_successes",
+        ),
+    ] {
+        let mut pool = test_upstream_pools().remove(0);
+        pool.passive_health = Some(PassiveHealthPolicy {
+            circuit_breaker: Some(breaker),
+            ..PassiveHealthPolicy::default()
+        });
+        let mut config = minimal_config();
+        config.upstream_pools.push(pool);
+
+        assert!(
+            matches!(
+                config.validate(),
+                Err(ConfigError::InvalidUpstreamServer { field: found, .. }) if found == field
+            ),
+            "{field}"
+        );
+    }
+}
+
 fn lenient_readmission() -> Readmission {
     Readmission {
         successes: 2,
@@ -947,6 +1027,13 @@ const RENDERED_FIELDS: &[&str] = &[
     "initial_backoff_ms",
     "max_backoff_ms",
     "recovery_threshold",
+    "circuit_breaker",
+    "window_ms",
+    "min_requests",
+    "failure_ratio_percent",
+    "open_ms",
+    "half_open_max",
+    "half_open_successes",
     "readmission",
     "successes",
     "probe",

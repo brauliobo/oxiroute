@@ -4,6 +4,7 @@ use super::*;
 const MAX_EJECTION_JITTER_PERCENT: u8 = 50;
 const MAX_UNAVAILABLE_BODY_BYTES: usize = 1024;
 const MAX_READMISSION_INTERVAL_MS: u64 = 3_600_000;
+const MAX_BREAKER_MS: u64 = 3_600_000;
 
 /// Validates upstream-pool identities, resources, endpoints, and health policies.
 ///
@@ -71,6 +72,60 @@ fn validate_passive_health_config(
     }
     if let Some(readmission) = &policy.readmission {
         validate_readmission(readmission, invalid)?;
+    }
+    if let Some(breaker) = &policy.circuit_breaker {
+        validate_circuit_breaker(breaker, invalid)?;
+    }
+    Ok(())
+}
+
+fn validate_circuit_breaker(
+    breaker: &crate::model::CircuitBreaker,
+    invalid: impl Fn(&'static str, &'static str) -> ConfigError,
+) -> Result<(), ConfigError> {
+    let field = |name| match name {
+        "window_ms" => "passive_health.circuit_breaker.window_ms",
+        "min_requests" => "passive_health.circuit_breaker.min_requests",
+        "failure_ratio_percent" => "passive_health.circuit_breaker.failure_ratio_percent",
+        "open_ms" => "passive_health.circuit_breaker.open_ms",
+        "half_open_max" => "passive_health.circuit_breaker.half_open_max",
+        _ => "passive_health.circuit_breaker.half_open_successes",
+    };
+    if !(1_000..=MAX_BREAKER_MS).contains(&breaker.window_ms) {
+        return Err(invalid(
+            field("window_ms"),
+            "window must be between 1000 and 3600000 milliseconds",
+        ));
+    }
+    if !(1..=100_000).contains(&breaker.min_requests) {
+        return Err(invalid(
+            field("min_requests"),
+            "minimum requests must be between 1 and 100000",
+        ));
+    }
+    if !(1..=100).contains(&breaker.failure_ratio_percent) {
+        return Err(invalid(
+            field("failure_ratio_percent"),
+            "failure ratio must be between 1 and 100 percent",
+        ));
+    }
+    if !(100..=MAX_BREAKER_MS).contains(&breaker.open_ms) {
+        return Err(invalid(
+            field("open_ms"),
+            "open time must be between 100 and 3600000 milliseconds",
+        ));
+    }
+    if !(1..=100).contains(&breaker.half_open_max) {
+        return Err(invalid(
+            field("half_open_max"),
+            "half-open trial limit must be between 1 and 100",
+        ));
+    }
+    if !(1..=100).contains(&breaker.half_open_successes) {
+        return Err(invalid(
+            field("half_open_successes"),
+            "half-open successes must be between 1 and 100",
+        ));
     }
     Ok(())
 }

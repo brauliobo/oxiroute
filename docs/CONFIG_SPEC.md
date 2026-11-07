@@ -391,6 +391,14 @@ Current constraints:
   connect. An active `health_check` no longer returns a passively ejected server on its own while
   `readmission` is set. Probing needs a socket or DNS endpoint; the first ejection behaves like
   today's, the probe only decides the return.
+- `passive_health.circuit_breaker` (optional) takes a server out of rotation when too large a share
+  of its recent requests fail, independent of the consecutive-failure `error_limit`. Over a sliding
+  `window_ms` (default 30000, 1000 through 3600000), once at least `min_requests` (default 20)
+  outcomes were seen and `failure_ratio_percent` (default 50, 1 through 100) of them are failures
+  (the same failures `error_limit` counts), the breaker opens for `open_ms` (default 10000, 100
+  through 3600000). It then goes half-open: at most `half_open_max` (default 1) trial requests run
+  at once, `half_open_successes` (default 3) trial successes in a row close it, and one trial
+  failure reopens it. Existing leases are never revoked.
 - `resilience` is an optional per-pool object whose options all default to the strict behavior.
   `fail_open = true` keeps a pool serving when health checks or passive ejection leave none of its
   servers selectable: instead of answering `503`, it selects the least bad server that is not

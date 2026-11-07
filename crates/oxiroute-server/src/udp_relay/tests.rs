@@ -59,6 +59,7 @@ fn passive_health(error_limit: u16, backoff_ms: u64) -> PassiveHealthPolicy {
         max_backoff_ms: backoff_ms,
         recovery_threshold: 1,
         readmission: None,
+        circuit_breaker: None,
     }
 }
 

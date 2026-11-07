@@ -102,6 +102,7 @@ fn exclude_nonintegrated_component_controls(
         "upstream_pools[].server_timeout_ms",
         "upstream_pools[].connection_reuse",
         "upstream_pools[].passive_health.readmission",
+        "upstream_pools[].passive_health.circuit_breaker",
         "upstream_pools[].health_check.startup",
         "upstream_pools[].health_check.fast_interval_ms",
         "upstream_pools[].health_check.down_interval_ms",

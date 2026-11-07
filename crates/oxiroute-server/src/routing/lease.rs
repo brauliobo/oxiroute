@@ -69,7 +69,7 @@ impl EndpointObservation {
     }
 
     pub(crate) fn record_passive_success(&self) {
-        self.server.record_passive_success();
+        self.health.record_passive_success(&self.server);
     }
 }
 
@@ -151,7 +151,7 @@ impl EndpointLease {
     }
 
     pub(crate) fn record_passive_success(&self) {
-        self.inner.server.record_passive_success();
+        self.inner.health.record_passive_success(&self.inner.server);
     }
 
     pub(crate) async fn resolve_addresses(&self) -> io::Result<Vec<SocketAddr>> {

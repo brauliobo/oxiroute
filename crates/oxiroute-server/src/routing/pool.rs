@@ -16,7 +16,14 @@ impl EndpointPool {
         let endpoints = servers
             .into_iter()
             .zip(blueprint.weights.iter().copied())
-            .map(|(server, weight)| Arc::new(PoolEndpoint::new(server, startup, weight)))
+            .map(|(server, weight)| {
+                Arc::new(PoolEndpoint::new(
+                    server,
+                    startup,
+                    weight,
+                    passive_policy.circuit_breaker,
+                ))
+            })
             .collect::<Arc<[_]>>();
         let queue = Arc::new(PoolQueue::new(queue_timeout.is_some()));
         let health = Arc::new(PoolHealthState::new(
