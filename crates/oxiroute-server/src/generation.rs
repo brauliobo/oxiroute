@@ -23,7 +23,7 @@ use crate::generation::resources::GenerationResources;
 use crate::generation::retirement::{
     PendingApply, RemoteRetired, RetiredGenerationStatus, RetiredGenerations, RetirementCounters,
 };
-use crate::listener_inventory::{ListenerId, ListenerInventory};
+use crate::listener::inventory::{ListenerId, ListenerInventory};
 use crate::routing::ServerAdminState;
 use crate::rtmp::generation_runtime::{RtmpRetirement, RtmpRetirementRegistry};
 #[cfg(test)]

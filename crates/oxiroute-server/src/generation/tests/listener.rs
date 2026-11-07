@@ -170,7 +170,7 @@ fn listener_runtime_rolls_back_generation_ownership_when_metrics_reject() {
         .register_listener("edge", "http", "127.0.0.1:8080", Some(1))
         .expect("listener");
     let held = listener.begin_connection().expect("held connection");
-    let runtime = crate::listener_runtime::ListenerRuntime::new(listener);
+    let runtime = crate::listener::runtime::ListenerRuntime::new(listener);
 
     assert!(
         runtime
@@ -191,7 +191,7 @@ fn listener_runtime_owned_admission_does_not_recheck_a_closed_generation_gate() 
     let listener = metrics
         .register_listener("edge", "http", "127.0.0.1:8080", Some(1))
         .expect("listener");
-    let runtime = crate::listener_runtime::ListenerRuntime::new(listener);
+    let runtime = crate::listener::runtime::ListenerRuntime::new(listener);
 
     generation.stop_accepting();
     let lease = runtime

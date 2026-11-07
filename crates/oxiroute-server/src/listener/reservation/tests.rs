@@ -7,7 +7,7 @@ use oxiroute_config::{ConfigDraft, Protocol, ValidatedConfig};
 use serde_json::json;
 
 use super::*;
-use crate::listener_inventory::{
+use crate::listener::inventory::{
     ListenerDescriptorKind, ListenerDescriptorRole, ListenerId, ListenerInventory,
     ListenerMetricPolicy, ListenerPlane,
 };

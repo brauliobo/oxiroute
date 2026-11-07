@@ -7,7 +7,7 @@ use super::{
     },
     *,
 };
-use crate::listener_inventory::{ListenerDescriptorKind, ListenerDescriptorRole, ListenerPlane};
+use crate::listener::inventory::{ListenerDescriptorKind, ListenerDescriptorRole, ListenerPlane};
 
 fn inventory_entry(id: ListenerId, name: &str, bind: ListenerBind) -> ListenerEntry {
     ListenerEntry {
