@@ -2601,6 +2601,7 @@ function projectMonitoringPoolEndpoint(value: MonitoringPoolEndpoint): Monitorin
     healthOverride: value.healthOverride,
     maxConnections: value.maxConnections,
     name: value.name,
+    origin: value.origin,
     state: value.state,
     weight: value.weight,
     lastCheckedAtUnixMs: value.lastCheckedAtUnixMs,

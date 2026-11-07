@@ -117,6 +117,7 @@ export interface EndpointDto {
   lastTransitionAtUnixMs: number | null
   maxConnections: number | null
   name: string
+  origin: ServerOrigin
   passiveConsecutiveFailures: DecimalCounter
   passiveEjected: boolean
   passiveEjectedAtUnixMs: number | null
@@ -301,6 +302,8 @@ export interface ServerInventoryEntry {
 export interface ServerInventoryResponse {
   servers: Array<ServerInventoryEntry>
 }
+
+export type ServerOrigin = "static" | "dynamic"
 
 export interface StatusCertificatesDto {
   acmeManaged: Array<AcmeManagedCertificateDto>
