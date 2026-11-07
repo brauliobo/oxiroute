@@ -272,7 +272,10 @@ function isUpstreamPool(value: unknown): value is UpstreamPoolConfig {
     ['never', 'safe', 'always'].includes(String(value.connection_reuse)) &&
     isRecord(value.resilience) && typeof value.resilience.fail_open === 'boolean' &&
     nullableSafeInteger(value.resilience.min_members) &&
-    integerInRange(value.resilience.ejection_jitter_percent, 0, 50)
+    integerInRange(value.resilience.ejection_jitter_percent, 0, 50) &&
+    nullableSafeInteger(value.resilience.queue_while_unavailable_ms) &&
+    nullableSafeInteger(value.resilience.unavailable_retry_after_seconds) &&
+    nullableString(value.resilience.unavailable_body)
 }
 
 function isUpstreamAlgorithm(value: unknown, serverCount: number): value is UpstreamAlgorithm {

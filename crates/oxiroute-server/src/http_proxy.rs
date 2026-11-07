@@ -9,9 +9,9 @@ use http::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
     header::{
         ACCEPT_RANGES, ALLOW, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
-        CONTENT_TYPE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
-        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, RANGE, SERVER, TRAILER, TRANSFER_ENCODING,
-        WWW_AUTHENTICATE,
+        CONTENT_TYPE, DATE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
+        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, RANGE, RETRY_AFTER, SERVER, TRAILER,
+        TRANSFER_ENCODING, WWW_AUTHENTICATE,
     },
     uri::Authority,
 };
@@ -643,7 +643,7 @@ impl ProxyHttp for HttpReverseProxy {
                 warn!("failed to send nginx proxy error response downstream: {write_error}");
             }
         } else if code > 0
-            && let Err(write_error) = respond_error(session, code, error).await
+            && let Err(write_error) = respond_error(session, code, error, ctx.pool.as_deref()).await
         {
             warn!("failed to send error response downstream: {write_error}");
         }
@@ -1842,13 +1842,34 @@ async fn execute_route_action(
     }
 }
 
-async fn respond_error(session: &mut Session, code: u16, error: &Error) -> pingora::Result<()> {
+async fn respond_error(
+    session: &mut Session,
+    code: u16,
+    error: &Error,
+    pool: Option<&UpstreamPlan>,
+) -> pingora::Result<()> {
     if !is_pool_unavailable(error) {
         return session.respond_error(code).await;
     }
+    let unavailable = pool.map(UpstreamPlan::unavailable_response);
     let mut response = ServerSession::generate_error(code);
     response.insert_header(POOL_UNAVAILABLE_HEADER, "1")?;
-    session.write_error_response(response, Bytes::new()).await
+    // Pingora's error responder carries a placeholder Date that only the automatic headers replace.
+    response.insert_header(DATE, httpdate::fmt_http_date(SystemTime::now()))?;
+    let mut body = Bytes::new();
+    if let Some(unavailable) = unavailable {
+        if let Some(retry_after) = &unavailable.retry_after {
+            response.insert_header(RETRY_AFTER, retry_after.clone())?;
+        }
+        if !unavailable.body.is_empty() {
+            response.insert_header(CONTENT_TYPE, "text/plain; charset=utf-8")?;
+            response.insert_header(CONTENT_LENGTH, unavailable.body.len().to_string())?;
+            if session.req_header().method != Method::HEAD {
+                body = unavailable.body.clone();
+            }
+        }
+    }
+    session.write_error_response(response, body).await
 }
 
 fn proxy_error_status(error: &Error) -> u16 {

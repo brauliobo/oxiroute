@@ -241,6 +241,9 @@ export interface PoolResilienceConfig {
   fail_open: boolean
   min_members: number | null
   ejection_jitter_percent: number
+  queue_while_unavailable_ms: number | null
+  unavailable_retry_after_seconds: number | null
+  unavailable_body: string | null
 }
 
 export interface UpstreamTlsConfig {

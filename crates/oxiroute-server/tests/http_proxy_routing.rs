@@ -1850,7 +1850,7 @@ async fn fail_open_pool_passes_the_apps_own_500_through_when_its_health_path_fai
     timeout(TEST_TIMEOUT, async {
         let origin = AppErrorOrigin::start().await;
         let proxy = ProxyHarness::start_with_health(
-            vec![app_error_pool(origin.address, true)],
+            vec![app_error_pool(origin.address, fail_open())],
             vec![route(None, "/", &[], "app")],
             1,
         )
@@ -1876,7 +1876,10 @@ async fn pool_without_fail_open_answers_an_empty_503_when_its_health_path_fails(
     timeout(TEST_TIMEOUT, async {
         let origin = AppErrorOrigin::start().await;
         let proxy = ProxyHarness::start_with_health(
-            vec![app_error_pool(origin.address, false)],
+            vec![app_error_pool(
+                origin.address,
+                oxiroute_config::PoolResilience::default(),
+            )],
             vec![route(None, "/", &[], "app")],
             1,
         )
@@ -1891,6 +1894,87 @@ async fn pool_without_fail_open_answers_an_empty_503_when_its_health_path_fails(
     })
     .await
     .expect("closed pool test timed out");
+}
+
+async fn unavailable_response(
+    resilience: oxiroute_config::PoolResilience,
+    automatic_response_headers: bool,
+    method: &str,
+) -> RawResponse {
+    let origin = AppErrorOrigin::start().await;
+    let proxy = ProxyHarness::start_with_features(
+        vec![app_error_pool(origin.address, resilience)],
+        vec![route(None, "/", &[], "app")],
+        Some(1024),
+        automatic_response_headers,
+        100,
+        0,
+        true,
+        1,
+        None,
+        None,
+        DownstreamTimeoutPolicy::default(),
+    )
+    .await;
+    let response = proxy
+        .request(&format!("{method} / HTTP/1.1\r\nHost: app.test\r\n"))
+        .await;
+    proxy.finish().await;
+    response
+}
+
+#[tokio::test]
+async fn pool_unavailable_503_carries_the_current_date_with_or_without_automatic_headers() {
+    timeout(TEST_TIMEOUT, async {
+        for automatic in [true, false] {
+            let response =
+                unavailable_response(oxiroute_config::PoolResilience::default(), automatic, "GET")
+                    .await;
+
+            assert_eq!(response.status, 503, "response: {}", response.text());
+            assert_eq!(response.header("x-oxiroute-pool-unavailable"), Some("1"));
+            let date = httpdate::parse_http_date(response.header("date").expect("Date header"))
+                .expect("HTTP date");
+            let age = std::time::SystemTime::now()
+                .duration_since(date)
+                .unwrap_or_default();
+            assert!(
+                age < Duration::from_secs(60),
+                "automatic {automatic}: {age:?}"
+            );
+            assert_eq!(response.header("retry-after"), None);
+            assert_eq!(response.header("content-length"), Some("0"));
+        }
+    })
+    .await
+    .expect("503 date test timed out");
+}
+
+#[tokio::test]
+async fn pool_unavailable_503_adds_the_configured_retry_after_and_body() {
+    timeout(TEST_TIMEOUT, async {
+        let resilience = oxiroute_config::PoolResilience {
+            unavailable_retry_after_seconds: Some(7),
+            unavailable_body: Some("temporarily unavailable\n".into()),
+            ..oxiroute_config::PoolResilience::default()
+        };
+
+        let get = unavailable_response(resilience.clone(), true, "GET").await;
+        assert_eq!(get.status, 503, "response: {}", get.text());
+        assert_eq!(get.header("retry-after"), Some("7"));
+        assert_eq!(
+            get.header("content-type"),
+            Some("text/plain; charset=utf-8")
+        );
+        assert_eq!(get.header("x-oxiroute-pool-unavailable"), Some("1"));
+        assert_eq!(get.body(), b"temporarily unavailable\n");
+
+        let head = unavailable_response(resilience, true, "HEAD").await;
+        assert_eq!(head.header("content-length"), Some("24"));
+        assert!(head.body().is_empty());
+    })
+    .await
+    .expect("503 body test timed out");
 }
 
 async fn statuses_while_every_app_server_fails(
@@ -6462,7 +6546,10 @@ fn pool(name: &str, endpoints: &[SocketAddr]) -> UpstreamPool {
     )
 }
 
-fn app_error_pool(address: SocketAddr, fail_open: bool) -> UpstreamPool {
+fn app_error_pool(
+    address: SocketAddr,
+    resilience: oxiroute_config::PoolResilience,
+) -> UpstreamPool {
     UpstreamPool {
         health_check: Some(HealthCheck {
             kind: HealthCheckType::Http,
@@ -6478,11 +6565,15 @@ fn app_error_pool(address: SocketAddr, fail_open: bool) -> UpstreamPool {
             expected_status: None,
             http_version: None,
         }),
-        resilience: oxiroute_config::PoolResilience {
-            fail_open,
-            ..oxiroute_config::PoolResilience::default()
-        },
+        resilience,
         ..pool("app", &[address])
+    }
+}
+
+fn fail_open() -> oxiroute_config::PoolResilience {
+    oxiroute_config::PoolResilience {
+        fail_open: true,
+        ..oxiroute_config::PoolResilience::default()
     }
 }
 

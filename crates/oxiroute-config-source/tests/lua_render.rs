@@ -692,6 +692,9 @@ fn round_trips_pool_resilience_options() {
         fail_open: true,
         min_members: Some(1),
         ejection_jitter_percent: 25,
+        queue_while_unavailable_ms: Some(3_000),
+        unavailable_retry_after_seconds: Some(5),
+        unavailable_body: Some("down for maintenance".into()),
     };
     let mut config = minimal_config();
     config.upstream_pools.push(pool.clone());
@@ -702,6 +705,9 @@ fn round_trips_pool_resilience_options() {
     assert!(source.contains("fail_open = true"));
     assert!(source.contains("min_members = 1"));
     assert!(source.contains("ejection_jitter_percent = 25"));
+    assert!(source.contains("queue_while_unavailable_ms = 3000"));
+    assert!(source.contains("unavailable_retry_after_seconds = 5"));
+    assert!(source.contains("unavailable_body = \"down for maintenance\""));
 }
 
 #[test]
@@ -720,6 +726,27 @@ fn rejects_invalid_pool_resilience_bounds() {
                 ..PoolResilience::default()
             },
             "resilience.ejection_jitter_percent",
+        ),
+        (
+            PoolResilience {
+                queue_while_unavailable_ms: Some(86_400_001),
+                ..PoolResilience::default()
+            },
+            "resilience.queue_while_unavailable_ms",
+        ),
+        (
+            PoolResilience {
+                unavailable_retry_after_seconds: Some(0),
+                ..PoolResilience::default()
+            },
+            "resilience.unavailable_retry_after_seconds",
+        ),
+        (
+            PoolResilience {
+                unavailable_body: Some(String::new()),
+                ..PoolResilience::default()
+            },
+            "resilience.unavailable_body",
         ),
     ] {
         let mut pool = test_upstream_pools().remove(0);
@@ -822,6 +849,9 @@ const RENDERED_FIELDS: &[&str] = &[
     "fail_open",
     "min_members",
     "ejection_jitter_percent",
+    "queue_while_unavailable_ms",
+    "unavailable_retry_after_seconds",
+    "unavailable_body",
     "observe",
     "on_error",
     "error_limit",

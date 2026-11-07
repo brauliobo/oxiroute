@@ -587,6 +587,7 @@ const DEFAULT_PASSIVE_MAX_EJECTION_DURATION: Duration = Duration::from_mins(5);
 const MAX_PASSIVE_FAILURE_THRESHOLD: u16 = 100;
 const MAX_PASSIVE_EJECTION_DURATION: Duration = Duration::from_hours(24);
 const MAX_EJECTION_JITTER_PERCENT: u8 = 50;
+const RECOVERY_POLL: Duration = Duration::from_millis(250);
 
 /// Bounded policy for passively ejecting endpoints after attributed upstream failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -746,6 +747,8 @@ pub(crate) struct PoolResiliencePolicy {
     fail_open: bool,
     /// Passive ejection leaves at least this many other servers selectable.
     min_members: usize,
+    /// How long a request waits for a server to become selectable before the pool is unavailable.
+    unavailable_wait: Option<Duration>,
 }
 
 impl PoolResiliencePolicy {
@@ -755,6 +758,9 @@ impl PoolResiliencePolicy {
             min_members: resilience
                 .min_members
                 .map_or_else(|| usize::from(resilience.fail_open), usize::from),
+            unavailable_wait: resilience
+                .queue_while_unavailable_ms
+                .map(Duration::from_millis),
         }
     }
 }
@@ -2291,17 +2297,45 @@ impl EndpointPool {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn select_connection_target_excluding(
         &self,
         excluded: &[String],
     ) -> Option<EndpointLease> {
+        let (lease, _) = self.connection_target(excluded);
+        if lease.is_none() {
+            self.note_unavailable_selection();
+        }
+        lease
+    }
+
+    /// Like [`Self::select_connection_target_excluding`], but waits up to the pool's
+    /// `queue_while_unavailable_ms` for a server to become selectable.
+    pub(crate) async fn select_connection_target_waiting(
+        &self,
+        excluded: &[String],
+    ) -> Option<EndpointLease> {
+        let recovery_deadline = self.recovery_deadline();
+        loop {
+            let (lease, pool_available) = self.connection_target(excluded);
+            if lease.is_some() || pool_available || !self.await_recovery(recovery_deadline).await {
+                if lease.is_none() {
+                    self.note_unavailable_selection();
+                }
+                return lease;
+            }
+        }
+    }
+
+    /// A connection target, and whether any server was selectable.
+    fn connection_target(&self, excluded: &[String]) -> (Option<EndpointLease>, bool) {
         let mut selection = self
             .selection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (candidates, pool_available) = self.candidates(selection.next, excluded, now_unix_ms());
         if !pool_available && self.resilience.fail_open {
-            return self.fail_open_connection_target(excluded);
+            return (self.fail_open_connection_target(excluded), false);
         }
         let available = candidates
             .iter()
@@ -2329,8 +2363,7 @@ impl EndpointPool {
                 .map(|(cursor, index, _)| (*cursor, *index)),
         };
         let Some((cursor, index)) = selected else {
-            self.note_unavailable_selection();
-            return None;
+            return (None, pool_available);
         };
         if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
             selection.next = if self.weighted_schedule.is_empty() {
@@ -2339,19 +2372,18 @@ impl EndpointPool {
                 (cursor + 1) % self.weighted_schedule.len()
             };
         }
-        Some(self.pending_lease(index, Admission::Selectable))
+        (
+            Some(self.pending_lease(index, Admission::Selectable)),
+            pool_available,
+        )
     }
 
     fn fail_open_connection_target(&self, excluded: &[String]) -> Option<EndpointLease> {
         let ranking = self.fail_open_ranking(excluded);
-        let Some(server) = ranking
+        let server = ranking
             .iter()
             .find(|server| server.has_capacity())
-            .or_else(|| ranking.first())
-        else {
-            self.note_unavailable_selection();
-            return None;
-        };
+            .or_else(|| ranking.first())?;
         self.fail_open_selections.fetch_add(1, Ordering::Relaxed);
         Some(self.pending_lease_for(server, Admission::FailOpen))
     }
@@ -2408,12 +2440,27 @@ impl EndpointPool {
         &self,
         mut select: impl FnMut() -> SelectionAttempt,
     ) -> Option<EndpointLease> {
+        let recovery_deadline = self.recovery_deadline();
+        loop {
+            let (lease, unavailable) = self.select_wait_once(&mut select).await;
+            if !unavailable || !self.await_recovery(recovery_deadline).await {
+                if unavailable {
+                    self.note_unavailable_selection();
+                }
+                return lease;
+            }
+        }
+    }
+
+    /// One queued selection; the flag reports that no server was selectable.
+    async fn select_wait_once(
+        &self,
+        select: &mut impl FnMut() -> SelectionAttempt,
+    ) -> (Option<EndpointLease>, bool) {
         let Some(queue_timeout) = self.queue_timeout else {
             let attempt = select();
-            if attempt.lease.is_none() && !attempt.pool_available {
-                self.note_unavailable_selection();
-            }
-            return attempt.lease;
+            let unavailable = attempt.lease.is_none() && !attempt.pool_available;
+            return (attempt.lease, unavailable);
         };
         let deadline = Instant::now() + queue_timeout;
         let mut waiting = QueueWaitGuard::new(Arc::clone(&self.queue));
@@ -2426,22 +2473,45 @@ impl EndpointPool {
                 let attempt = select();
                 if let Some(lease) = attempt.lease {
                     waiting.complete();
-                    return Some(lease);
+                    return (Some(lease), false);
                 }
                 if !attempt.pool_available || !attempt.saturated {
                     waiting.complete();
-                    if !attempt.pool_available {
-                        self.note_unavailable_selection();
-                    }
-                    return None;
+                    return (None, !attempt.pool_available);
                 }
             }
             waiting.mark_waiting();
             if timeout_at(deadline, notified).await.is_err() {
                 waiting.timeout();
-                return None;
+                return (None, false);
             }
         }
+    }
+
+    fn recovery_deadline(&self) -> Option<Instant> {
+        self.resilience
+            .unavailable_wait
+            .map(|wait| Instant::now() + wait)
+    }
+
+    /// Waits for a health change or the next poll, since ejections also end with time. Returns
+    /// false when the deadline has passed or no server could ever become selectable by itself.
+    async fn await_recovery(&self, deadline: Option<Instant>) -> bool {
+        let Some(deadline) = deadline else {
+            return false;
+        };
+        let now = Instant::now();
+        let recoverable = self
+            .read_health(|endpoints| endpoints.iter().any(|server| server.fail_open_eligible()));
+        if now >= deadline || !recoverable {
+            return false;
+        }
+        let _ = timeout_at(
+            (now + RECOVERY_POLL).min(deadline),
+            self.queue.notify.notified(),
+        )
+        .await;
+        true
     }
 
     fn select_named_server(&self, name: &str) -> SelectionAttempt {
