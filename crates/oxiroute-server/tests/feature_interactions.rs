@@ -556,6 +556,49 @@ async fn a_rescue_pool_may_reuse_the_server_names_of_the_pool_that_failed() {
     .expect("shared server names test timed out");
 }
 
+#[tokio::test]
+async fn the_rescue_pool_tries_each_of_its_servers_once_even_when_they_all_answer_the_rescue_status()
+ {
+    timeout(TEST_TIMEOUT, async {
+        let primary = Origin::start(404, "primary").await;
+        let (spare_one, spare_two) = (
+            Origin::start(404, "s1").await,
+            Origin::start(404, "s2").await,
+        );
+        let proxy = Proxy::start(
+            vec![
+                pool(
+                    "primary",
+                    UpstreamAlgorithm::First,
+                    vec![server("one", primary.address)],
+                ),
+                two_named("spare", &spare_one, &spare_two),
+            ],
+            vec![rescue_route(
+                "primary",
+                HttpRescueTarget::Pool,
+                Some("spare"),
+            )],
+            3,
+            1,
+        )
+        .await;
+
+        let response = proxy.request("GET").await;
+
+        assert_eq!(response.status, 404, "response: {}", response.text());
+        assert_eq!(response.header("x-origin"), Some("s2"));
+        assert_eq!(
+            (primary.hits(), spare_one.hits(), spare_two.hits()),
+            (1, 1, 1),
+            "no server is revisited"
+        );
+        proxy.finish().await;
+    })
+    .await
+    .expect("rescue pool exhaustion test timed out");
+}
+
 // 3. A rescue status is not a passive-health failure.
 
 fn resilient_pool(name: &str, first: &Origin, second: &Origin) -> UpstreamPool {
