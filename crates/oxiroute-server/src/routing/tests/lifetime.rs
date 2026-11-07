@@ -288,7 +288,7 @@ fn reload_keeps_each_old_connection_on_its_original_queue_timeout_invariant() {
 }
 
 #[tokio::test]
-async fn public_selector_queue_counters_exclude_hidden_lifetime_waits() {
+async fn selector_and_bound_lifetime_waits_share_the_queue_counters() {
     let pool = Arc::new(
         RoundRobinPool::new_named_servers(
             "counter-ownership".into(),
@@ -307,22 +307,22 @@ async fn public_selector_queue_counters_exclude_hidden_lifetime_waits() {
     let hidden_waiter = tokio::spawn(async move { hidden.wait_for_capacity(generation).await });
     wait_for_lifetime_waiters(&pool, 1).await;
     let hidden_snapshot = pool.health_snapshot();
-    assert_eq!(hidden_snapshot.queued, 0);
-    assert_eq!(hidden_snapshot.queued_total, 0);
+    assert_eq!(hidden_snapshot.queued, 1);
+    assert_eq!(hidden_snapshot.queued_total, 1);
     assert_eq!(hidden_snapshot.queue_cancellations, 0);
 
     let selecting_pool = Arc::clone(&pool);
     let selector_waiter = tokio::spawn(async move { selecting_pool.select_wait().await });
     tokio::time::timeout(Duration::from_secs(1), async {
-        while pool.health_snapshot().queued != 1 {
+        while pool.health_snapshot().queued != 2 {
             tokio::task::yield_now().await;
         }
     })
     .await
     .expect("selector waiter registration");
     let combined_snapshot = pool.health_snapshot();
-    assert_eq!(combined_snapshot.queued, 1);
-    assert_eq!(combined_snapshot.queued_total, 1);
+    assert_eq!(combined_snapshot.queued, 2);
+    assert_eq!(combined_snapshot.queued_total, 2);
     assert_eq!(combined_snapshot.queue_cancellations, 0);
 
     hidden_waiter.abort();
@@ -334,7 +334,7 @@ async fn public_selector_queue_counters_exclude_hidden_lifetime_waits() {
     );
     wait_for_lifetime_waiters(&pool, 0).await;
     assert_eq!(pool.health_snapshot().queued, 1);
-    assert_eq!(pool.health_snapshot().queue_cancellations, 0);
+    assert_eq!(pool.health_snapshot().queue_cancellations, 1);
 
     selector_waiter.abort();
     assert!(
@@ -345,8 +345,8 @@ async fn public_selector_queue_counters_exclude_hidden_lifetime_waits() {
     );
     let final_snapshot = pool.health_snapshot();
     assert_eq!(final_snapshot.queued, 0);
-    assert_eq!(final_snapshot.queued_total, 1);
-    assert_eq!(final_snapshot.queue_cancellations, 1);
+    assert_eq!(final_snapshot.queued_total, 2);
+    assert_eq!(final_snapshot.queue_cancellations, 2);
 }
 
 #[tokio::test]
