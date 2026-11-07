@@ -2064,6 +2064,7 @@ fn editable_config() -> ConfigDraft {
         PRIVATE_KEY.get_or_init(|| fixture_support::private_key_fixture("proxy-a-key.pem"));
 
     ConfigDraft {
+        retirement: None,
         certificates: vec![Certificate {
             name: "test-certificate".into(),
             dns_names: vec!["proxy.example.test".into()],

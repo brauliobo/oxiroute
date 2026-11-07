@@ -138,6 +138,9 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         {
             thread::sleep(Duration::from_millis(150));
         }
+        if behavior == "slow-drain" && phase == ControlPhase::Drain {
+            thread::sleep(Duration::from_millis(500));
+        }
         if behavior == "timeout-activate" && phase == ControlPhase::Activate {
             thread::sleep(Duration::from_secs(1));
         }

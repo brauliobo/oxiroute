@@ -641,6 +641,7 @@ fn runtime_config(
     manual_root: &Path,
 ) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(Management {
             bind: management_address,
             ui_dir: None,
@@ -677,6 +678,7 @@ fn runtime_config(
 
 fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(Management {
             bind: management_address,
             ui_dir: None,
@@ -744,6 +746,7 @@ fn handoff_runtime_config(
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     };
     ConfigDraft {
+        retirement: None,
         management: Some(Management {
             bind: management_address,
             ui_dir: None,
@@ -787,6 +790,7 @@ fn handoff_runtime_config(
             resilience: oxiroute_config::PoolResilience::default(),
         }],
         http_services: vec![HttpService {
+            drain_deadline_ms: None,
             name: "handoff-http".into(),
             routes: vec![HttpRoute {
                 host: None,
@@ -835,6 +839,7 @@ fn handoff_runtime_config(
             }],
         }],
         l4_services: vec![L4Service {
+            drain_deadline_ms: None,
             name: "handoff-tcp".into(),
             upstream_pool: "handoff-upstream".into(),
             connect_timeout_ms: 1_000,

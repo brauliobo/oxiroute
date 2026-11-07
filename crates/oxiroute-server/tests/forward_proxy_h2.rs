@@ -66,6 +66,7 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
         policy: oxiroute_config::TlsPolicy::default(),
     });
     config.forward_proxy_services.push(ForwardProxyService {
+        drain_deadline_ms: None,
         name: "forward".into(),
         enabled_versions: vec![ForwardHttpVersion::H2],
         allow_absolute_form: false,

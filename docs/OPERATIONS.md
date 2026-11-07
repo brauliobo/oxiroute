@@ -245,13 +245,30 @@ The configuration API describes the effect of a change before and after saving t
 `I_LISTENER_CHANGES` diagnostic (path `/config/listeners`), which lists the `added`, `removed` and
 `kept` listeners as `name (transport address)`.
 
-In supervised mode the old worker keeps serving its accepted connections for up to the reload
-drain window, `3 hours` by default so that it outlasts the 2 hour read timeouts of long-lived
-streaming upstreams. Set `OXIROUTE_RELOAD_DRAIN_SECONDS` (1 to 86400) in `/etc/oxiroute/oxiroute.env` to
-change it; connections still open when the window ends are closed. The old worker exits as soon as
-its last connection ends, which is also when the master returns to idle. Only one old worker is
-drained at a time, so a reload requested while one is draining waits for it (the master applies
-the newest saved revision afterwards without further action).
+A replaced generation (a worker in supervised mode) closes its idle HTTP/1 keep-alive connections
+when the next revision is applied, so an idle client never holds up an apply. A request still in
+progress finishes, its response carries `Connection: close`, and the client reconnects to the new
+generation. Other work (a long request, a WebSocket, a CONNECT tunnel, an L4 relay, an RTMP session,
+an HTTP/3 request) continues until it ends or the generation's drain deadline passes, then the
+generation is closed. The deadline is, in order, `retirement.drain_deadline_ms` of the replaced
+generation's own configuration, the deprecated `OXIROUTE_RELOAD_DRAIN_SECONDS` (1 to 86400) in
+`/etc/oxiroute/oxiroute.env`, or the larger of 3 hours and the longest HTTP
+`upstream_io_timeout_ms`; an HTTP, forward proxy or L4 service `drain_deadline_ms` only raises it.
+`retirement.max_retired_generations` (default 4) bounds how many replaced generations drain at
+once in the direct runtime: a further apply stays prepared (`pendingApply` with reason
+`retired_cap` in `generation status`, a `generation_retire` event with outcome `cap_reached`) until
+a slot frees. In supervised mode one replaced worker drains at a time, whatever the setting, so a
+second reload requested while a long request keeps it alive waits for it (the master applies the
+newest saved revision afterwards without further action). At the deadline the retired worker
+closes its generation and logs a `generation_retire` event with outcome `forced_close`; the master
+kills the worker 10 seconds later if it is still there. `generation status` and
+`GET /api/v1/generations` list the draining generations as `retiredGenerations` (revision, state,
+age, seconds before the deadline, in-flight work by protocol). Under the supervising master the
+retired worker is listed by the active worker from what the master reports once a second, and its
+in-flight work is the connection total (`inFlightByKind` has a single `connections` entry). The
+metrics `oxiroute_generation_retired`, `oxiroute_generation_retired_age_seconds`,
+`oxiroute_generation_in_flight{role}` and `oxiroute_generation_forced_close_total{reason}` count
+them. Stopping the service (`TimeoutStopSec=15s`) still ends long jobs.
 
 One case still needs a process restart: a Unix socket that keeps its path and changes its mode,
 because the new socket would need the path the running one owns.

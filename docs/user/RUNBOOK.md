@@ -157,14 +157,16 @@ apart. *6.0:* per-phase `policy.timeouts` and `504` with `x-oxiroute-reason`.
 **Bad config.** Nothing changed after a write: see the rejected-write detection. Applied but wrong:
 [roll back](#roll-back-a-generation).
 
-**Retired generation blocked by an idle keep-alive.** Only one old worker drains at a time, for up to
-3 hours (`OXIROUTE_RELOAD_DRAIN_SECONDS`), and a client holding an idle keep-alive connection counts as
-in-flight work, so the next reload stays pending (`generation status` shows a candidate; the journal has
-`ReplacementCommitted` without `ReplacementCompleted`). Close or restart the client holding it
-(`ss -tn state established '( sport = :PORT )'` lists peers) or wait; restart OxiRoute only when nothing
-is in flight. Prevent it: set listener `downstream_timeouts.keepalive_timeout_ms`, keep
-`OXIROUTE_RELOAD_DRAIN_SECONDS` in `/etc/oxiroute/oxiroute.env` below your longest job, and list known
-machines permanently so applies are rare.
+**A reload stays pending behind a retired generation.** Since 6.0 an idle keep-alive connection no
+longer holds a replaced generation: it is closed when the next revision is applied. What can still
+hold one is work in progress (a long request, a WebSocket, a tunnel, a relay). Only one replaced
+worker drains at a time under the supervising master, so the next reload stays pending
+(`generation status` shows a candidate; the journal has `ReplacementCommitted` without
+`ReplacementCompleted`) until that work ends or the `retirement.drain_deadline_ms` of the replaced
+configuration passes, when the worker is stopped. Check by applying twice during a long request:
+the second apply activates when the request ends. In the direct runtime `generation status` lists
+the draining generations as `retiredGenerations`, with their in-flight counts, and a full
+`max_retired_generations` shows `pendingApply`.
 
 ## Hardening recipe (0.5.4)
 

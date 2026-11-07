@@ -37,6 +37,10 @@ fn exposition_contains_operational_families_without_listener_binds() {
     assert!(output.contains("oxiroute_process_uptime_seconds"));
     assert!(output.contains("listener=\"public\\\"edge\""));
     assert!(output.contains("oxiroute_generation_activations_total"));
+    assert!(output.contains("oxiroute_generation_retired 0"));
+    assert!(output.contains("oxiroute_generation_forced_close_total{reason=\"drain_deadline\"} 0"));
+    assert!(output.contains("oxiroute_generation_forced_close_total{reason=\"shutdown\"} 0"));
+    assert!(output.contains("oxiroute_generation_retired_cap_deferrals_total 0"));
     assert!(output.contains("oxiroute_audit_component_state{state=\"memory\"} 1"));
     assert!(
         output.contains(

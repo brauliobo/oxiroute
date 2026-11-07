@@ -57,6 +57,7 @@ fn all_decoders_apply_the_source_bound_before_parsing() {
 #[test]
 fn typed_configs_render_in_every_supported_format() {
     let config = oxiroute_config::ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,

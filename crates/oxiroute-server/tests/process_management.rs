@@ -2022,6 +2022,7 @@ fn management_config(
     ui_dir: Option<std::path::PathBuf>,
 ) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(Management {
             bind: management_address,
             ui_dir,
@@ -2081,6 +2082,7 @@ fn recording_candidate(active: &ConfigDraft, root: &Path) -> ConfigDraft {
 
 fn rtmp_listener_config(bind: ListenerBind) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         listeners: vec![Listener {
             name: "live".into(),
             bind,

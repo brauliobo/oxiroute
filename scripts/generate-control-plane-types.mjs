@@ -111,6 +111,9 @@ function inlineObject(schema) {
     const optional = required.has(propertyName) ? '' : '?'
     return `${propertyKey(propertyName)}${optional}: ${typeFor(properties[propertyName])}`
   })
+  if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
+    entries.push(`[key: string]: ${typeFor(schema.additionalProperties)}`)
+  }
   return `{ ${entries.join('; ')} }`
 }
 

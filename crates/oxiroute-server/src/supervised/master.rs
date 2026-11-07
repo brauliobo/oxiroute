@@ -18,7 +18,7 @@ use log::{info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
-    ListenerReservations, RuntimeMode,
+    ListenerReservations, RemoteRetired, RuntimeMode, WorkerNotice,
     config_coordinator::{
         AuthoredRevision, CanonicalConfigCoordinator, ConfigDiagnostic, ConfigDiagnosticSeverity,
         ConfigDiagnosticStage, ConfigLoadOutcome, ConfigRejection, EffectiveRevision,
@@ -32,6 +32,7 @@ use oxiroute_supervision::{
 use oxiroute_supervision_unix::{DescriptorManifest, InstanceToken, ListenerChanges};
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, Master, MasterConfig, MasterEvent, MasterState, WorkerInput,
+    WorkerRole, WorkerStatus,
 };
 use oxiroute_supervisor_process::{
     CgroupV2ProbeStatus, WorkerCommand, WorkerIdentity, WorkerSpawner, probe_cgroup_v2,
@@ -56,9 +57,11 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
 const CONFIG_RELOAD_DEBOUNCE: Duration = Duration::from_millis(250);
 const CONFIG_RELOAD_MAX_DEBOUNCE: Duration = Duration::from_secs(2);
 const CONFIG_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
-const RELOAD_DRAIN_ENV: &str = "OXIROUTE_RELOAD_DRAIN_SECONDS";
+pub(super) const RELOAD_DRAIN_ENV: &str = "OXIROUTE_RELOAD_DRAIN_SECONDS";
 const DEFAULT_RELOAD_DRAIN: Duration = Duration::from_hours(3);
 const MAX_RELOAD_DRAIN: Duration = Duration::from_hours(24);
+/// The master kills a retired worker this long after the deadline at which the worker closes itself.
+pub(super) const RETIREMENT_BACKSTOP: Duration = Duration::from_secs(10);
 
 /// Runs the production master for one eligible canonical configuration.
 pub(crate) fn run_master(config_path: &Path) -> Result<(), Box<dyn Error>> {
@@ -99,6 +102,7 @@ pub(crate) fn run_if_supported(config_path: &Path) -> Result<(), Box<dyn Error>>
 mod catalog;
 mod monitors;
 mod plan;
+mod retired;
 mod runner;
 mod setup;
 
@@ -109,7 +113,10 @@ use monitors::*;
 #[allow(clippy::wildcard_imports)]
 use plan::*;
 #[allow(clippy::wildcard_imports)]
+use retired::*;
+#[allow(clippy::wildcard_imports)]
 use runner::*;
+pub(super) use setup::retirement_window;
 #[allow(clippy::wildcard_imports)]
 use setup::*;
 

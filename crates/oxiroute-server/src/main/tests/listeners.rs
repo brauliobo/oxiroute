@@ -9,6 +9,7 @@ async fn tcp_handler_closes_connections_when_its_pool_is_unavailable() {
         .expect("ingress bind");
     let ingress_address = ingress.local_addr().expect("ingress address");
     let config = ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -49,6 +50,7 @@ async fn tcp_handler_closes_connections_when_its_pool_is_unavailable() {
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: vec![L4Service {
+            drain_deadline_ms: None,
             name: "database".into(),
             upstream_pool: "database".into(),
             connect_timeout_ms: 100,

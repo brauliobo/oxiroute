@@ -68,7 +68,7 @@ async fn process_drain_test_guard() -> OwnedSemaphorePermit {
 }
 
 #[tokio::test]
-async fn http_reload_retains_the_old_keepalive_and_drain_rejects_new_admissions() {
+async fn http_reload_closes_the_idle_keepalive_and_drain_rejects_new_admissions() {
     let _test_guard = process_drain_test_guard().await;
     let management_address = reserve_tcp_address();
     let listener_address = reserve_tcp_address();
@@ -94,13 +94,16 @@ async fn http_reload_retains_the_old_keepalive_and_drain_rejects_new_admissions(
     write_config(&server.config_path, &candidate.clone().validate().unwrap());
     wait_for_new_revision(management_address, &authorization, &original_revision).await;
 
-    assert_eq!(
-        persistent_request(&mut old_connection, "GET", "/", &[], &[])
-            .await
-            .body(),
-        b"old-http",
-        "the established HTTP connection changed generations"
+    let mut closed = Vec::new();
+    timeout(WIRE_TIMEOUT, old_connection.read_to_end(&mut closed))
+        .await
+        .expect("the idle HTTP connection stayed open after the reload")
+        .expect("read the closed HTTP connection");
+    assert!(
+        closed.is_empty(),
+        "the idle connection was answered after retirement"
     );
+    drop(old_connection);
     let mut new_connection = TcpStream::connect(listener_address)
         .await
         .expect("new HTTP connection");
@@ -117,15 +120,6 @@ async fn http_reload_retains_the_old_keepalive_and_drain_rejects_new_admissions(
     assert_eq!(drain.status, 202, "{}", drain.text());
     assert_eq!(drain.json()["outcome"], "draining");
     assert_no_http_response(listener_address).await;
-
-    assert_eq!(
-        persistent_request(&mut old_connection, "GET", "/", &[], &[])
-            .await
-            .body(),
-        b"old-http",
-        "draining the active generation closed the retained old connection"
-    );
-    drop(old_connection);
     server.shutdown();
     assert_listener_released([management_address, listener_address]);
 }
@@ -520,6 +514,7 @@ fn management(address: SocketAddr) -> Management {
 
 fn management_config_only(address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(management(address)),
         ..empty_config()
     }
@@ -531,6 +526,7 @@ fn http_config(
     body: &str,
 ) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {
             name: "http".into(),
@@ -543,6 +539,7 @@ fn http_config(
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
         }],
         http_services: vec![HttpService {
+            drain_deadline_ms: None,
             name: "web".into(),
             routes: vec![HttpRoute {
                 host: None,
@@ -573,6 +570,7 @@ fn forward_h2_config(
     private_key_path: &Path,
 ) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(management(management_address)),
         certificates: vec![Certificate {
             name: "downstream".into(),
@@ -591,6 +589,7 @@ fn forward_h2_config(
             policy: oxiroute_config::TlsPolicy::default(),
         }],
         forward_proxy_services: vec![ForwardProxyService {
+            drain_deadline_ms: None,
             name: "forward".into(),
             enabled_versions: vec![ForwardHttpVersion::H2],
             allow_absolute_form: false,
@@ -637,6 +636,7 @@ fn tcp_config(
     upstream_address: SocketAddr,
 ) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {
             name: "tcp".into(),
@@ -664,6 +664,7 @@ fn tcp_config(
             resilience: oxiroute_config::PoolResilience::default(),
         }],
         l4_services: vec![L4Service {
+            drain_deadline_ms: None,
             name: "relay".into(),
             upstream_pool: "upstream".into(),
             connect_timeout_ms: 1_000,
@@ -678,6 +679,7 @@ fn tcp_config(
 
 fn rtmp_config(management_address: SocketAddr, listener_address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {
             name: "rtmp".into(),

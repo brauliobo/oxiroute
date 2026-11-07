@@ -506,6 +506,33 @@ fn reload_drain_window_defaults_above_the_longest_stream_and_is_bounded() {
 }
 
 #[test]
+fn the_retiring_generation_sets_its_own_drain_window() {
+    use std::ffi::OsStr;
+
+    let plain = validated(&ConfigDraft {
+        retirement: None,
+        ..config()
+    });
+    assert_eq!(retirement_window(&plain, None), Duration::from_hours(3));
+    assert_eq!(
+        retirement_window(&plain, Some(OsStr::new("90"))),
+        Duration::from_secs(90)
+    );
+
+    let mut explicit = config();
+    explicit.retirement = Some(oxiroute_config::Retirement {
+        drain_deadline_ms: Some(45_000),
+        max_retired_generations: 4,
+    });
+    let explicit = validated(&explicit);
+    assert_eq!(
+        retirement_window(&explicit, Some(OsStr::new("90"))),
+        Duration::from_secs(45),
+        "an explicit key wins over the environment"
+    );
+}
+
+#[test]
 fn master_config_reads_the_drain_window_from_the_environment() {
     let config = master_config_with_environment(|key: &str| {
         (key == RELOAD_DRAIN_ENV).then(|| OsString::from("120"))
@@ -631,5 +658,66 @@ fn worker_command_contains_metadata_but_not_launcher_configuration() {
             debug.contains(expected),
             "worker command omitted {expected}"
         );
+    }
+}
+
+#[test]
+fn the_retired_worker_is_reported_with_its_age_deadline_and_connections() {
+    let mut status = worker_status_for_test();
+    status.generation.active_revision = Some(format!("{:064x}", 5));
+    status.metrics = Some(oxiroute_supervisor_master::WorkerMetrics {
+        active_connections: 7,
+        ..Default::default()
+    });
+
+    let report = remote_retired(&status, Duration::from_secs(20), Duration::from_secs(90))
+        .expect("a worker with an active revision");
+    assert_eq!(report.revision, format!("{:064x}", 5));
+    assert_eq!(report.age_seconds, 20);
+    assert_eq!(report.deadline_remaining_seconds, 70);
+    assert_eq!(report.connections, 7);
+
+    let overdue = remote_retired(&status, Duration::from_secs(95), Duration::from_secs(90));
+    assert_eq!(overdue.expect("report").deadline_remaining_seconds, 0);
+
+    status.generation.active_revision = None;
+    assert!(remote_retired(&status, Duration::ZERO, Duration::ZERO).is_none());
+}
+
+fn worker_status_for_test() -> WorkerStatus {
+    use oxiroute_supervisor_master::{
+        WorkerAdministrativeState, WorkerGenerationStatus, WorkerLifecycle,
+    };
+
+    WorkerStatus {
+        sequence: 1,
+        generation_id: GenerationId(2),
+        lifecycle: WorkerLifecycle::Draining,
+        administrative_state: WorkerAdministrativeState::Ready,
+        accepting: false,
+        runtime_started: true,
+        runtime_failed: false,
+        drained: false,
+        generation: WorkerGenerationStatus {
+            disk_revision: None,
+            candidate_revision: None,
+            active_revision: None,
+            previous_revision: None,
+            quarantined_revision: None,
+            active_accepting: false,
+            degraded: false,
+            last_failure: None,
+            prepares: 0,
+            activations: 0,
+            failures: 0,
+            rollbacks: 0,
+        },
+        metrics: None,
+        listeners: Vec::new(),
+        degraded: false,
+        degradation: None,
+        event_cursor: 0,
+        event_cursor_lost: false,
+        events: Vec::new(),
     }
 }

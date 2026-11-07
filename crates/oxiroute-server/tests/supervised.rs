@@ -575,6 +575,7 @@ fn supervised_control_listeners_report_real_lifecycle_and_connection_counters_on
     let stats_address = reserve_tcp_address();
     let stats_page = reserve_tcp_address();
     let config = ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: Some(Management {
@@ -660,6 +661,7 @@ fn supervised_control_listeners_report_real_lifecycle_and_connection_counters_on
 fn supervised_control_listener_callback_failure_prevents_readiness() {
     let directory = tempfile::tempdir().expect("control listener failure fixture directory");
     let config = ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: Some(Management {
@@ -1982,6 +1984,7 @@ fn reload_config(shape: &ReloadShape<'_>) -> ConfigDraft {
             .upstream_pools
             .extend(udp_only_config(address, upstream).upstream_pools);
         config.l4_services = vec![L4Service {
+            drain_deadline_ms: None,
             name: "relay".into(),
             upstream_pool: "upstream".into(),
             connect_timeout_ms: 1_000,
@@ -2627,6 +2630,7 @@ fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf) -> ConfigD
     })
     .collect();
     ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -2637,6 +2641,7 @@ fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf) -> ConfigD
         cache_stores: Vec::new(),
         upstream_pools: Vec::new(),
         http_services: vec![HttpService {
+            drain_deadline_ms: None,
             name: "fixed".into(),
             routes: vec![HttpRoute {
                 host: None,
@@ -2664,6 +2669,7 @@ fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf) -> ConfigD
 
 fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -2704,6 +2710,7 @@ fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: vec![L4Service {
+            drain_deadline_ms: None,
             name: "relay".into(),
             upstream_pool: "upstream".into(),
             connect_timeout_ms: 1_000,
@@ -2717,6 +2724,7 @@ fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -
 
 fn h3_only_config(listener_address: SocketAddr, private_key_path: &Path) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -2752,6 +2760,7 @@ fn h3_only_config(listener_address: SocketAddr, private_key_path: &Path) -> Conf
         cache_stores: Vec::new(),
         upstream_pools: Vec::new(),
         http_services: vec![HttpService {
+            drain_deadline_ms: None,
             name: "h3".into(),
             routes: vec![HttpRoute {
                 host: None,
