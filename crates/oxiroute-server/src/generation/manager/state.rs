@@ -165,7 +165,19 @@ impl GenerationManager {
             config_rejections: self.counters.config_rejections.load(Ordering::Relaxed),
             failures: self.counters.failures.load(Ordering::Relaxed),
             rollbacks: self.counters.rollbacks.load(Ordering::Relaxed),
-            retired_generations: state.retired.statuses(now),
+            retired_generations: state
+                .retired
+                .statuses(now)
+                .into_iter()
+                .chain(
+                    state
+                        .remote_retired
+                        .iter()
+                        .map(|(revision, report, received)| {
+                            report.status(revision, now.saturating_duration_since(*received))
+                        }),
+                )
+                .collect(),
             max_retired_generations: state
                 .active
                 .as_ref()
@@ -183,6 +195,27 @@ impl GenerationManager {
                 })
                 .cloned(),
         }
+    }
+
+    /// Replaces the list of retired workers that a supervising master reports.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a report names a revision that is not a configuration revision.
+    pub fn set_remote_retired(
+        &self,
+        reports: Vec<RemoteRetired>,
+    ) -> Result<(), RevisionParseError> {
+        let received = Instant::now();
+        let reports = reports
+            .into_iter()
+            .map(|report| Ok((report.revision.parse()?, report, received)))
+            .collect::<Result<_, RevisionParseError>>()?;
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remote_retired = reports;
+        Ok(())
     }
 
     /// Marks retired generations past their drain deadline as closing and returns each once, for

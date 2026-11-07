@@ -262,9 +262,11 @@ second reload requested while a long request keeps it alive waits for it (the ma
 newest saved revision afterwards without further action). At the deadline the retired worker
 closes its generation and logs a `generation_retire` event with outcome `forced_close`; the master
 kills the worker 10 seconds later if it is still there. `generation status` and
-`GET /api/v1/generations` list the draining generations of the direct runtime as
-`retiredGenerations` (revision, state, age, seconds before the deadline, in-flight work by
-protocol), and the metrics `oxiroute_generation_retired`, `oxiroute_generation_retired_age_seconds`,
+`GET /api/v1/generations` list the draining generations as `retiredGenerations` (revision, state,
+age, seconds before the deadline, in-flight work by protocol). Under the supervising master the
+retired worker is listed by the active worker from what the master reports once a second, and its
+in-flight work is the connection total (`inFlightByKind` has a single `connections` entry). The
+metrics `oxiroute_generation_retired`, `oxiroute_generation_retired_age_seconds`,
 `oxiroute_generation_in_flight{role}` and `oxiroute_generation_forced_close_total{reason}` count
 them. Stopping the service (`TimeoutStopSec=15s`) still ends long jobs.
 

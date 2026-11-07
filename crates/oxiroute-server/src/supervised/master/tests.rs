@@ -660,3 +660,64 @@ fn worker_command_contains_metadata_but_not_launcher_configuration() {
         );
     }
 }
+
+#[test]
+fn the_retired_worker_is_reported_with_its_age_deadline_and_connections() {
+    let mut status = worker_status_for_test();
+    status.generation.active_revision = Some(format!("{:064x}", 5));
+    status.metrics = Some(oxiroute_supervisor_master::WorkerMetrics {
+        active_connections: 7,
+        ..Default::default()
+    });
+
+    let report = remote_retired(&status, Duration::from_secs(20), Duration::from_secs(90))
+        .expect("a worker with an active revision");
+    assert_eq!(report.revision, format!("{:064x}", 5));
+    assert_eq!(report.age_seconds, 20);
+    assert_eq!(report.deadline_remaining_seconds, 70);
+    assert_eq!(report.connections, 7);
+
+    let overdue = remote_retired(&status, Duration::from_secs(95), Duration::from_secs(90));
+    assert_eq!(overdue.expect("report").deadline_remaining_seconds, 0);
+
+    status.generation.active_revision = None;
+    assert!(remote_retired(&status, Duration::ZERO, Duration::ZERO).is_none());
+}
+
+fn worker_status_for_test() -> WorkerStatus {
+    use oxiroute_supervisor_master::{
+        WorkerAdministrativeState, WorkerGenerationStatus, WorkerLifecycle,
+    };
+
+    WorkerStatus {
+        sequence: 1,
+        generation_id: GenerationId(2),
+        lifecycle: WorkerLifecycle::Draining,
+        administrative_state: WorkerAdministrativeState::Ready,
+        accepting: false,
+        runtime_started: true,
+        runtime_failed: false,
+        drained: false,
+        generation: WorkerGenerationStatus {
+            disk_revision: None,
+            candidate_revision: None,
+            active_revision: None,
+            previous_revision: None,
+            quarantined_revision: None,
+            active_accepting: false,
+            degraded: false,
+            last_failure: None,
+            prepares: 0,
+            activations: 0,
+            failures: 0,
+            rollbacks: 0,
+        },
+        metrics: None,
+        listeners: Vec::new(),
+        degraded: false,
+        degradation: None,
+        event_cursor: 0,
+        event_cursor_lost: false,
+        events: Vec::new(),
+    }
+}

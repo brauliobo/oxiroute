@@ -64,7 +64,8 @@ pub use generation::{
     PreparedGeneration, RuntimeGeneration, RuntimeReferenceKind,
 };
 pub use generation_retirement::{
-    PendingApply, RetiredGenerationStatus, RetiredState, RetirementCounters,
+    PendingApply, RemoteRetired, RetiredGenerationStatus, RetiredState, RetirementCounters,
+    WorkerNotice,
 };
 pub use health::{HealthBuildError, HealthSupervisor};
 pub use http_proxy::{HttpRequestContext, HttpReverseProxy};

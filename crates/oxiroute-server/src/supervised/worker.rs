@@ -12,10 +12,8 @@ use std::{
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
     AdministrativeState, GenerationManager, ListenerRuntimeState, RuntimeGeneration,
-    RuntimeSnapshot, ServerAdminState,
-    config_coordinator::{
-        CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRejection, EffectiveRevision,
-    },
+    RuntimeSnapshot, ServerAdminState, WorkerNotice,
+    config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
     worker_event_page,
 };
 use oxiroute_supervision::GenerationId;
@@ -385,7 +383,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                     lifecycle,
                 )?;
             }
-            ControlPhase::Notice => apply_config_notice(&manager, request.attachment())?,
+            ControlPhase::Notice => apply_notice(&manager, request.attachment())?,
             ControlPhase::AdoptListeners | ControlPhase::Activate | ControlPhase::Drain => {
                 control.acknowledge(&request, ControlOutcome::Rejected(REJECT_INVALID_STATE))?;
                 report_status(
@@ -441,15 +439,15 @@ fn hand_over(
     }
 }
 
-fn apply_config_notice(
-    manager: &GenerationManager,
-    notice: &[u8],
-) -> Result<(), serde_json::Error> {
-    match serde_json::from_slice::<Option<ConfigRejection>>(notice)? {
-        Some(rejection) => {
+fn apply_notice(manager: &GenerationManager, notice: &[u8]) -> Result<(), Box<dyn Error>> {
+    match serde_json::from_slice::<WorkerNotice>(notice)? {
+        WorkerNotice::Config {
+            rejection: Some(rejection),
+        } => {
             manager.reject_configuration(rejection);
         }
-        None => manager.accept_configuration(),
+        WorkerNotice::Config { rejection: None } => manager.accept_configuration(),
+        WorkerNotice::Retired { generations } => manager.set_remote_retired(generations)?,
     }
     Ok(())
 }

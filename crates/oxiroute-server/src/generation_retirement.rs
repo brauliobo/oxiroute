@@ -10,9 +10,13 @@ use std::{
 };
 
 use log::info;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 
-use crate::{RuntimeGeneration, config_coordinator::EffectiveRevision, operational_event};
+use crate::{
+    RuntimeGeneration,
+    config_coordinator::{ConfigRejection, EffectiveRevision},
+    operational_event,
+};
 
 /// A generation that was asked to close stays listed this long while its teardown finishes.
 const CLOSE_GRACE: Duration = Duration::from_secs(10);
@@ -48,6 +52,47 @@ pub struct RetiredGenerationStatus {
     pub deadline_remaining_seconds: u64,
     pub in_flight: u64,
     pub in_flight_by_kind: BTreeMap<&'static str, u64>,
+}
+
+/// What the supervising master tells its active worker about the worker it replaced.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "notice", rename_all = "snake_case")]
+pub enum WorkerNotice {
+    /// The newest configuration the master refused, or `None` once a file was accepted.
+    Config { rejection: Option<ConfigRejection> },
+    /// The retired workers still draining; an empty list once none is left.
+    Retired { generations: Vec<RemoteRetired> },
+}
+
+/// A replaced generation that drains in another process, as the master last observed it.
+///
+/// The master sees the retired worker's connection total, not its work by protocol.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RemoteRetired {
+    pub revision: String,
+    pub age_seconds: u64,
+    pub deadline_remaining_seconds: u64,
+    pub connections: u64,
+}
+
+impl RemoteRetired {
+    /// Lists this report as it stands `elapsed` after the worker received it.
+    pub(crate) fn status(
+        &self,
+        revision: &EffectiveRevision,
+        elapsed: Duration,
+    ) -> RetiredGenerationStatus {
+        RetiredGenerationStatus {
+            revision: revision.clone(),
+            state: RetiredState::Draining,
+            age_seconds: self.age_seconds + elapsed.as_secs(),
+            deadline_remaining_seconds: self
+                .deadline_remaining_seconds
+                .saturating_sub(elapsed.as_secs()),
+            in_flight: self.connections,
+            in_flight_by_kind: BTreeMap::from([("connections", self.connections)]),
+        }
+    }
 }
 
 /// A prepared revision that is waiting for a retired generation to finish.

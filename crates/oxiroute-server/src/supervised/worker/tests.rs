@@ -226,3 +226,38 @@ fn stage_two_configuration_accepts_stream_listeners_and_statistics() {
     config.listeners[0].service = Some("relay".into());
     assert!(validate_stage_one_config(&config.validate().expect("valid config")).is_ok());
 }
+
+#[test]
+fn a_retired_worker_notice_lists_and_then_clears_the_draining_worker() {
+    let manager = GenerationManager::new();
+    let retired = WorkerNotice::Retired {
+        generations: vec![oxiroute_server::RemoteRetired {
+            revision: format!("{:064x}", 9),
+            age_seconds: 4,
+            deadline_remaining_seconds: 100,
+            connections: 2,
+        }],
+    };
+    apply_notice(&manager, &serde_json::to_vec(&retired).unwrap()).expect("retired notice");
+    let listed = manager.status().retired_generations;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].in_flight, 2);
+
+    let cleared = WorkerNotice::Retired {
+        generations: Vec::new(),
+    };
+    apply_notice(&manager, &serde_json::to_vec(&cleared).unwrap()).expect("empty notice");
+    assert!(manager.status().retired_generations.is_empty());
+}
+
+#[test]
+fn a_configuration_notice_still_clears_the_reported_rejection() {
+    let manager = GenerationManager::new();
+    let accepted = WorkerNotice::Config { rejection: None };
+    apply_notice(&manager, &serde_json::to_vec(&accepted).unwrap()).expect("config notice");
+    assert!(manager.status().last_rejection.is_none());
+    assert!(
+        apply_notice(&manager, b"null").is_err(),
+        "the old bare format is gone"
+    );
+}
