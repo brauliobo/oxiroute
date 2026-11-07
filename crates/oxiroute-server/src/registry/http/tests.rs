@@ -63,10 +63,9 @@ fn fixture() -> Fixture {
 }
 
 fn call(f: &Fixture, who: &Principal, method: &str, path: &str, body: serde_json::Value) -> Reply {
-    let bytes = if body.is_null() {
-        Vec::new()
-    } else {
-        serde_json::to_vec(&body).expect("body")
+    let bytes = match body {
+        serde_json::Value::Null => Vec::new(),
+        body => serde_json::to_vec(&body).expect("body"),
     };
     let (path, query) = path
         .split_once('?')

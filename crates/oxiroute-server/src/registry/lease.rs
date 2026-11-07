@@ -1,6 +1,7 @@
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     collections::{BTreeSet, HashMap},
-    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -20,11 +21,13 @@ impl Clock for SystemClock {
 }
 
 /// Test clock that only moves when told to.
+#[cfg(test)]
 pub struct ManualClock {
     base: Instant,
     offset_ms: AtomicU64,
 }
 
+#[cfg(test)]
 impl ManualClock {
     pub fn new() -> Self {
         Self {
@@ -39,6 +42,7 @@ impl ManualClock {
     }
 }
 
+#[cfg(test)]
 impl Clock for ManualClock {
     fn now(&self) -> Instant {
         self.base + Duration::from_millis(self.offset_ms.load(Ordering::SeqCst))
@@ -90,10 +94,6 @@ impl LeaseTable {
             expired.push(key);
         }
         expired
-    }
-
-    pub fn len(&self) -> usize {
-        self.deadlines.len()
     }
 }
 

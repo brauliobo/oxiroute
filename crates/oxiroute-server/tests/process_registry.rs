@@ -17,12 +17,11 @@ use std::{
 };
 
 use oxiroute_config::{
-    ConfigDraft, DnsResolutionPolicy, HealthCheck, HealthCheckType, HealthStartup,
-    HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
-    Listener, Management, PoolRegistration, Protocol, Registry, RegistryEndpoint, RegistryRole,
-    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    ConfigDraft, HealthCheck, HealthCheckType, HealthStartup, HttpPathSelector, HttpProxyPolicy,
+    HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy, Listener, Management,
+    PoolRegistration, Protocol, Registry, RegistryEndpoint, RegistryRole, UpstreamAlgorithm,
+    UpstreamPool,
 };
-use oxiroute_server::registry::auth::mint_token;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
@@ -37,6 +36,58 @@ use process_support::{ServerProcess, reserve_tcp_address, write_config};
 
 const TOKEN: &str = "cdb85a91948758cfcb895216a3603c8fcd8aaf691f39f5fd82b5df15af14628e";
 
+fn registered_pool(name: &str) -> UpstreamPool {
+    UpstreamPool {
+        name: name.into(),
+        servers: Vec::new(),
+        endpoints: Vec::new(),
+        algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: Some(HealthCheck {
+            kind: HealthCheckType::Tcp,
+            interval_ms: 1_000,
+            timeout_ms: 500,
+            healthy_threshold: 1,
+            unhealthy_threshold: 1,
+            startup: HealthStartup::Healthy,
+            fast_interval_ms: None,
+            down_interval_ms: None,
+            host: None,
+            path: None,
+            expected_status: None,
+            http_version: None,
+        }),
+        passive_health: None,
+        tls: None,
+        http_versions: HttpVersionPolicy::default(),
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        registration: Some(PoolRegistration {
+            allowed_cidrs: vec!["127.0.0.0/8".into()],
+            require_peer_address: false,
+            min_ttl_ms: 2_000,
+            default_ttl_ms: 3_000,
+            ..PoolRegistration::default()
+        }),
+        resilience: oxiroute_config::PoolResilience::default(),
+    }
+}
+
+fn route(path: &str, pool: &str) -> HttpRoute {
+    HttpRoute {
+        host: None,
+        path: HttpPathSelector::SegmentPrefix { value: path.into() },
+        methods: Vec::new(),
+        access_policy: None,
+        policy: oxiroute_config::HttpRoutePolicy::default(),
+        action: HttpRouteAction::Proxy {
+            upstream_pool: pool.into(),
+            policy: HttpProxyPolicy::default(),
+        },
+    }
+}
+
 struct Farm {
     state: TempDir,
     management: SocketAddr,
@@ -50,11 +101,30 @@ struct Farm {
 impl Farm {
     fn new() -> Self {
         let state = TempDir::new().expect("registry scratch");
-        let (voice_secret, line) =
-            mint_token("voice-agent", "register pools=voice").expect("token");
         let tokens = state.path().join("registry.tokens");
-        fs::write(&tokens, format!("{line}\n")).expect("tokens");
-        fs::set_permissions(&tokens, fs::Permissions::from_mode(0o600)).expect("mode");
+        let minted = Command::new(env!("CARGO_BIN_EXE_oxiroute"))
+            .args([
+                "registry",
+                "token",
+                "create",
+                "--id",
+                "voice-agent",
+                "--pool",
+                "voice",
+            ])
+            .arg("--tokens-file")
+            .arg(&tokens)
+            .output()
+            .expect("oxiroute registry token create");
+        assert!(
+            minted.status.success(),
+            "{}",
+            String::from_utf8_lossy(&minted.stderr)
+        );
+        let voice_secret = String::from_utf8(minted.stdout)
+            .expect("secret")
+            .trim()
+            .to_owned();
         Self {
             state,
             management: reserve_tcp_address(),
@@ -71,61 +141,6 @@ impl Farm {
     }
 
     fn config(&self, extra_root_limit: Option<u64>) -> oxiroute_config::ValidatedConfig {
-        let registration = PoolRegistration {
-            allowed_cidrs: vec!["127.0.0.0/8".into()],
-            require_peer_address: false,
-            min_ttl_ms: 2_000,
-            default_ttl_ms: 3_000,
-            ..PoolRegistration::default()
-        };
-        let pool = |name: &str, static_server: Option<SocketAddr>| UpstreamPool {
-            name: name.into(),
-            servers: static_server
-                .map(|address| UpstreamServer {
-                    name: "static".into(),
-                    endpoint: UpstreamEndpoint::Socket { address },
-                    max_connections: None,
-                    dns_resolution: DnsResolutionPolicy::OnConnect,
-                })
-                .into_iter()
-                .collect(),
-            endpoints: Vec::new(),
-            algorithm: UpstreamAlgorithm::RoundRobin,
-            health_check: Some(HealthCheck {
-                kind: HealthCheckType::Tcp,
-                interval_ms: 1_000,
-                timeout_ms: 500,
-                healthy_threshold: 1,
-                unhealthy_threshold: 1,
-                startup: HealthStartup::Healthy,
-                fast_interval_ms: None,
-                down_interval_ms: None,
-                host: None,
-                path: None,
-                expected_status: None,
-                http_version: None,
-            }),
-            passive_health: None,
-            tls: None,
-            http_versions: HttpVersionPolicy::default(),
-            queue_timeout_ms: None,
-            connect_timeout_ms: None,
-            server_timeout_ms: None,
-            connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
-            registration: Some(registration.clone()),
-            resilience: oxiroute_config::PoolResilience::default(),
-        };
-        let route = |path: &str, pool: &str| HttpRoute {
-            host: None,
-            path: HttpPathSelector::SegmentPrefix { value: path.into() },
-            methods: Vec::new(),
-            access_policy: None,
-            policy: oxiroute_config::HttpRoutePolicy::default(),
-            action: HttpRouteAction::Proxy {
-                upstream_pool: pool.into(),
-                policy: HttpProxyPolicy::default(),
-            },
-        };
         ConfigDraft {
             max_connections: extra_root_limit,
             management: Some(Management {
@@ -164,7 +179,7 @@ impl Farm {
                 max_connections: Some(100),
                 downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
             }],
-            upstream_pools: vec![pool("render", None), pool("voice", None)],
+            upstream_pools: vec![registered_pool("render"), registered_pool("voice")],
             http_services: vec![HttpService {
                 name: "traffic".into(),
                 routes: vec![route("/voice", "voice"), route("/", "render")],
@@ -850,42 +865,6 @@ async fn the_cli_registers_lists_and_removes_servers_over_group_sockets() {
         Some(0)
     );
 
-    let secret = farm.state.path().join("voice.secret");
-    fs::write(&secret, &farm.voice_secret).expect("secret file");
-    fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).expect("mode");
-    let lan = format!("http://{}", farm.test);
-    let secret = secret.display().to_string();
-    let (second, _s) = stub("tts-2").await;
-    let second = second.to_string();
-    let over_lan = async |pool: &str| {
-        farm.cli(
-            ("--endpoint", &lan),
-            &[
-                "--token-file",
-                &secret,
-                "server",
-                "register",
-                "--pool",
-                pool,
-                "tts-2",
-                "--address",
-                &second,
-            ],
-        )
-        .await
-    };
-    let joined = over_lan("voice").await;
-    assert!(
-        joined.status.success(),
-        "a scoped token registers over the LAN endpoint: {}",
-        String::from_utf8_lossy(&joined.stderr)
-    );
-    assert_eq!(
-        over_lan("render").await.status.code(),
-        Some(5),
-        "another pool is refused"
-    );
-
     let removed = farm
         .cli(
             (flag, &register),
@@ -1033,5 +1012,48 @@ async fn a_supervised_worker_handover_keeps_registrations_and_sockets() {
         .over_socket("read", "GET", "/api/v1/registrations", &Value::Null)
         .await;
     assert_eq!(listing["registrations"].as_array().map(Vec::len), Some(3));
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn the_cli_registers_over_the_lan_with_a_scoped_token_file() {
+    let farm = Farm::new();
+    let server = farm.start().await;
+    let secret = farm.state.path().join("voice.secret");
+    fs::write(&secret, &farm.voice_secret).expect("secret file");
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).expect("mode");
+    let lan = format!("http://{}", farm.test);
+    let secret = secret.display().to_string();
+    let (second, _s) = stub("tts-2").await;
+    let second = second.to_string();
+    let over_lan = async |pool: &str| {
+        farm.cli(
+            ("--endpoint", &lan),
+            &[
+                "--token-file",
+                &secret,
+                "server",
+                "register",
+                "--pool",
+                pool,
+                "tts-2",
+                "--address",
+                &second,
+            ],
+        )
+        .await
+    };
+    let joined = over_lan("voice").await;
+    assert!(
+        joined.status.success(),
+        "a scoped token registers over the LAN endpoint: {}",
+        String::from_utf8_lossy(&joined.stderr)
+    );
+    assert_eq!(
+        over_lan("render").await.status.code(),
+        Some(5),
+        "another pool is refused"
+    );
+
     server.shutdown();
 }

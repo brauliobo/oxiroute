@@ -89,6 +89,9 @@ pub struct PutOutcome {
     pub warnings: Vec<&'static str>,
 }
 
+/// A registration pool of a live generation, its policy and the addresses it must never reach.
+type PoolContext = (Arc<RoundRobinPool>, PoolRegistration, Arc<[SocketAddr]>);
+
 #[derive(Clone, Debug)]
 pub struct RegistryStatus {
     pub revision: u64,
@@ -423,10 +426,7 @@ impl RegistryService {
     }
 
     /// The pool of the newest generation that opts into registration.
-    fn registration_pool(
-        state: &State,
-        pool: &str,
-    ) -> Result<(Arc<RoundRobinPool>, PoolRegistration, Arc<[SocketAddr]>), RegistryError> {
+    fn registration_pool(state: &State, pool: &str) -> Result<PoolContext, RegistryError> {
         let binding = state
             .bindings
             .iter()
@@ -503,7 +503,7 @@ impl RegistryService {
             .update(|stored| {
                 let existing = stored.get(&key).cloned();
                 match Self::admit(
-                    &stored,
+                    stored,
                     &members,
                     &endpoint,
                     &record,
@@ -829,7 +829,7 @@ impl RegistryService {
         if self.writer.load(Ordering::Acquire) {
             self.retry_removals(&mut state);
             for key in state.leases.take_expired(now) {
-                self.expire(&mut state, key);
+                self.expire(&mut state, &key);
             }
         } else {
             self.follow(&mut state);
@@ -841,13 +841,13 @@ impl RegistryService {
             .clamp(Duration::from_millis(10), POLL)
     }
 
-    fn expire(&self, state: &mut State, key: RegistrationKey) {
-        Self::detach_everywhere(state, &key);
+    fn expire(&self, state: &mut State, key: &RegistrationKey) {
+        Self::detach_everywhere(state, key);
         match self
             .store
-            .update(|stored| (stored.remove(&key).is_some(), ()))
+            .update(|stored| (stored.remove(key).is_some(), ()))
         {
-            Ok((_, seq)) => state.applied_seq = seq,
+            Ok(((), seq)) => state.applied_seq = seq,
             Err(error) => {
                 self.store_error(state, &error);
                 state.pending_removals.push(key.clone());
@@ -872,7 +872,7 @@ impl RegistryService {
                 .store
                 .update(|stored| (stored.remove(&key).is_some(), ()))
             {
-                Ok((_, seq)) => state.applied_seq = seq,
+                Ok(((), seq)) => state.applied_seq = seq,
                 Err(_) => state.pending_removals.push(key),
             }
         }
