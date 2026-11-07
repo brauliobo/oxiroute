@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     GenerationManager,
-    config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, RejectionDiagnostic},
+    config::coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, RejectionDiagnostic},
 };
 
 #[cfg(test)]

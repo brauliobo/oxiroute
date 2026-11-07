@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use serde_json::Value;
 
 use super::service::RegistryService;
-use crate::{GenerationManager, RuntimeMetrics, status_summary::status_document};
+use crate::{GenerationManager, RuntimeMetrics, observability::status_summary::status_document};
 
 /// The newest generation's metrics and the generation manager, published at every activation.
 pub(crate) struct StatusFeed {

@@ -296,7 +296,7 @@ fn h3_passive_failure(error: &H3UpstreamError) -> Option<HealthFailure> {
 async fn send_h3_upstream_response<S>(
     stream: &mut h3::server::RequestStream<S, Bytes>,
     request: &Request<()>,
-    response: crate::http3_upstream::H3UpstreamResponse,
+    response: crate::http3::upstream_plan::H3UpstreamResponse,
     proxy: &ProxyActionPlan,
     metrics: &ListenerMetrics,
     deadline: Instant,

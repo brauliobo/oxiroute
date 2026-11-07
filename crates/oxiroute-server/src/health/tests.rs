@@ -353,7 +353,7 @@ fn active_check_transitions_are_reported_as_events() {
         true,
     )
     .expect("health pool");
-    let before = crate::operational_event::current_cursor();
+    let before = crate::observability::operational_event::current_cursor();
 
     pool.record_health(
         &pool.handle(0),
@@ -373,7 +373,7 @@ fn active_check_transitions_are_reported_as_events() {
     );
     pool.record_health(&pool.handle(0), true, None, Some(3), 1, 1);
 
-    let outcomes: Vec<_> = crate::operational_event::page(before, 100)
+    let outcomes: Vec<_> = crate::observability::operational_event::page(before, 100)
         .events
         .into_iter()
         .filter(|event| event.event.as_str() == "upstream_endpoint_health")

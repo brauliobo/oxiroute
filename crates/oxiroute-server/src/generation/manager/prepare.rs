@@ -78,7 +78,7 @@ impl GenerationManager {
         match prepared {
             Ok(_generation) if deadline.is_some_and(|deadline| Instant::now() >= deadline) => {
                 let error = GenerationError::PreparationTimedOut;
-                crate::operational_event::emit(
+                crate::observability::operational_event::emit(
                     "generation_prepare",
                     "rejected",
                     Some(&candidate_revision),
@@ -92,7 +92,7 @@ impl GenerationManager {
                     generation,
                     id: self.next_candidate_id.fetch_add(1, Ordering::Relaxed) + 1,
                 };
-                crate::operational_event::emit(
+                crate::observability::operational_event::emit(
                     "generation_prepare",
                     "prepared",
                     Some(&candidate.revision().candidate),
@@ -104,7 +104,7 @@ impl GenerationManager {
                 Ok(candidate)
             }
             Err(error) => {
-                crate::operational_event::emit(
+                crate::observability::operational_event::emit(
                     "generation_prepare",
                     "rejected",
                     Some(&candidate_revision),
@@ -194,7 +194,7 @@ impl GenerationManager {
         match prepared {
             Ok(_generation) if deadline.is_some_and(|deadline| Instant::now() >= deadline) => {
                 let error = GenerationError::PreparationTimedOut;
-                crate::operational_event::emit(
+                crate::observability::operational_event::emit(
                     "generation_prepare",
                     "rejected",
                     Some(&candidate_revision),
@@ -208,7 +208,7 @@ impl GenerationManager {
                     generation,
                     id: self.next_candidate_id.fetch_add(1, Ordering::Relaxed) + 1,
                 };
-                crate::operational_event::emit(
+                crate::observability::operational_event::emit(
                     "generation_prepare",
                     "prepared",
                     Some(&candidate.revision().candidate),
@@ -220,7 +220,7 @@ impl GenerationManager {
                 Ok(candidate)
             }
             Err(error) => {
-                crate::operational_event::emit(
+                crate::observability::operational_event::emit(
                     "generation_prepare",
                     "rejected",
                     Some(&candidate_revision),

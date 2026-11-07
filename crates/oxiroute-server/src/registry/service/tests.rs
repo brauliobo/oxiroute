@@ -478,7 +478,7 @@ fn an_unwritable_store_refuses_changes_and_leaves_the_pool_untouched() {
 }
 
 fn server_updates() -> usize {
-    crate::operational_event::page(0, 1000)
+    crate::observability::operational_event::page(0, 1000)
         .events
         .iter()
         .filter(|event| event.event.as_str() == "server_update")

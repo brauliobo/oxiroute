@@ -254,7 +254,7 @@ impl EndpointLeaseInner {
         }
         let millis = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX);
         self.wait.waited_ms.fetch_add(millis, Ordering::Relaxed);
-        crate::upstream_stats::upstream_stats()
+        crate::observability::upstream_stats::upstream_stats()
             .pool(&self.health.pool_name)
             .record_queue_wait(waited);
     }

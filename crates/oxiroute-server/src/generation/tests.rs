@@ -11,7 +11,7 @@ use std::{
 use oxiroute_config::{ConfigDraft, Listener, ListenerBind, Management, Protocol, Stats};
 use tempfile::TempDir;
 
-use crate::config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome};
+use crate::config::coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome};
 
 use super::*;
 
