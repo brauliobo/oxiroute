@@ -4,7 +4,7 @@
 
 The control plane shares the daemon but remains logically separate from traffic listeners. The
 current schema requires a loopback bind. Every recognized management/API route requires exactly one
-bearer token loaded at startup, except exact `GET /ready` and `GET /metrics`. UI assets are
+bearer token loaded at startup, except exact `GET /ready`, `GET /metrics` and `GET /status.json`. UI assets are
 read-only static responses, and separately configured HAProxy-compatible statistics pages have
 their own page-only contract. There is no remote management mode or permissive CORS default.
 
@@ -70,7 +70,7 @@ Implemented and recognized endpoints:
 Every `/api/v1/...` and `/api/v2/...` route in this table requires the management bearer token,
 with one extension: the registry routes (the five rows above for registrations and pool servers)
 are also served, and only they, by the `registry` endpoints from the configuration. A unix socket
-authorizes by file mode and group: the `read` role serves `GET` routes and `/ready`, the `register`
+authorizes by file mode and group: the `read` role serves `GET` routes, `/ready` and `/status.json`, the `register`
 role serves registration, heartbeat and deregistration for its pools, and neither accepts a token.
 The TCP endpoint takes scoped tokens from the registry tokens file (`read`, or `register` for named
 pools and an optional name prefix) and a peer address allow list, and never the root token. Errors
@@ -86,7 +86,7 @@ registered servers appear in the topology as endpoint nodes with `origin: "dynam
 pool.
 
 Every other `/api/v1/...` and `/api/v2/...` route in this table requires the management bearer token. The only public
-recognized API probes are exact `GET /ready` and `GET /metrics`; wrong methods and unknown paths do
+recognized API probes are exact `GET /ready`, `GET /metrics` and `GET /status.json` (the summary read by `oxiroute check`, see CONFIG_SPEC); wrong methods and unknown paths do
 not create an authentication bypass.
 
 `GET /api/v1/capabilities` reports `active`, `blocked`, or `unconfigured` independently for UDP,
@@ -108,7 +108,7 @@ recognized management routes.
 `capabilities.manual_recording` is true when the active config contains at least one manual
 recorder; continuous-only recording does not set that capability.
 
-The statistics listener additionally serves public `GET /metrics` and `GET /ready`. Authenticated
+The statistics listener additionally serves public `GET /metrics`, `GET /ready` and `GET /status.json`. Authenticated
 `GET /stats` renders the local server table. `GET /api/v1/status` on that listener is also
 authenticated. `POST /stats/admin` accepts one JSON
 `{pool, server, action}` target plus `If-Generation-Revision`; `GET` and `HEAD` return `405` and can
@@ -152,7 +152,7 @@ Each recognized non-public API request requires exactly one `Authorization: Bear
 authorization returns `400 duplicate_authorization`; missing, malformed, or incorrect authorization
 returns `401` with `WWW-Authenticate: Bearer`.
 The token is hashed after startup loading and compared in constant time. Non-configuration routes
-apply the same authentication check; only exact `GET /ready` and `GET /metrics` bypass it.
+apply the same authentication check; only exact `GET /ready`, `GET /metrics` and `GET /status.json` bypass it.
 
 ### Configuration routes
 
@@ -530,7 +530,7 @@ server-validatable but read-only. It preserves dirty drafts across refresh failu
 - Configuration routes require the file-backed bearer token described above. The current UI does
   not use cookies or persist the token.
 - Recognized management/API routes, including recorder-control routes, require the bearer token
-  except exact `GET /ready` and `GET /metrics`. The management listener remains loopback-only;
+  except exact `GET /ready`, `GET /metrics` and `GET /status.json`. The management listener remains loopback-only;
   recorder controls MUST gain explicit audit records before any future remote management mode
   exposes them.
 - A future remote mode will require authenticated users, short sessions, audit records, TLS, and

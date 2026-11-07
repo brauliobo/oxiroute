@@ -1,10 +1,10 @@
 # Runbook: GPU farms and worker pools
 
 Procedures for operators of a LAN farm (GPU render nodes, voice or inference pools) behind OxiRoute.
-Commands are verified against the 0.5.4 CLI. Behavior that changes in 6.0 sits in a marked box; check
-the [CONFIG_SPEC.md](../CONFIG_SPEC.md) of the installed version before using 6.0 setting names. See
-also [OPERATING.md](OPERATING.md), [TROUBLESHOOTING.md](TROUBLESHOOTING.md),
-[MANAGEMENT_CLI.md](../MANAGEMENT_CLI.md).
+Commands and settings are those of 6.0; where a 0.5.x install behaves differently a note says so. The
+setting names are defined in [CONFIG_SPEC.md](../CONFIG_SPEC.md) and the commands in
+[CLI.md](../reference/CLI.md). See also [OPERATING.md](OPERATING.md),
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md), [MANAGEMENT_CLI.md](../MANAGEMENT_CLI.md).
 
 Examples use the pool `gpu-render` with servers `node-a` (`192.0.2.11:9000`), `node-b`, `node-c`; config
 fragments use the notation of CONFIG_SPEC (the KDL file uses the same names).
@@ -15,7 +15,9 @@ fragments use the notation of CONFIG_SPEC (the KDL file uses the same names).
 - The token comes from the packaged discovery (`/etc/oxiroute/oxiroute.env`, then
   `/etc/oxiroute/management.token`). For another file export its path, never the secret:
   `export OXIROUTE_MANAGEMENT_TOKEN_FILE=/path/to/management.token` (mode `0400`/`0600`; use `sudo` when
-  root-owned). Never put a token in a command line, `curl -H` included. `ready` and `metrics` need none.
+  root-owned). Never put a token in a command line, `curl -H` included. `ready`, `metrics` and `check` need
+  none. With a `registry` block, `oxiroute --socket /run/oxiroute/status.sock ...` reads status and
+  `server list` as any member of the socket's group, without a token and without `sudo`.
 - Scratch files hold the whole configuration: `work=$(mktemp -d)` (mode 0700), delete it afterwards.
 - A change is done when `oxiroute status` shows `activeRevision` equal to the new disk revision.
 
@@ -67,11 +69,18 @@ oxiroute --socket /run/oxiroute/status.sock server list --pool gpu-render
 
 `--heartbeat` is the whole agent: a systemd unit running it registers at start, renews at a third
 of the TTL, registers again if the lease was lost, and on `SIGTERM` announces `draining` and
-deregisters. Operators drain a registered worker like any other (`server drain --pool P NAME`); the
+deregisters. Without `--heartbeat` the command registers once and the lease runs out after its TTL.
+`oxiroute server deregister --pool gpu-render node-c [--missing-ok]` removes a registration at once.
+`server list --origin dynamic` shows only registered machines, with their lease and `status`: `active`,
+`shadowed` (a configured server of the same name or address wins) or `orphaned` (the pool stopped opting in). Operators drain a registered worker like any other (`server drain --pool P NAME`); the
 decision is stored with the registration, so it survives re-registration, reloads and restarts. A
 server in the configuration file wins over a registration of the same name or address.
 
 ## Remove a machine
+
+A registered machine: stop its agent (`systemctl stop`), which drains and deregisters it; its requests finish.
+From the host, `oxiroute server drain --pool gpu-render node-c` then `server deregister` does the same
+by hand, and a dead machine simply leaves when its lease runs out. A machine in the configuration file:
 
 ```sh
 oxiroute server drain --pool gpu-render node-c
@@ -82,9 +91,9 @@ jq '.config.upstream_pools |= map(if .name=="gpu-render"
 oxiroute config validate "$work/new.json" && oxiroute config apply "$work/new.json"
 ```
 
-A dead machine needs no drain. A pool cannot have zero servers (`422`): remove the pool and its routes
-together. Or keep known machines listed while off: health takes them out of rotation and their return needs
-no apply.
+A dead machine needs no drain. A pool cannot have zero servers (`422`) unless it has a `registration`
+block: remove the pool and its routes together. Or keep known machines listed while off: health takes
+them out of rotation and their return needs no apply.
 
 ## Drain and un-drain
 
@@ -97,15 +106,15 @@ oxiroute server drain --pool gpu-render --pool voice-tts node-a   # same name in
 ```
 
 Drain is runtime state; nothing is written to the file. `server list` shows it next to observed health.
+Drain, maintenance, health override, check switch, `max-connections` and `weight` overrides follow a
+server by pool and server name across every generation change (file write, `generation reload`,
+`config apply`, rollback, supervised worker replacement) and are in place before the new generation
+takes traffic. A removed server loses its state and a new one starts `ready`. A restart resets them,
+except the drain of a registered machine, which is stored with its registration.
 
-> **0.5.4: drain resets on every generation change.** A file write, `generation reload`, `config apply`,
-> rollback or supervised worker replacement returns all servers to `ready`; a restart does too. After
-> any change run `oxiroute --output json server list` and re-drain what must stay drained (for example a
-> machine in use by its owner).
->
-> **Arrives in 6.0:** drain, maintenance, health override, check switch and max-connections override
-> follow a server by pool and server name across every generation change. A removed server loses its
-> state, a new one starts `ready`, a restart still resets it.
+> **0.5.4:** drain resets on every generation change and on restart. After any change run
+> `oxiroute --output json server list` and re-drain what must stay drained (for example a machine in use
+> by its owner).
 
 ## Apply configuration safely
 
@@ -129,46 +138,58 @@ oxiroute status                                          # activeRevision follow
 - In-flight requests finish on the retired worker. A listener address that cannot be bound rejects the
   whole reload; the old generation keeps serving and the journal names the listener.
 
-**A rejected file write.**
-
-- *0.5.4:* silent. The old generation keeps serving, `/ready` stays OK, and there is no log line, event
-  or status field. About 5 s after a write, check that `activeRevision` equals the disk revision in
-  `oxiroute status`. `generation reload` then answers `422 E_INVALID_VALUE` without naming the setting;
-  find it with `config check` on a copy.
-- *Arrives in 6.0:* logged once at error level (`oxiroute::config`) with the failing setting and, for KDL
-  syntax, the line; `events list` shows `configuration_reload` / `rejected`;
-  `oxiroute_config_rejections_total` rises; `generation status` shows `lastRejection` and
-  `degraded: true` until the next acceptable file (`/ready` stays OK). `422` and `config check` print
-  `<code>: <path>: <detail>`.
+**A rejected file write.** The old generation keeps serving and `/ready` stays OK, but the refusal is not
+silent: it is logged once at error level (`oxiroute::config`) with the failing setting and, for KDL syntax,
+the line; `events list` shows `configuration_reload` / `rejected`; `oxiroute_config_rejections_total` rises;
+`generation status` shows `lastRejection` and `degraded: true` until the next acceptable file; and
+`oxiroute check` exits `1` with `configuration refused N s ago`. `422` and `config check` print
+`<code>: <path>: <detail>`. (0.5.4 gave no signal: compare `activeRevision` with the disk revision about 5 s
+after every write.)
 
 ## Roll back a generation
 
 1. Restore the backup by atomic rename: `cp -p "$cfg.bak-STAMP" "$cfg.new" && mv "$cfg.new" "$cfg"`, then
-   confirm with `oxiroute status` and re-drain (0.5.4).
-2. `oxiroute generation rollback` re-activates the retained previous generation, but in supervised mode
-   it answers `409 previous_missing` right after a replacement. In 6.0 supervised mode `previousRevision`
-   is informational only. The file restore is the rollback.
+   confirm with `oxiroute status` (`activeRevision` equals the restored file) and `oxiroute check`. Drain
+   and the other server overrides stay as they were.
+2. `oxiroute generation rollback` re-activates the retained previous generation in the direct runtime. Under
+   the supervising master (the packaged service) it is unavailable and `previousRevision` in
+   `generation status` is informational only: the file restore is the rollback. Registrations are not part
+   of a generation, so a rollback neither loses nor restores them.
+3. The replaced generation drains like any other: its requests finish on it, and `generation status` lists
+   it under `retiredGenerations` until they do. If the next apply stays pending, see
+   [a reload stays pending](#outage-playbook).
 
 Never restart to roll back: it cuts in-flight requests and resets runtime state.
 
 ## Outage playbook
 
 ```sh
+oxiroute check                                           # one line: which pool, what is wrong; exit 0/1/2/3
 oxiroute ready; oxiroute status; oxiroute generation status
 oxiroute pool list; oxiroute --output json server list    # health, lastFailure, passive state
-curl -s http://127.0.0.1:9900/metrics | grep -E 'oxiroute_pool_(available|queue)|passive_ejected'
+oxiroute requests list --older-than 30s                  # requests stuck inside the router, oldest first
+curl -s http://127.0.0.1:9900/metrics | grep -E 'oxiroute_pool_(available|queue)|passive_ejected|canary'
 ```
+
+Start with `check`: its findings name the pool and the symptom (`pool gpu-render 0/4 available`,
+`2 overdue requests`, `configuration refused 40 s ago`, `pool gpu-render canary failed
+(unexpected_status)`), and the sections below say what to do about each.
 
 **All backends down.** Immediate empty `503` with `x-oxiroute-pool-unavailable: 1`. A pool never queues
 when no server is selectable; the queue only waits while servers exist but are at capacity. Read
 `lastFailure` (`connect_failed`, `timeout`, `unexpected_status`), fix the workers, and expect recovery
-after `down_interval_ms` plus `healthy_threshold` x `fast_interval_ms`.
+after `down_interval_ms` plus `healthy_threshold` x `fast_interval_ms`. The `503` carries a current
+`Date`, and `Retry-After` and a short body when `resilience.unavailable_retry_after_seconds` and
+`unavailable_body` are set. With `resilience.queue_while_unavailable_ms` callers wait for a recovering
+server instead. `check` exits `2`.
 
 **Only backend unhealthy.** The app is up but its health path fails (for example a pending migration), so
 the single-server pool fails closed with an empty `503`. Verify the origin directly, then
 `oxiroute server set-health --pool P S up` so the app serves its own error page; undo with `auto`.
-Permanent fix: a `tcp` check or a liveness path that never touches the database. *6.0:*
-`resilience.fail_open`.
+Permanent fix: a `tcp` check or a liveness path that never touches the database, or
+`resilience.fail_open = true`, which makes the pool serve its least bad server (the application's own error
+page) instead of an empty `503`; `oxiroute_pool_fail_open_selections_total` and `failOpen` in `/status.json`
+tell that it is happening.
 
 **Saturation.** `oxiroute_pool_queue_depth` above 0, active connections at the caps,
 `oxiroute_pool_queue_timeouts_total` rising (those callers get `503` after `queue_timeout_ms`). Add
@@ -177,11 +198,14 @@ machines, lengthen `queue_timeout_ms` to the callers' patience, or for an emerge
 GPU's VRAM holds.
 
 **Hung backend.** It accepts and never answers; its leases stay held. Set it to `maintenance`, then kill
-the process on the worker; OxiRoute cannot cancel a request in flight. In 0.5.4 the read timeout is the
-pool `server_timeout_ms` when set (it shadows route `read_timeout_ms`), capped by the service
-`upstream_io_timeout_ms`, which is also the total deadline. A retry on `response_timeout` then has no
-budget left and the client sees a dropped connection, not a status. Keep short-call and long-job pools
-apart. *6.0:* per-phase `policy.timeouts` and `504` with `x-oxiroute-reason`.
+the process on the worker; OxiRoute cannot cancel a request in flight. `oxiroute requests list --pool P
+--older-than 60s` shows which requests are waiting and in which phase (`awaiting_headers` means the worker
+took the request and said nothing). The route's `policy.timeouts` (`connect_ms`, `header_ms`, `idle_ms`,
+`total_ms`) bound each phase; when one fires the client gets `504` with `x-oxiroute-reason`
+(`connect_timeout`, `upstream_header_timeout`, `upstream_write_timeout`, `total_deadline`) and a retry still
+has budget. A request past its total deadline plus 5 s is a router bug: `check` exits `2` with `N overdue
+requests` and `oxiroute_http_inflight_overdue` is above 0. Keep short-call and long-job pools apart.
+(0.5.4 dropped the connection instead of answering.)
 
 **Bad config.** Nothing changed after a write: see the rejected-write detection. Applied but wrong:
 [roll back](#roll-back-a-generation).
@@ -193,11 +217,23 @@ worker drains at a time under the supervising master, so the next reload stays p
 (`generation status` shows a candidate; the journal has `ReplacementCommitted` without
 `ReplacementCompleted`) until that work ends or the `retirement.drain_deadline_ms` of the replaced
 configuration passes, when the worker is stopped. Check by applying twice during a long request:
-the second apply activates when the request ends. In the direct runtime `generation status` lists
-the draining generations as `retiredGenerations`, with their in-flight counts, and a full
-`max_retired_generations` shows `pendingApply`.
+the second apply activates when the request ends. `generation status` lists the draining generations as
+`retiredGenerations`, with their age and in-flight counts, and a full `max_retired_generations` shows
+`pendingApply`. `check` warns when one drains longer than `--max-retired-age` (default 1 h).
 
-## Hardening recipe (0.5.4)
+**A canary fails.** `check` reports `pool P canary failed (reason)` with reason `connect_failed`, `timeout`,
+`unexpected_status` or `protocol_error`: one failed run is a WARNING, two in a row a CRITICAL. The canary
+asks the pool the client's question, so a failing canary with all servers `healthy` means the health path is
+shallower than the work: the status page of the server it hit is in `canary.server`
+(`oxiroute check --json`, `details.pools[].canary`). Test the same path against that worker by hand, then
+fix the worker or deepen its health path. A canary that is `busy` was skipped because the pool was at
+capacity, which is not a failure.
+
+**A registered worker vanished.** Its lease ran out: it left rotation within its TTL, and `oxiroute server
+list --pool P` no longer lists it (`check` warns `late for a heartbeat` while a lease has under a third of
+its TTL left). Restart the worker's agent; it registers again by itself.
+
+## Hardening recipe
 
 ```
 upstream_pools = { {
@@ -214,9 +250,9 @@ policy = { retry = { max_retries = 3, delay_ms = 250, target = "next_server",
                      response_statuses = { 502, 503 } } }
 ```
 
-- **Set `passive_health` explicitly.** In 0.5.4 a pool without it never ejects a server, although the
-  specification describes defaults (observed; fixed in 6.0). Without it a dead backend costs errors until
-  `unhealthy_threshold` probes fail.
+- **Set `passive_health` explicitly.** A pool without it does no passive accounting and never ejects a
+  server. Without it a dead backend costs errors until `unhealthy_threshold` probes fail. A successful
+  response clears the failure run, so unrelated errors spread over time no longer eject a healthy server.
 - **Fast recovery.** `down_interval_ms` of 10000 or less, `fast_interval_ms` 1000. A 60 s down interval
   hides a restarted machine for a minute. `timeout_ms` must not exceed `interval_ms`.
 - **Statuses count as passive failures only if the route lists them in `response_statuses`.** Add `500`
@@ -234,29 +270,35 @@ policy = { retry = { max_retries = 3, delay_ms = 250, target = "next_server",
   not extend it); give short calls their own service and pool. `max_connections` is concurrent jobs per
   GPU; `queue_timeout_ms` bounds the wait for a slot (`null`: no queue, immediate `503`).
 
-> **Arrives in 6.0** (optional; defaults keep the strict behavior):
->
-> ```
-> resilience = { fail_open = true, min_members = 1, ejection_jitter_percent = 20,      -- on the pool
->                queue_while_unavailable_ms = 15000, unavailable_retry_after_seconds = 5,
->                unavailable_body = "pool unavailable" }
-> policy = { retry = { ..., jitter_percent = 50, idempotency_header = "Idempotency-Key",
->                      budget = { per_second = 20, ratio_percent = 20 } },
->            timeouts = { connect_ms = 2000, header_ms = 30000, idle_ms = 60000, total_ms = 3600000 },
->            rescue = { statuses = { 404 }, target = "next_server" } }
-> ```
->
-> - `fail_open`: a pool with no selectable server serves the least bad one instead of an empty `503`;
->   `min_members` stops ejection from emptying the pool; `queue_while_unavailable_ms` waits for a
->   recovering member. The unavailable `503` always has a current `Date`.
-> - `504` with `x-oxiroute-reason` (`connect_timeout`, `upstream_header_timeout`,
->   `upstream_write_timeout`, `total_deadline`) replaces the dropped connection; attempts are clamped, so a
->   hang leaves retry budget.
-> - `rescue`: replay on another server when a backend answers a listed status, for example a `404` from an
->   Ollama node that lacks the model, without ejecting it (`target = "pool"` plus `pool` goes to another pool).
-> - `idempotency_header` (needs `method_safety = "all"`): a non-`GET`/`HEAD` request is replayed after bytes
->   were sent only when it carries the header; the worker must honour the key. `budget` caps retries per
->   second and as a share of recent requests, so retries cannot amplify an outage.
+Optional hardening (defaults keep the strict behavior):
+
+```
+resilience = { fail_open = true, min_members = 1, ejection_jitter_percent = 20,      -- on the pool
+               queue_while_unavailable_ms = 15000, unavailable_retry_after_seconds = 5,
+               unavailable_body = "pool unavailable" }
+canary = { path = "/__fit", interval_ms = 30000, timeout_ms = 5000, max_latency_ms = 2000 }  -- on the pool
+-- proxy action of the route:
+policy = { retry = { ..., jitter_percent = 50, idempotency_header = "Idempotency-Key",
+                     budget = { per_second = 20, ratio_percent = 20 } },
+           timeouts = { connect_ms = 2000, header_ms = 30000, idle_ms = 60000, total_ms = 3600000 },
+           rescue = { statuses = { 404 }, target = "next_server" } }
+```
+
+- `fail_open`: a pool with no selectable server serves the least bad one instead of an empty `503`;
+  `min_members` stops ejection from emptying the pool; `queue_while_unavailable_ms` waits for a
+  recovering member. The unavailable `503` always has a current `Date`.
+- `504` with `x-oxiroute-reason` (`connect_timeout`, `upstream_header_timeout`,
+  `upstream_write_timeout`, `total_deadline`) replaces the dropped connection; attempts are clamped, so a
+  hang leaves retry budget.
+- `rescue`: replay on another server when a backend answers a listed status, for example a `404` from an
+  Ollama node that lacks the model, without ejecting it (`target = "pool"` plus `pool` goes to another pool).
+- `idempotency_header` (needs `method_safety = "all"`): a non-`GET`/`HEAD` request is replayed after bytes
+  were sent only when it carries the header; the worker must honour the key. `budget` caps retries per
+  second and as a share of recent requests, so retries cannot amplify an outage.
+- `canary`: a request every `interval_ms` through the pool's own server selection, so it proves the path a
+  client takes, not only that each server answers its probe. It skips (`busy`) instead of taking a slot
+  from a client, and a failing run shows in `oxiroute check` and `oxiroute_canary_*`. Point it at the same
+  worker-side health path or at a deeper one; plain HTTP only.
 
 ## Worker-side health recipes
 
@@ -313,7 +355,9 @@ ThreadingHTTPServer(("127.0.0.1", 9100), Gate).serve_forever()
 ```
 
 Test with `curl -si http://127.0.0.1:9100/__fit` while the NFS server is stopped and while another
-process holds the VRAM.
+process holds the VRAM. On the front OxiRoute the stale mount then shows as `pool gpu-render 3/4
+available` in `oxiroute check` within `unhealthy_threshold` x `interval_ms`, and a `canary` with
+`path = "/__fit"` proves the gate is reachable through the pool as a client would reach it.
 
 ## HA and local-first
 
@@ -326,7 +370,11 @@ process holds the VRAM.
   front pool so the node is not asked again on every request.
 - Run two front instances (`front-a`, `front-b`) with identical configuration pushed by the file flow:
   canary on `front-b`, verify `oxiroute status` and traffic, then `front-a`. Give clients both addresses,
-  or a floating address managed outside OxiRoute (VRRP). Runtime state is per instance in 0.5.4: drain on both.
+  or a floating address managed outside OxiRoute (VRRP). Runtime state (drain, overrides, registrations) is per
+  instance: drain on both. Workers that register themselves (`server register --heartbeat`) can announce to
+  both fronts, one agent per front.
+- Monitor each front with its own `oxiroute check` and a `canary` on the front pool; a front is healthy when
+  `check` exits `0`, whatever the other front does.
 
 ## Monitoring and alerts
 
@@ -355,6 +403,66 @@ groups:
   ratio. `oxiroute_http_request_duration_milliseconds` is the latency histogram.
 - `oxiroute_pool_available_servers` counts selectable servers (healthy, not drained, not ejected): page
   on zero, and compare against the expected count to catch forgotten drains.
-- *Arrives in 6.0:* also alert on `increase(oxiroute_config_rejections_total[15m]) > 0` and
+- Also alert on `increase(oxiroute_config_rejections_total[15m]) > 0` (a refused file) and
   `increase(oxiroute_pool_fail_open_selections_total[5m]) > 0` (serving degraded); `rescue` replays are
   counted by `oxiroute_http_rescues_total`.
+- `oxiroute_http_inflight_overdue > 0` is a router bug and should page. `oxiroute_canary_success == 0` and
+  `time() - oxiroute_canary_last_success_timestamp_seconds > 120` mean a pool's client-side path fails.
+  `oxiroute_generation_retired_age_seconds` shows a replaced generation that does not drain.
+
+## Monitor with `oxiroute check`
+
+`oxiroute check` is the one command for cron and monitoring systems. It prints one line and exits with the
+plugin codes: `0` OK, `1` WARNING, `2` CRITICAL, `3` UNKNOWN (it could not reach or understand the
+endpoint, or an option is wrong). These codes replace the exit categories 2 to 9 of the other commands;
+see [CLI.md](../reference/CLI.md#check-monitoring-exit-codes). It reads the public `/status.json`, so it
+needs no token: over `--endpoint` on the host, or over `--socket` as any member of the status socket's
+group, without `sudo`.
+
+```sh
+oxiroute check
+# OXIROUTE OK - 2 pools, 8/8 servers available | gpu-render_available=4;4;1 gpu-render_queued=0 ...
+oxiroute check --pool gpu-render --warn-available-below 3 --crit-available-below 2
+# OXIROUTE WARNING - pool gpu-render 2/4 available | gpu-render_available=2;3;2 ...
+oxiroute --socket /run/oxiroute/status.sock check --max-inflight-age 2h --json
+```
+
+What it judges: the process is ready; every pool has enough available servers (`--warn-available-below`,
+default any missing; `--crit-available-below`, default 1); no queued request waited longer than
+`--max-queue-wait` (5 s); no request is older than `--max-inflight-age` (off by default; size it to the
+longest legitimate job); no overdue or stuck requests; the last configuration file was accepted; no
+replaced generation drains longer than `--max-retired-age` (1 h); registered leases are renewed and the
+registry store is healthy; and the pool canaries answer. `--canary --url http://host:port/path
+[--host H]` additionally requests the URL through the listener and requires `--expect-status`.
+`--json` prints `status`, `exitCode`, `summary`, `findings` and the whole page as `details`.
+
+A systemd timer that fails its unit, and so triggers `OnFailure=`, whenever the farm is not OK:
+
+```ini
+# /etc/systemd/system/oxiroute-check.service
+[Unit]
+Description=OxiRoute farm check
+OnFailure=oxiroute-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/oxiroute --socket /run/oxiroute/status.sock check --pool gpu-render --warn-available-below 3
+
+# /etc/systemd/system/oxiroute-check.timer
+[Timer]
+OnCalendar=minutely
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
+```
+
+`journalctl -u oxiroute-check` keeps the line of every run. Plain cron mails only when something is wrong:
+
+```cron
+*/5 * * * * out=$(oxiroute --socket /run/oxiroute/status.sock check); rc=$?; [ $rc -ne 0 ] && echo "$out" | mail -s "oxiroute check rc=$rc" ops@example.com
+```
+
+Nagios, Icinga and NRPE take the line and the code as they are: `command[check_oxiroute]=/usr/bin/oxiroute
+--socket /run/oxiroute/status.sock check --warn-available-below 3`. Treat `3` as "cannot tell" and alert on
+it too: a router that cannot be asked is not known to be healthy.
