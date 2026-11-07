@@ -331,6 +331,12 @@ impl RuntimeGeneration {
         self.references[kind.index()].load(Ordering::Acquire)
     }
 
+    /// How long work admitted by this generation may continue after it is replaced.
+    #[must_use]
+    pub fn retirement_deadline(&self) -> Duration {
+        Duration::from_millis(self.config.retirement_deadline_ms())
+    }
+
     /// Whether a newer generation replaced this one. Unlike a closed accept gate, this never
     /// reverts, and an operator drain of the active generation does not set it.
     #[must_use]
