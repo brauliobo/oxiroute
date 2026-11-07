@@ -377,11 +377,19 @@ export interface HttpCookieAttributePolicyConfig {
   same_site: 'strict' | 'lax' | 'none' | null
 }
 
+export interface HttpRetryBudgetConfig {
+  per_second: number | null
+  ratio_percent: number | null
+}
+
 export interface HttpRetryPolicyConfig {
   max_retries: number
   target: 'same_server' | 'next_server'
   delay_ms: number
+  jitter_percent: number
   final_redispatch: boolean
+  idempotency_header: string | null
+  budget: HttpRetryBudgetConfig | null
   triggers: HttpRetryTrigger[]
   response_statuses?: number[]
   method_safety: 'get_head' | 'all'

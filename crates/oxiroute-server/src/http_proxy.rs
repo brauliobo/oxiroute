@@ -125,6 +125,7 @@ pub struct HttpRequestContext {
     retry_delay_pending: bool,
     prior_attempts: usize,
     rescued: bool,
+    retry_prepaid: bool,
     response_status_override: Option<u16>,
     response_header_overrides: Vec<(HeaderName, HeaderValue)>,
     started_at: Instant,
@@ -190,6 +191,13 @@ impl HttpRequestContext {
             self.attempt_count()
         );
         self.listener.record_rescue(&route, status);
+    }
+
+    fn spend_retry_budget(&self) -> bool {
+        proxy_policy(self)
+            .retry_budget
+            .as_ref()
+            .is_none_or(|budget| budget.try_spend(Instant::now()))
     }
 
     fn release_lease(&mut self) {
@@ -314,6 +322,7 @@ impl ProxyHttp for HttpReverseProxy {
             retry_delay_pending: false,
             prior_attempts: 0,
             rescued: false,
+            retry_prepaid: false,
             response_status_override: None,
             response_header_overrides: Vec::new(),
             started_at,
@@ -488,7 +497,7 @@ impl ProxyHttp for HttpReverseProxy {
         };
         if ctx.selected.is_none() {
             if ctx.retry_delay_pending {
-                let delay = proxy_policy(ctx).retry_delay;
+                let delay = proxy_policy(ctx).next_retry_delay();
                 if delay > remaining {
                     return Err(Error::new_up(ErrorType::ReadTimedout));
                 }
@@ -566,14 +575,14 @@ impl ProxyHttp for HttpReverseProxy {
                 .is_some_and(|pool| pool.has_unattempted(&ctx.attempted_upstreams)),
         };
         let trigger = connect_retry_trigger(&error);
-        let retry = should_retry_connection(
-            has_address_fallback,
-            ctx.connection_retryable
-                && trigger.is_some_and(|trigger| policy.retries_on(trigger))
-                && has_budget
-                && target_available
-                && ctx.remaining(true).is_ok(),
-        );
+        let route_retry_allowed = !has_address_fallback
+            && ctx.connection_retryable
+            && trigger.is_some_and(|trigger| policy.retries_on(trigger))
+            && has_budget
+            && target_available
+            && ctx.remaining(true).is_ok()
+            && ctx.spend_retry_budget();
+        let retry = should_retry_connection(has_address_fallback, route_retry_allowed);
         error.set_retry(retry);
         if retry {
             if !has_address_fallback {
@@ -595,6 +604,7 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
         _client_reused: bool,
     ) -> Box<Error> {
+        let prepaid = std::mem::take(&mut ctx.retry_prepaid);
         let rescue_only = is_rescue_only(&error, proxy_policy(ctx));
         if let Some(failure) = passive_failure_for_error(&error).filter(|_| !rescue_only) {
             ctx.record_passive_failure(failure);
@@ -621,7 +631,8 @@ impl ProxyHttp for HttpReverseProxy {
             && response_is_retryable(session)
             && has_budget
             && target_available
-            && ctx.remaining(true).is_ok();
+            && ctx.remaining(true).is_ok()
+            && (prepaid || ctx.spend_retry_budget());
         error.set_retry(retry);
         if retry {
             if retry_target == HttpRetryTarget::SameServer {
@@ -856,7 +867,11 @@ impl ProxyHttp for HttpReverseProxy {
         let status = response.status.as_u16();
         let rescued = !refused && proxy_policy(ctx).rescues_status(status);
         let retries_on_status = refused || rescued || proxy_policy(ctx).retries_on_status(status);
-        if retries_on_status && response_status_retryable(session, ctx, refused, rescued) {
+        if retries_on_status
+            && response_status_retryable(session, ctx, refused, rescued)
+            && ctx.spend_retry_budget()
+        {
+            ctx.retry_prepaid = true;
             if rescued {
                 ctx.begin_rescue(status);
             }
@@ -1689,14 +1704,19 @@ async fn execute_route_action(
                 ctx.response_header_overrides = std::mem::take(&mut status_headers);
                 ctx.connection_retryable =
                     proxy.policy.max_retries > 0 && !session.is_upgrade_req();
+                let body_is_empty = session.is_body_empty();
                 ctx.replay_retryable = proxy.policy.max_retries > 0
                     && proxy.policy.request_is_replay_safe(
                         &method,
-                        session.is_body_empty(),
+                        &session.req_header().headers,
+                        body_is_empty,
                         route.policy.request_buffering,
                     )
                     && !session.is_upgrade_req();
                 ctx.adopt_route_total(proxy.policy.timeouts.total_ms.map(Duration::from_millis));
+                if let Some(budget) = &proxy.policy.retry_budget {
+                    budget.record_request(Instant::now());
+                }
                 ctx.pool = Some(Arc::clone(&proxy.pool));
                 return Ok(false);
             }

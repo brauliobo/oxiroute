@@ -431,7 +431,8 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
       (policy.same_site === null || ['strict', 'lax', 'none'].includes(String(policy.same_site)))) &&
     isRecord(value.retry) && integerInRange(value.retry.max_retries, 0, 3) &&
     ['same_server', 'next_server'].includes(String(value.retry.target)) &&
-    integerInRange(value.retry.delay_ms, 0, 60_000) &&
+    integerInRange(value.retry.delay_ms, 0, 60_000) && integerInRange(value.retry.jitter_percent, 0, 100) &&
+    nullableString(value.retry.idempotency_header) && isHttpRetryBudget(value.retry.budget) &&
     typeof value.retry.final_redispatch === 'boolean' &&
     (!value.retry.final_redispatch ||
       (value.retry.max_retries > 0 && value.retry.target === 'same_server')) &&
@@ -441,6 +442,12 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
       (value.retry.method_safety === 'all' && value.retry.body_safety === 'buffered')) &&
     isHttpProxyTimeouts(value.timeouts) && isHttpRescue(value.rescue) &&
     (value.cache === null || isHttpCachePolicy(value.cache))
+}
+
+function isHttpRetryBudget(value: unknown): boolean {
+  return value === null || (isRecord(value) && (value.per_second !== null || value.ratio_percent !== null) &&
+    (value.per_second === null || integerInRange(value.per_second, 1, 100_000)) &&
+    (value.ratio_percent === null || integerInRange(value.ratio_percent, 1, 100)))
 }
 
 function isHttpRescue(value: unknown): boolean {

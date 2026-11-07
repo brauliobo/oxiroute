@@ -642,8 +642,29 @@ pub struct HttpRetryPolicy {
     pub target: HttpRetryTarget,
     #[serde(default)]
     pub delay_ms: u64,
+    /// Extra random delay, up to this percentage of `delay_ms`, added before each retry.
+    #[serde(default)]
+    pub jitter_percent: u8,
     #[serde(default)]
     pub final_redispatch: bool,
+    /// A request that is not `GET` or `HEAD` is replayed after a response-phase failure only when it
+    /// carries this header. Requires `method_safety = "all"`.
+    #[serde(default)]
+    pub idempotency_header: Option<String>,
+    /// Caps the retries of the route so that they cannot amplify an outage.
+    #[serde(default)]
+    pub budget: Option<HttpRetryBudget>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpRetryBudget {
+    /// Retries allowed per second.
+    #[serde(default)]
+    pub per_second: Option<u32>,
+    /// Retries allowed as a percentage of the requests of the last 10 seconds, rounded up.
+    #[serde(default)]
+    pub ratio_percent: Option<u8>,
 }
 
 fn deserialize_http_retry_triggers<'de, D>(
@@ -713,7 +734,10 @@ impl Default for HttpRetryPolicy {
             body_safety: HttpRetryBodySafety::default(),
             target: HttpRetryTarget::default(),
             delay_ms: 0,
+            jitter_percent: 0,
             final_redispatch: false,
+            idempotency_header: None,
+            budget: None,
         }
     }
 }

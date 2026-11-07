@@ -11,7 +11,7 @@ use std::{
         mpsc::{self, SyncSender, TrySendError},
     },
     thread::JoinHandle,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -349,6 +349,9 @@ pub(crate) struct ProxyPolicyPlan {
     pub(crate) retry_body_safety: HttpRetryBodySafety,
     pub(crate) retry_target: HttpRetryTarget,
     pub(crate) retry_delay: Duration,
+    pub(crate) retry_jitter_percent: u8,
+    pub(crate) idempotency_header: Option<HeaderName>,
+    pub(crate) retry_budget: Option<Arc<RetryBudget>>,
     pub(crate) final_redispatch: bool,
     pub(crate) timeouts: HttpProxyTimeouts,
     pub(crate) rescue_statuses: Box<[u16]>,
@@ -380,6 +383,9 @@ impl ProxyPolicyPlan {
             retry_body_safety: self.retry_body_safety,
             retry_target: self.retry_target,
             retry_delay: self.retry_delay,
+            retry_jitter_percent: self.retry_jitter_percent,
+            idempotency_header: self.idempotency_header.clone(),
+            retry_budget: self.retry_budget.clone(),
             final_redispatch: self.final_redispatch,
             timeouts: self.timeouts,
             rescue_statuses: self.rescue_statuses.clone(),
@@ -451,6 +457,14 @@ impl ProxyPolicyPlan {
             retry_body_safety: policy.retry.body_safety,
             retry_target: policy.retry.target,
             retry_delay: Duration::from_millis(policy.retry.delay_ms),
+            retry_jitter_percent: policy.retry.jitter_percent,
+            idempotency_header: policy.retry.idempotency_header.as_deref().map(|name| {
+                HeaderName::from_bytes(name.as_bytes()).expect("validated idempotency header")
+            }),
+            retry_budget: policy
+                .retry
+                .budget
+                .map(|budget| Arc::new(RetryBudget::new(budget))),
             final_redispatch: policy.retry.final_redispatch,
             timeouts: policy.timeouts,
             rescue_statuses: policy
@@ -469,12 +483,19 @@ impl ProxyPolicyPlan {
     pub(crate) fn request_is_replay_safe(
         &self,
         method: &Method,
+        headers: &HeaderMap,
         body_is_empty: bool,
         request_buffered: bool,
     ) -> bool {
         let method_safe = match self.retry_method_safety {
             HttpRetryMethodSafety::GetHead => matches!(*method, Method::GET | Method::HEAD),
-            HttpRetryMethodSafety::All => true,
+            HttpRetryMethodSafety::All => {
+                matches!(*method, Method::GET | Method::HEAD)
+                    || self
+                        .idempotency_header
+                        .as_ref()
+                        .is_none_or(|name| headers.get(name).is_some_and(|value| !value.is_empty()))
+            }
         };
         let body_safe = body_is_empty
             || (self.retry_body_safety == HttpRetryBodySafety::Buffered && request_buffered);
@@ -489,12 +510,102 @@ impl ProxyPolicyPlan {
         self.rescue_statuses.contains(&status)
     }
 
+    /// The delay before a retry: `retry_delay` plus up to `retry_jitter_percent` of it.
+    pub(crate) fn next_retry_delay(&self) -> Duration {
+        jittered_delay(self.retry_delay, self.retry_jitter_percent, random_unit())
+    }
+
     pub(crate) fn target_for_retry(&self, attempts: usize) -> HttpRetryTarget {
         if self.final_redispatch && attempts == usize::from(self.max_retries) {
             HttpRetryTarget::NextServer
         } else {
             self.retry_target
         }
+    }
+}
+
+fn jittered_delay(delay: Duration, jitter_percent: u8, unit: f64) -> Duration {
+    delay.mul_f64(unit.mul_add(f64::from(jitter_percent) / 100.0, 1.0))
+}
+
+fn random_unit() -> f64 {
+    use std::hash::{BuildHasher as _, Hasher as _, RandomState};
+    let bits = RandomState::new().build_hasher().finish() >> 11;
+    bits as f64 / (1_u64 << 53) as f64
+}
+
+/// Caps the retries of a route per second and as a ratio of its recent requests, so that retries
+/// cannot amplify an outage. Windows are fixed: one second for the rate, ten for the ratio.
+#[derive(Debug)]
+pub(crate) struct RetryBudget {
+    per_second: Option<u32>,
+    ratio_percent: Option<u8>,
+    window: Mutex<BudgetWindow>,
+}
+
+#[derive(Debug)]
+struct BudgetWindow {
+    second_started: Instant,
+    second_retries: u32,
+    ratio_started: Instant,
+    requests: u64,
+    retries: u64,
+}
+
+const BUDGET_RATIO_WINDOW: Duration = Duration::from_secs(10);
+
+impl RetryBudget {
+    pub(crate) fn new(budget: oxiroute_config::HttpRetryBudget) -> Self {
+        let now = Instant::now();
+        Self {
+            per_second: budget.per_second,
+            ratio_percent: budget.ratio_percent,
+            window: Mutex::new(BudgetWindow {
+                second_started: now,
+                second_retries: 0,
+                ratio_started: now,
+                requests: 0,
+                retries: 0,
+            }),
+        }
+    }
+
+    pub(crate) fn record_request(&self, now: Instant) {
+        let mut window = self.rolled_window(now);
+        window.requests += 1;
+    }
+
+    /// Takes one retry from the budget, or returns `false` when the route spent it.
+    pub(crate) fn try_spend(&self, now: Instant) -> bool {
+        let mut window = self.rolled_window(now);
+        let within_rate = self
+            .per_second
+            .is_none_or(|rate| window.second_retries < rate);
+        let within_ratio = self.ratio_percent.is_none_or(|ratio| {
+            window.retries < (window.requests * u64::from(ratio)).div_ceil(100)
+        });
+        if within_rate && within_ratio {
+            window.second_retries += 1;
+            window.retries += 1;
+        }
+        within_rate && within_ratio
+    }
+
+    fn rolled_window(&self, now: Instant) -> std::sync::MutexGuard<'_, BudgetWindow> {
+        let mut window = self
+            .window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if now.duration_since(window.second_started) >= Duration::from_secs(1) {
+            window.second_started = now;
+            window.second_retries = 0;
+        }
+        if now.duration_since(window.ratio_started) >= BUDGET_RATIO_WINDOW {
+            window.ratio_started = now;
+            window.requests = 0;
+            window.retries = 0;
+        }
+        window
     }
 }
 
@@ -2705,9 +2816,24 @@ mod retry_tests {
     #[test]
     fn replay_safety_requires_the_explicit_buffered_all_methods_policy() {
         let default_policy = ProxyPolicyPlan::compile(&HttpProxyPolicy::default());
-        assert!(default_policy.request_is_replay_safe(&Method::GET, true, false));
-        assert!(!default_policy.request_is_replay_safe(&Method::GET, false, true));
-        assert!(!default_policy.request_is_replay_safe(&Method::POST, true, true));
+        assert!(default_policy.request_is_replay_safe(
+            &Method::GET,
+            &HeaderMap::new(),
+            true,
+            false
+        ));
+        assert!(!default_policy.request_is_replay_safe(
+            &Method::GET,
+            &HeaderMap::new(),
+            false,
+            true
+        ));
+        assert!(!default_policy.request_is_replay_safe(
+            &Method::POST,
+            &HeaderMap::new(),
+            true,
+            true
+        ));
 
         let replay_policy = ProxyPolicyPlan::compile(&HttpProxyPolicy {
             retry: oxiroute_config::HttpRetryPolicy {
@@ -2717,9 +2843,103 @@ mod retry_tests {
             },
             ..HttpProxyPolicy::default()
         });
-        assert!(replay_policy.request_is_replay_safe(&Method::POST, true, false));
-        assert!(!replay_policy.request_is_replay_safe(&Method::POST, false, false));
-        assert!(replay_policy.request_is_replay_safe(&Method::POST, false, true));
+        assert!(replay_policy.request_is_replay_safe(
+            &Method::POST,
+            &HeaderMap::new(),
+            true,
+            false
+        ));
+        assert!(!replay_policy.request_is_replay_safe(
+            &Method::POST,
+            &HeaderMap::new(),
+            false,
+            false
+        ));
+        assert!(replay_policy.request_is_replay_safe(
+            &Method::POST,
+            &HeaderMap::new(),
+            false,
+            true
+        ));
+    }
+
+    fn idempotent_policy() -> ProxyPolicyPlan {
+        ProxyPolicyPlan::compile(&HttpProxyPolicy {
+            retry: oxiroute_config::HttpRetryPolicy {
+                method_safety: HttpRetryMethodSafety::All,
+                body_safety: HttpRetryBodySafety::Buffered,
+                idempotency_header: Some("idempotency-key".into()),
+                ..oxiroute_config::HttpRetryPolicy::default()
+            },
+            ..HttpProxyPolicy::default()
+        })
+    }
+
+    #[test]
+    fn the_idempotency_header_gates_only_methods_other_than_get_and_head() {
+        let policy = idempotent_policy();
+        let keyed = HeaderMap::from_iter([(
+            HeaderName::from_static("idempotency-key"),
+            HeaderValue::from_static("job-1"),
+        )]);
+        let empty = HeaderMap::from_iter([(
+            HeaderName::from_static("idempotency-key"),
+            HeaderValue::from_static(""),
+        )]);
+        assert!(policy.request_is_replay_safe(&Method::POST, &keyed, false, true));
+        assert!(!policy.request_is_replay_safe(&Method::POST, &HeaderMap::new(), false, true));
+        assert!(!policy.request_is_replay_safe(&Method::POST, &empty, false, true));
+        assert!(policy.request_is_replay_safe(&Method::GET, &HeaderMap::new(), true, false));
+        assert!(policy.request_is_replay_safe(&Method::HEAD, &HeaderMap::new(), true, false));
+    }
+
+    #[test]
+    fn jitter_adds_up_to_the_configured_share_of_the_delay() {
+        let base = Duration::from_millis(1_000);
+        assert_eq!(jittered_delay(base, 0, 0.9), base);
+        assert_eq!(jittered_delay(base, 50, 0.0), base);
+        assert_eq!(jittered_delay(base, 50, 0.5), Duration::from_millis(1_250));
+        assert_eq!(jittered_delay(base, 100, 1.0), Duration::from_millis(2_000));
+        for _ in 0..100 {
+            let delay = jittered_delay(base, 30, random_unit());
+            assert!(
+                delay >= base && delay <= Duration::from_millis(1_300),
+                "{delay:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_retry_budget_caps_the_rate_per_second() {
+        let budget = RetryBudget::new(oxiroute_config::HttpRetryBudget {
+            per_second: Some(2),
+            ratio_percent: None,
+        });
+        let start = Instant::now();
+        assert!(budget.try_spend(start));
+        assert!(budget.try_spend(start));
+        assert!(!budget.try_spend(start));
+        assert!(budget.try_spend(start + Duration::from_millis(1_100)));
+    }
+
+    #[test]
+    fn the_retry_budget_caps_the_ratio_of_recent_requests() {
+        let budget = RetryBudget::new(oxiroute_config::HttpRetryBudget {
+            per_second: None,
+            ratio_percent: Some(10),
+        });
+        let start = Instant::now();
+        assert!(!budget.try_spend(start), "no request, no retry");
+        let mut spent = 0;
+        for request in 0_u32..100 {
+            budget.record_request(start);
+            spent += u32::from(budget.try_spend(start));
+            assert!(spent <= (request + 1).div_ceil(10), "request {request}");
+        }
+        assert_eq!(spent, 10);
+        let later = start + BUDGET_RATIO_WINDOW;
+        budget.record_request(later);
+        assert!(budget.try_spend(later), "the ratio window rolls over");
     }
 }
 

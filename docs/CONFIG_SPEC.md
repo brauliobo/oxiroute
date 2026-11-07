@@ -463,8 +463,19 @@ Current constraints:
   requests that can create a duplicate side effect. The values are a pair: mixed `get_head`/`buffered`
   or `all`/`empty` policies fail validation. Every retry also requires the configured
   `target` to be selectable. `target = "next_server"` requires a distinct named server;
-  `target = "same_server"` reselects the same named server. `delay_ms` defaults to `0`, is bounded to
-  `60000`, and is applied before each route retry. A `503` that carries the
+  `target = "same_server"` reselects the same named server. A replay never returns to a server that
+  already answered the request when `target = "next_server"`; it is not attempted at all when every
+  other server was tried. `delay_ms` defaults to `0`, is bounded to
+  `60000`, and is applied before each same-server route retry; `jitter_percent` (default `0`, at most
+  `100`) adds a random share of up to that percentage of the delay, so that clients do not retry in
+  lockstep. `idempotency_header` (default `null`, requires `method_safety = "all"`) limits the replay
+  of a method other than `GET` and `HEAD` after the request was sent (response-phase retries and
+  rescue) to requests that carry that header with a non-empty value, such as `Idempotency-Key`; the
+  backend must honour the key. `budget` (default `null`) caps the retries of the route so that
+  they cannot amplify an outage: `per_second` (1 to 100000) bounds the retries started in each
+  second and `ratio_percent` (1 to 100) bounds them to that share, rounded up, of the route requests
+  of the last 10 seconds; when either is spent, the client receives the failing response or error
+  instead of a retry. The budget is not supported for HTTP/3 upstream pools. A `503` that carries the
   `x-oxiroute-pool-unavailable` header, which an OxiRoute node adds when no server of its own pool is
   selectable (for example every server is drained), was never forwarded, so it is redispatched to
   the next server of the pool like a connection failure: any non-upgrade request, within
