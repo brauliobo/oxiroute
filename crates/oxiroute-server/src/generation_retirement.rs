@@ -66,18 +66,18 @@ pub struct RetirementCounters {
 
 struct Retired {
     generation: Arc<RuntimeGeneration>,
-    retired_at: Instant,
+    since: Instant,
     deadline: Duration,
     closed_at: Option<Instant>,
 }
 
 impl Retired {
     fn due(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.retired_at) >= self.deadline
+        now.saturating_duration_since(self.since) >= self.deadline
     }
 
     fn status(&self, now: Instant) -> RetiredGenerationStatus {
-        let age = now.saturating_duration_since(self.retired_at);
+        let age = now.saturating_duration_since(self.since);
         RetiredGenerationStatus {
             revision: self.generation.revision().candidate.clone(),
             state: if self.closed_at.is_some() {
@@ -112,7 +112,7 @@ impl RetiredGenerations {
         );
         self.entries.push(Retired {
             generation,
-            retired_at: now,
+            since: now,
             deadline,
             closed_at: None,
         });
