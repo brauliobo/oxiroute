@@ -1341,3 +1341,44 @@ fn retains_source_and_render_size_bounds_for_http_actions() {
         oxiroute_config_source::LuaConfigError::SourceTooLarge
     ));
 }
+
+#[test]
+fn validates_header_pool_selectors() {
+    let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
+    let select = proxy_route(
+        "",
+        r#"              select = { header = "X-Min-VRAM", rules = { { at_most = 12, pool = "web" }, { at_most = 24, pool = "web" } }, on_invalid = "reject", spill = "up" },"#,
+    );
+    let loaded = load_lua(&config(&select, endpoint)).expect("selector");
+    let policy = &first_route(&config(&select, endpoint))["action"]["policy"];
+    assert_eq!(policy["select"]["header"], json!("x-min-vram"));
+    assert_eq!(policy["select"]["forward"], json!(false));
+    let rendered = render_lua(&loaded).expect("render selector");
+    assert_eq!(load_lua(&rendered).expect("selector roundtrip"), loaded);
+
+    for (select, expected) in [
+        (r#"select = { header = "x", rules = {} },"#, "sequence"),
+        (
+            r#"select = { header = "x", rules = { { at_most = 24, pool = "web" }, { at_most = 12, pool = "web" } } },"#,
+            "ascending",
+        ),
+        (
+            r#"select = { header = "x", rules = { { at_most = 12, pool = "gone" } } },"#,
+            "gone",
+        ),
+        (
+            r#"select = { header = "host", rules = { { at_most = 12, pool = "web" } } },"#,
+            "select",
+        ),
+        (
+            r#"select = { header = "x", rules = { { at_most = 12, pool = "web" } }, spill = "down" },"#,
+            "down",
+        ),
+    ] {
+        let message = error(&config(
+            &proxy_route("", &format!("              {select}")),
+            endpoint,
+        ));
+        assert!(message.contains(expected), "{select}: {message}");
+    }
+}

@@ -67,6 +67,7 @@ fn compile_http_route(
         HttpActionBlueprint::Proxy {
             pool,
             rescue_pool,
+            select,
             policy,
             cache,
         } => compile_proxy_action(
@@ -74,6 +75,7 @@ fn compile_http_route(
             route_index,
             *pool,
             *rescue_pool,
+            select.as_ref(),
             policy,
             cache.as_ref(),
             pools,
@@ -112,6 +114,7 @@ fn compile_proxy_action(
     route: usize,
     pool_index: usize,
     rescue_pool_index: Option<usize>,
+    select: Option<&(HttpPoolSelect, Vec<usize>)>,
     policy: &ProxyPolicyPlan,
     cache: Option<&CachePolicyBlueprint>,
     pools: &[Arc<UpstreamPlan>],
@@ -133,6 +136,13 @@ fn compile_proxy_action(
     Ok(HttpActionPlan::Proxy(ProxyActionPlan {
         pool: Arc::clone(pool),
         rescue_pool: rescue_pool_index.map(|index| Arc::clone(&pools[index])),
+        select: select.map(|(select, indices)| {
+            let rule_pools = indices
+                .iter()
+                .map(|index| Arc::clone(&pools[*index]))
+                .collect();
+            PoolSelectPlan::compile(select, rule_pools)
+        }),
         policy: policy.clone_with_cache(cache),
     }))
 }

@@ -57,6 +57,7 @@ pub(super) fn validate_proxy_policy(
     }
     validate_proxy_timeouts(service, route_index, policy.timeouts)?;
     validate_rescue(service, route_index, policy, pool, pools)?;
+    validate_select(service, route_index, policy, pool, pools)?;
     if let Some(cache) = &mut policy.cache {
         crate::cache_validation::validate_cache_policy(service, route_index, cache, cache_stores)?;
     }
@@ -151,6 +152,55 @@ fn validate_rescue(
     }
     let http3 = |pool: &UpstreamPool| pool.http_versions.max == crate::model::HttpVersion::Http3;
     if http3(pool) || target_pool.is_some_and(|target| http3(target)) {
+        return Err(invalid("is not supported for HTTP/3 upstream pools"));
+    }
+    Ok(())
+}
+
+fn validate_select(
+    service: &str,
+    route_index: usize,
+    policy: &mut HttpProxyPolicy,
+    pool: &UpstreamPool,
+    pools: &HashMap<&str, &UpstreamPool>,
+) -> Result<(), ConfigError> {
+    let cached = policy.cache.is_some();
+    let Some(select) = &mut policy.select else {
+        return Ok(());
+    };
+    let invalid =
+        |detail: &'static str| invalid_route(service, route_index, "action.policy.select", detail);
+    normalize_header_name(&mut select.header).map_err(invalid)?;
+    if select.rules.is_empty() || select.rules.len() > crate::defaults::MAX_HTTP_SELECT_RULES {
+        return Err(invalid("rules must contain between 1 and 16 entries"));
+    }
+    if select
+        .rules
+        .windows(2)
+        .any(|pair| pair[0].at_most >= pair[1].at_most)
+    {
+        return Err(invalid("rules must have strictly ascending at_most bounds"));
+    }
+    if cached {
+        return Err(invalid(
+            "cannot be combined with cache: entries are not keyed by pool",
+        ));
+    }
+    let http3 = |pool: &UpstreamPool| pool.http_versions.max == crate::model::HttpVersion::Http3;
+    for rule in &select.rules {
+        let target =
+            pools
+                .get(rule.pool.as_str())
+                .ok_or_else(|| ConfigError::UnknownRouteUpstreamPool {
+                    service: service.into(),
+                    route: route_index,
+                    pool: rule.pool.clone(),
+                })?;
+        if http3(target) {
+            return Err(invalid("is not supported for HTTP/3 upstream pools"));
+        }
+    }
+    if http3(pool) {
         return Err(invalid("is not supported for HTTP/3 upstream pools"));
     }
     Ok(())

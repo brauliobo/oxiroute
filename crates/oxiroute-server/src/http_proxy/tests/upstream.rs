@@ -75,6 +75,7 @@ async fn http_falls_back_to_the_second_address_without_route_retry_budget() {
         action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
             pool: Arc::clone(&plan),
             rescue_pool: None,
+            select: None,
             policy,
         }),
         policy: crate::http_action::RoutePolicyPlan::compile(

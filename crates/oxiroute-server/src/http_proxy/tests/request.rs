@@ -63,6 +63,7 @@ async fn unix_downstream_preserves_existing_x_forwarded_for_without_an_ip_peer()
                 UpstreamConnectionReuse::Safe,
             )),
             rescue_pool: None,
+            select: None,
             policy,
         }),
         policy: crate::http_action::RoutePolicyPlan::compile(

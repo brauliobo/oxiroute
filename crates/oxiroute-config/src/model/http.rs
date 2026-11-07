@@ -322,6 +322,54 @@ pub struct HttpProxyPolicy {
     pub rescue: Option<HttpRescuePolicy>,
     #[serde(default)]
     pub cache: Option<Box<HttpCachePolicy>>,
+    /// Chooses the pool per request from a numeric header; absent routes every request to `upstream_pool`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub select: Option<HttpPoolSelect>,
+}
+
+/// Capability routing: the first rule whose `at_most` covers the numeric value of `header` names the pool.
+/// A missing header, or a value above every bound, uses the route `upstream_pool`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpPoolSelect {
+    pub header: String,
+    /// Rules in strictly ascending `at_most` order.
+    pub rules: Vec<HttpPoolSelectRule>,
+    /// What a value that is not a non-negative number does.
+    #[serde(default)]
+    pub on_invalid: HttpSelectInvalid,
+    /// Whether the selector header still reaches the upstream.
+    #[serde(default)]
+    pub forward: bool,
+    #[serde(default)]
+    pub spill: HttpSelectSpill,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpPoolSelectRule {
+    pub at_most: u32,
+    pub pool: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpSelectInvalid {
+    /// Use the route `upstream_pool`.
+    #[default]
+    Default,
+    /// Answer 400.
+    Reject,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpSelectSpill {
+    #[default]
+    None,
+    /// Move to the next larger pool (later rules, then `upstream_pool`) while the chosen one has no
+    /// selectable server.
+    Up,
 }
 
 /// Replays a request that a backend answered with one of `statuses` (any status, for example a 404

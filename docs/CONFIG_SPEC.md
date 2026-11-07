@@ -563,6 +563,21 @@ Current constraints:
   replayable, the client receives the last backend response unchanged (status, headers, body) and
   nothing is synthesized. Rescues are counted in `oxiroute_http_rescues_total{route,status}` and
   logged at debug level. Rescue is not supported for HTTP/3 upstream pools and is rejected there.
+- Proxy `policy.select` (default absent) routes by capability: `{ header, rules, on_invalid, forward,
+  spill }`. After the route matches, the numeric value of `header` (a non-negative decimal) picks the
+  pool of the first rule whose `at_most` is at least the value; `rules` has 1 through 16 entries in
+  strictly ascending `at_most` order. A missing header, or a value above every bound, uses the route
+  `upstream_pool`. A value that is not a single non-negative number follows `on_invalid`: `default`
+  (the route pool, default) or `reject` (`400`). The header is removed before the upstream unless
+  `forward = true`. With `spill = "up"` (default `none`) a chosen pool that has no selectable server
+  (all drained, in maintenance, down or ejected; busy does not count) hands the request to the next
+  rule pool and finally the route pool, the first with a selectable server; when none has one the
+  chosen pool answers as usual (`503`, or its `fail_open` behavior). A client can request a
+  capability but never name a pool, since only configured pools are reachable. `retry.target =
+  next_server` stays in the chosen pool and `rescue` is independent. Not supported with `cache`
+  (entries are not keyed by pool) or HTTP/3 upstream pools. Selections are counted in
+  `oxiroute_route_pool_selections_total{route,pool}`. Restrict the header to trusted listeners
+  with an `access_policy` when a client claiming the largest capability could starve the big pool.
 - Proxy `policy.timeouts` optionally refines the upstream timeouts of one route, each phase `null` by
   default and between `1` and `86400000` milliseconds: `connect_ms` (per attempt, until the upstream
   connection is established), `header_ms` (per attempt, from the sent request until the first

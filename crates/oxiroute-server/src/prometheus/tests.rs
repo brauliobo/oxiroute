@@ -239,6 +239,24 @@ fn exposition_counts_rescues_by_route_and_status() {
 }
 
 #[test]
+fn exposition_counts_header_selector_choices_by_route_and_pool() {
+    let metrics = RuntimeMetrics::new();
+    let listener = metrics
+        .register_listener("edge", "http", "socket:192.0.2.10:private-port", None)
+        .expect("listener");
+    listener.record_pool_selection("0", "gpu-12");
+    listener.record_pool_selection("0", "gpu-12");
+    listener.record_pool_selection("0", "gpu-24");
+    let control = empty_rtmp_runtime().control();
+
+    let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+        .expect("exposition");
+
+    assert!(output.contains("oxiroute_route_pool_selections_total{route=\"0\",pool=\"gpu-12\"} 2"));
+    assert!(output.contains("oxiroute_route_pool_selections_total{route=\"0\",pool=\"gpu-24\"} 1"));
+}
+
+#[test]
 fn exposition_contains_bounded_passive_endpoint_observability() {
     let metrics = RuntimeMetrics::new();
     let pool = Arc::new(

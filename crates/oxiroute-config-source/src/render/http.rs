@@ -407,6 +407,7 @@ impl Renderer {
             timeouts,
             rescue,
             cache,
+            select,
         } = policy;
         self.begin_table_field("upstream_host");
         self.http_upstream_host(upstream_host);
@@ -461,7 +462,35 @@ impl Renderer {
             }
             None => self.nil_field("cache"),
         }
+        if let Some(select) = select {
+            self.begin_table_field("select");
+            self.http_pool_select(select);
+            self.end_table();
+        }
         Ok(())
+    }
+
+    fn http_pool_select(&mut self, select: &HttpPoolSelect) {
+        self.string_field("header", &select.header);
+        self.table_list_field("rules", &select.rules, |writer, rule| {
+            writer.integer_field("at_most", rule.at_most);
+            writer.string_field("pool", &rule.pool);
+        });
+        self.string_field(
+            "on_invalid",
+            match select.on_invalid {
+                HttpSelectInvalid::Default => "default",
+                HttpSelectInvalid::Reject => "reject",
+            },
+        );
+        self.boolean_field("forward", select.forward);
+        self.string_field(
+            "spill",
+            match select.spill {
+                HttpSelectSpill::None => "none",
+                HttpSelectSpill::Up => "up",
+            },
+        );
     }
 
     fn http_rescue_policy(&mut self, rescue: &HttpRescuePolicy) {

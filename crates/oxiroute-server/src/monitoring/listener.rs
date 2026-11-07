@@ -269,6 +269,19 @@ impl ListenerMetrics {
         *count = count.saturating_add(1);
     }
 
+    /// Accounts for a request routed to `pool` by a header selector.
+    pub fn record_pool_selection(&self, route: &str, pool: &str) {
+        let mut selections = self
+            .process
+            .pool_selections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = selections
+            .entry((route.to_owned(), pool.to_owned()))
+            .or_default();
+        *count = count.saturating_add(1);
+    }
+
     /// Records one terminal reverse-proxy HTTP operation and its latency sample.
     ///
     /// # Errors
@@ -466,6 +479,7 @@ pub(super) struct ProcessAdmissionState {
     pub(super) rejected: AtomicU64,
     pub(super) retry_attempts: AtomicU64,
     rescues: Mutex<BTreeMap<(String, u16), u64>>,
+    pool_selections: Mutex<BTreeMap<(String, String), u64>>,
 }
 
 impl ProcessAdmissionState {
@@ -477,6 +491,7 @@ impl ProcessAdmissionState {
             rejected: AtomicU64::new(0),
             retry_attempts: AtomicU64::new(0),
             rescues: Mutex::new(BTreeMap::new()),
+            pool_selections: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -488,6 +503,19 @@ impl ProcessAdmissionState {
             .map(|((route, status), count)| RescueSnapshot {
                 route: route.clone(),
                 status: *status,
+                count: *count,
+            })
+            .collect()
+    }
+
+    pub(super) fn pool_selection_snapshots(&self) -> Vec<PoolSelectionSnapshot> {
+        self.pool_selections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|((route, pool), count)| PoolSelectionSnapshot {
+                route: route.clone(),
+                pool: pool.clone(),
                 count: *count,
             })
             .collect()
