@@ -219,6 +219,9 @@ fn compile_pool_blueprints(
             let construction = crate::routing::PoolConstructionBlueprint::compile(
                 &pool.algorithm,
                 endpoints.len(),
+                pool.passive_health
+                    .as_ref()
+                    .and_then(|policy| policy.readmission.as_ref()),
             )
             .map_err(|source| ServicePlanError::Pool {
                 pool: pool.name.clone(),

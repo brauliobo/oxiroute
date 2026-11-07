@@ -726,6 +726,156 @@
       "required_tests": ["decode", "validate", "failure", "integration", "observability"]
     },
     {
+      "id": "canonical.upstream-pools.passive-health.readmission",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.readmission",
+      "editability": "operator",
+      "normalization": ["absence keeps the backoff-expiry return"],
+      "validation": ["nonempty probe settings within their bounds"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.readmission.successes",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.readmission.successes",
+      "editability": "operator",
+      "normalization": ["default to 2"],
+      "validation": ["1 through 100 consecutive probes"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.readmission.interval-ms",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.readmission.interval_ms",
+      "editability": "operator",
+      "normalization": ["default to 1000"],
+      "validation": ["100 through 3600000 milliseconds"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.readmission.timeout-ms",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.readmission.timeout_ms",
+      "editability": "operator",
+      "normalization": ["default to 2000"],
+      "validation": ["10 through 3600000 milliseconds"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.readmission.probe",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.readmission.probe",
+      "editability": "operator",
+      "normalization": ["absence selects a TCP connect probe"],
+      "validation": ["HTTP probe with an absolute path"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.readmission.probe.path",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.readmission.probe.path",
+      "editability": "operator",
+      "normalization": ["identity"],
+      "validation": ["must start with a slash"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.readmission.probe.host",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.readmission.probe.host",
+      "editability": "operator",
+      "normalization": ["absence sends no Host header"],
+      "validation": ["identity"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.readmission.probe.expected-status",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.readmission.probe.expected_status",
+      "editability": "operator",
+      "normalization": ["absence selects 200"],
+      "validation": ["100 through 599"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.circuit-breaker",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.circuit_breaker",
+      "editability": "operator",
+      "normalization": ["absence disables the circuit breaker"],
+      "validation": ["every field within its bounds"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.circuit-breaker.window-ms",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.circuit_breaker.window_ms",
+      "editability": "operator",
+      "normalization": ["default to 30000"],
+      "validation": ["1000 through 3600000 milliseconds"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.circuit-breaker.min-requests",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.circuit_breaker.min_requests",
+      "editability": "operator",
+      "normalization": ["default to 20"],
+      "validation": ["1 through 100000 requests"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.circuit-breaker.failure-ratio-percent",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.circuit_breaker.failure_ratio_percent",
+      "editability": "operator",
+      "normalization": ["default to 50"],
+      "validation": ["1 through 100 percent"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.circuit-breaker.open-ms",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.circuit_breaker.open_ms",
+      "editability": "operator",
+      "normalization": ["default to 10000"],
+      "validation": ["100 through 3600000 milliseconds"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.circuit-breaker.half-open-max",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.circuit_breaker.half_open_max",
+      "editability": "operator",
+      "normalization": ["default to 1"],
+      "validation": ["positive trial concurrency"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.circuit-breaker.half-open-successes",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.circuit_breaker.half_open_successes",
+      "editability": "operator",
+      "normalization": ["default to 3"],
+      "validation": ["positive trial success count"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"]
+    },
+    {
       "id": "canonical.upstream-pools.tls",
       "kind": "field",
       "path": "upstream_pools[].tls",
@@ -1684,6 +1834,16 @@
       "editability": "operator",
       "normalization": ["token least_connections"],
       "validation": ["accepted connection-count selection algorithm"],
+      "runtime": { "target": "upstream.pool", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "integration", "observability"]
+    },
+    {
+      "id": "canonical.enum.upstream-algorithm.power-of-two-choices",
+      "kind": "variant",
+      "path": "UpstreamAlgorithm::PowerOfTwoChoices",
+      "editability": "operator",
+      "normalization": ["token power_of_two_choices"],
+      "validation": ["accepted two-random-choices selection algorithm"],
       "runtime": { "target": "upstream.pool", "disposition": "lowered" },
       "required_tests": ["decode", "validate", "integration", "observability"]
     },

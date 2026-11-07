@@ -275,6 +275,7 @@ pub(super) const fn upstream_algorithm(algorithm: &UpstreamAlgorithm) -> &'stati
         UpstreamAlgorithm::RoundRobin => "round_robin",
         UpstreamAlgorithm::WeightedRoundRobin { .. } => "weighted_round_robin",
         UpstreamAlgorithm::LeastConnections => "least_connections",
+        UpstreamAlgorithm::PowerOfTwoChoices => "power_of_two_choices",
         UpstreamAlgorithm::First => "first",
     }
 }
