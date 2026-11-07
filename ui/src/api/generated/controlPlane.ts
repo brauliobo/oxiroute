@@ -193,7 +193,7 @@ export interface H3LimitsDto {
   maxUnidirectionalStreams: number
 }
 
-export type HealthFailureDto = "timeout" | "connect_failed" | "unexpected_status" | "protocol_error"
+export type HealthFailureDto = "timeout" | "connect_failed" | "unexpected_status" | "protocol_error" | "slow"
 
 export type HealthOverrideDto = "auto" | "up" | "down"
 

@@ -134,6 +134,7 @@ fn management_schemas_preserve_decimal_null_enum_and_secret_contracts() {
             "connect_failed",
             "unexpected_status",
             "protocol_error",
+            "slow",
         ])
     );
 
@@ -425,13 +426,15 @@ fn api_enum_projections_are_exhaustive_and_stable() {
             HealthFailureDto::from(HealthFailure::ConnectFailed),
             HealthFailureDto::from(HealthFailure::UnexpectedStatus),
             HealthFailureDto::from(HealthFailure::ProtocolError),
+            HealthFailureDto::from(HealthFailure::Slow),
         ])
         .expect("health failure JSON"),
         json!([
             "timeout",
             "connect_failed",
             "unexpected_status",
-            "protocol_error"
+            "protocol_error",
+            "slow"
         ])
     );
     assert_eq!(

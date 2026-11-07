@@ -308,6 +308,14 @@ impl HttpRequestContext {
                 stats.record_header_duration(header);
             }
         }
+        if let (Some(header), Some(observation), Some(route), 200..=299) = (
+            trace.header,
+            &self.selected_observation,
+            &self.route,
+            status,
+        ) {
+            observation.record_latency(&route.route_id, header);
+        }
     }
 
     fn note_queue_wait(&mut self) {

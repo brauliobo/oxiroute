@@ -19,7 +19,7 @@ use http::{
     uri::{Authority, PathAndQuery},
 };
 use oxiroute_config::{
-    CircuitBreaker, HealthStartup, HttpHostSelector, HttpPathSelector,
+    CircuitBreaker, HealthStartup, HttpHostSelector, HttpPathSelector, OutlierDetection,
     PassiveHealthPolicy as ConfigPassiveHealthPolicy, PassiveObserve, PassiveOnError,
     PoolResilience, Readmission, UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
 };
@@ -33,6 +33,7 @@ mod breaker;
 mod endpoint;
 mod health;
 mod lease;
+mod outlier;
 mod policy;
 mod pool;
 mod queue;
@@ -46,6 +47,8 @@ use breaker::{Breaker, BreakerTransition};
 pub use endpoint::*;
 pub use health::*;
 pub use lease::*;
+use outlier::OutlierDetector;
+pub use outlier::OutlierPolicy;
 pub use policy::*;
 #[allow(clippy::wildcard_imports)]
 use queue::*;

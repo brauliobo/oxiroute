@@ -71,6 +71,11 @@ impl EndpointObservation {
     pub(crate) fn record_passive_success(&self) {
         self.health.record_passive_success(&self.server);
     }
+
+    /// Feeds the time to first byte of a successful response on `route`.
+    pub(crate) fn record_latency(&self, route: &str, elapsed: Duration) {
+        self.health.record_latency(&self.server, route, elapsed);
+    }
 }
 
 #[derive(Debug)]

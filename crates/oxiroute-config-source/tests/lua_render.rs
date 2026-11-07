@@ -14,10 +14,10 @@ use oxiroute_config::{
     HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpSelectInvalid,
     HttpSelectSpill, HttpService, HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost,
     HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management,
-    PassiveHealthPolicy, PassiveObserve, PassiveOnError, PoolResilience, Protocol, Readmission,
-    ReadmissionProbe, RtmpAccessPolicy, RtmpApplication, RtmpExecEnvironment,
-    RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy, RtmpExecProfile,
-    RtmpExecTrigger, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
+    OutlierDetection, PassiveHealthPolicy, PassiveObserve, PassiveOnError, PoolResilience,
+    Protocol, Readmission, ReadmissionProbe, RtmpAccessPolicy, RtmpApplication,
+    RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy,
+    RtmpExecProfile, RtmpExecTrigger, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
     RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings,
     TlsClientAuthMode, TlsClientAuthPolicy, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion,
     UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
@@ -202,6 +202,12 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
                     open_ms: 5_000,
                     half_open_max: 2,
                     half_open_successes: 4,
+                }),
+                outlier_detection: Some(OutlierDetection {
+                    factor_percent: 250,
+                    min_samples: 30,
+                    interval_ms: 5_000,
+                    max_ejected_percent: 40,
                 }),
             }),
             tls: Some(UpstreamTls {
@@ -778,6 +784,62 @@ fn rejects_invalid_readmission_bounds() {
         let mut pool = test_upstream_pools().remove(0);
         pool.passive_health = Some(PassiveHealthPolicy {
             readmission: Some(readmission),
+            ..PassiveHealthPolicy::default()
+        });
+        let mut config = minimal_config();
+        config.upstream_pools.push(pool);
+
+        assert!(
+            matches!(
+                config.validate(),
+                Err(ConfigError::InvalidUpstreamServer { field: found, .. }) if found == field
+            ),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_outlier_detection_bounds() {
+    let valid = OutlierDetection {
+        factor_percent: 300,
+        min_samples: 50,
+        interval_ms: 10_000,
+        max_ejected_percent: 30,
+    };
+    for (outlier, field) in [
+        (
+            OutlierDetection {
+                factor_percent: 100,
+                ..valid
+            },
+            "passive_health.outlier_detection.factor_percent",
+        ),
+        (
+            OutlierDetection {
+                min_samples: 0,
+                ..valid
+            },
+            "passive_health.outlier_detection.min_samples",
+        ),
+        (
+            OutlierDetection {
+                interval_ms: 50,
+                ..valid
+            },
+            "passive_health.outlier_detection.interval_ms",
+        ),
+        (
+            OutlierDetection {
+                max_ejected_percent: 0,
+                ..valid
+            },
+            "passive_health.outlier_detection.max_ejected_percent",
+        ),
+    ] {
+        let mut pool = test_upstream_pools().remove(0);
+        pool.passive_health = Some(PassiveHealthPolicy {
+            outlier_detection: Some(outlier),
             ..PassiveHealthPolicy::default()
         });
         let mut config = minimal_config();

@@ -445,3 +445,93 @@ async fn a_failed_trial_reopens_the_breaker() {
 
     assert_eq!(first_server(&pool).as_deref(), Some("other"));
 }
+
+fn outlier_pool(servers: u16, max_ejected_percent: u8) -> RoundRobinPool {
+    let mut policy =
+        PassiveFailurePolicy::new(100, Duration::from_secs(60), Duration::from_secs(60));
+    policy.outlier = Some(OutlierPolicy::from(&oxiroute_config::OutlierDetection {
+        factor_percent: 300,
+        min_samples: 5,
+        interval_ms: 1_000,
+        max_ejected_percent,
+    }));
+    RoundRobinPool::new_named_servers_with_policy(
+        "outliers".into(),
+        (0..servers).map(|index| runtime_server(&format!("s{index}"), 3000 + index, None)),
+        UpstreamAlgorithm::RoundRobin,
+        Some(HealthStartup::Healthy),
+        None,
+        policy,
+    )
+    .expect("outlier pool")
+}
+
+/// One interval of traffic: `samples` responses per server and route, then the judging response.
+fn feed(pool: &RoundRobinPool, route: &str, millis: &[u64], interval: u64) {
+    let at = now_unix_ms() - 10_000 + interval * 1_000;
+    for _ in 0..6 {
+        for (index, ms) in millis.iter().enumerate() {
+            let server = &pool.endpoints[index];
+            pool.health
+                .record_latency_at(server, route, Duration::from_millis(*ms), at);
+        }
+    }
+}
+
+fn ejected(pool: &RoundRobinPool) -> Vec<(usize, Option<&'static str>)> {
+    pool.health_snapshot()
+        .endpoints
+        .iter()
+        .enumerate()
+        .filter(|(_, endpoint)| endpoint.passive_ejected)
+        .map(|(index, endpoint)| {
+            (
+                index,
+                endpoint.passive_ejection_reason.map(HealthFailure::as_str),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_server_far_slower_than_its_peers_on_a_route_is_ejected() {
+    let pool = outlier_pool(3, 50);
+
+    feed(&pool, "run", &[10, 12, 100], 0);
+    assert!(ejected(&pool).is_empty(), "no interval has ended yet");
+    feed(&pool, "run", &[10, 12, 100], 1);
+
+    assert_eq!(ejected(&pool), [(2, Some("slow"))]);
+}
+
+#[test]
+fn a_moderately_slower_server_stays_in_rotation() {
+    let pool = outlier_pool(3, 50);
+
+    feed(&pool, "run", &[10, 12, 25], 0);
+    feed(&pool, "run", &[10, 12, 25], 1);
+
+    assert!(ejected(&pool).is_empty());
+}
+
+#[test]
+fn outlier_ejection_never_exceeds_the_ejected_share() {
+    let pool = outlier_pool(4, 30);
+
+    feed(&pool, "run", &[10, 10, 100, 100], 0);
+    feed(&pool, "run", &[10, 10, 100, 100], 1);
+
+    assert_eq!(ejected(&pool).len(), 1, "30% of four servers allows one");
+}
+
+#[test]
+fn routes_are_judged_separately() {
+    let pool = outlier_pool(3, 50);
+
+    for interval in 0..2 {
+        feed(&pool, "draft", &[10, 10, 10], interval);
+        feed(&pool, "render", &[3_000, 3_000, 3_000], interval);
+    }
+
+    assert!(ejected(&pool).is_empty(), "long jobs are not slow servers");
+}

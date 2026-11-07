@@ -505,6 +505,7 @@ api_enum!(HealthFailureDto from HealthFailure {
     HealthFailure::ConnectFailed => ConnectFailed,
     HealthFailure::UnexpectedStatus => UnexpectedStatus,
     HealthFailure::ProtocolError => ProtocolError,
+    HealthFailure::Slow => Slow,
 });
 
 api_enum!(HttpOperationResultDto from HttpOperationResult {

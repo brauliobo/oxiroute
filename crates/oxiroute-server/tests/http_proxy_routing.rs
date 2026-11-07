@@ -2965,6 +2965,10 @@ struct StatusOrigin {
 
 impl StatusOrigin {
     async fn start(status: u16, name: &'static str) -> Self {
+        Self::start_delayed(status, name, Duration::ZERO).await
+    }
+
+    async fn start_delayed(status: u16, name: &'static str, delay: Duration) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let address = listener.local_addr().expect("origin address");
         let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -3000,6 +3004,7 @@ impl StatusOrigin {
                     .lock()
                     .expect("recorded bodies")
                     .push(request[head_end..].to_vec());
+                tokio::time::sleep(delay).await;
                 let response = format!(
                     "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nX-Origin: {name}\r\nConnection: close\r\n\r\n{name}",
                     name.len()
@@ -3417,6 +3422,58 @@ async fn header_affinity_names_the_server_and_falls_back_when_it_cannot_serve() 
     })
     .await
     .expect("header affinity test timed out");
+}
+
+#[tokio::test]
+async fn latency_outlier_is_ejected_and_stops_receiving_requests() {
+    timeout(Duration::from_secs(30), async {
+        let origins = [
+            StatusOrigin::start(200, "fast-a").await,
+            StatusOrigin::start_delayed(200, "slow", Duration::from_millis(150)).await,
+            StatusOrigin::start(200, "fast-b").await,
+        ];
+        let mut farm = pool("farm", &origins.each_ref().map(|origin| origin.address));
+        farm.passive_health = Some(oxiroute_config::PassiveHealthPolicy {
+            outlier_detection: Some(oxiroute_config::OutlierDetection {
+                factor_percent: 300,
+                min_samples: 2,
+                interval_ms: 500,
+                max_ejected_percent: 50,
+            }),
+            ..oxiroute_config::PassiveHealthPolicy::default()
+        });
+        let proxy = ProxyHarness::start_with_retries(
+            vec![farm],
+            vec![route(None, "/", &[], "farm")],
+            0,
+            40,
+        )
+        .await;
+
+        let mut served = Vec::new();
+        for _ in 0..40 {
+            let response = proxy
+                .request("GET /run HTTP/1.1\r\nHost: slow.test\r\n")
+                .await;
+            served.push(response.header("x-origin").expect("origin").to_owned());
+        }
+
+        let endpoint = &proxy.pools[0].health_snapshot().endpoints[1];
+        assert!(endpoint.passive_ejected, "the slow server is ejected");
+        assert_eq!(
+            endpoint.passive_ejection_reason,
+            Some(oxiroute_server::HealthFailure::Slow)
+        );
+        assert!(
+            served[served.len() - 10..]
+                .iter()
+                .all(|origin| origin != "slow"),
+            "no request reaches it after the ejection: {served:?}"
+        );
+        proxy.finish().await;
+    })
+    .await
+    .expect("outlier test timed out");
 }
 
 const JSON_POST: &[u8] = b"POST /api/chat HTTP/1.1\r\nHost: rescue.test\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"model\":\"qwen\"}";

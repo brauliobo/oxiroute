@@ -313,7 +313,7 @@ Endpoint `state` is `unchecked`, `unknown`, `healthy`, or `unhealthy`. Pools wit
 policy report selectable `unchecked` endpoints; health-enabled pools begin with unavailable
 `unknown` endpoints. `lastCheckedAtUnixMs` and `lastTransitionAtUnixMs` are Unix-millisecond
 numbers or `null` before the corresponding event. `lastFailure` is `timeout`, `connect_failed`,
-`unexpected_status`, `protocol_error`, or `null`. To preserve every cumulative `u64` exactly in
+`unexpected_status`, `protocol_error`, `slow` (a latency outlier), or `null`. To preserve every cumulative `u64` exactly in
 JavaScript, aggregate/listener accepted, rejected, and byte totals; endpoint leases/check totals;
 pool unavailable and fail-open selections; RTMP media/recorder totals; and Certbot/direct-file watcher counters are base-10
 integer strings. Current gauges, timestamps, and configuration-bounded counts remain JSON numbers.

@@ -34,6 +34,8 @@ pub enum HealthFailure {
     ConnectFailed = 2,
     UnexpectedStatus = 3,
     ProtocolError = 4,
+    /// Ejected as a latency outlier among its peers.
+    Slow = 5,
 }
 
 const DEFAULT_PASSIVE_FAILURE_THRESHOLD: u16 = 3;
@@ -60,6 +62,7 @@ pub struct PassiveFailurePolicy {
     pub recovery_threshold: u16,
     pub readmit_by: ReadmitBy,
     pub circuit_breaker: Option<CircuitBreakerPolicy>,
+    pub outlier: Option<OutlierPolicy>,
 }
 
 /// What returns a passively ejected server to rotation.
@@ -92,6 +95,7 @@ impl PassiveFailurePolicy {
             recovery_threshold: 1,
             readmit_by: ReadmitBy::Backoff,
             circuit_breaker: None,
+            outlier: None,
         }
     }
 
@@ -120,6 +124,7 @@ impl PassiveFailurePolicy {
                 .circuit_breaker
                 .as_ref()
                 .map(CircuitBreakerPolicy::from),
+            outlier: policy.outlier_detection.as_ref().map(OutlierPolicy::from),
         }
     }
 
@@ -217,6 +222,7 @@ impl Default for PassiveFailurePolicy {
             recovery_threshold: 1,
             readmit_by: ReadmitBy::Backoff,
             circuit_breaker: None,
+            outlier: None,
         }
     }
 }
@@ -300,6 +306,7 @@ impl HealthFailure {
             Self::ConnectFailed => "connect_failed",
             Self::UnexpectedStatus => "unexpected_status",
             Self::ProtocolError => "protocol_error",
+            Self::Slow => "slow",
         }
     }
 
@@ -309,6 +316,7 @@ impl HealthFailure {
             2 => Some(Self::ConnectFailed),
             3 => Some(Self::UnexpectedStatus),
             4 => Some(Self::ProtocolError),
+            5 => Some(Self::Slow),
             _ => None,
         }
     }
@@ -436,6 +444,7 @@ pub(super) struct PoolHealthState {
     queue: Arc<PoolQueue>,
     readmission: Option<Arc<ReadmissionProbe>>,
     resilience: PoolResiliencePolicy,
+    outliers: OutlierDetector,
 }
 
 impl PoolHealthState {
@@ -456,6 +465,7 @@ impl PoolHealthState {
             queue,
             readmission,
             resilience,
+            outliers: OutlierDetector::default(),
         }
     }
 
@@ -503,18 +513,98 @@ impl PoolHealthState {
             self.record_outcome(server, false, at_unix_ms);
         }
         if let Some(ejection) = ejection {
-            self.queue.notify_capacity_waiters();
-            crate::operational_event::emit_upstream_endpoint_ejection(
-                &self.pool_name,
-                &server.name,
-                ejection.reason,
-                ejection.failure_count,
-                ejection.ejection_count,
-                ejection.ejected_at_unix_ms,
-                ejection.ejection_until_unix_ms,
-            );
-            self.start_probing(server);
+            self.announce_ejection(server, &ejection);
         }
+    }
+
+    fn announce_ejection(self: &Arc<Self>, server: &Arc<PoolEndpoint>, ejection: &PassiveEjection) {
+        self.queue.notify_capacity_waiters();
+        crate::operational_event::emit_upstream_endpoint_ejection(
+            &self.pool_name,
+            &server.name,
+            ejection.reason,
+            ejection.failure_count,
+            ejection.ejection_count,
+            ejection.ejected_at_unix_ms,
+            ejection.ejection_until_unix_ms,
+        );
+        self.start_probing(server);
+    }
+
+    /// Feeds the latency of a successful response on `route`; outliers are ejected like failures.
+    pub(super) fn record_latency(
+        self: &Arc<Self>,
+        server: &Arc<PoolEndpoint>,
+        route: &str,
+        elapsed: Duration,
+    ) {
+        self.record_latency_at(server, route, elapsed, now_unix_ms());
+    }
+
+    pub(super) fn record_latency_at(
+        self: &Arc<Self>,
+        server: &Arc<PoolEndpoint>,
+        route: &str,
+        elapsed: Duration,
+        at_unix_ms: u64,
+    ) {
+        let Some(policy) = self.passive_policy.outlier else {
+            return;
+        };
+        let Some(index) = self
+            .endpoints
+            .iter()
+            .position(|other| Arc::ptr_eq(other, server))
+        else {
+            return;
+        };
+        let outliers = self.outliers.record(
+            route,
+            index,
+            self.endpoints.len(),
+            elapsed.as_secs_f64() * 1_000.0,
+            at_unix_ms,
+            policy,
+        );
+        for outlier in outliers {
+            self.eject_outlier(outlier, policy, at_unix_ms);
+        }
+    }
+
+    /// Ejects a latency outlier unless that would exceed the ejected share or the `min_members` floor.
+    fn eject_outlier(self: &Arc<Self>, index: usize, policy: OutlierPolicy, at_unix_ms: u64) {
+        let server = &self.endpoints[index];
+        let ejection = {
+            let _writer = self
+                .health_writer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ejected = self
+                .endpoints
+                .iter()
+                .filter(|other| other.passively_ejected_at(at_unix_ms))
+                .count();
+            let limit =
+                (self.endpoints.len() * usize::from(policy.max_ejected_percent) / 100).max(1);
+            if ejected >= limit
+                || server.passively_ejected_at(at_unix_ms)
+                || !self.may_eject(server, at_unix_ms)
+            {
+                return;
+            }
+            self.health_version.fetch_add(1, Ordering::AcqRel);
+            let failures = server.passive_failure_count.load(Ordering::Relaxed);
+            let ejection = server.eject(
+                HealthFailure::Slow,
+                failures,
+                at_unix_ms,
+                self.passive_policy,
+            );
+            self.health_version.fetch_add(1, Ordering::Release);
+            ejection
+        };
+        self.outliers.forget(index);
+        self.announce_ejection(server, &ejection);
     }
 
     pub(super) fn record_passive_success(&self, server: &PoolEndpoint) {
