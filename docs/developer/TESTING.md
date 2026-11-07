@@ -86,7 +86,7 @@ cargo +1.97.1 test -p oxiroute-import --test import_report --test varnish_founda
 cargo +1.97.1 test -p oxiroute --test process_udp_drain --locked --jobs 4
 cargo +1.97.1 test -p oxiroute-rtmp --test amf_hardening --test chunk_interop --locked --jobs 4
 cargo test -p oxiroute --test rtmp_api
-cargo +1.97.1 test -p oxiroute --lib rtmp_api::contract --locked --jobs 4
+cargo +1.97.1 test -p oxiroute --lib contract:: --locked --jobs 4
 cargo test -p oxiroute --test wire_tls_interop
 cargo test -p oxiroute-rtmp --test recording_store --test recording_worker
 pnpm --dir ui test
