@@ -166,6 +166,7 @@ impl Lowerer {
                 timeouts: oxiroute_config::HttpProxyTimeouts::default(),
                 rescue: None,
                 select: None,
+                affinity: None,
                 cache: None,
             },
             timeouts,

@@ -428,6 +428,11 @@ export interface HttpPoolSelectConfig {
   spill: 'none' | 'up'
 }
 
+export type HttpAffinityConfig =
+  | { type: 'cookie'; name: string; ttl_s: number; same_site: 'strict' | 'lax' | 'none'; secure: boolean; http_only: boolean }
+  | { type: 'hash'; key: string }
+  | { type: 'header'; name: string }
+
 export interface HttpProxyPolicyConfig {
   upstream_host: HttpUpstreamHostConfig
   upstream_path_rewrite?: HttpProxyPathRewriteConfig | null
@@ -440,6 +445,7 @@ export interface HttpProxyPolicyConfig {
   rescue: HttpRescuePolicyConfig | null
   cache: HttpCachePolicyConfig | null
   select?: HttpPoolSelectConfig | null
+  affinity?: HttpAffinityConfig | null
 }
 
 export type CacheKeyComponentConfig =

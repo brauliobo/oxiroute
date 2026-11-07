@@ -408,6 +408,7 @@ impl Renderer {
             rescue,
             cache,
             select,
+            affinity,
         } = policy;
         self.begin_table_field("upstream_host");
         self.http_upstream_host(upstream_host);
@@ -467,7 +468,46 @@ impl Renderer {
             self.http_pool_select(select);
             self.end_table();
         }
+        if let Some(affinity) = affinity {
+            self.begin_table_field("affinity");
+            self.http_affinity(affinity);
+            self.end_table();
+        }
         Ok(())
+    }
+
+    fn http_affinity(&mut self, affinity: &HttpAffinity) {
+        match affinity {
+            HttpAffinity::Cookie {
+                name,
+                ttl_s,
+                same_site,
+                secure,
+                http_only,
+            } => {
+                self.string_field("type", "cookie");
+                self.string_field("name", name);
+                self.integer_field("ttl_s", ttl_s);
+                self.string_field(
+                    "same_site",
+                    match same_site {
+                        HttpSameSite::Strict => "strict",
+                        HttpSameSite::Lax => "lax",
+                        HttpSameSite::None => "none",
+                    },
+                );
+                self.boolean_field("secure", *secure);
+                self.boolean_field("http_only", *http_only);
+            }
+            HttpAffinity::Hash { key } => {
+                self.string_field("type", "hash");
+                self.string_field("key", key);
+            }
+            HttpAffinity::Header { name } => {
+                self.string_field("type", "header");
+                self.string_field("name", name);
+            }
+        }
     }
 
     fn http_pool_select(&mut self, select: &HttpPoolSelect) {

@@ -325,7 +325,71 @@ pub struct HttpProxyPolicy {
     /// Chooses the pool per request from a numeric header; absent routes every request to `upstream_pool`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub select: Option<HttpPoolSelect>,
+    /// Sends requests of one client or key to the same server of the pool while it is selectable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affinity: Option<HttpAffinity>,
 }
+
+/// Sticky sessions. A preferred server that is not selectable is replaced by the normal algorithm.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HttpAffinity {
+    /// An opaque cookie names the server; the proxy sets it when absent or when the server changed.
+    Cookie {
+        name: String,
+        #[serde(default = "default_affinity_ttl_s")]
+        ttl_s: u32,
+        #[serde(default = "default_affinity_same_site")]
+        same_site: HttpSameSite,
+        #[serde(default = "default_true")]
+        secure: bool,
+        #[serde(default = "default_true")]
+        http_only: bool,
+    },
+    /// Rendezvous hashing of a request key over the selectable servers, weights respected.
+    Hash { key: String },
+    /// The value of a request header names the server.
+    Header { name: String },
+}
+
+/// The key of [`HttpAffinity::Hash`]: `header:<name>`, `client_ip` or `path_prefix:<segments>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HttpAffinityKey {
+    Header(String),
+    ClientIp,
+    PathPrefix(u8),
+}
+
+impl HttpAffinityKey {
+    /// # Errors
+    ///
+    /// Returns the reason when `text` is not one of the key forms.
+    pub fn parse(text: &str) -> Result<Self, &'static str> {
+        match text.split_once(':') {
+            None if text == "client_ip" => Ok(Self::ClientIp),
+            Some(("header", name)) => Ok(Self::Header(name.to_owned())),
+            Some(("path_prefix", segments)) => segments
+                .parse()
+                .ok()
+                .filter(|segments| (1..=MAX_AFFINITY_PATH_SEGMENTS).contains(segments))
+                .map(Self::PathPrefix)
+                .ok_or("path_prefix takes 1 through 8 segments"),
+            _ => Err("key must be header:<name>, client_ip or path_prefix:<segments>"),
+        }
+    }
+}
+
+impl std::fmt::Display for HttpAffinityKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Header(name) => write!(formatter, "header:{name}"),
+            Self::ClientIp => formatter.write_str("client_ip"),
+            Self::PathPrefix(segments) => write!(formatter, "path_prefix:{segments}"),
+        }
+    }
+}
+
+pub const MAX_AFFINITY_PATH_SEGMENTS: u8 = 8;
 
 /// Capability routing: the first rule whose `at_most` covers the numeric value of `header` names the pool.
 /// A missing header, or a value above every bound, uses the route `upstream_pool`.

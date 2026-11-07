@@ -39,9 +39,9 @@ use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
-        AccessLog, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan, ProxyPolicyPlan,
-        RedirectLocationPlan, StaticErrorTarget, StaticFile, StaticRequestDecision,
-        StaticServeError, StaticTarget,
+        AccessLog, AffinityRequest, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan,
+        ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget, StaticFile,
+        StaticRequestDecision, StaticServeError, StaticTarget,
     },
     http_cache::{
         CacheFailureClass, CacheRequest, CacheStart, CacheStartFailure, CacheTransaction,

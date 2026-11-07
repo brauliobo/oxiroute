@@ -58,6 +58,7 @@ pub(super) fn validate_proxy_policy(
     validate_proxy_timeouts(service, route_index, policy.timeouts)?;
     validate_rescue(service, route_index, policy, pool, pools)?;
     validate_select(service, route_index, policy, pool, pools)?;
+    validate_affinity(service, route_index, policy, pool)?;
     if let Some(cache) = &mut policy.cache {
         crate::cache_validation::validate_cache_policy(service, route_index, cache, cache_stores)?;
     }
@@ -202,6 +203,57 @@ fn validate_select(
     }
     if http3(pool) {
         return Err(invalid("is not supported for HTTP/3 upstream pools"));
+    }
+    Ok(())
+}
+
+fn validate_affinity(
+    service: &str,
+    route_index: usize,
+    policy: &mut HttpProxyPolicy,
+    pool: &UpstreamPool,
+) -> Result<(), ConfigError> {
+    let cached = policy.cache.is_some();
+    let Some(affinity) = &mut policy.affinity else {
+        return Ok(());
+    };
+    let invalid = |detail: &'static str| {
+        invalid_route(service, route_index, "action.policy.affinity", detail)
+    };
+    if pool.http_versions.max == crate::model::HttpVersion::Http3 {
+        return Err(invalid("is not supported for HTTP/3 upstream pools"));
+    }
+    match affinity {
+        HttpAffinity::Cookie {
+            name,
+            ttl_s,
+            same_site,
+            secure,
+            ..
+        } => {
+            let token =
+                |byte: u8| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte);
+            if name.is_empty() || name.len() > 64 || !name.bytes().all(token) {
+                return Err(invalid("cookie name must be a 1..=64 byte token"));
+            }
+            if !(1..=crate::defaults::MAX_AFFINITY_TTL_S).contains(ttl_s) {
+                return Err(invalid("ttl_s must be between 1 and 31536000"));
+            }
+            if *same_site == crate::model::HttpSameSite::None && !*secure {
+                return Err(invalid("same_site none requires secure"));
+            }
+            if cached {
+                return Err(invalid("a cookie cannot be combined with cache"));
+            }
+        }
+        HttpAffinity::Hash { key } => {
+            let mut parsed = HttpAffinityKey::parse(key).map_err(invalid)?;
+            if let HttpAffinityKey::Header(name) = &mut parsed {
+                normalize_header_name(name).map_err(invalid)?;
+            }
+            *key = parsed.to_string();
+        }
+        HttpAffinity::Header { name } => normalize_header_name(name).map_err(invalid)?,
     }
     Ok(())
 }

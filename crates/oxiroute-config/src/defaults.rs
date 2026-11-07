@@ -132,6 +132,7 @@ pub(crate) const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub(crate) const MAX_HTTP_RETRIES: u8 = 3;
 pub(crate) const MAX_HTTP_RETRY_RESPONSE_STATUSES: usize = 100;
 pub(crate) const MAX_HTTP_SELECT_RULES: usize = 16;
+pub(crate) const MAX_AFFINITY_TTL_S: u32 = 31_536_000;
 pub(crate) const MAX_HTTP_METHODS_PER_ROUTE: usize = 16;
 pub(crate) const MAX_HTTP_METHOD_BYTES: usize = 32;
 pub(crate) const MAX_HTTP_AUTHORITY_BYTES: usize = 255;
@@ -643,6 +644,14 @@ pub(crate) const fn default_readmission_interval_ms() -> u64 {
 
 pub(crate) const fn default_readmission_timeout_ms() -> u64 {
     DEFAULT_READMISSION_TIMEOUT_MS
+}
+
+pub(crate) const fn default_affinity_ttl_s() -> u32 {
+    3_600
+}
+
+pub(crate) const fn default_affinity_same_site() -> crate::model::HttpSameSite {
+    crate::model::HttpSameSite::Lax
 }
 
 pub(crate) const fn default_http_redirect_status() -> u16 {

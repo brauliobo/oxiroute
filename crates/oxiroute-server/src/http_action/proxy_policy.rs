@@ -23,6 +23,7 @@ pub(crate) struct ProxyPolicyPlan {
     pub(crate) timeouts: HttpProxyTimeouts,
     pub(crate) rescue_statuses: Box<[u16]>,
     pub(crate) cache: Option<Arc<HttpCachePlan>>,
+    pub(crate) affinity: Option<AffinityPlan>,
     pub(crate) nginx_error_server: Option<HeaderValue>,
 }
 
@@ -57,6 +58,7 @@ impl ProxyPolicyPlan {
             timeouts: self.timeouts,
             rescue_statuses: self.rescue_statuses.clone(),
             cache,
+            affinity: self.affinity.clone(),
             nginx_error_server: self.nginx_error_server.clone(),
         }
     }
@@ -139,6 +141,7 @@ impl ProxyPolicyPlan {
                 .as_ref()
                 .map_or_else(Box::default, |rescue| rescue.statuses.clone().into()),
             cache,
+            affinity: policy.affinity.as_ref().map(AffinityPlan::compile),
             nginx_error_server,
         }
     }

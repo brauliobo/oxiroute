@@ -1382,3 +1382,75 @@ fn validates_header_pool_selectors() {
         assert!(message.contains(expected), "{select}: {message}");
     }
 }
+
+#[test]
+fn validates_sticky_session_affinity() {
+    let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
+    for (affinity, field, value) in [
+        (
+            r#"affinity = { type = "cookie", name = "oxr_srv" },"#,
+            "ttl_s",
+            json!(3600),
+        ),
+        (
+            r#"affinity = { type = "hash", key = "header:X-Session" },"#,
+            "key",
+            json!("header:x-session"),
+        ),
+        (
+            r#"affinity = { type = "hash", key = "path_prefix:2" },"#,
+            "key",
+            json!("path_prefix:2"),
+        ),
+        (
+            r#"affinity = { type = "header", name = "X-Worker" },"#,
+            "name",
+            json!("x-worker"),
+        ),
+    ] {
+        let source = config(
+            &proxy_route("", &format!("              {affinity}")),
+            endpoint,
+        );
+        let loaded = load_lua(&source).expect(affinity);
+        assert_eq!(
+            first_route(&source)["action"]["policy"]["affinity"][field],
+            value
+        );
+        let rendered = render_lua(&loaded).expect("render affinity");
+        assert_eq!(load_lua(&rendered).expect("affinity roundtrip"), loaded);
+    }
+
+    for (affinity, expected) in [
+        (
+            r#"affinity = { type = "cookie", name = "bad name" },"#,
+            "cookie name",
+        ),
+        (
+            r#"affinity = { type = "cookie", name = "a", ttl_s = 0 },"#,
+            "ttl_s",
+        ),
+        (
+            r#"affinity = { type = "cookie", name = "a", same_site = "none", secure = false },"#,
+            "secure",
+        ),
+        (
+            r#"affinity = { type = "hash", key = "cookie:x" },"#,
+            "key must be",
+        ),
+        (
+            r#"affinity = { type = "hash", key = "path_prefix:9" },"#,
+            "path_prefix",
+        ),
+        (
+            r#"affinity = { type = "header", name = "host" },"#,
+            "affinity",
+        ),
+    ] {
+        let message = error(&config(
+            &proxy_route("", &format!("              {affinity}")),
+            endpoint,
+        ));
+        assert!(message.contains(expected), "{affinity}: {message}");
+    }
+}

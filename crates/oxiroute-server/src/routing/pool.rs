@@ -675,6 +675,18 @@ impl EndpointPool {
         })
     }
 
+    /// Name and weight of every server that could be chosen now, in pool order.
+    pub(crate) fn selectable_servers(&self) -> Vec<(String, u16)> {
+        let now_unix_ms = now_unix_ms();
+        self.read_health(|endpoints| {
+            endpoints
+                .iter()
+                .filter(|server| server.selectable_at(now_unix_ms))
+                .map(|server| (server.name.clone(), server.weight()))
+                .collect()
+        })
+    }
+
     /// Whether any server could be chosen now, ignoring whether it has spare capacity.
     #[must_use]
     pub fn has_selectable(&self) -> bool {
