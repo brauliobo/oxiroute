@@ -605,8 +605,17 @@ pub struct PassiveFailurePolicy {
     pub mark_down: bool,
     pub mark_up: bool,
     pub recovery_threshold: u16,
-    /// An ejected server returns only after an active probe succeeds, not when the time ends.
-    pub probe_readmission: bool,
+    pub readmit_by: ReadmitBy,
+}
+
+/// What returns a passively ejected server to rotation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ReadmitBy {
+    /// The ejection time ending.
+    #[default]
+    Backoff,
+    /// An active probe succeeding; the time only starts the probing.
+    Probe,
 }
 
 impl PassiveFailurePolicy {
@@ -627,7 +636,7 @@ impl PassiveFailurePolicy {
             mark_down: false,
             mark_up: false,
             recovery_threshold: 1,
-            probe_readmission: false,
+            readmit_by: ReadmitBy::Backoff,
         }
     }
 
@@ -647,7 +656,11 @@ impl PassiveFailurePolicy {
             mark_down: policy.mark_down,
             mark_up: policy.mark_up,
             recovery_threshold: policy.recovery_threshold,
-            probe_readmission: policy.readmission.is_some(),
+            readmit_by: if policy.readmission.is_some() {
+                ReadmitBy::Probe
+            } else {
+                ReadmitBy::Backoff
+            },
         }
     }
 
@@ -743,7 +756,7 @@ impl Default for PassiveFailurePolicy {
             mark_down: false,
             mark_up: false,
             recovery_threshold: 1,
-            probe_readmission: false,
+            readmit_by: ReadmitBy::Backoff,
         }
     }
 }
@@ -1272,7 +1285,7 @@ impl PoolEndpoint {
             }
             Some((previous, next))
         };
-        let passive_recovery = (healthy && !passive_policy.probe_readmission)
+        let passive_recovery = (healthy && passive_policy.readmit_by == ReadmitBy::Backoff)
             .then_some(consecutive)
             .filter(|consecutive| {
                 *consecutive >= u64::from(healthy_threshold.max(passive_policy.recovery_threshold))
@@ -1326,7 +1339,7 @@ impl PoolEndpoint {
         self.passive_last_failure
             .store(failure as u8, Ordering::Relaxed);
         self.awaiting_probe
-            .store(policy.probe_readmission, Ordering::Release);
+            .store(policy.readmit_by == ReadmitBy::Probe, Ordering::Release);
         self.passive_ejected.store(true, Ordering::Release);
         self.passive_consecutive_failures
             .store(0, Ordering::Relaxed);
