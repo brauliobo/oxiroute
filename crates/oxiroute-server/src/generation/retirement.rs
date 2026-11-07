@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::{
     RuntimeGeneration,
-    config_coordinator::{ConfigRejection, EffectiveRevision},
+    config::coordinator::{ConfigRejection, EffectiveRevision},
     observability::operational_event,
 };
 

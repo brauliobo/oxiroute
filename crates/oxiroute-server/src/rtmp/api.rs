@@ -25,4 +25,4 @@ pub use self::{
     service::{RtmpManagementApi, RtmpManagementHttpApp},
 };
 
-pub const MAX_CONFIG_REQUEST_BYTES: usize = crate::config_coordinator::MAX_CANONICAL_CONFIG_BYTES;
+pub const MAX_CONFIG_REQUEST_BYTES: usize = crate::config::coordinator::MAX_CANONICAL_CONFIG_BYTES;

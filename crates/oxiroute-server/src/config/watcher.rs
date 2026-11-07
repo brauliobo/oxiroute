@@ -14,7 +14,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::{
     GenerationError, GenerationManager, RuntimeMode,
-    config_coordinator::{
+    config::coordinator::{
         CanonicalConfigCoordinator, ConfigDiagnostic, ConfigDiagnosticSeverity,
         ConfigDiagnosticStage, ConfigLoadOutcome, ConfigRejection,
     },

@@ -15,7 +15,7 @@ use crate::generation::health::generation_component_status;
 use crate::html::escape_html;
 use crate::{
     ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics,
-    config_coordinator::EffectiveRevision,
+    config::coordinator::EffectiveRevision,
     observability::prometheus::render_prometheus_control,
     rtmp::api::response::to_http_response,
     secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},

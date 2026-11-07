@@ -15,7 +15,7 @@ use rustix::{
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use tokio::sync::Notify;
 
-use crate::config_coordinator::EffectiveRevision;
+use crate::config::coordinator::EffectiveRevision;
 use crate::observability::logging::{
     next_correlation_id, redact_identifier, redact_text, valid_correlation_id,
 };

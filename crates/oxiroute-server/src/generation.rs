@@ -31,7 +31,7 @@ use crate::service_plan::acquire_runtime_services;
 use crate::{
     ListenerMetrics, ListenerReservations, MetricsError, ProcessRuntime, RuntimeMetrics,
     RuntimePlan, ServiceKind,
-    config_coordinator::{
+    config::coordinator::{
         AuthoredRevision, ConfigRejection, EffectiveRevision, ResolvedConfigDocument,
         RevisionParseError,
     },

@@ -3,7 +3,7 @@ use oxiroute_config_source::{ConfigFormat, render_config};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config_coordinator::{
+use crate::config::coordinator::{
     AuthoredRevision, ConfigDiagnostic, EffectiveRevision, ResolvedConfigDocument,
 };
 

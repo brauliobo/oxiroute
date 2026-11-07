@@ -22,7 +22,7 @@ use super::{
 };
 use crate::{
     GenerationManager, RuntimeMetrics, TopologySnapshot,
-    config_coordinator::{CanonicalConfigCoordinator, EffectiveRevision},
+    config::coordinator::{CanonicalConfigCoordinator, EffectiveRevision},
     lifecycle_control::{DirectLifecycleControl, LifecyclePort},
     observability::operational_event::{
         self, AuditCategory, AuditContext, AuditLimits, AuditResult, AuditStore,

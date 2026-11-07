@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     CertbotWatcherConfig, FileWatcherConfig, GenerationManager, RuntimeMode, RuntimePlan,
-    config_coordinator::{
+    config::coordinator::{
         AuthoredRevision, CanonicalConfigCoordinator, ConfigConflict, ConfigDiagnostic,
         ConfigLoadOutcome, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
         EffectiveRevision, NativeImportSourceOutcome, PersistableConfigCandidate,
@@ -400,7 +400,7 @@ impl ConfigApiState {
                 }
             };
             generations
-                .validate_candidate(crate::config_coordinator::ResolvedConfigDocument {
+                .validate_candidate(crate::config::coordinator::ResolvedConfigDocument {
                     authored_revision: disk_revision,
                     effective_revision: candidate.effective_revision().clone(),
                     validated_config: candidate.validated_config().clone(),
@@ -610,7 +610,7 @@ fn parse_config_request(body: &[u8]) -> Result<ConfigDraft, ApiResponse> {
                         "stage": "parse",
                         "path": "/config",
                         "message": "the config field does not match the canonical configuration schema",
-                        "detail": crate::config_coordinator::without_values(&error.to_string()),
+                        "detail": crate::config::coordinator::without_values(&error.to_string()),
                     }],
                 }),
             )
@@ -746,8 +746,8 @@ fn diagnostics_json(diagnostics: &[ConfigDiagnostic], as_warnings: bool) -> Vec<
                 "code": diagnostic.code,
                 "severity": if as_warnings { "warning" } else {
                     match diagnostic.severity {
-                        crate::config_coordinator::ConfigDiagnosticSeverity::Error => "error",
-                        crate::config_coordinator::ConfigDiagnosticSeverity::Warning => "warning",
+                        crate::config::coordinator::ConfigDiagnosticSeverity::Error => "error",
+                        crate::config::coordinator::ConfigDiagnosticSeverity::Warning => "warning",
                     }
                 },
                 "stage": diagnostic.stage,

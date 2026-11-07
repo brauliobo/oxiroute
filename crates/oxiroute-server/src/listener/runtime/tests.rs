@@ -22,11 +22,11 @@ fn generation() -> std::sync::Arc<crate::RuntimeGeneration> {
     };
     let manager = crate::GenerationManager::new();
     let candidate = manager
-        .prepare(crate::config_coordinator::ResolvedConfigDocument {
-            authored_revision: crate::config_coordinator::AuthoredRevision::from_bytes(
+        .prepare(crate::config::coordinator::ResolvedConfigDocument {
+            authored_revision: crate::config::coordinator::AuthoredRevision::from_bytes(
                 b"listener-runtime-test",
             ),
-            effective_revision: crate::config_coordinator::EffectiveRevision::from_bytes(
+            effective_revision: crate::config::coordinator::EffectiveRevision::from_bytes(
                 b"listener-runtime-test",
             ),
             validated_config: config.validate().expect("valid generation config"),

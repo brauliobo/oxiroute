@@ -9,7 +9,7 @@ use oxiroute_config_source::ConfigFormat;
 
 use crate::{
     GenerationManager, RuntimeReferenceKind, ServiceKind,
-    config_coordinator::{AuthoredRevision, EffectiveRevision, ResolvedConfigDocument},
+    config::coordinator::{AuthoredRevision, EffectiveRevision, ResolvedConfigDocument},
 };
 
 use super::*;

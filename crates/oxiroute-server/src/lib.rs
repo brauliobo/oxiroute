@@ -1,7 +1,6 @@
 mod capsule;
 pub mod cli;
-pub mod config_coordinator;
-mod config_watcher;
+pub mod config;
 mod encoding;
 mod forward_proxy;
 mod generation;
@@ -25,7 +24,8 @@ mod topology;
 mod upstream_peer;
 mod wire;
 
-pub use config_watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
+pub use config::coordinator as config_coordinator;
+pub use config::watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
 pub use forward_proxy::{
     ForwardAccessMetricsSnapshot, ForwardAccessResult, ForwardConnectionLifecycle,
     ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, ForwardHttp2ServicePlan, ForwardProxyBody,

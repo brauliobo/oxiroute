@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::DecimalCounter;
-use crate::config_coordinator::{ConfigRejection, RejectionDiagnostic};
+use crate::config::coordinator::{ConfigRejection, RejectionDiagnostic};
 use crate::{
     AdministrativeState, CacheSnapshot, EndpointHealthSnapshot, EndpointHealthState,
     GenerationStatus, HealthFailure, HealthOverride, HttpOperationCountSnapshot,
@@ -137,12 +137,14 @@ impl From<crate::PendingApply> for PendingApplyDto {
     }
 }
 
-fn authored_revision(value: Option<crate::config_coordinator::AuthoredRevision>) -> Option<String> {
+fn authored_revision(
+    value: Option<crate::config::coordinator::AuthoredRevision>,
+) -> Option<String> {
     value.map(|revision| revision.as_str().to_owned())
 }
 
 fn effective_revision(
-    value: Option<crate::config_coordinator::EffectiveRevision>,
+    value: Option<crate::config::coordinator::EffectiveRevision>,
 ) -> Option<String> {
     value.map(|revision| revision.as_str().to_owned())
 }

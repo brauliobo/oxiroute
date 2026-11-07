@@ -83,9 +83,9 @@ fn api() -> (
             .expect("render"),
     )
     .expect("config");
-    let coordinator = crate::config_coordinator::CanonicalConfigCoordinator::new(config_path)
+    let coordinator = crate::config::coordinator::CanonicalConfigCoordinator::new(config_path)
         .expect("coordinator");
-    let crate::config_coordinator::ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
+    let crate::config::coordinator::ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
         panic!("load config")
     };
     let generations = GenerationManager::new();
