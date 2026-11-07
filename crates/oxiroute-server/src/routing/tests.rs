@@ -2043,6 +2043,7 @@ fn fail_open_pool(servers: &[(&str, Option<u64>)], algorithm: UpstreamAlgorithm)
         PoolResiliencePolicy {
             fail_open: true,
             min_members: 0,
+            ..PoolResiliencePolicy::default()
         },
     )
     .expect("fail-open pool")
@@ -2189,6 +2190,7 @@ async fn fail_open_queues_for_capacity_like_a_healthy_pool() {
             PoolResiliencePolicy {
                 fail_open: true,
                 min_members: 0,
+                ..PoolResiliencePolicy::default()
             },
         )
         .expect("pool"),
@@ -2437,4 +2439,88 @@ fn a_configured_passive_policy_applies_the_documented_defaults_to_omitted_fields
     );
     assert_eq!(policy.max_ejection_duration, Duration::from_mins(5));
     assert_eq!(policy.recovery_threshold, 1);
+}
+
+fn waiting_pool(wait: Duration, queue_timeout: Option<Duration>) -> Arc<EndpointPool> {
+    Arc::new(
+        EndpointPool::new_named_servers_resilient(
+            "recovering".into(),
+            [runtime_server("only", 3000, None)],
+            UpstreamAlgorithm::First,
+            Some(HealthStartup::Checking),
+            queue_timeout,
+            PassiveFailurePolicy::default(),
+            PoolResiliencePolicy {
+                unavailable_wait: Some(wait),
+                ..PoolResiliencePolicy::default()
+            },
+        )
+        .expect("pool"),
+    )
+}
+
+#[tokio::test]
+async fn requests_wait_for_a_recovering_server_instead_of_failing_at_once() {
+    for queue_timeout in [None, Some(Duration::from_secs(5))] {
+        let pool = waiting_pool(Duration::from_secs(5), queue_timeout);
+        let waiter = tokio::spawn({
+            let pool = Arc::clone(&pool);
+            async move {
+                pool.select_wait()
+                    .await
+                    .map(|lease| lease.server_name().to_owned())
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!waiter.is_finished());
+
+        pool.record_health(0, true, None, None, 1, 1);
+
+        assert_eq!(waiter.await.expect("waiter").as_deref(), Some("only"));
+        assert_eq!(pool.health_snapshot().unavailable_selections, 0);
+    }
+}
+
+#[tokio::test]
+async fn connection_targets_wait_for_a_recovering_server() {
+    let pool = waiting_pool(Duration::from_secs(5), None);
+    let waiter = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move { pool.select_connection_target_waiting(&[]).await.is_some() }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    pool.record_health(0, true, None, None, 1, 1);
+
+    assert!(waiter.await.expect("waiter"));
+}
+
+#[tokio::test]
+async fn the_wait_for_a_recovering_server_is_bounded_and_counted_once() {
+    let pool = waiting_pool(Duration::from_millis(300), None);
+
+    assert!(pool.select_wait().await.is_none());
+    assert!(pool.select_connection_target_waiting(&[]).await.is_none());
+
+    assert_eq!(pool.health_snapshot().unavailable_selections, 2);
+}
+
+#[tokio::test]
+async fn pools_without_a_recovery_wait_fail_at_once() {
+    let pool = Arc::new(
+        RoundRobinPool::new_named_servers(
+            "strict".into(),
+            [runtime_server("only", 3000, None)],
+            UpstreamAlgorithm::First,
+            Some(HealthStartup::Checking),
+            None,
+        )
+        .expect("pool"),
+    );
+    let started = Instant::now();
+
+    assert!(pool.select_connection_target_waiting(&[]).await.is_none());
+    assert!(pool.select_wait().await.is_none());
+
+    assert!(started.elapsed() < Duration::from_millis(100));
 }

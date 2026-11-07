@@ -69,6 +69,7 @@ pub(crate) struct PoolBlueprint {
     pub(crate) health: Option<HealthCheckBlueprint>,
     pub(crate) passive_health: PassiveFailurePolicy,
     pub(crate) resilience: crate::routing::PoolResiliencePolicy,
+    pub(crate) unavailable: crate::upstream_peer::UnavailableResponse,
     pub(crate) upstream_tls: Option<crate::tls::UpstreamTlsBlueprint>,
     pub(crate) min_http_version: HttpVersion,
     pub(crate) queue_timeout: Option<std::time::Duration>,

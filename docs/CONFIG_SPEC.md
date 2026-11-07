@@ -389,6 +389,16 @@ Current constraints:
   be ejected below the floor keeps counting failures but stays in rotation. `ejection_jitter_percent`
   (0 through 50, default `0`) spreads each passive ejection by that many percent either way, never
   beyond `passive_health.max_backoff_ms`, so servers ejected together do not return together.
+  `queue_while_unavailable_ms` (default absent) makes a request that finds no selectable server wait
+  up to that many milliseconds, re-checking on every health change and at least every 250 ms, before
+  the pool is reported unavailable; it applies only while some server is neither drained, in
+  maintenance nor forced down, is not ordered (waiters are not part of the `queue_timeout_ms`
+  FIFO) and does not apply to a retry to a server that was already tried. The `503` that
+  OxiRoute answers when the pool is unavailable always carries the marker header
+  `x-oxiroute-pool-unavailable: 1` and a current `Date`, also when `automatic_response_headers` is
+  false. `unavailable_retry_after_seconds` (1 through 86400) adds `Retry-After`, and
+  `unavailable_body` (1 through 1024 bytes of text) is sent as `text/plain; charset=utf-8` instead
+  of an empty body; a `HEAD` request gets the headers and `Content-Length` only.
 - HTTP services MUST contain at least one route. Route pool references MUST resolve.
 - Forward HTTP/1 services support absolute-form requests and classic CONNECT only when H1 is enabled.
   Opt-in RFC 9298 CONNECT-UDP uses an HTTP/1.1 Upgrade request and bounded Capsule Protocol

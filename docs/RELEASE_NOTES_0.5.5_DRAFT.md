@@ -17,6 +17,13 @@ it to zero servers. The release remains pre-alpha and retains conservative compa
   short burst of application errors cannot turn into a whole backoff of `503` answers.
 - `resilience.ejection_jitter_percent` (0 through 50) randomizes each passive ejection duration so
   servers ejected together do not return together; the maximum backoff still bounds it.
+- `resilience.queue_while_unavailable_ms` makes requests wait up to that long for a recovering
+  server before the pool answers `503`, so a rolling restart or a node reboot no longer shows up as
+  client errors.
+- The `503` OxiRoute answers when a pool has no server that can take the request now carries a
+  correct `Date` header (it previously carried Pingora's placeholder from 1994 when automatic
+  response headers were off). `resilience.unavailable_retry_after_seconds` adds `Retry-After` and
+  `resilience.unavailable_body` sets a short `text/plain` body.
 - `oxiroute_pool_fail_open_selections_total` and the pool `failOpenSelections` field of the
   management API count the selections made this way.
 

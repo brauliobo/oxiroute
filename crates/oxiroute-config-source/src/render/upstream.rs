@@ -168,6 +168,15 @@ impl Renderer {
         self.boolean_field("fail_open", resilience.fail_open);
         self.optional_integer_field("min_members", resilience.min_members);
         self.integer_field("ejection_jitter_percent", resilience.ejection_jitter_percent);
+        self.optional_integer_field(
+            "queue_while_unavailable_ms",
+            resilience.queue_while_unavailable_ms,
+        );
+        self.optional_integer_field(
+            "unavailable_retry_after_seconds",
+            resilience.unavailable_retry_after_seconds,
+        );
+        self.optional_string_field("unavailable_body", resilience.unavailable_body.as_deref());
     }
 
     fn passive_health(&mut self, policy: &PassiveHealthPolicy) {

@@ -591,6 +591,15 @@ pub struct PoolResilience {
     /// Randomizes each passive ejection duration by up to this many percent either way.
     #[serde(default)]
     pub ejection_jitter_percent: u8,
+    /// A request that finds no selectable server waits this long for one before answering 503.
+    #[serde(default)]
+    pub queue_while_unavailable_ms: Option<u64>,
+    /// `Retry-After` seconds sent with the 503 answered when no server can take a request.
+    #[serde(default)]
+    pub unavailable_retry_after_seconds: Option<u32>,
+    /// Plain-text body of that 503; empty when absent.
+    #[serde(default)]
+    pub unavailable_body: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

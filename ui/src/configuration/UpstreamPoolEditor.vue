@@ -166,6 +166,15 @@ fieldset.object-block(data-field="upstream_pools[].resilience")
     label.field(data-field="upstream_pools[].resilience.ejection_jitter_percent")
       span Ejection duration jitter (%)
       input(type="number" min="0" max="50" step="1" v-model.number="pool.resilience.ejection_jitter_percent")
+    label.field(data-field="upstream_pools[].resilience.queue_while_unavailable_ms")
+      span Wait for a recovering server (ms)
+      input(type="number" min="1" max="86400000" step="1" :value="pool.resilience.queue_while_unavailable_ms ?? ''" @input="pool.resilience.queue_while_unavailable_ms = nullableIntegerInput($event)")
+    label.field(data-field="upstream_pools[].resilience.unavailable_retry_after_seconds")
+      span Retry-After of the unavailable 503 (s)
+      input(type="number" min="1" max="86400" step="1" :value="pool.resilience.unavailable_retry_after_seconds ?? ''" @input="pool.resilience.unavailable_retry_after_seconds = nullableIntegerInput($event)")
+    label.field(data-field="upstream_pools[].resilience.unavailable_body")
+      span Body of the unavailable 503
+      input(type="text" maxlength="1024" :value="pool.resilience.unavailable_body ?? ''" @input="pool.resilience.unavailable_body = nullableInput($event)")
 </template>
 
 <script setup lang="ts">
