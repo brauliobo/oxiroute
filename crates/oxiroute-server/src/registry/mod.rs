@@ -3,4 +3,5 @@
 pub mod error;
 pub mod lease;
 pub mod record;
+pub mod store;
 pub mod validate;
