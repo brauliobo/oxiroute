@@ -9,8 +9,8 @@ use crate::{GenerationManager, RuntimeMetrics};
 
 mod format;
 use format::{
-    component_state, endpoint_state, labels, listener_state, metric, render_latency_histogram,
-    render_transport_latency_histogram, sample,
+    component_state, endpoint_state, labels, listener_state, metric, render_histogram,
+    render_latency_histogram, render_transport_latency_histogram, sample,
 };
 
 pub(crate) fn render_prometheus_control(
@@ -312,6 +312,20 @@ fn render_prometheus_snapshot(
             "oxiroute_pool_queue_depth",
             &[("pool", pool.name.as_str())],
             pool.queued,
+        )?;
+        labels(
+            &mut output,
+            "oxiroute_pool_queue_oldest_wait_seconds",
+            &[("pool", pool.name.as_str())],
+            pool.oldest_queue_wait_ms as f64 / 1_000.0,
+        )?;
+        render_histogram(
+            &mut output,
+            "oxiroute_pool_queue_wait_milliseconds",
+            &[("pool", pool.name.as_str())],
+            &crate::upstream_stats::upstream_stats()
+                .pool(&pool.name)
+                .queue_wait(),
         )?;
         labels(
             &mut output,

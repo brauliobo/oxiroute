@@ -297,3 +297,49 @@ fn exposition_contains_bounded_passive_endpoint_observability() {
     assert!(output.contains("oxiroute_pool_queue_cancellations_total{pool=\"observability\"} 0"));
     assert!(!output.contains("127.0.0.1:3000"));
 }
+
+#[test]
+fn exposition_has_queue_wait_histogram_and_oldest_wait_per_pool() {
+    let metrics = RuntimeMetrics::new();
+    let pool = Arc::new(
+        RoundRobinPool::new_named_servers(
+            "queue-wait-series".into(),
+            [RuntimeServer {
+                name: "0".into(),
+                endpoint: RuntimeEndpoint::from(
+                    "127.0.0.1:3000"
+                        .parse::<std::net::SocketAddr>()
+                        .expect("endpoint"),
+                ),
+                max_connections: Some(1),
+                pinned_addresses: None,
+                protected_addresses: Arc::from([]),
+            }],
+            UpstreamAlgorithm::RoundRobin,
+            None,
+            Some(std::time::Duration::from_secs(1)),
+        )
+        .expect("pool"),
+    );
+    crate::upstream_stats::upstream_stats()
+        .pool("queue-wait-series")
+        .record_queue_wait(std::time::Duration::from_millis(30));
+    metrics
+        .register_upstream_pools([Arc::clone(&pool)])
+        .expect("upstream pools");
+    let control = empty_rtmp_runtime().control();
+
+    let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+        .expect("exposition");
+
+    for expected in [
+        "oxiroute_pool_queue_wait_milliseconds_bucket{pool=\"queue-wait-series\",le=\"25\"} 0",
+        "oxiroute_pool_queue_wait_milliseconds_bucket{pool=\"queue-wait-series\",le=\"50\"} 1",
+        "oxiroute_pool_queue_wait_milliseconds_bucket{pool=\"queue-wait-series\",le=\"600000\"} 1",
+        "oxiroute_pool_queue_wait_milliseconds_count{pool=\"queue-wait-series\"} 1",
+        "oxiroute_pool_queue_wait_milliseconds_sum{pool=\"queue-wait-series\"} 30",
+        "oxiroute_pool_queue_oldest_wait_seconds{pool=\"queue-wait-series\"} 0",
+    ] {
+        assert!(output.contains(expected), "missing {expected}");
+    }
+}

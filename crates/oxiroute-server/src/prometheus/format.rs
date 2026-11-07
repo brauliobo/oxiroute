@@ -32,33 +32,32 @@ pub(super) fn labels(
     writeln!(output, "}} {value}")
 }
 
+pub(super) fn render_histogram(
+    output: &mut String,
+    name: &str,
+    base_labels: &[(&str, &str)],
+    latency: &crate::LatencySnapshot,
+) -> fmt::Result {
+    let bucket_name = format!("{name}_bucket");
+    for bucket in &latency.buckets {
+        let upper_bound = bucket
+            .upper_bound_ms
+            .map_or_else(|| "+Inf".to_owned(), |value| value.to_string());
+        let mut bucket_labels = base_labels.to_vec();
+        bucket_labels.push(("le", upper_bound.as_str()));
+        labels(output, &bucket_name, &bucket_labels, bucket.count)?;
+    }
+    labels(output, &format!("{name}_count"), base_labels, latency.count)?;
+    labels(output, &format!("{name}_sum"), base_labels, latency.sum_ms)
+}
+
 pub(super) fn render_latency_histogram(
     output: &mut String,
     name: &str,
     listener: &str,
     latency: &crate::LatencySnapshot,
 ) -> fmt::Result {
-    let bucket_name = format!("{name}_bucket");
-    let count_name = format!("{name}_count");
-    let sum_name = format!("{name}_sum");
-    for bucket in &latency.buckets {
-        let upper_bound = bucket
-            .upper_bound_ms
-            .map_or_else(|| "+Inf".to_owned(), |value| value.to_string());
-        labels(
-            output,
-            &bucket_name,
-            &[("listener", listener), ("le", upper_bound.as_str())],
-            bucket.count,
-        )?;
-    }
-    labels(
-        output,
-        &count_name,
-        &[("listener", listener)],
-        latency.count,
-    )?;
-    labels(output, &sum_name, &[("listener", listener)], latency.sum_ms)
+    render_histogram(output, name, &[("listener", listener)], latency)
 }
 
 pub(super) fn render_transport_latency_histogram(
@@ -67,32 +66,7 @@ pub(super) fn render_transport_latency_histogram(
     transport: &str,
     latency: &crate::LatencySnapshot,
 ) -> fmt::Result {
-    let bucket_name = format!("{name}_bucket");
-    let count_name = format!("{name}_count");
-    let sum_name = format!("{name}_sum");
-    for bucket in &latency.buckets {
-        let upper_bound = bucket
-            .upper_bound_ms
-            .map_or_else(|| "+Inf".to_owned(), |value| value.to_string());
-        labels(
-            output,
-            &bucket_name,
-            &[("transport", transport), ("le", upper_bound.as_str())],
-            bucket.count,
-        )?;
-    }
-    labels(
-        output,
-        &count_name,
-        &[("transport", transport)],
-        latency.count,
-    )?;
-    labels(
-        output,
-        &sum_name,
-        &[("transport", transport)],
-        latency.sum_ms,
-    )
+    render_histogram(output, name, &[("transport", transport)], latency)
 }
 
 fn escape_label(output: &mut String, value: &str) {
