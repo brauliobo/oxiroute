@@ -265,6 +265,42 @@ inline tests moved to separate files, so reviews and future changes touch smalle
   recordings toolchain moves to Remotion 4.0.541 and React 19.3.
 - Pingora stays at 0.8.1. See Known limits for the advisories this leaves open.
 
+## Verified behavior
+
+Checked on a scratch instance in front of throwaway HTTP stubs on loopback, against the 0.5.4 binary
+under the same configuration (a fault matrix of backend kills, hangs, error bursts, saturation,
+reloads and invalid files; one dead backend of three, 3 clients, about 60 requests per second):
+
+- One backend of three killed, with retry and passive ejection: no client error in either release.
+- A pool whose only backend answers `500` on every path including its health check: 0.5.4 turned
+  into an empty `503` after three failed checks; with `resilience.fail_open` the application's own
+  `500` keeps being served and no `503` is answered.
+- Every backend of a pool answering `500` while its health check passes: 0.5.4 answered `503` for
+  almost the whole backoff; with `fail_open` and `min_members = 1` the clients saw the application's
+  `500` and one `503`.
+- A backend that accepts and never answers, with a response-timeout retry: 0.5.4 dropped the
+  connection after the whole deadline; 6.0 answers `504` (`total_deadline`) and, with
+  `policy.timeouts.header_ms`, the retry reaches the next server after that time and succeeds.
+- A `POST` replayed after a response timeout ran twice in 0.5.4; with `retry.idempotency_header` it
+  is replayed only when the header is present.
+- All servers down: with `queue_while_unavailable_ms` a request waited for the recovering server and
+  was answered `200`; when none returned it answered `503` with `Retry-After` and the configured body.
+- A sick backend (`500` on traffic, healthy checks) behind a `GET`/`HEAD`-only retry lost 28 `POST`s
+  in 14 s in 0.5.4; with `readmission` it lost 6 and with `circuit_breaker` 4.
+- A drain set before a file write was reset to ready by 0.5.4 and is kept in 6.0; no request failed
+  in either release across the reload and the in-flight requests finished.
+- An invalid file written to disk left no trace in 0.5.4 beyond a log line without the cause; 6.0
+  shows `lastRejection` with the field name, `degraded`, a `configuration_reload` event and the
+  rejection counter. `config check` names a missing `version` and the failing setting.
+- A server registered with a 3 s lease was routable after about 0.1 s and left rotation when the
+  lease ran out, without creating a generation (adding a server with `config apply` took 0.6 s and
+  rewrote the configuration).
+
+Unchanged by design, and still configuration work: a pool without retry still answers `502` until the
+health check marks a killed backend down (about three seconds with a 1 s interval), a replay needs
+`method_safety` and `body_safety` to allow it, and a restarted backend is invisible for
+`down_interval_ms` plus the success threshold.
+
 ## Upgrade notes
 
 - **Restart the service to upgrade.** The supervising master and its workers exchange the activation
