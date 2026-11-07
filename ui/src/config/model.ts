@@ -420,6 +420,14 @@ export interface HttpRescuePolicyConfig {
   pool: string | null
 }
 
+export interface HttpPoolSelectConfig {
+  header: string
+  rules: { at_most: number; pool: string }[]
+  on_invalid: 'default' | 'reject'
+  forward: boolean
+  spill: 'none' | 'up'
+}
+
 export interface HttpProxyPolicyConfig {
   upstream_host: HttpUpstreamHostConfig
   upstream_path_rewrite?: HttpProxyPathRewriteConfig | null
@@ -431,6 +439,7 @@ export interface HttpProxyPolicyConfig {
   timeouts: HttpProxyTimeoutsConfig
   rescue: HttpRescuePolicyConfig | null
   cache: HttpCachePolicyConfig | null
+  select?: HttpPoolSelectConfig | null
 }
 
 export type CacheKeyComponentConfig =

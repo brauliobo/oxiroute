@@ -264,6 +264,8 @@ pub struct ProcessSnapshot {
     pub retry_attempts: u64,
     #[serde(skip)]
     pub rescues: Vec<RescueSnapshot>,
+    #[serde(skip)]
+    pub pool_selections: Vec<PoolSelectionSnapshot>,
     pub resident_memory_bytes: Option<u64>,
     pub virtual_memory_bytes: Option<u64>,
     pub thread_count: Option<u64>,
@@ -275,6 +277,14 @@ pub struct ProcessSnapshot {
 pub struct RescueSnapshot {
     pub route: String,
     pub status: u16,
+    pub count: u64,
+}
+
+/// Requests a header selector sent to one pool, by route.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolSelectionSnapshot {
+    pub route: String,
+    pub pool: String,
     pub count: u64,
 }
 

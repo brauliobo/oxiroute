@@ -40,7 +40,20 @@ pub(super) async fn execute_route_action(
                 if let Some(budget) = &proxy.policy.retry_budget {
                     budget.record_request(Instant::now());
                 }
-                ctx.pool = Some(Arc::clone(&proxy.pool));
+                let pool = match &proxy.select {
+                    Some(select) => {
+                        let Ok(pool) = select.choose(&session.req_header().headers, &proxy.pool)
+                        else {
+                            session.respond_error(400).await?;
+                            return Ok(true);
+                        };
+                        ctx.listener
+                            .record_pool_selection(&route.route_id, pool.selector().name());
+                        pool
+                    }
+                    None => &proxy.pool,
+                };
+                ctx.pool = Some(Arc::clone(pool));
                 return Ok(false);
             }
             HttpActionPlan::Fixed(response) => {

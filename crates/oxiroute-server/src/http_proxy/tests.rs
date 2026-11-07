@@ -87,6 +87,7 @@ async fn request_preparation_fixture(
         action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
             pool: Arc::clone(&plan),
             rescue_pool: None,
+            select: None,
             policy: ProxyPolicyPlan::compile(&policy),
         }),
         policy: crate::http_action::RoutePolicyPlan::compile(

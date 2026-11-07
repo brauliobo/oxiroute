@@ -754,6 +754,7 @@ fn runtime_snapshot(listeners: Vec<ListenerSnapshot>) -> RuntimeSnapshot {
             rejected_connections: 0,
             retry_attempts: 0,
             rescues: Vec::new(),
+            pool_selections: Vec::new(),
             resident_memory_bytes: None,
             virtual_memory_bytes: None,
             thread_count: None,

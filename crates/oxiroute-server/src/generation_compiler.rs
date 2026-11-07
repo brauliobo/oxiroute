@@ -383,9 +383,22 @@ fn compile_http_route_blueprint(
                 .and_then(|rescue| rescue.pool.as_ref())
                 .map(pool_index)
                 .transpose()?;
+            let select = policy
+                .select
+                .as_ref()
+                .map(|select| {
+                    let pools = select
+                        .rules
+                        .iter()
+                        .map(|rule| pool_index(&rule.pool))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok((select.clone(), pools))
+                })
+                .transpose()?;
             HttpActionBlueprint::Proxy {
                 pool: pool_index(upstream_pool)?,
                 rescue_pool,
+                select,
                 policy: ProxyPolicyPlan::compile(policy),
                 cache: compile_cache_policy_blueprint(config, service, route_index, route, policy)?,
             }

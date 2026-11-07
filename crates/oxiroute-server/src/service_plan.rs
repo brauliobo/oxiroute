@@ -15,8 +15,8 @@ use crate::{
     PassiveFailurePolicy, PoolError, PreparedTls, RelayPolicy, RoundRobinPool, RouteTable,
     RuntimeEndpoint, TlsProfilePlan, TopologySnapshot, health,
     http_action::{
-        AccessLog, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan, ProxyPolicyPlan,
-        RouteAccess, StaticFilesPlan,
+        AccessLog, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, PoolSelectPlan, ProxyActionPlan,
+        ProxyPolicyPlan, RouteAccess, StaticFilesPlan,
     },
     http_cache::{CachePurgeAccess, DiskBackend, HttpCacheBackend, HttpCachePlan},
     routing::RuntimeServer,
@@ -32,7 +32,9 @@ use crate::{
 };
 use http::{Method, Uri, uri::Authority};
 use oxiroute_cache::{Cache, DiskCache, DiskCacheConfig};
-use oxiroute_config::{CachePurgeAuthorization, ListenerBind, Protocol, ValidatedConfig};
+use oxiroute_config::{
+    CachePurgeAuthorization, HttpPoolSelect, ListenerBind, Protocol, ValidatedConfig,
+};
 use oxiroute_rtmp::{
     PreparedRtmpRuntimeSet, RtmpCapabilities, RtmpPrepareContext, RtmpPrepareMode,
 };

@@ -30,11 +30,11 @@ use openssl::{
 };
 use oxiroute_config::{
     AccessLogPolicy, HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
-    HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpProxyPathRewrite,
-    HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation, HttpRequestHeaderMutation,
-    HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety,
-    HttpRetryTarget, HttpRetryTrigger, HttpRoutePolicy, HttpStaticPathMapping, HttpStaticTryFile,
-    HttpUpstreamHost,
+    HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpPoolSelect,
+    HttpProxyPathRewrite, HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation,
+    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
+    HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryTarget, HttpRetryTrigger, HttpRoutePolicy,
+    HttpSelectInvalid, HttpSelectSpill, HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
 };
 use rustix::{
     fd::OwnedFd,
@@ -52,6 +52,7 @@ use crate::{
 mod access;
 mod access_log;
 mod plan;
+mod pool_select;
 mod proxy_policy;
 mod static_files;
 mod static_serve;
@@ -59,6 +60,7 @@ mod static_serve;
 pub(crate) use access::*;
 pub(crate) use access_log::*;
 pub(crate) use plan::*;
+pub(crate) use pool_select::*;
 pub(crate) use proxy_policy::*;
 pub(crate) use static_files::*;
 pub(crate) use static_serve::*;

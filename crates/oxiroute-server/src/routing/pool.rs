@@ -670,6 +670,22 @@ impl EndpointPool {
         })
     }
 
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Whether any server could be chosen now, ignoring whether it has spare capacity.
+    #[must_use]
+    pub fn has_selectable(&self) -> bool {
+        let now_unix_ms = now_unix_ms();
+        self.read_health(|endpoints| {
+            endpoints
+                .iter()
+                .any(|server| server.selectable_at(now_unix_ms))
+        })
+    }
+
     pub(crate) fn note_unavailable_selection(&self) {
         self.unavailable_selections.fetch_add(1, Ordering::Relaxed);
     }

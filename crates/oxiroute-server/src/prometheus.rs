@@ -104,6 +104,17 @@ fn render_prometheus_snapshot(
             rescue.count,
         )?;
     }
+    for selection in &runtime.process.pool_selections {
+        labels(
+            &mut output,
+            "oxiroute_route_pool_selections_total",
+            &[
+                ("route", selection.route.as_str()),
+                ("pool", selection.pool.as_str()),
+            ],
+            selection.count,
+        )?;
+    }
     if let Some(value) = runtime.process.resident_memory_bytes {
         sample(&mut output, "oxiroute_process_resident_memory_bytes", value)?;
     }

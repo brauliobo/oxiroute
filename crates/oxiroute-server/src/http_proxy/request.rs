@@ -85,6 +85,9 @@ pub(super) fn pingora_request_header_decisions(
         }
         decisions.push(decide_request_header(mutation, context)?);
     }
+    if let Some(select) = proxy.select.as_ref().filter(|select| !select.forward) {
+        decisions.push(RequestHeaderDecision::Remove(select.header().clone()));
+    }
     Ok(decisions.into_boxed_slice())
 }
 
