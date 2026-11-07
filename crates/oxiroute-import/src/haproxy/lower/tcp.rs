@@ -60,6 +60,7 @@ impl Lowerer<'_> {
         };
         let service_index = self.draft.l4_services.len();
         self.draft.l4_services.push(L4Service {
+            drain_deadline_ms: None,
             name: name.to_owned(),
             upstream_pool: pool,
             connect_timeout_ms,
@@ -125,6 +126,7 @@ impl Lowerer<'_> {
         };
         let service_index = self.draft.l4_services.len();
         self.draft.l4_services.push(L4Service {
+            drain_deadline_ms: None,
             name: name.to_owned(),
             upstream_pool: pool,
             connect_timeout_ms,

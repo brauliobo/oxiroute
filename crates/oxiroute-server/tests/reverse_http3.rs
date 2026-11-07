@@ -143,6 +143,7 @@ async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool() {
         resilience: oxiroute_config::PoolResilience::default(),
     });
     config.http_services.push(HttpService {
+        drain_deadline_ms: None,
         name: "web".into(),
         routes: vec![HttpRoute {
             host: None,
@@ -365,6 +366,7 @@ async fn reverse_h3_cache_serves_a_second_get_without_origin_contact() {
         ..HttpProxyPolicy::default()
     };
     config.http_services.push(HttpService {
+        drain_deadline_ms: None,
         name: "web".into(),
         routes: vec![HttpRoute {
             host: None,
@@ -575,6 +577,7 @@ async fn reverse_h3_characterizes_http_policy_parity_and_early_origin_contact() 
         ..HttpProxyPolicy::default()
     };
     let service = HttpService {
+        drain_deadline_ms: None,
         name: "web".into(),
         routes: vec![
             HttpRoute {
@@ -1027,6 +1030,7 @@ async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
         policy: oxiroute_config::TlsPolicy::default(),
     });
     config.http_services.push(HttpService {
+        drain_deadline_ms: None,
         name: "web".into(),
         routes: vec![HttpRoute {
             host: None,
@@ -1730,6 +1734,7 @@ fn proxy_service(max_request_body_bytes: u64) -> HttpService {
 
 fn reverse_service(action: HttpRouteAction) -> HttpService {
     HttpService {
+        drain_deadline_ms: None,
         name: "web".into(),
         routes: vec![HttpRoute {
             host: None,

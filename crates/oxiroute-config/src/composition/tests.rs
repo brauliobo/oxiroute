@@ -100,6 +100,7 @@ fn validates_only_after_complete_drafts_are_composed() {
 
 fn empty_config() -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -143,6 +144,7 @@ fn tcp_config(name: &str, port: u16, upstream_port: u16) -> ConfigDraft {
         resilience: crate::PoolResilience::default(),
     });
     config.l4_services.push(L4Service {
+        drain_deadline_ms: None,
         name: service.clone(),
         upstream_pool: pool,
         connect_timeout_ms: 5000,

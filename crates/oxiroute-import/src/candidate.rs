@@ -229,6 +229,7 @@ impl CanonicalCandidateSummary {
 
 pub(crate) fn empty_config() -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,

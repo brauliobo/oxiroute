@@ -20,6 +20,7 @@ mod validation;
 
 fn config(name: &str, address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         listeners: vec![oxiroute_config::Listener {
             name: name.into(),
             bind: ListenerBind::Socket { address },
@@ -36,6 +37,7 @@ fn config(name: &str, address: SocketAddr) -> ConfigDraft {
 
 fn empty_config() -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -203,6 +205,7 @@ fn many_listener_config(count: usize) -> ValidatedConfig {
         resilience: oxiroute_config::PoolResilience::default(),
     });
     config.l4_services.push(oxiroute_config::L4Service {
+        drain_deadline_ms: None,
         name: "relay".into(),
         upstream_pool: "origin".into(),
         connect_timeout_ms: 1_000,

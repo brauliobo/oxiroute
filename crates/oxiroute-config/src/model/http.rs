@@ -17,6 +17,9 @@ pub struct HttpService {
     pub gzip: Option<HttpGzipPolicy>,
     #[serde(default)]
     pub access_log: Option<AccessLogPolicy>,
+    /// Raises the generation drain deadline while this service is configured; never lowers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drain_deadline_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

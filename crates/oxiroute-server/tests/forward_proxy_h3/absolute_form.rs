@@ -74,6 +74,7 @@ async fn daemon_forwards_h3_http_absolute_form_to_a_tcp_origin_and_releases_udp_
         policy: oxiroute_config::TlsPolicy::default(),
     });
     config.forward_proxy_services.push(ForwardProxyService {
+        drain_deadline_ms: None,
         name: "forward".into(),
         enabled_versions: vec![ForwardHttpVersion::H3],
         allow_absolute_form: true,
@@ -294,6 +295,7 @@ async fn h3_cache_serves_a_second_absolute_form_get_without_origin_contact() {
         policy: oxiroute_config::TlsPolicy::default(),
     });
     config.forward_proxy_services.push(ForwardProxyService {
+        drain_deadline_ms: None,
         name: "forward".into(),
         enabled_versions: vec![ForwardHttpVersion::H3],
         allow_absolute_form: true,

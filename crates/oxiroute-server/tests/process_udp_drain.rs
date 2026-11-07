@@ -150,6 +150,7 @@ fn udp_config(
     upstream_address: SocketAddr,
 ) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         management: Some(Management {
             bind: management_address,
             ui_dir: None,
@@ -182,6 +183,7 @@ fn udp_config(
             resilience: oxiroute_config::PoolResilience::default(),
         }],
         l4_services: vec![L4Service {
+            drain_deadline_ms: None,
             name: "relay".into(),
             upstream_pool: "upstream".into(),
             connect_timeout_ms: 1_000,

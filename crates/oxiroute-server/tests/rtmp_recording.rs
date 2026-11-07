@@ -180,6 +180,7 @@ fn manual_api_start_and_stop_control_the_exact_runtime_recorder() {
 
 fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         listeners: vec![Listener {
             name: "live".into(),
             bind: socket_bind(loopback_address(1935)),
