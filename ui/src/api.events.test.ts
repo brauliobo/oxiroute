@@ -363,7 +363,8 @@ function eventResponse(body: string): Response {
 }
 
 const SIMPLE_OUTCOMES = [
-  'prepared', 'rejected', 'activated', 'quarantined', 'requested', 'applied', 'failed', 'unknown',
+  'prepared', 'rejected', 'activated', 'quarantined', 'requested', 'applied', 'failed',
+  'retiring', 'drained', 'forced_close', 'cap_reached', 'unknown',
 ] as const
 
 const SIMPLE_EVENT_OUTCOMES: Record<string, readonly (typeof SIMPLE_OUTCOMES)[number][]> = {
@@ -371,6 +372,7 @@ const SIMPLE_EVENT_OUTCOMES: Record<string, readonly (typeof SIMPLE_OUTCOMES)[nu
   generation_activate: ['activated'],
   generation_rollback: ['prepared', 'rejected', 'requested', 'failed'],
   generation_drain: ['rejected', 'requested', 'failed'],
+  generation_retire: ['retiring', 'drained', 'forced_close', 'cap_reached'],
   generation_start: ['quarantined'],
   configuration_reload: ['rejected', 'applied', 'failed'],
   import_completed: ['applied'],
