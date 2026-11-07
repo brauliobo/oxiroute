@@ -94,6 +94,8 @@ fn exclude_nonintegrated_component_controls(
         "http_services[].routes[].action.policy.select",
         "http_services[].routes[].action.policy.affinity",
         "max_connections",
+        "registry",
+        "upstream_pools[].registration",
         "retirement",
         "http_services[].drain_deadline_ms",
         "forward_proxy_services[].drain_deadline_ms",

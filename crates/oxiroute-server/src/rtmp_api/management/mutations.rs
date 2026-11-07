@@ -77,7 +77,20 @@ impl ManagementState {
             Err(response) => return response,
         };
         self.apply_servers(&request.change, |pool, server| {
-            pool.set_server_administrative_state(server, request.state)
+            match (pool.member(server), self.generations.registry()) {
+                (Some((crate::ServerOrigin::Dynamic, _)), Some(registry)) => registry
+                    .set_operator_state(
+                        &crate::registry::auth::Principal::admin("management"),
+                        pool.name(),
+                        server,
+                        request.state,
+                    )
+                    .map(drop)
+                    .map_err(Box::<dyn std::error::Error>::from),
+                _ => pool
+                    .set_server_administrative_state(server, request.state)
+                    .map_err(Box::<dyn std::error::Error>::from),
+            }
         })
     }
 
@@ -184,10 +197,10 @@ impl ManagementState {
         )
     }
 
-    fn apply_servers(
+    fn apply_servers<E>(
         &self,
         change: &ServerChange,
-        apply: impl Fn(&Arc<crate::RoundRobinPool>, &str) -> Result<(), crate::PoolAdminError>,
+        apply: impl Fn(&Arc<crate::RoundRobinPool>, &str) -> Result<(), E>,
     ) -> ApiResponse {
         let (_mutation, selected) = match self.select_servers(change) {
             Ok(selected) => selected,

@@ -13,6 +13,9 @@ pub struct ConfigDraft {
     pub retirement: Option<Retirement>,
     #[serde(default)]
     pub management: Option<Management>,
+    /// Runtime server registration: state directory, tokens, and registry-only endpoints.
+    #[serde(default)]
+    pub registry: Option<Registry>,
     #[serde(default)]
     pub stats: Option<Stats>,
     #[serde(default)]
@@ -607,6 +610,9 @@ pub struct UpstreamPool {
     /// Orders the requests that wait for capacity by class and tenant; absent keeps first come first served.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<PoolQueuePolicy>,
+    /// Opts the pool into servers that register themselves at runtime; absent means static only.
+    #[serde(default)]
+    pub registration: Option<PoolRegistration>,
 }
 
 /// How a saturated pool picks the next waiting request. Needs `queue_timeout_ms`.
@@ -667,6 +673,136 @@ pub enum QueueDiscipline {
     Weighted,
     /// A lower class is served only when no higher class waits.
     Strict,
+}
+
+/// Limits for servers that register themselves in a pool at runtime.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PoolRegistration {
+    /// Registered servers the pool holds at most, besides its static servers.
+    #[serde(default = "default_registration_max_servers")]
+    pub max_servers: u16,
+    #[serde(default = "default_registration_min_ttl_ms")]
+    pub min_ttl_ms: u64,
+    #[serde(default = "default_registration_default_ttl_ms")]
+    pub default_ttl_ms: u64,
+    #[serde(default = "default_registration_max_ttl_ms")]
+    pub max_ttl_ms: u64,
+    /// Addresses a registration may point at, as `address/prefix`; empty allows any non-special one.
+    #[serde(default)]
+    pub allowed_cidrs: Vec<String>,
+    /// A registering TCP peer may only register its own address.
+    #[serde(default = "default_registration_require_peer_address")]
+    pub require_peer_address: bool,
+}
+
+const fn default_registration_max_servers() -> u16 {
+    64
+}
+
+const fn default_registration_min_ttl_ms() -> u64 {
+    2_000
+}
+
+const fn default_registration_default_ttl_ms() -> u64 {
+    15_000
+}
+
+const fn default_registration_max_ttl_ms() -> u64 {
+    3_600_000
+}
+
+const fn default_registration_require_peer_address() -> bool {
+    true
+}
+
+impl Default for PoolRegistration {
+    fn default() -> Self {
+        Self {
+            max_servers: default_registration_max_servers(),
+            min_ttl_ms: default_registration_min_ttl_ms(),
+            default_ttl_ms: default_registration_default_ttl_ms(),
+            max_ttl_ms: default_registration_max_ttl_ms(),
+            allowed_cidrs: Vec::new(),
+            require_peer_address: default_registration_require_peer_address(),
+        }
+    }
+}
+
+impl PoolRegistration {
+    /// Whether `ip` lies inside one of the allowed networks. Malformed entries never match.
+    #[must_use]
+    pub fn allows(&self, ip: IpAddr) -> bool {
+        self.allowed_cidrs
+            .iter()
+            .any(|cidr| cidr_contains(cidr, ip) == Some(true))
+    }
+}
+
+/// Whether `ip` is in `cidr` (`address/prefix`); `None` when `cidr` is malformed.
+#[must_use]
+pub fn cidr_contains(cidr: &str, ip: IpAddr) -> Option<bool> {
+    let (network, prefix) = cidr.split_once('/')?;
+    let network = network.parse::<IpAddr>().ok()?;
+    let prefix = prefix.parse::<u32>().ok()?;
+    let shared = |network: u128, ip: u128, bits: u32| {
+        let shift = bits.checked_sub(prefix)?;
+        Some(shift >= 128 || network >> shift == ip >> shift)
+    };
+    match (network, ip) {
+        (IpAddr::V4(network), IpAddr::V4(ip)) => {
+            shared(u32::from(network).into(), u32::from(ip).into(), 32)
+        }
+        (IpAddr::V6(network), IpAddr::V6(ip)) => shared(network.into(), ip.into(), 128),
+        (IpAddr::V4(_), IpAddr::V6(_)) => (prefix <= 32).then_some(false),
+        (IpAddr::V6(_), IpAddr::V4(_)) => (prefix <= 128).then_some(false),
+    }
+}
+
+/// Process-wide registration settings: where registrations persist and who may reach the registry.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Registry {
+    /// Directory that holds `registrations.json`; must not be the configuration directory.
+    pub state_dir: PathBuf,
+    /// Scoped bearer tokens (`<id> <sha256-hex> read|register pools=a,b`); required by TCP endpoints.
+    #[serde(default)]
+    pub tokens_file: Option<PathBuf>,
+    /// Listeners that serve only the registry routes.
+    #[serde(default)]
+    pub endpoints: Vec<RegistryEndpoint>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RegistryEndpoint {
+    /// A unix socket whose file mode and group decide who may use `role`.
+    Unix {
+        path: PathBuf,
+        #[serde(default = "default_registry_socket_mode")]
+        mode: u16,
+        role: RegistryRole,
+        /// Pools a `register` socket may touch; empty means every registration pool.
+        #[serde(default)]
+        pools: Vec<String>,
+    },
+    /// A TCP listener for LAN workers: bearer tokens plus a peer-address allow list.
+    Tcp {
+        bind: SocketAddr,
+        #[serde(default)]
+        allow_cidrs: Vec<String>,
+    },
+}
+
+const fn default_registry_socket_mode() -> u16 {
+    0o660
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryRole {
+    Read,
+    Register,
 }
 
 /// Availability options of one pool. Every option defaults to the strict behaviour.

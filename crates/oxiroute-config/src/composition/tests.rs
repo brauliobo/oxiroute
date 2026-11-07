@@ -104,6 +104,7 @@ fn empty_config() -> ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
@@ -141,6 +142,7 @@ fn tcp_config(name: &str, port: u16, upstream_port: u16) -> ConfigDraft {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: crate::PoolResilience::default(),
         queue: None,
     });

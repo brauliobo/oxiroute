@@ -141,6 +141,7 @@ fn canonical_minimal_config_bytes_and_effective_revision_are_stable() {
             "(array)listeners {\n}\n",
             "management #null\n",
             "max_connections #null\n",
+            "registry #null\n",
             "(array)rtmp_services {\n}\n",
             "stats #null\n",
             "(array)tls_profiles {\n}\n",
@@ -150,7 +151,7 @@ fn canonical_minimal_config_bytes_and_effective_revision_are_stable() {
     );
     assert_eq!(
         EffectiveRevision::from_bytes(canonical.as_bytes()).as_str(),
-        "055f445bd5783bc7ecf206cfc4b5cdc66849eb6c9d41c8404ae5bbcfbef2202e"
+        "2267bcdb337bd589b19fa98367ea91b04e857bb81ecb21329c91a7aee32af072"
     );
 }
 
@@ -353,6 +354,7 @@ fn validation_errors_point_at_the_failing_setting() {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     });

@@ -17,6 +17,15 @@ impl AuditContext {
         }
     }
 
+    /// A registry change made by `actor`: a token id, a socket peer or the lease sweeper.
+    pub(crate) fn registry(actor: &str) -> Self {
+        Self {
+            correlation_id: next_correlation_id(),
+            actor: redact_identifier(actor),
+            source: "registry".into(),
+        }
+    }
+
     pub(crate) fn from_external(value: &str) -> Option<Self> {
         if !valid_correlation_id(value) {
             return None;

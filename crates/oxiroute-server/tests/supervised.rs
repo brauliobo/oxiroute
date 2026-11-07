@@ -582,6 +582,7 @@ fn supervised_control_listeners_report_real_lifecycle_and_connection_counters_on
             bind: management,
             ui_dir: None,
         }),
+        registry: None,
         stats: Some(Stats {
             binds: vec![stats_address],
             admin_token_file: None,
@@ -668,6 +669,7 @@ fn supervised_control_listener_callback_failure_prevents_readiness() {
             bind: reserve_tcp_address(),
             ui_dir: None,
         }),
+        registry: None,
         stats: Some(Stats {
             binds: vec![reserve_tcp_address()],
             admin_token_file: None,
@@ -1942,6 +1944,7 @@ fn reload_config(shape: &ReloadShape<'_>) -> ConfigDraft {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::default(),
+            registration: None,
             resilience: oxiroute_config::PoolResilience::default(),
             queue: None,
         }];
@@ -2635,6 +2638,7 @@ fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf) -> ConfigD
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
@@ -2674,6 +2678,7 @@ fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
@@ -2705,6 +2710,7 @@ fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::default(),
+            registration: None,
             resilience: oxiroute_config::PoolResilience::default(),
             queue: None,
         }],
@@ -2730,6 +2736,7 @@ fn h3_only_config(listener_address: SocketAddr, private_key_path: &Path) -> Conf
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: vec![Certificate {
             name: "downstream".into(),
@@ -2839,6 +2846,7 @@ fn h3_proxy_config(
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     });

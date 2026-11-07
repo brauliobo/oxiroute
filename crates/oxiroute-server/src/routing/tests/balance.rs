@@ -214,7 +214,7 @@ fn active_health_checks_cannot_bypass_probe_readmission() {
     pool.record_passive_failure(0, HealthFailure::Timeout);
     std::thread::sleep(Duration::from_millis(20));
 
-    pool.record_health(0, true, None, Some(now_unix_ms()), 1, 1);
+    pool.record_health(&pool.handle(0), true, None, Some(now_unix_ms()), 1, 1);
 
     let snapshot = pool.health_snapshot();
     assert!(snapshot.endpoints[0].passive_ejected);
@@ -471,7 +471,7 @@ fn feed(pool: &RoundRobinPool, route: &str, millis: &[u64], interval: u64) {
     let at = now_unix_ms() - 10_000 + interval * 1_000;
     for _ in 0..6 {
         for (index, ms) in millis.iter().enumerate() {
-            let server = &pool.endpoints[index];
+            let server = &pool.health.members.load().endpoints[index];
             pool.health
                 .record_latency_at(server, route, Duration::from_millis(*ms), at);
         }

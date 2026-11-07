@@ -42,6 +42,35 @@ account needs write access to the configuration directory (else `write_failed`, 
 with templates or native references answers `422 E_COMPOSITIONAL_ROOT`: use the file flow below. `config
 get` redacts RTMP token secrets, so never round-trip a configuration with RTMP services through `apply`.
 
+## Let machines register themselves
+
+A pool with a `registration` block (see [CONFIG_SPEC](../CONFIG_SPEC.md#dynamic-server-registration))
+accepts workers that announce themselves: no file edit, no new generation, no root token, no drain
+reset. Registrations are leases: a worker that stops renewing leaves rotation within its TTL, and
+everything it was serving finishes first.
+
+```sh
+# once, on the oxiroute host: a token for the workers of one pool
+oxiroute registry token create --tokens-file /etc/oxiroute/registry.tokens --id gpu-render --pool gpu-render
+
+# on a worker on the same host: the register socket needs no token
+oxiroute --socket /run/oxiroute/register.sock server register --pool gpu-render node-c \
+  --address 192.0.2.13:9000 --max-connections 1 --ttl 15s --heartbeat
+
+# on a LAN worker: the TCP endpoint with that token (mode 0600 file with the printed secret)
+oxiroute --endpoint http://192.0.2.5:9911 --token-file /etc/oxiroute/worker.token \
+  server register --pool gpu-render node-d --address 192.0.2.14:9000 --heartbeat
+
+# anyone in the status group: read-only, no sudo
+oxiroute --socket /run/oxiroute/status.sock server list --pool gpu-render
+```
+
+`--heartbeat` is the whole agent: a systemd unit running it registers at start, renews at a third
+of the TTL, registers again if the lease was lost, and on `SIGTERM` announces `draining` and
+deregisters. Operators drain a registered worker like any other (`server drain --pool P NAME`); the
+decision is stored with the registration, so it survives re-registration, reloads and restarts. A
+server in the configuration file wins over a registration of the same name or address.
+
 ## Remove a machine
 
 ```sh

@@ -15,6 +15,7 @@ impl Renderer {
             connection_reuse,
             resilience,
             queue,
+            registration,
         } = pool;
 
         self.string_field("name", name);
@@ -74,6 +75,7 @@ impl Renderer {
             self.pool_queue(queue);
             self.end_table();
         }
+        self.optional_table_field("registration", registration.as_ref(), Self::pool_registration);
         Ok(())
     }
 
@@ -190,6 +192,15 @@ impl Renderer {
             Some(HealthHttpVersion::Http11) => self.string_field("http_version", "1.1"),
             None => self.nil_field("http_version"),
         }
+    }
+
+    fn pool_registration(&mut self, registration: &PoolRegistration) {
+        self.integer_field("max_servers", registration.max_servers);
+        self.integer_field("min_ttl_ms", registration.min_ttl_ms);
+        self.integer_field("default_ttl_ms", registration.default_ttl_ms);
+        self.integer_field("max_ttl_ms", registration.max_ttl_ms);
+        self.string_list_or_nil_field("allowed_cidrs", &registration.allowed_cidrs);
+        self.boolean_field("require_peer_address", registration.require_peer_address);
     }
 
     fn pool_resilience(&mut self, resilience: &PoolResilience) {

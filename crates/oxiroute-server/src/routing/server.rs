@@ -28,6 +28,88 @@ impl Admission {
     }
 }
 
+/// Where a pool member comes from: the configuration file or a runtime registration.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerOrigin {
+    Static,
+    Dynamic,
+}
+
+/// Placement and balancing weight of a server that joins a pool at runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DynamicServer {
+    pub(crate) weight: u16,
+    /// Dynamic servers follow the static ones, ordered by priority and then by name.
+    pub(crate) priority: u16,
+}
+
+/// The servers of a pool, in rotation order. Replaced as a whole.
+#[derive(Debug)]
+pub(super) struct Membership {
+    pub(super) endpoints: Box<[Arc<PoolEndpoint>]>,
+}
+
+impl Membership {
+    pub(super) fn new(endpoints: Vec<Arc<PoolEndpoint>>) -> Self {
+        Self {
+            endpoints: endpoints.into_boxed_slice(),
+        }
+    }
+
+    pub(super) fn position(&self, name: &str) -> Option<usize> {
+        self.endpoints.iter().position(|server| server.name == name)
+    }
+
+    /// Where a dynamic server belongs: after every static one, by priority and then name.
+    pub(super) fn dynamic_position(&self, priority: u16, name: &str) -> usize {
+        let statics = self
+            .endpoints
+            .iter()
+            .take_while(|server| server.origin == ServerOrigin::Static)
+            .count();
+        statics
+            + self.endpoints[statics..].partition_point(|server| {
+                (server.priority(), server.name.as_str()) < (priority, name)
+            })
+    }
+}
+
+/// Why a server could not join, change or leave a pool.
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+pub enum PoolMembershipError {
+    #[error("the pool already has a server named `{0}`")]
+    DuplicateName(String),
+    #[error("the pool has no server named `{0}`")]
+    UnknownServer(String),
+    #[error(transparent)]
+    Invalid(#[from] PoolError),
+}
+
+/// Addresses one server of a pool without a position, so membership can change under it.
+#[derive(Clone, Debug)]
+pub(crate) struct ServerHandle(pub(super) Arc<PoolEndpoint>);
+
+impl PartialEq for ServerHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl ServerHandle {
+    pub(crate) fn state(&self) -> EndpointHealthState {
+        self.0.state()
+    }
+
+    pub(crate) fn checks_running(&self) -> bool {
+        self.0.checks_running()
+    }
+
+    pub(crate) fn passively_ejected(&self) -> bool {
+        self.0.passively_ejected_at(now_unix_ms())
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct PoolEndpoint {
     pub(super) active_work: AtomicU64,
@@ -39,13 +121,16 @@ pub(super) struct PoolEndpoint {
     pub(super) checks_enabled: AtomicBool,
     pub(super) health_override: AtomicU8,
     pub(super) endpoint: RuntimeEndpoint,
-    configured_max_connections: Option<u64>,
+    /// Zero means unlimited; registered servers may change it while they are members.
+    pub(super) configured_max_connections: AtomicU64,
     pub(super) max_connections_override: AtomicU64,
     pub(super) name: String,
     pinned_addresses: Option<RwLock<Arc<[SocketAddr]>>>,
     protected_addresses: Arc<[SocketAddr]>,
+    pub(super) origin: ServerOrigin,
+    pub(super) priority: AtomicU16,
     pub(super) state: AtomicU8,
-    configured_weight: u16,
+    configured_weight: AtomicU16,
     pub(super) weight_override: AtomicU16,
     pub(super) last_checked_at_unix_ms: AtomicU64,
     pub(super) last_transition_at_unix_ms: AtomicU64,
@@ -74,6 +159,8 @@ impl PoolEndpoint {
         server: RuntimeServer,
         startup: Option<HealthStartup>,
         weight: u16,
+        origin: ServerOrigin,
+        priority: u16,
         breaker_policy: Option<CircuitBreakerPolicy>,
     ) -> Self {
         let state = match startup {
@@ -91,13 +178,15 @@ impl PoolEndpoint {
             checks_enabled: AtomicBool::new(true),
             health_override: AtomicU8::new(HealthOverride::Auto as u8),
             endpoint: server.endpoint,
-            configured_max_connections: server.max_connections,
+            configured_max_connections: AtomicU64::new(server.max_connections.unwrap_or(0)),
             max_connections_override: AtomicU64::new(0),
             name: server.name,
             pinned_addresses: server.pinned_addresses.map(RwLock::new),
             protected_addresses: server.protected_addresses,
+            origin,
+            priority: AtomicU16::new(priority),
             state: AtomicU8::new(state as u8),
-            configured_weight: weight,
+            configured_weight: AtomicU16::new(weight),
             weight_override: AtomicU16::new(0),
             last_checked_at_unix_ms: AtomicU64::new(0),
             last_transition_at_unix_ms: AtomicU64::new(0),
@@ -180,9 +269,17 @@ impl PoolEndpoint {
             .is_none_or(|limit| self.active_work.load(Ordering::Acquire) < limit)
     }
 
+    pub(super) fn configured_weight(&self) -> u16 {
+        self.configured_weight.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_configured_weight(&self, weight: u16) {
+        self.configured_weight.store(weight, Ordering::Release);
+    }
+
     pub(super) fn weight(&self) -> u16 {
         match self.weight_override.load(Ordering::Acquire) {
-            0 => self.configured_weight,
+            0 => self.configured_weight(),
             weight => weight,
         }
     }
@@ -211,10 +308,18 @@ impl PoolEndpoint {
         HealthOverride::from_u8(self.health_override.load(Ordering::Acquire))
     }
 
+    fn configured_max_connections(&self) -> Option<u64> {
+        nonzero(self.configured_max_connections.load(Ordering::Acquire))
+    }
+
+    pub(super) fn priority(&self) -> u16 {
+        self.priority.load(Ordering::Acquire)
+    }
+
     /// The operator's limit: the runtime override, else the configured one.
     fn configured_limit(&self) -> Option<u64> {
         match self.max_connections_override.load(Ordering::Acquire) {
-            0 => self.configured_max_connections,
+            0 => self.configured_max_connections(),
             limit => Some(limit),
         }
     }
@@ -541,12 +646,13 @@ impl PoolEndpoint {
             address: self.endpoint.clone(),
             checks_enabled: self.checks_enabled.load(Ordering::Acquire),
             checks_running: self.checks_running(),
-            configured_max_connections: self.configured_max_connections,
+            configured_max_connections: self.configured_max_connections(),
             health_override: self.health_override(),
             max_connections: self.configured_limit(),
             name: self.name.clone(),
             state: self.state(),
-            configured_weight: self.configured_weight,
+            origin: self.origin,
+            configured_weight: self.configured_weight(),
             weight: self.weight(),
             last_checked_at_unix_ms: nonzero(self.last_checked_at_unix_ms.load(Ordering::Relaxed)),
             last_transition_at_unix_ms: nonzero(

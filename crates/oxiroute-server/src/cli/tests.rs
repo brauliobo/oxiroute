@@ -412,6 +412,87 @@ fn rejects_empty_batch_targets() {
 }
 
 #[test]
+fn parses_registration_commands_and_socket_endpoints() {
+    let cli = Cli::try_parse_from([
+        "oxiroute",
+        "--socket",
+        "/run/oxiroute/register.sock",
+        "server",
+        "register",
+        "--pool",
+        "voice",
+        "tts-1",
+        "--address",
+        "192.0.2.10:8000",
+        "--ttl",
+        "15s",
+        "--label",
+        "gpu=0",
+        "--heartbeat",
+    ])
+    .expect("CLI");
+    let Command::Server {
+        command: ServerCommand::Register(args),
+    } = cli.command()
+    else {
+        panic!("server register command")
+    };
+    assert_eq!(args.ttl, Some(Duration::from_secs(15)));
+    assert_eq!(args.labels, [("gpu".to_owned(), "0".to_owned())]);
+    assert!(args.heartbeat);
+    assert_eq!(
+        cli.socket.as_deref(),
+        Some(Path::new("/run/oxiroute/register.sock"))
+    );
+
+    assert!(
+        Endpoint::parse("unix:/run/oxiroute/read.sock").is_ok_and(|endpoint| endpoint.is_unix())
+    );
+    assert!(Endpoint::parse("unix:relative.sock").is_err());
+    assert_eq!(registry::parse_ttl("500ms"), Ok(Duration::from_millis(500)));
+    assert_eq!(registry::parse_ttl("2m"), Ok(Duration::from_secs(120)));
+    assert!(registry::parse_ttl("soon").is_err());
+}
+
+#[test]
+fn created_tokens_authenticate_once_and_ids_are_not_reused() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = tempfile::tempdir().expect("directory");
+    let file = directory.path().join("registry.tokens");
+    let pools = ["voice".to_owned(), "render".to_owned()];
+
+    let secret =
+        registry::create_token(&file, "agent-a", &pools, Some("gpu-"), false).expect("token");
+    let read = registry::create_token(&file, "dash", &[], None, true).expect("read token");
+
+    assert_eq!(
+        std::fs::metadata(&file).expect("file").permissions().mode() & 0o777,
+        0o640
+    );
+    let text = std::fs::read_to_string(&file).expect("tokens");
+    assert!(!text.contains(&secret), "only the digest is stored");
+    let store = crate::registry::auth::TokenStore::open(&file).expect("store");
+    assert_eq!(
+        store
+            .authenticate(secret.as_bytes())
+            .map(|principal| principal.scope),
+        Some(crate::registry::auth::Scope::Register {
+            pools: pools.to_vec(),
+            name_prefix: Some("gpu-".into()),
+        })
+    );
+    assert_eq!(
+        store
+            .authenticate(read.as_bytes())
+            .map(|principal| principal.scope),
+        Some(crate::registry::auth::Scope::Read)
+    );
+    assert!(registry::create_token(&file, "agent-a", &pools, None, false).is_err());
+    assert!(registry::create_token(&file, "bad id", &pools, None, false).is_err());
+}
+
+#[test]
 fn requests_list_builds_one_filtered_query() {
     let cli = Cli::try_parse_from([
         "oxiroute",

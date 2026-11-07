@@ -40,9 +40,6 @@ impl PoolConstructionBlueprint {
         readmission: Option<&Readmission>,
         queue: Option<&PoolQueuePolicy>,
     ) -> Result<Self, PoolError> {
-        if endpoint_count == 0 {
-            return Err(PoolError::Empty);
-        }
         let weights = effective_weights(algorithm, endpoint_count)?.into_boxed_slice();
         Ok(Self {
             algorithm: algorithm.clone(),

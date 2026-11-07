@@ -35,8 +35,8 @@ struct Sample {
 #[derive(Debug, Default)]
 struct Observations {
     evaluated_at_ms: u64,
-    /// Per route, one sample per server in pool order; routes are bounded by the configuration.
-    routes: HashMap<String, Vec<Sample>>,
+    /// Per route, the average of each server by name; routes are bounded by the configuration.
+    routes: HashMap<String, HashMap<String, Sample>>,
 }
 
 /// Moving average of the time to first byte per route and server, judged once per interval.
@@ -46,25 +46,27 @@ pub(super) struct OutlierDetector {
 }
 
 impl OutlierDetector {
-    /// Records one response time and returns the servers found to be outliers when the interval ended.
+    /// Records one response time. When the interval ended, returns the outliers among `members`,
+    /// worst first, and forgets servers that left the pool.
     pub(super) fn record(
         &self,
         route: &str,
-        server: usize,
-        servers: usize,
+        server: &str,
+        members: &[&str],
         elapsed_ms: f64,
         now_unix_ms: u64,
         policy: OutlierPolicy,
-    ) -> Vec<usize> {
+    ) -> Vec<String> {
         let mut observations = self
             .observations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let samples = observations
+        let sample = observations
             .routes
             .entry(route.to_owned())
-            .or_insert_with(|| vec![Sample::default(); servers]);
-        let sample = &mut samples[server];
+            .or_default()
+            .entry(server.to_owned())
+            .or_default();
         sample.ewma_ms = if sample.count == 0 && sample.ewma_ms == 0.0 {
             elapsed_ms
         } else {
@@ -80,50 +82,52 @@ impl OutlierDetector {
             return Vec::new();
         }
         observations.evaluated_at_ms = now_unix_ms;
-        let outliers = observations
+        let mut outliers = observations
             .routes
             .values_mut()
-            .flat_map(|samples| judge(samples, policy))
+            .flat_map(|samples| {
+                samples.retain(|name, _| members.contains(&name.as_str()));
+                judge(samples, policy)
+            })
             .collect::<Vec<_>>();
+        outliers.sort_by(|a, b| b.0.total_cmp(&a.0));
         outliers.into_iter().map(|(_, server)| server).collect()
     }
 
     /// Forgets a server's averages, so an ejected server is judged afresh after it returns.
-    pub(super) fn forget(&self, server: usize) {
+    pub(super) fn forget(&self, server: &str) {
         let mut observations = self
             .observations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for samples in observations.routes.values_mut() {
-            samples[server] = Sample::default();
+            samples.remove(server);
         }
     }
 }
 
-/// The servers of one route above `factor` times the median of their peers, worst first, and the
-/// start of a new window.
-fn judge(samples: &mut [Sample], policy: OutlierPolicy) -> Vec<(f64, usize)> {
+/// The servers of one route above `factor` times the median of their peers, and the start of a
+/// new window.
+fn judge(samples: &mut HashMap<String, Sample>, policy: OutlierPolicy) -> Vec<(f64, String)> {
     let judged = samples
         .iter()
-        .enumerate()
         .filter(|(_, sample)| sample.count >= policy.min_samples)
-        .map(|(index, sample)| (index, sample.ewma_ms))
+        .map(|(name, sample)| (name.clone(), sample.ewma_ms))
         .collect::<Vec<_>>();
-    let mut outliers = judged
+    let outliers = judged
         .iter()
-        .filter_map(|(index, ewma)| {
+        .filter_map(|(name, ewma)| {
             let mut peers = judged
                 .iter()
-                .filter(|(other, _)| other != index)
+                .filter(|(other, _)| other != name)
                 .map(|(_, ewma)| *ewma)
                 .collect::<Vec<_>>();
             let median = median(&mut peers)?;
             let ratio = ewma / median.max(f64::EPSILON);
-            (ratio * 100.0 > f64::from(policy.factor_percent)).then_some((ratio, *index))
+            (ratio * 100.0 > f64::from(policy.factor_percent)).then(|| (ratio, name.clone()))
         })
-        .collect::<Vec<_>>();
-    outliers.sort_by(|a, b| b.0.total_cmp(&a.0));
-    for sample in samples {
+        .collect();
+    for sample in samples.values_mut() {
         sample.count = 0;
     }
     outliers

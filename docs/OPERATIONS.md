@@ -215,6 +215,20 @@ and re-protocoling traffic, management, statistics, statistics-page, UDP, and HT
 changing a listener's TLS profile. Since 0.5.3 a supervised reload no longer retains the old
 revision for a listener change.
 
+### Server registration
+
+Pools with `registration` take servers at runtime. The registry keeps them in
+`registry.state_dir/registrations.json` (atomic writes, a `.bak` copy, an exclusive lock); a lease is
+an in-memory deadline, so every registration gets a full TTL when a process starts and heartbeats
+write nothing. In supervised mode the active worker persists and expires; every worker, including
+a draining one, follows the store, and a retired worker answers writes with `409 generation_inactive`
+and closes the connection so clients reconnect. The group sockets are bound privately and renamed
+into place, so a replacement worker takes over a path atomically; keep their directory owned by
+the service user (a setgid runtime directory gives the group). If the store cannot be written the
+registry reports `registry_unavailable`, keeps serving the members it has and retries.
+`oxiroute_registry_*` metrics cover members by state, operations, expiries, refusals and the lease
+time left of each server, and joins, changes, departures and expiries are `server_update` events.
+
 ### Listener changes on reload
 
 A reload compares the sockets of the running revision with those of the new one. A socket is

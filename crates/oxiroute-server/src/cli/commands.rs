@@ -2,8 +2,11 @@
 use super::*;
 
 pub(super) fn run(cli: &Cli) -> Result<(), CliError> {
-    let endpoint = Endpoint::parse(&cli.endpoint)?;
-    let token = if command_requires_token(cli.command()) {
+    let endpoint = match &cli.socket {
+        Some(path) => Endpoint::unix(&path.to_string_lossy())?,
+        None => Endpoint::parse(&cli.endpoint)?,
+    };
+    let token = if command_requires_token(cli.command()) && !endpoint.is_unix() {
         let configured_token_file = std::env::var_os(MANAGEMENT_TOKEN_ENV);
         resolve_token_path(
             cli.token_file.as_deref(),
@@ -56,8 +59,32 @@ fn execute(cli: &Cli, client: &Client) -> Result<FollowOutcome, CliError> {
         } => return Ok(FollowOutcome::Follow),
         Command::Requests { command } => (client.get(&requests_path(command), true)?, None),
         Command::Server {
-            command: ServerCommand::List,
-        } => (client.get("/api/v1/servers", true)?, None),
+            command: ServerCommand::List { pool, origin },
+        } => (
+            registry::list(client, pool.as_deref())?,
+            origin.map(Selection::Origin),
+        ),
+        Command::Server {
+            command: ServerCommand::Register(args),
+        } => {
+            let registered = registry::register(client, args)?;
+            if args.heartbeat {
+                registry::keep_registered(cli, client, args, &registered)?;
+                return Ok(FollowOutcome::Complete);
+            }
+            (registered, None)
+        }
+        Command::Server {
+            command:
+                ServerCommand::Deregister {
+                    pool,
+                    server,
+                    missing_ok,
+                },
+        } => (
+            registry::deregister(client, pool, server, *missing_ok)?,
+            None,
+        ),
         Command::Server {
             command: ServerCommand::Show(target),
         } => (
@@ -329,6 +356,7 @@ fn execute(cli: &Cli, client: &Client) -> Result<FollowOutcome, CliError> {
         Command::Serve { .. }
         | Command::Import { .. }
         | Command::Version
+        | Command::Registry { .. }
         | Command::Config {
             command: ConfigCommand::Check { .. } | ConfigCommand::Compose { .. },
         } => {
@@ -477,6 +505,7 @@ impl HealthValue {
 }
 
 enum Selection<'a> {
+    Origin(OriginFilter),
     Server(&'a ServerTarget),
     Pool(&'a str),
     Listener(&'a str),
@@ -485,6 +514,26 @@ enum Selection<'a> {
 impl Selection<'_> {
     fn apply(self, mut value: Value) -> Result<Value, CliError> {
         match self {
+            Self::Origin(origin) => {
+                let wanted = if origin == OriginFilter::Static {
+                    "static"
+                } else {
+                    "dynamic"
+                };
+                let servers = value
+                    .get_mut("servers")
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| {
+                        CliError::Local("server response has no servers array".into())
+                    })?;
+                servers.retain(|entry| {
+                    entry
+                        .pointer("/origin")
+                        .or_else(|| entry.pointer("/server/origin"))
+                        .and_then(Value::as_str)
+                        == Some(wanted)
+                });
+            }
             Self::Server(target) => {
                 let servers = value
                     .get_mut("servers")

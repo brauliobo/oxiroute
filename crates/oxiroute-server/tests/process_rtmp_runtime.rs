@@ -646,6 +646,7 @@ fn runtime_config(
             bind: management_address,
             ui_dir: None,
         }),
+        registry: None,
         stats: None,
         listeners: vec![Listener {
             name: "wire-rtmp".into(),
@@ -683,6 +684,7 @@ fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr)
             bind: management_address,
             ui_dir: None,
         }),
+        registry: None,
         stats: None,
         listeners: vec![Listener {
             name: "timer-rtmp".into(),
@@ -787,6 +789,7 @@ fn handoff_runtime_config(
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Safe,
+            registration: None,
             resilience: oxiroute_config::PoolResilience::default(),
             queue: None,
         }],

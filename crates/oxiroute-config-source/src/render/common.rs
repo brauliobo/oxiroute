@@ -16,6 +16,7 @@ impl Renderer {
             max_connections,
             retirement,
             management,
+            registry,
             stats,
             certificates,
             tls_profiles,
@@ -37,6 +38,7 @@ impl Renderer {
         }
         self.optional_table_field("retirement", retirement.as_ref(), Self::retirement);
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;
+        self.fallible_optional_table_field("registry", registry.as_ref(), Self::registry)?;
         self.fallible_optional_table_field("stats", stats.as_ref(), Self::stats)?;
         self.fallible_table_list_field("certificates", certificates, Self::certificate)?;
         self.table_list_field("tls_profiles", tls_profiles, Self::tls_profile);
@@ -73,6 +75,43 @@ impl Renderer {
                 );
             }
             None => self.nil_field("ui_dir"),
+        }
+        Ok(())
+    }
+
+    fn registry(&mut self, registry: &Registry) -> Result<(), ConfigError> {
+        let Registry { state_dir, tokens_file, endpoints } = registry;
+
+        self.string_field("state_dir", utf8_path(state_dir, "registry", "registry", "state_dir")?);
+        match tokens_file {
+            Some(path) => {
+                self.string_field("tokens_file", utf8_path(path, "registry", "registry", "tokens_file")?);
+            }
+            None => self.nil_field("tokens_file"),
+        }
+        self.fallible_table_list_field("endpoints", endpoints, Self::registry_endpoint)
+    }
+
+    fn registry_endpoint(&mut self, endpoint: &RegistryEndpoint) -> Result<(), ConfigError> {
+        match endpoint {
+            RegistryEndpoint::Unix { path, mode, role, pools } => {
+                self.string_field("type", "unix");
+                self.string_field("path", utf8_path(path, "registry", "registry", "endpoints")?);
+                self.integer_field("mode", mode);
+                self.string_field(
+                    "role",
+                    match role {
+                        RegistryRole::Read => "read",
+                        RegistryRole::Register => "register",
+                    },
+                );
+                self.string_list_or_nil_field("pools", pools);
+            }
+            RegistryEndpoint::Tcp { bind, allow_cidrs } => {
+                self.string_field("type", "tcp");
+                self.string_field("bind", &bind.to_string());
+                self.string_list_or_nil_field("allow_cidrs", allow_cidrs);
+            }
         }
         Ok(())
     }

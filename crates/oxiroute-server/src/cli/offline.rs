@@ -22,6 +22,22 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
         Command::Config {
             command: ConfigCommand::Compose { format, configs },
         } => Ok(Some(compose_config_files(configs, (*format).into())?)),
+        Command::Registry {
+            command:
+                RegistryCommand::Token {
+                    command:
+                        RegistryTokenCommand::Create {
+                            tokens_file,
+                            id,
+                            pools,
+                            name_prefix,
+                            read,
+                        },
+                },
+        } => Ok(Some(format!(
+            "{}\n",
+            registry::create_token(tokens_file, id, pools, name_prefix.as_deref(), *read)?
+        ))),
         Command::Import {
             command:
                 ImportCommand::Nginx {

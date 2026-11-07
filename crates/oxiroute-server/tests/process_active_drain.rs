@@ -661,6 +661,7 @@ fn tcp_config(
             connect_timeout_ms: Some(1_000),
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::default(),
+            registration: None,
             resilience: oxiroute_config::PoolResilience::default(),
             queue: None,
         }],

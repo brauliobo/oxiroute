@@ -125,6 +125,7 @@ fn main() -> ExitCode {
             }
         }
         Command::Import { .. }
+        | Command::Registry { .. }
         | Command::Version
         | Command::Config {
             command: ConfigCommand::Check { .. } | ConfigCommand::Compose { .. },

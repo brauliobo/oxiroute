@@ -72,7 +72,7 @@ fn passive_ejection_is_deterministic_and_active_health_reentry_preserves_weighti
         .collect::<Vec<_>>();
     assert!(selected_while_ejected.iter().all(|name| name == "backup"));
 
-    pool.record_health(0, true, None, Some(base + 10), 1, 1);
+    pool.record_health(&pool.handle(0), true, None, Some(base + 10), 1, 1);
     let recovered = pool.health_snapshot();
     assert!(!recovered.endpoints[0].passive_ejected);
     assert_eq!(recovered.endpoints[0].passive_recovery_count, 1);
@@ -109,7 +109,7 @@ fn passive_ejection_backoff_is_bounded_and_active_failures_are_not_double_counte
     let base = now_unix_ms();
 
     pool.record_health(
-        0,
+        &pool.handle(0),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(base.saturating_sub(500)),

@@ -19,18 +19,18 @@ fn checked_endpoints_transition_through_thresholds() {
         EndpointHealthState::Unknown
     );
 
-    pool.record_health(0, true, None, Some(100), 2, 2);
+    pool.record_health(&pool.handle(0), true, None, Some(100), 2, 2);
     assert!(
         !pool.has_available(),
         "one success remains below startup threshold"
     );
-    pool.record_health(0, true, None, Some(150), 2, 2);
+    pool.record_health(&pool.handle(0), true, None, Some(150), 2, 2);
     assert!(
         pool.has_available(),
         "the startup threshold establishes state"
     );
     pool.record_health(
-        0,
+        &pool.handle(0),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(200),
@@ -39,7 +39,7 @@ fn checked_endpoints_transition_through_thresholds() {
     );
     assert!(pool.has_available(), "one failure remains below threshold");
     pool.record_health(
-        0,
+        &pool.handle(0),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(300),
@@ -50,12 +50,12 @@ fn checked_endpoints_transition_through_thresholds() {
         !pool.has_available(),
         "the failure threshold removes the endpoint"
     );
-    pool.record_health(0, true, None, Some(400), 2, 2);
+    pool.record_health(&pool.handle(0), true, None, Some(400), 2, 2);
     assert!(
         !pool.has_available(),
         "one success remains below recovery threshold"
     );
-    pool.record_health(0, true, None, Some(500), 2, 2);
+    pool.record_health(&pool.handle(0), true, None, Some(500), 2, 2);
     assert!(
         pool.has_available(),
         "the recovery threshold restores the endpoint"
@@ -111,19 +111,24 @@ fn health_counters_serialize_without_losing_u64_precision() {
     .expect("checked pool");
     pool.unavailable_selections
         .store(u64::MAX, Ordering::Relaxed);
-    pool.endpoints[0]
+    pool.handle(0)
+        .0
         .active_work
         .store(u64::MAX, Ordering::Relaxed);
-    pool.endpoints[0]
+    pool.handle(0)
+        .0
         .successful_checks
         .store(u64::MAX, Ordering::Relaxed);
-    pool.endpoints[0]
+    pool.handle(0)
+        .0
         .failed_checks
         .store(u64::MAX, Ordering::Relaxed);
-    pool.endpoints[0]
+    pool.handle(0)
+        .0
         .consecutive_successes
         .store(u64::MAX, Ordering::Relaxed);
-    pool.endpoints[0]
+    pool.handle(0)
+        .0
         .consecutive_failures
         .store(u64::MAX, Ordering::Relaxed);
 
@@ -166,16 +171,20 @@ fn health_snapshot_waits_for_a_complete_observation() {
     barrier.wait();
     assert!(snapshot_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
-    pool.endpoints[0]
+    pool.handle(0)
+        .0
         .state
         .store(EndpointHealthState::Healthy as u8, Ordering::Relaxed);
-    pool.endpoints[0]
+    pool.handle(0)
+        .0
         .last_checked_at_unix_ms
         .store(100, Ordering::Relaxed);
-    pool.endpoints[0]
+    pool.handle(0)
+        .0
         .last_transition_at_unix_ms
         .store(100, Ordering::Relaxed);
-    pool.endpoints[0]
+    pool.handle(0)
+        .0
         .successful_checks
         .store(1, Ordering::Relaxed);
     pool.health.health_version.store(2, Ordering::Release);

@@ -133,12 +133,52 @@ A pool keeps serving when health checks or passive ejection would otherwise take
   change a server weight (1 to 100) at runtime; like the other overrides it follows the server by
   pool and server name through reloads.
 
+## Dynamic server registration
+
+- Workers can join and leave a pool on their own. A pool opts in with `registration` (limits,
+  TTL bounds, allowed address ranges) and the new process-level `registry` block names the store,
+  the scoped tokens file and the endpoints. A registration is a lease: `PUT
+  /api/v1/pools/{pool}/servers/{name}`, a heartbeat before it runs out, `DELETE` to leave. A
+  worker that goes silent leaves rotation within its TTL and the requests it holds finish. No
+  configuration write, no generation, no drain reset, no root token.
+- Access without the root token: group-permission unix sockets (`read` for status without `sudo`,
+  `register` limited to named pools, access is the file mode) and a TCP endpoint for LAN workers
+  with per-pool scoped tokens, a peer address allow list, a 4 KiB body limit and a rate limit.
+  Registered addresses are checked against the pool's `allowed_cidrs` and never point at an
+  OxiRoute listener.
+- Registrations live in a persisted store outside the configuration file. They survive restarts,
+  `config apply`, rollback and supervised worker replacement; static servers win over a registration
+  of the same name or address; an operator's drain, maintenance, weight and capacity choices for a
+  registered server are kept like those of a configured one (the drain is also stored, so it
+  survives restarts).
+- The same model serves any pool: a voice or LLM pool registers exactly like a render pool, with
+  its own tokens and limits.
+- Health checks, ejection, the circuit breaker, queues and metrics treat registered servers like
+  configured ones. Server inventory, pool view and topology report `origin`; new
+  `oxiroute_registry_*` series and `server_update` events report registrations, expiries and
+  refusals.
+- New CLI: `oxiroute server register|deregister`, `server list --pool P --origin static|dynamic`,
+  `--socket PATH` or `OXIROUTE_ENDPOINT=unix:/path`, and `oxiroute registry token create`.
+  `server register --heartbeat` is a complete agent for a systemd unit.
+- Evaluated and not built: merging an overlay or an include directory into each candidate
+  configuration, which costs one generation (0.5 to 2.5 s, a new worker process, reset drain state
+  and counters) per membership change. The registry updates live pools in place instead, and the
+  configuration file, its revisions and `config apply` never see registered servers.
+- Contracts: `contracts/registry.openapi.json` (new) and `contracts/control-plane.openapi.json`
+  (`origin` on the server inventory).
+
 ## Operational Notes
 
 Fail-open applies to HTTP and L4 pools alike. Alerting on `oxiroute_pool_available_servers == 0`
 keeps working: the strict count does not include failed-open servers.
 
 ## Upgrade notes
+
+- The canonical form of every configuration now includes an empty `registry` entry, so effective
+  revisions change once on upgrade.
+- A configuration that uses `registry` or `registration` must drop them before rolling back,
+  because the previous release rejects unknown fields; registrations stay in `state_dir` and
+  return when the pool opts in again.
 
 - Weighted round-robin selection order changed (smooth instead of clumped); the share per server is
   the same.

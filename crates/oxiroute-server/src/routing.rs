@@ -13,6 +13,7 @@ use std::{
 };
 
 use crate::health::ReadmissionProbe;
+use arc_swap::ArcSwap;
 use http::{
     HeaderMap, Method, Uri,
     uri::{Authority, PathAndQuery},
@@ -57,7 +58,10 @@ use queue_wait::{WaitLedger, WaitTicket};
 pub use route::*;
 pub use schedule::QueueTag;
 use schedule::{QueueSchedule, WaitQueue};
+pub use server::ServerOrigin;
 pub(crate) use server::*;
 
+#[cfg(test)]
+mod membership_tests;
 #[cfg(test)]
 mod tests;
