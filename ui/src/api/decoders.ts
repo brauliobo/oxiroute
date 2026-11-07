@@ -83,7 +83,8 @@ export function monitoringPoolEndpoint(value: unknown): value is MonitoringPoolE
     decimalString(value.consecutiveSuccesses) && decimalString(value.consecutiveFailures) &&
     (value.lastFailure === null || (typeof value.lastFailure === 'string' &&
       ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error'].includes(value.lastFailure))) &&
-    safeInteger(value.weight) && typeof value.passiveEjected === 'boolean' &&
+    safeInteger(value.weight) && (value.origin === 'static' || value.origin === 'dynamic') &&
+    typeof value.passiveEjected === 'boolean' &&
     decimalString(value.passiveFailureCount) && decimalString(value.passiveConsecutiveFailures) &&
     decimalString(value.passiveEjectionCount) &&
     (value.passiveEjectionReason === null || (typeof value.passiveEjectionReason === 'string' &&
