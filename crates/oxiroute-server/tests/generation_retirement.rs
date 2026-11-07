@@ -139,3 +139,70 @@ fn the_deadline_follows_the_retiring_generations_own_config() {
     let remaining = manager.status().retired_generations[0].deadline_remaining_seconds;
     assert!((55..=60).contains(&remaining), "{remaining}");
 }
+
+#[test]
+fn a_generation_past_its_deadline_is_closed_once_and_counted() {
+    let manager = GenerationManager::new();
+    let first = activate(&manager, 1, &limited(1_000, 4));
+    let request = hold(&first, RuntimeReferenceKind::WebSocket);
+    activate(&manager, 2, &config(None));
+
+    assert!(manager.expire_retired().is_empty(), "before the deadline");
+    thread::sleep(Duration::from_millis(1_100));
+    let expired = manager.expire_retired();
+    assert_eq!(expired.len(), 1);
+    assert!(Arc::ptr_eq(&expired[0], &first));
+    assert!(
+        manager.expire_retired().is_empty(),
+        "each generation is closed once"
+    );
+    assert_eq!(
+        manager.status().retired_generations[0].state.as_str(),
+        "closing"
+    );
+    assert_eq!(manager.retirement_counters().forced_close_drain_deadline, 1);
+
+    drop(request);
+    assert!(manager.status().retired_generations.is_empty());
+}
+
+#[test]
+fn a_full_registry_defers_the_next_apply_until_a_slot_frees() {
+    let manager = GenerationManager::new();
+    let first = activate(&manager, 1, &limited(3_600_000, 1));
+    let request = hold(&first, RuntimeReferenceKind::Http1);
+    activate(&manager, 2, &limited(3_600_000, 1));
+    let next = candidate(&manager, 3, &limited(3_600_000, 1));
+
+    assert!(manager.defer_for_retired_cap(&next));
+    assert!(manager.defer_for_retired_cap(&next));
+    let pending = manager.status().pending_apply.expect("pending apply");
+    assert_eq!(pending.revision, next.revision().candidate);
+    assert_eq!(pending.reason, "retired_cap");
+    assert_eq!(
+        manager.retirement_counters().cap_deferrals,
+        1,
+        "once per revision"
+    );
+
+    drop(request);
+    assert!(!manager.defer_for_retired_cap(&next));
+    assert!(manager.status().pending_apply.is_none());
+}
+
+#[test]
+fn the_cap_comes_from_the_candidate_and_defaults_to_four() {
+    let manager = GenerationManager::new();
+    let mut held = Vec::new();
+    for sequence in 1..=4 {
+        let generation = activate(&manager, sequence, &config(None));
+        held.push(hold(&generation, RuntimeReferenceKind::Http1));
+    }
+    let next = candidate(&manager, 5, &config(None));
+    assert!(!manager.defer_for_retired_cap(&next), "three are retired");
+    activate(&manager, 5, &config(None));
+    let next = candidate(&manager, 6, &config(None));
+    assert!(manager.defer_for_retired_cap(&next), "four are retired");
+    let raised = candidate(&manager, 7, &limited(3_600_000, 5));
+    assert!(!manager.defer_for_retired_cap(&raised));
+}
