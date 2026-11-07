@@ -179,6 +179,7 @@ fn udp_config(
             connect_timeout_ms: Some(1_000),
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::default(),
+            resilience: oxiroute_config::PoolResilience::default(),
         }],
         l4_services: vec![L4Service {
             name: "relay".into(),

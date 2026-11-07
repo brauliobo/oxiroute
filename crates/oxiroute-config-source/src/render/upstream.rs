@@ -13,6 +13,7 @@ impl Renderer {
             connect_timeout_ms,
             server_timeout_ms,
             connection_reuse,
+            resilience,
         } = pool;
 
         self.string_field("name", name);
@@ -61,6 +62,9 @@ impl Renderer {
                 UpstreamConnectionReuse::Always => "always",
             },
         );
+        self.begin_table_field("resilience");
+        self.pool_resilience(resilience);
+        self.end_table();
         Ok(())
     }
 
@@ -158,6 +162,10 @@ impl Renderer {
             Some(HealthHttpVersion::Http11) => self.string_field("http_version", "1.1"),
             None => self.nil_field("http_version"),
         }
+    }
+
+    fn pool_resilience(&mut self, resilience: &PoolResilience) {
+        self.boolean_field("fail_open", resilience.fail_open);
     }
 
     fn passive_health(&mut self, policy: &PassiveHealthPolicy) {

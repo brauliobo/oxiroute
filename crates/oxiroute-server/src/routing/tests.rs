@@ -2028,3 +2028,214 @@ fn health_snapshot_waits_for_a_complete_observation() {
     assert_eq!(snapshot.endpoints[0].last_transition_at_unix_ms, Some(100));
     assert_eq!(snapshot.endpoints[0].successful_checks, 1);
 }
+
+fn fail_open_pool(servers: &[(&str, Option<u64>)], algorithm: UpstreamAlgorithm) -> EndpointPool {
+    EndpointPool::new_named_servers_resilient(
+        "fail-open".into(),
+        servers
+            .iter()
+            .zip(3000..)
+            .map(|((name, max), port)| runtime_server(name, port, *max)),
+        algorithm,
+        Some(HealthStartup::Healthy),
+        None,
+        PassiveFailurePolicy::new(1, Duration::from_mins(1), Duration::from_mins(2)),
+        PoolResiliencePolicy { fail_open: true },
+    )
+    .expect("fail-open pool")
+}
+
+fn mark_unhealthy(pool: &EndpointPool, index: usize, failed_checks: u64) {
+    for _ in 0..failed_checks {
+        pool.record_health(
+            index,
+            false,
+            Some(HealthFailure::UnexpectedStatus),
+            None,
+            1,
+            1,
+        );
+    }
+}
+
+#[test]
+fn fail_open_is_off_by_default_so_unhealthy_pools_stay_unavailable() {
+    let pool = RoundRobinPool::new_named_servers(
+        "closed".into(),
+        [runtime_server("only", 3000, None)],
+        UpstreamAlgorithm::First,
+        Some(HealthStartup::Healthy),
+        None,
+    )
+    .expect("pool");
+    mark_unhealthy(&pool, 0, 1);
+
+    assert!(pool.select().is_none());
+    assert!(pool.select_connection_target_excluding(&[]).is_none());
+    let snapshot = pool.health_snapshot();
+    assert_eq!(snapshot.unavailable_selections, 2);
+    assert_eq!(snapshot.fail_open_selections, 0);
+}
+
+#[test]
+fn fail_open_serves_the_only_unhealthy_member() {
+    let pool = fail_open_pool(&[("only", None)], UpstreamAlgorithm::First);
+    mark_unhealthy(&pool, 0, 3);
+
+    let lease = pool.select().expect("fail-open lease");
+
+    assert_eq!(lease.server_name(), "only");
+    let snapshot = pool.health_snapshot();
+    assert_eq!(snapshot.available_endpoints, 0);
+    assert_eq!(snapshot.unavailable_selections, 0);
+    assert_eq!(snapshot.fail_open_selections, 1);
+    assert_eq!(snapshot.endpoints[0].active_connections, 1);
+}
+
+#[test]
+fn fail_open_leaves_normal_selection_alone_while_a_member_is_selectable() {
+    let pool = fail_open_pool(&[("a", None), ("b", None)], UpstreamAlgorithm::First);
+    mark_unhealthy(&pool, 0, 1);
+
+    assert_eq!(pool.select().expect("lease").server_name(), "b");
+    assert_eq!(pool.health_snapshot().fail_open_selections, 0);
+}
+
+#[test]
+fn fail_open_prefers_healthy_ejected_soonest_then_fewest_failed_checks() {
+    let pool = fail_open_pool(
+        &[
+            ("flaky", None),
+            ("down", None),
+            ("ejected-late", None),
+            ("ejected-soon", None),
+        ],
+        UpstreamAlgorithm::RoundRobin,
+    );
+    let base = now_unix_ms();
+    mark_unhealthy(&pool, 0, 2);
+    mark_unhealthy(&pool, 1, 5);
+    pool.record_passive_failure_at(2, HealthFailure::Timeout, base + 5_000);
+    pool.record_passive_failure_at(3, HealthFailure::Timeout, base);
+
+    let order = (1..=4)
+        .scan(Vec::<String>::new(), |excluded, _| {
+            let lease = pool.select_server_excluding(excluded).lease?;
+            excluded.push(lease.server_name().to_owned());
+            Some(lease.server_name().to_owned())
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(order, ["ejected-soon", "ejected-late", "flaky", "down"]);
+    assert_eq!(pool.health_snapshot().fail_open_selections, 4);
+}
+
+#[test]
+fn fail_open_honours_drain_maintenance_and_forced_down() {
+    let pool = fail_open_pool(
+        &[
+            ("drained", None),
+            ("maintained", None),
+            ("forced", None),
+            ("sick", None),
+        ],
+        UpstreamAlgorithm::First,
+    );
+    for index in 0..4 {
+        mark_unhealthy(&pool, index, 1);
+    }
+    pool.set_server_administrative_state("drained", AdministrativeState::Drain)
+        .expect("drain");
+    pool.set_server_administrative_state("maintained", AdministrativeState::Maintenance)
+        .expect("maintenance");
+    pool.set_server_health_override("forced", HealthOverride::Down)
+        .expect("override");
+
+    let lease = pool.select().expect("only the sick member is eligible");
+    assert_eq!(lease.server_name(), "sick");
+    drop(lease);
+
+    pool.set_server_administrative_state("sick", AdministrativeState::Drain)
+        .expect("drain");
+    assert!(pool.select().is_none());
+    assert_eq!(pool.health_snapshot().unavailable_selections, 1);
+}
+
+#[test]
+fn fail_open_respects_max_connections() {
+    let pool = fail_open_pool(&[("only", Some(1))], UpstreamAlgorithm::First);
+    mark_unhealthy(&pool, 0, 1);
+
+    let held = pool.select().expect("first lease");
+
+    assert!(pool.select().is_none(), "capacity still applies");
+    drop(held);
+    assert!(pool.select().is_some());
+}
+
+#[tokio::test]
+async fn fail_open_queues_for_capacity_like_a_healthy_pool() {
+    let pool = Arc::new(
+        EndpointPool::new_named_servers_resilient(
+            "fail-open-queue".into(),
+            [runtime_server("only", 3000, Some(1))],
+            UpstreamAlgorithm::First,
+            Some(HealthStartup::Healthy),
+            Some(Duration::from_secs(2)),
+            PassiveFailurePolicy::default(),
+            PoolResiliencePolicy { fail_open: true },
+        )
+        .expect("pool"),
+    );
+    mark_unhealthy(&pool, 0, 1);
+    let held = pool.select_wait().await.expect("first lease");
+    let waiter = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move {
+            pool.select_wait()
+                .await
+                .map(|lease| lease.server_name().to_owned())
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    drop(held);
+
+    assert_eq!(waiter.await.expect("waiter").as_deref(), Some("only"));
+}
+
+#[test]
+fn fail_open_connection_targets_acquire_capacity_while_failing_open() {
+    let pool = fail_open_pool(&[("only", Some(1))], UpstreamAlgorithm::First);
+    mark_unhealthy(&pool, 0, 1);
+
+    let lease = pool
+        .select_connection_target_excluding(&[])
+        .expect("pending lease");
+    let lifetime = Arc::clone(&lease.inner);
+
+    assert!(lifetime.try_acquire().expect("acquire"));
+    assert_eq!(pool.health_snapshot().endpoints[0].active_connections, 1);
+    assert_eq!(pool.health_snapshot().fail_open_selections, 1);
+    assert!(pool.select_server_connection_target("only").is_some());
+}
+
+#[test]
+fn fail_open_counts_a_server_as_unattempted_only_once() {
+    let pool = fail_open_pool(&[("a", None), ("b", None)], UpstreamAlgorithm::First);
+    mark_unhealthy(&pool, 0, 1);
+    mark_unhealthy(&pool, 1, 1);
+
+    assert!(pool.has_unattempted_servers(&["a".to_owned()]));
+    assert!(!pool.has_unattempted_servers(&["a".to_owned(), "b".to_owned()]));
+    let closed = RoundRobinPool::new_named_servers(
+        "closed".into(),
+        [runtime_server("a", 3000, None)],
+        UpstreamAlgorithm::First,
+        Some(HealthStartup::Healthy),
+        None,
+    )
+    .expect("pool");
+    mark_unhealthy(&closed, 0, 1);
+    assert!(!closed.has_unattempted_servers(&[]));
+}

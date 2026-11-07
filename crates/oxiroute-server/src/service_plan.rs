@@ -793,6 +793,7 @@ fn compile_pools(
             pool.health.as_ref().map(|health| health.startup),
             pool.queue_timeout,
             passive_policy,
+            pool.resilience,
             &pool.construction,
         ));
         let tls = pool

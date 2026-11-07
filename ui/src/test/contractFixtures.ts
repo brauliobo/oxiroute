@@ -220,6 +220,7 @@ export function contractMonitoring(): MonitoringSnapshot {
       availableEndpoints: 1,
       totalEndpoints: 2,
       unavailableSelections: '18446744073709551615',
+      failOpenSelections: '0',
       queued: 2,
       queuedTotal: '7',
       queueTimeouts: '1',
@@ -596,6 +597,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
     connect_timeout_ms: null,
     server_timeout_ms: null,
     connection_reuse: 'safe',
+    resilience: { fail_open: false },
   }]
   snapshot.config.http_services = [{
     name: 'web',

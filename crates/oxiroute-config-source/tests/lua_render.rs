@@ -195,6 +195,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: Some(10_000),
             server_timeout_ms: Some(30_000),
             connection_reuse: UpstreamConnectionReuse::Safe,
+            resilience: oxiroute_config::PoolResilience::default(),
         },
         UpstreamPool {
             name: "web-backends".into(),
@@ -236,6 +237,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Safe,
+            resilience: oxiroute_config::PoolResilience::default(),
         },
         UpstreamPool {
             name: "database-backends".into(),
@@ -268,6 +270,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Never,
+            resilience: oxiroute_config::PoolResilience::default(),
         },
         UpstreamPool {
             name: "unix-backends".into(),
@@ -287,6 +290,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Never,
+            resilience: oxiroute_config::PoolResilience::default(),
         },
     ]
 }
@@ -762,6 +766,8 @@ const RENDERED_FIELDS: &[&str] = &[
     "algorithm",
     "health_check",
     "passive_health",
+    "resilience",
+    "fail_open",
     "observe",
     "on_error",
     "error_limit",

@@ -58,6 +58,7 @@ describe('configuration editor fields', () => {
       connect_timeout_ms: null,
       server_timeout_ms: null,
       connection_reuse: 'safe',
+      resilience: { fail_open: false },
     }
     const l4Services: L4ServiceConfig[] = [{
       name: 'database',
@@ -97,6 +98,7 @@ describe('configuration editor fields', () => {
       connect_timeout_ms: null,
       server_timeout_ms: null,
       connection_reuse: 'safe',
+      resilience: { fail_open: false },
     }
     const wrapper = mount(UpstreamPoolEditor, { props: { pool, l4Services: [] } })
 

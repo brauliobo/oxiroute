@@ -118,6 +118,7 @@ fn normalizable_config() -> ConfigDraft {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        resilience: oxiroute_config::PoolResilience::default(),
     });
     config.http_services.push(HttpService {
         name: "web-service".into(),

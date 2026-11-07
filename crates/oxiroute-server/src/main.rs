@@ -3636,6 +3636,7 @@ mod tests {
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
                 connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+                resilience: oxiroute_config::PoolResilience::default(),
             }],
             http_services: Vec::new(),
             cache_stores: Vec::new(),

@@ -260,6 +260,7 @@ mod tests {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::default(),
+            resilience: crate::PoolResilience::default(),
         });
         config.l4_services.push(L4Service {
             name: service.clone(),

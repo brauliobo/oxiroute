@@ -154,6 +154,11 @@ fieldset.object-block(data-field="upstream_pools[].http_versions")
       select(v-model="pool.http_versions.max" @change="normalizeHttpVersions('max')")
         option(value="1.1") HTTP/1.1
         option(value="2" :disabled="pool.tls === null") HTTP/2
+fieldset.object-block(data-field="upstream_pools[].resilience")
+  legend Resilience
+  label.enable-row(data-field="upstream_pools[].resilience.fail_open")
+    input(type="checkbox" v-model="pool.resilience.fail_open")
+    span Serve the least-bad server when none is healthy
 </template>
 
 <script setup lang="ts">

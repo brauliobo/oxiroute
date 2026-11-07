@@ -227,6 +227,7 @@ fn compile_pool_blueprints(
                 endpoints,
                 health,
                 passive_health,
+                resilience: crate::routing::PoolResiliencePolicy::from_config(&pool.resilience),
                 upstream_tls,
                 min_http_version: pool.http_versions.min,
                 queue_timeout: pool.queue_timeout_ms.map(Duration::from_millis),
