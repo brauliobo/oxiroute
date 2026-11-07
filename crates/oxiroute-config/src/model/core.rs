@@ -47,6 +47,10 @@ pub struct Retirement {
     pub max_retired_generations: u64,
 }
 
+impl Retirement {
+    pub const DEFAULT_MAX_RETIRED_GENERATIONS: u64 = 4;
+}
+
 impl Default for Retirement {
     fn default() -> Self {
         Self {

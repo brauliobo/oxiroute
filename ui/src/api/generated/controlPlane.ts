@@ -159,9 +159,12 @@ export interface GenerationStatusDto {
   generation: number
   lastFailure: string | null
   lastRejection: ConfigRejectionDto | null
+  maxRetiredGenerations: number
+  pendingApply: PendingApplyDto | null
   prepares: number
   previousRevision: string | null
   quarantinedRevision: string | null
+  retiredGenerations: Array<RetiredGenerationDto>
   rollbacks: number
 }
 
@@ -251,6 +254,11 @@ export type ListenerRuntimeStateDto = "configured" | "listening" | "stopped" | "
 
 export type NoneDto = "none"
 
+export interface PendingApplyDto {
+  reason: string
+  revision: string
+}
+
 export interface PoolDto {
   algorithm: string
   availableEndpoints: number
@@ -289,6 +297,15 @@ export interface RejectionDiagnostic {
   message: string
   path?: string | null
   stage: string
+}
+
+export interface RetiredGenerationDto {
+  ageSeconds: number
+  deadlineRemainingSeconds: number
+  inFlight: number
+  inFlightByKind: { [key: string]: number }
+  revision: string
+  state: string
 }
 
 export type RuntimeModeDto = "direct" | "supervised"

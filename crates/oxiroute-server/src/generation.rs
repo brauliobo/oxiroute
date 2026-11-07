@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     io,
     sync::{
         Arc, Condvar, Mutex,
@@ -19,6 +20,9 @@ use pingora::apps::{AcceptGate, AcceptGateClose, AcceptOwnership};
 use serde::Serialize;
 
 use crate::generation_resources::GenerationResources;
+use crate::generation_retirement::{
+    PendingApply, RetiredGenerationStatus, RetiredGenerations, RetirementCounters,
+};
 use crate::listener_inventory::{ListenerId, ListenerInventory};
 use crate::routing::ServerAdminState;
 use crate::rtmp_generation_runtime::{RtmpRetirement, RtmpRetirementRegistry};
@@ -38,6 +42,8 @@ use crate::{
 };
 
 pub(crate) const GENERATION_PREPARATION_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_MAX_RETIRED_GENERATIONS: usize =
+    oxiroute_config::Retirement::DEFAULT_MAX_RETIRED_GENERATIONS as usize;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum RuntimeReferenceKind {
@@ -64,6 +70,32 @@ impl RuntimeReferenceKind {
             Self::Udp => 6,
             Self::ForwardHttp3 => 7,
             Self::Http3 => 8,
+        }
+    }
+
+    const ALL: [Self; 9] = [
+        Self::ForwardHttp1,
+        Self::Http1,
+        Self::Http2,
+        Self::WebSocket,
+        Self::Tcp,
+        Self::Rtmp,
+        Self::Udp,
+        Self::ForwardHttp3,
+        Self::Http3,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::ForwardHttp1 => "forward_http1",
+            Self::Http1 => "http1",
+            Self::Http2 => "http2",
+            Self::WebSocket => "websocket",
+            Self::Tcp => "tcp",
+            Self::Rtmp => "rtmp",
+            Self::Udp => "udp",
+            Self::ForwardHttp3 => "forward_http3",
+            Self::Http3 => "http3",
         }
     }
 }
@@ -850,6 +882,24 @@ impl RuntimeGeneration {
         self.references[kind.index()].load(Ordering::Acquire)
     }
 
+    /// Connections and streams admitted by this generation that have not ended.
+    #[must_use]
+    pub fn in_flight(&self) -> u64 {
+        self.references
+            .iter()
+            .map(|counter| counter.load(Ordering::Acquire))
+            .sum()
+    }
+
+    #[must_use]
+    pub fn in_flight_by_kind(&self) -> BTreeMap<&'static str, u64> {
+        RuntimeReferenceKind::ALL
+            .into_iter()
+            .map(|kind| (kind.label(), self.active_references(kind)))
+            .filter(|&(_, count)| count != 0)
+            .collect()
+    }
+
     #[must_use]
     pub fn drained(&self) -> bool {
         self.references
@@ -964,6 +1014,7 @@ struct GenerationState {
     last_failure: Option<&'static str>,
     last_rejection: Option<ConfigRejection>,
     previous: Option<Arc<RuntimeGeneration>>,
+    retired: RetiredGenerations,
     supervised_lineage: Option<SupervisedLineage>,
     quarantined_revision: Option<EffectiveRevision>,
     shutdown_generations: Vec<Arc<RuntimeGeneration>>,
@@ -1644,6 +1695,7 @@ impl GenerationManager {
         let active = Arc::clone(&candidate.generation);
         if let Some(previous) = state.active.replace(Arc::clone(&active)) {
             active.restore_administrative_states(&previous.administrative_states());
+            state.retired.retire(Arc::clone(&previous), Instant::now());
             let evicted = state.previous.replace(previous);
             if let Some(evicted) = &evicted {
                 let mut retirements = self
@@ -2146,6 +2198,7 @@ impl GenerationManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.shutting_down = true;
+        state.retired.close_for_shutdown();
         let mut generations = Vec::with_capacity(3);
         if let Some(active) = &state.active {
             push_unique_generation(&mut generations, active);
@@ -2184,10 +2237,12 @@ impl GenerationManager {
     #[must_use]
     pub fn status(&self) -> GenerationStatus {
         self.prune_completed();
-        let state = self
+        let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        state.retired.sweep_drained(now);
         GenerationStatus {
             build_version: crate::cli::BUILD_VERSION,
             disk_revision: state.disk_revision.clone(),
@@ -2221,7 +2276,60 @@ impl GenerationManager {
             config_rejections: self.counters.config_rejections.load(Ordering::Relaxed),
             failures: self.counters.failures.load(Ordering::Relaxed),
             rollbacks: self.counters.rollbacks.load(Ordering::Relaxed),
+            retired_generations: state.retired.statuses(now),
+            max_retired_generations: state
+                .active
+                .as_ref()
+                .map_or(DEFAULT_MAX_RETIRED_GENERATIONS, |active| {
+                    active.config().retired_generation_limit()
+                }),
+            pending_apply: state
+                .retired
+                .pending()
+                .filter(|pending| {
+                    state
+                        .candidate
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.revision().candidate == pending.revision)
+                })
+                .cloned(),
         }
+    }
+
+    /// Marks retired generations past their drain deadline as closing and returns each once, for
+    /// the runtime owner to tear down.
+    #[must_use]
+    pub fn expire_retired(&self) -> Vec<Arc<RuntimeGeneration>> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        state.retired.sweep_drained(now);
+        state.retired.expire_due(now)
+    }
+
+    /// Whether the candidate must wait for a retired generation to finish before it may activate.
+    ///
+    /// The limit is the candidate's own `max_retired_generations`.
+    #[must_use]
+    pub fn defer_for_retired_cap(&self, candidate: &GenerationCandidate) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.retired.sweep_drained(Instant::now());
+        let limit = candidate.generation().config().retired_generation_limit();
+        state.retired.defer(&candidate.revision().candidate, limit)
+    }
+
+    #[must_use]
+    pub fn retirement_counters(&self) -> RetirementCounters {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retired
+            .counters()
     }
 }
 
@@ -2306,6 +2414,10 @@ pub struct GenerationStatus {
     pub config_rejections: u64,
     pub failures: u64,
     pub rollbacks: u64,
+    /// Replaced generations still draining, oldest first.
+    pub retired_generations: Vec<RetiredGenerationStatus>,
+    pub max_retired_generations: usize,
+    pub pending_apply: Option<PendingApply>,
 }
 
 impl GenerationStatus {

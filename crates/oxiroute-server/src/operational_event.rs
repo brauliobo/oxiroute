@@ -966,6 +966,7 @@ pub(crate) enum EventName {
     GenerationActivate,
     GenerationRollback,
     GenerationDrain,
+    GenerationRetire,
     GenerationStart,
     ConfigurationReload,
     ImportCompleted,
@@ -1006,6 +1007,7 @@ impl EventName {
             "generation_activate" => Self::GenerationActivate,
             "generation_rollback" => Self::GenerationRollback,
             "generation_drain" => Self::GenerationDrain,
+            "generation_retire" => Self::GenerationRetire,
             "generation_start" => Self::GenerationStart,
             "configuration_reload" => Self::ConfigurationReload,
             "import_completed" => Self::ImportCompleted,
@@ -1037,6 +1039,7 @@ impl EventName {
             Self::GenerationActivate => "generation_activate",
             Self::GenerationRollback => "generation_rollback",
             Self::GenerationDrain => "generation_drain",
+            Self::GenerationRetire => "generation_retire",
             Self::GenerationStart => "generation_start",
             Self::ConfigurationReload => "configuration_reload",
             Self::ImportCompleted => "import_completed",
@@ -1069,7 +1072,8 @@ pub(crate) const fn v1_serialized_event_name(event: EventName) -> &'static str {
         EventName::CertificateRevocation
         | EventName::CertificateDeletion
         | EventName::CertificateAccountRollover
-        | EventName::CertificateJobControl => "unknown",
+        | EventName::CertificateJobControl
+        | EventName::GenerationRetire => "unknown",
         _ => event.as_str(),
     }
 }
@@ -1079,7 +1083,8 @@ pub(crate) const fn v1_sse_event_name(event: EventName) -> &'static str {
         EventName::CertificateRevocation
         | EventName::CertificateDeletion
         | EventName::CertificateAccountRollover
-        | EventName::CertificateJobControl => "unknown",
+        | EventName::CertificateJobControl
+        | EventName::GenerationRetire => "unknown",
         _ => event.as_str(),
     }
 }
@@ -1103,6 +1108,10 @@ pub(crate) enum EventOutcome {
     Requested,
     Applied,
     Failed,
+    Retiring,
+    Drained,
+    ForcedClose,
+    CapReached,
     Ejected {
         pool: String,
         server: String,
@@ -1135,6 +1144,10 @@ impl Serialize for EventOutcome {
             Self::Requested => serializer.serialize_str("requested"),
             Self::Applied => serializer.serialize_str("applied"),
             Self::Failed => serializer.serialize_str("failed"),
+            Self::Retiring => serializer.serialize_str("retiring"),
+            Self::Drained => serializer.serialize_str("drained"),
+            Self::ForcedClose => serializer.serialize_str("forced_close"),
+            Self::CapReached => serializer.serialize_str("cap_reached"),
             Self::Unknown => serializer.serialize_str("unknown"),
             Self::Ejected {
                 pool,
@@ -1186,6 +1199,10 @@ impl EventOutcome {
             Self::Requested => "requested",
             Self::Applied => "applied",
             Self::Failed => "failed",
+            Self::Retiring => "retiring",
+            Self::Drained => "drained",
+            Self::ForcedClose => "forced_close",
+            Self::CapReached => "cap_reached",
             Self::Ejected { .. } => "ejected",
             Self::Recovered { .. } => "recovered",
             Self::Unknown => "unknown",
@@ -1201,6 +1218,10 @@ impl EventOutcome {
             "requested" => Self::Requested,
             "applied" => Self::Applied,
             "failed" => Self::Failed,
+            "retiring" => Self::Retiring,
+            "drained" => Self::Drained,
+            "forced_close" => Self::ForcedClose,
+            "cap_reached" => Self::CapReached,
             _ => Self::Unknown,
         }
     }
@@ -1370,6 +1391,19 @@ pub(crate) fn emit_certificate_with_context(
     context: &AuditContext,
 ) {
     emit_inner(event, outcome, None, Some(certificate), context, None, None);
+}
+
+/// A retired generation was closed before its work ended; `reason` is `drain_deadline` or `shutdown`.
+pub(crate) fn emit_retire_forced_close(revision: &EffectiveRevision, reason: &str) {
+    emit_inner(
+        "generation_retire",
+        "forced_close",
+        Some(revision),
+        None,
+        &AuditContext::generated(),
+        Some(reason),
+        None,
+    );
 }
 
 pub(crate) fn emit_api_operation(
@@ -1568,6 +1602,7 @@ const fn category_for_event(event: EventName) -> AuditCategory {
         | EventName::GenerationActivate
         | EventName::GenerationRollback
         | EventName::GenerationDrain
+        | EventName::GenerationRetire
         | EventName::GenerationStart
         | EventName::ConfigurationReload => AuditCategory::Reload,
         EventName::ImportCompleted => AuditCategory::Import,
@@ -1595,14 +1630,17 @@ const fn category_for_event(event: EventName) -> AuditCategory {
 
 const fn result_for_outcome(outcome: &EventOutcome) -> AuditResult {
     match outcome {
-        EventOutcome::Prepared | EventOutcome::Activated | EventOutcome::Applied => {
-            AuditResult::Succeeded
-        }
-        EventOutcome::Requested => AuditResult::Requested,
+        EventOutcome::Prepared
+        | EventOutcome::Activated
+        | EventOutcome::Applied
+        | EventOutcome::Retiring
+        | EventOutcome::Drained => AuditResult::Succeeded,
+        EventOutcome::Requested | EventOutcome::CapReached => AuditResult::Requested,
         EventOutcome::Rejected => AuditResult::Rejected,
-        EventOutcome::Failed | EventOutcome::Quarantined | EventOutcome::Unknown => {
-            AuditResult::Failed
-        }
+        EventOutcome::Failed
+        | EventOutcome::ForcedClose
+        | EventOutcome::Quarantined
+        | EventOutcome::Unknown => AuditResult::Failed,
         EventOutcome::Ejected { .. } | EventOutcome::Recovered { .. } => AuditResult::Succeeded,
     }
 }

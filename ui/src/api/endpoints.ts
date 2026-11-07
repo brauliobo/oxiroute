@@ -613,6 +613,7 @@ export interface OperationalEventSimpleOutcomes {
   generation_activate: 'activated'
   generation_rollback: 'prepared' | 'rejected' | 'requested' | 'failed'
   generation_drain: 'rejected' | 'requested' | 'failed'
+  generation_retire: 'retiring' | 'drained' | 'forced_close' | 'cap_reached'
   generation_start: 'quarantined'
   configuration_reload: 'rejected' | 'applied' | 'failed'
   import_completed: 'applied'
@@ -1097,6 +1098,7 @@ const OPERATIONAL_EVENT_NAMES: readonly OperationalEventName[] = [
   'generation_activate',
   'generation_rollback',
   'generation_drain',
+  'generation_retire',
   'generation_start',
   'configuration_reload',
   'import_completed',
@@ -1127,6 +1129,7 @@ const OPERATIONAL_EVENT_OUTCOMES: {
   generation_activate: ['activated'],
   generation_rollback: ['prepared', 'rejected', 'requested', 'failed'],
   generation_drain: ['rejected', 'requested', 'failed'],
+  generation_retire: ['retiring', 'drained', 'forced_close', 'cap_reached'],
   generation_start: ['quarantined'],
   configuration_reload: ['rejected', 'applied', 'failed'],
   import_completed: ['applied'],

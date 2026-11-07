@@ -363,7 +363,7 @@ pub(crate) const fn default_self_signed_validity_days() -> u32 {
 }
 
 pub(crate) const fn default_max_retired_generations() -> u64 {
-    4
+    crate::Retirement::DEFAULT_MAX_RETIRED_GENERATIONS
 }
 
 pub(crate) const fn default_upstream_io_timeout_ms() -> u64 {
