@@ -283,7 +283,7 @@ pub fn service_specs(config: &ValidatedConfig) -> Result<Vec<ServiceSpec>, Servi
         .as_draft()
         .upstream_pools
         .iter()
-        .any(|pool| pool.health_check.is_some())
+        .any(|pool| pool.health_check.is_some() || pool.canary.is_some())
     {
         return Err(ServicePlanError::HealthSupervisorRequired);
     }

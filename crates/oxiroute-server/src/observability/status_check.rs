@@ -5,9 +5,17 @@ use std::{cmp::Reverse, fmt::Write as _};
 
 use serde::Serialize;
 
-use crate::observability::status_summary::{
-    GenerationSummary, PoolSummary, RegistrySummary, Severity, StatusSummary,
+use crate::{
+    observability::status_summary::{
+        CanarySummary, GenerationSummary, PoolSummary, RegistrySummary, Severity, StatusSummary,
+    },
+    routing::CanaryResult,
 };
+
+/// A canary that failed this many runs in a row is an outage, not a blip.
+const CANARY_CRITICAL_AFTER: u64 = 2;
+/// A canary silent for this many of its own intervals is no longer running.
+const CANARY_STALLED_INTERVALS: u64 = 3;
 
 #[cfg(test)]
 mod tests;
@@ -83,6 +91,49 @@ impl PoolSummary {
         {
             let message = format!("oldest request is {} ms old", self.oldest_inflight_ms);
             findings.push(at(Severity::Warning, message));
+        }
+        findings.extend(
+            self.canary
+                .iter()
+                .flat_map(|canary| canary.judge(&self.name)),
+        );
+        findings
+    }
+}
+
+impl CanarySummary {
+    fn judge(&self, pool: &str) -> Vec<Finding> {
+        let at = |severity, message: String| Finding {
+            severity,
+            pool: Some(pool.to_owned()),
+            message: format!("pool {pool} {message}"),
+        };
+        let mut findings = Vec::new();
+        match self.result {
+            Some(CanaryResult::Failed) => {
+                let severity = if self.consecutive_failures >= CANARY_CRITICAL_AFTER {
+                    Severity::Critical
+                } else {
+                    Severity::Warning
+                };
+                let reason = self.reason.as_deref().unwrap_or("unknown");
+                findings.push(at(severity, format!("canary failed ({reason})")));
+            }
+            Some(CanaryResult::Slow) => {
+                let message = format!("canary answered slowly ({} ms)", self.duration_ms);
+                findings.push(at(Severity::Warning, message));
+            }
+            _ => {}
+        }
+        let stalled_after = (self.interval_ms / 1_000).saturating_mul(CANARY_STALLED_INTERVALS);
+        if let Some(age) = self
+            .last_attempt_age_seconds
+            .filter(|age| *age > stalled_after)
+        {
+            findings.push(at(
+                Severity::Warning,
+                format!("canary has not run for {age} s"),
+            ));
         }
         findings
     }
@@ -252,6 +303,13 @@ fn performance_data(summary: &StatusSummary, limits: &Thresholds) -> String {
             pool.inflight,
             pool.oldest_inflight_ms,
         );
+        if let Some(canary) = pool
+            .canary
+            .as_ref()
+            .filter(|canary| canary.result.is_some())
+        {
+            let _ = write!(data, "{name}_canary_ms={} ", canary.duration_ms);
+        }
     }
     let _ = write!(
         data,

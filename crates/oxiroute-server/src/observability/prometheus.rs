@@ -5,7 +5,7 @@ use std::{
 
 use oxiroute_rtmp::{RtmpCatalogSnapshot, RtmpControlHandle};
 
-use crate::{GenerationManager, RuntimeMetrics};
+use crate::{GenerationManager, RuntimeMetrics, routing::CanarySnapshot};
 
 mod format;
 mod registry;
@@ -418,6 +418,9 @@ fn render_prometheus_snapshot(
             &[("pool", pool.name.as_str())],
             pool.fail_open_selections,
         )?;
+        if let Some(canary) = &pool.canary {
+            render_canary(&mut output, &pool.name, canary)?;
+        }
         labels(
             &mut output,
             "oxiroute_pool_queue_depth",
@@ -1018,4 +1021,49 @@ fn render_retirement(
 /// Revisions are 64 hex digits; the first twelve identify one in a label.
 fn revision_label(revision: &str) -> &str {
     &revision[..revision.len().min(12)]
+}
+
+fn render_canary(
+    output: &mut String,
+    pool: &str,
+    canary: &CanarySnapshot,
+) -> Result<(), PrometheusError> {
+    let pool_label = [("pool", pool)];
+    if let Some(result) = canary.result {
+        labels(
+            output,
+            "oxiroute_canary_success",
+            &pool_label,
+            u8::from(result.healthy()),
+        )?;
+        labels(
+            output,
+            "oxiroute_canary_duration_milliseconds",
+            &pool_label,
+            canary.duration_ms,
+        )?;
+    }
+    if let Some(at) = canary.last_success_unix_ms {
+        labels(
+            output,
+            "oxiroute_canary_last_success_timestamp_seconds",
+            &pool_label,
+            at / 1_000,
+        )?;
+    }
+    labels(
+        output,
+        "oxiroute_canary_consecutive_failures",
+        &pool_label,
+        canary.consecutive_failures,
+    )?;
+    for (result, runs) in &canary.runs {
+        labels(
+            output,
+            "oxiroute_canary_runs_total",
+            &[("pool", pool), ("result", result)],
+            *runs,
+        )?;
+    }
+    Ok(())
 }

@@ -435,6 +435,9 @@ pub struct PoolHealthSnapshot {
     pub queue_timeouts: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub queue_cancellations: u64,
+    /// The latest canary results; absent when the pool declares no canary.
+    #[serde(skip)]
+    pub canary: Option<CanarySnapshot>,
     pub endpoints: Vec<EndpointHealthSnapshot>,
 }
 
@@ -449,6 +452,7 @@ pub(super) struct PoolHealthState {
     readmission: Option<Arc<ReadmissionProbe>>,
     resilience: PoolResiliencePolicy,
     outliers: OutlierDetector,
+    pub(super) canary: std::sync::OnceLock<Arc<CanaryState>>,
 }
 
 impl PoolHealthState {
@@ -470,6 +474,7 @@ impl PoolHealthState {
             readmission,
             resilience,
             outliers: OutlierDetector::default(),
+            canary: std::sync::OnceLock::new(),
         }
     }
 

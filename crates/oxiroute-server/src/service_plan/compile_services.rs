@@ -35,6 +35,7 @@ pub(super) fn compile_forward_proxy_services(
 pub(super) struct CompiledPools {
     pub(super) plans: Vec<Arc<UpstreamPlan>>,
     pub(super) health_groups: Vec<health::HealthGroup>,
+    pub(super) canaries: Vec<health::CanaryRunner>,
     pub(super) ordered: Vec<Arc<RoundRobinPool>>,
 }
 
@@ -49,6 +50,7 @@ pub(super) fn compile_pools(
 ) -> Result<CompiledPools, ServicePlanError> {
     let mut pools = HashMap::with_capacity(pool_specs.len());
     let mut health_groups = Vec::new();
+    let mut canaries = Vec::new();
     let mut ordered = Vec::with_capacity(pool_specs.len());
     let mut plans = Vec::with_capacity(pool_specs.len());
     for pool in pool_specs {
@@ -151,6 +153,9 @@ pub(super) fn compile_pools(
                 health_check,
             ));
         }
+        if let Some(canary) = &pool.canary {
+            canaries.push(health::CanaryRunner::new(Arc::clone(&selector), canary));
+        }
         pools.insert(pool.name.clone(), Arc::clone(&compiled));
         plans.push(compiled);
         ordered.push(selector);
@@ -158,6 +163,7 @@ pub(super) fn compile_pools(
     Ok(CompiledPools {
         plans,
         health_groups,
+        canaries,
         ordered,
     })
 }

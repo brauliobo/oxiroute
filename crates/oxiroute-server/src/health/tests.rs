@@ -246,7 +246,7 @@ fn counting_supervisor(check: &Arc<CountingCheck>) -> (HealthSupervisor, Arc<Rou
         template,
         targets: Vec::new(),
     };
-    (HealthSupervisor::new(vec![group]), pool)
+    (HealthSupervisor::new(vec![group], Vec::new()), pool)
 }
 
 fn join(pool: &RoundRobinPool, name: &str, port: u16) -> (ServerHandle, RuntimeEndpoint) {

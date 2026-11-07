@@ -26,7 +26,10 @@ use tokio::{
     time::{sleep, timeout},
 };
 
+pub(crate) use self::canary::{CanaryBlueprint, CanaryRunner};
 use crate::{HealthFailure, RoundRobinPool, RuntimeEndpoint, routing::ServerHandle};
+
+mod canary;
 
 const MAX_CONCURRENT_PROBES: usize = 32;
 
@@ -327,6 +330,7 @@ struct SupervisorInner {
 
 struct SupervisorState {
     groups: Vec<GroupState>,
+    canaries: Vec<CanaryRunner>,
     running: Option<(tokio::runtime::Handle, ShutdownWatch)>,
 }
 
@@ -352,7 +356,7 @@ impl SupervisorState {
 }
 
 impl HealthSupervisor {
-    pub(crate) fn new(groups: Vec<HealthGroup>) -> Self {
+    pub(crate) fn new(groups: Vec<HealthGroup>, canaries: Vec<CanaryRunner>) -> Self {
         let groups = groups
             .into_iter()
             .map(|group| GroupState {
@@ -369,6 +373,7 @@ impl HealthSupervisor {
                 semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES)),
                 state: StdMutex::new(SupervisorState {
                     groups,
+                    canaries,
                     running: None,
                 }),
             }),
@@ -377,7 +382,8 @@ impl HealthSupervisor {
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.state().groups.is_empty()
+        let state = self.state();
+        state.groups.is_empty() && state.canaries.is_empty()
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, SupervisorState> {
@@ -388,13 +394,22 @@ impl HealthSupervisor {
     }
 
     pub async fn probe_once(&self) {
-        let targets = self
-            .state()
-            .groups
-            .iter()
-            .flat_map(|group| group.targets.iter().map(|running| running.target.clone()))
-            .collect();
-        run_targets(targets, Arc::clone(&self.inner.semaphore)).await;
+        let (targets, canaries) = {
+            let state = self.state();
+            let targets = state
+                .groups
+                .iter()
+                .flat_map(|group| group.targets.iter().map(|running| running.target.clone()))
+                .collect();
+            (targets, state.canaries.clone())
+        };
+        let canaries = stream::iter(canaries).for_each_concurrent(None, |canary| async move {
+            canary.run_once().await;
+        });
+        tokio::join!(
+            run_targets(targets, Arc::clone(&self.inner.semaphore)),
+            canaries
+        );
     }
 
     /// Starts checking a server that joined `pool`. A pool without health checks ignores it.
@@ -434,11 +449,21 @@ impl HealthSupervisor {
 
     /// Runs every target until shutdown, then waits for their tasks.
     async fn run(&self, shutdown: ShutdownWatch) {
+        let mut canary_tasks = Vec::new();
         {
             let mut state = self.state();
-            let SupervisorState { groups, running } = &mut *state;
+            let SupervisorState {
+                groups,
+                canaries,
+                running,
+            } = &mut *state;
             let (runtime, watch) =
                 running.insert((tokio::runtime::Handle::current(), shutdown.clone()));
+            canary_tasks.extend(
+                canaries
+                    .iter()
+                    .map(|canary| runtime.spawn(run_canary(canary.clone(), watch.clone()))),
+            );
             for member in groups.iter_mut().flat_map(|group| group.targets.iter_mut()) {
                 member.task = Some(runtime.spawn(run_target(
                     member.target.clone(),
@@ -463,7 +488,7 @@ impl HealthSupervisor {
                 })
                 .collect::<Vec<_>>()
         };
-        for task in tasks {
+        for task in tasks.into_iter().chain(canary_tasks) {
             let _ = task.await;
         }
     }
@@ -497,6 +522,22 @@ async fn run_target(target: HealthTarget, mut shutdown: ShutdownWatch, semaphore
         tokio::select! {
             () = sleep(interval) => {}
             _ = shutdown.changed() => return,
+        }
+    }
+}
+
+async fn run_canary(canary: CanaryRunner, mut shutdown: ShutdownWatch) {
+    loop {
+        tokio::select! {
+            () = canary.run_once() => {}
+            _ = shutdown.changed() => return,
+        }
+        tokio::select! {
+            () = sleep(canary.interval()) => {}
+            _ = shutdown.changed() => return,
+        }
+        if *shutdown.borrow() {
+            return;
         }
     }
 }

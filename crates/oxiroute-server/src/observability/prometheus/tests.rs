@@ -528,3 +528,65 @@ fn registry_series_cover_servers_operations_expiries_and_leases() {
         assert!(output.contains(line), "missing `{line}` in\n{output}");
     }
 }
+
+#[test]
+fn exposition_reports_the_canary_of_each_pool_that_declares_one() {
+    use crate::routing::{CanaryResult, CanaryRun, CanaryState};
+
+    let metrics = RuntimeMetrics::new();
+    let server = |name: &str| RuntimeServer {
+        name: name.into(),
+        endpoint: RuntimeEndpoint::from(
+            "127.0.0.1:3000"
+                .parse::<std::net::SocketAddr>()
+                .expect("endpoint"),
+        ),
+        max_connections: None,
+        pinned_addresses: None,
+        protected_addresses: Arc::from([]),
+    };
+    let pool = |name: &str| {
+        Arc::new(
+            RoundRobinPool::new_named_servers(
+                name.into(),
+                [server("0")],
+                UpstreamAlgorithm::RoundRobin,
+                None,
+                None,
+            )
+            .expect("pool"),
+        )
+    };
+    let (watched, plain) = (pool("canary-series"), pool("no-canary-series"));
+    let state = Arc::new(CanaryState::new(std::time::Duration::from_secs(30)));
+    watched.attach_canary(Arc::clone(&state));
+    for result in [CanaryResult::Ok, CanaryResult::Failed] {
+        state.complete(CanaryRun {
+            result,
+            reason: None,
+            server: Some("0".into()),
+            duration: std::time::Duration::from_millis(42),
+        });
+    }
+    metrics
+        .register_upstream_pools([watched, plain])
+        .expect("upstream pools");
+    let control = empty_rtmp_runtime().control();
+
+    let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+        .expect("exposition");
+
+    for expected in [
+        "oxiroute_canary_success{pool=\"canary-series\"} 0",
+        "oxiroute_canary_duration_milliseconds{pool=\"canary-series\"} 42",
+        "oxiroute_canary_consecutive_failures{pool=\"canary-series\"} 1",
+        "oxiroute_canary_runs_total{pool=\"canary-series\",result=\"ok\"} 1",
+        "oxiroute_canary_runs_total{pool=\"canary-series\",result=\"failed\"} 1",
+    ] {
+        assert!(output.contains(expected), "missing {expected}");
+    }
+    assert!(
+        output.contains("oxiroute_canary_last_success_timestamp_seconds{pool=\"canary-series\"} ")
+    );
+    assert!(!output.contains("oxiroute_canary_success{pool=\"no-canary-series\"}"));
+}

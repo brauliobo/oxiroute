@@ -285,8 +285,8 @@ fn acquire_runtime_services_with_mode(
             .collect(),
     );
     let pools = acquired.compiled_pools.take().expect("acquired pools");
-    acquired.health_supervisor =
-        (!pools.health_groups.is_empty()).then(|| HealthSupervisor::new(pools.health_groups));
+    acquired.health_supervisor = (!pools.health_groups.is_empty() || !pools.canaries.is_empty())
+        .then(|| HealthSupervisor::new(pools.health_groups, pools.canaries));
     acquired.pools = Some(pools.ordered);
     Ok(acquired)
 }

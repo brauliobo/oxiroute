@@ -31,6 +31,7 @@ use tokio::{
 };
 
 mod breaker;
+mod canary;
 mod endpoint;
 mod health;
 mod lease;
@@ -46,6 +47,7 @@ mod server;
 pub use breaker::CircuitBreakerPolicy;
 #[allow(clippy::wildcard_imports)]
 use breaker::{Breaker, BreakerTransition};
+pub use canary::{CanaryResult, CanaryRun, CanarySelection, CanarySnapshot, CanaryState};
 pub use endpoint::*;
 pub use health::*;
 pub use lease::*;

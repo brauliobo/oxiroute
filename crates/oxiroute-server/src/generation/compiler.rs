@@ -196,6 +196,15 @@ fn compile_pool_blueprints(
                     pool: pool.name.clone(),
                     source: Box::new(source),
                 })?;
+            let canary = pool
+                .canary
+                .as_ref()
+                .map(crate::health::CanaryBlueprint::compile)
+                .transpose()
+                .map_err(|source| ServicePlanError::Health {
+                    pool: pool.name.clone(),
+                    source: Box::new(source),
+                })?;
             let upstream_tls = crate::tls::UpstreamTlsBlueprint::compile(
                 &pool.name,
                 pool.tls.as_ref(),
@@ -232,6 +241,7 @@ fn compile_pool_blueprints(
                 name: pool.name.clone(),
                 endpoints,
                 health,
+                canary,
                 passive_health,
                 resilience: crate::routing::PoolResiliencePolicy::from_config(&pool.resilience),
                 unavailable: crate::upstream_peer::UnavailableResponse::from_config(
