@@ -1135,7 +1135,18 @@ fn batched_old_active_status_follows_role_move_to_retired() {
 
 #[test]
 fn replacement_supervisor_is_never_reconstructed() {
-    let source = include_str!("../src/master.rs");
+    let source = [
+        include_str!("../src/master.rs"),
+        include_str!("../src/master/dispatch.rs"),
+        include_str!("../src/master/executor.rs"),
+        include_str!("../src/master/failure.rs"),
+        include_str!("../src/master/model.rs"),
+        include_str!("../src/master/observation.rs"),
+        include_str!("../src/master/query.rs"),
+        include_str!("../src/master/replacement.rs"),
+        include_str!("../src/master/runtime.rs"),
+    ]
+    .concat();
     assert_eq!(source.matches("ReplacementSupervisor::new(").count(), 1);
     assert!(!source.contains("expect_action"));
 }
