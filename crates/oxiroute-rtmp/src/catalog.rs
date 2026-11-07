@@ -7,7 +7,7 @@ use std::{
 
 use uuid::Uuid;
 
-pub use crate::session_control::SessionId;
+pub use crate::session::control::SessionId;
 
 use crate::{
     RecorderEnqueueResult, RecorderNotification, RecorderWorkerPhase, RecorderWorkerStatus,
@@ -17,7 +17,7 @@ use crate::{
         RecorderReaperOwner, RecorderRuntimeStatus, RecorderStartFailure, recorder_error_code,
     },
     relay::{RtmpRelayController, RtmpRelayStatus},
-    session_control::{
+    session::control::{
         MAX_RTMP_SESSION_CONTROLS, RtmpClientSnapshot, RtmpSessionControl,
         RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome,
     },
