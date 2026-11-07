@@ -177,10 +177,11 @@ impl HttpRequestContext {
         self.prior_attempts + self.attempted_upstreams.len()
     }
 
-    /// Moves a rescued request to the route's rescue pool, if any; each pool tries a server once.
+    /// Moves a rescued request to the route's rescue pool the first time; each pool tries a server once.
     fn begin_rescue(&mut self, status: u16) {
+        let entering = rescue_pool_to_enter(self, true).cloned();
         self.rescued = true;
-        if let Some(rescue_pool) = proxy_action(self).rescue_pool.clone() {
+        if let Some(rescue_pool) = entering {
             self.prior_attempts += self.attempted_upstreams.len();
             self.attempted_upstreams.clear();
             self.pool = Some(rescue_pool);
