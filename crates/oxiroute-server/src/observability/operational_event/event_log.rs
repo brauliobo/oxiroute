@@ -95,7 +95,7 @@ pub(crate) fn emit(event: &str, outcome: &str, revision: Option<&EffectiveRevisi
 
 /// Emits a bounded, redacted RTMP lifecycle event without copying stream queries or credentials.
 pub fn emit_rtmp_access(event: &str, outcome: &str) {
-    crate::monitoring::record_transport_event(
+    crate::observability::monitoring::record_transport_event(
         ObservedTransport::Rtmp,
         match outcome {
             "accepted" | "closed" => TransportOutcome::Success,
@@ -127,7 +127,7 @@ pub fn emit_rtmp_access(event: &str, outcome: &str) {
 }
 
 pub fn emit_certificate(event: &str, outcome: &str, certificate: &str) {
-    crate::monitoring::record_transport_event(
+    crate::observability::monitoring::record_transport_event(
         ObservedTransport::Acme,
         match outcome {
             "requested" | "activated" | "applied" => TransportOutcome::Success,

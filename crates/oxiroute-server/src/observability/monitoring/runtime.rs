@@ -140,7 +140,7 @@ pub(super) fn append_access_record(records: &Mutex<VecDeque<AccessRecord>>, reco
     records.push_back(record.clone());
     drop(records);
     if let Ok(value) = serde_json::to_value(record) {
-        crate::logging::log_json("oxiroute::access", &value);
+        crate::observability::logging::log_json("oxiroute::access", &value);
     }
 }
 

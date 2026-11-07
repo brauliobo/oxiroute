@@ -9,7 +9,7 @@ use oxiroute_config::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::{ListenerRuntimeState, ServerOrigin, monitoring::RuntimeHealthSnapshot};
+use crate::{ListenerRuntimeState, ServerOrigin, observability::monitoring::RuntimeHealthSnapshot};
 
 mod attributes;
 mod builder;

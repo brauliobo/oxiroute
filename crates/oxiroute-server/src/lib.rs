@@ -12,10 +12,7 @@ mod http3;
 mod l4;
 mod lifecycle_control;
 mod listener;
-mod logging;
-mod monitoring;
-mod operational_event;
-mod prometheus;
+mod observability;
 mod registry;
 mod routing;
 mod rtmp;
@@ -23,12 +20,9 @@ mod runtime_policy;
 mod secure_bearer;
 mod service_plan;
 mod shutdown;
-mod stats;
-mod status_summary;
 pub mod tls;
 mod topology;
 mod upstream_peer;
-mod upstream_stats;
 mod wire;
 
 pub use config_watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
@@ -65,7 +59,7 @@ pub use l4::tcp::{
 pub use l4::udp::{UdpRelayStats, UdpRuntime};
 pub use listener::reservation::{ListenerReservation, ListenerReservations};
 pub use listener::runtime::{AdmissionError, ListenerRuntime, TrafficLease};
-pub use monitoring::{
+pub use observability::monitoring::{
     ACCESS_RECORD_CAPACITY, AccessRecord, AcmeManagedCertificateSnapshot, CacheSnapshot,
     CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot, ComponentState,
     ComponentStatus, ConnectionGuard, DirectFileCertificateSnapshot, DirectFileWatcherSnapshot,
@@ -77,9 +71,12 @@ pub use monitoring::{
     RuntimeSnapshot, TcpRelayCountSnapshot, TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot,
     TransportOperationCountSnapshot, TransportOperationSnapshot, TransportOutcome,
 };
-pub use operational_event::{WorkerEventPage, WorkerEventSnapshot, worker_event_page};
-pub use operational_event::{emit_certificate, emit_rtmp_access};
-pub use prometheus::PrometheusError;
+pub use observability::operational_event::{
+    WorkerEventPage, WorkerEventSnapshot, worker_event_page,
+};
+pub use observability::operational_event::{emit_certificate, emit_rtmp_access};
+pub use observability::prometheus::PrometheusError;
+pub use observability::stats::{HaproxyStatsApi, HaproxyStatsPage};
 pub use routing::{
     AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
     HealthFailure, HealthOverride, PassiveFailurePolicy, PoolAdminError, PoolError,
@@ -91,7 +88,6 @@ pub use service_plan::{
     HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
     runtime_plan, runtime_plan_with_passive_failure_policy, service_specs, validate_runtime_plan,
 };
-pub use stats::{HaproxyStatsApi, HaproxyStatsPage};
 pub use tls::{
     AcmeDnsCleanupRecovery, AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy,
     AcmeManagedReconciler, AcmeManagedStatus, ActiveCertificateGeneration,

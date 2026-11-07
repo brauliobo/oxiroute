@@ -72,7 +72,7 @@ impl PoolQueue {
 pub(super) struct QueueWaitGuard {
     completed: bool,
     queue: Arc<PoolQueue>,
-    stats: Arc<crate::upstream_stats::PoolStats>,
+    stats: Arc<crate::observability::upstream_stats::PoolStats>,
     ticket: Option<WaitTicket>,
     pub(super) waiter: Arc<PoolWaiter>,
     waiting: bool,
@@ -91,7 +91,7 @@ impl QueueWaitGuard {
         Self {
             completed: false,
             queue,
-            stats: crate::upstream_stats::upstream_stats().pool(pool),
+            stats: crate::observability::upstream_stats::upstream_stats().pool(pool),
             ticket: None,
             waiter,
             waiting: false,

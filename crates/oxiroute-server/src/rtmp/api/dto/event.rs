@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use crate::{
     EndpointHealthState, HealthFailure,
-    operational_event::{EventName, EventOutcome, EventPage, OperationalEvent},
+    observability::operational_event::{EventName, EventOutcome, EventPage, OperationalEvent},
 };
 
 #[derive(JsonSchema, Serialize)]

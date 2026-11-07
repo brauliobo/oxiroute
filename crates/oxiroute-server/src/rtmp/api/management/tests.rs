@@ -6,7 +6,7 @@ use super::{EventApiVersion, ManagementState, Route, match_route};
 use crate::{
     GenerationManager, RuntimeMetrics,
     lifecycle_control::{LifecycleError, LifecycleOutcome, LifecyclePort},
-    operational_event::{AuditLimits, AuditStore},
+    observability::operational_event::{AuditLimits, AuditStore},
 };
 
 struct ContractLifecycleControl(GenerationManager);

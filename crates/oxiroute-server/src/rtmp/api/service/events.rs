@@ -41,7 +41,7 @@ impl RtmpManagementHttpApp {
         let limit = cursor.limit;
         let mut cursor = cursor
             .after
-            .unwrap_or_else(crate::operational_event::current_cursor);
+            .unwrap_or_else(crate::observability::operational_event::current_cursor);
         if !self.write_sse_frame(session, ready_frame(cursor)).await {
             return;
         }
@@ -56,8 +56,8 @@ impl RtmpManagementHttpApp {
                 return;
             }
 
-            let notification = crate::operational_event::wait_for_event();
-            let page = crate::operational_event::page(cursor, limit);
+            let notification = crate::observability::operational_event::wait_for_event();
+            let page = crate::observability::operational_event::page(cursor, limit);
             if page.cursor_lost {
                 let _ = self
                     .write_sse_frame(
@@ -196,21 +196,25 @@ pub(super) fn ready_frame(cursor: u64) -> Vec<u8> {
     format!("event: ready\ndata: {data}\n\n").into_bytes()
 }
 
-pub(super) fn operational_frame(event: &crate::operational_event::OperationalEvent) -> Vec<u8> {
-    let data = crate::operational_event::v1_event_value(event).to_string();
+pub(super) fn operational_frame(
+    event: &crate::observability::operational_event::OperationalEvent,
+) -> Vec<u8> {
+    let data = crate::observability::operational_event::v1_event_value(event).to_string();
     let mut frame = String::new();
     let _ = writeln!(frame, "id: {}", event.cursor);
     let _ = writeln!(
         frame,
         "event: {}",
-        crate::operational_event::v1_sse_event_name(event.event)
+        crate::observability::operational_event::v1_sse_event_name(event.event)
     );
     let _ = writeln!(frame, "data: {data}\n");
     frame.into_bytes()
 }
 
-pub(super) fn operational_frame_v2(event: &crate::operational_event::OperationalEvent) -> Vec<u8> {
-    let data = crate::operational_event::v2_event_value(event).to_string();
+pub(super) fn operational_frame_v2(
+    event: &crate::observability::operational_event::OperationalEvent,
+) -> Vec<u8> {
+    let data = crate::observability::operational_event::v2_event_value(event).to_string();
     let mut frame = String::new();
     let _ = writeln!(frame, "id: {}", event.cursor);
     let _ = writeln!(frame, "event: {}", event.event.as_str());

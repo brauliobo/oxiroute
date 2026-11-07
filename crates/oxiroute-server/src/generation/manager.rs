@@ -80,7 +80,7 @@ impl GenerationManager {
         };
         let Some(operation) = operation else {
             let error = GenerationError::PreparationTimedOut;
-            crate::operational_event::emit(
+            crate::observability::operational_event::emit(
                 "generation_prepare",
                 "rejected",
                 Some(candidate_revision),

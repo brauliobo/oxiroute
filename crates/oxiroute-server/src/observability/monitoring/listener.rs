@@ -199,7 +199,7 @@ impl ListenerMetrics {
             releases_active_connection: true,
             records_access: true,
             started_at: Instant::now(),
-            correlation_id: crate::logging::next_correlation_id(),
+            correlation_id: crate::observability::logging::next_correlation_id(),
             outcome: AtomicU8::new(transport_outcome_index(TransportOutcome::Success)),
             terminal_recorded: AtomicBool::new(false),
             received: AtomicU64::new(0),
@@ -459,7 +459,7 @@ impl Drop for ConnectionGuard {
                 AccessRecord {
                     timestamp_unix_ms: unix_time_ms().unwrap_or(0),
                     correlation_id: self.correlation_id.clone(),
-                    listener: crate::logging::redact_identifier(&self.state.name),
+                    listener: crate::observability::logging::redact_identifier(&self.state.name),
                     transport,
                     outcome,
                     duration_ms,

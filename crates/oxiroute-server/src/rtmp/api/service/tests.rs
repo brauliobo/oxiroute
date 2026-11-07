@@ -1,5 +1,5 @@
 use super::*;
-use crate::operational_event::OperationalEvent;
+use crate::observability::operational_event::OperationalEvent;
 
 #[test]
 fn initial_and_reconnect_cursors_are_distinct_and_stable() {
@@ -19,8 +19,8 @@ fn sse_frames_include_cursors_and_bounded_heartbeat() {
     let event = OperationalEvent {
         cursor: 7,
         timestamp_unix_ms: None,
-        event: crate::operational_event::EventName::GenerationPrepare,
-        outcome: crate::operational_event::EventOutcome::Prepared,
+        event: crate::observability::operational_event::EventName::GenerationPrepare,
+        outcome: crate::observability::operational_event::EventOutcome::Prepared,
         revision: None,
         certificate: None,
         correlation_id: None,
@@ -42,8 +42,8 @@ fn redacted_typed_event_data_cannot_copy_raw_credentials_into_sse() {
     let event = OperationalEvent {
         cursor: 11,
         timestamp_unix_ms: None,
-        event: crate::operational_event::EventName::Unknown,
-        outcome: crate::operational_event::EventOutcome::Unknown,
+        event: crate::observability::operational_event::EventName::Unknown,
+        outcome: crate::observability::operational_event::EventOutcome::Unknown,
         revision: None,
         certificate: None,
         correlation_id: None,
@@ -64,8 +64,8 @@ fn version_one_sse_keeps_the_shipped_certificate_activation_spellings() {
     let event = OperationalEvent {
         cursor: 12,
         timestamp_unix_ms: None,
-        event: crate::operational_event::EventName::CertificateActivation,
-        outcome: crate::operational_event::EventOutcome::Activated,
+        event: crate::observability::operational_event::EventName::CertificateActivation,
+        outcome: crate::observability::operational_event::EventOutcome::Activated,
         revision: None,
         certificate: Some("edge".into()),
         correlation_id: None,
@@ -79,7 +79,7 @@ fn version_one_sse_keeps_the_shipped_certificate_activation_spellings() {
     assert!(frame.contains(r#""event":"certificate_activation""#));
 
     let event = OperationalEvent {
-        event: crate::operational_event::EventName::CertificateRevocation,
+        event: crate::observability::operational_event::EventName::CertificateRevocation,
         ..event
     };
     let frame = String::from_utf8(operational_frame(&event)).expect("SSE frame");
@@ -92,8 +92,8 @@ fn version_two_sse_uses_the_complete_matching_event_vocabulary() {
     let event = OperationalEvent {
         cursor: 13,
         timestamp_unix_ms: None,
-        event: crate::operational_event::EventName::CertificateRevocation,
-        outcome: crate::operational_event::EventOutcome::Requested,
+        event: crate::observability::operational_event::EventName::CertificateRevocation,
+        outcome: crate::observability::operational_event::EventOutcome::Requested,
         revision: None,
         certificate: Some("edge".into()),
         correlation_id: None,

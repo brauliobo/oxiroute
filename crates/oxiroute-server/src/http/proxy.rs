@@ -62,7 +62,7 @@ use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};
 use crate::http::request_id::{REQUEST_ID_HEADER, RequestIdBuilder};
-use crate::upstream_stats::{AttemptOutcome, ServerStats, upstream_stats};
+use crate::observability::upstream_stats::{AttemptOutcome, ServerStats, upstream_stats};
 
 pub struct HttpReverseProxy {
     challenge_store: Option<ChallengeStore>,

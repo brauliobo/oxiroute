@@ -23,7 +23,7 @@ use super::{
 };
 use crate::{
     AdministrativeState, HealthSupervisor, RoundRobinPool, RuntimeEndpoint, ServerOrigin,
-    operational_event::{AuditContext, emit_server_registration},
+    observability::operational_event::{AuditContext, emit_server_registration},
     routing::{DynamicServer, RuntimeServer},
 };
 

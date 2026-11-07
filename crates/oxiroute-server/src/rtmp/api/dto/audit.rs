@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::operational_event::{
+use crate::observability::operational_event::{
     AuditCategory, AuditComponentState, AuditPage, AuditRecord, AuditResult, AuditStatus,
 };
 

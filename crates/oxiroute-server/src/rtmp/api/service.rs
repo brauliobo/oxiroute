@@ -24,7 +24,9 @@ use crate::{
     GenerationManager, RuntimeMetrics, TopologySnapshot,
     config_coordinator::{CanonicalConfigCoordinator, EffectiveRevision},
     lifecycle_control::{DirectLifecycleControl, LifecyclePort},
-    operational_event::{self, AuditCategory, AuditContext, AuditLimits, AuditResult, AuditStore},
+    observability::operational_event::{
+        self, AuditCategory, AuditContext, AuditLimits, AuditResult, AuditStore,
+    },
     secure_bearer::{HeaderCardinality, single_header},
 };
 use async_trait::async_trait;

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use super::DecimalCounter;
 use crate::{
     TOPOLOGY_SCHEMA_VERSION, TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind,
-    TopologySnapshot, monitoring::RuntimeHealthSnapshot,
+    TopologySnapshot, observability::monitoring::RuntimeHealthSnapshot,
 };
 
 #[derive(Deserialize, JsonSchema, Serialize)]

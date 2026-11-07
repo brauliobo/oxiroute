@@ -7,7 +7,7 @@ use oxiroute_rtmp::{
 use crate::{
     GenerationError, HealthSupervisor, ListenerReservations, PreparedTls, RoundRobinPool,
     RuntimePlan, ServiceSpec,
-    monitoring::ListenerRegistrationTransaction,
+    observability::monitoring::ListenerRegistrationTransaction,
     rtmp::generation_runtime::{RtmpGenerationRuntime, RtmpRetirement},
     service_plan::GenerationAcquisition,
 };

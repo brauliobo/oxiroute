@@ -365,7 +365,10 @@ impl RuntimeGeneration {
             self.revision().candidate.as_str(),
             self.in_flight()
         );
-        crate::operational_event::emit_retire_forced_close(&self.revision().candidate, reason);
+        crate::observability::operational_event::emit_retire_forced_close(
+            &self.revision().candidate,
+            reason,
+        );
     }
 
     /// Whether a newer generation replaced this one. Unlike a closed accept gate, this never
