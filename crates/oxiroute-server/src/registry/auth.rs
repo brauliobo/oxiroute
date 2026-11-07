@@ -1,4 +1,5 @@
 use std::{
+    fmt::Write as _,
     fs,
     os::unix::fs::{MetadataExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
@@ -187,7 +188,10 @@ pub fn mint_token(id: &str, scope: &str) -> Result<(String, String), openssl::er
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    bytes.iter().fold(String::new(), |mut text, byte| {
+        write!(text, "{byte:02x}").expect("writing to a String cannot fail");
+        text
+    })
 }
 
 /// The token file, reloaded atomically when it changes on disk. A broken edit keeps the last good set.

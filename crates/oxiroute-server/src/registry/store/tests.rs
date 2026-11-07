@@ -26,7 +26,7 @@ fn a_missing_store_loads_empty_and_updates_bump_the_revision() {
     let store = Store::open(&dir.path().join("registry")).expect("open");
     assert_eq!(store.load().expect("load"), StoredRegistry::default());
 
-    let (_, seq) = store
+    let ((), seq) = store
         .update(|registry| (registry.upsert(record("a")), ()))
         .expect("update");
 
@@ -42,7 +42,7 @@ fn an_unchanged_update_does_not_rewrite_or_bump() {
         .update(|registry| (registry.upsert(record("a")), ()))
         .expect("first");
 
-    let (_, seq) = store
+    let ((), seq) = store
         .update(|registry| (registry.upsert(record("a")), ()))
         .expect("same");
 

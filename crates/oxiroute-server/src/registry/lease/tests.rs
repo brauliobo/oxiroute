@@ -11,12 +11,12 @@ fn leases_expire_in_deadline_order_and_only_after_their_ttl() {
     table.grant(key("slow"), clock.now(), Duration::from_secs(30));
     table.grant(key("fast"), clock.now(), Duration::from_secs(10));
 
-    assert!(table.take_expired(clock.now()).is_empty());
+    assert_eq!(table.take_expired(clock.now()), Vec::new());
     clock.advance(Duration::from_secs(10));
     assert_eq!(table.take_expired(clock.now()), [key("fast")]);
     clock.advance(Duration::from_secs(60));
     assert_eq!(table.take_expired(clock.now()), [key("slow")]);
-    assert_eq!(table.len(), 0);
+    assert_eq!(table.remaining(&key("slow"), clock.now()), None);
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn a_renewal_replaces_the_deadline_without_leaving_a_stale_entry() {
     table.grant(key("gpu"), clock.now(), Duration::from_secs(10));
     clock.advance(Duration::from_secs(8));
 
-    assert!(table.take_expired(clock.now()).is_empty());
+    assert_eq!(table.take_expired(clock.now()), Vec::new());
     assert_eq!(
         table.remaining(&key("gpu"), clock.now()),
         Some(Duration::from_secs(2))

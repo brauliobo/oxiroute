@@ -31,7 +31,7 @@ mod planning_errors;
 mod planning_types;
 mod prometheus;
 mod proxy_protocol;
-pub mod registry;
+mod registry;
 mod request_id;
 mod routing;
 mod rtmp_api;

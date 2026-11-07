@@ -34,7 +34,7 @@ fn registering_config() -> oxiroute_config::ValidatedConfig {
 fn registration_and_registry_round_trip_through_every_format() {
     let config = registering_config();
     let render = &config.as_draft().upstream_pools[0];
-    assert!(render.servers.is_empty());
+    assert_eq!(render.servers, Vec::new());
     assert_eq!(
         render
             .registration

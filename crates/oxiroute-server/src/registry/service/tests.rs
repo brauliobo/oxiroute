@@ -385,7 +385,7 @@ fn a_restart_restores_members_with_a_full_lease() {
     assert_eq!(members(&reborn), ["gpu"], "the restart granted a fresh TTL");
     h.clock.advance(Duration::from_secs(2));
     restarted.tick();
-    assert!(members(&reborn).is_empty());
+    assert_eq!(members(&reborn), Vec::<String>::new());
 }
 
 #[test]
@@ -473,7 +473,7 @@ fn an_unwritable_store_refuses_changes_and_leaves_the_pool_untouched() {
     std::fs::set_permissions(h.dir.path(), std::fs::Permissions::from_mode(0o700))
         .expect("restore");
     assert_eq!(result.map(|_| ()), Err(RegistryError::RegistryUnavailable));
-    assert!(members(&render).is_empty());
+    assert_eq!(members(&render), Vec::<String>::new());
     assert!(h.service.status().degraded.is_some());
 }
 
