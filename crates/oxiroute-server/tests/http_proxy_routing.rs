@@ -7475,6 +7475,7 @@ impl ProxyHarness {
         let address = listener.local_addr().expect("proxy address");
         drop(listener);
         let config = ConfigDraft {
+            retirement: None,
             listeners: vec![Listener {
                 name: "http-loopback".into(),
                 bind: socket_bind(address),
@@ -7487,6 +7488,7 @@ impl ProxyHarness {
             }],
             upstream_pools,
             http_services: vec![HttpService {
+                drain_deadline_ms: None,
                 name: "routing".into(),
                 routes,
                 automatic_response_headers,

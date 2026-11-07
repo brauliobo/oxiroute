@@ -43,6 +43,7 @@ impl ProxyHttp for HttpReverseProxy {
             deadline: started_at + self.service.upstream_io_timeout(),
             operation_result: None,
             websocket_reference: None,
+            generation: self.generation.clone(),
             cache_transaction: None,
             cache_capture: None,
             response_buffer: None,
@@ -604,6 +605,7 @@ impl ProxyHttp for HttpReverseProxy {
             .get_write_timeout()
             .map_or(remaining, |timeout| timeout.min(remaining));
         session.set_write_timeout(Some(write_timeout));
+        ctx.close_when_retired(session);
         let refused = response.status == StatusCode::SERVICE_UNAVAILABLE
             && response.headers.contains_key(POOL_UNAVAILABLE_HEADER);
         let status = response.status.as_u16();

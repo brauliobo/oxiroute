@@ -150,11 +150,15 @@ impl<E: ActionExecutor> Master<E> {
                         )?;
                         self.complete_failed_retired()?;
                     } else {
+                        let window = self
+                            .retirement_deadline
+                            .take()
+                            .unwrap_or_else(|| self.config.drain_timeout());
                         self.issue_or_compensate(
                             WorkerRole::Retired,
                             ControlPhase::Drain,
                             now,
-                            self.config.drain_timeout(),
+                            window,
                             FailurePhase::Drain,
                         )?;
                     }

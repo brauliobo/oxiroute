@@ -1028,6 +1028,11 @@ impl HttpSession {
         self.reused_connection = true;
     }
 
+    /// Whether an earlier request was already served on this connection.
+    pub fn is_reused_connection(&self) -> bool {
+        self.reused_connection
+    }
+
     /// Sets the downstream read timeout. This will trigger if we're unable
     /// to read from the stream after `timeout`.
     pub fn set_read_timeout(&mut self, timeout: Option<Duration>) {

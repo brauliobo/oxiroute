@@ -161,6 +161,7 @@ impl Lowerer<'_> {
         extend_sources(&mut sources, &rule.provenance);
         Some(LoweredHttpService {
             service: HttpService {
+                drain_deadline_ms: None,
                 name: name.into(),
                 routes: vec![HttpRoute {
                     host: None,
@@ -254,6 +255,7 @@ impl Lowerer<'_> {
         deduplicate_sources(&mut sources);
         Some(LoweredHttpService {
             service: HttpService {
+                drain_deadline_ms: None,
                 name: name.into(),
                 routes,
                 automatic_response_headers: false,

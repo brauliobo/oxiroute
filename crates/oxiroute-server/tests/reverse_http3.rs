@@ -143,6 +143,7 @@ async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool() {
         resilience: oxiroute_config::PoolResilience::default(),
     });
     config.http_services.push(HttpService {
+        drain_deadline_ms: None,
         name: "web".into(),
         routes: vec![HttpRoute {
             host: None,
@@ -365,6 +366,7 @@ async fn reverse_h3_cache_serves_a_second_get_without_origin_contact() {
         ..HttpProxyPolicy::default()
     };
     config.http_services.push(HttpService {
+        drain_deadline_ms: None,
         name: "web".into(),
         routes: vec![HttpRoute {
             host: None,
@@ -575,6 +577,7 @@ async fn reverse_h3_characterizes_http_policy_parity_and_early_origin_contact() 
         ..HttpProxyPolicy::default()
     };
     let service = HttpService {
+        drain_deadline_ms: None,
         name: "web".into(),
         routes: vec![
             HttpRoute {
@@ -731,8 +734,17 @@ async fn reverse_h3_characterizes_http_policy_parity_and_early_origin_contact() 
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
 async fn daemon_reloads_reverse_h3_while_active_request_drains_and_rejects_new_streams() {
+    reload_reverse_h3_while_a_request_is_in_flight(Duration::ZERO).await;
+}
+
+#[tokio::test]
+async fn reverse_h3_request_outlives_the_old_five_second_retirement_drain() {
+    reload_reverse_h3_while_a_request_is_in_flight(Duration::from_millis(6_500)).await;
+}
+
+#[allow(clippy::too_many_lines)]
+async fn reload_reverse_h3_while_a_request_is_in_flight(hold: Duration) {
     let (origin_address, origin_started, release_origin, origin_task) = spawn_slow_h3_origin();
     let management_address = process_support::reserve_tcp_address();
     let listener_address = reserve_udp_address();
@@ -747,6 +759,7 @@ async fn daemon_reloads_reverse_h3_while_active_request_drains_and_rejects_new_s
         vec![h3_pool(origin_address)],
         Some(8),
     );
+    config.http_services[0].upstream_io_timeout_ms = 20_000;
     config.management = Some(Management {
         bind: management_address,
         ui_dir: None,
@@ -826,6 +839,7 @@ async fn daemon_reloads_reverse_h3_while_active_request_drains_and_rejects_new_s
     .await
     .expect("candidate H3 generation activation timeout");
 
+    sleep(hold).await;
     release_origin.send(()).expect("release active H3 request");
     let response = timeout(Duration::from_secs(10), old_stream.recv_response())
         .await
@@ -1027,6 +1041,7 @@ async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
         policy: oxiroute_config::TlsPolicy::default(),
     });
     config.http_services.push(HttpService {
+        drain_deadline_ms: None,
         name: "web".into(),
         routes: vec![HttpRoute {
             host: None,
@@ -1730,6 +1745,7 @@ fn proxy_service(max_request_body_bytes: u64) -> HttpService {
 
 fn reverse_service(action: HttpRouteAction) -> HttpService {
     HttpService {
+        drain_deadline_ms: None,
         name: "web".into(),
         routes: vec![HttpRoute {
             host: None,

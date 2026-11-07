@@ -75,6 +75,7 @@ use crate::{
 };
 
 mod management;
+mod retirement;
 mod rtmp;
 mod tls;
 mod upstream;
@@ -109,6 +110,7 @@ pub(crate) fn validate_config_in_place(config: &mut ConfigDraft) -> Result<(), C
         config.max_connections,
     )?;
 
+    retirement::validate_retirement(config)?;
     validate_management(config.management.as_ref())?;
     validate_stats(config.stats.as_ref())?;
     validate_certificates(&mut config.certificates)?;

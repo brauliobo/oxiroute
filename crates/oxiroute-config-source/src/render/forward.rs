@@ -66,6 +66,7 @@ impl Renderer {
                 ForwardAuditMode::Metadata => "metadata",
             },
         );
+        self.optional_integer_field("drain_deadline_ms", service.drain_deadline_ms);
         Ok(())
     }
 
@@ -294,6 +295,7 @@ impl Renderer {
             lifetime_timeout_ms,
             proxy_protocol,
             udp,
+            drain_deadline_ms,
         } = service;
 
         self.string_field("name", name);
@@ -310,6 +312,7 @@ impl Renderer {
             Self::proxy_protocol,
         );
         self.optional_table_field("udp", udp.as_ref(), Self::udp_policy);
+        self.optional_integer_field("drain_deadline_ms", *drain_deadline_ms);
     }
 
     fn udp_policy(&mut self, policy: &UdpPolicy) {

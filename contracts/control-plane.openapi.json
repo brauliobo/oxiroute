@@ -711,6 +711,21 @@
               }
             ]
           },
+          "maxRetiredGenerations": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pendingApply": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingApplyDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "prepares": {
             "format": "uint64",
             "minimum": 0,
@@ -727,6 +742,12 @@
               "string",
               "null"
             ]
+          },
+          "retiredGenerations": {
+            "items": {
+              "$ref": "#/components/schemas/RetiredGenerationDto"
+            },
+            "type": "array"
           },
           "rollbacks": {
             "format": "uint64",
@@ -750,7 +771,10 @@
           "activations",
           "configRejections",
           "failures",
-          "rollbacks"
+          "rollbacks",
+          "retiredGenerations",
+          "maxRetiredGenerations",
+          "pendingApply"
         ],
         "type": "object"
       },
@@ -1235,6 +1259,21 @@
         ],
         "type": "string"
       },
+      "PendingApplyDto": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision",
+          "reason"
+        ],
+        "type": "object"
+      },
       "Phase": {
         "enum": [
           "routed",
@@ -1429,6 +1468,48 @@
           "total",
           "truncated",
           "requests"
+        ],
+        "type": "object"
+      },
+      "RetiredGenerationDto": {
+        "properties": {
+          "ageSeconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "deadlineRemainingSeconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "inFlight": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "inFlightByKind": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision",
+          "state",
+          "ageSeconds",
+          "deadlineRemainingSeconds",
+          "inFlight",
+          "inFlightByKind"
         ],
         "type": "object"
       },

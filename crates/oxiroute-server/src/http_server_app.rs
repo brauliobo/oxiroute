@@ -14,7 +14,7 @@ use pingora::{
     },
     server::ShutdownWatch,
 };
-use tokio::sync::watch;
+use tokio::{sync::watch, task::JoinHandle};
 
 use crate::listener_runtime::{AdmissionError, ListenerRuntime};
 use crate::{ListenerMetrics, RuntimeGeneration, RuntimeReferenceKind, TlsProfilePlan};
@@ -90,6 +90,24 @@ where
     async fn cleanup(&self) {
         self.inner.cleanup().await;
     }
+}
+
+fn retirement_monitor(
+    generation: &RuntimeGeneration,
+    process_shutdown: &ShutdownWatch,
+) -> (ShutdownWatch, JoinHandle<()>) {
+    let mut retired = generation.retirement_signal();
+    let mut process_shutdown = process_shutdown.clone();
+    let (shutdown_tx, shutdown_rx) =
+        watch::channel(*process_shutdown.borrow() || *retired.borrow());
+    let monitor = tokio::spawn(async move {
+        tokio::select! {
+            _ = retired.wait_for(|retired| *retired) => {}
+            _ = process_shutdown.wait_for(|stopping| *stopping) => {}
+        }
+        let _ = shutdown_tx.send(true);
+    });
+    (shutdown_rx, monitor)
 }
 
 fn log_admission_error(protocol: &str, error: &AdmissionError) {
@@ -205,6 +223,11 @@ where
                     }
                 }
             });
+            (Some(shutdown_rx), Some(monitor))
+        } else if let Some(generation) = self.generation.as_ref() {
+            // A replaced generation closes its idle HTTP/1 connections and lets a busy one finish
+            // its request with `Connection: close`.
+            let (shutdown_rx, monitor) = retirement_monitor(generation, shutdown);
             (Some(shutdown_rx), Some(monitor))
         } else {
             (None, None)

@@ -87,7 +87,7 @@ pub(super) async fn run_reverse_connection(
             }
         }
     };
-    let deadline = Instant::now() + H3_GRACEFUL_DRAIN_TIMEOUT;
+    let deadline = Instant::now() + h3_drain_window(&generation, &shutdown);
     let goaway_sent = if graceful {
         drain_h3_connection(&mut h3, deadline).await
     } else {
@@ -186,7 +186,7 @@ pub(super) async fn run_connection(
             }
         }
     };
-    let deadline = Instant::now() + H3_GRACEFUL_DRAIN_TIMEOUT;
+    let deadline = Instant::now() + h3_drain_window(&generation, &shutdown);
     let goaway_sent = if graceful {
         drain_h3_connection(&mut h3, deadline).await
     } else {

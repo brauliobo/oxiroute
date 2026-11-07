@@ -226,6 +226,7 @@ impl MasterRunner {
                     if let Some(detail) = apply_catalog_events(catalog, &events, book)? {
                         reports.replacement_failed(master, detail);
                     }
+                    reports.retired.report(master, now);
                     let forced_reload = catalog.candidate().is_none()
                         && reload_requested.swap(false, Ordering::AcqRel);
                     if catalog.candidate().is_none() && (forced_reload || reload.next_trigger(now))
@@ -246,11 +247,13 @@ impl MasterRunner {
                     return Err(master_failure("unexpected early shutdown").into());
                 }
                 _ => {
-                    let events = master.poll(Instant::now())?;
+                    let now = Instant::now();
+                    let events = master.poll(now)?;
                     log_master_events(&events);
                     if let Some(detail) = apply_catalog_events(catalog, &events, book)? {
                         reports.replacement_failed(master, detail);
                     }
+                    reports.retired.report(master, now);
                     thread::sleep(MASTER_POLL_INTERVAL);
                 }
             }
@@ -355,6 +358,16 @@ impl MasterRunner {
         book.begin(reservations, manifest, &changes, &revision);
         reports.candidate_file = Some(file.clone());
         reports.accept(master);
+        let window = retirement_window(
+            &catalog.active().payload().config,
+            std::env::var_os(RELOAD_DRAIN_ENV).as_deref(),
+        );
+        info!(
+            "supervised master lets the replaced worker drain for up to {} seconds",
+            window.as_secs()
+        );
+        reports.retired.begin(window);
+        master.set_retirement_deadline(window + RETIREMENT_BACKSTOP);
         if let Err(error) =
             master.replace_with_listeners(factory, candidate, listeners, Instant::now())
         {

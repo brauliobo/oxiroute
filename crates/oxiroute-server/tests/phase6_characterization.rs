@@ -306,6 +306,7 @@ fn characterization_config(
         resilience: oxiroute_config::PoolResilience::default(),
     }];
     config.http_services = vec![HttpService {
+        drain_deadline_ms: None,
         name: "phase6-web".into(),
         routes: vec![HttpRoute {
             host: None,

@@ -8,6 +8,7 @@ impl Renderer {
             max_request_body_bytes,
             gzip,
             access_log,
+            drain_deadline_ms,
         } = service;
 
         self.string_field("name", name);
@@ -35,6 +36,7 @@ impl Renderer {
             None => self.nil_field("gzip"),
         }
         self.access_log_field("access_log", access_log.as_ref(), "HTTP service", name)?;
+        self.optional_integer_field("drain_deadline_ms", *drain_deadline_ms);
         Ok(())
     }
 

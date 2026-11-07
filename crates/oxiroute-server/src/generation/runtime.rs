@@ -13,6 +13,7 @@ pub struct RuntimeGeneration {
     pub(super) revision: GenerationRevision,
     runtime_lifecycle: AtomicU8,
     runtime_failed: AtomicBool,
+    retired: tokio::sync::watch::Sender<bool>,
 }
 
 const RUNTIME_PREPARED: u8 = 0;
@@ -34,6 +35,7 @@ impl RuntimeGeneration {
             revision: prepared.revision,
             runtime_lifecycle: AtomicU8::new(RUNTIME_PREPARED),
             runtime_failed: AtomicBool::new(false),
+            retired: tokio::sync::watch::channel(false).0,
         }
     }
 
@@ -327,6 +329,60 @@ impl RuntimeGeneration {
     #[must_use]
     pub fn active_references(&self, kind: RuntimeReferenceKind) -> u64 {
         self.references[kind.index()].load(Ordering::Acquire)
+    }
+
+    /// How long work admitted by this generation may continue after it is replaced.
+    #[must_use]
+    pub fn retirement_deadline(&self) -> Duration {
+        Duration::from_millis(self.config.retirement_deadline_ms())
+    }
+
+    /// Reports that this generation is being closed before its work ended; `reason` is
+    /// `drain_deadline` or `shutdown`.
+    pub fn announce_forced_close(&self, reason: &str) {
+        log::warn!(
+            "retired generation {} closed by {reason} with {} requests in flight",
+            self.revision().candidate.as_str(),
+            self.in_flight()
+        );
+        crate::operational_event::emit_retire_forced_close(&self.revision().candidate, reason);
+    }
+
+    /// Whether a newer generation replaced this one. Unlike a closed accept gate, this never
+    /// reverts, and an operator drain of the active generation does not set it.
+    #[must_use]
+    pub fn retired(&self) -> bool {
+        *self.retired.borrow()
+    }
+
+    /// Records that a newer generation replaced this one; idle HTTP/1 connections end and busy
+    /// ones close after their response.
+    pub fn mark_retired(&self) {
+        self.retired.send_replace(true);
+    }
+
+    /// Resolves with `true` once this generation is replaced.
+    #[must_use]
+    pub fn retirement_signal(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.retired.subscribe()
+    }
+
+    /// Connections and streams admitted by this generation that have not ended.
+    #[must_use]
+    pub fn in_flight(&self) -> u64 {
+        self.references
+            .iter()
+            .map(|counter| counter.load(Ordering::Acquire))
+            .sum()
+    }
+
+    #[must_use]
+    pub fn in_flight_by_kind(&self) -> BTreeMap<&'static str, u64> {
+        RuntimeReferenceKind::ALL
+            .into_iter()
+            .map(|kind| (kind.label(), self.active_references(kind)))
+            .filter(|&(_, count)| count != 0)
+            .collect()
     }
 
     #[must_use]

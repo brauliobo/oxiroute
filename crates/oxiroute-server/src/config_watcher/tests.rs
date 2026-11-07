@@ -524,6 +524,7 @@ fn haproxy_source(listener_port: u16, upstream_port: u16) -> String {
 
 fn empty_config() -> ConfigDraft {
     ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,

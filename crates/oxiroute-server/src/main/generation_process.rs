@@ -339,7 +339,7 @@ impl GenerationProcess {
         }
     }
 
-    fn request_shutdown(&self) {
+    pub(super) fn request_shutdown(&self) {
         self.generation.stop_accepting();
         let _ = self.shutdown.send(true);
     }
@@ -488,10 +488,22 @@ pub(super) fn supervise_generations(
                 }
             })
             .collect();
+        for expired in manager.expire_retired() {
+            if let Some(process) = retired
+                .iter()
+                .find(|process| Arc::ptr_eq(&process.generation, &expired))
+            {
+                process.request_shutdown();
+            }
+        }
         let Some(candidate) = manager.candidate() else {
             thread::sleep(Duration::from_millis(20));
             continue;
         };
+        if manager.defer_for_retired_cap(&candidate) {
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        }
         let startup_deadline = std::time::Instant::now() + GENERATION_STARTUP_TIMEOUT;
         let mut startup = match manager.begin_candidate_start(&candidate) {
             Ok(startup) => startup,

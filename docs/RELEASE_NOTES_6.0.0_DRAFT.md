@@ -54,6 +54,27 @@ A pool keeps serving when health checks or passive ejection would otherwise take
 - New `retry.budget` (`per_second`, `ratio_percent`) caps the retries of a route so that they cannot
   amplify an outage, and `retry.jitter_percent` spreads the same-server retry delay.
 
+## Generation retirement
+
+- An idle HTTP/1 keep-alive connection no longer holds a replaced generation, so it can no longer
+  delay the next apply until an operator resets the socket. It is closed when the next revision is
+  applied; a request in progress finishes with `Connection: close`.
+- New `retirement` block: `drain_deadline_ms` (1 s to 24 h) bounds how long a replaced generation
+  serves work already in progress before it is closed, and `max_retired_generations` (1 to 16,
+  default 4) bounds how many may drain at once. An HTTP, forward proxy or L4 service may set its own
+  `drain_deadline_ms`, which only raises the deadline. The default is the larger of 3 hours and the
+  longest HTTP `upstream_io_timeout_ms`, so a request is never cut earlier than its own deadline.
+  `OXIROUTE_RELOAD_DRAIN_SECONDS` still works and is deprecated.
+- The HTTP/3 drain of a replaced generation follows that deadline instead of a fixed 5 seconds.
+- `generation status` and `GET /api/v1/generations` list draining generations (`retiredGenerations`,
+  `maxRetiredGenerations`, `pendingApply`); new metrics `oxiroute_generation_retired`,
+  `oxiroute_generation_retired_age_seconds`, `oxiroute_generation_in_flight` and
+  `oxiroute_generation_forced_close_total`, and a `generation_retire` event.
+- Limits: under the supervising master one replaced worker drains at a time, so a second apply
+  waits while a long request keeps the first alive. The retired worker is listed with its
+  connection total instead of work by protocol. A retired worker closes itself at the deadline; the master kills it 10 seconds
+  later if it has not left. Stopping the service still ends long jobs after `TimeoutStopSec=15s`.
+
 ## Observability
 
 - Every HTTP request carries `x-request-id`: a well formed incoming value is kept, otherwise one is

@@ -233,6 +233,7 @@ impl GenerationManager {
         let active = Arc::clone(&candidate.generation);
         if let Some(previous) = state.active.replace(Arc::clone(&active)) {
             active.restore_administrative_states(&previous.administrative_states());
+            state.retired.retire(Arc::clone(&previous), Instant::now());
             let evicted = state.previous.replace(previous);
             if let Some(evicted) = &evicted {
                 let mut retirements = self

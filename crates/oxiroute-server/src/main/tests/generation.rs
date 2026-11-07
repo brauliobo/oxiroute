@@ -6,6 +6,7 @@ async fn generation_runtime_marker_publishes_readiness_after_start_claim() {
     let directory = tempfile::tempdir().expect("directory");
     let path = directory.path().join("oxiroute.kdl");
     let config = ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,
@@ -276,6 +277,7 @@ fn generation_join_detaches_at_the_absolute_process_deadline() {
     let directory = tempfile::tempdir().expect("directory");
     let path = directory.path().join("oxiroute.kdl");
     let config = ConfigDraft {
+        retirement: None,
         version: 1,
         max_connections: None,
         management: None,

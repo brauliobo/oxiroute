@@ -30,6 +30,7 @@ async fn daemon_rejects_h3_extended_connect_without_tcp_or_h1_fallback() {
         policy: oxiroute_config::TlsPolicy::default(),
     });
     config.forward_proxy_services.push(ForwardProxyService {
+        drain_deadline_ms: None,
         name: "forward".into(),
         enabled_versions: vec![ForwardHttpVersion::H1, ForwardHttpVersion::H3],
         allow_absolute_form: true,
