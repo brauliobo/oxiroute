@@ -979,6 +979,62 @@ Each server runs its first probe immediately, then waits `fast_interval_ms` whil
 interval uses `interval_ms`. A slow server does not shift another server's schedule, even within the
 same pool. All pools share a limit of 32 concurrent probes, and a server never overlaps its probes.
 
+### Pool canary
+
+`canary` is optional on a pool. Active health checks ask each server whether it is up; the canary asks
+the pool the question a client asks. Every `interval_ms` the runtime selects a server exactly like a
+client request would (algorithm, `max_connections`, administrative state, ejection), sends one `GET`
+and compares the status. It never waits for capacity and never takes a slot a client needs: when every
+selectable server is at its `max_connections` the run is skipped and counted as `busy`. A canary does not
+eject servers or feed passive health.
+
+```lua
+upstream_pools = {
+  {
+    name = "farm",
+    servers = { { name = "a", endpoint = { type = "socket", address = "192.0.2.10:9000" } } },
+    canary = { path = "/healthz/deep", host = "farm.example.com", expected_status = 200,
+               interval_ms = 30000, timeout_ms = 5000, max_latency_ms = 2000 },
+  },
+}
+```
+
+| `canary` field | Required | Default | Constraint |
+| --- | --- | --- | --- |
+| `path` | yes | none | Absolute path with optional query, at most 1024 visible ASCII bytes |
+| `host` | no | none | `Host` header value without spaces; absent sends none |
+| `expected_status` | no | `200` | `100` through `599` |
+| `interval_ms` | no | `30000` | `1000` through `86400000` |
+| `timeout_ms` | no | `5000` | `100` through `interval_ms`; bounds the whole request |
+| `max_latency_ms` | no | none | `1` through `timeout_ms`; a correct answer slower than this is `slow` |
+
+The request is plain HTTP/1.1, so a canary is rejected on a pool with `tls` or a Unix endpoint, like
+`health_check`. Results per run: `ok`, `slow`, `failed` (connection, timeout, protocol or wrong status),
+`busy`, and `unavailable` (no server was selectable; the pool's availability already reports that). The
+latest result is exported as `oxiroute_canary_success{pool}` (1 for `ok` and `slow`),
+`oxiroute_canary_duration_milliseconds{pool}`, `oxiroute_canary_last_success_timestamp_seconds{pool}`,
+`oxiroute_canary_consecutive_failures{pool}` and `oxiroute_canary_runs_total{pool,result}`, appears in
+the `canary` object of each pool in `/status.json`, and is judged by `oxiroute check`: one failed run is a
+WARNING, two in a row a CRITICAL, `slow` is a WARNING, and a canary that has not run for three intervals
+is a WARNING. A transition between answering and failing is logged once at `warn` and `info` level.
+Planned and not configurable: a per-server canary (`mode = "each_server"`; use `health_check`), HTTP
+methods other than `GET`, upstream TLS, and `canary_failed` events.
+
+### Status page
+
+`GET /status.json` is public like `/ready` and carries no secrets: `state` (`ok`, `warning`, `critical`),
+`ready`, `generation` (`id`, `ageSeconds`, `degraded`, `retired`, `retiredOldestAgeSeconds`,
+`lastRejection` with `atUnixMs` and `ageSeconds`), `pools` (`name`, `state`, `available`, `total`,
+`ejected`, `failOpen`, `queued`, `oldestQueueWaitMs`, `inflight`, `oldestInflightMs`, `canary`),
+`overdueRequests`, `stuckRequests` and, when a `registry` block exists, `registry` (`degraded`, `leases`,
+`lateLeases`, `shadowed`, `orphaned`). A lease is late when less than a third of its TTL is left, which
+means its holder missed a heartbeat. The same document is served by the `read` registry sockets, so
+monitoring can read it without a token and without `sudo`. One function judges it: a pool is `critical`
+with no available server and `warning` with fewer than `total`; the page is `critical` when the process is
+not ready, a request is overdue or the registry store is degraded, and `warning` for a stuck request, a
+refused configuration file, a retired generation draining longer than an hour, late leases or a repeatedly
+failing canary. `oxiroute check` applies the same rules with the thresholds its options set.
+
 ### Dynamic server registration
 
 A pool opts in to servers that register themselves at runtime with a `registration` object. A
@@ -1009,8 +1065,8 @@ upstream_pools = {
 ```
 
 `registry` is a top-level, process-wide object. Its endpoints serve only the registry routes
-(`/api/v1/registrations`, `/api/v1/pools/{pool}/servers[/{name}[/heartbeat|/state]]`) and `/ready`
-on `read` sockets; every other path is `404`. The management API serves the same routes to the root
+(`/api/v1/registrations`, `/api/v1/pools/{pool}/servers[/{name}[/heartbeat|/state]]`), plus `/ready`
+and [`/status.json`](#status-page) on `read` sockets; every other path is `404`. The management API serves the same routes to the root
 management token. A change to `registry.endpoints` takes effect when the process restarts; a
 supervised worker handover replaces the unix socket atomically and keeps the lease table.
 
@@ -1022,7 +1078,7 @@ supervised worker handover replaces the unix socket atomically and keeps the lea
 
 | Endpoint | Fields | Behaviour |
 | --- | --- | --- |
-| `type = "unix"` | `path` (absolute), `mode` (decimal, default `432` = `0660`, never world writable), `role` (`read` or `register`), `pools` (for `register`; empty means every registering pool) | Access is the socket's file mode and group, so a worker on the host needs no token. The `read` role serves `GET` routes and `/ready`. The `register` role may add, renew and remove servers only in its `pools`. Audit records name the peer uid. |
+| `type = "unix"` | `path` (absolute), `mode` (decimal, default `432` = `0660`, never world writable), `role` (`read` or `register`), `pools` (for `register`; empty means every registering pool) | Access is the socket's file mode and group, so a worker on the host needs no token. The `read` role serves `GET` routes, `/ready` and `/status.json`. The `register` role may add, renew and remove servers only in its `pools`. Audit records name the peer uid. |
 | `type = "tcp"` | `bind` (non-zero port; non-loopback allowed here only), `allow_cidrs` (peer addresses; empty means no restriction beyond the token) | Requires a scoped bearer token from `tokens_file`; the root management token is never accepted. |
 
 | `registration` field | Default | Constraint |

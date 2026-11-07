@@ -91,7 +91,7 @@ A pool keeps serving when health checks or passive ejection would otherwise take
   (reusing) path, which it read as 0 before. New: `oxiroute_pool_queue_oldest_wait_seconds`,
   `oxiroute_pool_queue_wait_milliseconds`, per-server response, attempt, latency, byte and
   connection limit series, and `oxiroute_generation_info`.
-- New public `GET /status.json` with an overall and per-pool `ok`/`warning`/`critical` state.
+- New public `GET /status.json` with an overall and per-pool `ok`/`warning`/`critical` state; see Monitoring.
 - New per-route `policy.queue_headers` (default off) adds `x-oxiroute-queue-position` and
   `x-oxiroute-queue-wait-ms` to the responses of requests that waited for capacity.
 - Active health check transitions are events (`upstream_endpoint_health`), with the previous and next
@@ -167,6 +167,34 @@ A pool keeps serving when health checks or passive ejection would otherwise take
 - Contracts: `contracts/registry.openapi.json` (new) and `contracts/control-plane.openapi.json`
   (`origin` on the server inventory).
 
+## Monitoring
+
+- New `oxiroute check`: one line and a monitoring-plugin exit code for cron, systemd timers, Nagios,
+  Icinga and NRPE (`0` OK, `1` WARNING, `2` CRITICAL, `3` UNKNOWN), with `--json`. It judges readiness,
+  the available servers of each pool (`--warn-available-below`, `--crit-available-below`), queue wait
+  (`--max-queue-wait`), the oldest request (`--max-inflight-age`), overdue and stuck requests, a refused
+  configuration file, retired generations that do not drain (`--max-retired-age`), registry leases and
+  the pool canaries; `--canary --url URL` also requests a URL through the listener. These codes replace
+  the exit categories 2 to 9 of every other command for `check` only, and a usage error of `check` exits
+  `3`, not `2`.
+- `check` needs no token. It reads the public `/status.json`, over the management endpoint or over
+  `--socket` on a `read` registry socket, so a monitoring user in the socket's group runs it without
+  `sudo`. The `read` socket now serves `/status.json` beside `/ready`.
+- `/status.json` is richer: `ready`, `generation` (`id`, `retired`, `retiredOldestAgeSeconds`,
+  `lastRejection`), per pool `canary`, and `registry` (`leases`, `lateLeases`, `shadowed`, `orphaned`,
+  `degraded`). One implementation judges it for the page and for `check`.
+- New pool `canary` (`path`, `host`, `expected_status`, `interval_ms`, `timeout_ms`, `max_latency_ms`):
+  a `GET` every interval through the pool's own server selection, as a client reaches it. It never
+  waits for capacity and never takes a slot from a client (a saturated pool is skipped and counted as
+  `busy`), and it does not eject servers. Results are `oxiroute_canary_success`,
+  `oxiroute_canary_duration_milliseconds`, `oxiroute_canary_last_success_timestamp_seconds`,
+  `oxiroute_canary_consecutive_failures` and `oxiroute_canary_runs_total{result}` per pool, and appear
+  in `check`: one failed run warns, two in a row are critical. Plain HTTP only, like `health_check`.
+  Not built: a per-server canary (use `health_check`) and canary events.
+- The operator runbook (`docs/user/RUNBOOK.md`) is complete for 6.0: adding and removing machines with
+  and without the registry, drain, rollback, an outage playbook, the NFS-aware worker health gate,
+  local-first and two-front setups, and `check` with cron and systemd examples.
+
 ## Operational Notes
 
 Fail-open applies to HTTP and L4 pools alike. Alerting on `oxiroute_pool_available_servers == 0`
@@ -180,6 +208,8 @@ keeps working: the strict count does not include failed-open servers.
   because the previous release rejects unknown fields; registrations stay in `state_dir` and
   return when the pool opts in again.
 
+- A configuration that uses a pool `canary` must drop it before rolling back, because the previous
+  release rejects unknown fields. `oxiroute check` does not exist before 6.0.
 - Weighted round-robin selection order changed (smooth instead of clumped); the share per server is
   the same.
 - A configuration that uses `passive_health.readmission`, `passive_health.circuit_breaker`, `passive_health.outlier_detection`, `policy.select`, `policy.affinity`, `policy.queue_class`, a pool `queue` or `power_of_two_choices` must drop them
