@@ -2273,6 +2273,7 @@ mod tests {
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
                 connection_reuse: UpstreamConnectionReuse::default(),
+                resilience: oxiroute_config::PoolResilience::default(),
             }],
             http_services: Vec::new(),
             forward_proxy_services: Vec::new(),

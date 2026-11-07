@@ -237,6 +237,15 @@ export interface PassiveHealthConfig {
   recovery_threshold: number
 }
 
+export interface PoolResilienceConfig {
+  fail_open: boolean
+  min_members: number | null
+  ejection_jitter_percent: number
+  queue_while_unavailable_ms: number | null
+  unavailable_retry_after_seconds: number | null
+  unavailable_body: string | null
+}
+
 export interface UpstreamTlsConfig {
   server_name: string
   ca_certificate_path: string | null
@@ -288,6 +297,7 @@ export interface UpstreamPoolConfig {
   connect_timeout_ms: number | null
   server_timeout_ms: number | null
   connection_reuse: 'never' | 'safe' | 'always'
+  resilience: PoolResilienceConfig
 }
 
 export type HttpHostKind =

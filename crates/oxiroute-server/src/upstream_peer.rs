@@ -7,8 +7,9 @@ use std::{
     time::Duration,
 };
 
-use http::{HeaderName, Version};
-use oxiroute_config::{HttpVersion, UpstreamConnectionReuse};
+use bytes::Bytes;
+use http::{HeaderName, HeaderValue, Version};
+use oxiroute_config::{HttpVersion, PoolResilience, UpstreamConnectionReuse};
 use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
 use tokio::time::Instant;
 
@@ -25,6 +26,28 @@ pub(crate) fn is_pool_unavailable(error: &Error) -> bool {
     error.etype() == &POOL_UNAVAILABLE
 }
 
+/// What the 503 of a pool without a selectable server carries beyond its marker header.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct UnavailableResponse {
+    pub(crate) retry_after: Option<HeaderValue>,
+    pub(crate) body: Bytes,
+}
+
+impl UnavailableResponse {
+    pub(crate) fn from_config(resilience: &PoolResilience) -> Self {
+        Self {
+            retry_after: resilience
+                .unavailable_retry_after_seconds
+                .map(HeaderValue::from),
+            body: resilience
+                .unavailable_body
+                .as_deref()
+                .map(|body| Bytes::copy_from_slice(body.as_bytes()))
+                .unwrap_or_default(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct UpstreamPlan {
     connect_timeout: Option<Duration>,
@@ -34,16 +57,14 @@ pub(crate) struct UpstreamPlan {
     selector: Arc<RoundRobinPool>,
     server_timeout: Option<Duration>,
     tls: Option<Arc<UpstreamTlsPlan>>,
+    unavailable: UnavailableResponse,
 }
 
 static NEVER_REUSE_KEY: AtomicU64 = AtomicU64::new(1);
 
 impl UpstreamPlan {
     #[cfg(test)]
-    pub(crate) const fn new(
-        selector: Arc<RoundRobinPool>,
-        tls: Option<Arc<UpstreamTlsPlan>>,
-    ) -> Self {
+    pub(crate) fn new(selector: Arc<RoundRobinPool>, tls: Option<Arc<UpstreamTlsPlan>>) -> Self {
         Self {
             connect_timeout: None,
             connection_reuse: UpstreamConnectionReuse::Safe,
@@ -52,11 +73,12 @@ impl UpstreamPlan {
             selector,
             server_timeout: None,
             tls,
+            unavailable: UnavailableResponse::default(),
         }
     }
 
     #[cfg(test)]
-    pub(crate) const fn with_policy(
+    pub(crate) fn with_policy(
         selector: Arc<RoundRobinPool>,
         tls: Option<Arc<UpstreamTlsPlan>>,
         connect_timeout: Option<Duration>,
@@ -74,7 +96,7 @@ impl UpstreamPlan {
         )
     }
 
-    pub(crate) const fn with_http_policy(
+    pub(crate) fn with_http_policy(
         selector: Arc<RoundRobinPool>,
         tls: Option<Arc<UpstreamTlsPlan>>,
         connect_timeout: Option<Duration>,
@@ -91,7 +113,18 @@ impl UpstreamPlan {
             selector,
             server_timeout,
             tls,
+            unavailable: UnavailableResponse::default(),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_unavailable_response(mut self, unavailable: UnavailableResponse) -> Self {
+        self.unavailable = unavailable;
+        self
+    }
+
+    pub(crate) const fn unavailable_response(&self) -> &UnavailableResponse {
+        &self.unavailable
     }
 
     pub(crate) fn selector(&self) -> &Arc<RoundRobinPool> {
@@ -115,7 +148,9 @@ impl UpstreamPlan {
         {
             self.selector.select_wait_excluding(excluded).await
         } else {
-            self.selector.select_connection_target_excluding(excluded)
+            self.selector
+                .select_connection_target_waiting(excluded)
+                .await
         };
         lease
             .map(SelectedEndpoint::new)
@@ -671,6 +706,7 @@ mod tests {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+            resilience: oxiroute_config::PoolResilience::default(),
         };
         Arc::new(
             crate::tls::prepare_upstream_tls(&pool)

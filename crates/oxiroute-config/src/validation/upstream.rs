@@ -1,6 +1,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+const MAX_EJECTION_JITTER_PERCENT: u8 = 50;
+const MAX_UNAVAILABLE_BODY_BYTES: usize = 1024;
+
 /// Validates upstream-pool identities, resources, endpoints, and health policies.
 ///
 /// # Errors
@@ -166,7 +169,66 @@ fn validate_upstream_pool_definition(
             pool: pool.name.clone(),
         });
     }
-    validate_upstream_pool_timeouts(pool)
+    validate_upstream_pool_timeouts(pool)?;
+    validate_pool_resilience(pool)
+}
+
+fn validate_pool_resilience(pool: &UpstreamPool) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidUpstreamServer {
+        pool: pool.name.clone(),
+        server: "<pool>".into(),
+        field,
+        detail,
+    };
+    let resilience = &pool.resilience;
+    if resilience
+        .min_members
+        .is_some_and(|members| usize::from(members) > pool.servers.len())
+    {
+        return Err(invalid(
+            "resilience.min_members",
+            "must not exceed the number of servers",
+        ));
+    }
+    if resilience.ejection_jitter_percent > MAX_EJECTION_JITTER_PERCENT {
+        return Err(invalid(
+            "resilience.ejection_jitter_percent",
+            "must not exceed 50",
+        ));
+    }
+    validate_optional_safe_limit(
+        "upstream pool",
+        &pool.name,
+        "resilience.queue_while_unavailable_ms",
+        resilience.queue_while_unavailable_ms,
+    )?;
+    if resilience
+        .queue_while_unavailable_ms
+        .is_some_and(|wait| wait > MAX_HTTP_TIMEOUT_MS)
+    {
+        return Err(invalid(
+            "resilience.queue_while_unavailable_ms",
+            "must not exceed 86400000 milliseconds",
+        ));
+    }
+    if resilience
+        .unavailable_retry_after_seconds
+        .is_some_and(|seconds| !(1..=86_400).contains(&seconds))
+    {
+        return Err(invalid(
+            "resilience.unavailable_retry_after_seconds",
+            "must be between 1 and 86400",
+        ));
+    }
+    if resilience.unavailable_body.as_ref().is_some_and(|body| {
+        body.is_empty() || body.len() > MAX_UNAVAILABLE_BODY_BYTES || body.contains('\0')
+    }) {
+        return Err(invalid(
+            "resilience.unavailable_body",
+            "must be 1 to 1024 bytes without NUL",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_upstream_algorithm(pool: &UpstreamPool) -> Result<(), ConfigError> {

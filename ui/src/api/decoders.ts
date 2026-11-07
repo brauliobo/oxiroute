@@ -62,7 +62,8 @@ export function monitoringPool(value: unknown): value is MonitoringPool {
     typeof value.algorithm === 'string' &&
     ['first', 'round_robin', 'least_connections', 'weighted_round_robin'].includes(value.algorithm) &&
     safeInteger(value.availableEndpoints) && safeInteger(value.totalEndpoints) &&
-    decimalString(value.unavailableSelections) && safeInteger(value.queued) &&
+    decimalString(value.unavailableSelections) && decimalString(value.failOpenSelections) &&
+    safeInteger(value.queued) &&
     decimalString(value.queuedTotal) && decimalString(value.queueTimeouts) &&
     decimalString(value.queueCancellations) && Array.isArray(value.endpoints) &&
     value.endpoints.every(monitoringPoolEndpoint)

@@ -784,6 +784,7 @@ fn handoff_runtime_config(
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Safe,
+            resilience: oxiroute_config::PoolResilience::default(),
         }],
         http_services: vec![HttpService {
             name: "handoff-http".into(),
