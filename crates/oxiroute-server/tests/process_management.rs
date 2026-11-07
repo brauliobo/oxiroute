@@ -380,6 +380,88 @@ async fn generation_status_remains_responsive_through_publication() {
     server.shutdown();
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn a_rejected_file_write_is_reported_until_the_next_accepted_file() {
+    let management_address = reserve_tcp_address();
+    let mut config = management_config(management_address, None);
+    let mut server = ServerProcess::start(
+        &config.clone().validate().expect("valid process config"),
+        Some(TOKEN),
+    );
+    server.wait_for_tcp(management_address).await;
+    let authorization = format!("Bearer {TOKEN}");
+    let get = |path: &'static str| {
+        let authorization = authorization.clone();
+        async move {
+            http_request(
+                management_address,
+                "GET",
+                path,
+                &[("Authorization", &authorization)],
+                &[],
+            )
+            .await
+        }
+    };
+    let status = get("/api/v1/generations").await.json()["generation"].clone();
+    assert!(status["lastRejection"].is_null());
+    assert_eq!(status["degraded"], false);
+    let active_revision = status["activeRevision"].clone();
+
+    fs::write(
+        &server.config_path,
+        "return { version = secret_external_value",
+    )
+    .expect("bad write");
+    let deadline = Instant::now() + process_support::PROCESS_TIMEOUT;
+    let status = loop {
+        let status = get("/api/v1/generations").await.json()["generation"].clone();
+        if !status["lastRejection"].is_null() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "rejection was not reported");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    assert_eq!(status["activeRevision"], active_revision);
+    assert_eq!(status["degraded"], true);
+    assert_eq!(get("/ready").await.status, 200);
+    assert_eq!(status["configRejections"], 1);
+    assert_eq!(
+        status["lastRejection"]["diagnostics"][0]["code"],
+        "E_SYNTAX"
+    );
+    assert!(status["lastRejection"]["atUnixMs"].as_u64().is_some());
+    assert!(!status.to_string().contains("secret_external_value"));
+    let events = get("/api/v2/events").await.json().to_string();
+    assert!(events.contains("configuration_reload"), "{events}");
+    let metrics = get("/metrics").await;
+    assert!(
+        String::from_utf8_lossy(&metrics.body).contains("oxiroute_config_rejections_total 1"),
+        "{}",
+        metrics.text()
+    );
+
+    config.max_connections = Some(103);
+    write_config(
+        &server.config_path,
+        &config.clone().validate().expect("valid process config"),
+    );
+    let deadline = Instant::now() + process_support::PROCESS_TIMEOUT;
+    loop {
+        let status = get("/api/v1/generations").await.json()["generation"].clone();
+        if status["lastRejection"].is_null() && status["activeRevision"] != active_revision {
+            assert_eq!(status["degraded"], false);
+            assert_eq!(status["configRejections"], 1);
+            break;
+        }
+        assert!(Instant::now() < deadline, "rejection was not cleared");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    server.shutdown();
+}
+
 #[tokio::test]
 async fn stats_admin_uses_json_targets_and_rejects_duplicate_authorization_headers() {
     let directory = TempDir::new().expect("stats admin directory");

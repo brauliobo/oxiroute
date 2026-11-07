@@ -1136,7 +1136,15 @@ restricted Lua, UCI, or HOCON.
 - The watcher debounces root-directory and resolved-native dependency events, watches exact resolved
   files plus include/glob parent directories, rebuilds that set after each successful resolution, and
   periodically re-resolves the root and native references. Invalid edits are rejected while the last
-  active generation continues serving.
+  active generation continues serving. Every rejection of the file on disk, whether it fails to
+  load, validate or prepare, is logged once at error level on the `oxiroute::config` target with the
+  diagnostic code, the failing setting (a JSON pointer that names list items instead of indexing
+  them) and the line of a KDL syntax error; it also emits a `configuration_reload` event with the
+  outcome `rejected`, raises `oxiroute_config_rejections_total`, and is reported as `lastRejection`
+  (`atUnixMs`, `revision` of the refused file, `diagnostics`) by `generation status` until the next
+  file is accepted. While it is set `degraded` is true, but `/ready` is unaffected because the active
+  generation keeps serving. Diagnostics name settings and rules; they never quote the source or the
+  rejected value.
 
 ## Diagnostics
 

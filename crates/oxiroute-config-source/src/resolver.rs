@@ -110,8 +110,7 @@ pub fn resolve_source_with_format(
         return Err(ConfigSourceError::NoFragments);
     }
 
-    let config = crate::compose_validated_fragments(inline, imported_fragments, native_version)
-        .map_err(|error| ConfigSourceError::Composition(error.to_string()))?;
+    let config = crate::compose_validated_fragments(inline, imported_fragments, native_version)?;
     finish(
         format,
         config,

@@ -70,6 +70,12 @@ The file watcher observes rename-based replacements through the parent directory
 reconciles effective revisions, including strict native references. Use generation status as the
 authority for completion; a durable configuration save may first report `saved_pending_activation`.
 
+A file written to disk that cannot be loaded, validated or prepared is not applied and does not
+stop the running configuration. It is logged as an error with the code and the failing setting (and
+line, for a syntax error), counted by `oxiroute_config_rejections_total`, listed by `events list`
+as `configuration_reload` / `rejected`, and shown by `generation status` as `lastRejection` with
+`degraded: true` until the next acceptable file replaces it.
+
 Listener changes apply on reload in both runtimes, so adding, removing or moving a listener does
 not need a restart and does not interrupt traffic:
 

@@ -164,8 +164,7 @@ pub(crate) struct ReadinessResponse {
 impl ReadinessResponse {
     pub(crate) fn project(runtime: &RuntimeSnapshot, generation: Option<GenerationStatus>) -> Self {
         let ready = generation.as_ref().is_some_and(|status| {
-            status.active_revision.is_some()
-                && !status.degraded
+            status.serving()
                 && runtime.process.administrative_state == AdministrativeState::Ready
                 && runtime.listeners.iter().all(|listener| {
                     listener.state == ListenerRuntimeState::Listening
