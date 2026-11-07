@@ -90,9 +90,11 @@ not need a restart and does not interrupt traffic:
   (or on `systemctl reload oxiroute`) once the address is free.
 
 Validation and a save report the effect in an `I_LISTENER_CHANGES` diagnostic that lists the added,
-removed and kept listeners. In supervised mode the old worker may keep serving long-lived
-connections for up to three hours (`OXIROUTE_RELOAD_DRAIN_SECONDS` in `/etc/oxiroute/oxiroute.env`
-changes the limit), and a further reload waits until it has finished.
+removed and kept listeners. The old generation closes its idle keep-alive connections at once and
+keeps serving work already in progress until it ends or the `retirement.drain_deadline_ms` of that
+configuration passes (default: the larger of three hours and the longest HTTP
+`upstream_io_timeout_ms`; `OXIROUTE_RELOAD_DRAIN_SECONDS` is deprecated). In supervised mode a
+further reload waits while a long request keeps the old worker alive.
 
 Only one change still needs a restart, in either runtime: a Unix listener that keeps its path and
 changes its filesystem mode is valid but `restartRequired`, because the new socket would need the

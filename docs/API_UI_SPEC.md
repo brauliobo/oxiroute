@@ -38,7 +38,7 @@ Implemented and recognized endpoints:
 | `POST` | `/api/v1/servers/administrative-state`, `/api/v1/servers/health-override`, `/api/v1/servers/checks` | Revision-checked server state, observed-health override, or probe enablement changes. |
 | `PUT` | `/api/v1/servers/max-connections` | Revision-checked server capacity override or reset. |
 | `POST` | `/api/v1/servers/refresh-dns` | Resolve every prevalidated target and report explicit non-atomic per-server outcomes. |
-| `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state. |
+| `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state, plus `retiredGenerations` (draining replaced generations, oldest first: `revision`, `state`, `ageSeconds`, `deadlineRemainingSeconds`, `inFlight`, `inFlightByKind`), `maxRetiredGenerations` and `pendingApply` (`revision`, `reason` `retired_cap`). The direct runtime fills the list; the supervising master drains one worker at a time and leaves it empty. |
 | `POST` | `/api/v1/generations/reload`, `/api/v1/generations/rollback`, `/api/v1/generations/drain` | Revision-checked generation preparation, rollback, and drain operations. |
 | `GET` | `/api/v1/tls` | Redacted certificate, managed ACME, and Certbot watcher status. |
 | `POST` | `/api/v1/tls/reconcile` | Revision-checked reconciliation of externally owned Certbot lineages. |
