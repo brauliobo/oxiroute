@@ -474,6 +474,8 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'upstream_pools[].connection_reuse', kind: 'enum' },
   { path: 'upstream_pools[].resilience', kind: 'object' },
   { path: 'upstream_pools[].resilience.fail_open', kind: 'boolean' },
+  { path: 'upstream_pools[].resilience.min_members', kind: 'integer' },
+  { path: 'upstream_pools[].resilience.ejection_jitter_percent', kind: 'integer' },
   { path: 'upstream_pools[].health_check.startup', kind: 'enum' },
   { path: 'upstream_pools[].health_check.fast_interval_ms', kind: 'integer' },
   { path: 'upstream_pools[].health_check.down_interval_ms', kind: 'integer' },

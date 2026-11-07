@@ -159,6 +159,13 @@ fieldset.object-block(data-field="upstream_pools[].resilience")
   label.enable-row(data-field="upstream_pools[].resilience.fail_open")
     input(type="checkbox" v-model="pool.resilience.fail_open")
     span Serve the least-bad server when none is healthy
+  .field-grid
+    label.field(data-field="upstream_pools[].resilience.min_members")
+      span Minimum selectable servers kept by passive ejection
+      input(type="number" min="0" step="1" placeholder="1 with fail-open, otherwise 0" :value="pool.resilience.min_members ?? ''" @input="pool.resilience.min_members = nullableIntegerInput($event)")
+    label.field(data-field="upstream_pools[].resilience.ejection_jitter_percent")
+      span Ejection duration jitter (%)
+      input(type="number" min="0" max="50" step="1" v-model.number="pool.resilience.ejection_jitter_percent")
 </template>
 
 <script setup lang="ts">
@@ -363,6 +370,11 @@ function normalizeHttpVersions(changed: 'min' | 'max'): void {
 
 function nullableInput(event: Event): string | null {
   return (event.target as HTMLInputElement).value || null
+}
+
+function nullableIntegerInput(event: Event): number | null {
+  const value = (event.target as HTMLInputElement).value
+  return value === '' ? null : Number(value)
 }
 
 function isWeightedRoundRobin(algorithm: UpstreamAlgorithm): algorithm is WeightedRoundRobinAlgorithm {

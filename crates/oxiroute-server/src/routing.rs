@@ -1,7 +1,9 @@
 use std::{
     collections::VecDeque,
     error::Error,
-    fmt, io,
+    fmt,
+    hash::{BuildHasher as _, RandomState},
+    io,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::{
@@ -584,6 +586,7 @@ const DEFAULT_PASSIVE_EJECTION_DURATION: Duration = Duration::from_secs(30);
 const DEFAULT_PASSIVE_MAX_EJECTION_DURATION: Duration = Duration::from_mins(5);
 const MAX_PASSIVE_FAILURE_THRESHOLD: u16 = 100;
 const MAX_PASSIVE_EJECTION_DURATION: Duration = Duration::from_hours(24);
+const MAX_EJECTION_JITTER_PERCENT: u8 = 50;
 
 /// Bounded policy for passively ejecting endpoints after attributed upstream failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -592,6 +595,8 @@ pub struct PassiveFailurePolicy {
     pub consecutive_failure_threshold: u16,
     pub initial_ejection_duration: Duration,
     pub max_ejection_duration: Duration,
+    /// Each ejection lasts its backoff duration plus or minus up to this many percent.
+    pub ejection_jitter_percent: u8,
     pub observe: PassiveObserve,
     pub on_error: PassiveOnError,
     pub mark_down: bool,
@@ -611,6 +616,7 @@ impl PassiveFailurePolicy {
             consecutive_failure_threshold,
             initial_ejection_duration,
             max_ejection_duration,
+            ejection_jitter_percent: 0,
             observe: PassiveObserve::Layer7,
             on_error: PassiveOnError::Count,
             mark_down: false,
@@ -629,12 +635,19 @@ impl PassiveFailurePolicy {
             },
             initial_ejection_duration: Duration::from_millis(policy.initial_backoff_ms),
             max_ejection_duration: Duration::from_millis(policy.max_backoff_ms),
+            ejection_jitter_percent: 0,
             observe: policy.observe,
             on_error: policy.on_error,
             mark_down: policy.mark_down,
             mark_up: policy.mark_up,
             recovery_threshold: policy.recovery_threshold,
         }
+    }
+
+    #[must_use]
+    pub const fn with_ejection_jitter_percent(mut self, percent: u8) -> Self {
+        self.ejection_jitter_percent = percent;
+        self
     }
 
     fn observes(self, failure: HealthFailure) -> bool {
@@ -679,6 +692,11 @@ impl PassiveFailurePolicy {
                 detail: "maximum ejection duration must not exceed 24 hours",
             });
         }
+        if self.ejection_jitter_percent > MAX_EJECTION_JITTER_PERCENT {
+            return Err(PoolError::InvalidPassivePolicy {
+                detail: "ejection jitter must not exceed 50 percent",
+            });
+        }
         if self.recovery_threshold == 0 || self.recovery_threshold > MAX_PASSIVE_FAILURE_THRESHOLD {
             return Err(PoolError::InvalidPassivePolicy {
                 detail: "recovery threshold must be between 1 and 100",
@@ -687,14 +705,21 @@ impl PassiveFailurePolicy {
         Ok(())
     }
 
-    fn ejection_duration_for(self, backoff_step: u64) -> Duration {
+    /// The backoff duration for `backoff_step`, spread by the jitter percentage using `entropy`
+    /// and never longer than the maximum.
+    fn ejection_duration_for(self, backoff_step: u64, entropy: u64) -> Duration {
         let exponent = backoff_step.saturating_sub(1).min(31);
         let multiplier = 1_u32 << exponent;
-        self.initial_ejection_duration
+        let backoff = self
+            .initial_ejection_duration
             .checked_mul(multiplier)
             .map_or(self.max_ejection_duration, |duration| {
                 duration.min(self.max_ejection_duration)
-            })
+            });
+        let backoff_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX);
+        let spread_ms = backoff_ms / 100 * u64::from(self.ejection_jitter_percent);
+        let jittered_ms = backoff_ms - spread_ms + entropy % (2 * spread_ms + 1);
+        Duration::from_millis(jittered_ms).min(self.max_ejection_duration)
     }
 }
 
@@ -705,6 +730,7 @@ impl Default for PassiveFailurePolicy {
             consecutive_failure_threshold: DEFAULT_PASSIVE_FAILURE_THRESHOLD,
             initial_ejection_duration: DEFAULT_PASSIVE_EJECTION_DURATION,
             max_ejection_duration: DEFAULT_PASSIVE_MAX_EJECTION_DURATION,
+            ejection_jitter_percent: 0,
             observe: PassiveObserve::Layer7,
             on_error: PassiveOnError::Count,
             mark_down: false,
@@ -718,12 +744,17 @@ impl Default for PassiveFailurePolicy {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PoolResiliencePolicy {
     fail_open: bool,
+    /// Passive ejection leaves at least this many other servers selectable.
+    min_members: usize,
 }
 
 impl PoolResiliencePolicy {
-    pub(crate) const fn from_config(resilience: &PoolResilience) -> Self {
+    pub(crate) fn from_config(resilience: &PoolResilience) -> Self {
         Self {
             fail_open: resilience.fail_open,
+            min_members: resilience
+                .min_members
+                .map_or_else(|| usize::from(resilience.fail_open), usize::from),
         }
     }
 }
@@ -1177,6 +1208,7 @@ impl PoolEndpoint {
         failure: HealthFailure,
         at_unix_ms: u64,
         policy: PassiveFailurePolicy,
+        may_eject: bool,
     ) -> Option<PassiveEjection> {
         if !policy.observes(failure) {
             return None;
@@ -1187,13 +1219,14 @@ impl PoolEndpoint {
             .store(failure as u8, Ordering::Relaxed);
         if self.passively_ejected_at(at_unix_ms)
             || consecutive < u64::from(policy.consecutive_failure_threshold)
+            || !may_eject
         {
             return None;
         }
 
         let ejection_count = increment_saturating(&self.passive_ejection_count);
         let backoff_step = increment_saturating(&self.passive_backoff_step);
-        let duration = policy.ejection_duration_for(backoff_step);
+        let duration = policy.ejection_duration_for(backoff_step, ejection_entropy(at_unix_ms));
         let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
         let ejection_until_unix_ms = at_unix_ms.saturating_add(duration_ms);
         self.passive_ejected.store(true, Ordering::Release);
@@ -1332,6 +1365,10 @@ fn increment_saturating(counter: &AtomicU64) -> u64 {
         .saturating_add(1)
 }
 
+fn ejection_entropy(salt: u64) -> u64 {
+    RandomState::new().hash_one(salt)
+}
+
 fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -1465,22 +1502,43 @@ impl PoolQueue {
 
 #[derive(Debug)]
 struct PoolHealthState {
+    endpoints: Arc<[Arc<PoolEndpoint>]>,
     health_version: AtomicU64,
     health_writer: Mutex<()>,
     passive_policy: PassiveFailurePolicy,
     pool_name: String,
     queue: Arc<PoolQueue>,
+    resilience: PoolResiliencePolicy,
 }
 
 impl PoolHealthState {
-    fn new(pool_name: String, queue: Arc<PoolQueue>, passive_policy: PassiveFailurePolicy) -> Self {
+    fn new(
+        pool_name: String,
+        endpoints: Arc<[Arc<PoolEndpoint>]>,
+        queue: Arc<PoolQueue>,
+        passive_policy: PassiveFailurePolicy,
+        resilience: PoolResiliencePolicy,
+    ) -> Self {
         Self {
+            endpoints,
             health_version: AtomicU64::new(0),
             health_writer: Mutex::new(()),
             passive_policy,
             pool_name,
             queue,
+            resilience,
         }
+    }
+
+    /// Whether ejecting `server` still leaves the configured floor of other selectable servers.
+    fn may_eject(&self, server: &PoolEndpoint, at_unix_ms: u64) -> bool {
+        self.endpoints
+            .iter()
+            .filter(|other| {
+                !std::ptr::eq(other.as_ref(), server) && other.selectable_at(at_unix_ms)
+            })
+            .count()
+            >= self.resilience.min_members
     }
 
     fn record_passive_failure(&self, server: &PoolEndpoint, failure: HealthFailure) {
@@ -1499,7 +1557,12 @@ impl PoolHealthState {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.health_version.fetch_add(1, Ordering::AcqRel);
-            let ejection = server.record_passive_failure(failure, at_unix_ms, self.passive_policy);
+            let ejection = server.record_passive_failure(
+                failure,
+                at_unix_ms,
+                self.passive_policy,
+                self.may_eject(server, at_unix_ms),
+            );
             self.health_version.fetch_add(1, Ordering::Release);
             ejection
         };
@@ -1564,7 +1627,7 @@ impl PoolHealthState {
 pub struct EndpointPool {
     algorithm: UpstreamAlgorithm,
     name: String,
-    endpoints: Box<[Arc<PoolEndpoint>]>,
+    endpoints: Arc<[Arc<PoolEndpoint>]>,
     weighted_schedule: Box<[usize]>,
     health: Arc<PoolHealthState>,
     selection: Mutex<SelectionState>,
@@ -1939,13 +2002,14 @@ impl EndpointPool {
             .into_iter()
             .zip(blueprint.weights.iter().copied())
             .map(|(server, weight)| Arc::new(PoolEndpoint::new(server, startup, weight)))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+            .collect::<Arc<[_]>>();
         let queue = Arc::new(PoolQueue::new(queue_timeout.is_some()));
         let health = Arc::new(PoolHealthState::new(
             name.clone(),
+            Arc::clone(&endpoints),
             Arc::clone(&queue),
             passive_policy,
+            resilience,
         ));
         Self {
             algorithm: blueprint.algorithm.clone(),
@@ -2481,7 +2545,7 @@ impl EndpointPool {
     }
 
     pub fn set_administrative_state(&self, state: AdministrativeState) {
-        for server in &self.endpoints {
+        for server in &*self.endpoints {
             server
                 .administrative_state
                 .store(state as u8, Ordering::Release);

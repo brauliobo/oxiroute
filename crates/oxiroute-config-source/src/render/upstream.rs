@@ -166,6 +166,8 @@ impl Renderer {
 
     fn pool_resilience(&mut self, resilience: &PoolResilience) {
         self.boolean_field("fail_open", resilience.fail_open);
+        self.optional_integer_field("min_members", resilience.min_members);
+        self.integer_field("ejection_jitter_percent", resilience.ejection_jitter_percent);
     }
 
     fn passive_health(&mut self, policy: &PassiveHealthPolicy) {

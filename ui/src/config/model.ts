@@ -239,6 +239,8 @@ export interface PassiveHealthConfig {
 
 export interface PoolResilienceConfig {
   fail_open: boolean
+  min_members: number | null
+  ejection_jitter_percent: number
 }
 
 export interface UpstreamTlsConfig {

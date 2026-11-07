@@ -378,6 +378,11 @@ Current constraints:
   are chosen exactly as without the option. Each fail-open selection increments
   `oxiroute_pool_fail_open_selections_total` and the pool's `failOpenSelections` in the management
   API; `availableEndpoints` and `oxiroute_pool_available_servers` keep reporting the strict count.
+  `min_members` (default `1` with `fail_open`, otherwise `0`; at most the number of servers) stops
+  passive ejection from leaving fewer than that many other servers selectable: a server that would
+  be ejected below the floor keeps counting failures but stays in rotation. `ejection_jitter_percent`
+  (0 through 50, default `0`) spreads each passive ejection by that many percent either way, never
+  beyond `passive_health.max_backoff_ms`, so servers ejected together do not return together.
 - HTTP services MUST contain at least one route. Route pool references MUST resolve.
 - Forward HTTP/1 services support absolute-form requests and classic CONNECT only when H1 is enabled.
   Opt-in RFC 9298 CONNECT-UDP uses an HTTP/1.1 Upgrade request and bounded Capsule Protocol

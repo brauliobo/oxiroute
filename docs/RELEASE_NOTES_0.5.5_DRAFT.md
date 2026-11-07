@@ -12,6 +12,11 @@ it to zero servers. The release remains pre-alpha and retains conservative compa
   Administrative drain, maintenance and a forced-down health override are still honoured, and
   `max_connections` and the queue still apply. A single-backend pool whose application also fails
   its own health path now returns the application's error response.
+- `resilience.min_members` (default 1 with `fail_open`, otherwise 0) keeps that many servers
+  selectable: passive ejection no longer takes the last selectable server out of rotation, so a
+  short burst of application errors cannot turn into a whole backoff of `503` answers.
+- `resilience.ejection_jitter_percent` (0 through 50) randomizes each passive ejection duration so
+  servers ejected together do not return together; the maximum backoff still bounds it.
 - `oxiroute_pool_fail_open_selections_total` and the pool `failOpenSelections` field of the
   management API count the selections made this way.
 
