@@ -253,9 +253,7 @@ impl RtmpCallbackEndpointBlueprint {
         } else {
             return Err(RtmpCallbackError::InvalidUrl);
         };
-        let (authority, path_and_query) = remainder
-            .split_once('/')
-            .map_or((remainder, ""), |value| value);
+        let (authority, path_and_query) = remainder.split_once('/').unwrap_or((remainder, ""));
         if authority.is_empty() || authority.contains('@') {
             return Err(RtmpCallbackError::InvalidUrl);
         }

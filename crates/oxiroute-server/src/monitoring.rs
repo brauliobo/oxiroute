@@ -1729,7 +1729,7 @@ impl ListenerMetrics {
                 return Err(error);
             }
         };
-        let admission = self.state.shared.active_connections.fetch_update(
+        let admission = self.state.shared.active_connections.try_update(
             Ordering::AcqRel,
             Ordering::Acquire,
             |current| {
@@ -1848,7 +1848,7 @@ impl ListenerMetrics {
 
     /// Accounts for a retry that the HTTP proxy handed back to Pingora.
     pub fn record_retry_attempt(&self) {
-        let _ = self.process.retry_attempts.fetch_update(
+        let _ = self.process.retry_attempts.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.saturating_add(1)),
@@ -2096,7 +2096,7 @@ impl ProcessAdmissionState {
         }
         let admission = self
             .active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 if (enforce_administrative_state
                     && AdministrativeState::from_u8(
                         self.administrative_state.load(Ordering::Acquire),
@@ -2756,7 +2756,7 @@ fn checked_atomic_add(
     name: &'static str,
 ) -> Result<(), MetricsError> {
     counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(value)
         })
         .map(|_| ())
@@ -2804,7 +2804,7 @@ fn latency_snapshot(
 }
 
 fn decrement_counter(counter: &AtomicU64) {
-    let result = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let result = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         current.checked_sub(1)
     });
     debug_assert!(result.is_ok(), "active connection counter underflowed");

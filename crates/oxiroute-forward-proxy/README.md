@@ -23,8 +23,8 @@ forwarding and eligible GET/HEAD memory or persistent caching. CONNECT-UDP remai
 
 The selected Rust-1.97-compatible H3 stack is `h3 0.0.8`, `h3-quinn 0.0.10`, and Quinn 0.11. The
 workspace uses Rust `1.97.1` as its active MSRV. The
-workspace manifest patches `h3` to verified upstream commit `e07e6941`, which is the focused
-standard-CONNECT encoder fix later merged upstream: classic CONNECT omits `:scheme` and `:path` and
+workspace manifest patches `h3` to upstream commit `43745ad8`, which includes the focused
+standard-CONNECT encoder fix: classic CONNECT omits `:scheme` and `:path` and
 emits only `:method` and `:authority`. The patched crate declares Rust 1.74. Extended CONNECT is
 explicitly rejected and is not used as a TCP CONNECT substitute.
 

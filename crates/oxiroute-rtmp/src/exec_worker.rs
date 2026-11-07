@@ -188,7 +188,7 @@ impl ExecWorker {
         let reserved = self
             .inner
             .queued_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
                 queued
                     .checked_add(length)
                     .filter(|total| *total <= self.inner.max_queue_bytes)

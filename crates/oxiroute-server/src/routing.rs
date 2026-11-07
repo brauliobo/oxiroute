@@ -950,7 +950,7 @@ impl PoolEndpoint {
 
     fn try_acquire_capacity(&self, now_unix_ms: u64) -> Option<()> {
         self.active_work
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 if !self.selectable_at(now_unix_ms)
                     || self.max_connections().is_some_and(|limit| active >= limit)
                 {
@@ -964,11 +964,11 @@ impl PoolEndpoint {
     }
 
     fn release_capacity(&self, queue: &PoolQueue) {
-        let released =
-            self.active_work
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                    active.checked_sub(1)
-                });
+        let released = self
+            .active_work
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                active.checked_sub(1)
+            });
         debug_assert!(released.is_ok(), "endpoint lease counter underflow");
         queue.notify_capacity_waiters();
     }
@@ -1261,7 +1261,7 @@ const fn nonzero(value: u64) -> Option<u64> {
 
 fn increment_saturating(counter: &AtomicU64) -> u64 {
     counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             Some(value.saturating_add(1))
         })
         .unwrap_or(u64::MAX)
@@ -1684,7 +1684,7 @@ impl Drop for LifetimeWaitGuard<'_> {
     fn drop(&mut self) {
         let released = self
             .waiters
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |waiters| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |waiters| {
                 waiters.checked_sub(1)
             });
         debug_assert!(released.is_ok(), "lifetime waiter counter underflow");
@@ -1791,7 +1791,7 @@ impl Drop for QueueWaitGuard {
 }
 
 fn decrement_queue_count(counter: &AtomicU64) {
-    let released = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+    let released = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
         queued.checked_sub(1)
     });
     debug_assert!(released.is_ok(), "pool queue counter underflow");
