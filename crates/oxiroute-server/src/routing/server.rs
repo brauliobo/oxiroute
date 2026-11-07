@@ -29,7 +29,7 @@ impl Admission {
 }
 
 /// Where a pool member comes from: the configuration file or a runtime registration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, schemars::JsonSchema, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerOrigin {
     Static,

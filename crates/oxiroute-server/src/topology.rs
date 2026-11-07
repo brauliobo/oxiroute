@@ -9,7 +9,7 @@ use oxiroute_config::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::{ListenerRuntimeState, monitoring::RuntimeHealthSnapshot};
+use crate::{ListenerRuntimeState, ServerOrigin, monitoring::RuntimeHealthSnapshot};
 
 mod attributes;
 mod builder;
@@ -17,7 +17,7 @@ mod ids;
 
 use attributes::endpoint_state;
 use builder::TopologyBuilder;
-use ids::{edge_kind_name, stable_id};
+use ids::{edge_kind_name, endpoint_id, stable_id};
 
 pub const TOPOLOGY_SCHEMA_VERSION: u32 = 1;
 
@@ -28,6 +28,7 @@ pub struct TopologySnapshot {
     edges: Box<[TopologyEdge]>,
     listener_nodes: HashMap<String, String>,
     pool_nodes: HashMap<String, String>,
+    pool_paths: HashMap<String, String>,
     endpoint_nodes: HashMap<(String, String), String>,
 }
 
@@ -69,6 +70,7 @@ impl TopologySnapshot {
         );
         self.add_listener_overlays(runtime, &mut overlays)?;
         self.add_pool_overlays(runtime, &mut overlays)?;
+        let registered = self.registered_servers(runtime);
 
         serde_json::to_value(TopologyResponse {
             schema_version: TOPOLOGY_SCHEMA_VERSION,
@@ -77,11 +79,66 @@ impl TopologySnapshot {
                 runtime: runtime_state(&runtime.listeners),
                 sampled_at_unix_ms: runtime.sampled_at_unix_ms,
             },
-            nodes: &self.nodes,
-            edges: &self.edges,
+            nodes: self
+                .nodes
+                .iter()
+                .chain(registered.iter().map(|(node, _)| node))
+                .collect(),
+            edges: self
+                .edges
+                .iter()
+                .chain(registered.iter().map(|(_, edge)| edge))
+                .collect(),
             overlays,
         })
         .map_err(TopologyResponseError::Serialize)
+    }
+
+    /// Servers that joined at runtime are not in the compiled graph; they hang off their pool.
+    fn registered_servers(
+        &self,
+        runtime: &RuntimeHealthSnapshot,
+    ) -> Vec<(TopologyNode, TopologyEdge)> {
+        runtime
+            .upstream_pools
+            .iter()
+            .filter_map(|pool| {
+                Some((
+                    pool,
+                    self.pool_nodes.get(&pool.name)?,
+                    self.pool_paths.get(&pool.name)?,
+                ))
+            })
+            .flat_map(|(pool, pool_node, pool_path)| {
+                pool.endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.origin == ServerOrigin::Dynamic)
+                    .map(move |endpoint| {
+                        let id = endpoint_id(&pool.name, &endpoint.name);
+                        let config_path = format!("{pool_path}/registration");
+                        let node = TopologyNode {
+                            id: id.clone(),
+                            kind: TopologyNodeKind::Endpoint,
+                            name: endpoint.name.clone(),
+                            config_path: config_path.clone(),
+                            attributes: json!({
+                                "type": "socket",
+                                "origin": "dynamic",
+                                "address": endpoint.address.to_string(),
+                                "maxConnections": endpoint.max_connections,
+                                "serverName": endpoint.name,
+                            }),
+                        };
+                        let edge = TopologyEdge::new(
+                            TopologyEdgeKind::PoolEndpoint,
+                            pool_node,
+                            &id,
+                            config_path,
+                        );
+                        (node, edge)
+                    })
+            })
+            .collect()
     }
 
     fn add_listener_overlays(
@@ -149,15 +206,19 @@ impl TopologySnapshot {
                 }),
             });
             for endpoint in &pool.endpoints {
-                let node_id = self
-                    .endpoint_nodes
-                    .get(&(pool.name.clone(), endpoint.name.clone()))
-                    .ok_or_else(|| TopologyResponseError::UnknownEndpoint {
-                        pool: pool.name.clone(),
-                        endpoint: endpoint.name.clone(),
-                    })?;
+                let node_id = if endpoint.origin == ServerOrigin::Dynamic {
+                    endpoint_id(&pool.name, &endpoint.name)
+                } else {
+                    self.endpoint_nodes
+                        .get(&(pool.name.clone(), endpoint.name.clone()))
+                        .ok_or_else(|| TopologyResponseError::UnknownEndpoint {
+                            pool: pool.name.clone(),
+                            endpoint: endpoint.name.clone(),
+                        })?
+                        .clone()
+                };
                 overlays.push(TopologyRuntimeOverlay {
-                    node_id: node_id.clone(),
+                    node_id,
                     state: endpoint_state(endpoint.state),
                     metrics: json!({
                         "activeConnections": endpoint.active_connections.to_string(),
@@ -285,8 +346,8 @@ impl TopologyEdge {
 struct TopologyResponse<'a> {
     schema_version: u32,
     state: TopologyState,
-    nodes: &'a [TopologyNode],
-    edges: &'a [TopologyEdge],
+    nodes: Vec<&'a TopologyNode>,
+    edges: Vec<&'a TopologyEdge>,
     overlays: Vec<TopologyRuntimeOverlay>,
 }
 

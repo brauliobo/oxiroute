@@ -17,6 +17,7 @@ pub(super) struct TopologyBuilder {
     edges: Vec<TopologyEdge>,
     listener_nodes: HashMap<String, String>,
     pool_nodes: HashMap<String, String>,
+    pool_paths: HashMap<String, String>,
     endpoint_nodes: HashMap<(String, String), String>,
 }
 
@@ -34,6 +35,7 @@ impl TopologyBuilder {
                 config.listeners.len() + config.stats.as_ref().map_or(0, |stats| stats.pages.len()),
             ),
             pool_nodes: HashMap::with_capacity(config.upstream_pools.len()),
+            pool_paths: HashMap::with_capacity(config.upstream_pools.len()),
             endpoint_nodes: HashMap::with_capacity(endpoint_capacity),
         }
     }
@@ -343,6 +345,8 @@ impl TopologyBuilder {
                 }),
             });
             self.pool_nodes.insert(pool.name.clone(), id.clone());
+            self.pool_paths
+                .insert(pool.name.clone(), config_path.clone());
 
             for (server_index, server) in pool.servers.iter().enumerate() {
                 let endpoint = &server.endpoint;
@@ -378,6 +382,7 @@ impl TopologyBuilder {
             edges: self.edges.into_boxed_slice(),
             listener_nodes: self.listener_nodes,
             pool_nodes: self.pool_nodes,
+            pool_paths: self.pool_paths,
             endpoint_nodes: self.endpoint_nodes,
         }
     }

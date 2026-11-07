@@ -466,6 +466,30 @@ async fn a_second_pool_registers_with_the_same_model_and_a_scoped_token() {
         farm.served_by("/", 4).await,
         ["gpu-1"].map(String::from).into()
     );
+    let (status, topology) = farm
+        .api("GET", "/api/v1/topology", TOKEN, &Value::Null)
+        .await;
+    assert_eq!(status, 200, "{topology}");
+    let node = topology["nodes"]
+        .as_array()
+        .and_then(|nodes| nodes.iter().find(|node| node["name"] == "tts-1"))
+        .expect("the registered server is a topology node");
+    assert_eq!(node["attributes"]["origin"], "dynamic");
+    assert!(
+        topology["edges"]
+            .as_array()
+            .is_some_and(|edges| edges.iter().any(|edge| edge["target"] == node["id"])),
+        "a pool edge reaches it"
+    );
+    for path in [
+        "/api/v1/monitoring",
+        "/api/v1/servers",
+        "/api/v1/pools",
+        "/api/v1/status",
+    ] {
+        let (status, _) = farm.api("GET", path, TOKEN, &Value::Null).await;
+        assert_eq!(status, 200, "{path} copes with registered servers");
+    }
     let (status, listing) = farm
         .api("GET", "/api/v1/pools/voice/servers", TOKEN, &Value::Null)
         .await;
