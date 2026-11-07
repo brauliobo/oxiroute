@@ -395,7 +395,7 @@ impl ForwardHttp1ServicePlan {
             || request.headers().contains_key(header::AUTHORIZATION)
             || request.headers().contains_key(header::PROXY_AUTHORIZATION)
             || request.headers().contains_key(header::COOKIE)
-            || crate::http_proxy::cache_request_bypasses_cache(request.headers())
+            || crate::http::proxy::cache_request_bypasses_cache(request.headers())
         {
             return H3ForwardCacheDecision::Bypass;
         }

@@ -11,7 +11,7 @@ pub(crate) struct StaticPeerPlan {
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct ForwardServiceBlueprint {
     pub(crate) name: String,
-    pub(crate) cache: Option<crate::generation_blueprint::CachePolicyBlueprint>,
+    pub(crate) cache: Option<crate::generation::blueprint::CachePolicyBlueprint>,
     pub(super) auth: Option<ForwardAuthBlueprint>,
     pub(super) challenge: Option<HeaderValue>,
     pub(super) access_policy: Option<ForwardAccessPolicy>,
@@ -61,7 +61,7 @@ pub(super) struct ForwardResolverBlueprint {
 impl ForwardServiceBlueprint {
     pub(crate) fn compile(
         service: &oxiroute_config::ForwardProxyService,
-        cache: Option<crate::generation_blueprint::CachePolicyBlueprint>,
+        cache: Option<crate::generation::blueprint::CachePolicyBlueprint>,
     ) -> Result<Self, ForwardPlanError> {
         let destination_policy = DestinationRules::new(
             service.destination_policy.allow_domains.clone(),
@@ -131,7 +131,8 @@ impl ForwardServiceBlueprint {
                 .enabled_versions
                 .contains(&ForwardHttpVersion::H3)
                 .then_some(
-                    max_connections.clamp(1, crate::http3_upstream::H3_UPSTREAM_MAX_CONNECTIONS),
+                    max_connections
+                        .clamp(1, crate::http3::upstream_plan::H3_UPSTREAM_MAX_CONNECTIONS),
                 ),
         })
     }

@@ -529,7 +529,7 @@ impl PoolHealthState {
 
     fn announce_ejection(self: &Arc<Self>, server: &Arc<PoolEndpoint>, ejection: &PassiveEjection) {
         self.queue.notify_capacity_waiters();
-        crate::operational_event::emit_upstream_endpoint_ejection(
+        crate::observability::operational_event::emit_upstream_endpoint_ejection(
             &self.pool_name,
             &server.name,
             ejection.reason,
@@ -687,7 +687,7 @@ impl PoolHealthState {
             self.health_version.fetch_add(1, Ordering::Release);
             ejection
         };
-        crate::operational_event::emit_upstream_endpoint_ejection(
+        crate::observability::operational_event::emit_upstream_endpoint_ejection(
             &self.pool_name,
             &server.name,
             ejection.reason,
@@ -711,7 +711,7 @@ impl PoolHealthState {
         };
         if let Some(recovery) = recovery {
             self.queue.notify_capacity_waiters();
-            crate::operational_event::emit_upstream_endpoint_recovery(
+            crate::observability::operational_event::emit_upstream_endpoint_recovery(
                 &self.pool_name,
                 &server.name,
                 recovery.reason,
@@ -751,7 +751,7 @@ impl PoolHealthState {
             self.queue.notify_capacity_waiters();
         }
         if let Some((previous, next)) = update.transition {
-            crate::operational_event::emit_upstream_endpoint_health(
+            crate::observability::operational_event::emit_upstream_endpoint_health(
                 &self.pool_name,
                 &server.name,
                 previous,
@@ -761,7 +761,7 @@ impl PoolHealthState {
             );
         }
         if let Some(recovery) = update.passive_recovery {
-            crate::operational_event::emit_upstream_endpoint_recovery(
+            crate::observability::operational_event::emit_upstream_endpoint_recovery(
                 &self.pool_name,
                 &server.name,
                 recovery.reason,

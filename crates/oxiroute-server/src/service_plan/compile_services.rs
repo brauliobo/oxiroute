@@ -188,7 +188,7 @@ pub(super) fn compile_l4_services(
 pub(crate) fn compile_rtmp_value_plans(
     config: &ValidatedConfig,
 ) -> Result<Vec<oxiroute_rtmp::RtmpServicePlan>, oxiroute_rtmp::RtmpPrepareError> {
-    crate::rtmp_value_plan::compile_rtmp_value_plans_from_draft(config.as_draft())
+    crate::rtmp::value_plan::compile_rtmp_value_plans_from_draft(config.as_draft())
 }
 
 pub(super) fn compile_rtmp_services(

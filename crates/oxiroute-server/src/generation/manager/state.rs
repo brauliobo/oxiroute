@@ -38,7 +38,7 @@ impl GenerationManager {
         self.counters
             .config_rejections
             .fetch_add(1, Ordering::Relaxed);
-        crate::operational_event::emit("configuration_reload", "rejected", None);
+        crate::observability::operational_event::emit("configuration_reload", "rejected", None);
         true
     }
 

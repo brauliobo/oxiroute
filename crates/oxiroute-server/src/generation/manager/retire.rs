@@ -98,7 +98,7 @@ impl GenerationManager {
         state.quarantined_revision = None;
         state.last_failure = None;
         self.counters.rollbacks.fetch_add(1, Ordering::Relaxed);
-        crate::operational_event::emit(
+        crate::observability::operational_event::emit(
             "generation_rollback",
             "prepared",
             Some(&candidate.revision().candidate),
@@ -143,7 +143,7 @@ impl GenerationManager {
         state.quarantined_revision = Some(candidate.revision().candidate.clone());
         state.last_failure = Some(failure);
         self.counters.failures.fetch_add(1, Ordering::Relaxed);
-        crate::operational_event::emit(
+        crate::observability::operational_event::emit(
             "generation_start",
             "quarantined",
             Some(&candidate.revision().candidate),

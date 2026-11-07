@@ -183,8 +183,8 @@ impl RuntimeGeneration {
     pub(crate) fn listener_changes(
         &self,
         candidate: &ValidatedConfig,
-    ) -> Option<crate::listener_inventory::ListenerChangeSummary> {
-        crate::listener_reservation::listener_changes(
+    ) -> Option<crate::listener::inventory::ListenerChangeSummary> {
+        crate::listener::reservation::listener_changes(
             &self.inventory,
             &ListenerInventory::compile(candidate),
         )
@@ -202,7 +202,7 @@ impl RuntimeGeneration {
     pub(crate) fn listener_restart_reason(
         &self,
         candidate: &ValidatedConfig,
-    ) -> Option<crate::listener_inventory::ListenerRestartReason> {
+    ) -> Option<crate::listener::inventory::ListenerRestartReason> {
         self.inventory
             .restart_reason(&ListenerInventory::compile(candidate))
     }
@@ -365,7 +365,10 @@ impl RuntimeGeneration {
             self.revision().candidate.as_str(),
             self.in_flight()
         );
-        crate::operational_event::emit_retire_forced_close(&self.revision().candidate, reason);
+        crate::observability::operational_event::emit_retire_forced_close(
+            &self.revision().candidate,
+            reason,
+        );
     }
 
     /// Whether a newer generation replaced this one. Unlike a closed accept gate, this never

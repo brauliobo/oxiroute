@@ -1,4 +1,4 @@
-use crate::planning_errors::ServicePlanError;
+use crate::service_plan::errors::ServicePlanError;
 
 pub(crate) fn reject_unimplemented_runtime_policies(
     config: &oxiroute_config::ConfigDraft,

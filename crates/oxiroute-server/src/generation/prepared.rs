@@ -81,7 +81,7 @@ impl PreparedGeneration {
         tls: &crate::PreparedTls,
     ) -> Result<(), GenerationError> {
         let draft = config.as_draft();
-        crate::stats::preflight_admin_token(
+        crate::observability::stats::preflight_admin_token(
             draft
                 .stats
                 .as_ref()
@@ -91,7 +91,7 @@ impl PreparedGeneration {
             let token_file = std::env::var_os("OXIROUTE_MANAGEMENT_TOKEN_FILE")
                 .map(std::path::PathBuf::from)
                 .ok_or(GenerationError::ManagementToken)?;
-            crate::rtmp_api::preflight_management_token(&token_file)
+            crate::rtmp::api::preflight_management_token(&token_file)
                 .map_err(|_| GenerationError::ManagementToken)?;
         }
         if let Some(ui_dir) = draft
@@ -99,7 +99,8 @@ impl PreparedGeneration {
             .as_ref()
             .and_then(|management| management.ui_dir.as_deref())
         {
-            crate::rtmp_api::UiAssets::load(ui_dir).map_err(|_| GenerationError::RuntimePrepare)?;
+            crate::rtmp::api::UiAssets::load(ui_dir)
+                .map_err(|_| GenerationError::RuntimePrepare)?;
         }
         tls.check_certbot_watcher(crate::CertbotWatcherConfig::default())
             .map_err(|_| GenerationError::RuntimePrepare)?;

@@ -11,7 +11,7 @@ use oxiroute_supervision::{LifecycleControl, LifecycleOperation, LifecycleReques
 use crate::{
     AdministrativeState, GenerationError, GenerationManager, GenerationStatus,
     RuntimeReferenceKind,
-    config_coordinator::{
+    config::coordinator::{
         CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigLoadRejection, EffectiveRevision,
     },
     generation::GENERATION_PREPARATION_TIMEOUT,
@@ -135,7 +135,7 @@ impl DirectLifecycleControl {
             .metrics()
             .set_process_administrative_state(AdministrativeState::Drain);
         shutdown.store(true, Ordering::Release);
-        crate::operational_event::emit("process_shutdown", "requested", None);
+        crate::observability::operational_event::emit("process_shutdown", "requested", None);
         Ok(LifecycleOutcome::ShutdownRequested)
     }
 }
