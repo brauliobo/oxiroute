@@ -181,7 +181,16 @@ impl Farm {
     }
 
     async fn start(&self) -> ServerProcess {
-        let mut server = ServerProcess::start(&self.config(None), Some(TOKEN));
+        self.ready(ServerProcess::start(&self.config(None), Some(TOKEN)))
+            .await
+    }
+
+    async fn start_supervised(&self) -> ServerProcess {
+        self.ready(ServerProcess::start_supervised(&self.config(None), TOKEN))
+            .await
+    }
+
+    async fn ready(&self, mut server: ServerProcess) -> ServerProcess {
         server.wait_for_tcp(self.management).await;
         server.wait_for_tcp(self.traffic).await;
         server.wait_for_tcp(self.test).await;
@@ -971,5 +980,58 @@ async fn a_heartbeating_cli_keeps_its_lease_and_leaves_cleanly_on_sigterm() {
         Some(0),
         "SIGTERM deregisters"
     );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn a_supervised_worker_handover_keeps_registrations_and_sockets() {
+    let farm = Farm::new();
+    let server = farm.start_supervised().await;
+    let (alpha, _a) = stub("alpha").await;
+    let (beta, _b) = stub("beta").await;
+    let (gamma, _g) = stub("gamma").await;
+    assert_eq!(farm.register("render", "alpha", alpha, 60_000).await, 201);
+    let body = json!({"address": beta.to_string(), "ttlMs": 60_000});
+    let (status, _) = farm
+        .over_socket("register", "PUT", "/api/v1/pools/voice/servers/beta", &body)
+        .await;
+    assert_eq!(status, 201);
+    let (_, before) = farm
+        .api("GET", "/api/v1/generations", TOKEN, &Value::Null)
+        .await;
+
+    write_config(&server.config_path, &farm.config(Some(500)));
+    eventually("a new worker to take over", async || {
+        let (_, now) = farm
+            .api("GET", "/api/v1/generations", TOKEN, &Value::Null)
+            .await;
+        now["generation"]["activeRevision"] != before["generation"]["activeRevision"]
+    })
+    .await;
+
+    eventually(
+        "the new worker to serve the registered server",
+        async || farm.served_by("/", 4).await == ["alpha"].map(String::from).into(),
+    )
+    .await;
+    assert_eq!(
+        farm.beat("render", "alpha").await,
+        200,
+        "the lease survives the handover"
+    );
+    let body = json!({"address": gamma.to_string(), "ttlMs": 60_000});
+    let (status, _) = farm
+        .over_socket(
+            "register",
+            "PUT",
+            "/api/v1/pools/voice/servers/gamma",
+            &body,
+        )
+        .await;
+    assert_eq!(status, 201, "the register socket belongs to the new worker");
+    let (_, listing) = farm
+        .over_socket("read", "GET", "/api/v1/registrations", &Value::Null)
+        .await;
+    assert_eq!(listing["registrations"].as_array().map(Vec::len), Some(3));
     server.shutdown();
 }
