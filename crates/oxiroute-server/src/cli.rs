@@ -267,6 +267,10 @@ pub enum ServerCommand {
         #[command(subcommand)]
         command: MaxConnectionsCommand,
     },
+    Weight {
+        #[command(subcommand)]
+        command: WeightCommand,
+    },
     RefreshDns(ServerTarget),
 }
 
@@ -285,6 +289,17 @@ pub enum MaxConnectionsCommand {
         target: ServerTarget,
         #[arg(value_parser = clap::value_parser!(u64).range(1..))]
         limit: u64,
+    },
+    Reset(ServerTarget),
+}
+
+#[derive(Subcommand)]
+pub enum WeightCommand {
+    Set {
+        #[command(flatten)]
+        target: ServerTarget,
+        #[arg(value_parser = clap::value_parser!(u16).range(1..=100))]
+        weight: u16,
     },
     Reset(ServerTarget),
 }

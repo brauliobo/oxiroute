@@ -111,6 +111,22 @@ impl ManagementState {
         })
     }
 
+    pub(super) async fn server_weight(&self, session: &mut ServerSession) -> ApiResponse {
+        let request: ServerWeightRequest = match body(session).await {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+        if request
+            .weight
+            .is_some_and(|weight| !(1..=100).contains(&weight))
+        {
+            return ApiResponse::error(400, "invalid_weight", "weight must be between 1 and 100");
+        }
+        self.apply_servers(&request.change, |pool, server| {
+            pool.set_server_weight(server, request.weight)
+        })
+    }
+
     pub(super) async fn server_refresh_dns(&self, session: &mut ServerSession) -> ApiResponse {
         let request: ServerChange = match body(session).await {
             Ok(request) => request,
