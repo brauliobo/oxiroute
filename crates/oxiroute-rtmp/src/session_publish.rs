@@ -11,7 +11,7 @@ use crate::{
     RtmpRegistry, SessionId, StreamId, StreamKey,
     auto_push::AutoPushPublisher,
     exec_worker::{ExecProfileSet, ExecWorker},
-    media_snapshot::MediaSnapshotAccumulator,
+    media::snapshot::MediaSnapshotAccumulator,
     recording::runtime::RecorderController,
     relay::RtmpRelayController,
 };

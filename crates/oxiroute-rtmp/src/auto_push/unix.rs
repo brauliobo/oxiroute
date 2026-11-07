@@ -23,7 +23,7 @@ use super::{RtmpAutoPushConfig, RtmpAutoPushError, RtmpAutoPushStatus};
 use crate::{
     LiveHub, MediaEvent, MediaEventKind, PublisherIncarnation, PublisherRegistration, RtmpRegistry,
     SessionId, StreamKey, VideoCodec, clock::unix_time_ms,
-    media_snapshot::MediaSnapshotAccumulator,
+    media::snapshot::MediaSnapshotAccumulator,
 };
 
 mod coordinator;

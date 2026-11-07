@@ -6,7 +6,7 @@ use super::*;
 use crate::{DashSegmentNaming, LiveHub, LiveHubLimits, MediaEvent, MediaStoreLimits};
 
 mod media_config_corpus {
-    include!("../../tests/corpus/media_configs.rs");
+    include!("../../../tests/corpus/media_configs.rs");
 }
 
 fn test_config(store: Arc<MediaStore>) -> Arc<HlsOutputConfig> {

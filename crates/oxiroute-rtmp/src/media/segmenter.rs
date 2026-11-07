@@ -16,10 +16,10 @@ use openssl::{rand::rand_bytes, symm};
 use crate::{
     MediaEvent, MediaEventKind, PublisherIncarnation, StreamKey,
     clock::unix_time_ms,
-    dash_segmenter::{DashOutputConfig, DashSegmenter},
-    media_parser::{parse_aac_configuration, parse_avc_configuration},
-    media_storage::{MediaStore, MediaStoreError},
-    segment_window::SegmentWindowConfig,
+    media::dash::{DashOutputConfig, DashSegmenter},
+    media::parser::{parse_aac_configuration, parse_avc_configuration},
+    media::segment_window::SegmentWindowConfig,
+    media::storage::{MediaStore, MediaStoreError},
 };
 
 mod config;

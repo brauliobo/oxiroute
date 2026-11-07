@@ -6,7 +6,7 @@ use super::*;
 use crate::{LiveHub, LiveHubLimits, MediaStoreLimits};
 
 mod media_config_corpus {
-    include!("../../tests/corpus/media_configs.rs");
+    include!("../../../tests/corpus/media_configs.rs");
 }
 
 fn avc_sequence_header() -> Vec<u8> {
