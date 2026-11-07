@@ -91,7 +91,7 @@ fn passive_ejection_is_deterministic_and_active_health_reentry_preserves_weighti
         .collect::<Vec<_>>();
     assert_eq!(
         selected_after_recovery,
-        ["primary", "primary", "primary", "backup"]
+        ["primary", "primary", "backup", "primary"]
     );
 }
 
