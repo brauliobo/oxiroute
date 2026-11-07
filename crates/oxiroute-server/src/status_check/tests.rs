@@ -9,7 +9,7 @@ fn pool(name: &str, available: u64, total: u64) -> Value {
     })
 }
 
-fn summary(pools: Vec<Value>, extra: Value) -> StatusSummary {
+fn summary(pools: &[Value], extra: &Value) -> StatusSummary {
     let mut body = json!({
         "state": "ok", "ready": true,
         "generation": {
@@ -30,7 +30,7 @@ fn verdict(summary: &StatusSummary, limits: &Thresholds) -> (u8, String) {
 
 #[test]
 fn a_healthy_farm_is_ok_and_the_line_carries_performance_data() {
-    let farm = summary(vec![pool("farm", 4, 4), pool("web", 2, 2)], json!({}));
+    let farm = summary(&[pool("farm", 4, 4), pool("web", 2, 2)], &json!({}));
     let (code, line) = verdict(&farm, &Thresholds::default());
     assert_eq!(code, 0);
     assert!(
@@ -43,7 +43,7 @@ fn a_healthy_farm_is_ok_and_the_line_carries_performance_data() {
 #[test]
 fn one_missing_server_warns_and_an_empty_pool_is_critical() {
     let (code, line) = verdict(
-        &summary(vec![pool("farm", 3, 4)], json!({})),
+        &summary(&[pool("farm", 3, 4)], &json!({})),
         &Thresholds::default(),
     );
     assert_eq!(
@@ -51,7 +51,7 @@ fn one_missing_server_warns_and_an_empty_pool_is_critical() {
         (1, true)
     );
     let (code, line) = verdict(
-        &summary(vec![pool("farm", 0, 4)], json!({})),
+        &summary(&[pool("farm", 0, 4)], &json!({})),
         &Thresholds::default(),
     );
     assert_eq!(
@@ -62,7 +62,7 @@ fn one_missing_server_warns_and_an_empty_pool_is_critical() {
 
 #[test]
 fn the_operator_thresholds_replace_the_defaults() {
-    let farm = summary(vec![pool("farm", 2, 4)], json!({}));
+    let farm = summary(&[pool("farm", 2, 4)], &json!({}));
     let limits = Thresholds {
         warn_available_below: Some(2),
         crit_available_below: 3,
@@ -84,7 +84,7 @@ fn queue_wait_and_request_age_limits_warn() {
     busy["queued"] = json!(7);
     busy["oldestQueueWaitMs"] = json!(9_000);
     busy["oldestInflightMs"] = json!(91_000);
-    let farm = summary(vec![busy], json!({}));
+    let farm = summary(&[busy], &json!({}));
     assert_eq!(verdict(&farm, &Thresholds::default()).0, 1);
     let lenient = Thresholds {
         max_queue_wait_ms: 10_000,
@@ -105,7 +105,7 @@ fn queue_wait_and_request_age_limits_warn() {
 
 #[test]
 fn overdue_requests_and_an_unready_process_are_critical_and_stuck_ones_warn() {
-    let farm = |extra| summary(vec![pool("farm", 4, 4)], extra);
+    let farm = |extra| summary(&[pool("farm", 4, 4)], &extra);
     let limits = Thresholds::default();
     assert_eq!(
         verdict(&farm(json!({ "overdueRequests": 2 })), &limits).0,
@@ -117,14 +117,11 @@ fn overdue_requests_and_an_unready_process_are_critical_and_stuck_ones_warn() {
 
 #[test]
 fn a_refused_configuration_and_a_lingering_retired_generation_warn() {
-    let mut generation = json!({
+    let generation = json!({
         "id": 3, "ageSeconds": 600, "degraded": true, "retired": 1, "retiredOldestAgeSeconds": 7_300,
         "lastRejection": { "atUnixMs": 1, "ageSeconds": 120 },
     });
-    let farm = summary(
-        vec![pool("farm", 4, 4)],
-        json!({ "generation": generation.take() }),
-    );
+    let farm = summary(&[pool("farm", 4, 4)], &json!({ "generation": generation }));
     let (code, line) = verdict(&farm, &Thresholds::default());
     assert_eq!(code, 1);
     assert!(line.contains("configuration refused 120 s ago"));
@@ -142,7 +139,7 @@ fn a_refused_configuration_and_a_lingering_retired_generation_warn() {
 
 #[test]
 fn registry_problems_are_judged() {
-    let registry = |body: Value| summary(vec![pool("farm", 4, 4)], json!({ "registry": body }));
+    let registry = |body: Value| summary(&[pool("farm", 4, 4)], &json!({ "registry": body }));
     let clean =
         json!({ "degraded": false, "leases": 3, "lateLeases": 0, "shadowed": 0, "orphaned": 0 });
     assert_eq!(
@@ -167,8 +164,8 @@ fn registry_problems_are_judged() {
 #[test]
 fn the_worst_finding_leads_the_line() {
     let farm = summary(
-        vec![pool("web", 1, 2), pool("farm", 0, 4)],
-        json!({ "stuckRequests": 1 }),
+        &[pool("web", 1, 2), pool("farm", 0, 4)],
+        &json!({ "stuckRequests": 1 }),
     );
     let (code, line) = verdict(&farm, &Thresholds::default());
     assert_eq!(code, 2);

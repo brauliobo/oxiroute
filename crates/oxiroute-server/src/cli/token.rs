@@ -6,6 +6,7 @@ pub(super) fn command_requires_token(command: &Command) -> bool {
         command,
         Command::Ready
             | Command::Metrics
+            | Command::Check(_)
             | Command::Rtmp {
                 command: RtmpCommand::Stream {
                     command: StreamCommand::Disconnect { .. },

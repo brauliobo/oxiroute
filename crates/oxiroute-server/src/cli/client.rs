@@ -50,6 +50,20 @@ impl Endpoint {
         }
     }
 
+    /// One GET whose answer is returned whatever its status, to an authority the caller names.
+    pub(super) fn get_unchecked(&self, path: &str, host: &str) -> Result<Response, CliError> {
+        if path.contains(['\r', '\n', ' ']) || host.contains(['\r', '\n']) {
+            return Err(CliError::Local("request target is invalid".into()));
+        }
+        let mut stream = self.connect()?;
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+        )
+        .map_err(connect_io)?;
+        Response::read(BufReader::new(stream))
+    }
+
     /// Registry sockets authorize by file permission, so no token is read or sent.
     pub(super) const fn is_unix(&self) -> bool {
         matches!(self, Self::Unix(_))

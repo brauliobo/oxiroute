@@ -354,6 +354,7 @@ fn execute(cli: &Cli, client: &Client) -> Result<FollowOutcome, CliError> {
             ));
         }
         Command::Serve { .. }
+        | Command::Check(_)
         | Command::Import { .. }
         | Command::Version
         | Command::Registry { .. }
