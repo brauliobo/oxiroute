@@ -64,6 +64,7 @@ mod reverse;
 mod runtime;
 mod static_files;
 mod upstream;
+pub(crate) mod upstream_plan;
 
 #[allow(clippy::wildcard_imports)]
 use cache::*;

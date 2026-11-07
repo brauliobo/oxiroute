@@ -131,7 +131,8 @@ impl ForwardServiceBlueprint {
                 .enabled_versions
                 .contains(&ForwardHttpVersion::H3)
                 .then_some(
-                    max_connections.clamp(1, crate::http3_upstream::H3_UPSTREAM_MAX_CONNECTIONS),
+                    max_connections
+                        .clamp(1, crate::http3::upstream_plan::H3_UPSTREAM_MAX_CONNECTIONS),
                 ),
         })
     }
