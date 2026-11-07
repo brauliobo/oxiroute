@@ -591,6 +591,10 @@ Current constraints:
   hashing over the selectable servers: the mapping is stateless, honors weights and, when a server
   leaves, remaps only that server's keys. `type = "header"` reads `name` as a server name. Not
   supported for HTTP/3 upstream pools.
+- Proxy `policy.queue_headers` (default `false`) adds `x-oxiroute-queue-position` (how many requests
+  were waiting when this one joined the pool queue, itself included) and `x-oxiroute-queue-wait-ms`
+  (milliseconds it waited) to the response of a request that had to wait for capacity. Requests that
+  were served at once carry neither header. It is opt-in because the values reveal pool load.
 - Proxy `policy.timeouts` optionally refines the upstream timeouts of one route, each phase `null` by
   default and between `1` and `86400000` milliseconds: `connect_ms` (per attempt, until the upstream
   connection is established), `header_ms` (per attempt, from the sent request until the first
@@ -1043,8 +1047,8 @@ The access log (`access_log = { type = "file", path }`) adds, next to the existi
 client re-issue can be matched with the original. A request that is quiet for 60 seconds writes one
 extra line `{"event":"stuck","requestId","phase","ageMs","pool","server"}` while it is still alive.
 
-Planned and not yet configurable: switching the request id off or renaming its header, and the
-opt-in `x-oxiroute-queue-position`, `x-oxiroute-queue-wait-ms` and `Server-Timing` response headers.
+Planned and not yet configurable: switching the request id off or renaming its header, and a
+`Server-Timing` response header. The queue headers are the per-route `policy.queue_headers` above.
 
 ### Upstream pool
 

@@ -415,6 +415,7 @@ fn test_proxy_policy() -> HttpProxyPolicy {
             http_only: false,
         }),
         cache: None,
+        queue_headers: true,
     }
 }
 
@@ -539,6 +540,7 @@ fn test_http_services() -> Vec<HttpService> {
                         select: None,
                         affinity: None,
                         cache: None,
+                        queue_headers: false,
                     },
                 },
             }],

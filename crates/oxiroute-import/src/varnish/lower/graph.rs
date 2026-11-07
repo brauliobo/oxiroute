@@ -331,6 +331,7 @@ impl Lowerer<'_> {
                     select: None,
                     affinity: None,
                     cache,
+                    queue_headers: false,
                 },
             },
         };

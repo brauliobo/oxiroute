@@ -168,6 +168,7 @@ impl Lowerer {
                 select: None,
                 affinity: None,
                 cache: None,
+                queue_headers: false,
             },
             timeouts,
             origins,
