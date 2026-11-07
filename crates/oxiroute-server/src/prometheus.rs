@@ -867,6 +867,17 @@ fn render_prometheus_snapshot(
         "oxiroute_generation_degraded",
         u8::from(generation.degraded),
     )?;
+    if let Some(revision) = &generation.active_revision {
+        labels(
+            &mut output,
+            "oxiroute_generation_info",
+            &[
+                ("generation", &generation.generation.to_string()),
+                ("revision", revision.as_str()),
+            ],
+            1,
+        )?;
+    }
     labels(
         &mut output,
         "oxiroute_audit_component_state",
