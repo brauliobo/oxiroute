@@ -259,7 +259,7 @@ impl RtmpManagementApi {
         path_and_query: &str,
         session: &ServerSession,
     ) -> Option<ApiResponse> {
-        let public_read = method == "GET" && matches!(path, "/ready" | "/metrics");
+        let public_read = method == "GET" && matches!(path, "/ready" | "/metrics" | "/status.json");
         let api_request = endpoint_registry::match_path_and_query(path_and_query).is_some()
             || management::match_route(path_and_query).is_some()
             || match_api_route(path).is_some();
