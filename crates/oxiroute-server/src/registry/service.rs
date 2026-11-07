@@ -191,6 +191,21 @@ impl RegistryService {
         })
     }
 
+    /// Names of the pools of live generations that accept registrations.
+    #[must_use]
+    pub fn registration_pools(&self) -> Vec<String> {
+        let state = self.lock();
+        let mut pools = state
+            .bindings
+            .iter()
+            .filter(|binding| binding.policy.is_some() && binding.live().is_some())
+            .map(|binding| binding.name.clone())
+            .collect::<Vec<_>>();
+        pools.sort();
+        pools.dedup();
+        pools
+    }
+
     /// Members of the newest live generation's pool, static and registered.
     #[must_use]
     pub fn pool_snapshot(&self, pool: &str) -> Option<crate::PoolHealthSnapshot> {

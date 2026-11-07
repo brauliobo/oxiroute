@@ -18,15 +18,15 @@ use std::{
 use oxiroute_config::{
     ConfigDraft, DnsResolutionPolicy, HealthCheck, HealthCheckType, HealthStartup,
     HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
-    Listener, Management, PoolRegistration, Protocol, Registry, UpstreamAlgorithm,
-    UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    Listener, Management, PoolRegistration, Protocol, Registry, RegistryEndpoint, RegistryRole,
+    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
 use oxiroute_server::registry::auth::mint_token;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::TcpListener,
+    net::{TcpListener, UnixStream},
     task::JoinHandle,
 };
 
@@ -40,6 +40,8 @@ struct Farm {
     state: TempDir,
     management: SocketAddr,
     traffic: SocketAddr,
+    lan: SocketAddr,
+    lan_cidrs: Vec<String>,
     tokens: std::path::PathBuf,
     voice_secret: String,
 }
@@ -56,9 +58,15 @@ impl Farm {
             state,
             management: reserve_tcp_address(),
             traffic: reserve_tcp_address(),
+            lan: reserve_tcp_address(),
+            lan_cidrs: vec!["127.0.0.0/8".into()],
             tokens,
             voice_secret,
         }
+    }
+
+    fn socket(&self, role: &str) -> std::path::PathBuf {
+        self.state.path().join(format!("{role}.sock"))
     }
 
     fn config(&self, extra_root_limit: Option<u64>) -> oxiroute_config::ValidatedConfig {
@@ -126,7 +134,24 @@ impl Farm {
             registry: Some(Registry {
                 state_dir: self.state.path().join("state"),
                 tokens_file: Some(self.tokens.clone()),
-                endpoints: Vec::new(),
+                endpoints: vec![
+                    RegistryEndpoint::Unix {
+                        path: self.socket("read"),
+                        mode: 0o660,
+                        role: RegistryRole::Read,
+                        pools: Vec::new(),
+                    },
+                    RegistryEndpoint::Unix {
+                        path: self.socket("register"),
+                        mode: 0o660,
+                        role: RegistryRole::Register,
+                        pools: vec!["voice".into()],
+                    },
+                    RegistryEndpoint::Tcp {
+                        bind: self.test,
+                        allow_cidrs: self.lan_cidrs.clone(),
+                    },
+                ],
             }),
             listeners: vec![Listener {
                 name: "traffic".into(),
@@ -158,7 +183,69 @@ impl Farm {
         let mut server = ServerProcess::start(&self.config(None), Some(TOKEN));
         server.wait_for_tcp(self.management).await;
         server.wait_for_tcp(self.traffic).await;
+        server.wait_for_tcp(self.test).await;
+        eventually("the registry sockets", async || {
+            self.socket("read").exists() && self.socket("register").exists()
+        })
+        .await;
         server
+    }
+
+    async fn over_socket(
+        &self,
+        role: &str,
+        method: &str,
+        path: &str,
+        body: &Value,
+    ) -> (u16, Value) {
+        let bytes = if body.is_null() {
+            Vec::new()
+        } else {
+            serde_json::to_vec(body).expect("body")
+        };
+        let mut stream = UnixStream::connect(self.socket(role))
+            .await
+            .expect("socket");
+        let head = format!(
+            "{method} {path} HTTP/1.1\r\nHost: registry\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+            bytes.len()
+        );
+        stream
+            .write_all(head.as_bytes())
+            .await
+            .expect("request head");
+        stream.write_all(&bytes).await.expect("request body");
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await.expect("response");
+        let response = http_support::HttpResponse::parse(raw);
+        let body = if response.body.is_empty() {
+            Value::Null
+        } else {
+            response.json()
+        };
+        (response.status, body)
+    }
+
+    async fn over_lan(&self, method: &str, path: &str, token: &str, body: &Value) -> (u16, Value) {
+        let bytes = if body.is_null() {
+            Vec::new()
+        } else {
+            serde_json::to_vec(body).expect("body")
+        };
+        let authorization = format!("Bearer {token}");
+        let headers = [("Authorization", authorization.as_str())];
+        let headers = if token.is_empty() {
+            &headers[..0]
+        } else {
+            &headers[..]
+        };
+        let response = http_request(self.test, method, path, headers, &bytes).await;
+        let body = if response.body.is_empty() {
+            Value::Null
+        } else {
+            response.json()
+        };
+        (response.status, body)
     }
 
     async fn api(&self, method: &str, path: &str, token: &str, body: &Value) -> (u16, Value) {
@@ -416,4 +503,135 @@ async fn registrations_and_operator_drain_survive_generation_reload_and_restart(
         .await;
     assert_eq!(listing["registrations"].as_array().map(Vec::len), Some(2));
     restarted.shutdown();
+}
+
+#[tokio::test]
+async fn group_sockets_split_status_from_registration_without_tokens() {
+    let farm = Farm::new();
+    let server = farm.start().await;
+    let (voice, _v) = stub("tts-1").await;
+    let body = json!({"address": voice.to_string()});
+    for role in ["read", "register"] {
+        let mode = fs::metadata(farm.socket(role))
+            .expect("socket")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o660, "{role} socket mode");
+    }
+
+    let (status, _) = farm
+        .over_socket(
+            "register",
+            "PUT",
+            "/api/v1/pools/voice/servers/tts-1",
+            &body,
+        )
+        .await;
+    assert_eq!(status, 201, "a socket client needs no token");
+    let (status, error) = farm
+        .over_socket(
+            "register",
+            "PUT",
+            "/api/v1/pools/render/servers/tts-1",
+            &body,
+        )
+        .await;
+    assert_eq!(
+        (status, error["error"]["code"].as_str()),
+        (403, Some("scope_denied"))
+    );
+    let (status, _) = farm
+        .over_socket("register", "GET", "/api/v1/registrations", &Value::Null)
+        .await;
+    assert_eq!(status, 403, "the register socket cannot read");
+    let (status, _) = farm
+        .over_socket("register", "GET", "/api/v1/status", &Value::Null)
+        .await;
+    assert_eq!(status, 404, "only registry routes are served");
+
+    let (status, listing) = farm
+        .over_socket("read", "GET", "/api/v1/registrations", &Value::Null)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(listing["registrations"][0]["registration"]["name"], "tts-1");
+    let (status, _) = farm
+        .over_socket(
+            "read",
+            "DELETE",
+            "/api/v1/pools/voice/servers/tts-1",
+            &Value::Null,
+        )
+        .await;
+    assert_eq!(status, 403, "the read socket cannot change anything");
+    let (status, _) = farm
+        .over_socket("read", "GET", "/ready", &Value::Null)
+        .await;
+    assert_eq!(status, 200);
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn the_lan_endpoint_needs_a_scoped_token_and_a_peer_in_range() {
+    let farm = Farm::new();
+    let server = farm.start().await;
+    let (voice, _v) = stub("tts-1").await;
+    let body = json!({"address": voice.to_string()});
+    let path = "/api/v1/pools/voice/servers/tts-1";
+
+    assert_eq!(farm.over_lan("PUT", path, "", &body).await.0, 401);
+    assert_eq!(
+        farm.over_lan("PUT", path, TOKEN, &body).await.0,
+        401,
+        "the root token is not accepted here"
+    );
+    assert_eq!(
+        farm.over_lan("PUT", path, &farm.voice_secret, &body)
+            .await
+            .0,
+        201
+    );
+    assert_eq!(
+        farm.over_lan(
+            "POST",
+            &format!("{path}/heartbeat"),
+            &farm.voice_secret,
+            &Value::Null
+        )
+        .await
+        .0,
+        200
+    );
+    let (status, _) = farm
+        .over_lan(
+            "GET",
+            "/api/v1/registrations",
+            &farm.voice_secret,
+            &Value::Null,
+        )
+        .await;
+    assert_eq!(status, 403);
+    assert_eq!(
+        farm.over_lan(
+            "PUT",
+            "/api/v1/pools/render/servers/x",
+            &farm.voice_secret,
+            &body
+        )
+        .await
+        .0,
+        403
+    );
+    server.shutdown();
+
+    let mut outside = Farm::new();
+    outside.lan_cidrs = vec!["192.0.2.0/8".into()];
+    let server = outside.start().await;
+    let (status, error) = outside
+        .over_lan("PUT", path, &outside.voice_secret, &body)
+        .await;
+    assert_eq!(
+        (status, error["error"]["code"].as_str()),
+        (403, Some("peer_not_allowed"))
+    );
+    server.shutdown();
 }

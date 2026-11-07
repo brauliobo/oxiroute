@@ -19,6 +19,10 @@ pub enum RegistryError {
     ScopeDenied,
     #[error("{0}")]
     AddressNotAllowed(&'static str),
+    #[error("this endpoint does not accept requests from the peer address")]
+    PeerNotAllowed,
+    #[error("no such route")]
+    RouteNotFound,
     #[error("the pool does not exist")]
     PoolNotFound,
     #[error("no registration with that name; register again")]
@@ -54,8 +58,8 @@ impl RegistryError {
             | Self::InvalidTtl
             | Self::InvalidMetadata => 400,
             Self::Unauthorized => 401,
-            Self::ScopeDenied | Self::AddressNotAllowed(_) => 403,
-            Self::PoolNotFound | Self::RegistrationNotFound => 404,
+            Self::ScopeDenied | Self::AddressNotAllowed(_) | Self::PeerNotAllowed => 403,
+            Self::RouteNotFound | Self::PoolNotFound | Self::RegistrationNotFound => 404,
             Self::PoolNotDynamic
             | Self::NameConflict
             | Self::EndpointConflict
@@ -78,6 +82,8 @@ impl RegistryError {
             Self::Unauthorized => "unauthorized",
             Self::ScopeDenied => "scope_denied",
             Self::AddressNotAllowed(_) => "address_not_allowed",
+            Self::PeerNotAllowed => "peer_not_allowed",
+            Self::RouteNotFound => "route_not_found",
             Self::PoolNotFound => "pool_not_found",
             Self::RegistrationNotFound => "registration_not_found",
             Self::PoolNotDynamic => "pool_not_dynamic",
