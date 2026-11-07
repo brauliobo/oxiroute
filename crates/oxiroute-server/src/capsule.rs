@@ -300,7 +300,7 @@ fn encode_varint(value: u64, output: &mut Vec<u8>) -> io::Result<()> {
 mod tests {
     use bytes::Bytes;
     use tokio::{
-        io::{AsyncWriteExt as _, duplex},
+        io::duplex,
         net::UdpSocket,
         sync::watch,
         time::{Duration, timeout},

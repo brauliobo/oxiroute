@@ -28,9 +28,7 @@ mod errors;
 
 pub use self::errors::HandshakeError;
 
-use hmac::{Hmac, Mac, NewMac};
-use rand;
-use rand::Rng;
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 const RTMP_PACKET_SIZE: usize = 1536;
@@ -390,10 +388,10 @@ impl Handshake {
         peer_key.extend_from_slice(&RANDOM_CRUD[..]);
 
         let hmac1 = calc_hmac(&self.sent_digest, &peer_key[..]);
-        let mut verifier = Hmac::<Sha256>::new_varkey(&hmac1).unwrap();
+        let mut verifier = Hmac::<Sha256>::new_from_slice(&hmac1).unwrap();
         verifier.update(&received_packet_2[..P2_SIG_START_INDEX]);
         if verifier
-            .verify(&received_packet_2[P2_SIG_START_INDEX..RTMP_PACKET_SIZE])
+            .verify_slice(&received_packet_2[P2_SIG_START_INDEX..RTMP_PACKET_SIZE])
             .is_err()
         {
             return Err(HandshakeError::InvalidP2Packet);
@@ -478,7 +476,7 @@ fn calc_hmac_from_parts(part1: &[u8], part2: &[u8], key: &[u8]) -> [u8; SHA256_D
 }
 
 fn calc_hmac(input: &[u8], key: &[u8]) -> [u8; SHA256_DIGEST_LENGTH] {
-    let mut mac = Hmac::<Sha256>::new_varkey(key).unwrap();
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
     mac.update(input);
 
     let result = mac.finalize();
@@ -500,11 +498,7 @@ fn calc_hmac(input: &[u8], key: &[u8]) -> [u8; SHA256_DIGEST_LENGTH] {
 }
 
 fn fill_with_random_data(buffer: &mut [u8]) {
-    let mut rng = rand::thread_rng();
-    for x in 0..buffer.len() {
-        let value = rng.gen();
-        buffer[x] = value;
-    }
+    rand::fill(buffer);
 }
 
 #[cfg(test)]
@@ -880,7 +874,7 @@ mod tests {
 
     #[test]
     fn hmac_test3() {
-        let mut mac = Hmac::<Sha256>::new_varkey(&[0x0b; 20]).unwrap();
+        let mut mac = Hmac::<Sha256>::new_from_slice(&[0x0b; 20]).unwrap();
         mac.update(b"Hi There");
 
         let expected = [
