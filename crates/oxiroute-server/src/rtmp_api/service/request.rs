@@ -47,6 +47,9 @@ pub(super) fn audited_api_operation(
     if method == "GET" {
         return None;
     }
+    if crate::registry::http::match_route(path).is_some() {
+        return Some(("server_control", AuditCategory::Control));
+    }
     let (operation, category) = match path {
         "/api/v1/config" => ("configuration_reload", AuditCategory::Reload),
         "/api/v1/generations/reload" => ("generation_reload", AuditCategory::Reload),

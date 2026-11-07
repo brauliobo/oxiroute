@@ -101,15 +101,6 @@ pub(crate) fn protected_addresses(config: &ConfigDraft) -> Vec<SocketAddr> {
             .copied()
             .chain(stats.pages.iter().map(|page| page.bind))
     });
-    let registry = config.registry.iter().flat_map(|registry| {
-        registry
-            .endpoints
-            .iter()
-            .filter_map(|endpoint| match endpoint {
-                RegistryEndpoint::Tcp { bind, .. } => Some(*bind),
-                RegistryEndpoint::Unix { .. } => None,
-            })
-    });
     config
         .management
         .iter()

@@ -1,8 +1,10 @@
 //! Lease-based dynamic server registration. See `docs/developer/design/DYNAMIC_REGISTRY.md`.
 
 pub mod auth;
+pub mod dto;
 pub mod error;
 pub(crate) mod host;
+pub mod http;
 pub mod lease;
 pub mod limits;
 pub mod record;
