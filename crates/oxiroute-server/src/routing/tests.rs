@@ -734,6 +734,169 @@ async fn reusable_path_waiter_timeout_leaves_the_queue_empty() {
     assert_eq!(snapshot.queue_timeouts, 1);
 }
 
+struct ProbeStub {
+    address: SocketAddr,
+    requests: Arc<AtomicU64>,
+    status: Arc<std::sync::atomic::AtomicU16>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ProbeStub {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn probe_stub(status: u16) -> ProbeStub {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("stub bind");
+    let address = listener.local_addr().expect("stub address");
+    let requests = Arc::new(AtomicU64::new(0));
+    let status = Arc::new(std::sync::atomic::AtomicU16::new(status));
+    let (seen, current) = (Arc::clone(&requests), Arc::clone(&status));
+    let task = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.expect("stub accept");
+            let (seen, current) = (Arc::clone(&seen), Arc::clone(&current));
+            tokio::spawn(async move {
+                let mut buffer = [0_u8; 1024];
+                if stream.read(&mut buffer).await.is_ok_and(|read| read > 0) {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    let status = current.load(Ordering::SeqCst);
+                    let _ = stream
+                        .write_all(
+                            format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                                .as_bytes(),
+                        )
+                        .await;
+                }
+            });
+        }
+    });
+    ProbeStub {
+        address,
+        requests,
+        status,
+        task,
+    }
+}
+
+fn probed_pool(address: SocketAddr, successes: u16) -> RoundRobinPool {
+    let readmission = oxiroute_config::Readmission {
+        successes,
+        interval_ms: 100,
+        timeout_ms: 500,
+        probe: Some(oxiroute_config::ReadmissionProbe {
+            path: "/deep".into(),
+            host: None,
+            expected_status: None,
+        }),
+    };
+    let blueprint =
+        PoolConstructionBlueprint::compile(&UpstreamAlgorithm::First, 1, Some(&readmission))
+            .expect("blueprint");
+    let mut policy =
+        PassiveFailurePolicy::new(1, Duration::from_millis(50), Duration::from_millis(200));
+    policy.probe_readmission = true;
+    RoundRobinPool::acquire_compiled(
+        "probed".into(),
+        [RuntimeServer {
+            name: "only".into(),
+            endpoint: RuntimeEndpoint::from(address),
+            max_connections: None,
+            pinned_addresses: None,
+            protected_addresses: Arc::from([]),
+        }],
+        Some(HealthStartup::Healthy),
+        None,
+        policy,
+        PoolResiliencePolicy::default(),
+        &blueprint,
+    )
+}
+
+async fn wait_until(what: &str, condition: impl Fn() -> bool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+}
+
+#[tokio::test]
+async fn an_ejected_server_stays_out_until_its_probe_passes() {
+    let stub = probe_stub(500).await;
+    let pool = probed_pool(stub.address, 2);
+    pool.record_passive_failure(0, HealthFailure::Timeout);
+
+    wait_until("failed probes to extend the ejection", || {
+        pool.health_snapshot().endpoints[0].passive_ejection_count >= 3
+    })
+    .await;
+    let ejected = pool.health_snapshot();
+    assert!(
+        ejected.endpoints[0].passive_ejected,
+        "the time ending is not enough"
+    );
+    assert!(pool.select().is_none());
+    assert_eq!(ejected.endpoints[0].passive_recovery_count, 0);
+
+    stub.status.store(200, Ordering::SeqCst);
+    wait_until("the server to be re-admitted", || {
+        !pool.health_snapshot().endpoints[0].passive_ejected
+    })
+    .await;
+    assert!(pool.select().is_some());
+    let recovered = pool.health_snapshot();
+    assert_eq!(recovered.endpoints[0].passive_recovery_count, 1);
+    assert!(
+        stub.requests.load(Ordering::SeqCst) >= 4,
+        "two passing probes after the failures"
+    );
+}
+
+#[tokio::test]
+async fn readmission_needs_the_configured_run_of_passing_probes() {
+    let stub = probe_stub(200).await;
+    let pool = probed_pool(stub.address, 3);
+    pool.record_passive_failure(0, HealthFailure::Timeout);
+
+    wait_until("re-admission", || {
+        !pool.health_snapshot().endpoints[0].passive_ejected
+    })
+    .await;
+
+    assert_eq!(stub.requests.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn active_health_checks_cannot_bypass_probe_readmission() {
+    let policy = {
+        let mut policy =
+            PassiveFailurePolicy::new(1, Duration::from_millis(10), Duration::from_millis(10));
+        policy.probe_readmission = true;
+        policy
+    };
+    let pool = RoundRobinPool::new_named_servers_with_policy(
+        "bypass".into(),
+        [runtime_server("only", 3000, None)],
+        UpstreamAlgorithm::First,
+        Some(HealthStartup::Healthy),
+        None,
+        policy,
+    )
+    .expect("pool");
+    pool.record_passive_failure(0, HealthFailure::Timeout);
+    std::thread::sleep(Duration::from_millis(20));
+
+    pool.record_health(0, true, None, Some(now_unix_ms()), 1, 1);
+
+    let snapshot = pool.health_snapshot();
+    assert!(snapshot.endpoints[0].passive_ejected);
+    assert!(pool.select().is_none());
+}
+
 #[test]
 fn a_live_success_resets_consecutive_passive_failures() {
     let pool = RoundRobinPool::new_named_servers_with_policy(

@@ -31,6 +31,7 @@ use crate::defaults::{
     default_idle_timeout_ms, default_max_request_body_bytes, default_passive_error_limit,
     default_passive_initial_backoff_ms, default_passive_max_backoff_ms,
     default_passive_recovery_threshold, default_proxy_protocol_timeout_ms,
+    default_readmission_interval_ms, default_readmission_successes, default_readmission_timeout_ms,
     default_recorder_max_active_recorders, default_recorder_max_queue_bytes,
     default_recorder_max_queue_messages, default_recorder_shutdown_timeout_ms,
     default_recorder_suffix_template, default_rtmp_ack_window_size,

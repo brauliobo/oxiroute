@@ -13,13 +13,14 @@ use oxiroute_config::{
     HttpRetryPolicy, HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction,
     HttpRoutePolicy, HttpService, HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost,
     HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management,
-    PassiveHealthPolicy, PassiveObserve, PassiveOnError, PoolResilience, Protocol,
-    RtmpAccessPolicy, RtmpApplication, RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode,
-    RtmpExecNetworkPolicy, RtmpExecProfile, RtmpExecTrigger, RtmpRecorder,
-    RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
-    RtmpService, RtmpSessionCeilings, TlsClientAuthMode, TlsClientAuthPolicy, TlsPolicy,
-    TlsProfile, TlsSessionCache, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse,
-    UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
+    PassiveHealthPolicy, PassiveObserve, PassiveOnError, PoolResilience, Protocol, Readmission,
+    ReadmissionProbe, RtmpAccessPolicy, RtmpApplication, RtmpExecEnvironment,
+    RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy, RtmpExecProfile,
+    RtmpExecTrigger, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
+    RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings,
+    TlsClientAuthMode, TlsClientAuthPolicy, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion,
+    UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
+    UpstreamServer, UpstreamTls,
 };
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -183,6 +184,16 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
                 initial_backoff_ms: 10_000,
                 max_backoff_ms: 60_000,
                 recovery_threshold: 2,
+                readmission: Some(Readmission {
+                    successes: 3,
+                    interval_ms: 1_500,
+                    timeout_ms: 800,
+                    probe: Some(ReadmissionProbe {
+                        path: "/healthz/deep".into(),
+                        host: None,
+                        expected_status: Some(204),
+                    }),
+                }),
             }),
             tls: Some(UpstreamTls {
                 server_name: "ORIGIN.EXAMPLE.TEST".into(),
@@ -706,6 +717,62 @@ fn rejects_invalid_passive_health_bounds() {
 }
 
 #[test]
+fn rejects_invalid_readmission_bounds() {
+    for (readmission, field) in [
+        (
+            Readmission {
+                successes: 0,
+                ..lenient_readmission()
+            },
+            "passive_health.readmission.successes",
+        ),
+        (
+            Readmission {
+                interval_ms: 5,
+                ..lenient_readmission()
+            },
+            "passive_health.readmission.interval_ms",
+        ),
+        (
+            Readmission {
+                probe: Some(ReadmissionProbe {
+                    path: "healthz".into(),
+                    host: None,
+                    expected_status: None,
+                }),
+                ..lenient_readmission()
+            },
+            "passive_health.readmission.probe.path",
+        ),
+    ] {
+        let mut pool = test_upstream_pools().remove(0);
+        pool.passive_health = Some(PassiveHealthPolicy {
+            readmission: Some(readmission),
+            ..PassiveHealthPolicy::default()
+        });
+        let mut config = minimal_config();
+        config.upstream_pools.push(pool);
+
+        assert!(
+            matches!(
+                config.validate(),
+                Err(ConfigError::InvalidUpstreamServer { field: found, .. }) if found == field
+            ),
+            "{field}"
+        );
+    }
+}
+
+fn lenient_readmission() -> Readmission {
+    Readmission {
+        successes: 2,
+        interval_ms: 1_000,
+        timeout_ms: 500,
+        probe: None,
+    }
+}
+
+#[test]
 fn round_trips_pool_resilience_options() {
     let mut pool = test_upstream_pools().remove(0);
     pool.resilience = PoolResilience {
@@ -880,6 +947,10 @@ const RENDERED_FIELDS: &[&str] = &[
     "initial_backoff_ms",
     "max_backoff_ms",
     "recovery_threshold",
+    "readmission",
+    "successes",
+    "probe",
+    "expected_status",
     "tls",
     "http_versions",
     "server_name",
