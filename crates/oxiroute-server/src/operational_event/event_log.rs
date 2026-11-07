@@ -201,7 +201,6 @@ pub(crate) fn emit_api_operation(
 ///
 /// It is reported as the existing `server_update` event so operators and the audit trail see it
 /// without a new event shape; the registry decides when to call it.
-#[allow(dead_code, reason = "called by the dynamic server registry")]
 pub(crate) fn emit_server_registration(context: &AuditContext) {
     emit_with_context("server_update", "applied", None, context);
 }

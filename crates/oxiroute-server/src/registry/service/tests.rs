@@ -476,3 +476,37 @@ fn an_unwritable_store_refuses_changes_and_leaves_the_pool_untouched() {
     assert!(members(&render).is_empty());
     assert!(h.service.status().degraded.is_some());
 }
+
+fn server_updates() -> usize {
+    crate::operational_event::page(0, 1000)
+        .events
+        .iter()
+        .filter(|event| event.event.as_str() == "server_update")
+        .count()
+}
+
+#[test]
+fn joins_changes_departures_and_expiries_are_events_but_renewals_are_not() {
+    let h = harness();
+    let render = pool("render", &[]);
+    h.service.attach(vec![binding(&render, Some(policy()))]);
+    let before = server_updates();
+
+    put(&h, &admin(), "render", "gpu", "192.0.2.10:9000").expect("joined");
+    assert_eq!(server_updates(), before + 1, "a join");
+    put(&h, &admin(), "render", "gpu", "192.0.2.10:9000").expect("renewed by PUT");
+    h.service
+        .heartbeat(&admin(), "render", "gpu", HeartbeatRequest::default())
+        .expect("renewed");
+    assert_eq!(server_updates(), before + 1, "renewals stay silent");
+
+    h.service
+        .delete(&admin(), "render", "gpu")
+        .expect("deleted");
+    assert_eq!(server_updates(), before + 2, "a departure");
+
+    put(&h, &admin(), "render", "gpu", "192.0.2.10:9000").expect("joined again");
+    h.clock.advance(Duration::from_secs(30));
+    h.service.tick();
+    assert_eq!(server_updates(), before + 4, "a join and an expiry");
+}
