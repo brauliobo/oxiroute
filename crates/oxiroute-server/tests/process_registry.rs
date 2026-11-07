@@ -474,6 +474,23 @@ async fn registrations_and_operator_drain_survive_generation_reload_and_restart(
         ["alpha"].map(String::from).into()
     );
 
+    let (_, generations) = farm
+        .api("GET", "/api/v1/generations", TOKEN, &Value::Null)
+        .await;
+    let (status, _) = farm
+        .api(
+            "PUT",
+            "/api/v1/servers/weight",
+            TOKEN,
+            &json!({
+                "targets": [{"pool": "render", "server": "alpha"}],
+                "expectedActiveRevision": generations["generation"]["activeRevision"],
+                "weight": 5,
+            }),
+        )
+        .await;
+    assert_eq!(status, 200);
+
     write_config(&server.config_path, &farm.config(Some(500)));
     eventually("the changed file to become a new generation", async || {
         let metrics = http_request(farm.management, "GET", "/metrics", &[], &[]).await;
@@ -489,6 +506,21 @@ async fn registrations_and_operator_drain_survive_generation_reload_and_restart(
         farm.beat("render", "beta").await,
         200,
         "the lease survives the reload"
+    );
+    let (_, servers) = farm
+        .api("GET", "/api/v1/servers", TOKEN, &Value::Null)
+        .await;
+    let alpha = servers["servers"]
+        .as_array()
+        .and_then(|all| all.iter().find(|entry| entry["server"]["name"] == "alpha"))
+        .expect("alpha is listed");
+    assert_eq!(
+        (
+            alpha["server"]["origin"].as_str(),
+            alpha["server"]["weight"].as_u64()
+        ),
+        (Some("dynamic"), Some(5)),
+        "the operator's live weight survives the reload"
     );
 
     server.shutdown_gracefully();
