@@ -22,11 +22,14 @@ use oxiroute_config::{
     PassiveHealthPolicy as ConfigPassiveHealthPolicy, PassiveObserve, PassiveOnError,
     PoolResilience, UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
 };
+use queue_wait::{WaitLedger, WaitTicket};
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::{
     sync::Notify,
     time::{Instant, timeout_at},
 };
+
+mod queue_wait;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum HostMatcher {
@@ -1466,6 +1469,8 @@ pub struct PoolHealthSnapshot {
     pub fail_open_selections: u64,
     pub queued: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub oldest_queue_wait_ms: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub queued_total: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub queue_timeouts: u64,
@@ -1480,6 +1485,7 @@ struct PoolQueue {
     capacity_waiters_possible: bool,
     cancellations: AtomicU64,
     generation: AtomicU64,
+    ledger: WaitLedger,
     notify: Notify,
     #[cfg(test)]
     notifications: AtomicU64,
@@ -1502,6 +1508,7 @@ impl PoolQueue {
             capacity_waiters_possible,
             cancellations: AtomicU64::new(0),
             generation: AtomicU64::new(0),
+            ledger: WaitLedger::default(),
             notify: Notify::new(),
             #[cfg(test)]
             notifications: AtomicU64::new(0),
@@ -1706,6 +1713,15 @@ struct EndpointLeaseInner {
     health: Arc<PoolHealthState>,
     queue: Arc<PoolQueue>,
     server: Arc<PoolEndpoint>,
+    wait: LeaseWait,
+}
+
+/// A lease that has to wait for capacity counts as queued from its first wait until it is acquired or dropped.
+#[derive(Debug, Default)]
+struct LeaseWait {
+    ticket: Mutex<Option<WaitTicket>>,
+    waited_ms: AtomicU64,
+    position: AtomicU64,
 }
 
 impl EndpointLease {
@@ -1722,6 +1738,7 @@ impl EndpointLease {
                 health,
                 queue,
                 server,
+                wait: LeaseWait::default(),
             }),
         }
     }
@@ -1741,6 +1758,7 @@ impl EndpointLease {
                 health,
                 queue,
                 server,
+                wait: LeaseWait::default(),
             }),
         }
     }
@@ -1753,6 +1771,16 @@ impl EndpointLease {
     #[must_use]
     pub fn server_name(&self) -> &str {
         &self.inner.server.name
+    }
+
+    /// Time this lease spent waiting for capacity so far.
+    pub(crate) fn queue_wait(&self) -> Duration {
+        Duration::from_millis(self.inner.wait.waited_ms.load(Ordering::Relaxed))
+    }
+
+    /// How many requests were waiting when this one joined, itself included; 0 if it never waited.
+    pub(crate) fn queue_position(&self) -> u64 {
+        self.inner.wait.position.load(Ordering::Relaxed)
     }
 
     pub(crate) fn observation(&self) -> EndpointObservation {
@@ -1780,8 +1808,46 @@ impl EndpointLease {
     }
 }
 
+impl EndpointLeaseInner {
+    fn ticket(&self) -> std::sync::MutexGuard<'_, Option<WaitTicket>> {
+        self.wait
+            .ticket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn join_queue(&self) {
+        let mut ticket = self.ticket();
+        if ticket.is_some() {
+            return;
+        }
+        let joined = self.queue.ledger.join();
+        self.wait.position.store(joined.position, Ordering::Relaxed);
+        self.queue.queued.fetch_add(1, Ordering::Relaxed);
+        self.queue.queued_total.fetch_add(1, Ordering::Relaxed);
+        *ticket = Some(joined);
+    }
+
+    fn leave_queue(&self, cancelled: bool) {
+        let Some(ticket) = self.ticket().take() else {
+            return;
+        };
+        let waited = self.queue.ledger.leave(ticket);
+        decrement_queue_count(&self.queue.queued);
+        if cancelled {
+            self.queue.cancellations.fetch_add(1, Ordering::Relaxed);
+        }
+        let millis = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX);
+        self.wait.waited_ms.fetch_add(millis, Ordering::Relaxed);
+        crate::upstream_stats::upstream_stats()
+            .pool(&self.health.pool_name)
+            .record_queue_wait(waited);
+    }
+}
+
 impl Drop for EndpointLeaseInner {
     fn drop(&mut self) {
+        self.leave_queue(true);
         if !self.acquired.load(Ordering::Acquire) {
             return;
         }
@@ -1803,6 +1869,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
             return Ok(false);
         }
         self.acquired.store(true, Ordering::Release);
+        self.leave_queue(false);
         Ok(true)
     }
 
@@ -1814,6 +1881,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
         let Some(deadline) = self.deadline else {
             return Err(pingora::Error::new_up(pingora::ErrorType::HTTPStatus(503)));
         };
+        self.join_queue();
         #[cfg(test)]
         let _waiting = LifetimeWaitGuard::new(&self.queue.lifetime_waiters);
         loop {
@@ -1828,6 +1896,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
             }
             if timeout_at(deadline, notified).await.is_err() {
                 self.queue.timeouts.fetch_add(1, Ordering::Relaxed);
+                self.leave_queue(false);
                 return Err(pingora::Error::new_up(pingora::ErrorType::HTTPStatus(503)));
             }
         }
@@ -1868,12 +1937,14 @@ impl Drop for LifetimeWaitGuard<'_> {
 struct QueueWaitGuard {
     completed: bool,
     queue: Arc<PoolQueue>,
+    stats: Arc<crate::upstream_stats::PoolStats>,
+    ticket: Option<WaitTicket>,
     waiter: Arc<PoolWaiter>,
     waiting: bool,
 }
 
 impl QueueWaitGuard {
-    fn new(queue: Arc<PoolQueue>) -> Self {
+    fn new(queue: Arc<PoolQueue>, pool: &str) -> Self {
         let waiter = Arc::new(PoolWaiter {
             notify: Notify::new(),
         });
@@ -1885,6 +1956,8 @@ impl QueueWaitGuard {
         Self {
             completed: false,
             queue,
+            stats: crate::upstream_stats::upstream_stats().pool(pool),
+            ticket: None,
             waiter,
             waiting: false,
         }
@@ -1904,6 +1977,7 @@ impl QueueWaitGuard {
             return;
         }
         self.waiting = true;
+        self.ticket = Some(self.queue.ledger.join());
         self.queue.queued.fetch_add(1, Ordering::Relaxed);
         self.queue.queued_total.fetch_add(1, Ordering::Relaxed);
     }
@@ -1920,6 +1994,7 @@ impl QueueWaitGuard {
         let removed_front = self.remove();
         if self.waiting {
             decrement_queue_count(&self.queue.queued);
+            self.leave_ledger();
         }
         if timed_out {
             self.queue.timeouts.fetch_add(1, Ordering::Relaxed);
@@ -1927,6 +2002,13 @@ impl QueueWaitGuard {
         self.completed = true;
         if removed_front {
             self.queue.notify_front();
+        }
+    }
+
+    fn leave_ledger(&mut self) {
+        if let Some(ticket) = self.ticket.take() {
+            self.stats
+                .record_queue_wait(self.queue.ledger.leave(ticket));
         }
     }
 
@@ -1956,6 +2038,7 @@ impl Drop for QueueWaitGuard {
         let removed_front = self.remove();
         if self.waiting {
             decrement_queue_count(&self.queue.queued);
+            self.leave_ledger();
             self.queue.cancellations.fetch_add(1, Ordering::Relaxed);
         }
         if removed_front {
@@ -2492,7 +2575,7 @@ impl EndpointPool {
             return (attempt.lease, unavailable);
         };
         let deadline = Instant::now() + queue_timeout;
-        let mut waiting = QueueWaitGuard::new(Arc::clone(&self.queue));
+        let mut waiting = QueueWaitGuard::new(Arc::clone(&self.queue), &self.name);
         loop {
             let waiter = Arc::clone(&waiting.waiter);
             let notified = waiter.notify.notified();
@@ -2584,6 +2667,11 @@ impl EndpointPool {
                     .iter()
                     .any(|server| server.selectable_at(now_unix_ms))
             })
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     #[must_use]
@@ -2885,6 +2973,8 @@ impl EndpointPool {
             unavailable_selections: self.unavailable_selections.load(Ordering::Relaxed),
             fail_open_selections: self.fail_open_selections.load(Ordering::Relaxed),
             queued: self.queue.queued.load(Ordering::Relaxed),
+            oldest_queue_wait_ms: u64::try_from(self.queue.ledger.oldest().as_millis())
+                .unwrap_or(u64::MAX),
             queued_total: self.queue.queued_total.load(Ordering::Relaxed),
             queue_timeouts: self.queue.timeouts.load(Ordering::Relaxed),
             queue_cancellations: self.queue.cancellations.load(Ordering::Relaxed),

@@ -46,6 +46,7 @@ pub mod tls;
 mod topology;
 mod udp_relay;
 mod upstream_peer;
+mod upstream_stats;
 mod wire;
 
 pub use config_watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
