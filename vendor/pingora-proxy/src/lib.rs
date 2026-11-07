@@ -1198,8 +1198,11 @@ where
     ) -> Option<ReusedHttpStream> {
         let session = Box::new(session);
 
+        // A connection that has not served a request yet keeps its place in the queue, so only the
+        // wait between requests ends on shutdown.
+        let between_requests = session.is_reused_connection().then_some(shutdown);
         // TODO: keepalive pool, use stack
-        let mut session = match self.handle_new_request(session, Some(shutdown)).await {
+        let mut session = match self.handle_new_request(session, between_requests).await {
             Some(downstream_session) => Session::new(
                 downstream_session,
                 &self.downstream_modules,
