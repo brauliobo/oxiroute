@@ -82,6 +82,7 @@ fn startup_dns_cannot_resolve_to_a_statistics_listener() {
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
         registration: None,
+        canary: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     });
@@ -132,6 +133,7 @@ fn upstream_socket_cannot_target_a_statistics_page_listener() {
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
         registration: None,
+        canary: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     });
@@ -215,6 +217,7 @@ fn host-b_host-a_and_host-c_pool_shapes_compile_with_named_policy() {
         server_timeout_ms: Some(50_000),
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
         registration: None,
+        canary: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     };
@@ -729,6 +732,7 @@ fn compiles_a_bounded_udp_service_plan() {
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         registration: None,
+        canary: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
     });
@@ -1663,6 +1667,7 @@ fn canonical_config() -> ConfigDraft {
                 server_timeout_ms: None,
                 connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
                 registration: None,
+                canary: None,
                 resilience: oxiroute_config::PoolResilience::default(),
                 queue: None,
             },
@@ -1680,6 +1685,7 @@ fn canonical_config() -> ConfigDraft {
                 server_timeout_ms: None,
                 connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
                 registration: None,
+                canary: None,
                 resilience: oxiroute_config::PoolResilience::default(),
                 queue: None,
             },

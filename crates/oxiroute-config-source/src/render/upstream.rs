@@ -16,6 +16,7 @@ impl Renderer {
             resilience,
             queue,
             registration,
+            canary,
         } = pool;
 
         self.string_field("name", name);
@@ -76,7 +77,17 @@ impl Renderer {
             self.end_table();
         }
         self.optional_table_field("registration", registration.as_ref(), Self::pool_registration);
+        self.optional_table_field("canary", canary.as_ref(), Self::pool_canary);
         Ok(())
+    }
+
+    fn pool_canary(&mut self, canary: &PoolCanary) {
+        self.string_field("path", &canary.path);
+        self.optional_string_field("host", canary.host.as_deref());
+        self.integer_field("expected_status", canary.expected_status);
+        self.integer_field("interval_ms", canary.interval_ms);
+        self.integer_field("timeout_ms", canary.timeout_ms);
+        self.optional_integer_field("max_latency_ms", canary.max_latency_ms);
     }
 
     fn pool_queue(&mut self, queue: &PoolQueuePolicy) {

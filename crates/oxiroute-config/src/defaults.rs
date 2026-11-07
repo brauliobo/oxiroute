@@ -674,6 +674,18 @@ pub(crate) const fn default_readmission_timeout_ms() -> u64 {
     DEFAULT_READMISSION_TIMEOUT_MS
 }
 
+pub(crate) const fn default_canary_expected_status() -> u16 {
+    200
+}
+
+pub(crate) const fn default_canary_interval_ms() -> u64 {
+    30_000
+}
+
+pub(crate) const fn default_canary_timeout_ms() -> u64 {
+    5_000
+}
+
 pub(crate) const fn default_queue_max_tenants() -> u16 {
     64
 }

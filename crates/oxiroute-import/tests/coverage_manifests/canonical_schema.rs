@@ -96,6 +96,7 @@ fn exclude_nonintegrated_component_controls(
         "max_connections",
         "registry",
         "upstream_pools[].registration",
+        "upstream_pools[].canary",
         "retirement",
         "http_services[].drain_deadline_ms",
         "forward_proxy_services[].drain_deadline_ms",

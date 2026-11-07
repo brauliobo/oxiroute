@@ -237,6 +237,7 @@ fn udp_config(listener: SocketAddr, upstream: SocketAddr) -> ConfigDraft {
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::default(),
             registration: None,
+            canary: None,
             resilience: oxiroute_config::PoolResilience::default(),
             queue: None,
         }],

@@ -143,6 +143,7 @@ fn tcp_config(name: &str, port: u16, upstream_port: u16) -> ConfigDraft {
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::default(),
         registration: None,
+        canary: None,
         resilience: crate::PoolResilience::default(),
         queue: None,
     });

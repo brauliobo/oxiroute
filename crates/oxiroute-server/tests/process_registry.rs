@@ -72,6 +72,7 @@ fn registered_pool(name: &str) -> UpstreamPool {
         }),
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
+        canary: None,
     }
 }
 

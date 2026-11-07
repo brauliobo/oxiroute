@@ -301,6 +301,16 @@ export interface UpstreamPoolConfig {
   resilience: PoolResilienceConfig
   queue?: PoolQueueConfig | null
   registration?: PoolRegistrationConfig | null
+  canary?: PoolCanaryConfig | null
+}
+
+export interface PoolCanaryConfig {
+  path: string
+  host: string | null
+  expected_status: number
+  interval_ms: number
+  timeout_ms: number
+  max_latency_ms: number | null
 }
 
 export interface PoolQueueConfig {

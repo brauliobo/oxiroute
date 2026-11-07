@@ -278,7 +278,14 @@ function isUpstreamPool(value: unknown): value is UpstreamPoolConfig {
     nullableSafeInteger(value.resilience.unavailable_retry_after_seconds) &&
     nullableString(value.resilience.unavailable_body) &&
     (value.registration === undefined || value.registration === null ||
-      isPoolRegistration(value.registration))
+      isPoolRegistration(value.registration)) &&
+    (value.canary === undefined || value.canary === null || isPoolCanary(value.canary))
+}
+
+function isPoolCanary(value: unknown): boolean {
+  return isRecord(value) && typeof value.path === 'string' && nullableString(value.host) &&
+    integerInRange(value.expected_status, 100, 599) && safeInteger(value.interval_ms) &&
+    safeInteger(value.timeout_ms) && nullableSafeInteger(value.max_latency_ms)
 }
 
 function isPoolRegistration(value: unknown): boolean {
