@@ -375,3 +375,43 @@ fn passive_endpoint_events_serialize_bounded_recovery_details() {
     assert_eq!(recovery["outcome"]["type"], "recovered");
     assert_eq!(recovery["outcome"]["recoveryCount"], 1);
 }
+
+#[test]
+fn health_changes_serialize_both_states_and_the_failure() {
+    let event = OperationalEvent {
+        cursor: 1,
+        timestamp_unix_ms: Some(10),
+        event: EventName::UpstreamEndpointHealth,
+        outcome: EventOutcome::HealthChanged {
+            pool: "backend".into(),
+            server: "primary".into(),
+            previous: EndpointHealthState::Healthy,
+            next: EndpointHealthState::Unhealthy,
+            reason: Some(HealthFailure::UnexpectedStatus),
+            changed_at_unix_ms: 10,
+        },
+        revision: None,
+        certificate: None,
+        correlation_id: None,
+        actor: None,
+        source: None,
+        operation: None,
+    };
+
+    let value = v2_event_value(&event);
+    assert_eq!(value["event"], "upstream_endpoint_health");
+    assert_eq!(
+        value["outcome"],
+        serde_json::json!({
+            "type": "health_changed",
+            "pool": "backend",
+            "server": "primary",
+            "previous": "healthy",
+            "next": "unhealthy",
+            "reason": "unexpected_status",
+            "changedAtUnixMs": 10,
+        })
+    );
+    assert_eq!(v1_event_value(&event)["event"], "unknown");
+    assert_eq!(event.event.as_str(), "upstream_endpoint_health");
+}

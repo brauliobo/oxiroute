@@ -197,6 +197,15 @@ pub(crate) fn emit_api_operation(
     );
 }
 
+/// Hook for the dynamic server registry: a server joined, left or was changed in a pool.
+///
+/// It is reported as the existing `server_update` event so operators and the audit trail see it
+/// without a new event shape; the registry decides when to call it.
+#[allow(dead_code, reason = "called by the dynamic server registry")]
+pub(crate) fn emit_server_registration(context: &AuditContext) {
+    emit_with_context("server_update", "applied", None, context);
+}
+
 pub(crate) fn emit_upstream_endpoint_ejection(
     pool: &str,
     server: &str,
@@ -235,6 +244,27 @@ pub(crate) fn emit_upstream_endpoint_recovery(
             reason,
             recovery_count,
             recovered_at_unix_ms,
+        },
+    );
+}
+
+pub(crate) fn emit_upstream_endpoint_health(
+    pool: &str,
+    server: &str,
+    previous: EndpointHealthState,
+    next: EndpointHealthState,
+    reason: Option<HealthFailure>,
+    changed_at_unix_ms: u64,
+) {
+    emit_typed(
+        EventName::UpstreamEndpointHealth,
+        EventOutcome::HealthChanged {
+            pool: redact_identifier(pool),
+            server: redact_identifier(server),
+            previous,
+            next,
+            reason,
+            changed_at_unix_ms,
         },
     );
 }
@@ -374,6 +404,7 @@ pub(super) const fn category_for_event(event: EventName) -> AuditCategory {
         | EventName::RtmpAccess
         | EventName::UpstreamEndpointEjection
         | EventName::UpstreamEndpointRecovery
+        | EventName::UpstreamEndpointHealth
         | EventName::Unknown => AuditCategory::Control,
     }
 }
@@ -388,7 +419,9 @@ const fn result_for_outcome(outcome: &EventOutcome) -> AuditResult {
         EventOutcome::Failed | EventOutcome::Quarantined | EventOutcome::Unknown => {
             AuditResult::Failed
         }
-        EventOutcome::Ejected { .. } | EventOutcome::Recovered { .. } => AuditResult::Succeeded,
+        EventOutcome::Ejected { .. }
+        | EventOutcome::Recovered { .. }
+        | EventOutcome::HealthChanged { .. } => AuditResult::Succeeded,
     }
 }
 

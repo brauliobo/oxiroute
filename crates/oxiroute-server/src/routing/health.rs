@@ -417,6 +417,8 @@ pub struct PoolHealthSnapshot {
     pub fail_open_selections: u64,
     pub queued: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub oldest_queue_wait_ms: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub queued_total: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub queue_timeouts: u64,
@@ -431,7 +433,7 @@ pub(super) struct PoolHealthState {
     pub(super) health_version: AtomicU64,
     pub(super) health_writer: Mutex<()>,
     passive_policy: PassiveFailurePolicy,
-    pool_name: String,
+    pub(super) pool_name: String,
     queue: Arc<PoolQueue>,
     readmission: Option<Arc<ReadmissionProbe>>,
     resilience: PoolResiliencePolicy,
@@ -647,6 +649,16 @@ impl PoolHealthState {
         };
         if update.transition.is_some() || update.passive_recovery.is_some() {
             self.queue.notify_capacity_waiters();
+        }
+        if let Some((previous, next)) = update.transition {
+            crate::operational_event::emit_upstream_endpoint_health(
+                &self.pool_name,
+                &server.name,
+                previous,
+                next,
+                failure,
+                at_unix_ms.unwrap_or_else(now_unix_ms),
+            );
         }
         if let Some(recovery) = update.passive_recovery {
             crate::operational_event::emit_upstream_endpoint_recovery(

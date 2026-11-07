@@ -563,6 +563,10 @@ Current constraints:
   replayable, the client receives the last backend response unchanged (status, headers, body) and
   nothing is synthesized. Rescues are counted in `oxiroute_http_rescues_total{route,status}` and
   logged at debug level. Rescue is not supported for HTTP/3 upstream pools and is rejected there.
+- Proxy `policy.queue_headers` (default `false`) adds `x-oxiroute-queue-position` (how many requests
+  were waiting when this one joined the pool queue, itself included) and `x-oxiroute-queue-wait-ms`
+  (milliseconds it waited) to the response of a request that had to wait for capacity. Requests that
+  were served at once carry neither header. It is opt-in because the values reveal pool load.
 - Proxy `policy.timeouts` optionally refines the upstream timeouts of one route, each phase `null` by
   default and between `1` and `86400000` milliseconds: `connect_ms` (per attempt, until the upstream
   connection is established), `header_ms` (per attempt, from the sent request until the first
@@ -994,6 +998,29 @@ schema.
 - Explicit precedence and source order.
 - Proxy, redirect, static response, or reject action.
 - Explicit URI transformation rather than implicit trailing-slash behavior.
+
+#### Request ids and access log fields
+
+Every HTTP request is tagged with `x-request-id`; there is no configuration to switch it on. A
+well formed incoming value (at most 64 bytes of letters, digits, `-`, `_`, `.`, `:`) is kept; a
+missing or malformed one is replaced, never rejected, by a generated `rq-<boot8>-<seq12>` that
+cannot collide across restarts or parallel workers. The id is sent to the backend on every attempt
+(including retries and rescues) and returned on every response, including responses the router
+writes itself. A request id the backend returns is kept as `x-upstream-request-id`.
+
+The access log (`access_log = { type = "file", path }`) adds, next to the existing keys,
+`requestId` (also `correlationId`), `idemKey`, `pool`, `server` (the last one tried), `servers`
+(all tried, comma separated), `attempts`, `rescued`, `queueWaitMs`, `connectMs`, `headerMs`,
+`wasStuck` and one bounded `reason` that is empty on success: `connect_failed`, `connect_timeout`,
+`upstream_header_timeout`, `upstream_idle_timeout`, `upstream_write_timeout`, `total_deadline`,
+`pool_unavailable`, `queue_timeout`, `retry_budget_spent`, `client_closed`, `upstream_reset`,
+`protocol_error`. The `Idempotency-Key` header of the route (`retry.idempotency_header`, default
+`Idempotency-Key`) is never logged: `idemKey` holds the first 8 hex digits of its hash, so a
+client re-issue can be matched with the original. A request that is quiet for 60 seconds writes one
+extra line `{"event":"stuck","requestId","phase","ageMs","pool","server"}` while it is still alive.
+
+Planned and not yet configurable: switching the request id off or renaming its header, and a
+`Server-Timing` response header. The queue headers are the per-route `policy.queue_headers` above.
 
 ### Upstream pool
 

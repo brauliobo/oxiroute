@@ -37,6 +37,7 @@ mod lease;
 mod policy;
 mod pool;
 mod queue;
+mod queue_wait;
 mod route;
 mod server;
 
@@ -49,6 +50,7 @@ pub use lease::*;
 pub use policy::*;
 #[allow(clippy::wildcard_imports)]
 use queue::*;
+use queue_wait::{WaitLedger, WaitTicket};
 pub use route::*;
 pub use server::ServerOrigin;
 pub(crate) use server::*;

@@ -491,3 +491,40 @@ fn created_tokens_authenticate_once_and_ids_are_not_reused() {
     assert!(registry::create_token(&file, "agent-a", &pools, None, false).is_err());
     assert!(registry::create_token(&file, "bad id", &pools, None, false).is_err());
 }
+
+#[test]
+fn requests_list_builds_one_filtered_query() {
+    let cli = Cli::try_parse_from([
+        "oxiroute",
+        "requests",
+        "list",
+        "--pool",
+        "farm",
+        "--older-than",
+        "30s",
+        "--phase",
+        "queued",
+    ])
+    .expect("CLI");
+    let Command::Requests { command } = cli.command() else {
+        panic!("requests command")
+    };
+    assert_eq!(
+        requests_path(command),
+        "/api/v1/requests?pool=farm&phase=queued&min_age_ms=30000&limit=100"
+    );
+    let show = Cli::try_parse_from(["oxiroute", "requests", "show", "rq-1"]).expect("CLI");
+    let Command::Requests { command } = show.command() else {
+        panic!("requests command")
+    };
+    assert_eq!(requests_path(command), "/api/v1/requests?requestId=rq-1");
+}
+
+#[test]
+fn request_ages_need_a_unit() {
+    assert_eq!(parse_age_ms("500ms"), Ok(500));
+    assert_eq!(parse_age_ms("2m"), Ok(120_000));
+    assert_eq!(parse_age_ms("1h"), Ok(3_600_000));
+    assert!(parse_age_ms("30").is_err());
+    assert!(parse_age_ms("xs").is_err());
+}

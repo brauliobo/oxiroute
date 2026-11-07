@@ -6,6 +6,7 @@ impl ProxyHttp for HttpReverseProxy {
     type CTX = HttpRequestContext;
 
     fn init_downstream_modules(&self, modules: &mut HttpModules) {
+        modules.add_module(Box::new(RequestIdBuilder));
         if let Some(gzip) = self.service.gzip() {
             modules.add_module(Box::new(ConfiguredCompressionBuilder {
                 gzip: Arc::clone(gzip),
@@ -46,6 +47,8 @@ impl ProxyHttp for HttpReverseProxy {
             cache_capture: None,
             response_buffer: None,
             cache_response_handled: false,
+            trace: AttemptTrace::default(),
+            inflight: None,
         }
     }
 
@@ -56,6 +59,7 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
         ctx.adopt_downstream_deadline(session);
+        ctx.register_inflight(session, self.service.access_log());
         let remaining = ctx.remaining(false)?;
         let write_timeout = session
             .get_write_timeout()
@@ -112,7 +116,7 @@ impl ProxyHttp for HttpReverseProxy {
                 .as_ref()
                 .and_then(|generation| generation.begin_reference(RuntimeReferenceKind::WebSocket))
             else {
-                session.respond_error(503).await?;
+                respond_status(session, 503).await?;
                 ctx.allow_downstream_drain(session);
                 return Ok(true);
             };
@@ -120,28 +124,30 @@ impl ProxyHttp for HttpReverseProxy {
         }
 
         let Ok(authority) = authority else {
-            session.respond_error(400).await?;
+            respond_status(session, 400).await?;
             return Ok(true);
         };
         if content_length.is_err() || !is_unambiguous_http_path(uri.path()) {
-            session.respond_error(400).await?;
+            respond_status(session, 400).await?;
             return Ok(true);
         }
         let Some(route) = self.service.select_route(authority.as_ref(), &uri, &method) else {
-            session
-                .respond_error_with_body(404, Bytes::from_static(b"route not found\n"))
+            respond_status_with_body(session, 404, Bytes::from_static(b"route not found\n"))
                 .await?;
             ctx.allow_downstream_drain(session);
             return Ok(true);
         };
         ctx.authority = authority;
+        if let Some(inflight) = &ctx.inflight {
+            inflight.set_route(&route.route_id);
+        }
         ctx.route = Some(Arc::clone(&route));
         session.set_total_drain_timeout(Some(ctx.remaining(false)?.min(route.policy.read_timeout)));
         if content_length
             .expect("checked content length")
             .is_some_and(|length| route.policy.exceeds_body_limit(length))
         {
-            session.respond_error(413).await?;
+            respond_status(session, 413).await?;
             ctx.allow_downstream_drain(session);
             return Ok(true);
         }
@@ -163,7 +169,7 @@ impl ProxyHttp for HttpReverseProxy {
         match pingora_request_header_decisions(session, &route, ctx.authority.as_ref()) {
             Ok(decisions) => ctx.request_header_decisions = decisions,
             Err(RequestPolicyError::SourceTooLarge) => {
-                session.respond_error(431).await?;
+                respond_status(session, 431).await?;
                 ctx.allow_downstream_drain(session);
                 return Ok(true);
             }
@@ -212,9 +218,12 @@ impl ProxyHttp for HttpReverseProxy {
                 if delay > remaining {
                     return Err(Error::new_up(ErrorType::ReadTimedout));
                 }
+                ctx.enter_phase(Phase::RetryWait);
                 tokio::time::sleep(delay).await;
                 ctx.retry_delay_pending = false;
             }
+            ctx.enter_phase(Phase::Queued);
+            let selection_started = Instant::now();
             let selected = if let Some(server) = ctx.retry_server.take() {
                 pool.select_server_endpoint(&server).await?
             } else {
@@ -223,6 +232,17 @@ impl ProxyHttp for HttpReverseProxy {
                     .await
                     .map_err(|_| Error::new_up(ErrorType::ReadTimedout))??
             };
+            ctx.trace.queue_wait += selection_started.elapsed();
+            ctx.trace.attempt_started = Some(Instant::now());
+            ctx.trace.servers.push(selected.server_name().to_owned());
+            ctx.trace.stats =
+                Some(upstream_stats().server(pool.selector().name(), selected.server_name()));
+            if let Some(inflight) = &ctx.inflight {
+                inflight.set_pool(pool.selector().name());
+                inflight.set_server(selected.server_name());
+                selected.observe_queue_position(inflight.queue_cell());
+                inflight.set_phase(Phase::Connecting);
+            }
             ctx.selected_upstream_host = selected_upstream_host(
                 selected.endpoint(),
                 proxy_policy(ctx).upstream_host.clone(),
@@ -298,6 +318,9 @@ impl ProxyHttp for HttpReverseProxy {
             && ctx.spend_retry_budget();
         let retry = should_retry_connection(has_address_fallback, route_retry_allowed);
         error.set_retry(retry);
+        if !has_address_fallback {
+            ctx.settle_attempt(&error, retry);
+        }
         if retry {
             if !has_address_fallback {
                 if retry_target == HttpRetryTarget::SameServer {
@@ -348,6 +371,7 @@ impl ProxyHttp for HttpReverseProxy {
             && ctx.remaining(true).is_ok()
             && (prepaid || ctx.spend_retry_budget());
         error.set_retry(retry);
+        ctx.settle_attempt(&error, retry);
         if retry {
             if retry_target == HttpRetryTarget::SameServer {
                 ctx.retry_server = ctx.attempted_upstreams.last().cloned();
@@ -364,6 +388,7 @@ impl ProxyHttp for HttpReverseProxy {
         error: &Error,
         ctx: &mut Self::CTX,
     ) -> FailToProxy {
+        ctx.trace.failure_reason = Some(failure_reason(error, ctx, session));
         if ctx.client_deadline_expired() {
             return FailToProxy {
                 error_code: 0,
@@ -587,6 +612,12 @@ impl ProxyHttp for HttpReverseProxy {
             && ctx.spend_retry_budget()
         {
             ctx.retry_prepaid = true;
+            let outcome = if rescued {
+                AttemptOutcome::Rescued
+            } else {
+                AttemptOutcome::StatusRetry
+            };
+            ctx.trace.finish(outcome, Some(status));
             if rescued {
                 ctx.begin_rescue(status);
             }
@@ -603,6 +634,8 @@ impl ProxyHttp for HttpReverseProxy {
         } else if !rescued {
             ctx.record_passive_failure(HealthFailure::UnexpectedStatus);
         }
+        ctx.note_response(status);
+        ctx.enter_phase(Phase::Streaming);
         let had_uncacheable_framing = response.headers.contains_key(TRANSFER_ENCODING)
             || response.headers.contains_key(TRAILER);
         let remove_hop_by_hop = response.status != http::StatusCode::SWITCHING_PROTOCOLS;
@@ -613,6 +646,7 @@ impl ProxyHttp for HttpReverseProxy {
             response.append_header(name.clone(), value.clone())?;
         }
         apply_response_policy(response, proxy_policy(ctx), remove_hop_by_hop)?;
+        ctx.stamp_queue_headers(response)?;
         ctx.response_buffer = None;
         if ctx
             .cache_transaction
@@ -707,6 +741,9 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
         ctx.remaining(true)?;
+        ctx.enter_phase(Phase::AwaitingHeaders);
+        ctx.trace.connected_at = Some(Instant::now());
+        ctx.trace.connect = ctx.trace.attempt_started.map(|started| started.elapsed());
         let result =
             validate_tls_connection(ctx.pool.as_deref().and_then(UpstreamPlan::tls), digest);
         if result.is_err() {
@@ -843,23 +880,9 @@ impl ProxyHttp for HttpReverseProxy {
         }
         ctx.observe(session);
         ctx.release_lease();
+        ctx.account_final_attempt(session);
         if let Some(access_log) = self.service.access_log() {
-            let request = session.req_header();
-            let event = serde_json::json!({
-                "timestampUnixMs": SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .ok()
-                    .and_then(|duration| u64::try_from(duration.as_millis()).ok()),
-                "service": access_log.service(),
-                "route": ctx.route.as_ref().map(|route| route.route_id.as_str()),
-                "host": ctx.authority.as_ref().map(normalized_request_host),
-                "method": request.method.as_str(),
-                "status": response_status,
-                "bytesReceived": session.body_bytes_read().to_string(),
-                "bytesSent": session.body_bytes_sent().to_string(),
-                "durationMs": ctx.started_at.elapsed().as_millis().to_string(),
-                "clientIp": session.client_addr().and_then(|address| address.as_inet()).map(|address| address.ip().to_string()),
-            });
+            let event = access_record::build(ctx, session, response_status, access_log.service());
             if let Err(error) = access_log.write(&event) {
                 warn!("HTTP access log write failed: {error}");
             }

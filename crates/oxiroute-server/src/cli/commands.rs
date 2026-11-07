@@ -57,6 +57,7 @@ fn execute(cli: &Cli, client: &Client) -> Result<FollowOutcome, CliError> {
         Command::Events {
             command: EventsCommand::Follow { .. },
         } => return Ok(FollowOutcome::Follow),
+        Command::Requests { command } => (client.get(&requests_path(command), true)?, None),
         Command::Server {
             command: ServerCommand::List { pool, origin },
         } => (
