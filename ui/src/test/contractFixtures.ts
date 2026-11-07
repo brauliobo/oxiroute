@@ -426,6 +426,7 @@ export function contractTopology(): TopologySnapshot {
             delayMs: 0,
             finalRedispatch: false,
           },
+          timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
         },
       },
     }, {
@@ -645,6 +646,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
             method_safety: 'get_head',
             body_safety: 'empty',
           },
+          timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
           cache: {
             store: 'responses',
             methods: ['GET', 'HEAD'],

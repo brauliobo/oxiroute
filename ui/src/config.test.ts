@@ -173,6 +173,11 @@ const currentCanonicalFields = [
   'http_services[].routes[].action.policy.retry.response_statuses',
   'http_services[].routes[].action.policy.retry.method_safety',
   'http_services[].routes[].action.policy.retry.body_safety',
+  'http_services[].routes[].action.policy.timeouts',
+  'http_services[].routes[].action.policy.timeouts.connect_ms',
+  'http_services[].routes[].action.policy.timeouts.header_ms',
+  'http_services[].routes[].action.policy.timeouts.idle_ms',
+  'http_services[].routes[].action.policy.timeouts.total_ms',
   'http_services[].routes[].action.policy.cache',
   'http_services[].routes[].action.policy.cache.store',
   'http_services[].routes[].action.policy.cache.methods',
@@ -378,6 +383,10 @@ describe('canonical field registry', () => {
       final_redispatch: true,
     }
 
+    expect(isCanonicalConfig(config)).toBe(true)
+    route.action.policy.timeouts.header_ms = 0
+    expect(isCanonicalConfig(config)).toBe(false)
+    route.action.policy.timeouts.header_ms = 2_000
     expect(isCanonicalConfig(config)).toBe(true)
     route.action.policy.retry.method_safety = 'all'
     route.action.policy.retry.body_safety = 'buffered'

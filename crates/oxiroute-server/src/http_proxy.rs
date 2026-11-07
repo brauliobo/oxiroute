@@ -15,7 +15,7 @@ use http::{
     },
     uri::Authority,
 };
-use log::warn;
+use log::{debug, warn};
 use oxiroute_acme::ChallengeStore;
 use oxiroute_cache::{CachedResponse, ResponseTiming};
 use oxiroute_config::{
@@ -125,6 +125,8 @@ pub struct HttpRequestContext {
     response_status_override: Option<u16>,
     response_header_overrides: Vec<(HeaderName, HeaderValue)>,
     started_at: Instant,
+    total_deadline: Instant,
+    client_deadline: Option<Instant>,
     deadline: Instant,
     operation_result: Option<HttpOperationResult>,
     websocket_reference: Option<GenerationReference>,
@@ -186,12 +188,32 @@ impl HttpRequestContext {
     }
 
     fn adopt_downstream_deadline(&mut self, session: &Session) {
-        for timeout in [session.get_read_timeout(), session.get_write_timeout()]
+        self.client_deadline = [session.get_read_timeout(), session.get_write_timeout()]
             .into_iter()
             .flatten()
-        {
-            self.deadline = std::cmp::min(self.deadline, self.started_at + timeout);
+            .map(|timeout| self.started_at + timeout)
+            .chain(self.client_deadline)
+            .min();
+        self.refresh_deadline();
+    }
+
+    /// A route total shortens the service deadline; it never extends it.
+    fn adopt_route_total(&mut self, total: Option<Duration>) {
+        if let Some(total) = total {
+            self.total_deadline = self.total_deadline.min(self.started_at + total);
+            self.refresh_deadline();
         }
+    }
+
+    fn refresh_deadline(&mut self) {
+        self.deadline = self.client_deadline.map_or(self.total_deadline, |client| {
+            client.min(self.total_deadline)
+        });
+    }
+
+    fn client_deadline_expired(&self) -> bool {
+        self.client_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
     fn remaining(&self, upstream: bool) -> pingora::Result<Duration> {
@@ -269,6 +291,8 @@ impl ProxyHttp for HttpReverseProxy {
             response_status_override: None,
             response_header_overrides: Vec::new(),
             started_at,
+            total_deadline: started_at + self.service.upstream_io_timeout(),
+            client_deadline: None,
             deadline: started_at + self.service.upstream_io_timeout(),
             operation_result: None,
             websocket_reference: None,
@@ -462,20 +486,29 @@ impl ProxyHttp for HttpReverseProxy {
         }
         let remaining = ctx.remaining(true)?;
         let route_policy = proxy_route(ctx).policy;
-        let peer = ctx
+        let timeouts = proxy_policy(ctx).timeouts;
+        let attempt = |explicit: Option<u64>, inherited: Duration| {
+            explicit
+                .map_or(inherited, Duration::from_millis)
+                .min(remaining)
+        };
+        let response = pool.server_timeout(route_policy.read_timeout);
+        let mut peer = ctx
             .selected
             .as_mut()
             .expect("selected endpoint initialized")
             .prepare_peer_with_timeouts(
                 pool,
-                pool.connect_timeout(route_policy.connect_timeout)
-                    .min(remaining),
-                pool.server_timeout(route_policy.read_timeout)
-                    .min(remaining),
+                attempt(
+                    timeouts.connect_ms,
+                    pool.connect_timeout(route_policy.connect_timeout),
+                ),
+                attempt(timeouts.header_ms, response),
                 pool.server_timeout(route_policy.write_timeout)
                     .min(remaining),
             )
             .await?;
+        peer.options.body_read_timeout = Some(attempt(timeouts.idle_ms, response));
         Ok(Box::new(peer))
     }
 
@@ -579,7 +612,7 @@ impl ProxyHttp for HttpReverseProxy {
         error: &Error,
         ctx: &mut Self::CTX,
     ) -> FailToProxy {
-        if ctx.remaining(false).is_err() {
+        if ctx.client_deadline_expired() {
             return FailToProxy {
                 error_code: 0,
                 can_reuse_downstream: false,
@@ -615,22 +648,32 @@ impl ProxyHttp for HttpReverseProxy {
                 };
             }
         }
-        let code = proxy_error_status(error);
+        let reason = timeout_reason(error, ctx, session);
+        let code = reason.map_or_else(|| proxy_error_status(error), |_| 504);
+        if let Some(reason) = reason {
+            debug!("request ended by {}", reason.as_str());
+        }
         let nginx_server = ctx.route.as_ref().and_then(|route| match &route.action {
             HttpActionPlan::Proxy(proxy) => proxy.policy.nginx_error_server.clone(),
             HttpActionPlan::Fixed(_) | HttpActionPlan::Redirect(_) | HttpActionPlan::Static(_) => {
                 None
             }
         });
-        if code == 502
+        if matches!(code, 502 | 504)
             && error.esource() == &ErrorSource::Upstream
             && let Some(server) = nginx_server
         {
-            let headers = [
+            let mut headers = vec![
                 (SERVER, server.clone()),
                 (CONTENT_TYPE, HeaderValue::from_static("text/html")),
             ];
-            let body = nginx_error_body(502, "Bad Gateway", &server);
+            headers.extend(reason.map(TimeoutReason::header));
+            let phrase = if code == 504 {
+                "Gateway Time-out"
+            } else {
+                "Bad Gateway"
+            };
+            let body = nginx_error_body(code, phrase, &server);
             if let Err(write_error) = write_local_response(
                 session,
                 code,
@@ -643,7 +686,7 @@ impl ProxyHttp for HttpReverseProxy {
                 warn!("failed to send nginx proxy error response downstream: {write_error}");
             }
         } else if code > 0
-            && let Err(write_error) = respond_error(session, code, error).await
+            && let Err(write_error) = respond_error(session, code, error, reason).await
         {
             warn!("failed to send error response downstream: {write_error}");
         }
@@ -1622,6 +1665,7 @@ async fn execute_route_action(
                         route.policy.request_buffering,
                     )
                     && !session.is_upgrade_req();
+                ctx.adopt_route_total(proxy.policy.timeouts.total_ms.map(Duration::from_millis));
                 ctx.pool = Some(Arc::clone(&proxy.pool));
                 return Ok(false);
             }
@@ -1842,13 +1886,87 @@ async fn execute_route_action(
     }
 }
 
-async fn respond_error(session: &mut Session, code: u16, error: &Error) -> pingora::Result<()> {
-    if !is_pool_unavailable(error) {
+async fn respond_error(
+    session: &mut Session,
+    code: u16,
+    error: &Error,
+    reason: Option<TimeoutReason>,
+) -> pingora::Result<()> {
+    if !is_pool_unavailable(error) && reason.is_none() {
         return session.respond_error(code).await;
     }
     let mut response = ServerSession::generate_error(code);
-    response.insert_header(POOL_UNAVAILABLE_HEADER, "1")?;
+    if is_pool_unavailable(error) {
+        response.insert_header(POOL_UNAVAILABLE_HEADER, "1")?;
+    }
+    if let Some(reason) = reason {
+        let (name, value) = reason.header();
+        response.insert_header(name, value)?;
+    }
     session.write_error_response(response, Bytes::new()).await
+}
+
+const REASON_HEADER: HeaderName = HeaderName::from_static("x-oxiroute-reason");
+
+/// Which upstream or total timeout ended a request that has no complete response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimeoutReason {
+    Connect,
+    UpstreamHeader,
+    UpstreamIdle,
+    UpstreamWrite,
+    TotalDeadline,
+}
+
+impl TimeoutReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Connect => "connect_timeout",
+            Self::UpstreamHeader => "upstream_header_timeout",
+            Self::UpstreamIdle => "upstream_idle_timeout",
+            Self::UpstreamWrite => "upstream_write_timeout",
+            Self::TotalDeadline => "total_deadline",
+        }
+    }
+
+    const fn header(self) -> (HeaderName, HeaderValue) {
+        (REASON_HEADER, HeaderValue::from_static(self.as_str()))
+    }
+}
+
+fn timeout_reason(
+    error: &Error,
+    ctx: &HttpRequestContext,
+    session: &Session,
+) -> Option<TimeoutReason> {
+    let timed_out = matches!(
+        error.etype(),
+        ErrorType::ConnectTimedout
+            | ErrorType::TLSHandshakeTimedout
+            | ErrorType::ReadTimedout
+            | ErrorType::WriteTimedout
+    );
+    if timed_out && ctx.remaining(false).is_err() {
+        return Some(TimeoutReason::TotalDeadline);
+    }
+    if error.esource() != &ErrorSource::Upstream {
+        return None;
+    }
+    match error.etype() {
+        ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout => {
+            Some(TimeoutReason::Connect)
+        }
+        ErrorType::WriteTimedout => Some(TimeoutReason::UpstreamWrite),
+        ErrorType::ReadTimedout if response_started(session) => Some(TimeoutReason::UpstreamIdle),
+        ErrorType::ReadTimedout => Some(TimeoutReason::UpstreamHeader),
+        _ => None,
+    }
+}
+
+fn response_started(session: &Session) -> bool {
+    session
+        .response_written()
+        .is_some_and(|response| !response.status.is_informational())
 }
 
 fn proxy_error_status(error: &Error) -> u16 {

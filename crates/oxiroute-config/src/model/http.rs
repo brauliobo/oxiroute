@@ -317,7 +317,28 @@ pub struct HttpProxyPolicy {
     #[serde(default)]
     pub retry: HttpRetryPolicy,
     #[serde(default)]
+    pub timeouts: HttpProxyTimeouts,
+    #[serde(default)]
     pub cache: Option<Box<HttpCachePolicy>>,
+}
+
+/// Optional per-phase upstream timeouts of one proxy route; an omitted phase falls back to the
+/// pool `connect_timeout_ms`/`server_timeout_ms`, then the route policy, then the service.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpProxyTimeouts {
+    /// Per attempt, until the upstream connection is established.
+    #[serde(default)]
+    pub connect_ms: Option<u64>,
+    /// Per attempt, from the sent request until the first response byte.
+    #[serde(default)]
+    pub header_ms: Option<u64>,
+    /// Between upstream response body chunks.
+    #[serde(default)]
+    pub idle_ms: Option<u64>,
+    /// Whole request including retries; defaults to the service `upstream_io_timeout_ms`.
+    #[serde(default)]
+    pub total_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

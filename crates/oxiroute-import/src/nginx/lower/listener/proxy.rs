@@ -163,6 +163,7 @@ impl Lowerer {
                 response_cookie_path_rewrites,
                 response_cookie_attributes,
                 retry,
+                timeouts: oxiroute_config::HttpProxyTimeouts::default(),
                 cache: None,
             },
             timeouts,

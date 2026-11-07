@@ -439,7 +439,13 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
     isHttpRetryTriggers(value.retry.triggers, hasResponseStatuses || value.retry.max_retries === 0) &&
     ((value.retry.method_safety === 'get_head' && value.retry.body_safety === 'empty') ||
       (value.retry.method_safety === 'all' && value.retry.body_safety === 'buffered')) &&
+    isHttpProxyTimeouts(value.timeouts) &&
     (value.cache === null || isHttpCachePolicy(value.cache))
+}
+
+function isHttpProxyTimeouts(value: unknown): boolean {
+  return isRecord(value) && ['connect_ms', 'header_ms', 'idle_ms', 'total_ms'].every((key) =>
+    value[key] === null || integerInRange(value[key], 1, 86_400_000))
 }
 
 function isHttpCachePolicy(value: unknown): value is HttpCachePolicyConfig {
