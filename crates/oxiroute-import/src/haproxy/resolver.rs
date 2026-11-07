@@ -30,9 +30,12 @@ use super::{
     SectionKind,
 };
 
+mod engine;
 mod http_directives;
 mod server;
 
+pub(super) use engine::resolve_report;
+use engine::{ParsedHeader, PendingAclCondition, SectionMeta};
 use http_directives::{
     parse_acl, parse_forward_for, parse_http_check, parse_http_check_send, parse_http_request_rule,
     parse_http_response_rule, parse_status_ranges,
@@ -40,7 +43,6 @@ use http_directives::{
 use server::{merge_server_defaults, parse_server};
 
 include!("resolver/effective.rs");
-include!("resolver/engine.rs");
 include!("resolver/directives.rs");
 include!("resolver/certificates.rs");
 include!("resolver/support.rs");
