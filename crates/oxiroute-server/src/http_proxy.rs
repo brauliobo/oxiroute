@@ -507,7 +507,10 @@ impl ProxyHttp for HttpReverseProxy {
             let selected = if let Some(server) = ctx.retry_server.take() {
                 pool.select_server_endpoint(&server).await?
             } else {
-                pool.select_endpoint(&ctx.attempted_upstreams).await?
+                let wait = ctx.remaining(true)?;
+                tokio::time::timeout(wait, pool.select_endpoint(&ctx.attempted_upstreams))
+                    .await
+                    .map_err(|_| Error::new_up(ErrorType::ReadTimedout))??
             };
             ctx.selected_upstream_host = selected_upstream_host(
                 selected.endpoint(),
