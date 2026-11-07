@@ -298,6 +298,26 @@ export interface UpstreamPoolConfig {
   server_timeout_ms: number | null
   connection_reuse: 'never' | 'safe' | 'always'
   resilience: PoolResilienceConfig
+  registration?: PoolRegistrationConfig | null
+}
+
+export interface PoolRegistrationConfig {
+  max_servers: number
+  min_ttl_ms: number
+  default_ttl_ms: number
+  max_ttl_ms: number
+  allowed_cidrs: string[]
+  require_peer_address: boolean
+}
+
+export type RegistryEndpointConfig =
+  | { type: 'unix'; path: string; mode: number; role: 'read' | 'register'; pools: string[] }
+  | { type: 'tcp'; bind: string; allow_cidrs: string[] }
+
+export interface RegistryConfig {
+  state_dir: string
+  tokens_file: string | null
+  endpoints: RegistryEndpointConfig[]
 }
 
 export type HttpHostKind =
@@ -952,6 +972,7 @@ export interface CanonicalConfig {
   version: number
   max_connections: number | null
   management: ManagementConfig | null
+  registry?: RegistryConfig | null
   stats?: StatsConfig | null
   certificates: CertificateConfig[]
   tls_profiles: TlsProfileConfig[]

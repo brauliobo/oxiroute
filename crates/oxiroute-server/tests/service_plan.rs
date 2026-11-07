@@ -81,6 +81,7 @@ fn startup_dns_cannot_resolve_to_a_statistics_listener() {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     });
 
@@ -129,6 +130,7 @@ fn upstream_socket_cannot_target_a_statistics_page_listener() {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     });
 
@@ -210,6 +212,7 @@ fn host-b_host-a_and_host-c_pool_shapes_compile_with_named_policy() {
         connect_timeout_ms: Some(5_000),
         server_timeout_ms: Some(50_000),
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     };
     let config = ConfigDraft {
@@ -721,6 +724,7 @@ fn compiles_a_bounded_udp_service_plan() {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     });
     config.l4_services.push(L4Service {
@@ -1651,6 +1655,7 @@ fn canonical_config() -> ConfigDraft {
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
                 connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+                registration: None,
                 resilience: oxiroute_config::PoolResilience::default(),
             },
             UpstreamPool {
@@ -1666,6 +1671,7 @@ fn canonical_config() -> ConfigDraft {
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
                 connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+                registration: None,
                 resilience: oxiroute_config::PoolResilience::default(),
             },
         ],

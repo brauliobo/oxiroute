@@ -196,6 +196,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: Some(10_000),
             server_timeout_ms: Some(30_000),
             connection_reuse: UpstreamConnectionReuse::Safe,
+            registration: None,
             resilience: oxiroute_config::PoolResilience::default(),
         },
         UpstreamPool {
@@ -238,6 +239,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Safe,
+            registration: None,
             resilience: oxiroute_config::PoolResilience::default(),
         },
         UpstreamPool {
@@ -271,6 +273,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Never,
+            registration: None,
             resilience: oxiroute_config::PoolResilience::default(),
         },
         UpstreamPool {
@@ -291,6 +294,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Never,
+            registration: None,
             resilience: oxiroute_config::PoolResilience::default(),
         },
     ]
@@ -631,6 +635,7 @@ fn complete_config() -> ConfigDraft {
             bind: socket("127.0.0.1:9080"),
             ui_dir: Some(PathBuf::from("./ui/dist")),
         }),
+        registry: None,
         stats: None,
         certificates: test_certificates(),
         tls_profiles: test_tls_profiles(),
@@ -649,6 +654,7 @@ fn minimal_config() -> ConfigDraft {
         version: 1,
         max_connections: None,
         management: None,
+        registry: None,
         stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
@@ -1110,6 +1116,7 @@ fn emits_defaults_empty_vectors_and_options_explicitly_as_data_only_lua() {
   version = 1,
   max_connections = null,
   management = nil,
+  registry = nil,
   stats = nil,
   certificates = {
   },

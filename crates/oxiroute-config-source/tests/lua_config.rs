@@ -2233,6 +2233,7 @@ fn rejects_non_utf8_file_paths() {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::Safe,
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     };
 

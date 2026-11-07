@@ -92,6 +92,8 @@ fn exclude_nonintegrated_component_controls(
         "cache_stores",
         "http_services[].routes[].action.policy.cache",
         "max_connections",
+        "registry",
+        "upstream_pools[].registration",
         "listeners[].bind.mode",
         "listeners[].downstream_timeouts",
         "upstream_pools[].endpoints",

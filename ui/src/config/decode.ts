@@ -153,6 +153,7 @@ export function isCanonicalConfig(value: unknown): value is CanonicalConfig {
   if (!isRecord(value) || !safeInteger(value.version) || !nullableSafeInteger(value.max_connections) ||
     !(value.management === null || (isRecord(value.management) &&
       typeof value.management.bind === 'string' && nullableString(value.management.ui_dir))) ||
+    !(value.registry === undefined || value.registry === null || isRegistry(value.registry)) ||
     !(value.stats === undefined || value.stats === null || (isRecord(value.stats) &&
       arrayOf(value.stats.binds, isString) && nullableString(value.stats.admin_token_file) &&
       arrayOf(value.stats.pages, isStatsPage))) ||
@@ -275,7 +276,27 @@ function isUpstreamPool(value: unknown): value is UpstreamPoolConfig {
     integerInRange(value.resilience.ejection_jitter_percent, 0, 50) &&
     nullableSafeInteger(value.resilience.queue_while_unavailable_ms) &&
     nullableSafeInteger(value.resilience.unavailable_retry_after_seconds) &&
-    nullableString(value.resilience.unavailable_body)
+    nullableString(value.resilience.unavailable_body) &&
+    (value.registration === undefined || value.registration === null ||
+      isPoolRegistration(value.registration))
+}
+
+function isPoolRegistration(value: unknown): boolean {
+  return isRecord(value) && safeInteger(value.max_servers) && safeInteger(value.min_ttl_ms) &&
+    safeInteger(value.default_ttl_ms) && safeInteger(value.max_ttl_ms) &&
+    arrayOf(value.allowed_cidrs, isString) && typeof value.require_peer_address === 'boolean'
+}
+
+function isRegistry(value: unknown): boolean {
+  return isRecord(value) && typeof value.state_dir === 'string' && nullableString(value.tokens_file) &&
+    arrayOf(value.endpoints, isRegistryEndpoint)
+}
+
+function isRegistryEndpoint(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  if (value.type === 'tcp') return typeof value.bind === 'string' && arrayOf(value.allow_cidrs, isString)
+  return value.type === 'unix' && typeof value.path === 'string' && safeInteger(value.mode) &&
+    ['read', 'register'].includes(String(value.role)) && arrayOf(value.pools, isString)
 }
 
 function isUpstreamAlgorithm(value: unknown, serverCount: number): value is UpstreamAlgorithm {

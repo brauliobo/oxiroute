@@ -139,6 +139,17 @@ impl Renderer {
         Ok(())
     }
 
+    fn string_list_or_nil_field<S>(&mut self, name: &str, values: &[S])
+    where
+        S: AsRef<str>,
+    {
+        if values.is_empty() {
+            self.nil_field(name);
+        } else {
+            self.string_list_field(name, values);
+        }
+    }
+
     fn string_list_field<S>(&mut self, name: &str, values: &[S])
     where
         S: AsRef<str>,

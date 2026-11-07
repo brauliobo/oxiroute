@@ -416,6 +416,7 @@ impl Lowerer {
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Never,
+            registration: None,
             resilience: oxiroute_config::PoolResilience::default(),
         });
         let pool_path = format!("/upstream_pools/{pool_index}");

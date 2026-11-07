@@ -1487,6 +1487,7 @@ async fn capped_first_pool_dispatches_queued_requests_fifo_to_the_next_available
                     connect_timeout_ms: None,
                     server_timeout_ms: None,
                     connection_reuse: oxiroute_config::UpstreamConnectionReuse::Never,
+                    registration: None,
                     resilience: oxiroute_config::PoolResilience::default(),
                 }],
                 vec![route(None, "/", &[], "workers")],
@@ -7402,6 +7403,7 @@ fn capped_pool(name: &str, address: SocketAddr, max_connections: u64) -> Upstrea
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     }
 }
@@ -7424,6 +7426,7 @@ fn endpoint_pool(
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+        registration: None,
         resilience: oxiroute_config::PoolResilience::default(),
     }
 }
