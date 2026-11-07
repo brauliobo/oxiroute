@@ -68,6 +68,7 @@ Status meanings:
 | Server | health override auto/up/down | Supported | `server set-health`; override is separate from observed health and `auto` restores observed-health selection. |
 | Server | checks enable/disable | Supported | `server check`; maintenance still suspends enabled checks. |
 | Server | max-connections set/reset | Supported | Runtime override; reset restores configured capacity. |
+| Server | state across generations | Supported | Administrative state, health override, check switch and max-connections override follow a server by pool and server name through every generation change (file write, `generation reload`, `config apply`, rollback, supervised worker replacement). They are applied before the new generation accepts traffic. Servers that no longer exist lose their state; new servers start ready. |
 | Server | DNS refresh | Supported | `server refresh-dns`; resolves immediately and replaces startup-pinned addresses when applicable. Runtime-resolved endpoints are resolved and reported. |
 | Server | queue/counter visibility | Supported | Pool/server reads and `monitoring` expose active work, queue depth/totals/timeouts/cancellations, checks, and failures. |
 | Server | address, FQDN, check port, TLS, weight mutation | Config generation | These fields determine immutable endpoint/TLS/selection plans and require full preflight plus generation activation. |
@@ -142,6 +143,19 @@ retryable on the next reconciliation. HTTP/1.1, HTTP/2, WebSocket, TCP, and RTMP
 generation references through transport teardown. Retired runtimes therefore remain alive until
 their admitted work drains; process and listener capacities count shared active work across that
 overlap. Process drain state and process uptime are also process-owned and do not reset on reload.
+
+`generation status` reports `generation` (the live generation number: the activation count, or the
+supervisor's generation id), `activeRevision`, and `previousRevision` (the last good revision that
+the live one replaced; informational in supervised mode, where `generation rollback` is unavailable).
+
+`generation status` reports `lastRejection` (`atUnixMs`, `revision`, `diagnostics`) and
+`configRejections` when the configuration file on disk was refused while the previous generation
+kept serving. `lastRejection` is cleared by the next file that is accepted, `degraded` is true while
+it is set, and `/ready` is not affected.
+
+`422` responses of `config validate`, `config apply` and `generation reload`, and `config check`,
+name each failing setting: `path` is a JSON pointer, `detail` the failed rule and `line` the KDL
+syntax-error line when known. The CLI prints the first one as `<code>: <path>: <detail>`.
 
 SIGTERM, SIGINT, and authenticated shutdown use one five-second process deadline. Startup waits and
 drain polling are cancellation-aware; after the deadline the daemon stops waiting rather than

@@ -76,9 +76,14 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
     let mut serving = None;
     let mut status_sequence = 1_u64;
+    let mut notice = String::new();
+    let mut activation_state = String::new();
     loop {
         let mut request = control.receive()?;
         let phase = request.phase();
+        if phase == ControlPhase::Notice {
+            notice = String::from_utf8_lossy(request.attachment()).into_owned();
+        }
         if behavior == reject_behavior(phase) {
             control.acknowledge(&request, ControlOutcome::Rejected(7))?;
             continue;
@@ -110,7 +115,13 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     .ok_or("listeners were not adopted")?
                     .quiesce();
             }
-            ControlPhase::AdoptListeners => {}
+            ControlPhase::AdoptListeners | ControlPhase::Notice => {}
+        }
+        if behavior == "echo-state" && phase == ControlPhase::Quiesce {
+            control.report_state(b"state-of-the-quiesced-worker")?;
+        }
+        if phase == ControlPhase::Activate {
+            activation_state = String::from_utf8_lossy(request.attachment()).into_owned();
         }
         if behavior == "stale-adopt" && phase == ControlPhase::AdoptListeners {
             control.acknowledge_raw(
@@ -133,7 +144,9 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         if behavior == "timeout-adopt" && phase == ControlPhase::AdoptListeners {
             thread::sleep(Duration::from_secs(1));
         }
-        control.acknowledge(&request, ControlOutcome::Accepted)?;
+        if phase != ControlPhase::Notice {
+            control.acknowledge(&request, ControlOutcome::Accepted)?;
+        }
         if behavior == "delay-status-after-quiesce" && phase == ControlPhase::Quiesce {
             thread::sleep(Duration::from_millis(150));
         }
@@ -142,7 +155,9 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             generation_id: identity.generation,
             lifecycle: match phase {
                 ControlPhase::AdoptListeners => WorkerLifecycle::Ready,
-                ControlPhase::Activate | ControlPhase::Reactivate => WorkerLifecycle::Active,
+                ControlPhase::Activate | ControlPhase::Reactivate | ControlPhase::Notice => {
+                    WorkerLifecycle::Active
+                }
                 ControlPhase::Quiesce => WorkerLifecycle::Quiescing,
                 ControlPhase::Drain => WorkerLifecycle::Draining,
                 ControlPhase::Shutdown => WorkerLifecycle::Stopping,
@@ -179,7 +194,7 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             metrics: None,
             listeners: Vec::new(),
             degraded: false,
-            degradation: None,
+            degradation: (behavior == "echo-state").then(|| format!("{activation_state}|{notice}")),
             event_cursor: u64::from(phase == ControlPhase::Activate),
             event_cursor_lost: false,
             events: if phase == ControlPhase::Activate {
@@ -346,6 +361,7 @@ fn reject_behavior(phase: ControlPhase) -> &'static str {
         ControlPhase::Drain => "reject-drain",
         ControlPhase::Reactivate => "reject-reactivate",
         ControlPhase::Shutdown => "reject-shutdown",
+        ControlPhase::Notice => "reject-notice",
     }
 }
 
@@ -357,6 +373,7 @@ fn crash_behavior(phase: ControlPhase) -> &'static str {
         ControlPhase::Drain => "crash-drain",
         ControlPhase::Reactivate => "crash-reactivate",
         ControlPhase::Shutdown => "crash-shutdown",
+        ControlPhase::Notice => "crash-notice",
     }
 }
 

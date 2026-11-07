@@ -161,7 +161,7 @@ impl HaproxyStatsApi {
                         && listener.administrative_state == crate::AdministrativeState::Ready
                 })
         });
-        let ready = status.active_revision.is_some() && !status.degraded && listeners_ready;
+        let ready = status.serving() && listeners_ready;
         ApiResponse::json(
             if ready { 200 } else { 503 },
             &serde_json::json!({

@@ -4,7 +4,9 @@ pub(crate) fn generation_component_status(generation: Option<&crate::GenerationS
     match generation {
         Some(status) if status.degraded => json!({
             "state": "degraded",
-            "reason": status.last_failure,
+            "reason": status
+                .last_failure
+                .or_else(|| status.last_rejection.as_ref().map(|_| "config_rejected")),
         }),
         Some(status) if status.active_revision.is_some() => json!({ "state": "healthy" }),
         Some(_) | None => json!({

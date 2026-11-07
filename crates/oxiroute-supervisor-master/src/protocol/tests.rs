@@ -123,7 +123,7 @@ fn version_two_control_decoder_rejects_legacy_version_one_payload() {
 fn control_prefix_and_ack_tags_stay_byte_exact() {
     let request_id = 0x0102_0304_0506_0708;
     assert_eq!(
-        encode_request(request_id, ControlPhase::Quiesce),
+        encode_request(request_id, ControlPhase::Quiesce, &[]).unwrap(),
         [0, 2, 1, 2, 3, 4, 5, 6, 7, 8]
     );
     assert_eq!(
@@ -134,4 +134,24 @@ fn control_prefix_and_ack_tags_stay_byte_exact() {
         ),
         [0, 2, 1, 2, 3, 4, 5, 6, 7, 8, 5, 9]
     );
+}
+
+#[test]
+fn only_activation_and_notice_requests_carry_an_attachment() {
+    for phase in [ControlPhase::Activate, ControlPhase::Notice] {
+        let payload = encode_request(7, phase, b"state").unwrap();
+        assert_eq!(&payload[PREFIX_SIZE..], b"state");
+    }
+    for phase in [
+        ControlPhase::Quiesce,
+        ControlPhase::Drain,
+        ControlPhase::Reactivate,
+        ControlPhase::Shutdown,
+    ] {
+        assert!(matches!(
+            encode_request(7, phase, b"state"),
+            Err(ControlProtocolError::InvalidPayload)
+        ));
+    }
+    assert!(encode_request(7, ControlPhase::Notice, &vec![0; MAX_ATTACHMENT_BYTES + 1]).is_err());
 }

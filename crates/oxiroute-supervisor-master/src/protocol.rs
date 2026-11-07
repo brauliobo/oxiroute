@@ -20,7 +20,9 @@ use oxiroute_supervisor_process::{
 };
 use thiserror::Error;
 
-use crate::status::{STATUS_MESSAGE, StatusProtocolError, WorkerStatus, encode_status};
+use crate::status::{
+    STATE_MESSAGE, STATUS_MESSAGE, StatusProtocolError, WorkerStatus, encode_status,
+};
 
 /// Application protocol version used in the authenticated worker identity and every payload.
 pub const CONTROL_PROTOCOL_VERSION: u16 = 2;
@@ -37,7 +39,10 @@ const ACTIVATE: MessageType = MessageType(0x102);
 const DRAIN: MessageType = MessageType(0x103);
 const REACTIVATE: MessageType = MessageType(0x104);
 const SHUTDOWN: MessageType = MessageType(0x105);
+const NOTICE: MessageType = MessageType(0x106);
 pub(crate) const ACK: MessageType = MessageType(0x180);
+/// Maximum opaque attachment bytes the master sends with a request or the worker reports as state.
+pub const MAX_ATTACHMENT_BYTES: usize = 48 * 1024;
 const PREFIX_SIZE: usize = 10;
 const ACK_SIZE: usize = 12;
 
@@ -56,6 +61,8 @@ pub enum ControlPhase {
     Reactivate,
     /// Exit and allow the launcher to reap the worker group.
     Shutdown,
+    /// Tell the active worker something the master learned. It is never acknowledged.
+    Notice,
 }
 
 impl ControlPhase {
@@ -67,6 +74,7 @@ impl ControlPhase {
             Self::Drain => 4,
             Self::Reactivate => 5,
             Self::Shutdown => 6,
+            Self::Notice => 7,
         }
     }
 
@@ -78,6 +86,7 @@ impl ControlPhase {
             4 => Ok(Self::Drain),
             5 => Ok(Self::Reactivate),
             6 => Ok(Self::Shutdown),
+            7 => Ok(Self::Notice),
             _ => Err(ControlProtocolError::UnknownPhase(tag)),
         }
     }
@@ -90,7 +99,13 @@ impl ControlPhase {
             Self::Drain => DRAIN,
             Self::Reactivate => REACTIVATE,
             Self::Shutdown => SHUTDOWN,
+            Self::Notice => NOTICE,
         }
+    }
+
+    /// Whether the request may carry an opaque attachment after its fixed prefix.
+    const fn carries_attachment(self) -> bool {
+        matches!(self, Self::Activate | Self::Notice)
     }
 
     fn from_message_type(message_type: MessageType) -> Result<Self, ControlProtocolError> {
@@ -101,6 +116,7 @@ impl ControlPhase {
             DRAIN => Ok(Self::Drain),
             REACTIVATE => Ok(Self::Reactivate),
             SHUTDOWN => Ok(Self::Shutdown),
+            NOTICE => Ok(Self::Notice),
             _ => Err(ControlProtocolError::UnexpectedMessage(message_type.0)),
         }
     }
@@ -121,6 +137,7 @@ pub struct ControlRequest {
     request_id: u64,
     phase: ControlPhase,
     listeners: Option<DescriptorSet>,
+    attachment: Vec<u8>,
 }
 
 impl ControlRequest {
@@ -134,6 +151,12 @@ impl ControlRequest {
     #[must_use]
     pub const fn phase(&self) -> ControlPhase {
         self.phase
+    }
+
+    /// The opaque bytes the master attached to an activation or a notice, empty otherwise.
+    #[must_use]
+    pub fn attachment(&self) -> &[u8] {
+        &self.attachment
     }
 
     /// Takes the validated listener set from an adoption request.
@@ -226,6 +249,21 @@ impl WorkerControl {
             .send(STATUS_MESSAGE, FrameFlags::default(), &payload, &[])?)
     }
 
+    /// Reports opaque worker state that the master hands to the next worker at activation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a protocol error when the state exceeds [`MAX_ATTACHMENT_BYTES`], or a transport
+    /// error when the bounded frame cannot be sent.
+    pub fn report_state(&mut self, state: &[u8]) -> Result<Sequence, ControlProtocolError> {
+        if state.len() > MAX_ATTACHMENT_BYTES {
+            return Err(ControlProtocolError::InvalidPayload);
+        }
+        Ok(self
+            .endpoint
+            .send(STATE_MESSAGE, FrameFlags::default(), state, &[])?)
+    }
+
     /// Sends a raw status payload for protocol conformance fixtures.
     ///
     /// Production workers should use [`Self::report_status`] so application bounds are enforced
@@ -248,12 +286,25 @@ pub(crate) struct ControlAck {
     pub outcome: ControlOutcome,
 }
 
-pub(crate) fn encode_request(request_id: u64, phase: ControlPhase) -> [u8; PREFIX_SIZE] {
-    let mut payload = [0_u8; PREFIX_SIZE];
-    payload[..2].copy_from_slice(&CONTROL_PROTOCOL_VERSION.to_be_bytes());
-    payload[2..].copy_from_slice(&request_id.to_be_bytes());
+pub(crate) fn encode_request(
+    request_id: u64,
+    phase: ControlPhase,
+    attachment: &[u8],
+) -> Result<Vec<u8>, ControlProtocolError> {
     debug_assert_ne!(phase.message_type(), ADOPT);
+    if attachment.len() > MAX_ATTACHMENT_BYTES
+        || (!attachment.is_empty() && !phase.carries_attachment())
+    {
+        return Err(ControlProtocolError::InvalidPayload);
+    }
+    let mut payload = Vec::new();
     payload
+        .try_reserve_exact(PREFIX_SIZE + attachment.len())
+        .map_err(|_| ControlProtocolError::Allocation)?;
+    payload.extend_from_slice(&CONTROL_PROTOCOL_VERSION.to_be_bytes());
+    payload.extend_from_slice(&request_id.to_be_bytes());
+    payload.extend_from_slice(attachment);
+    Ok(payload)
 }
 
 pub(crate) fn encode_adopt_request(
@@ -300,15 +351,18 @@ fn decode_request(frame: AuthenticatedFrame) -> Result<ControlRequest, ControlPr
     }
     check_version(&payload)?;
     let request_id = u64::from_be_bytes(payload[2..10].try_into().expect("fixed slice"));
+    let mut attachment = Vec::new();
     let listeners = if phase == ControlPhase::AdoptListeners {
         decode_listeners(&payload[PREFIX_SIZE..], descriptors)?
     } else {
-        if payload.len() != PREFIX_SIZE {
+        let tail = &payload[PREFIX_SIZE..];
+        if tail.len() > MAX_ATTACHMENT_BYTES || (!tail.is_empty() && !phase.carries_attachment()) {
             return Err(ControlProtocolError::InvalidPayload);
         }
         if !descriptors.is_empty() {
             return Err(ControlProtocolError::UnexpectedDescriptors);
         }
+        attachment.extend_from_slice(tail);
         None
     };
     debug_assert_eq!(header.message_type(), phase.message_type());
@@ -316,6 +370,7 @@ fn decode_request(frame: AuthenticatedFrame) -> Result<ControlRequest, ControlPr
         request_id,
         phase,
         listeners,
+        attachment,
     })
 }
 

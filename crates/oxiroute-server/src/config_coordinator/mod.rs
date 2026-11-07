@@ -1,17 +1,21 @@
 use std::{
-    fmt,
+    fmt::{self, Write as _},
     path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use openssl::sha::sha256;
-use oxiroute_config::{ConfigDraft, ValidatedConfig, compose_validated_configs};
-use oxiroute_config_source::{
-    ConfigFormat, ConfigSourceError, NativeReferenceMetadata, ResolvedSource, render_config,
-    resolve_source,
+use oxiroute_config::{
+    ConfigCompositionError, ConfigDraft, ValidatedConfig, compose_validated_configs,
 };
-use serde::Serialize;
+use oxiroute_config_source::{
+    ConfigFormat, ConfigSourceError, LuaConfigError, NativeReferenceMetadata, ResolvedSource,
+    render_config, resolve_source,
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 mod candidate;
 mod storage;
@@ -156,15 +160,41 @@ pub enum ConfigDiagnosticStage {
     Rollback,
 }
 
+impl ConfigDiagnosticStage {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Parse => "parse",
+            Self::Validation => "validation",
+            Self::Render => "render",
+            Self::Conflict => "conflict",
+            Self::Write => "write",
+            Self::Sync => "sync",
+            Self::Rollback => "rollback",
+        }
+    }
+}
+
 /// A deliberately redacted diagnostic suitable for returning across a management boundary.
 ///
 /// Diagnostics never retain source text, configured paths, OS error strings, or rejected values.
+/// They may name the failing setting and the rule it broke.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ConfigDiagnostic {
     pub code: &'static str,
     pub severity: ConfigDiagnosticSeverity,
     pub stage: ConfigDiagnosticStage,
     pub message: &'static str,
+    /// JSON pointer to the failing setting, with item names in place of list indexes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The validator's explanation of the failing setting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// One-based line of a syntax error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
 }
 
 /// A valid resolved source. The authored revision hashes exact disk bytes, while the effective
@@ -212,6 +242,122 @@ pub enum ConfigLoadOutcome {
 pub struct ConfigLoadRejection {
     pub disk_revision: Option<AuthoredRevision>,
     pub diagnostics: Vec<ConfigDiagnostic>,
+}
+
+impl ConfigLoadRejection {
+    /// The one-line reason the file was refused, for startup failures and offline checks.
+    #[must_use]
+    pub fn message(&self) -> String {
+        ConfigRejection::new(self.disk_revision.as_ref(), &self.diagnostics).message()
+    }
+}
+
+/// The newest configuration the process refused to run and why.
+///
+/// Reported by `generation status` until a later configuration is accepted.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigRejection {
+    pub at_unix_ms: u64,
+    /// SHA-256 of the refused file, when it could be read.
+    pub revision: Option<String>,
+    pub diagnostics: Vec<RejectionDiagnostic>,
+}
+
+/// An owned [`ConfigDiagnostic`], so that a rejection can cross the master/worker boundary.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RejectionDiagnostic {
+    pub code: String,
+    #[serde(default)]
+    pub stage: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+
+impl From<&ConfigDiagnostic> for RejectionDiagnostic {
+    fn from(diagnostic: &ConfigDiagnostic) -> Self {
+        Self {
+            code: diagnostic.code.to_owned(),
+            stage: diagnostic.stage.as_str().to_owned(),
+            message: diagnostic.message.to_owned(),
+            path: diagnostic.path.clone(),
+            detail: diagnostic.detail.clone(),
+            line: diagnostic.line,
+        }
+    }
+}
+
+impl RejectionDiagnostic {
+    /// A stable code, the failing setting or line, and the explanation, on one line.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut summary = self.code.clone();
+        if let Some(reason) = self
+            .detail
+            .as_deref()
+            .or(Some(&self.message))
+            .filter(|reason| !reason.is_empty())
+        {
+            let _ = write!(summary, ": {reason}");
+        }
+        if let Some(path) = &self.path {
+            let _ = write!(summary, " at {path}");
+        }
+        if let Some(line) = self.line {
+            let _ = write!(summary, " (line {line})");
+        }
+        summary
+    }
+}
+
+impl ConfigRejection {
+    /// The one-line reason a file was refused, for startup failures and offline checks.
+    #[must_use]
+    pub fn message(&self) -> String {
+        let summaries = self
+            .diagnostics
+            .iter()
+            .map(RejectionDiagnostic::summary)
+            .collect::<Vec<_>>()
+            .join("; ");
+        if summaries.is_empty() {
+            "canonical configuration was rejected".to_owned()
+        } else {
+            format!("canonical configuration was rejected ({summaries})")
+        }
+    }
+
+    /// Logs the refusal once per diagnostic, naming the setting and never quoting the source.
+    pub fn log(&self) {
+        let revision = self.revision.as_deref().unwrap_or("unreadable");
+        for diagnostic in &self.diagnostics {
+            log::error!(
+                target: "oxiroute::config",
+                "configuration file revision {revision} rejected, the running configuration is \
+                 unchanged: {}",
+                diagnostic.summary()
+            );
+        }
+    }
+
+    #[must_use]
+    pub fn new(revision: Option<&AuthoredRevision>, diagnostics: &[ConfigDiagnostic]) -> Self {
+        Self {
+            at_unix_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |elapsed| {
+                    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+                }),
+            revision: revision.map(ToString::to_string),
+            diagnostics: diagnostics.iter().map(Into::into).collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -511,14 +657,15 @@ impl fmt::Debug for CanonicalConfigCoordinator {
 }
 
 fn prepare_candidate(format: ConfigFormat, draft: ConfigDraft) -> ConfigValidationOutcome {
-    let Ok(validated_config) = compose_validated_configs(vec![draft]) else {
-        return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
-            diagnostics: vec![diagnostic(
-                "E_INVALID_VALUE",
-                ConfigDiagnosticStage::Validation,
-                "configuration values or references are invalid",
-            )],
-        });
+    let validated_config = match compose_validated_configs(vec![draft]) {
+        Ok(validated_config) => validated_config,
+        Err(error) => {
+            return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
+                diagnostics: vec![source_error_diagnostic(&ConfigSourceError::Composition(
+                    error,
+                ))],
+            });
+        }
     };
     let canonical_kdl = match render_config(ConfigFormat::Kdl, &validated_config) {
         Ok(preview) => preview,
@@ -549,6 +696,64 @@ fn prepare_candidate(format: ConfigFormat, draft: ConfigDraft) -> ConfigValidati
 }
 
 fn source_error_diagnostic(error: &ConfigSourceError) -> ConfigDiagnostic {
+    let (path, detail, line) = source_error_location(error);
+    ConfigDiagnostic {
+        path,
+        detail,
+        line,
+        ..source_error_class(error)
+    }
+}
+
+/// Locates the failing setting without quoting source text.
+///
+/// Only parsers whose messages are fixed phrases (KDL) and validators that name settings
+/// contribute a detail; HOCON, UCI and Lua syntax errors contribute at most a line.
+fn source_error_location(
+    error: &ConfigSourceError,
+) -> (Option<String>, Option<String>, Option<u32>) {
+    match error {
+        ConfigSourceError::Parse {
+            format: "KDL 2",
+            message,
+            line,
+        } => (None, Some(message.clone()), *line),
+        ConfigSourceError::Parse { line, .. } => (None, None, *line),
+        ConfigSourceError::Composition(ConfigCompositionError::Invalid(error))
+        | ConfigSourceError::Lua(LuaConfigError::Config(error)) => {
+            (error.pointer(), Some(error.to_string()), None)
+        }
+        ConfigSourceError::Lua(LuaConfigError::Lua(error)) => (None, None, lua_line(error)),
+        ConfigSourceError::TypedConfig(message) => (None, Some(without_values(message)), None),
+        ConfigSourceError::Composition(_)
+        | ConfigSourceError::Template(_)
+        | ConfigSourceError::NativeImport { .. }
+        | ConfigSourceError::StructuralDepth
+        | ConfigSourceError::ExpansionDepth
+        | ConfigSourceError::SubstitutionLimit
+        | ConfigSourceError::NodeLimit
+        | ConfigSourceError::StringLimit => (None, Some(error.to_string()), None),
+        _ => (None, None, None),
+    }
+}
+
+/// Serde quotes the rejected value in type and value errors; keep only what was expected.
+pub(crate) fn without_values(message: &str) -> String {
+    if message.starts_with("invalid type: ") || message.starts_with("invalid value: ") {
+        let kind = message.split_once(':').map_or("value", |(kind, _)| kind);
+        let expected = message.split_once(", expected ").map_or("", |(_, e)| e);
+        return format!("{kind}, expected {expected}");
+    }
+    message.to_owned()
+}
+
+fn lua_line(error: &impl fmt::Display) -> Option<u32> {
+    let message = error.to_string();
+    let (_, rest) = message.split_once("oxiroute.lua:")?;
+    rest.split(':').next()?.parse().ok()
+}
+
+fn source_error_class(error: &ConfigSourceError) -> ConfigDiagnostic {
     match error {
         ConfigSourceError::SourceTooLarge => diagnostic(
             "E_CONFIG_TOO_LARGE",
@@ -641,6 +846,9 @@ const fn diagnostic(
         severity: ConfigDiagnosticSeverity::Error,
         stage,
         message,
+        path: None,
+        detail: None,
+        line: None,
     }
 }
 
@@ -650,6 +858,9 @@ const fn cleanup_durability_warning() -> ConfigDiagnostic {
         severity: ConfigDiagnosticSeverity::Warning,
         stage: ConfigDiagnosticStage::Sync,
         message: "configuration was committed but cleanup durability could not be confirmed",
+        path: None,
+        detail: None,
+        line: None,
     }
 }
 

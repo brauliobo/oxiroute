@@ -1364,6 +1364,61 @@ async fn rejects_invalid_malformed_and_oversized_config_requests() {
         .await;
     assert_eq!(validation.status, 422);
     assert_eq!(validation.json()["diagnostics"][0]["severity"], "error");
+    assert_eq!(validation.json()["diagnostics"][0]["path"], "/version");
+    assert!(
+        validation.json()["diagnostics"][0]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("version 2"))
+    );
+
+    let mut serviceless = active.clone();
+    serviceless.listeners.push(Listener {
+        name: "edge".into(),
+        bind: socket_bind(loopback_address(1935)),
+        protocol: Protocol::Rtmp,
+        service: None,
+        tls_profile: None,
+        proxy_protocol: None,
+        max_connections: None,
+        downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+    });
+    let serviceless = harness
+        .request(
+            "POST",
+            "/api/v1/config/validate",
+            None,
+            Some(&serde_json::json!({ "config": serviceless })),
+        )
+        .await;
+    assert_eq!(serviceless.status, 422);
+    assert_eq!(
+        serviceless.json()["diagnostics"][0]["path"],
+        "/listeners/edge/service"
+    );
+    assert!(
+        serviceless.json()["diagnostics"][0]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("listener `edge`"))
+    );
+
+    let misspelled = harness
+        .request(
+            "POST",
+            "/api/v1/config/validate",
+            None,
+            Some(&serde_json::json!({ "config": { "version": 1, "listners": [] } })),
+        )
+        .await;
+    assert_eq!(misspelled.status, 422);
+    assert_eq!(
+        misspelled.json()["diagnostics"][0]["code"],
+        "E_INVALID_FIELD"
+    );
+    assert!(
+        misspelled.json()["diagnostics"][0]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("`listners`"))
+    );
 
     let save = harness
         .request(

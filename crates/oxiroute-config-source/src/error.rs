@@ -2,7 +2,7 @@ use crate::{
     MAX_EXPANSION_DEPTH, MAX_NODES, MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES, MAX_STRING_BYTES,
     MAX_STRUCTURAL_DEPTH, MAX_SUBSTITUTIONS,
 };
-use oxiroute_config::ConfigError;
+use oxiroute_config::{ConfigCompositionError, ConfigError};
 
 /// Errors produced while loading or rendering restricted Lua configuration.
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +71,8 @@ pub enum ConfigSourceError {
     Parse {
         format: &'static str,
         message: String,
+        /// One-based line of the first syntax error, when the parser reports a position.
+        line: Option<u32>,
     },
     #[error("cannot render {format}: {message}")]
     Render {
@@ -84,7 +86,7 @@ pub enum ConfigSourceError {
     #[error("invalid typed configuration: {0}")]
     TypedConfig(String),
     #[error("configuration fragments cannot be composed: {0}")]
-    Composition(String),
+    Composition(#[from] ConfigCompositionError),
     #[error(transparent)]
     Lua(#[from] LuaConfigError),
     #[error("{importer} import did not produce a final candidate ({diagnostics})")]
@@ -103,6 +105,19 @@ impl ConfigSourceError {
         Self::Parse {
             format,
             message: message.into(),
+            line: None,
+        }
+    }
+
+    pub(crate) fn parse_at(
+        format: &'static str,
+        message: impl Into<String>,
+        line: Option<u32>,
+    ) -> Self {
+        Self::Parse {
+            format,
+            message: message.into(),
+            line,
         }
     }
 

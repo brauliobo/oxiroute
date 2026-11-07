@@ -110,16 +110,13 @@ impl<E: ActionExecutor> Master<E> {
                 }
             })?
         } else {
-            let encoded = encode_request(request_id, phase);
-            let mut payload = Vec::new();
-            payload
-                .try_reserve_exact(encoded.len())
-                .map_err(|_| MasterError::Preparation {
-                    step: PreparationStep::Allocation,
-                    source: PreparationError::Allocation,
-                })?;
-            payload.extend_from_slice(&encoded);
-            payload
+            let attachment = self.attachment(role, phase);
+            encode_request(request_id, phase, attachment).map_err(|source| {
+                MasterError::Preparation {
+                    step: PreparationStep::Encoding,
+                    source: PreparationError::Protocol(source),
+                }
+            })?
         };
         Ok(PreparedRequest {
             pending: Pending {
@@ -129,6 +126,17 @@ impl<E: ActionExecutor> Master<E> {
             },
             payload,
         })
+    }
+
+    /// The candidate starts from the state its predecessor reported when it quiesced.
+    fn attachment(&self, role: WorkerRole, phase: ControlPhase) -> &[u8] {
+        match (role, phase) {
+            (WorkerRole::Candidate, ControlPhase::Activate) => self
+                .active
+                .as_ref()
+                .map_or(&[], |active| active.reported_state.as_slice()),
+            _ => &[],
+        }
     }
 
     fn prepare_step(
@@ -200,6 +208,12 @@ impl<E: ActionExecutor> Master<E> {
                     Ok(status) => Some(Observation::Status(Box::new(status))),
                     Err(_) => Some(Observation::ProtocolFailure),
                 },
+                crate::status::STATE_MESSAGE
+                    if frame.payload().len() <= MAX_ATTACHMENT_BYTES
+                        && frame.descriptors().is_empty() =>
+                {
+                    Some(Observation::State(frame.payload().to_vec()))
+                }
                 _ => Some(Observation::ProtocolFailure),
             },
             Ok(None) => None,
@@ -227,6 +241,12 @@ impl<E: ActionExecutor> Master<E> {
         match observation {
             Observation::Ack(ack) => self.handle_ack(role, ack, now),
             Observation::Status(status) => self.handle_status(role, &status),
+            Observation::State(state) => {
+                self.worker_mut(role)
+                    .ok_or(MasterError::MissingWorker(role))?
+                    .reported_state = state;
+                Ok(())
+            }
             Observation::Exit(status) => self.handle_exit(role, status, now),
             Observation::Disconnected => self.handle_disconnect(role, now),
             Observation::ProtocolFailure => {

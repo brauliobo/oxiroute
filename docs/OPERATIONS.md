@@ -1,5 +1,8 @@
 # Operations
 
+Operator procedures for pools, drains, rollbacks and outages are in the
+[runbook](user/RUNBOOK.md).
+
 ## CLI
 
 `oxiroute serve CONFIG` starts the daemon. A lone positional `CONFIG` remains accepted for
@@ -53,14 +56,30 @@ and all listener reservations before publication. It does not write the canonica
 listener reservations are process-owned and reused by later generations.
 
 Activation swaps active and previous generation references under one lock, closes the old logical
-accept gate, and retains the previous generation for explicit rollback. HTTP/1, HTTP/2, WebSocket,
+accept gate, and retains the previous generation for explicit rollback. Before the new generation
+accepts, the runtime administrative state of the old one (drain, maintenance, health override,
+check switch, max-connections override) is copied to the servers with the same pool and server
+name, so a drained server never takes traffic across a file write, reload, apply or rollback.
+Servers that no longer exist lose their state and new servers start ready. In supervised mode the
+old worker reports that state at quiesce and the master hands it to the replacement at activation;
+a state too large for the control channel (over 48 KiB, hundreds of non-default servers) refuses
+the replacement and the old worker keeps serving. HTTP/1, HTTP/2, WebSocket,
 TCP, UDP pseudo-sessions, QUIC/H3 connections, and RTMP references are counted independently and
 drained under a caller-supplied deadline. Failed candidates are dropped without changing active
 state. Canonical management writes remain revision-checked and invalid drafts do not alter disk.
 
 The watcher observes the parent directory so rename-based replacement is visible, debounces event
 bursts, and periodically reconciles exact SHA-256 disk revisions. Invalid snapshots are rejected and
-do not replace active generation state. Operational logs on the `oxiroute::operations` target are
+do not replace active generation state: each one is logged at error level on the `oxiroute::config`
+target (once per distinct rejection, not at every reconciliation), emits a `configuration_reload`
+event with the outcome `rejected`, raises `oxiroute_config_rejections_total` and is shown as
+`lastRejection` in `generation status` and `GET /api/v1/generations` until a later file is accepted,
+in the plain and the supervised runtime. The master reports a rejection to the active worker, so
+`lastRejection` also covers a reload the master refused (unsupported configuration, a listener that
+cannot be bound) or whose replacement worker failed. `degraded` is true while a rejection is
+unresolved; `GET /ready` stays 200 because the active generation keeps serving. `config check`, `422` responses
+and startup failures name the failing setting (`path`, `detail`, `line`). Operational logs on
+the `oxiroute::operations` target are
 structured JSON and never include source text, secret values, configured paths, or OS error strings.
 
 For compositional KDL/HOCON/UCI roots, periodic reconciliation re-resolves templates and native

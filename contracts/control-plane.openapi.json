@@ -329,6 +329,33 @@
         ],
         "type": "object"
       },
+      "ConfigRejectionDto": {
+        "properties": {
+          "atUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/RejectionDiagnostic"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "atUnixMs",
+          "revision",
+          "diagnostics"
+        ],
+        "type": "object"
+      },
       "DecimalCounter": {
         "pattern": "^[0-9]+$",
         "type": "string"
@@ -644,6 +671,11 @@
               "null"
             ]
           },
+          "configRejections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "degraded": {
             "type": "boolean"
           },
@@ -658,10 +690,25 @@
             "minimum": 0,
             "type": "integer"
           },
+          "generation": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "lastFailure": {
             "type": [
               "string",
               "null"
+            ]
+          },
+          "lastRejection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConfigRejectionDto"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "prepares": {
@@ -694,11 +741,14 @@
           "activeRevision",
           "previousRevision",
           "quarantinedRevision",
+          "generation",
           "activeAccepting",
           "degraded",
           "lastFailure",
+          "lastRejection",
           "prepares",
           "activations",
+          "configRejections",
           "failures",
           "rollbacks"
         ],
@@ -1209,6 +1259,48 @@
           "quic"
         ],
         "type": "string"
+      },
+      "RejectionDiagnostic": {
+        "description": "An owned [`ConfigDiagnostic`], so that a rejection can cross the master/worker boundary.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "message": {
+            "default": "",
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "stage",
+          "message"
+        ],
+        "type": "object"
       },
       "RuntimeModeDto": {
         "enum": [

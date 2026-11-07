@@ -2,6 +2,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::DecimalCounter;
+use crate::config_coordinator::{ConfigRejection, RejectionDiagnostic};
 use crate::{
     AdministrativeState, CacheSnapshot, EndpointHealthSnapshot, EndpointHealthState,
     GenerationStatus, HealthFailure, HealthOverride, HttpOperationCountSnapshot,
@@ -33,13 +34,34 @@ struct GenerationStatusDto {
     active_revision: Option<String>,
     previous_revision: Option<String>,
     quarantined_revision: Option<String>,
+    generation: u64,
     active_accepting: bool,
     degraded: bool,
     last_failure: Option<&'static str>,
+    last_rejection: Option<ConfigRejectionDto>,
     prepares: u64,
     activations: u64,
+    config_rejections: u64,
     failures: u64,
     rollbacks: u64,
+}
+
+#[derive(JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigRejectionDto {
+    at_unix_ms: u64,
+    revision: Option<String>,
+    diagnostics: Vec<RejectionDiagnostic>,
+}
+
+impl From<ConfigRejection> for ConfigRejectionDto {
+    fn from(rejection: ConfigRejection) -> Self {
+        Self {
+            at_unix_ms: rejection.at_unix_ms,
+            revision: rejection.revision,
+            diagnostics: rejection.diagnostics,
+        }
+    }
 }
 
 impl From<GenerationStatus> for GenerationStatusDto {
@@ -51,11 +73,14 @@ impl From<GenerationStatus> for GenerationStatusDto {
             active_revision: effective_revision(status.active_revision),
             previous_revision: effective_revision(status.previous_revision),
             quarantined_revision: effective_revision(status.quarantined_revision),
+            generation: status.generation,
             active_accepting: status.active_accepting,
             degraded: status.degraded,
             last_failure: status.last_failure,
+            last_rejection: status.last_rejection.map(Into::into),
             prepares: status.prepares,
             activations: status.activations,
+            config_rejections: status.config_rejections,
             failures: status.failures,
             rollbacks: status.rollbacks,
         }

@@ -110,8 +110,7 @@ pub fn resolve_source_with_format(
         return Err(ConfigSourceError::NoFragments);
     }
 
-    let config = crate::compose_validated_fragments(inline, imported_fragments, native_version)
-        .map_err(|error| ConfigSourceError::Composition(error.to_string()))?;
+    let config = crate::compose_validated_fragments(inline, imported_fragments, native_version)?;
     finish(
         format,
         config,
@@ -129,6 +128,11 @@ fn inline_config(mut value: Value) -> Result<Option<ConfigDraft>, ConfigSourceEr
     };
     if root.keys().all(|key| key == "version") {
         return Ok(None);
+    }
+    if !root.contains_key("version") {
+        return Err(ConfigSourceError::TypedConfig(
+            "missing required top-level setting `version` (add `version 1`)".to_owned(),
+        ));
     }
     root.entry("listeners")
         .or_insert_with(|| Value::Array(Vec::new()));

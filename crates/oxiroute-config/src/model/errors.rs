@@ -440,3 +440,74 @@ pub enum ConfigError {
         detail: &'static str,
     },
 }
+
+impl ConfigError {
+    /// A JSON pointer to the setting the error is about, when the variant names one.
+    ///
+    /// Named lists are addressed by item name instead of index.
+    #[must_use]
+    pub fn pointer(&self) -> Option<String> {
+        let pointer = match self {
+            Self::UnsupportedVersion(_) => "/version".to_owned(),
+            Self::EmptyUpstreamEndpoints { pool }
+            | Self::TooManyUpstreamEndpoints { pool }
+            | Self::DuplicateUpstreamEndpoint { pool, .. }
+            | Self::InvalidUpstreamWeights { pool, .. }
+            | Self::ManagementUpstreamEndpoint { pool, .. }
+            | Self::InvalidDnsEndpoint { pool, .. }
+            | Self::UnsupportedUnixUpstreamTls { pool } => format!("/upstream_pools/{pool}"),
+            Self::InvalidUpstreamServer {
+                pool,
+                server,
+                field,
+                ..
+            } => format!("/upstream_pools/{pool}/servers/{server}/{field}"),
+            Self::InvalidHealthCheck { pool, .. }
+            | Self::UnsupportedTlsHealthCheck { pool }
+            | Self::UnsupportedUnixHealthCheck { pool } => {
+                format!("/upstream_pools/{pool}/health_check")
+            }
+            Self::InvalidUpstreamTlsServerName { pool, .. } => {
+                format!("/upstream_pools/{pool}/tls/server_name")
+            }
+            Self::InvalidHttpVersionRange { pool, .. }
+            | Self::H2RequiresUpstreamTls { pool }
+            | Self::H3RequiresUpstreamTls { pool } => {
+                format!("/upstream_pools/{pool}/http_versions")
+            }
+            Self::MissingListenerService { listener, .. }
+            | Self::UnknownListenerService { listener, .. } => {
+                format!("/listeners/{listener}/service")
+            }
+            Self::UnknownListenerTlsProfile { listener, .. }
+            | Self::UnexpectedListenerTlsProfile { listener, .. }
+            | Self::UnsupportedUnixListenerTls { listener, .. } => {
+                format!("/listeners/{listener}/tls_profile")
+            }
+            Self::InvalidListenerTransport { listener, .. }
+            | Self::InvalidListenerUnixMode { listener, .. } => {
+                format!("/listeners/{listener}/bind")
+            }
+            Self::EmptyHttpRoutes { service } => format!("/http_services/{service}/routes"),
+            Self::InvalidHttpRoute {
+                service,
+                route,
+                field,
+                ..
+            } => format!("/http_services/{service}/routes/{route}/{field}"),
+            Self::UnknownRouteUpstreamPool { service, route, .. } => {
+                format!("/http_services/{service}/routes/{route}/action/upstream_pool")
+            }
+            Self::UnknownL4UpstreamPool { service, .. }
+            | Self::TlsUpstreamPoolForL4Service { service, .. } => {
+                format!("/l4_services/{service}/upstream_pool")
+            }
+            Self::UnknownTlsProfileCertificate { profile, .. }
+            | Self::EmptyTlsProfileCertificates { profile } => {
+                format!("/tls_profiles/{profile}/certificates")
+            }
+            _ => return None,
+        };
+        Some(pointer)
+    }
+}

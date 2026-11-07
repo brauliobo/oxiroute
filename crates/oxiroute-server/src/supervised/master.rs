@@ -20,7 +20,9 @@ use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
     ListenerReservations, RuntimeMode,
     config_coordinator::{
-        CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision, ResolvedConfigDocument,
+        AuthoredRevision, CanonicalConfigCoordinator, ConfigDiagnostic, ConfigDiagnosticSeverity,
+        ConfigDiagnosticStage, ConfigLoadOutcome, ConfigRejection, EffectiveRevision,
+        ResolvedConfigDocument,
     },
 };
 use oxiroute_supervision::{
@@ -176,16 +178,7 @@ fn load_document(
     match coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => Ok(document),
         ConfigLoadOutcome::Rejected(rejection) => {
-            let message = rejection.diagnostics.first().map_or_else(
-                || "canonical configuration was rejected".to_owned(),
-                |diagnostic| {
-                    format!(
-                        "canonical configuration was rejected ({}): {}",
-                        diagnostic.code, diagnostic.message
-                    )
-                },
-            );
-            Err(io::Error::new(io::ErrorKind::InvalidData, message).into())
+            Err(io::Error::new(io::ErrorKind::InvalidData, rejection.message()).into())
         }
     }
 }
@@ -244,6 +237,7 @@ impl MasterRunner {
         let reservations = ListenerReservations::prepare(config, None)?;
         let listeners = reservations.clone().into_stable_listeners(config)?;
         let mut book = ListenerBook::new(reservations, listeners.manifest().clone());
+        let mut reports = ConfigReports::default();
         let token = generate_instance_token()?;
         let (instance_id, identity) = worker_identity(token)?;
         let active = self.build_launch_document(
@@ -276,6 +270,7 @@ impl MasterRunner {
                 &mut factory,
                 &mut reload,
                 &mut book,
+                &mut reports,
             ),
             Err(error) => Err(error.into()),
         };
@@ -357,6 +352,7 @@ impl MasterRunner {
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
         book: &mut ListenerBook,
+        reports: &mut ConfigReports,
     ) -> Result<(), Box<dyn Error>> {
         let result = self.drive_inner(
             master,
@@ -367,6 +363,7 @@ impl MasterRunner {
             factory,
             reload,
             book,
+            reports,
         );
         if result.is_err() && !matches!(master.state(), MasterState::Stopped | MasterState::Failed)
         {
@@ -386,6 +383,7 @@ impl MasterRunner {
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
         book: &mut ListenerBook,
+        reports: &mut ConfigReports,
     ) -> Result<(), Box<dyn Error>> {
         while master.state() != MasterState::Running {
             if master.state() == MasterState::Failed {
@@ -407,12 +405,21 @@ impl MasterRunner {
                     let now = Instant::now();
                     let events = master.poll(now)?;
                     log_master_events(&events);
-                    apply_catalog_events(catalog, &events, book)?;
+                    if let Some(detail) = apply_catalog_events(catalog, &events, book)? {
+                        reports.replacement_failed(master, detail);
+                    }
                     let forced_reload = catalog.candidate().is_none()
                         && reload_requested.swap(false, Ordering::AcqRel);
                     if catalog.candidate().is_none() && (forced_reload || reload.next_trigger(now))
                     {
-                        self.reconcile(master, coordinator, catalog, factory, reload, book)?;
+                        self.reconcile(
+                            master,
+                            coordinator,
+                            catalog,
+                            factory,
+                            reload,
+                            (book, reports),
+                        )?;
                     }
                     thread::sleep(MASTER_POLL_INTERVAL);
                 }
@@ -423,7 +430,9 @@ impl MasterRunner {
                 _ => {
                     let events = master.poll(Instant::now())?;
                     log_master_events(&events);
-                    apply_catalog_events(catalog, &events, book)?;
+                    if let Some(detail) = apply_catalog_events(catalog, &events, book)? {
+                        reports.replacement_failed(master, detail);
+                    }
                     thread::sleep(MASTER_POLL_INTERVAL);
                 }
             }
@@ -437,12 +446,15 @@ impl MasterRunner {
         catalog: &mut GenerationCatalog,
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
-        book: &mut ListenerBook,
+        (book, reports): (&mut ListenerBook, &mut ConfigReports),
     ) -> Result<(), Box<dyn Error>> {
         let document = match coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => document,
-            ConfigLoadOutcome::Rejected(_) => {
-                warn!("supervised master ignored a rejected configuration reload");
+            ConfigLoadOutcome::Rejected(rejection) => {
+                reports.reject(
+                    master,
+                    ConfigRejection::new(rejection.disk_revision.as_ref(), &rejection.diagnostics),
+                );
                 return Ok(());
             }
         };
@@ -450,13 +462,19 @@ impl MasterRunner {
             warn!("supervised master could not watch a configuration dependency: {error}");
         }
         let revision = document.effective_revision.clone();
+        let file = &document.authored_revision;
         if &revision == catalog.active().revision() {
+            reports.accept(master);
             return Ok(());
         }
         if let Err(error) =
             supervised_eligibility(&document.validated_config, probe_cgroup_v2().status)
         {
-            warn!("supervised master rejected an unsafe configuration reload: {error}");
+            let message = "the configuration cannot run under the supervising master";
+            reports.reject(
+                master,
+                refusal(file, "E_UNSUPPORTED_CONFIG", message, error),
+            );
             return Ok(());
         }
         if ListenerReservations::listener_restart_required(
@@ -464,6 +482,7 @@ impl MasterRunner {
             &catalog.active().payload().config,
             &document.validated_config,
         ) {
+            reports.accept(master);
             if has_restart_required_revision(catalog, &revision) {
                 return Ok(());
             }
@@ -487,26 +506,16 @@ impl MasterRunner {
         let reservations = match ListenerReservations::prepare(new_config, Some(&book.active)) {
             Ok(reservations) => reservations,
             Err(error) => {
-                if book.note_rejected(&revision) {
-                    warn!(
-                        "supervised master kept revision {} because the configuration reload \
-                         could not bind its listeners: {error}",
-                        catalog.active().revision()
-                    );
-                }
+                let message = "the configuration's listeners cannot be bound";
+                reports.reject(master, refusal(file, "E_LISTENER_BIND", message, error));
                 return Ok(());
             }
         };
         let listeners = match reservations.clone().into_stable_listeners(new_config) {
             Ok(listeners) => listeners,
             Err(error) => {
-                if book.note_rejected(&revision) {
-                    warn!(
-                        "supervised master kept revision {} because the configuration reload \
-                         could not export its listeners: {error}",
-                        catalog.active().revision()
-                    );
-                }
+                let message = "the configuration's listeners cannot be handed to a worker";
+                reports.reject(master, refusal(file, "E_LISTENER_EXPORT", message, error));
                 return Ok(());
             }
         };
@@ -526,6 +535,8 @@ impl MasterRunner {
                 .expect("candidate was inserted immediately before launch"),
         );
         book.begin(reservations, manifest, &changes, &revision);
+        reports.candidate_file = Some(file.clone());
+        reports.accept(master);
         if let Err(error) =
             master.replace_with_listeners(factory, candidate, listeners, Instant::now())
         {
@@ -589,6 +600,84 @@ fn has_restart_required_revision(
         .is_some_and(|retained| retained.revision() == revision)
 }
 
+/// What the master has told the active worker about the configuration file.
+///
+/// A refused file is tried again on every reconciliation, so only a refusal that differs from the
+/// reported one is logged and sent to the worker.
+#[derive(Default)]
+struct ConfigReports {
+    rejection: Option<ConfigRejection>,
+    /// The file the replacement in progress was started from.
+    candidate_file: Option<AuthoredRevision>,
+}
+
+impl ConfigReports {
+    fn reject(&mut self, master: &mut Master, rejection: ConfigRejection) {
+        if self.record(&rejection) {
+            rejection.log();
+            notify_active(master, Some(&rejection));
+        }
+    }
+
+    fn accept(&mut self, master: &mut Master) {
+        if self.forget() {
+            notify_active(master, None);
+        }
+    }
+
+    /// The candidate was refused by its own worker, which logged why; the old worker keeps serving.
+    fn replacement_failed(&mut self, master: &mut Master, detail: String) {
+        if let Some(file) = self.candidate_file.take() {
+            let message = "the configuration could not be activated by a replacement worker";
+            self.reject(master, refusal(&file, "E_RUNTIME_PREPARE", message, detail));
+        }
+    }
+
+    /// Remembers `rejection` and reports whether it differs from the one already reported.
+    fn record(&mut self, rejection: &ConfigRejection) -> bool {
+        let reported = self.rejection.as_ref().is_some_and(|reported| {
+            reported.revision == rejection.revision && reported.diagnostics == rejection.diagnostics
+        });
+        if !reported {
+            self.rejection = Some(rejection.clone());
+        }
+        !reported
+    }
+
+    fn forget(&mut self) -> bool {
+        self.rejection.take().is_some()
+    }
+}
+
+fn notify_active(master: &mut Master, rejection: Option<&ConfigRejection>) {
+    let notice = serde_json::to_vec(&rejection).expect("a configuration rejection serializes");
+    if let Err(error) = master.notify_active(&notice) {
+        warn!(
+            "supervised master could not tell the active worker about the configuration: {error}"
+        );
+    }
+}
+
+fn refusal(
+    file: &AuthoredRevision,
+    code: &'static str,
+    message: &'static str,
+    detail: impl ToString,
+) -> ConfigRejection {
+    ConfigRejection::new(
+        Some(file),
+        &[ConfigDiagnostic {
+            code,
+            severity: ConfigDiagnosticSeverity::Error,
+            stage: ConfigDiagnosticStage::Validation,
+            message,
+            path: None,
+            detail: Some(detail.to_string()),
+            line: None,
+        }],
+    )
+}
+
 /// The listener reservations behind the master's stable listener set.
 ///
 /// `active` mirrors the sockets the committed workers serve, so the next reload reuses the ones
@@ -598,7 +687,6 @@ struct ListenerBook {
     active: ListenerReservations,
     active_manifest: DescriptorManifest,
     pending: Option<(ListenerReservations, DescriptorManifest)>,
-    rejected: Option<EffectiveRevision>,
 }
 
 impl ListenerBook {
@@ -607,20 +695,7 @@ impl ListenerBook {
             active,
             active_manifest,
             pending: None,
-            rejected: None,
         }
-    }
-
-    /// Remembers that `revision` was rejected and reports whether this is the first time.
-    ///
-    /// A rejected revision is tried again on every reconciliation, so only the first rejection is
-    /// worth a log line.
-    fn note_rejected(&mut self, revision: &EffectiveRevision) -> bool {
-        if self.rejected.as_ref() == Some(revision) {
-            return false;
-        }
-        self.rejected = Some(revision.clone());
-        true
     }
 
     fn begin(
@@ -630,7 +705,6 @@ impl ListenerBook {
         changes: &ListenerChanges,
         revision: &EffectiveRevision,
     ) {
-        self.rejected = None;
         self.pending = Some((reservations, manifest));
         info!(
             "supervised master starts configuration revision {revision}: listeners added {:?}, \
@@ -653,17 +727,20 @@ impl ListenerBook {
     }
 }
 
+/// Applies the master's events to the catalog and says why a candidate failed, if one did.
 fn apply_catalog_events(
     catalog: &mut GenerationCatalog,
     events: &[MasterEvent],
     book: &mut ListenerBook,
-) -> Result<(), CatalogSyncError> {
+) -> Result<Option<String>, CatalogSyncError> {
+    let mut failure = None;
     for event in events {
         match event {
             MasterEvent::SpawnFailed { instance_id } => {
                 expect_catalog_instance(catalog, GenerationRole::Candidate, instance_id)?;
                 catalog.quarantine_candidate()?;
                 book.discard();
+                failure = Some("the replacement worker could not be started".to_owned());
             }
             MasterEvent::ReplacementCommitted { active, retired } => {
                 expect_catalog_instance(catalog, GenerationRole::Candidate, active)?;
@@ -675,15 +752,16 @@ fn apply_catalog_events(
             | MasterEvent::RollbackCompleted { active } => {
                 expect_catalog_instance(catalog, GenerationRole::Active, active)?;
             }
-            MasterEvent::RollbackStarted { candidate, .. } => {
+            MasterEvent::RollbackStarted { candidate, phase } => {
                 expect_catalog_instance(catalog, GenerationRole::Candidate, candidate)?;
                 catalog.quarantine_candidate()?;
                 book.discard();
+                failure = Some(format!("the replacement worker failed during {phase:?}"));
             }
             _ => {}
         }
     }
-    Ok(())
+    Ok(failure)
 }
 
 fn expect_catalog_instance(
@@ -1448,25 +1526,19 @@ mod tests {
     }
 
     #[test]
-    fn rejected_revision_is_reported_once_until_a_replacement_starts() {
-        let mut book = ListenerBook::new(ListenerReservations::default(), manifest_on(8080));
-        let first = EffectiveRevision::from_str(&"a".repeat(64)).expect("revision");
-        let second = EffectiveRevision::from_str(&"b".repeat(64)).expect("revision");
+    fn a_repeated_rejection_is_reported_once_until_the_file_is_accepted() {
+        let file = AuthoredRevision::from_str(&"a".repeat(64)).expect("revision");
+        let other = AuthoredRevision::from_str(&"b".repeat(64)).expect("revision");
+        let mut reports = ConfigReports::default();
+        let refused = |file: &AuthoredRevision, code| refusal(file, code, "refused", "why");
 
-        assert!(book.note_rejected(&first));
-        assert!(!book.note_rejected(&first));
-        assert!(book.note_rejected(&second));
-
-        let changes = manifest_on(8080).changes(&manifest_on(8081));
-        book.begin(
-            ListenerReservations::default(),
-            manifest_on(8081),
-            &changes,
-            &second,
-        );
-        assert_eq!(changes.added.len(), 1);
-        assert_eq!(changes.removed.len(), 1);
-        assert!(book.note_rejected(&second));
+        assert!(reports.record(&refused(&file, "E_LISTENER_BIND")));
+        assert!(!reports.record(&refused(&file, "E_LISTENER_BIND")));
+        assert!(reports.record(&refused(&other, "E_LISTENER_BIND")));
+        assert!(reports.record(&refused(&other, "E_UNSUPPORTED_CONFIG")));
+        assert!(reports.forget());
+        assert!(!reports.forget());
+        assert!(reports.record(&refused(&other, "E_UNSUPPORTED_CONFIG")));
     }
 
     #[test]
