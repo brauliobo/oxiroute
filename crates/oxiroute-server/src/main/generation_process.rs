@@ -339,7 +339,7 @@ impl GenerationProcess {
         }
     }
 
-    fn request_shutdown(&self) {
+    pub(super) fn request_shutdown(&self) {
         self.generation.stop_accepting();
         let _ = self.shutdown.send(true);
     }

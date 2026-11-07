@@ -56,9 +56,11 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
 const CONFIG_RELOAD_DEBOUNCE: Duration = Duration::from_millis(250);
 const CONFIG_RELOAD_MAX_DEBOUNCE: Duration = Duration::from_secs(2);
 const CONFIG_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
-const RELOAD_DRAIN_ENV: &str = "OXIROUTE_RELOAD_DRAIN_SECONDS";
+pub(super) const RELOAD_DRAIN_ENV: &str = "OXIROUTE_RELOAD_DRAIN_SECONDS";
 const DEFAULT_RELOAD_DRAIN: Duration = Duration::from_hours(3);
 const MAX_RELOAD_DRAIN: Duration = Duration::from_hours(24);
+/// The master kills a retired worker this long after the deadline at which the worker closes itself.
+pub(super) const RETIREMENT_BACKSTOP: Duration = Duration::from_secs(10);
 
 /// Runs the production master for one eligible canonical configuration.
 pub(crate) fn run_master(config_path: &Path) -> Result<(), Box<dyn Error>> {
@@ -110,6 +112,7 @@ use monitors::*;
 use plan::*;
 #[allow(clippy::wildcard_imports)]
 use runner::*;
+pub(super) use setup::retirement_window;
 #[allow(clippy::wildcard_imports)]
 use setup::*;
 

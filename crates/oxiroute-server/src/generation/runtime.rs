@@ -337,6 +337,17 @@ impl RuntimeGeneration {
         Duration::from_millis(self.config.retirement_deadline_ms())
     }
 
+    /// Reports that this generation is being closed before its work ended; `reason` is
+    /// `drain_deadline` or `shutdown`.
+    pub fn announce_forced_close(&self, reason: &str) {
+        log::warn!(
+            "retired generation {} closed by {reason} with {} requests in flight",
+            self.revision().candidate.as_str(),
+            self.in_flight()
+        );
+        crate::operational_event::emit_retire_forced_close(&self.revision().candidate, reason);
+    }
+
     /// Whether a newer generation replaced this one. Unlike a closed accept gate, this never
     /// reverts, and an operator drain of the active generation does not set it.
     #[must_use]

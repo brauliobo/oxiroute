@@ -363,7 +363,7 @@ impl MasterRunner {
             "supervised master lets the replaced worker drain for up to {} seconds",
             window.as_secs()
         );
-        master.set_retirement_deadline(window);
+        master.set_retirement_deadline(window + RETIREMENT_BACKSTOP);
         if let Err(error) =
             master.replace_with_listeners(factory, candidate, listeners, Instant::now())
         {

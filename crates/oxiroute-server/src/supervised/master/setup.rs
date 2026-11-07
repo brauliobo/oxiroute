@@ -48,7 +48,7 @@ pub(super) fn reload_drain_window(value: Option<&std::ffi::OsStr>) -> Result<Dur
 /// How long the worker retired by a replacement may keep serving its accepted connections: the
 /// retiring generation's own `retirement` keys, then the deprecated environment variable, then
 /// the default derived from its request deadlines.
-pub(super) fn retirement_window(
+pub(in crate::supervised) fn retirement_window(
     retiring: &ValidatedConfig,
     environment: Option<&std::ffi::OsStr>,
 ) -> Duration {
