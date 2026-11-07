@@ -76,6 +76,9 @@ impl HaproxyStatsApi {
             }
             ("GET", "/metrics") => self.metrics_response(),
             ("GET", "/ready") => self.readiness_response(),
+            ("GET", "/status.json") => {
+                crate::status_summary::status_json_response(&self.metrics, Some(&self.generations))
+            }
             ("GET", "/api/v1/status") => {
                 if self.authorized(peer_is_loopback, authorization) {
                     self.status_response()
@@ -87,7 +90,7 @@ impl HaproxyStatsApi {
             ("POST", "/stats/admin") => {
                 ApiResponse::error(400, "invalid_json", "a JSON admin target is required")
             }
-            (_, "/" | "/stats" | "/metrics" | "/ready" | "/api/v1/status") => {
+            (_, "/" | "/stats" | "/metrics" | "/ready" | "/status.json" | "/api/v1/status") => {
                 ApiResponse::method_not_allowed("GET")
             }
             _ => ApiResponse::route_not_found(),

@@ -289,6 +289,25 @@ impl SelectedEndpoint {
         self.observation.clone()
     }
 
+    pub(crate) fn end_queue_wait(&self) {
+        self.lease.end_queue_wait();
+    }
+
+    pub(crate) fn queue_wait(&self) -> Duration {
+        self.lease.queue_wait()
+    }
+
+    pub(crate) fn observe_queue_position(
+        &self,
+        cell: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) {
+        self.lease.observe_queue_position(cell);
+    }
+
+    pub(crate) fn queue_position(&self) -> u64 {
+        self.lease.queue_position()
+    }
+
     #[cfg(test)]
     pub(crate) fn with_addresses(lease: EndpointLease, addresses: Vec<SocketAddr>) -> Self {
         let server_name = lease.server_name().to_owned();

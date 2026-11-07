@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use super::{
     dto::{
         ErrorResponse, GenerationResponse, ListenerInventoryResponse, PoolInventoryResponse,
-        ServerInventoryResponse, StatusResponse,
+        RequestListResponse, ServerInventoryResponse, StatusResponse,
     },
     endpoint_registry::{self, EndpointSpec, SuccessSchema},
 };
@@ -73,6 +73,9 @@ fn register_success_schema(generator: &mut schemars::SchemaGenerator, schema: Su
         }
         SuccessSchema::Generations => {
             generator.subschema_for::<GenerationResponse>();
+        }
+        SuccessSchema::Requests => {
+            generator.subschema_for::<RequestListResponse>();
         }
     }
 }
@@ -160,6 +163,7 @@ fn success_schema_name(schema: SuccessSchema) -> &'static str {
         SuccessSchema::Pools => "PoolInventoryResponse",
         SuccessSchema::Servers => "ServerInventoryResponse",
         SuccessSchema::Generations => "GenerationResponse",
+        SuccessSchema::Requests => "RequestListResponse",
     }
 }
 

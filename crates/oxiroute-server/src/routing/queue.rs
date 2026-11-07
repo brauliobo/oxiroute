@@ -7,6 +7,7 @@ pub(super) struct PoolQueue {
     pub(super) capacity_waiters_possible: bool,
     pub(super) cancellations: AtomicU64,
     pub(super) generation: AtomicU64,
+    pub(super) ledger: WaitLedger,
     pub(super) notify: Notify,
     #[cfg(test)]
     pub(super) notifications: AtomicU64,
@@ -29,6 +30,7 @@ impl PoolQueue {
             capacity_waiters_possible,
             cancellations: AtomicU64::new(0),
             generation: AtomicU64::new(0),
+            ledger: WaitLedger::default(),
             notify: Notify::new(),
             #[cfg(test)]
             notifications: AtomicU64::new(0),
@@ -65,12 +67,14 @@ impl PoolQueue {
 pub(super) struct QueueWaitGuard {
     completed: bool,
     queue: Arc<PoolQueue>,
+    stats: Arc<crate::upstream_stats::PoolStats>,
+    ticket: Option<WaitTicket>,
     pub(super) waiter: Arc<PoolWaiter>,
     waiting: bool,
 }
 
 impl QueueWaitGuard {
-    pub(super) fn new(queue: Arc<PoolQueue>) -> Self {
+    pub(super) fn new(queue: Arc<PoolQueue>, pool: &str) -> Self {
         let waiter = Arc::new(PoolWaiter {
             notify: Notify::new(),
         });
@@ -82,6 +86,8 @@ impl QueueWaitGuard {
         Self {
             completed: false,
             queue,
+            stats: crate::upstream_stats::upstream_stats().pool(pool),
+            ticket: None,
             waiter,
             waiting: false,
         }
@@ -101,6 +107,7 @@ impl QueueWaitGuard {
             return;
         }
         self.waiting = true;
+        self.ticket = Some(self.queue.ledger.join());
         self.queue.queued.fetch_add(1, Ordering::Relaxed);
         self.queue.queued_total.fetch_add(1, Ordering::Relaxed);
     }
@@ -117,6 +124,7 @@ impl QueueWaitGuard {
         let removed_front = self.remove();
         if self.waiting {
             decrement_queue_count(&self.queue.queued);
+            self.leave_ledger();
         }
         if timed_out {
             self.queue.timeouts.fetch_add(1, Ordering::Relaxed);
@@ -124,6 +132,13 @@ impl QueueWaitGuard {
         self.completed = true;
         if removed_front {
             self.queue.notify_front();
+        }
+    }
+
+    fn leave_ledger(&mut self) {
+        if let Some(ticket) = self.ticket.take() {
+            self.stats
+                .record_queue_wait(self.queue.ledger.leave(ticket));
         }
     }
 
@@ -153,6 +168,7 @@ impl Drop for QueueWaitGuard {
         let removed_front = self.remove();
         if self.waiting {
             decrement_queue_count(&self.queue.queued);
+            self.leave_ledger();
             self.queue.cancellations.fetch_add(1, Ordering::Relaxed);
         }
         if removed_front {

@@ -54,6 +54,26 @@ A pool keeps serving when health checks or passive ejection would otherwise take
 - New `retry.budget` (`per_second`, `ratio_percent`) caps the retries of a route so that they cannot
   amplify an outage, and `retry.jitter_percent` spreads the same-server retry delay.
 
+## Observability
+
+- Every HTTP request carries `x-request-id`: a well formed incoming value is kept, otherwise one is
+  generated. It is sent to the backend on every attempt and returned on every response, including
+  the router's own `404`, `502`, `503` and `504`. A backend's own id is kept as
+  `x-upstream-request-id`.
+- The access log now records `requestId`, `pool`, `server`, `servers`, `attempts`, `rescued`,
+  `queueWaitMs`, `connectMs`, `headerMs`, `wasStuck` and a bounded `reason` for failed requests.
+  `Idempotency-Key` values are never logged, only a short hash (`idemKey`).
+- New `oxiroute requests list|show` and `GET /api/v1/requests` list the requests inside the router;
+  a request quiet for a minute is logged and counted once as stuck, and
+  `oxiroute_http_inflight_overdue` (should be 0) flags requests that outlived their deadline.
+- `oxiroute_pool_queue_depth` now counts requests waiting for a free connection on the default
+  (reusing) path, which it read as 0 before. New: `oxiroute_pool_queue_oldest_wait_seconds`,
+  `oxiroute_pool_queue_wait_milliseconds`, per-server response, attempt, latency, byte and
+  connection limit series, and `oxiroute_generation_info`.
+- New public `GET /status.json` with an overall and per-pool `ok`/`warning`/`critical` state.
+- Not yet in this draft: switching the request id off, active-check transition events, and the
+  opt-in queue position response headers.
+
 ## Load balancing and admission
 
 - A request that waits for a server no longer stays bound to the server the algorithm picked on
