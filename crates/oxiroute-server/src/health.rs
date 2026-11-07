@@ -25,7 +25,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use crate::{HealthFailure, RoundRobinPool, RuntimeEndpoint};
+use crate::{HealthFailure, RoundRobinPool, RuntimeEndpoint, routing::ServerHandle};
 
 const MAX_CONCURRENT_PROBES: usize = 32;
 
@@ -34,7 +34,7 @@ struct HealthTarget {
     check: Arc<dyn HealthCheck + Send + Sync>,
     down_interval: Duration,
     endpoint: RuntimeEndpoint,
-    endpoint_index: usize,
+    server: ServerHandle,
     fast_interval: Duration,
     healthy_threshold: u16,
     interval: Duration,
@@ -48,7 +48,7 @@ struct HealthTarget {
 impl HealthTarget {
     async fn probe(self, semaphore: Arc<Semaphore>) {
         let _probe_guard = self.probe_lock.lock().await;
-        if !self.pool.health_checks_running(self.endpoint_index) {
+        if !self.server.checks_running() {
             return;
         }
         let Ok(_permit) = semaphore.acquire_owned().await else {
@@ -61,7 +61,7 @@ impl HealthTarget {
             Ok(Err(failure)) => (false, Some(failure)),
         };
         let transition = self.pool.record_health(
-            self.endpoint_index,
+            &self.server,
             healthy,
             failure,
             unix_time_ms(),
@@ -79,21 +79,22 @@ impl HealthTarget {
     async fn run_probe(&self) -> Result<(), HealthFailure> {
         let addresses = self
             .pool
-            .resolve_server_addresses(self.endpoint_index)
+            .resolve_server_addresses(&self.server)
             .await
             .map_err(|_| HealthFailure::ConnectFailed)?;
         self.run_probe_addresses(&addresses).await
     }
 
     fn next_interval(&self) -> Duration {
-        if self.pool.passive_ejected(self.endpoint_index) {
+        if self.server.passively_ejected() {
             return self.fast_interval;
         }
-        match self.pool.health_state(self.endpoint_index) {
-            Some(crate::EndpointHealthState::Unknown) => self.fast_interval,
-            Some(crate::EndpointHealthState::Unhealthy) => self.down_interval,
-            Some(crate::EndpointHealthState::Unchecked | crate::EndpointHealthState::Healthy)
-            | None => self.interval,
+        match self.server.state() {
+            crate::EndpointHealthState::Unknown => self.fast_interval,
+            crate::EndpointHealthState::Unhealthy => self.down_interval,
+            crate::EndpointHealthState::Unchecked | crate::EndpointHealthState::Healthy => {
+                self.interval
+            }
         }
     }
 
@@ -326,11 +327,11 @@ pub(crate) fn acquire_health_group(
     };
     let targets = pool
         .endpoints()
-        .map(|(endpoint_index, endpoint)| HealthTarget {
+        .map(|(server, endpoint)| HealthTarget {
             check: Arc::clone(&check),
             down_interval: blueprint.down_interval,
             endpoint,
-            endpoint_index,
+            server,
             fast_interval: blueprint.fast_interval,
             healthy_threshold: blueprint.healthy_threshold,
             interval: blueprint.interval,
