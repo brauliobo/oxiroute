@@ -69,7 +69,8 @@ impl HttpModuleBuilder for RequestIdBuilder {
     }
 
     fn order(&self) -> i16 {
-        i16::MIN
+        // Pingora negates the order to sort, so `i16::MIN` itself would overflow.
+        i16::MIN + 1
     }
 }
 
