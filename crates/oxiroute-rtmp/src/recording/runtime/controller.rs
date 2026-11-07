@@ -580,7 +580,7 @@ impl RecorderController {
     #[cfg(test)]
     pub(super) fn install_publication_gate(
         &self,
-    ) -> Arc<crate::recording_store::RecordingPublicationGate> {
+    ) -> Arc<crate::recording::recording_store::RecordingPublicationGate> {
         self.lock()
             .worker
             .as_ref()

@@ -12,7 +12,7 @@ pub use crate::session_control::SessionId;
 use crate::{
     RecorderEnqueueResult, RecorderNotification, RecorderWorkerPhase, RecorderWorkerStatus,
     live::VideoCodecIdentifier,
-    recording_runtime::{
+    recording::runtime::{
         RecorderCommandContext, RecorderController, RecorderReaper, RecorderReaperHandle,
         RecorderReaperOwner, RecorderRuntimeStatus, RecorderStartFailure, recorder_error_code,
     },
