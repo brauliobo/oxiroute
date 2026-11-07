@@ -26,8 +26,7 @@ pub(super) fn classify_connect_udp_request<B>(request: &Request<B>) -> ConnectUd
     if upgrade.next().is_some()
         || !upgrade_value
             .to_str()
-            .ok()
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case("connect-udp"))
+            .is_ok_and(|value| value.trim().eq_ignore_ascii_case("connect-udp"))
     {
         return ConnectUdpRequestKind::Malformed;
     }

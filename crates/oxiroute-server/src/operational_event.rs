@@ -1709,7 +1709,6 @@ impl OperationalEvent {
 mod tests {
     use std::{
         fs::{self, OpenOptions},
-        io::Write as _,
         os::unix::fs::PermissionsExt,
     };
 

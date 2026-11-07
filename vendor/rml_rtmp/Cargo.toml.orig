@@ -13,7 +13,7 @@ keywords = ["rtmp", "video", "streaming"]
 rml_amf0 = { path = "../amf0", version = "0.3.0" }
 byteorder = "1.3"
 bytes = "1"
-rand = "0.8"
-hmac = "0.10"
-sha2 = "0.9"
+rand = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 thiserror = "1.0"

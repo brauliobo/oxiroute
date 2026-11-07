@@ -60,7 +60,7 @@ struct UdpAccounting {
 
 impl UdpAccounting {
     fn increment(counter: &AtomicU64) {
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(1)
         });
     }
@@ -284,7 +284,7 @@ impl DatagramQueue {
         let bytes = u64::try_from(payload.len()).unwrap_or(u64::MAX);
         let reserved = self
             .queued_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current
                     .checked_add(bytes)
                     .filter(|next| *next <= self.max_bytes)

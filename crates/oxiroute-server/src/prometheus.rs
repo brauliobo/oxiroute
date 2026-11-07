@@ -93,6 +93,17 @@ fn render_prometheus_snapshot(
         "oxiroute_upstream_retry_attempts_total",
         runtime.process.retry_attempts,
     )?;
+    for rescue in &runtime.process.rescues {
+        labels(
+            &mut output,
+            "oxiroute_http_rescues_total",
+            &[
+                ("route", rescue.route.as_str()),
+                ("status", &rescue.status.to_string()),
+            ],
+            rescue.count,
+        )?;
+    }
     if let Some(value) = runtime.process.resident_memory_bytes {
         sample(&mut output, "oxiroute_process_resident_memory_bytes", value)?;
     }
@@ -289,6 +300,12 @@ fn render_prometheus_snapshot(
             "oxiroute_pool_servers",
             &[("pool", pool.name.as_str())],
             pool.total_endpoints,
+        )?;
+        labels(
+            &mut output,
+            "oxiroute_pool_fail_open_selections_total",
+            &[("pool", pool.name.as_str())],
+            pool.fail_open_selections,
         )?;
         labels(
             &mut output,

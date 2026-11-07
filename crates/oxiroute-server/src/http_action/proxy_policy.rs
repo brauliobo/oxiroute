@@ -16,7 +16,12 @@ pub(crate) struct ProxyPolicyPlan {
     pub(crate) retry_body_safety: HttpRetryBodySafety,
     pub(crate) retry_target: HttpRetryTarget,
     pub(crate) retry_delay: Duration,
+    pub(crate) retry_jitter_percent: u8,
+    pub(crate) idempotency_header: Option<HeaderName>,
+    pub(crate) retry_budget: Option<Arc<RetryBudget>>,
     pub(crate) final_redispatch: bool,
+    pub(crate) timeouts: HttpProxyTimeouts,
+    pub(crate) rescue_statuses: Box<[u16]>,
     pub(crate) cache: Option<Arc<HttpCachePlan>>,
     pub(crate) nginx_error_server: Option<HeaderValue>,
 }
@@ -45,7 +50,12 @@ impl ProxyPolicyPlan {
             retry_body_safety: self.retry_body_safety,
             retry_target: self.retry_target,
             retry_delay: self.retry_delay,
+            retry_jitter_percent: self.retry_jitter_percent,
+            idempotency_header: self.idempotency_header.clone(),
+            retry_budget: self.retry_budget.clone(),
             final_redispatch: self.final_redispatch,
+            timeouts: self.timeouts,
+            rescue_statuses: self.rescue_statuses.clone(),
             cache,
             nginx_error_server: self.nginx_error_server.clone(),
         }
@@ -114,7 +124,20 @@ impl ProxyPolicyPlan {
             retry_body_safety: policy.retry.body_safety,
             retry_target: policy.retry.target,
             retry_delay: Duration::from_millis(policy.retry.delay_ms),
+            retry_jitter_percent: policy.retry.jitter_percent,
+            idempotency_header: policy.retry.idempotency_header.as_deref().map(|name| {
+                HeaderName::from_bytes(name.as_bytes()).expect("validated idempotency header")
+            }),
+            retry_budget: policy
+                .retry
+                .budget
+                .map(|budget| Arc::new(RetryBudget::new(budget))),
             final_redispatch: policy.retry.final_redispatch,
+            timeouts: policy.timeouts,
+            rescue_statuses: policy
+                .rescue
+                .as_ref()
+                .map_or_else(Box::default, |rescue| rescue.statuses.clone().into()),
             cache,
             nginx_error_server,
         }
@@ -127,12 +150,19 @@ impl ProxyPolicyPlan {
     pub(crate) fn request_is_replay_safe(
         &self,
         method: &Method,
+        headers: &HeaderMap,
         body_is_empty: bool,
         request_buffered: bool,
     ) -> bool {
         let method_safe = match self.retry_method_safety {
             HttpRetryMethodSafety::GetHead => matches!(*method, Method::GET | Method::HEAD),
-            HttpRetryMethodSafety::All => true,
+            HttpRetryMethodSafety::All => {
+                matches!(*method, Method::GET | Method::HEAD)
+                    || self
+                        .idempotency_header
+                        .as_ref()
+                        .is_none_or(|name| headers.get(name).is_some_and(|value| !value.is_empty()))
+            }
         };
         let body_safe = body_is_empty
             || (self.retry_body_safety == HttpRetryBodySafety::Buffered && request_buffered);
@@ -143,12 +173,106 @@ impl ProxyPolicyPlan {
         self.retry_response_statuses.contains(&status)
     }
 
+    pub(crate) fn rescues_status(&self, status: u16) -> bool {
+        self.rescue_statuses.contains(&status)
+    }
+
+    /// The delay before a retry: `retry_delay` plus up to `retry_jitter_percent` of it.
+    pub(crate) fn next_retry_delay(&self) -> Duration {
+        jittered_delay(self.retry_delay, self.retry_jitter_percent, random_unit())
+    }
+
     pub(crate) fn target_for_retry(&self, attempts: usize) -> HttpRetryTarget {
         if self.final_redispatch && attempts == usize::from(self.max_retries) {
             HttpRetryTarget::NextServer
         } else {
             self.retry_target
         }
+    }
+}
+
+pub(super) fn jittered_delay(delay: Duration, jitter_percent: u8, unit: f64) -> Duration {
+    delay.mul_f64(unit.mul_add(f64::from(jitter_percent) / 100.0, 1.0))
+}
+
+pub(super) fn random_unit() -> f64 {
+    use std::hash::{BuildHasher as _, Hasher as _, RandomState};
+    let bits = RandomState::new().build_hasher().finish() >> 11;
+    bits as f64 / (1_u64 << 53) as f64
+}
+
+/// Caps the retries of a route per second and as a ratio of its recent requests, so that retries
+/// cannot amplify an outage. Windows are fixed: one second for the rate, ten for the ratio.
+#[derive(Debug)]
+pub(crate) struct RetryBudget {
+    per_second: Option<u32>,
+    ratio_percent: Option<u8>,
+    window: Mutex<BudgetWindow>,
+}
+
+#[derive(Debug)]
+struct BudgetWindow {
+    second_started: Instant,
+    second_retries: u32,
+    ratio_started: Instant,
+    requests: u64,
+    retries: u64,
+}
+
+pub(super) const BUDGET_RATIO_WINDOW: Duration = Duration::from_secs(10);
+
+impl RetryBudget {
+    pub(crate) fn new(budget: oxiroute_config::HttpRetryBudget) -> Self {
+        let now = Instant::now();
+        Self {
+            per_second: budget.per_second,
+            ratio_percent: budget.ratio_percent,
+            window: Mutex::new(BudgetWindow {
+                second_started: now,
+                second_retries: 0,
+                ratio_started: now,
+                requests: 0,
+                retries: 0,
+            }),
+        }
+    }
+
+    pub(crate) fn record_request(&self, now: Instant) {
+        let mut window = self.rolled_window(now);
+        window.requests += 1;
+    }
+
+    /// Takes one retry from the budget, or returns `false` when the route spent it.
+    pub(crate) fn try_spend(&self, now: Instant) -> bool {
+        let mut window = self.rolled_window(now);
+        let within_rate = self
+            .per_second
+            .is_none_or(|rate| window.second_retries < rate);
+        let within_ratio = self.ratio_percent.is_none_or(|ratio| {
+            window.retries < (window.requests * u64::from(ratio)).div_ceil(100)
+        });
+        if within_rate && within_ratio {
+            window.second_retries += 1;
+            window.retries += 1;
+        }
+        within_rate && within_ratio
+    }
+
+    fn rolled_window(&self, now: Instant) -> std::sync::MutexGuard<'_, BudgetWindow> {
+        let mut window = self
+            .window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if now.duration_since(window.second_started) >= Duration::from_secs(1) {
+            window.second_started = now;
+            window.second_retries = 0;
+        }
+        if now.duration_since(window.ratio_started) >= BUDGET_RATIO_WINDOW {
+            window.ratio_started = now;
+            window.requests = 0;
+            window.retries = 0;
+        }
+        window
     }
 }
 

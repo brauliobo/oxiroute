@@ -237,6 +237,15 @@ export interface PassiveHealthConfig {
   recovery_threshold: number
 }
 
+export interface PoolResilienceConfig {
+  fail_open: boolean
+  min_members: number | null
+  ejection_jitter_percent: number
+  queue_while_unavailable_ms: number | null
+  unavailable_retry_after_seconds: number | null
+  unavailable_body: string | null
+}
+
 export interface UpstreamTlsConfig {
   server_name: string
   ca_certificate_path: string | null
@@ -288,6 +297,7 @@ export interface UpstreamPoolConfig {
   connect_timeout_ms: number | null
   server_timeout_ms: number | null
   connection_reuse: 'never' | 'safe' | 'always'
+  resilience: PoolResilienceConfig
 }
 
 export type HttpHostKind =
@@ -377,15 +387,36 @@ export interface HttpCookieAttributePolicyConfig {
   same_site: 'strict' | 'lax' | 'none' | null
 }
 
+export interface HttpRetryBudgetConfig {
+  per_second: number | null
+  ratio_percent: number | null
+}
+
 export interface HttpRetryPolicyConfig {
   max_retries: number
   target: 'same_server' | 'next_server'
   delay_ms: number
+  jitter_percent: number
   final_redispatch: boolean
+  idempotency_header: string | null
+  budget: HttpRetryBudgetConfig | null
   triggers: HttpRetryTrigger[]
   response_statuses?: number[]
   method_safety: 'get_head' | 'all'
   body_safety: 'empty' | 'buffered'
+}
+
+export interface HttpProxyTimeoutsConfig {
+  connect_ms: number | null
+  header_ms: number | null
+  idle_ms: number | null
+  total_ms: number | null
+}
+
+export interface HttpRescuePolicyConfig {
+  statuses: number[]
+  target: 'next_server' | 'pool'
+  pool: string | null
 }
 
 export interface HttpProxyPolicyConfig {
@@ -396,6 +427,8 @@ export interface HttpProxyPolicyConfig {
   response_cookie_path_rewrites: HttpCookiePathRewriteConfig[]
   response_cookie_attributes: HttpCookieAttributePolicyConfig[]
   retry: HttpRetryPolicyConfig
+  timeouts: HttpProxyTimeoutsConfig
+  rescue: HttpRescuePolicyConfig | null
   cache: HttpCachePolicyConfig | null
 }
 

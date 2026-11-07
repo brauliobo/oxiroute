@@ -71,10 +71,19 @@ fn rejects_hocon_documents_beyond_the_structural_depth_bound() {
         source.push_str(" }");
     }
 
-    assert!(matches!(
-        decode_value(ConfigFormat::Hocon, source.as_bytes()),
-        Err(ConfigSourceError::StructuralDepth)
-    ));
+    let error = decode_value(ConfigFormat::Hocon, source.as_bytes()).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ConfigSourceError::Parse {
+                format: "HOCON",
+                ..
+            }
+        ) && error
+            .to_string()
+            .contains(&format!("nests deeper than {MAX_STRUCTURAL_DEPTH} levels")),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

@@ -433,6 +433,8 @@ pub struct PeerOptions {
     pub connection_timeout: Option<Duration>,
     pub total_connection_timeout: Option<Duration>,
     pub read_timeout: Option<Duration>,
+    /// Replaces `read_timeout` once the final response header arrived (time between body reads).
+    pub body_read_timeout: Option<Duration>,
     pub idle_timeout: Option<Duration>,
     pub write_timeout: Option<Duration>,
     pub verify_cert: bool,
@@ -496,6 +498,7 @@ impl Debug for PeerOptions {
             .field("connection_timeout", &self.connection_timeout)
             .field("total_connection_timeout", &self.total_connection_timeout)
             .field("read_timeout", &self.read_timeout)
+            .field("body_read_timeout", &self.body_read_timeout)
             .field("idle_timeout", &self.idle_timeout)
             .field("write_timeout", &self.write_timeout)
             .field("verify_cert", &self.verify_cert)
@@ -539,6 +542,7 @@ impl PeerOptions {
             connection_timeout: None,
             total_connection_timeout: None,
             read_timeout: None,
+            body_read_timeout: None,
             idle_timeout: None,
             write_timeout: None,
             verify_cert: true,

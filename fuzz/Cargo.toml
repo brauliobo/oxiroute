@@ -9,7 +9,7 @@ rust-version = "1.97"
 cargo-fuzz = true
 
 [dependencies]
-bytes = "1"
+bytes = "1.12"
 libfuzzer-sys = "0.4"
 oxiroute-config = { path = "../crates/oxiroute-config" }
 oxiroute-config-source = { path = "../crates/oxiroute-config-source" }
@@ -19,9 +19,9 @@ oxiroute-rtmp = { path = "../crates/oxiroute-rtmp", features = ["fuzzing"] }
 oxiroute-server = { package = "oxiroute", path = "../crates/oxiroute-server" }
 pingora-core = { path = "../vendor/pingora-core", default-features = false }
 rml_rtmp = { path = "../vendor/rml_rtmp" }
-rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
-tokio = { version = "1", features = ["io-util", "rt"] }
-tokio-test = "0.4"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1.54", features = ["io-util", "rt"] }
+tokio-test = "0.4.6"
 
 [workspace]
 

@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
-use mlua::{ChunkMode, HookTriggers, Lua, LuaOptions, LuaSerdeExt, StdLib, VmState};
+use mlua::{HookTriggers, Lua, LuaOptions, LuaSerdeExt, StdLib, VmState, chunk::ChunkMode};
 
 use oxiroute_config::{ConfigDraft, ValidatedConfig};
 

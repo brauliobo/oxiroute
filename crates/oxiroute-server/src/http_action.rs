@@ -11,7 +11,7 @@ use std::{
         mpsc::{self, SyncSender, TrySendError},
     },
     thread::JoinHandle,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -31,9 +31,10 @@ use openssl::{
 use oxiroute_config::{
     AccessLogPolicy, HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
     HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpProxyPathRewrite,
-    HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-    HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryTarget,
-    HttpRetryTrigger, HttpRoutePolicy, HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
+    HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation, HttpRequestHeaderMutation,
+    HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety,
+    HttpRetryTarget, HttpRetryTrigger, HttpRoutePolicy, HttpStaticPathMapping, HttpStaticTryFile,
+    HttpUpstreamHost,
 };
 use rustix::{
     fd::OwnedFd,

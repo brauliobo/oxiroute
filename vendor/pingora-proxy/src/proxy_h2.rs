@@ -165,6 +165,7 @@ where
         }
 
         client_session.read_timeout = peer.options.read_timeout;
+        client_session.body_read_timeout = peer.options.body_read_timeout;
 
         let mut downstream_custom_message_writer = session
             .downstream_session

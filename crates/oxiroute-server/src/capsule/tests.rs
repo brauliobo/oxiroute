@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use tokio::{
-    io::{AsyncWriteExt as _, duplex},
+    io::duplex,
     net::UdpSocket,
     sync::watch,
     time::{Duration, timeout},

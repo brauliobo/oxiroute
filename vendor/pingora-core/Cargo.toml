@@ -91,7 +91,7 @@ version = ">=0.8.9"
 version = "0.1.42"
 
 [dependencies.brotli]
-version = "3"
+version = "9"
 
 [dependencies.bstr]
 version = "1.12.0"
@@ -109,7 +109,7 @@ version = "4.5"
 features = ["derive"]
 
 [dependencies.daggy]
-version = "0.8"
+version = "0.9"
 
 [dependencies.flate2]
 version = "1"
@@ -142,7 +142,7 @@ version = "0.2.70"
 version = "0.4"
 
 [dependencies.lru]
-version = "0.16.3"
+version = "0.19"
 optional = true
 
 [dependencies.once_cell]
@@ -156,7 +156,7 @@ version = "0.18.4"
 optional = true
 
 [dependencies.parking_lot]
-version = "0.12"
+version = "0.13"
 features = ["arc_lock"]
 
 [dependencies.percent-encoding]
@@ -194,7 +194,7 @@ optional = true
 version = "0.8.1"
 
 [dependencies.prometheus]
-version = "0.13"
+version = "0.14"
 default-features = false
 
 [dependencies.rand]
@@ -233,10 +233,10 @@ features = ["all"]
 version = "1"
 
 [dependencies.strum]
-version = "0.26.2"
+version = "0.28"
 
 [dependencies.strum_macros]
-version = "0.26.2"
+version = "0.28"
 
 [dependencies.tokio]
 version = "1"
@@ -256,7 +256,7 @@ version = "0.4"
 version = "2"
 
 [dependencies.x509-parser]
-version = "0.16.0"
+version = "0.18.1"
 optional = true
 
 [dependencies.zstd]

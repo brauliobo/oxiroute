@@ -44,6 +44,8 @@ pub struct HttpSession {
     /// The timeout is reset on every read. This is not a timeout on the overall duration of the
     /// response.
     pub read_timeout: Option<Duration>,
+    /// Replaces `read_timeout` once the final response header has been read.
+    pub body_read_timeout: Option<Duration>,
     /// The write timeout which will be applied to both writing request header and body.
     /// The timeout is reset on every write. This is not a timeout on the overall duration of the
     /// request.
@@ -109,6 +111,7 @@ impl HttpSession {
             request_written: None,
             _request_written_owned: None,
             read_timeout: None,
+            body_read_timeout: None,
             write_timeout: None,
             digest,
             bytes_sent: 0,
@@ -803,6 +806,9 @@ impl HttpSession {
             let resp_header = self.read_resp_header_parts().await?;
             let end_of_body = self.is_body_done();
             debug!("Response header: {resp_header:?}");
+            if !resp_header.status.is_informational() {
+                self.read_timeout = self.body_read_timeout.or(self.read_timeout);
+            }
             trace!(
                 "Raw Response header: {:?}",
                 str::from_utf8(self.get_headers_raw()).unwrap()

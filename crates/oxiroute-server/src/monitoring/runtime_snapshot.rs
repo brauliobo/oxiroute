@@ -87,6 +87,7 @@ impl RuntimeMetrics {
                     .process_admission
                     .retry_attempts
                     .load(Ordering::Relaxed),
+                rescues: self.inner.process_admission.rescue_snapshots(),
                 resident_memory_bytes,
                 virtual_memory_bytes,
                 thread_count,

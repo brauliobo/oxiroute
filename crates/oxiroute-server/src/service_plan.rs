@@ -793,6 +793,7 @@ fn compile_pools(
             pool.health.as_ref().map(|health| health.startup),
             pool.queue_timeout,
             passive_policy,
+            pool.resilience,
             &pool.construction,
         ));
         let tls = pool
@@ -811,15 +812,18 @@ fn compile_pools(
                 source: Box::new(source),
             })?
             .map(Arc::new);
-        let compiled = Arc::new(UpstreamPlan::with_http_policy(
-            Arc::clone(&selector),
-            tls,
-            pool.connect_timeout,
-            pool.server_timeout,
-            pool.connection_reuse,
-            pool.min_http_version,
-            h3,
-        ));
+        let compiled = Arc::new(
+            UpstreamPlan::with_http_policy(
+                Arc::clone(&selector),
+                tls,
+                pool.connect_timeout,
+                pool.server_timeout,
+                pool.connection_reuse,
+                pool.min_http_version,
+                h3,
+            )
+            .with_unavailable_response(pool.unavailable.clone()),
+        );
         if let Some(health_check) = &pool.health {
             health_groups.push(health::acquire_health_group(
                 &pool.name,
@@ -903,12 +907,14 @@ fn compile_http_route(
     let action = match &route.action {
         HttpActionBlueprint::Proxy {
             pool,
+            rescue_pool,
             policy,
             cache,
         } => compile_proxy_action(
             service,
             route_index,
             *pool,
+            *rescue_pool,
             policy,
             cache.as_ref(),
             pools,
@@ -1277,6 +1283,7 @@ fn compile_proxy_action(
     service: &str,
     route: usize,
     pool_index: usize,
+    rescue_pool_index: Option<usize>,
     policy: &ProxyPolicyPlan,
     cache: Option<&CachePolicyBlueprint>,
     pools: &[Arc<UpstreamPlan>],
@@ -1297,6 +1304,7 @@ fn compile_proxy_action(
     )?;
     Ok(HttpActionPlan::Proxy(ProxyActionPlan {
         pool: Arc::clone(pool),
+        rescue_pool: rescue_pool_index.map(|index| Arc::clone(&pools[index])),
         policy: policy.clone_with_cache(cache),
     }))
 }

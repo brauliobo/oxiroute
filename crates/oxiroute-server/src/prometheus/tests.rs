@@ -3,7 +3,7 @@ use std::sync::Arc;
 use oxiroute_config::UpstreamAlgorithm;
 use oxiroute_rtmp::{PreparedRtmpRuntimeSet, RtmpPrepareContext, RtmpPrepareMode, RtmpRuntimeSet};
 
-use crate::routing::RuntimeServer;
+use crate::routing::{PoolResiliencePolicy, RuntimeServer};
 use crate::{HealthFailure, PassiveFailurePolicy, RoundRobinPool, RuntimeEndpoint};
 
 use super::*;
@@ -221,10 +221,28 @@ fn exposition_includes_retry_and_queue_totals() {
 }
 
 #[test]
+fn exposition_counts_rescues_by_route_and_status() {
+    let metrics = RuntimeMetrics::new();
+    let listener = metrics
+        .register_listener("edge", "http", "socket:192.0.2.10:private-port", None)
+        .expect("listener");
+    listener.record_rescue("ollama", 404);
+    listener.record_rescue("ollama", 404);
+    listener.record_rescue("ollama", 503);
+    let control = empty_rtmp_runtime().control();
+
+    let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+        .expect("exposition");
+
+    assert!(output.contains("oxiroute_http_rescues_total{route=\"ollama\",status=\"404\"} 2"));
+    assert!(output.contains("oxiroute_http_rescues_total{route=\"ollama\",status=\"503\"} 1"));
+}
+
+#[test]
 fn exposition_contains_bounded_passive_endpoint_observability() {
     let metrics = RuntimeMetrics::new();
     let pool = Arc::new(
-        RoundRobinPool::new_named_servers_with_policy(
+        RoundRobinPool::new_named_servers_resilient(
             "observability".into(),
             [RuntimeServer {
                 name: "0".into(),
@@ -245,12 +263,18 @@ fn exposition_contains_bounded_passive_endpoint_observability() {
                 std::time::Duration::from_secs(30),
                 std::time::Duration::from_mins(5),
             ),
+            PoolResiliencePolicy::from_config(&oxiroute_config::PoolResilience {
+                fail_open: true,
+                min_members: Some(0),
+                ..oxiroute_config::PoolResilience::default()
+            }),
         )
         .expect("pool"),
     );
     for _ in 0..3 {
         pool.record_passive_failure(0, HealthFailure::ConnectFailed);
     }
+    assert!(pool.select().is_some(), "an ejected pool fails open");
     metrics
         .register_upstream_pools([Arc::clone(&pool)])
         .expect("upstream pools");
@@ -268,6 +292,7 @@ fn exposition_contains_bounded_passive_endpoint_observability() {
     assert!(output.contains(
         "oxiroute_server_passive_ejections_total{pool=\"observability\",server=\"0\"} 1"
     ));
+    assert!(output.contains("oxiroute_pool_fail_open_selections_total{pool=\"observability\"} 1"));
     assert!(output.contains("oxiroute_pool_queue_admissions_total{pool=\"observability\"} 0"));
     assert!(output.contains("oxiroute_pool_queue_cancellations_total{pool=\"observability\"} 0"));
     assert!(!output.contains("127.0.0.1:3000"));

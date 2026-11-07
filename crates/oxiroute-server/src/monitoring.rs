@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque, hash_map::Entry},
     error::Error,
     fmt, io,
     sync::{

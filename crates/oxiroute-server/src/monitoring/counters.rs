@@ -276,7 +276,7 @@ pub(super) fn checked_atomic_add(
     name: &'static str,
 ) -> Result<(), MetricsError> {
     counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(value)
         })
         .map(|_| ())
@@ -324,7 +324,7 @@ pub(super) fn latency_snapshot(
 }
 
 pub(super) fn decrement_counter(counter: &AtomicU64) {
-    let result = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    let result = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         current.checked_sub(1)
     });
     debug_assert!(result.is_ok(), "active connection counter underflowed");

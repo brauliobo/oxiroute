@@ -362,6 +362,9 @@ const BUF_READ_SIZE: usize = 64 * 1024;
 // The benefit is that user space can control when to flush, where Nagle's can't be controlled.
 // And userspace buffering reduce both syscalls and small packets.
 const BUF_WRITE_SIZE: usize = 1460;
+// tokio rejects zero-capacity buffers. One byte keeps every read and write bypassing the buffer
+// until `set_buffer` installs the real sizes.
+const UNBUFFERED_CAPACITY: usize = 1;
 
 // NOTE: with writer buffering, users need to call flush() to make sure the data is actually
 // sent. Otherwise data could be stuck in the buffer forever or get lost when stream is closed.
@@ -471,8 +474,8 @@ impl From<TcpStream> for Stream {
     fn from(s: TcpStream) -> Self {
         Stream {
             stream: Some(BufStream::with_capacity(
-                0,
-                0,
+                UNBUFFERED_CAPACITY,
+                UNBUFFERED_CAPACITY,
                 RawStreamWrapper::new(RawStream::Tcp(s)),
             )),
             rewind_read_buf: Vec::new(),
@@ -492,8 +495,8 @@ impl From<virt::VirtualSocketStream> for Stream {
     fn from(s: virt::VirtualSocketStream) -> Self {
         Stream {
             stream: Some(BufStream::with_capacity(
-                0,
-                0,
+                UNBUFFERED_CAPACITY,
+                UNBUFFERED_CAPACITY,
                 RawStreamWrapper::new(RawStream::Virtual(s)),
             )),
             rewind_read_buf: Vec::new(),
@@ -514,8 +517,8 @@ impl From<UnixStream> for Stream {
     fn from(s: UnixStream) -> Self {
         Stream {
             stream: Some(BufStream::with_capacity(
-                0,
-                0,
+                UNBUFFERED_CAPACITY,
+                UNBUFFERED_CAPACITY,
                 RawStreamWrapper::new(RawStream::Unix(s)),
             )),
             rewind_read_buf: Vec::new(),
