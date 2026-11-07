@@ -27,7 +27,8 @@ The management listener is configuration-owned and is restricted to a loopback a
 it as `127.0.0.1:9900` to use the client default. `--output json` emits one JSON value on stdout;
 diagnostics use stderr. Exit categories are stable: `2` usage, `3` local input/token, `4` transport,
 `5` authentication, `6` missing resource, `7` revision/state conflict, `8` remote/protocol failure,
-and `9` intentionally unsupported.
+and `9` intentionally unsupported. `oxiroute check` is the one exception: it exits with the
+monitoring-plugin codes `0` OK, `1` WARNING, `2` CRITICAL and `3` UNKNOWN (see below).
 
 ## Capability matrix
 
@@ -85,6 +86,7 @@ Status meanings:
 | RTMP | relay reconnect | Intentionally unsupported | Relay workers expose status but no targeted cancellation/reconnect handle. The command exits `9`. |
 | Metrics | Prometheus exposition | Supported | `oxiroute metrics`; `/metrics` is intentionally public for local scraping. Other statistics reads require the configured statistics admin token. |
 | Metrics | monitoring/topology | Supported | `oxiroute monitoring`, `oxiroute topology` |
+| Monitoring | check | Supported | `oxiroute check [--pool P ...] [--warn-available-below N] [--crit-available-below N] [--max-queue-wait 5s] [--max-inflight-age 60s] [--max-retired-age 1h] [--json] [--canary --url URL [--host H] [--expect-status 200]]`. Prints one plugin line and exits `0`/`1`/`2`/`3` (OK/WARNING/CRITICAL/UNKNOWN); these replace the exit categories above for this command only. Reads the public `/status.json`, so it needs no token and also works with `--socket` on a read-only registry socket. |
 | Events | bounded list/follow | Supported | Cursor and limit are validated; follow polls and never requests an unbounded stream. |
 | Cache | purge | Configured HTTP route or forward service | Configured reverse HTTP routes and forward HTTP/1 services accept bearer-protected `PURGE` for an exact request key or configured surrogate tag. No separate CLI/API cache purge command is exposed. |
 

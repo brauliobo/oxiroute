@@ -13,6 +13,8 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+
+pub use check::CheckArgs;
 use oxiroute_config_source::{ConfigFormat, render_config};
 use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 use serde_json::{Value, json};
@@ -91,6 +93,15 @@ pub enum Command {
         #[command(subcommand)]
         command: EventsCommand,
     },
+    /// Print one monitoring line and exit with a Nagios status.
+    ///
+    /// Reads the public status page, over the management endpoint or a read-only status socket
+    /// (`--socket`), and needs no token. Exit codes: 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN (the
+    /// endpoint cannot be reached or understood, or the options are wrong).
+    ///
+    /// This is the one command that does not use the exit categories 2 to 9 of the other
+    /// commands: a monitoring system reads 2 as CRITICAL and 3 as UNKNOWN.
+    Check(CheckArgs),
     /// Inspect the requests currently inside the router.
     Requests {
         #[command(subcommand)]
@@ -638,7 +649,18 @@ fn nonempty_target(value: &str) -> Result<String, String> {
 impl Cli {
     #[must_use]
     pub fn parse_process() -> Self {
-        Self::normalize(Self::parse())
+        let arguments = std::env::args_os().collect::<Vec<_>>();
+        match Self::try_parse_from(&arguments) {
+            Ok(cli) => Self::normalize(cli),
+            Err(error) if error.use_stderr() && check::is_invocation(&arguments) => {
+                eprintln!(
+                    "OXIROUTE UNKNOWN - {}",
+                    error.render().to_string().trim_end()
+                );
+                std::process::exit(i32::from(check::EXIT_UNKNOWN));
+            }
+            Err(error) => error.exit(),
+        }
     }
 
     /// Parses an injected argument sequence.
@@ -680,6 +702,9 @@ impl Cli {
 
     #[must_use]
     pub fn execute_management(&self) -> ExitCode {
+        if let Command::Check(args) = self.command() {
+            return check::run(self, args);
+        }
         match run(self) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -732,6 +757,7 @@ impl fmt::Display for CliError {
 
 impl Error for CliError {}
 
+mod check;
 mod client;
 mod commands;
 mod offline;

@@ -28,6 +28,7 @@ obsolete, or not planned. Only forms with both runtime integration and failure c
 | Family | Commands | Use |
 | --- | --- | --- |
 | Process | `serve`, `status`, `ready`, `metrics`, `monitoring`, `topology`, `drain`, `shutdown` | Start and inspect the daemon |
+| Monitoring | `check` | One line and a Nagios exit code for cron and monitoring systems |
 | Lifecycle | `generation status|reload|rollback|drain` | Prepare, publish, revert, or drain generations |
 | Configuration | `config check|compose|get|diff|validate|apply` | Inspect and change canonical configuration |
 | Events | `events list|follow` | Poll the bounded in-memory event ring |
@@ -43,9 +44,36 @@ the requests currently inside the router, oldest first, and `oxiroute requests s
 shows one. Phases are `routed`, `queued`, `connecting`, `awaiting_headers`, `streaming` and
 `retry_wait`. There is no command to cancel a request.
 
+## `check`: monitoring exit codes
+
+```sh
+oxiroute check [--pool P ...] [--warn-available-below N] [--crit-available-below N]
+               [--max-queue-wait 5s] [--max-inflight-age 60s] [--max-retired-age 1h] [--json]
+               [--canary --url http://host:port/path [--host H] [--expect-status 200] [--canary-max-latency 2s]]
+```
+
+`check` prints one plugin line (`OXIROUTE CRITICAL - pool farm 0/4 available | farm_available=0;4;1 ...`)
+and exits with the monitoring-plugin codes. **These replace the exit categories in the next section for
+this command only**; a monitoring system reads them as written:
+
+| Code | Meaning | Examples |
+| --- | --- | --- |
+| `0` | OK | Every judged pool has all servers available and nothing below is wrong |
+| `1` | WARNING | A server is missing from a pool, a queued request waited longer than `--max-queue-wait`, a stuck request, a refused configuration file, a retired generation draining longer than `--max-retired-age`, a registry lease late for a heartbeat |
+| `2` | CRITICAL | A pool has fewer than `--crit-available-below` (default 1) available servers, the process is not ready, an overdue request (a request past its total deadline, which is a router bug), the registry store is degraded, a failed `--canary` |
+| `3` | UNKNOWN | The endpoint cannot be reached or does not answer a status page, the answer is not understood, a `--pool` does not exist, or an option is wrong (a usage error is `3`, not `2`) |
+
+`check` reads the public `/status.json`, so it needs no token: use `--endpoint`, or `--socket PATH` for the
+read-only status socket of the registry (group-readable, no sudo). Global flags go before `check`.
+`--json` (or the global `--output json`) prints one JSON object with `status`, `exitCode`, `summary`,
+`findings` and the full `details` page instead of the line. Without `--warn-available-below` a pool warns when
+any server is missing; `--max-inflight-age` is not judged unless given. `--canary` also requests the URL
+through the router's own listener, with the `Host` of `--host`, and requires `--expect-status`; only plain
+`http://` URLs are supported.
+
 ## Output And Exit Categories
 
-Stable exit categories are designed for scripts:
+Stable exit categories are designed for scripts (every command except `check`, see above):
 
 | Code | Category |
 | --- | --- |
