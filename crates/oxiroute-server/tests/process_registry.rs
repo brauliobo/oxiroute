@@ -12,6 +12,7 @@ use std::{
     fs,
     net::SocketAddr,
     os::unix::fs::PermissionsExt as _,
+    process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
 
@@ -224,6 +225,29 @@ impl Farm {
             response.json()
         };
         (response.status, body)
+    }
+
+    async fn cli(&self, endpoint: (&str, &str), words: &[&str]) -> Output {
+        let (flag, value) = endpoint;
+        let mut arguments = vec![
+            flag.to_owned(),
+            value.to_owned(),
+            "--output".into(),
+            "json".into(),
+        ];
+        arguments.extend(words.iter().map(|word| (*word).to_owned()));
+        tokio::task::spawn_blocking(move || {
+            Command::new(env!("CARGO_BIN_EXE_oxiroute"))
+                .args(arguments)
+                .output()
+                .expect("oxiroute CLI")
+        })
+        .await
+        .expect("CLI task")
+    }
+
+    fn socket_arg(&self, role: &str) -> (&'static str, String) {
+        ("--socket", self.socket(role).display().to_string())
     }
 
     async fn over_lan(&self, method: &str, path: &str, token: &str, body: &Value) -> (u16, Value) {
@@ -705,4 +729,206 @@ async fn draining_a_registered_server_through_the_server_api_survives_restart() 
         "the drain outlives a restart"
     );
     restarted.shutdown();
+}
+
+fn stdout_json(output: &Output) -> Value {
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "CLI stdout is not JSON ({error}): {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
+#[tokio::test]
+async fn the_cli_registers_lists_and_removes_servers_over_group_sockets() {
+    let farm = Farm::new();
+    let server = farm.start().await;
+    let (voice, _v) = stub("tts-1").await;
+    let address = voice.to_string();
+    let (flag, register) = farm.socket_arg("register");
+    let (_, read) = farm.socket_arg("read");
+
+    let registered = farm
+        .cli(
+            (flag, &register),
+            &[
+                "server",
+                "register",
+                "--pool",
+                "voice",
+                "tts-1",
+                "--address",
+                &address,
+                "--weight",
+                "3",
+                "--ttl",
+                "30s",
+                "--label",
+                "gpu=0",
+            ],
+        )
+        .await;
+    assert!(
+        registered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&registered.stderr)
+    );
+
+    let listed = farm
+        .cli((flag, &read), &["server", "list", "--pool", "voice"])
+        .await;
+    let listing = stdout_json(&listed);
+    let entry = &listing["servers"][0];
+    assert_eq!(
+        (
+            entry["name"].as_str(),
+            entry["origin"].as_str(),
+            entry["weight"].as_u64()
+        ),
+        (Some("tts-1"), Some("dynamic"), Some(3))
+    );
+    assert_eq!(entry["registration"]["ttlMs"], 30_000);
+    let none = farm
+        .cli(
+            (flag, &read),
+            &["server", "list", "--pool", "voice", "--origin", "static"],
+        )
+        .await;
+    assert_eq!(
+        stdout_json(&none)["servers"].as_array().map(Vec::len),
+        Some(0)
+    );
+
+    let secret = farm.state.path().join("voice.secret");
+    fs::write(&secret, &farm.voice_secret).expect("secret file");
+    fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).expect("mode");
+    let lan = format!("http://{}", farm.test);
+    let secret = secret.display().to_string();
+    let (second, _s) = stub("tts-2").await;
+    let second = second.to_string();
+    let over_lan = async |pool: &str| {
+        farm.cli(
+            ("--endpoint", &lan),
+            &[
+                "--token-file",
+                &secret,
+                "server",
+                "register",
+                "--pool",
+                pool,
+                "tts-2",
+                "--address",
+                &second,
+            ],
+        )
+        .await
+    };
+    let joined = over_lan("voice").await;
+    assert!(
+        joined.status.success(),
+        "a scoped token registers over the LAN endpoint: {}",
+        String::from_utf8_lossy(&joined.stderr)
+    );
+    assert_eq!(
+        over_lan("render").await.status.code(),
+        Some(5),
+        "another pool is refused"
+    );
+
+    let removed = farm
+        .cli(
+            (flag, &register),
+            &["server", "deregister", "--pool", "voice", "tts-1"],
+        )
+        .await;
+    assert!(removed.status.success());
+    let again = farm
+        .cli(
+            (flag, &register),
+            &["server", "deregister", "--pool", "voice", "tts-1"],
+        )
+        .await;
+    assert_eq!(again.status.code(), Some(6));
+    let tolerated = farm
+        .cli(
+            (flag, &register),
+            &[
+                "server",
+                "deregister",
+                "--pool",
+                "voice",
+                "tts-1",
+                "--missing-ok",
+            ],
+        )
+        .await;
+    assert!(tolerated.status.success());
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn a_heartbeating_cli_keeps_its_lease_and_leaves_cleanly_on_sigterm() {
+    let farm = Farm::new();
+    let server = farm.start().await;
+    let (voice, _v) = stub("tts-1").await;
+    let address = voice.to_string();
+    let register = farm.socket("register").display().to_string();
+    let mut agent = Command::new(env!("CARGO_BIN_EXE_oxiroute"))
+        .args([
+            "--socket",
+            &register,
+            "server",
+            "register",
+            "--pool",
+            "voice",
+            "tts-1",
+            "--address",
+            &address,
+            "--ttl",
+            "2s",
+            "--heartbeat",
+        ])
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("agent");
+    eventually("the agent to register", async || {
+        farm.over_socket("read", "GET", "/api/v1/pools/voice/servers", &Value::Null)
+            .await
+            .1["servers"]
+            .as_array()
+            .is_some_and(|servers| servers.len() == 1)
+    })
+    .await;
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let (_, listing) = farm
+        .over_socket("read", "GET", "/api/v1/pools/voice/servers", &Value::Null)
+        .await;
+    assert_eq!(
+        listing["servers"].as_array().map(Vec::len),
+        Some(1),
+        "heartbeats outlive the 2s lease"
+    );
+
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &agent.id().to_string()])
+            .status()
+            .expect("kill")
+            .success()
+    );
+    let exit = tokio::task::spawn_blocking(move || agent.wait().expect("agent exit"))
+        .await
+        .expect("wait");
+    assert!(exit.success(), "{exit:?}");
+    let (_, listing) = farm
+        .over_socket("read", "GET", "/api/v1/pools/voice/servers", &Value::Null)
+        .await;
+    assert_eq!(
+        listing["servers"].as_array().map(Vec::len),
+        Some(0),
+        "SIGTERM deregisters"
+    );
+    server.shutdown();
 }
