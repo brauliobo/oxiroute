@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering, fence},
+        atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering, fence},
     },
     time::{Duration, SystemTime},
 };
@@ -412,7 +412,8 @@ pub enum RuntimeEndpoint {
 }
 
 pub(crate) const MAX_RESOLVED_ENDPOINT_ADDRESSES: usize = 16;
-const MAX_WEIGHTED_CYCLE: usize = 25_600;
+const LOAD_SCALE: u64 = 1000;
+const MAX_SERVER_WEIGHT: u16 = 100;
 
 impl RuntimeEndpoint {
     fn preflight(&self) -> Result<(), PoolError> {
@@ -769,7 +770,6 @@ impl PoolResiliencePolicy {
 pub(crate) struct PoolConstructionBlueprint {
     algorithm: UpstreamAlgorithm,
     weights: Box<[u16]>,
-    weighted_schedule: Box<[usize]>,
 }
 
 impl PoolConstructionBlueprint {
@@ -781,11 +781,9 @@ impl PoolConstructionBlueprint {
             return Err(PoolError::Empty);
         }
         let weights = effective_weights(algorithm, endpoint_count)?.into_boxed_slice();
-        let weighted_schedule = build_weighted_schedule(algorithm, &weights)?;
         Ok(Self {
             algorithm: algorithm.clone(),
             weights,
-            weighted_schedule,
         })
     }
 }
@@ -844,6 +842,8 @@ pub struct ServerAdminState {
     pub checks_enabled: bool,
     #[serde(default)]
     pub max_connections: Option<u64>,
+    #[serde(default)]
+    pub weight: Option<u16>,
 }
 
 const fn checks_enabled_by_default() -> bool {
@@ -856,6 +856,7 @@ impl ServerAdminState {
             && self.health == HealthOverride::Auto
             && self.checks_enabled
             && self.max_connections.is_none()
+            && self.weight.is_none()
     }
 }
 
@@ -920,7 +921,8 @@ struct PoolEndpoint {
     pinned_addresses: Option<RwLock<Arc<[SocketAddr]>>>,
     protected_addresses: Arc<[SocketAddr]>,
     state: AtomicU8,
-    weight: u16,
+    configured_weight: u16,
+    weight_override: AtomicU16,
     last_checked_at_unix_ms: AtomicU64,
     last_transition_at_unix_ms: AtomicU64,
     successful_checks: AtomicU64,
@@ -961,7 +963,8 @@ impl PoolEndpoint {
             pinned_addresses: server.pinned_addresses.map(RwLock::new),
             protected_addresses: server.protected_addresses,
             state: AtomicU8::new(state as u8),
-            weight,
+            configured_weight: weight,
+            weight_override: AtomicU16::new(0),
             last_checked_at_unix_ms: AtomicU64::new(0),
             last_transition_at_unix_ms: AtomicU64::new(0),
             successful_checks: AtomicU64::new(0),
@@ -1037,6 +1040,25 @@ impl PoolEndpoint {
     fn has_capacity(&self) -> bool {
         self.max_connections()
             .is_none_or(|limit| self.active_work.load(Ordering::Acquire) < limit)
+    }
+
+    fn weight(&self) -> u16 {
+        match self.weight_override.load(Ordering::Acquire) {
+            0 => self.configured_weight,
+            weight => weight,
+        }
+    }
+
+    /// Work in flight per unit of capacity, so servers of different size compare fairly.
+    fn load(&self) -> u64 {
+        let divisor = self
+            .max_connections()
+            .unwrap_or_else(|| u64::from(self.weight()))
+            .max(1);
+        self.active_work
+            .load(Ordering::Acquire)
+            .saturating_mul(LOAD_SCALE)
+            / divisor
     }
 
     fn has_idle_connection(&self) -> bool {
@@ -1348,7 +1370,8 @@ impl PoolEndpoint {
             max_connections: self.max_connections(),
             name: self.name.clone(),
             state: self.state(),
-            weight: self.weight,
+            configured_weight: self.configured_weight,
+            weight: self.weight(),
             last_checked_at_unix_ms: nonzero(self.last_checked_at_unix_ms.load(Ordering::Relaxed)),
             last_transition_at_unix_ms: nonzero(
                 self.last_transition_at_unix_ms.load(Ordering::Relaxed),
@@ -1441,6 +1464,7 @@ pub struct EndpointHealthSnapshot {
     pub max_connections: Option<u64>,
     pub name: String,
     pub state: EndpointHealthState,
+    pub configured_weight: u16,
     pub weight: u16,
     pub last_checked_at_unix_ms: Option<u64>,
     pub last_transition_at_unix_ms: Option<u64>,
@@ -1678,7 +1702,6 @@ pub struct EndpointPool {
     algorithm: UpstreamAlgorithm,
     name: String,
     endpoints: Arc<[Arc<PoolEndpoint>]>,
-    weighted_schedule: Box<[usize]>,
     health: Arc<PoolHealthState>,
     selection: Mutex<SelectionState>,
     queue: Arc<PoolQueue>,
@@ -1688,9 +1711,37 @@ pub struct EndpointPool {
     fail_open_selections: AtomicU64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SelectionState {
     next: usize,
+    /// Smooth weighted round robin: each server's accumulated credit.
+    credit: Vec<i64>,
+    random: u64,
+}
+
+impl SelectionState {
+    fn new(servers: usize) -> Self {
+        Self {
+            next: 0,
+            credit: vec![0; servers],
+            random: ejection_entropy(0) | 1,
+        }
+    }
+
+    fn next_random(&mut self) -> u64 {
+        self.random ^= self.random << 13;
+        self.random ^= self.random >> 7;
+        self.random ^= self.random << 17;
+        self.random
+    }
+}
+
+/// A selectable server and what the algorithms rank it by.
+#[derive(Clone, Copy, Debug)]
+struct Candidate {
+    index: usize,
+    load: u64,
+    weight: u16,
 }
 
 /// Compatibility name retained for monitoring and topology consumers during the pool transition.
@@ -2067,30 +2118,9 @@ fn effective_weights(
         }
         UpstreamAlgorithm::RoundRobin
         | UpstreamAlgorithm::LeastConnections
+        | UpstreamAlgorithm::PowerOfTwoChoices
         | UpstreamAlgorithm::First => Ok(vec![1; endpoint_count]),
     }
-}
-
-fn build_weighted_schedule(
-    algorithm: &UpstreamAlgorithm,
-    weights: &[u16],
-) -> Result<Box<[usize]>, PoolError> {
-    if !matches!(algorithm, UpstreamAlgorithm::WeightedRoundRobin { .. }) {
-        return Ok(Box::new([]));
-    }
-    let cycle_length = weights.iter().try_fold(0_usize, |total, weight| {
-        total
-            .checked_add(usize::from(*weight))
-            .filter(|total| *total <= MAX_WEIGHTED_CYCLE)
-            .ok_or(PoolError::InvalidWeights {
-                detail: "weighted round-robin cycle exceeds its bounded size",
-            })
-    })?;
-    let mut schedule = Vec::with_capacity(cycle_length);
-    for (index, weight) in weights.iter().enumerate() {
-        schedule.extend(std::iter::repeat_n(index, usize::from(*weight)));
-    }
-    Ok(schedule.into_boxed_slice())
 }
 
 impl EndpointPool {
@@ -2120,9 +2150,8 @@ impl EndpointPool {
             algorithm: blueprint.algorithm.clone(),
             name,
             endpoints,
-            weighted_schedule: blueprint.weighted_schedule.clone(),
             health,
-            selection: Mutex::new(SelectionState::default()),
+            selection: Mutex::new(SelectionState::new(blueprint.weights.len())),
             queue,
             queue_timeout,
             resilience,
@@ -2275,40 +2304,100 @@ impl EndpointPool {
         ))
     }
 
-    /// Rotation-ordered `(cursor, index, active)` candidates and whether any server is selectable.
+    /// Rotation-ordered candidates and whether any server is selectable.
     fn candidates(
         &self,
         start: usize,
         excluded: &[String],
         now_unix_ms: u64,
-    ) -> (Vec<(usize, usize, u64)>, bool) {
+    ) -> (Vec<Candidate>, bool) {
         self.read_health(|endpoints| {
             let pool_available = endpoints
                 .iter()
                 .any(|server| server.selectable_at(now_unix_ms));
-            let eligible =
-                |cursor: usize, index: usize| {
+            let candidates = (0..endpoints.len())
+                .filter_map(|offset| {
+                    let index = (start + offset) % endpoints.len();
                     let server = &endpoints[index];
-                    (server.selectable_at(now_unix_ms) && !excluded.contains(&server.name))
-                        .then_some((cursor, index, server.active_work.load(Ordering::Acquire)))
-                };
-            let candidates = if self.weighted_schedule.is_empty() {
-                (0..endpoints.len())
-                    .filter_map(|offset| {
-                        let index = (start + offset) % endpoints.len();
-                        eligible(index, index)
-                    })
-                    .collect()
-            } else {
-                (0..self.weighted_schedule.len())
-                    .filter_map(|offset| {
-                        let cursor = (start + offset) % self.weighted_schedule.len();
-                        eligible(cursor, self.weighted_schedule[cursor])
-                    })
-                    .collect()
-            };
+                    (server.selectable_at(now_unix_ms) && !excluded.contains(&server.name)).then(
+                        || Candidate {
+                            index,
+                            load: server.load(),
+                            weight: server.weight(),
+                        },
+                    )
+                })
+                .collect();
             (candidates, pool_available)
         })
+    }
+
+    /// Orders `candidates` by the algorithm's preference; the first is its pick.
+    fn rank(&self, selection: &mut SelectionState, candidates: &mut [Candidate]) {
+        match &self.algorithm {
+            UpstreamAlgorithm::RoundRobin => {}
+            UpstreamAlgorithm::First => candidates.sort_by_key(|candidate| candidate.index),
+            UpstreamAlgorithm::LeastConnections => {
+                candidates.sort_by_key(|candidate| candidate.load);
+            }
+            UpstreamAlgorithm::WeightedRoundRobin { .. } => {
+                candidates.sort_by_key(|candidate| {
+                    (
+                        std::cmp::Reverse(
+                            selection.credit[candidate.index] + i64::from(candidate.weight),
+                        ),
+                        candidate.index,
+                    )
+                });
+            }
+            UpstreamAlgorithm::PowerOfTwoChoices => {
+                if candidates.len() > 1 {
+                    let first =
+                        usize::try_from(selection.next_random()).unwrap_or(0) % candidates.len();
+                    let mut second = usize::try_from(selection.next_random()).unwrap_or(0)
+                        % (candidates.len() - 1);
+                    if second >= first {
+                        second += 1;
+                    }
+                    let (better, other) = if candidates[second].load < candidates[first].load {
+                        (second, first)
+                    } else {
+                        (first, second)
+                    };
+                    candidates.swap(0, better);
+                    let other = if other == 0 { better } else { other };
+                    candidates.swap(1, other);
+                }
+            }
+        }
+    }
+
+    /// Records that `chosen` was picked among `candidates`.
+    fn commit(&self, selection: &mut SelectionState, candidates: &[Candidate], chosen: usize) {
+        if matches!(
+            &self.algorithm,
+            UpstreamAlgorithm::WeightedRoundRobin { .. }
+        ) {
+            let total = candidates
+                .iter()
+                .map(|candidate| i64::from(candidate.weight))
+                .sum::<i64>();
+            for candidate in candidates {
+                selection.credit[candidate.index] += i64::from(candidate.weight);
+            }
+            selection.credit[chosen] -= total;
+        }
+        if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
+            selection.next = (chosen + 1) % self.endpoints.len();
+        }
+    }
+
+    /// Where candidates start: weighted rotation must not depend on the last pick.
+    fn rotation_start(&self, selection: &SelectionState) -> usize {
+        match &self.algorithm {
+            UpstreamAlgorithm::WeightedRoundRobin { .. } => 0,
+            _ => selection.next,
+        }
     }
 
     /// Servers a pool with nothing selectable may still serve, least bad first.
@@ -2357,7 +2446,8 @@ impl EndpointPool {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now_unix_ms = now_unix_ms();
-        let (candidates, pool_available) = self.candidates(selection.next, excluded, now_unix_ms);
+        let start = self.rotation_start(&selection);
+        let (candidates, pool_available) = self.candidates(start, excluded, now_unix_ms);
         if !pool_available && self.resilience.fail_open {
             return if reuse_idle {
                 SelectionAttempt {
@@ -2374,21 +2464,16 @@ impl EndpointPool {
         };
         let saturated = candidates
             .iter()
-            .any(|(_, index, _)| !usable(&self.endpoints[*index]));
+            .any(|candidate| !usable(&self.endpoints[candidate.index]));
+        let has_candidates = !candidates.is_empty();
         let mut ordered = candidates
-            .iter()
-            .filter(|(_, index, _)| usable(&self.endpoints[*index]))
-            .copied()
+            .into_iter()
+            .filter(|candidate| usable(&self.endpoints[candidate.index]))
             .collect::<Vec<_>>();
-        match &self.algorithm {
-            UpstreamAlgorithm::LeastConnections => {
-                ordered.sort_by_key(|(_, _, active)| *active);
-            }
-            UpstreamAlgorithm::First => ordered.sort_by_key(|(_, index, _)| *index),
-            UpstreamAlgorithm::WeightedRoundRobin { .. } | UpstreamAlgorithm::RoundRobin => {}
-        }
-        let selected = ordered.into_iter().find_map(|(cursor, index, _)| {
-            let server = &self.endpoints[index];
+        let pool = ordered.clone();
+        self.rank(&mut selection, &mut ordered);
+        let selected = ordered.iter().find_map(|candidate| {
+            let server = &self.endpoints[candidate.index];
             server
                 .try_acquire(
                     &self.queue,
@@ -2398,24 +2483,18 @@ impl EndpointPool {
                 )
                 .or_else(|| {
                     (reuse_idle && server.has_idle_connection())
-                        .then(|| self.pending_lease(index, Admission::Selectable))
+                        .then(|| self.pending_lease(candidate.index, Admission::Selectable))
                 })
-                .map(|lease| (lease, cursor, index))
+                .map(|lease| (lease, candidate.index))
         });
-        let lease = selected.map(|(lease, cursor, index)| {
-            if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
-                selection.next = if self.weighted_schedule.is_empty() {
-                    (index + 1) % self.endpoints.len()
-                } else {
-                    (cursor + 1) % self.weighted_schedule.len()
-                };
-            }
+        let lease = selected.map(|(lease, index)| {
+            self.commit(&mut selection, &pool, index);
             lease
         });
         SelectionAttempt {
             lease,
             pool_available,
-            saturated: saturated && !candidates.is_empty(),
+            saturated: saturated && has_candidates,
         }
     }
 
@@ -2462,47 +2541,29 @@ impl EndpointPool {
             .selection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (candidates, pool_available) = self.candidates(selection.next, excluded, now_unix_ms());
+        let start = self.rotation_start(&selection);
+        let (candidates, pool_available) = self.candidates(start, excluded, now_unix_ms());
         if !pool_available && self.resilience.fail_open {
             return (self.fail_open_connection_target(excluded), false);
         }
         let available = candidates
             .iter()
             .copied()
-            .filter(|(_, index, _)| self.endpoints[*index].has_capacity())
+            .filter(|candidate| self.endpoints[candidate.index].has_capacity())
             .collect::<Vec<_>>();
-        let candidates = if available.is_empty() {
-            &candidates
+        let mut pool = if available.is_empty() {
+            candidates
         } else {
-            &available
+            available
         };
-        let selected = match &self.algorithm {
-            UpstreamAlgorithm::WeightedRoundRobin { .. } | UpstreamAlgorithm::RoundRobin => {
-                candidates
-                    .first()
-                    .map(|(cursor, index, _)| (*cursor, *index))
-            }
-            UpstreamAlgorithm::LeastConnections => candidates
-                .iter()
-                .min_by_key(|(_, _, active)| *active)
-                .map(|(cursor, index, _)| (*cursor, *index)),
-            UpstreamAlgorithm::First => candidates
-                .iter()
-                .min_by_key(|(_, index, _)| *index)
-                .map(|(cursor, index, _)| (*cursor, *index)),
-        };
-        let Some((cursor, index)) = selected else {
+        let pooled = pool.clone();
+        self.rank(&mut selection, &mut pool);
+        let Some(chosen) = pool.first().map(|candidate| candidate.index) else {
             return (None, pool_available);
         };
-        if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
-            selection.next = if self.weighted_schedule.is_empty() {
-                (index + 1) % self.endpoints.len()
-            } else {
-                (cursor + 1) % self.weighted_schedule.len()
-            };
-        }
+        self.commit(&mut selection, &pooled, chosen);
         (
-            Some(self.pending_lease(index, Admission::Selectable)),
+            Some(self.pending_lease(chosen, Admission::Selectable)),
             pool_available,
         )
     }
@@ -2805,6 +2866,22 @@ impl EndpointPool {
         Ok(())
     }
 
+    /// Sets a runtime weight override, or restores the configured weight with `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a weight outside 1..=100 or an unknown exact server name.
+    pub fn set_server_weight(&self, name: &str, weight: Option<u16>) -> Result<(), PoolAdminError> {
+        if weight.is_some_and(|weight| !(1..=MAX_SERVER_WEIGHT).contains(&weight)) {
+            return Err(PoolAdminError::InvalidWeight);
+        }
+        self.server(name)?
+            .weight_override
+            .store(weight.unwrap_or(0), Ordering::Release);
+        self.queue.notify_capacity_waiters();
+        Ok(())
+    }
+
     /// Administrative state that differs from a freshly started server's.
     #[must_use]
     pub fn administrative_states(&self) -> Vec<ServerAdminState> {
@@ -2819,6 +2896,10 @@ impl EndpointPool {
                 max_connections: match server.max_connections_override.load(Ordering::Acquire) {
                     0 => None,
                     limit => Some(limit),
+                },
+                weight: match server.weight_override.load(Ordering::Acquire) {
+                    0 => None,
+                    weight => Some(weight),
                 },
             })
             .filter(|state| !state.is_default())
@@ -2843,6 +2924,9 @@ impl EndpointPool {
             server
                 .max_connections_override
                 .store(state.max_connections.unwrap_or(0), Ordering::Release);
+            server
+                .weight_override
+                .store(state.weight.unwrap_or(0), Ordering::Release);
         }
         self.queue.notify_capacity_waiters();
     }
@@ -3020,6 +3104,8 @@ pub enum PoolAdminError {
     UnknownServer(String),
     #[error("max-connections must be greater than zero")]
     InvalidMaxConnections,
+    #[error("weight must be between 1 and 100")]
+    InvalidWeight,
     #[error("upstream DNS refresh failed")]
     DnsRefreshFailed,
 }
@@ -3029,6 +3115,7 @@ const fn algorithm_name(algorithm: &UpstreamAlgorithm) -> &'static str {
         UpstreamAlgorithm::RoundRobin => "round_robin",
         UpstreamAlgorithm::WeightedRoundRobin { .. } => "weighted_round_robin",
         UpstreamAlgorithm::LeastConnections => "least_connections",
+        UpstreamAlgorithm::PowerOfTwoChoices => "power_of_two_choices",
         UpstreamAlgorithm::First => "first",
     }
 }

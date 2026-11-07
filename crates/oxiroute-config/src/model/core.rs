@@ -747,6 +747,7 @@ pub enum UpstreamAlgorithm {
         weights: Vec<u16>,
     },
     LeastConnections,
+    PowerOfTwoChoices,
     First,
 }
 
@@ -758,6 +759,7 @@ impl Serialize for UpstreamAlgorithm {
         match self {
             Self::RoundRobin => serializer.serialize_str("round_robin"),
             Self::LeastConnections => serializer.serialize_str("least_connections"),
+            Self::PowerOfTwoChoices => serializer.serialize_str("power_of_two_choices"),
             Self::First => serializer.serialize_str("first"),
             Self::WeightedRoundRobin { weights } => {
                 use serde::ser::SerializeStruct as _;
@@ -783,6 +785,7 @@ impl<'de> Deserialize<'de> for UpstreamAlgorithm {
             UpstreamAlgorithmRepr::Name(name) => match name.as_str() {
                 "round_robin" => Ok(Self::RoundRobin),
                 "least_connections" => Ok(Self::LeastConnections),
+                "power_of_two_choices" => Ok(Self::PowerOfTwoChoices),
                 "first" => Ok(Self::First),
                 "weighted_round_robin" => Ok(Self::WeightedRoundRobin {
                     weights: Vec::new(),
