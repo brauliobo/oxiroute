@@ -621,6 +621,36 @@ pub struct PassiveHealthPolicy {
     pub max_backoff_ms: u64,
     #[serde(default = "default_passive_recovery_threshold")]
     pub recovery_threshold: u16,
+    /// Keeps an ejected server out of rotation until an active probe succeeds, instead of
+    /// letting live requests test it when the ejection time ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readmission: Option<Readmission>,
+}
+
+/// Probe-based re-admission of a passively ejected server.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Readmission {
+    /// Consecutive successful probes that put the server back into rotation.
+    #[serde(default = "default_readmission_successes")]
+    pub successes: u16,
+    #[serde(default = "default_readmission_interval_ms")]
+    pub interval_ms: u64,
+    #[serde(default = "default_readmission_timeout_ms")]
+    pub timeout_ms: u64,
+    /// An HTTP probe; absent means a TCP connect.
+    #[serde(default)]
+    pub probe: Option<ReadmissionProbe>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReadmissionProbe {
+    pub path: String,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub expected_status: Option<u16>,
 }
 
 impl Default for PassiveHealthPolicy {
@@ -634,6 +664,7 @@ impl Default for PassiveHealthPolicy {
             initial_backoff_ms: default_passive_initial_backoff_ms(),
             max_backoff_ms: default_passive_max_backoff_ms(),
             recovery_threshold: default_passive_recovery_threshold(),
+            readmission: None,
         }
     }
 }

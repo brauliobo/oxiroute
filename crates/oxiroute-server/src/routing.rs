@@ -13,6 +13,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use crate::health::ReadmissionProbe;
 use http::{
     Method, Uri,
     uri::{Authority, PathAndQuery},
@@ -20,7 +21,7 @@ use http::{
 use oxiroute_config::{
     HealthStartup, HttpHostSelector, HttpPathSelector,
     PassiveHealthPolicy as ConfigPassiveHealthPolicy, PassiveObserve, PassiveOnError,
-    PoolResilience, UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
+    PoolResilience, Readmission, UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::{
@@ -604,6 +605,8 @@ pub struct PassiveFailurePolicy {
     pub mark_down: bool,
     pub mark_up: bool,
     pub recovery_threshold: u16,
+    /// An ejected server returns only after an active probe succeeds, not when the time ends.
+    pub probe_readmission: bool,
 }
 
 impl PassiveFailurePolicy {
@@ -624,6 +627,7 @@ impl PassiveFailurePolicy {
             mark_down: false,
             mark_up: false,
             recovery_threshold: 1,
+            probe_readmission: false,
         }
     }
 
@@ -643,6 +647,7 @@ impl PassiveFailurePolicy {
             mark_down: policy.mark_down,
             mark_up: policy.mark_up,
             recovery_threshold: policy.recovery_threshold,
+            probe_readmission: policy.readmission.is_some(),
         }
     }
 
@@ -738,6 +743,7 @@ impl Default for PassiveFailurePolicy {
             mark_down: false,
             mark_up: false,
             recovery_threshold: 1,
+            probe_readmission: false,
         }
     }
 }
@@ -770,12 +776,14 @@ impl PoolResiliencePolicy {
 pub(crate) struct PoolConstructionBlueprint {
     algorithm: UpstreamAlgorithm,
     weights: Box<[u16]>,
+    readmission: Option<Arc<ReadmissionProbe>>,
 }
 
 impl PoolConstructionBlueprint {
     pub(crate) fn compile(
         algorithm: &UpstreamAlgorithm,
         endpoint_count: usize,
+        readmission: Option<&Readmission>,
     ) -> Result<Self, PoolError> {
         if endpoint_count == 0 {
             return Err(PoolError::Empty);
@@ -784,6 +792,11 @@ impl PoolConstructionBlueprint {
         Ok(Self {
             algorithm: algorithm.clone(),
             weights,
+            readmission: readmission
+                .map(ReadmissionProbe::compile)
+                .transpose()
+                .map_err(|source| PoolError::InvalidReadmission(source.to_string()))?
+                .map(Arc::new),
         })
     }
 }
@@ -931,6 +944,9 @@ struct PoolEndpoint {
     consecutive_failures: AtomicU64,
     last_failure: AtomicU8,
     passive_ejected: AtomicBool,
+    /// An active probe, not the clock, ends the current ejection.
+    awaiting_probe: AtomicBool,
+    probing: AtomicBool,
     passive_failure_count: AtomicU64,
     passive_consecutive_failures: AtomicU64,
     passive_ejection_count: AtomicU64,
@@ -973,6 +989,8 @@ impl PoolEndpoint {
             consecutive_failures: AtomicU64::new(0),
             last_failure: AtomicU8::new(0),
             passive_ejected: AtomicBool::new(false),
+            awaiting_probe: AtomicBool::new(false),
+            probing: AtomicBool::new(false),
             passive_failure_count: AtomicU64::new(0),
             passive_consecutive_failures: AtomicU64::new(0),
             passive_ejection_count: AtomicU64::new(0),
@@ -1034,7 +1052,8 @@ impl PoolEndpoint {
 
     fn passively_ejected_at(&self, now_unix_ms: u64) -> bool {
         self.passive_ejected.load(Ordering::Acquire)
-            && self.passive_ejection_until_unix_ms.load(Ordering::Acquire) > now_unix_ms
+            && (self.awaiting_probe.load(Ordering::Acquire)
+                || self.passive_ejection_until_unix_ms.load(Ordering::Acquire) > now_unix_ms)
     }
 
     fn has_capacity(&self) -> bool {
@@ -1253,7 +1272,7 @@ impl PoolEndpoint {
             }
             Some((previous, next))
         };
-        let passive_recovery = healthy
+        let passive_recovery = (healthy && !passive_policy.probe_readmission)
             .then_some(consecutive)
             .filter(|consecutive| {
                 *consecutive >= u64::from(healthy_threshold.max(passive_policy.recovery_threshold))
@@ -1288,11 +1307,26 @@ impl PoolEndpoint {
             return None;
         }
 
+        Some(self.eject(failure, failure_count, at_unix_ms, policy))
+    }
+
+    /// Starts the next ejection step: one longer than the previous, counted and timed.
+    fn eject(
+        &self,
+        failure: HealthFailure,
+        failure_count: u64,
+        at_unix_ms: u64,
+        policy: PassiveFailurePolicy,
+    ) -> PassiveEjection {
         let ejection_count = increment_saturating(&self.passive_ejection_count);
         let backoff_step = increment_saturating(&self.passive_backoff_step);
         let duration = policy.ejection_duration_for(backoff_step, ejection_entropy(at_unix_ms));
         let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
         let ejection_until_unix_ms = at_unix_ms.saturating_add(duration_ms);
+        self.passive_last_failure
+            .store(failure as u8, Ordering::Relaxed);
+        self.awaiting_probe
+            .store(policy.probe_readmission, Ordering::Release);
         self.passive_ejected.store(true, Ordering::Release);
         self.passive_consecutive_failures
             .store(0, Ordering::Relaxed);
@@ -1310,13 +1344,13 @@ impl PoolEndpoint {
                     .store(at_unix_ms, Ordering::Relaxed);
             }
         }
-        Some(PassiveEjection {
+        PassiveEjection {
             reason: failure,
             failure_count,
             ejection_count,
             ejected_at_unix_ms: at_unix_ms,
             ejection_until_unix_ms,
-        })
+        }
     }
 
     /// A live success ends the run of consecutive failures.
@@ -1335,6 +1369,7 @@ impl PoolEndpoint {
         if !self.passive_ejected.swap(false, Ordering::AcqRel) {
             return None;
         }
+        self.awaiting_probe.store(false, Ordering::Release);
         let recovery_count = increment_saturating(&self.passive_recovery_count);
         self.passive_consecutive_failures
             .store(0, Ordering::Relaxed);
@@ -1423,6 +1458,61 @@ struct PassiveRecovery {
     reason: Option<HealthFailure>,
     recovery_count: u64,
     recovered_at_unix_ms: u64,
+}
+
+/// Waits out the ejection, then probes until `successes` in a row pass; a failed probe re-ejects.
+async fn probe_until_readmitted(
+    health: std::sync::Weak<PoolHealthState>,
+    server: std::sync::Weak<PoolEndpoint>,
+    probe: Arc<ReadmissionProbe>,
+) {
+    let mut streak = 0_u16;
+    loop {
+        let wait = {
+            let Some(server) = server.upgrade() else {
+                return;
+            };
+            if !server.passive_ejected.load(Ordering::Acquire) {
+                server.probing.store(false, Ordering::Release);
+                return;
+            }
+            let quiet = server
+                .passive_ejection_until_unix_ms
+                .load(Ordering::Acquire)
+                .saturating_sub(now_unix_ms());
+            if quiet > 0 {
+                Duration::from_millis(quiet)
+            } else {
+                probe.interval
+            }
+        };
+        tokio::time::sleep(wait).await;
+        let (Some(health), Some(server)) = (health.upgrade(), server.upgrade()) else {
+            return;
+        };
+        if !server.passive_ejected.load(Ordering::Acquire) {
+            server.probing.store(false, Ordering::Release);
+            return;
+        }
+        let result = match server.resolve_addresses().await {
+            Ok(addresses) => probe.probe(&addresses).await,
+            Err(_) => Err(HealthFailure::ConnectFailed),
+        };
+        match result {
+            Ok(()) => {
+                streak += 1;
+                if streak >= probe.successes {
+                    health.readmit(&server);
+                    server.probing.store(false, Ordering::Release);
+                    return;
+                }
+            }
+            Err(failure) => {
+                streak = 0;
+                health.reject_probe(&server, failure);
+            }
+        }
+    }
 }
 
 const fn nonzero(value: u64) -> Option<u64> {
@@ -1582,6 +1672,7 @@ struct PoolHealthState {
     passive_policy: PassiveFailurePolicy,
     pool_name: String,
     queue: Arc<PoolQueue>,
+    readmission: Option<Arc<ReadmissionProbe>>,
     resilience: PoolResiliencePolicy,
 }
 
@@ -1592,6 +1683,7 @@ impl PoolHealthState {
         queue: Arc<PoolQueue>,
         passive_policy: PassiveFailurePolicy,
         resilience: PoolResiliencePolicy,
+        readmission: Option<Arc<ReadmissionProbe>>,
     ) -> Self {
         Self {
             endpoints,
@@ -1600,6 +1692,7 @@ impl PoolHealthState {
             passive_policy,
             pool_name,
             queue,
+            readmission,
             resilience,
         }
     }
@@ -1615,13 +1708,17 @@ impl PoolHealthState {
             >= self.resilience.min_members
     }
 
-    fn record_passive_failure(&self, server: &PoolEndpoint, failure: HealthFailure) {
+    fn record_passive_failure(
+        self: &Arc<Self>,
+        server: &Arc<PoolEndpoint>,
+        failure: HealthFailure,
+    ) {
         self.record_passive_failure_at(server, failure, now_unix_ms());
     }
 
     fn record_passive_failure_at(
-        &self,
-        server: &PoolEndpoint,
+        self: &Arc<Self>,
+        server: &Arc<PoolEndpoint>,
         failure: HealthFailure,
         at_unix_ms: u64,
     ) {
@@ -1650,6 +1747,72 @@ impl PoolHealthState {
                 ejection.ejection_count,
                 ejection.ejected_at_unix_ms,
                 ejection.ejection_until_unix_ms,
+            );
+            self.start_probing(server);
+        }
+    }
+
+    /// Probes an ejected server until it passes, so live requests never have to test it.
+    fn start_probing(self: &Arc<Self>, server: &Arc<PoolEndpoint>) {
+        let Some(probe) = &self.readmission else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if !server.probing.swap(true, Ordering::AcqRel) {
+            runtime.spawn(probe_until_readmitted(
+                Arc::downgrade(self),
+                Arc::downgrade(server),
+                Arc::clone(probe),
+            ));
+        }
+    }
+
+    /// A failed probe ends the quiet period with the next, longer ejection step.
+    fn reject_probe(&self, server: &PoolEndpoint, failure: HealthFailure) {
+        let at_unix_ms = now_unix_ms();
+        let ejection = {
+            let _writer = self
+                .health_writer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.health_version.fetch_add(1, Ordering::AcqRel);
+            let failure_count = server.passive_failure_count.load(Ordering::Relaxed);
+            let ejection = server.eject(failure, failure_count, at_unix_ms, self.passive_policy);
+            self.health_version.fetch_add(1, Ordering::Release);
+            ejection
+        };
+        crate::operational_event::emit_upstream_endpoint_ejection(
+            &self.pool_name,
+            &server.name,
+            ejection.reason,
+            ejection.failure_count,
+            ejection.ejection_count,
+            ejection.ejected_at_unix_ms,
+            ejection.ejection_until_unix_ms,
+        );
+    }
+
+    fn readmit(&self, server: &PoolEndpoint) {
+        let recovery = {
+            let _writer = self
+                .health_writer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.health_version.fetch_add(1, Ordering::AcqRel);
+            let recovery = server.recover_passive(now_unix_ms(), self.passive_policy);
+            self.health_version.fetch_add(1, Ordering::Release);
+            recovery
+        };
+        if let Some(recovery) = recovery {
+            self.queue.notify_capacity_waiters();
+            crate::operational_event::emit_upstream_endpoint_recovery(
+                &self.pool_name,
+                &server.name,
+                recovery.reason,
+                recovery.recovery_count,
+                recovery.recovered_at_unix_ms,
             );
         }
     }
@@ -2145,6 +2308,7 @@ impl EndpointPool {
             Arc::clone(&queue),
             passive_policy,
             resilience,
+            blueprint.readmission.clone(),
         ));
         Self {
             algorithm: blueprint.algorithm.clone(),
@@ -2292,7 +2456,7 @@ impl EndpointPool {
         for server in &servers {
             server.endpoint.preflight()?;
         }
-        let blueprint = PoolConstructionBlueprint::compile(&algorithm, servers.len())?;
+        let blueprint = PoolConstructionBlueprint::compile(&algorithm, servers.len(), None)?;
         Ok(Self::acquire_compiled(
             name,
             servers,
@@ -3126,6 +3290,7 @@ pub enum PoolError {
     Empty,
     InvalidWeights { detail: &'static str },
     InvalidPassivePolicy { detail: &'static str },
+    InvalidReadmission(String),
     StartupDns { server: String, detail: String },
     InvalidSocketEndpoint(SocketAddr),
     InvalidDnsEndpoint { host: String, port: u16 },
@@ -3145,6 +3310,9 @@ impl fmt::Display for PoolError {
             }
             Self::InvalidPassivePolicy { detail } => {
                 write!(formatter, "invalid passive failure policy: {detail}")
+            }
+            Self::InvalidReadmission(detail) => {
+                write!(formatter, "invalid probe re-admission policy: {detail}")
             }
             Self::StartupDns { server, detail } => {
                 write!(

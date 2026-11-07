@@ -3,6 +3,7 @@ use super::*;
 
 const MAX_EJECTION_JITTER_PERCENT: u8 = 50;
 const MAX_UNAVAILABLE_BODY_BYTES: usize = 1024;
+const MAX_READMISSION_INTERVAL_MS: u64 = 3_600_000;
 
 /// Validates upstream-pool identities, resources, endpoints, and health policies.
 ///
@@ -67,6 +68,51 @@ fn validate_passive_health_config(
             "passive_health.recovery_threshold",
             "recovery threshold must be between 1 and 100",
         ));
+    }
+    if let Some(readmission) = &policy.readmission {
+        validate_readmission(readmission, invalid)?;
+    }
+    Ok(())
+}
+
+fn validate_readmission(
+    readmission: &crate::model::Readmission,
+    invalid: impl Fn(&'static str, &'static str) -> ConfigError,
+) -> Result<(), ConfigError> {
+    if readmission.successes == 0 || readmission.successes > MAX_PASSIVE_RECOVERY_THRESHOLD {
+        return Err(invalid(
+            "passive_health.readmission.successes",
+            "successes must be between 1 and 100",
+        ));
+    }
+    if !(100..=MAX_READMISSION_INTERVAL_MS).contains(&readmission.interval_ms) {
+        return Err(invalid(
+            "passive_health.readmission.interval_ms",
+            "interval must be between 100 and 3600000 milliseconds",
+        ));
+    }
+    if !(10..=MAX_READMISSION_INTERVAL_MS).contains(&readmission.timeout_ms) {
+        return Err(invalid(
+            "passive_health.readmission.timeout_ms",
+            "timeout must be between 10 and 3600000 milliseconds",
+        ));
+    }
+    if let Some(probe) = &readmission.probe {
+        if !probe.path.starts_with('/') {
+            return Err(invalid(
+                "passive_health.readmission.probe.path",
+                "probe path must start with /",
+            ));
+        }
+        if probe
+            .expected_status
+            .is_some_and(|status| !(100..=599).contains(&status))
+        {
+            return Err(invalid(
+                "passive_health.readmission.probe.expected_status",
+                "expected status must be between 100 and 599",
+            ));
+        }
     }
     Ok(())
 }
