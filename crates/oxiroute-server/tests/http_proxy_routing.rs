@@ -2068,7 +2068,13 @@ async fn slow_downstream_preserves_response_larger_than_pipe_capacity() {
         let response = RawResponse::parse(wire);
         assert_eq!(response.status, 200);
         assert_eq!(response.body().len(), CHUNKS * CHUNK_SIZE);
-        for (value, chunk) in response.body().chunks_exact(CHUNK_SIZE).enumerate() {
+        for (value, chunk) in response
+            .body()
+            .as_chunks::<CHUNK_SIZE>()
+            .0
+            .iter()
+            .enumerate()
+        {
             let value = u8::try_from(value).expect("response chunk index fits in u8");
             assert!(chunk.iter().all(|byte| *byte == value));
         }

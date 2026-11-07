@@ -9,7 +9,7 @@ version.workspace = true
 
 [dependencies]
 bytes.workspace = true
-crc32fast = "1"
+crc32fast = "1.5.4"
 http.workspace = true
 httpdate.workspace = true
 rustix.workspace = true

@@ -386,7 +386,7 @@ struct ForwardAccessMetrics {
 impl ForwardAccessMetrics {
     fn record(&self, result: ForwardAccessResult) {
         let counter = &self.counts[result.index()];
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             Some(value.saturating_add(1))
         });
     }
@@ -1231,10 +1231,7 @@ impl ForwardHttp1ServicePlan {
                 .as_ref()
                 .ok()
                 .map(|request| request.approved.destination().authority());
-            let authenticated = result
-                .as_ref()
-                .ok()
-                .is_some_and(|request| request.authenticated);
+            let authenticated = result.as_ref().is_ok_and(|request| request.authenticated);
             let event = serde_json::json!({
                 "event": "forward_access",
                 "service": self.name,
@@ -3368,8 +3365,7 @@ fn classify_connect_udp_request<B>(request: &Request<B>) -> ConnectUdpRequestKin
     if upgrade.next().is_some()
         || !upgrade_value
             .to_str()
-            .ok()
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case("connect-udp"))
+            .is_ok_and(|value| value.trim().eq_ignore_ascii_case("connect-udp"))
     {
         return ConnectUdpRequestKind::Malformed;
     }
@@ -3621,7 +3617,7 @@ fn is_structured_base64_byte(byte: u8) -> bool {
 
 fn header_has_token(headers: &HeaderMap, name: &http::HeaderName, expected: &str) -> bool {
     headers.get_all(name).iter().any(|value| {
-        value.to_str().ok().is_some_and(|value| {
+        value.to_str().is_ok_and(|value| {
             value
                 .split(',')
                 .any(|token| token.trim().eq_ignore_ascii_case(expected))

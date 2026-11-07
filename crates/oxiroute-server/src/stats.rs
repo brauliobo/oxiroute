@@ -539,7 +539,7 @@ impl ServeHttp for HaproxyStatsPage {
                             "the stats page administration form is invalid",
                         ),
                     },
-                    Err(response) => response,
+                    Err(response) => *response,
                 }
             }
         } else {
@@ -693,41 +693,41 @@ fn authority_has_valid_optional_port(authority: &str) -> bool {
     port.is_some_and(|port| !port.is_empty() && port.parse::<u16>().is_ok())
 }
 
-async fn read_stats_form_body(session: &mut ServerSession) -> Result<Vec<u8>, ApiResponse> {
+async fn read_stats_form_body(session: &mut ServerSession) -> Result<Vec<u8>, Box<ApiResponse>> {
     let mut content_lengths = session.req_header().headers.get_all(CONTENT_LENGTH).iter();
     let declared_length = content_lengths
         .next()
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<usize>().ok());
     if content_lengths.next().is_some() || declared_length.is_none() {
-        return Err(ApiResponse::error(
+        return Err(Box::new(ApiResponse::error(
             400,
             "invalid_content_length",
             "exactly one decimal Content-Length value is required",
-        ));
+        )));
     }
     if declared_length.is_some_and(|length| length > MAX_STATS_FORM_BYTES) {
-        return Err(stats_form_too_large());
+        return Err(stats_form_too_large().into());
     }
     let mut body = Vec::with_capacity(declared_length.unwrap_or_default());
     while let Some(chunk) = session.read_request_body().await.map_err(|_| {
-        ApiResponse::error(
+        Box::new(ApiResponse::error(
             400,
             "invalid_request_body",
             "request body could not be read",
-        )
+        ))
     })? {
         if chunk.len() > MAX_STATS_FORM_BYTES.saturating_sub(body.len()) {
-            return Err(stats_form_too_large());
+            return Err(stats_form_too_large().into());
         }
         body.extend_from_slice(&chunk);
     }
     if body.len() != declared_length.unwrap_or_default() {
-        return Err(ApiResponse::error(
+        return Err(Box::new(ApiResponse::error(
             400,
             "invalid_request_body",
             "request body length does not match Content-Length",
-        ));
+        )));
     }
     Ok(body)
 }

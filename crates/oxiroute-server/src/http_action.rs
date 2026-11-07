@@ -1022,8 +1022,7 @@ impl BasicHtpasswdAccess {
             hashes.iter().any(|hash| hash.verify(password.as_bytes()))
         })
         .await
-        .ok()
-        .is_some_and(|verified| known_user && verified);
+        .is_ok_and(|verified| known_user && verified);
         verified.then(|| Arc::clone(&self.users[selected_index].1))
     }
 }

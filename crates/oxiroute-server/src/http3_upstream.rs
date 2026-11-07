@@ -447,7 +447,7 @@ mod tests {
         time::Duration,
     };
 
-    use bytes::{Buf as _, Bytes};
+    use bytes::Bytes;
     use h3::server::Connection;
     use http::{HeaderMap, Method, Request, Response, StatusCode};
     use quinn::crypto::rustls::QuicServerConfig;

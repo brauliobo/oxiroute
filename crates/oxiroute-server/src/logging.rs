@@ -110,7 +110,7 @@ impl RtmpAccessLogMetrics {
     fn decrement_queue_depth(&self) {
         let _ = self
             .queue_depth
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
                 Some(depth.saturating_sub(1))
             });
     }
