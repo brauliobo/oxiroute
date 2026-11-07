@@ -259,7 +259,9 @@ once in the direct runtime: a further apply stays prepared (`pendingApply` with 
 `retired_cap` in `generation status`, a `generation_retire` event with outcome `cap_reached`) until
 a slot frees. In supervised mode one replaced worker drains at a time, whatever the setting, so a
 second reload requested while a long request keeps it alive waits for it (the master applies the
-newest saved revision afterwards without further action). `generation status` and
+newest saved revision afterwards without further action). At the deadline the retired worker
+closes its generation and logs a `generation_retire` event with outcome `forced_close`; the master
+kills the worker 10 seconds later if it is still there. `generation status` and
 `GET /api/v1/generations` list the draining generations of the direct runtime as
 `retiredGenerations` (revision, state, age, seconds before the deadline, in-flight work by
 protocol), and the metrics `oxiroute_generation_retired`, `oxiroute_generation_retired_age_seconds`,

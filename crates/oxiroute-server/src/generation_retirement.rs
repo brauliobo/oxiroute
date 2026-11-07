@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use log::{info, warn};
+use log::info;
 use serde::{Serialize, Serializer};
 
 use crate::{RuntimeGeneration, config_coordinator::EffectiveRevision, operational_event};
@@ -163,12 +163,7 @@ impl RetiredGenerations {
     }
 
     fn announce_forced_close(entry: &Retired, reason: &str) {
-        warn!(
-            "retired generation {} closed by {reason} with {} requests in flight",
-            entry.generation.revision().candidate.as_str(),
-            entry.generation.in_flight()
-        );
-        operational_event::emit_retire_forced_close(&entry.generation.revision().candidate, reason);
+        entry.generation.announce_forced_close(reason);
     }
 
     pub(crate) fn statuses(&self, now: Instant) -> Vec<RetiredGenerationStatus> {

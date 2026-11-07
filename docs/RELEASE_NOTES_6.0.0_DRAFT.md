@@ -72,7 +72,8 @@ A pool keeps serving when health checks or passive ejection would otherwise take
   `oxiroute_generation_forced_close_total`, and a `generation_retire` event.
 - Limits: under the supervising master one replaced worker drains at a time, so a second apply
   waits while a long request keeps the first alive, and the retired list is filled by the direct
-  runtime only. Stopping the service still ends long jobs after `TimeoutStopSec=15s`.
+  runtime only. A retired worker closes itself at the deadline; the master kills it 10 seconds
+  later if it has not left. Stopping the service still ends long jobs after `TimeoutStopSec=15s`.
 
 ## Observability
 

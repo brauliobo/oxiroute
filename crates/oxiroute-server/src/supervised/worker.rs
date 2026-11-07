@@ -29,6 +29,7 @@ use oxiroute_supervisor_process::WorkerIdentity;
 use pingora::apps::AcceptGateClose;
 use serde::{Deserialize, Serialize};
 
+use super::master::{RELOAD_DRAIN_ENV, retirement_window};
 use crate::{
     GenerationProcess, finish_candidate_generation_process, shutdown_generation_processes,
 };
@@ -109,9 +110,12 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     };
     let stop = Arc::new(AtomicBool::new(false));
     let mut quiesced = None;
-    // The drain request stays open until every in-flight connection and stream has finished, so
-    // the master's drain deadline, not this worker, bounds how long a retired generation serves.
+    // The drain request stays open until every in-flight connection and stream has finished. At the
+    // retirement deadline this worker closes its generation; the master's kill follows a backstop
+    // later.
     let mut draining = None;
+    let mut drain_ends = None;
+    let mut forced_close = false;
     let mut process = match GenerationProcess::start(
         Arc::clone(&generation),
         coordinator,
@@ -157,7 +161,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     let inject_runtime_failure = std::env::var_os(TEST_RUNTIME_FAILURE_ENV).is_some();
     loop {
         if generation.runtime_failed()
-            || process.as_ref().is_some_and(GenerationProcess::is_finished)
+            || (!forced_close && process.as_ref().is_some_and(GenerationProcess::is_finished))
         {
             lifecycle = WorkerLifecycle::Failed;
             let _ = report_status(
@@ -184,7 +188,22 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         let request = match control.try_receive() {
             Ok(Some(request)) => request,
             Ok(None) => {
-                if draining.is_some() && generation.drained() {
+                if draining.is_some()
+                    && !forced_close
+                    && drain_ends.is_some_and(|ends| Instant::now() >= ends)
+                {
+                    forced_close = true;
+                    generation.announce_forced_close("drain_deadline");
+                    process
+                        .as_ref()
+                        .expect("generation process is owned")
+                        .request_shutdown();
+                }
+                if draining.is_some()
+                    && (generation.drained()
+                        || forced_close
+                            && process.as_ref().is_some_and(GenerationProcess::is_finished))
+                {
                     let request = draining.take().expect("a drain request is pending");
                     control.acknowledge(&request, ControlOutcome::Accepted)?;
                     report_status(
@@ -330,6 +349,13 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             }
             ControlPhase::Drain if draining.is_none() && start_drain(&manager) => {
                 lifecycle = WorkerLifecycle::Draining;
+                drain_ends = Some(
+                    Instant::now()
+                        + retirement_window(
+                            generation.config(),
+                            std::env::var_os(RELOAD_DRAIN_ENV).as_deref(),
+                        ),
+                );
                 draining = Some(request);
                 report_status(
                     &mut control,
