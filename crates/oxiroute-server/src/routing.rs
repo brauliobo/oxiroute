@@ -908,6 +908,8 @@ impl Admission {
 #[derive(Debug)]
 struct PoolEndpoint {
     active_work: AtomicU64,
+    /// Pooled keep-alive connections that hold a permit but are not serving a request.
+    idle_permits: AtomicU64,
     administrative_state: AtomicU8,
     checks_enabled: AtomicBool,
     health_override: AtomicU8,
@@ -948,6 +950,7 @@ impl PoolEndpoint {
         };
         Self {
             active_work: AtomicU64::new(0),
+            idle_permits: AtomicU64::new(0),
             administrative_state: AtomicU8::new(AdministrativeState::Ready as u8),
             checks_enabled: AtomicBool::new(true),
             health_override: AtomicU8::new(HealthOverride::Auto as u8),
@@ -1034,6 +1037,10 @@ impl PoolEndpoint {
     fn has_capacity(&self) -> bool {
         self.max_connections()
             .is_none_or(|limit| self.active_work.load(Ordering::Acquire) < limit)
+    }
+
+    fn has_idle_connection(&self) -> bool {
+        self.idle_permits.load(Ordering::Acquire) > 0
     }
 
     fn administrative_state(&self) -> AdministrativeState {
@@ -1719,6 +1726,8 @@ struct EndpointLeaseInner {
     queue: Arc<PoolQueue>,
     server: Arc<PoolEndpoint>,
     waiting: AtomicBool,
+    /// Set while this lease's pooled connection waits idle for a request to reuse it.
+    idle: AtomicBool,
 }
 
 impl EndpointLease {
@@ -1736,6 +1745,7 @@ impl EndpointLease {
                 queue,
                 server,
                 waiting: AtomicBool::new(false),
+                idle: AtomicBool::new(false),
             }),
         }
     }
@@ -1756,6 +1766,7 @@ impl EndpointLease {
                 queue,
                 server,
                 waiting: AtomicBool::new(false),
+                idle: AtomicBool::new(false),
             }),
         }
     }
@@ -1808,6 +1819,16 @@ impl EndpointLeaseInner {
         }
     }
 
+    fn set_idle(&self, idle: bool) {
+        if self.idle.swap(idle, Ordering::AcqRel) != idle {
+            if idle {
+                self.server.idle_permits.fetch_add(1, Ordering::AcqRel);
+            } else {
+                self.server.idle_permits.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+    }
+
     fn clear_waiting(&self) -> bool {
         let was_waiting = self.waiting.swap(false, Ordering::AcqRel);
         if was_waiting {
@@ -1819,6 +1840,7 @@ impl EndpointLeaseInner {
 
 impl Drop for EndpointLeaseInner {
     fn drop(&mut self) {
+        self.set_idle(false);
         if self.clear_waiting() {
             self.queue.cancellations.fetch_add(1, Ordering::Relaxed);
         }
@@ -1877,9 +1899,14 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
     }
 
     fn notify_reusable(&self) {
+        self.set_idle(true);
         if self.queue.capacity_waiters_possible {
             self.queue.notify_capacity_waiters();
         }
+    }
+
+    fn notify_in_use(&self) {
+        self.set_idle(false);
     }
 }
 
@@ -2318,6 +2345,13 @@ impl EndpointPool {
     }
 
     fn select_server_excluding(&self, excluded: &[String]) -> SelectionAttempt {
+        self.select_attempt(excluded, false)
+    }
+
+    /// Acquires a permit of the best server. With `reuse_idle`, a server whose pooled connection
+    /// is idle also qualifies and gets a pending lease, since the connection serves the request
+    /// without a new permit.
+    fn select_attempt(&self, excluded: &[String], reuse_idle: bool) -> SelectionAttempt {
         let mut selection = self
             .selection
             .lock()
@@ -2325,14 +2359,25 @@ impl EndpointPool {
         let now_unix_ms = now_unix_ms();
         let (candidates, pool_available) = self.candidates(selection.next, excluded, now_unix_ms);
         if !pool_available && self.resilience.fail_open {
-            return self.select_fail_open(excluded);
+            return if reuse_idle {
+                SelectionAttempt {
+                    lease: self.fail_open_connection_target(excluded),
+                    pool_available: false,
+                    saturated: false,
+                }
+            } else {
+                self.select_fail_open(excluded)
+            };
         }
+        let usable = |server: &PoolEndpoint| {
+            server.has_capacity() || (reuse_idle && server.has_idle_connection())
+        };
         let saturated = candidates
             .iter()
-            .any(|(_, index, _)| !self.endpoints[*index].has_capacity());
+            .any(|(_, index, _)| !usable(&self.endpoints[*index]));
         let mut ordered = candidates
             .iter()
-            .filter(|(_, index, _)| self.endpoints[*index].has_capacity())
+            .filter(|(_, index, _)| usable(&self.endpoints[*index]))
             .copied()
             .collect::<Vec<_>>();
         match &self.algorithm {
@@ -2343,13 +2388,18 @@ impl EndpointPool {
             UpstreamAlgorithm::WeightedRoundRobin { .. } | UpstreamAlgorithm::RoundRobin => {}
         }
         let selected = ordered.into_iter().find_map(|(cursor, index, _)| {
-            self.endpoints[index]
+            let server = &self.endpoints[index];
+            server
                 .try_acquire(
                     &self.queue,
                     &self.health,
                     Admission::Selectable,
                     now_unix_ms,
                 )
+                .or_else(|| {
+                    (reuse_idle && server.has_idle_connection())
+                        .then(|| self.pending_lease(index, Admission::Selectable))
+                })
                 .map(|lease| (lease, cursor, index))
         });
         let lease = selected.map(|(lease, cursor, index)| {
@@ -2382,11 +2432,18 @@ impl EndpointPool {
     }
 
     /// Like [`Self::select_connection_target_excluding`], but waits up to the pool's
-    /// `queue_while_unavailable_ms` for a server to become selectable.
+    /// `queue_while_unavailable_ms` for a server to become selectable. A pool with a queue also
+    /// holds the request there until any server frees a permit or an idle connection, so it is
+    /// never bound to one busy server while another is free.
     pub(crate) async fn select_connection_target_waiting(
         &self,
         excluded: &[String],
     ) -> Option<EndpointLease> {
+        if self.queue_timeout.is_some() {
+            return self
+                .select_wait_with(|| self.select_attempt(excluded, true))
+                .await;
+        }
         let recovery_deadline = self.recovery_deadline();
         loop {
             let (lease, pool_available) = self.connection_target(excluded);
