@@ -221,6 +221,12 @@ impl HttpRequestContext {
         }
     }
 
+    fn record_passive_success(&self) {
+        if let Some(observation) = &self.selected_observation {
+            observation.record_passive_success();
+        }
+    }
+
     fn adopt_downstream_deadline(&mut self, session: &Session) {
         self.client_deadline = [session.get_read_timeout(), session.get_write_timeout()]
             .into_iter()

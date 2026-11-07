@@ -58,7 +58,7 @@ listener reservations are process-owned and reused by later generations.
 Activation swaps active and previous generation references under one lock, closes the old logical
 accept gate, and retains the previous generation for explicit rollback. Before the new generation
 accepts, the runtime administrative state of the old one (drain, maintenance, health override,
-check switch, max-connections override) is copied to the servers with the same pool and server
+check switch, max-connections and weight overrides) is copied to the servers with the same pool and server
 name, so a drained server never takes traffic across a file write, reload, apply or rollback.
 Servers that no longer exist lose their state and new servers start ready. In supervised mode the
 old worker reports that state at quiesce and the master hands it to the replacement at activation;

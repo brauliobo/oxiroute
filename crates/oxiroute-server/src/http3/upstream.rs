@@ -186,6 +186,8 @@ where
                     }
                     continue;
                 }
+            } else {
+                selected.observation().record_passive_success();
             }
             return send_h3_upstream_response(
                 stream,

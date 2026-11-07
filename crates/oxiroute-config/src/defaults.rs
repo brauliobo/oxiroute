@@ -6,6 +6,15 @@ const DEFAULT_PASSIVE_ERROR_LIMIT: u16 = 3;
 const DEFAULT_PASSIVE_INITIAL_BACKOFF_MS: u64 = 30_000;
 const DEFAULT_PASSIVE_MAX_BACKOFF_MS: u64 = 300_000;
 const DEFAULT_PASSIVE_RECOVERY_THRESHOLD: u16 = 1;
+const DEFAULT_READMISSION_SUCCESSES: u16 = 2;
+const DEFAULT_BREAKER_WINDOW_MS: u64 = 30_000;
+const DEFAULT_BREAKER_MIN_REQUESTS: u32 = 20;
+const DEFAULT_BREAKER_FAILURE_RATIO_PERCENT: u8 = 50;
+const DEFAULT_BREAKER_OPEN_MS: u64 = 10_000;
+const DEFAULT_BREAKER_HALF_OPEN_MAX: u16 = 1;
+const DEFAULT_BREAKER_HALF_OPEN_SUCCESSES: u16 = 3;
+const DEFAULT_READMISSION_INTERVAL_MS: u64 = 1_000;
+const DEFAULT_READMISSION_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_HEALTH_INTERVAL_MS: u64 = 10_000;
 const DEFAULT_HEALTH_TIMEOUT_MS: u64 = 1_000;
 const DEFAULT_HEALTHY_THRESHOLD: u16 = 1;
@@ -605,6 +614,42 @@ pub(crate) const fn default_passive_max_backoff_ms() -> u64 {
 
 pub(crate) const fn default_passive_recovery_threshold() -> u16 {
     DEFAULT_PASSIVE_RECOVERY_THRESHOLD
+}
+
+pub(crate) const fn default_breaker_window_ms() -> u64 {
+    DEFAULT_BREAKER_WINDOW_MS
+}
+
+pub(crate) const fn default_breaker_min_requests() -> u32 {
+    DEFAULT_BREAKER_MIN_REQUESTS
+}
+
+pub(crate) const fn default_breaker_failure_ratio_percent() -> u8 {
+    DEFAULT_BREAKER_FAILURE_RATIO_PERCENT
+}
+
+pub(crate) const fn default_breaker_open_ms() -> u64 {
+    DEFAULT_BREAKER_OPEN_MS
+}
+
+pub(crate) const fn default_breaker_half_open_max() -> u16 {
+    DEFAULT_BREAKER_HALF_OPEN_MAX
+}
+
+pub(crate) const fn default_breaker_half_open_successes() -> u16 {
+    DEFAULT_BREAKER_HALF_OPEN_SUCCESSES
+}
+
+pub(crate) const fn default_readmission_successes() -> u16 {
+    DEFAULT_READMISSION_SUCCESSES
+}
+
+pub(crate) const fn default_readmission_interval_ms() -> u64 {
+    DEFAULT_READMISSION_INTERVAL_MS
+}
+
+pub(crate) const fn default_readmission_timeout_ms() -> u64 {
+    DEFAULT_READMISSION_TIMEOUT_MS
 }
 
 pub(crate) const fn default_http_redirect_status() -> u16 {

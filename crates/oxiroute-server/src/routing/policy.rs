@@ -29,28 +29,30 @@ impl PoolResiliencePolicy {
 pub(crate) struct PoolConstructionBlueprint {
     pub(super) algorithm: UpstreamAlgorithm,
     pub(super) weights: Box<[u16]>,
-    pub(super) weighted_schedule: Box<[usize]>,
+    pub(super) readmission: Option<Arc<ReadmissionProbe>>,
 }
 
 impl PoolConstructionBlueprint {
     pub(crate) fn compile(
         algorithm: &UpstreamAlgorithm,
         endpoint_count: usize,
+        readmission: Option<&Readmission>,
     ) -> Result<Self, PoolError> {
         if endpoint_count == 0 {
             return Err(PoolError::Empty);
         }
         let weights = effective_weights(algorithm, endpoint_count)?.into_boxed_slice();
-        let weighted_schedule = build_weighted_schedule(algorithm, &weights)?;
         Ok(Self {
             algorithm: algorithm.clone(),
             weights,
-            weighted_schedule,
+            readmission: readmission
+                .map(ReadmissionProbe::compile)
+                .transpose()
+                .map_err(|source| PoolError::InvalidReadmission(source.to_string()))?
+                .map(Arc::new),
         })
     }
 }
-
-const MAX_WEIGHTED_CYCLE: usize = 25_600;
 
 fn effective_weights(
     algorithm: &UpstreamAlgorithm,
@@ -72,30 +74,9 @@ fn effective_weights(
         }
         UpstreamAlgorithm::RoundRobin
         | UpstreamAlgorithm::LeastConnections
+        | UpstreamAlgorithm::PowerOfTwoChoices
         | UpstreamAlgorithm::First => Ok(vec![1; endpoint_count]),
     }
-}
-
-fn build_weighted_schedule(
-    algorithm: &UpstreamAlgorithm,
-    weights: &[u16],
-) -> Result<Box<[usize]>, PoolError> {
-    if !matches!(algorithm, UpstreamAlgorithm::WeightedRoundRobin { .. }) {
-        return Ok(Box::new([]));
-    }
-    let cycle_length = weights.iter().try_fold(0_usize, |total, weight| {
-        total
-            .checked_add(usize::from(*weight))
-            .filter(|total| *total <= MAX_WEIGHTED_CYCLE)
-            .ok_or(PoolError::InvalidWeights {
-                detail: "weighted round-robin cycle exceeds its bounded size",
-            })
-    })?;
-    let mut schedule = Vec::with_capacity(cycle_length);
-    for (index, weight) in weights.iter().enumerate() {
-        schedule.extend(std::iter::repeat_n(index, usize::from(*weight)));
-    }
-    Ok(schedule.into_boxed_slice())
 }
 
 pub(super) const fn algorithm_name(algorithm: &UpstreamAlgorithm) -> &'static str {
@@ -103,6 +84,7 @@ pub(super) const fn algorithm_name(algorithm: &UpstreamAlgorithm) -> &'static st
         UpstreamAlgorithm::RoundRobin => "round_robin",
         UpstreamAlgorithm::WeightedRoundRobin { .. } => "weighted_round_robin",
         UpstreamAlgorithm::LeastConnections => "least_connections",
+        UpstreamAlgorithm::PowerOfTwoChoices => "power_of_two_choices",
         UpstreamAlgorithm::First => "first",
     }
 }
@@ -113,6 +95,8 @@ pub enum PoolAdminError {
     UnknownServer(String),
     #[error("max-connections must be greater than zero")]
     InvalidMaxConnections,
+    #[error("weight must be between 1 and 100")]
+    InvalidWeight,
     #[error("upstream DNS refresh failed")]
     DnsRefreshFailed,
 }
@@ -123,6 +107,7 @@ pub enum PoolError {
     Empty,
     InvalidWeights { detail: &'static str },
     InvalidPassivePolicy { detail: &'static str },
+    InvalidReadmission(String),
     StartupDns { server: String, detail: String },
     InvalidSocketEndpoint(SocketAddr),
     InvalidDnsEndpoint { host: String, port: u16 },
@@ -142,6 +127,9 @@ impl fmt::Display for PoolError {
             }
             Self::InvalidPassivePolicy { detail } => {
                 write!(formatter, "invalid passive failure policy: {detail}")
+            }
+            Self::InvalidReadmission(detail) => {
+                write!(formatter, "invalid probe re-admission policy: {detail}")
             }
             Self::StartupDns { server, detail } => {
                 write!(
