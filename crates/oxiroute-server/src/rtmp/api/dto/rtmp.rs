@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::DecimalCounter;
-use crate::rtmp_api::wire::{
+use crate::rtmp::api::wire::{
     RecorderErrorCodeDto, RecorderNotificationDto, RelayDnsRefreshFailureDto, RelayFailureDto,
     RelayPhaseDto, RtmpSessionControlActionDto, RtmpSessionControlOutcomeDto, RtmpSessionRoleDto,
 };

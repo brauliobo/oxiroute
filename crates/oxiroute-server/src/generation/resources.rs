@@ -8,7 +8,7 @@ use crate::{
     GenerationError, HealthSupervisor, ListenerReservations, PreparedTls, RoundRobinPool,
     RuntimePlan, ServiceSpec,
     monitoring::ListenerRegistrationTransaction,
-    rtmp_generation_runtime::{RtmpGenerationRuntime, RtmpRetirement},
+    rtmp::generation_runtime::{RtmpGenerationRuntime, RtmpRetirement},
     service_plan::GenerationAcquisition,
 };
 

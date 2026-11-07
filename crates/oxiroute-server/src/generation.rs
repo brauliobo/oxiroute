@@ -25,7 +25,7 @@ use crate::generation::retirement::{
 };
 use crate::listener_inventory::{ListenerId, ListenerInventory};
 use crate::routing::ServerAdminState;
-use crate::rtmp_generation_runtime::{RtmpRetirement, RtmpRetirementRegistry};
+use crate::rtmp::generation_runtime::{RtmpRetirement, RtmpRetirementRegistry};
 #[cfg(test)]
 use crate::service_plan::acquire_runtime_services;
 use crate::{
