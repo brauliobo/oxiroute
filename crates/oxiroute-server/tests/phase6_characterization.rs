@@ -297,6 +297,7 @@ fn characterization_config(
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::Safe,
+        resilience: oxiroute_config::PoolResilience::default(),
     }];
     config.http_services = vec![HttpService {
         name: "phase6-web".into(),

@@ -137,6 +137,7 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::Safe,
+        resilience: oxiroute_config::PoolResilience::default(),
     }];
     let mut server = ServerProcess::start(
         &config.clone().validate().expect("valid process config"),
@@ -411,6 +412,7 @@ async fn stats_admin_uses_json_targets_and_rejects_duplicate_authorization_heade
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::Safe,
+        resilience: oxiroute_config::PoolResilience::default(),
     }];
     let mut server = ServerProcess::start(
         &config.clone().validate().expect("valid process config"),
@@ -511,6 +513,7 @@ async fn persistent_old_generation_management_and_stats_connections_mutate_the_s
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::Safe,
+        resilience: oxiroute_config::PoolResilience::default(),
     }];
     let mut server = ServerProcess::start(
         &config.clone().validate().expect("valid process config"),
@@ -1052,6 +1055,7 @@ async fn authenticated_server_batches_are_prevalidated_and_mutate_owned_runtime_
             connect_timeout_ms: None,
             server_timeout_ms: None,
             connection_reuse: UpstreamConnectionReuse::Safe,
+            resilience: oxiroute_config::PoolResilience::default(),
         })
         .collect();
     let mut server = ServerProcess::start(
@@ -1272,6 +1276,7 @@ async fn dns_refresh_batch_reports_every_target_and_explicit_non_atomic_outcomes
         connect_timeout_ms: None,
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::Safe,
+        resilience: oxiroute_config::PoolResilience::default(),
     }];
     let mut server = ServerProcess::start(
         &config.clone().validate().expect("valid process config"),

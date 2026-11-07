@@ -184,7 +184,8 @@ fn compile_pool_blueprints(
                 .passive_health
                 .as_ref()
                 .map(PassiveFailurePolicy::from_config)
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .with_ejection_jitter_percent(pool.resilience.ejection_jitter_percent);
             let health = pool
                 .health_check
                 .as_ref()
@@ -227,6 +228,10 @@ fn compile_pool_blueprints(
                 endpoints,
                 health,
                 passive_health,
+                resilience: crate::routing::PoolResiliencePolicy::from_config(&pool.resilience),
+                unavailable: crate::upstream_peer::UnavailableResponse::from_config(
+                    &pool.resilience,
+                ),
                 upstream_tls,
                 min_http_version: pool.http_versions.min,
                 queue_timeout: pool.queue_timeout_ms.map(Duration::from_millis),

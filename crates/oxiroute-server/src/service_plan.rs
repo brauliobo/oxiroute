@@ -793,6 +793,7 @@ fn compile_pools(
             pool.health.as_ref().map(|health| health.startup),
             pool.queue_timeout,
             passive_policy,
+            pool.resilience,
             &pool.construction,
         ));
         let tls = pool
@@ -811,15 +812,18 @@ fn compile_pools(
                 source: Box::new(source),
             })?
             .map(Arc::new);
-        let compiled = Arc::new(UpstreamPlan::with_http_policy(
-            Arc::clone(&selector),
-            tls,
-            pool.connect_timeout,
-            pool.server_timeout,
-            pool.connection_reuse,
-            pool.min_http_version,
-            h3,
-        ));
+        let compiled = Arc::new(
+            UpstreamPlan::with_http_policy(
+                Arc::clone(&selector),
+                tls,
+                pool.connect_timeout,
+                pool.server_timeout,
+                pool.connection_reuse,
+                pool.min_http_version,
+                h3,
+            )
+            .with_unavailable_response(pool.unavailable.clone()),
+        );
         if let Some(health_check) = &pool.health {
             health_groups.push(health::acquire_health_group(
                 &pool.name,
