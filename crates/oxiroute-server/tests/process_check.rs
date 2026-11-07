@@ -12,6 +12,10 @@ mod process_support;
 use std::{
     net::SocketAddr,
     process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -69,6 +73,7 @@ impl Scratch {
                 "startup": "healthy",
             },
             "registration": {"allowed_cidrs": ["127.0.0.0/8"], "require_peer_address": false},
+            "canary": {"path": "/deep", "interval_ms": 1000, "timeout_ms": 500},
         }))
         .expect("farm pool")
     }
@@ -157,8 +162,9 @@ async fn run_cli(arguments: Vec<String>) -> Verdict {
     .expect("CLI task")
 }
 
-/// A backend that answers every request with 200, until it is aborted.
-async fn stub() -> (SocketAddr, JoinHandle<()>) {
+/// A backend that answers every request with 200, until it is aborted. `/deep`, the path of the
+/// canary, answers 503 while `deep_healthy` is false.
+async fn stub(deep_healthy: Arc<AtomicBool>) -> (SocketAddr, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("stub bind");
     let address = listener.local_addr().expect("stub address");
     let task = tokio::spawn(async move {
@@ -166,10 +172,19 @@ async fn stub() -> (SocketAddr, JoinHandle<()>) {
             let Ok((mut stream, _)) = listener.accept().await else {
                 return;
             };
+            let deep_healthy = Arc::clone(&deep_healthy);
             tokio::spawn(async move {
                 let mut buffer = [0_u8; 2048];
-                let _ = stream.read(&mut buffer).await;
-                let reply = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+                let read = stream.read(&mut buffer).await.unwrap_or(0);
+                let deep = buffer[..read].starts_with(b"GET /deep ");
+                let status = if deep && !deep_healthy.load(Ordering::Relaxed) {
+                    "503 Service Unavailable"
+                } else {
+                    "200 OK"
+                };
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                );
                 let _ = stream.write_all(reply.as_bytes()).await;
             });
         }
@@ -199,6 +214,7 @@ struct Farm {
     scratch: Scratch,
     server: ServerProcess,
     token_file: String,
+    deep_healthy: Arc<AtomicBool>,
     beta: JoinHandle<()>,
 }
 
@@ -209,8 +225,9 @@ impl Farm {
             management: reserve_tcp_address(),
             traffic: reserve_tcp_address(),
         };
-        let (alpha_address, _) = stub().await;
-        let (beta_address, beta) = stub().await;
+        let deep_healthy = Arc::new(AtomicBool::new(true));
+        let (alpha_address, _) = stub(Arc::clone(&deep_healthy)).await;
+        let (beta_address, beta) = stub(Arc::clone(&deep_healthy)).await;
         let mut server =
             ServerProcess::start(&scratch.config(&[alpha_address, beta_address]), Some(TOKEN));
         server.wait_for_tcp(scratch.management).await;
@@ -225,6 +242,7 @@ impl Farm {
             scratch,
             server,
             token_file,
+            deep_healthy,
             beta,
         }
     }
@@ -337,5 +355,47 @@ async fn check_requests_the_canary_url_and_reports_unknown_for_what_it_cannot_ju
             .stdout
             .starts_with("OXIROUTE UNKNOWN - status page unavailable")
     );
+    farm.server.shutdown();
+}
+
+#[tokio::test]
+async fn check_judges_the_pool_canary_that_the_status_page_and_metrics_report() {
+    let farm = Farm::start().await;
+    let scratch = &farm.scratch;
+    let first = eventually_exits(scratch, &[], 0).await;
+    let seen = |line: &str| line.contains(" farm_canary_ms=");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut line = first.stdout;
+    while !seen(&line) {
+        assert!(Instant::now() < deadline, "the canary never ran: {line}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        line = scratch.check(&[]).await.stdout;
+    }
+    let metrics = http_support::http_request(scratch.management, "GET", "/metrics", &[], &[]).await;
+    let text = String::from_utf8_lossy(&metrics.body).into_owned();
+    assert!(
+        text.contains("oxiroute_canary_success{pool=\"farm\"} 1"),
+        "{text}"
+    );
+    assert!(text.contains("oxiroute_canary_last_success_timestamp_seconds{pool=\"farm\"} "));
+
+    farm.deep_healthy.store(false, Ordering::Relaxed);
+    let critical = eventually_exits(scratch, &[], 2).await;
+    assert!(
+        critical
+            .stdout
+            .contains("pool farm canary failed (unexpected_status)"),
+        "{}",
+        critical.stdout
+    );
+    let metrics = http_support::http_request(scratch.management, "GET", "/metrics", &[], &[]).await;
+    let text = String::from_utf8_lossy(&metrics.body).into_owned();
+    assert!(
+        text.contains("oxiroute_canary_success{pool=\"farm\"} 0"),
+        "{text}"
+    );
+
+    farm.deep_healthy.store(true, Ordering::Relaxed);
+    eventually_exits(scratch, &[], 0).await;
     farm.server.shutdown();
 }

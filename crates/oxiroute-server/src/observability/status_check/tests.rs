@@ -171,3 +171,66 @@ fn the_worst_finding_leads_the_line() {
     assert_eq!(code, 2);
     assert!(line.starts_with("OXIROUTE CRITICAL - pool farm 0/4 available, "));
 }
+
+fn canary_pool(canary: &Value) -> Value {
+    let mut farm = pool("farm", 4, 4);
+    farm["canary"] = canary.clone();
+    farm
+}
+
+fn canary(result: &str, failures: u64, attempt_age: u64) -> Value {
+    json!({
+        "result": result, "reason": "unexpected_status", "server": "a", "durationMs": 840,
+        "lastAttemptAgeSeconds": attempt_age, "lastSuccessAgeSeconds": 90,
+        "consecutiveFailures": failures, "intervalMs": 30_000,
+    })
+}
+
+#[test]
+fn a_healthy_canary_adds_performance_data_but_no_finding() {
+    let farm = summary(&[canary_pool(&canary("ok", 0, 10))], &json!({}));
+    let (code, line) = verdict(&farm, &Thresholds::default());
+    assert_eq!(code, 0);
+    assert!(line.contains(" farm_canary_ms=840 "), "{line}");
+}
+
+#[test]
+fn a_failing_canary_warns_once_and_turns_critical_when_it_repeats() {
+    let once = summary(&[canary_pool(&canary("failed", 1, 10))], &json!({}));
+    let (code, line) = verdict(&once, &Thresholds::default());
+    assert_eq!(code, 1);
+    assert!(
+        line.contains("pool farm canary failed (unexpected_status)"),
+        "{line}"
+    );
+    let repeated = summary(&[canary_pool(&canary("failed", 2, 10))], &json!({}));
+    assert_eq!(verdict(&repeated, &Thresholds::default()).0, 2);
+}
+
+#[test]
+fn a_slow_canary_warns_and_one_that_stopped_running_is_reported() {
+    let slow = summary(&[canary_pool(&canary("slow", 0, 10))], &json!({}));
+    let (code, line) = verdict(&slow, &Thresholds::default());
+    assert_eq!(
+        (code, line.contains("canary answered slowly (840 ms)")),
+        (1, true)
+    );
+    let stalled = summary(&[canary_pool(&canary("ok", 0, 100))], &json!({}));
+    let (code, line) = verdict(&stalled, &Thresholds::default());
+    assert_eq!(
+        (code, line.contains("canary has not run for 100 s")),
+        (1, true)
+    );
+}
+
+#[test]
+fn busy_unavailable_and_pending_canaries_say_nothing_extra() {
+    for state in [
+        json!({ "result": "busy", "lastAttemptAgeSeconds": 5, "consecutiveFailures": 0, "intervalMs": 30_000, "durationMs": 0 }),
+        json!({ "result": "unavailable", "lastAttemptAgeSeconds": 5, "consecutiveFailures": 0, "intervalMs": 30_000, "durationMs": 0 }),
+        json!({ "result": null, "consecutiveFailures": 0, "intervalMs": 30_000, "durationMs": 0 }),
+    ] {
+        let farm = summary(&[canary_pool(&state)], &json!({}));
+        assert_eq!(verdict(&farm, &Thresholds::default()).0, 0, "{state}");
+    }
+}

@@ -629,6 +629,7 @@ fn pool() -> PoolHealthSnapshot {
         queued_total: 22,
         queue_timeouts: 23,
         queue_cancellations: 24,
+        canary: None,
         endpoints: vec![
             EndpointHealthSnapshot {
                 active_connections: 19,
@@ -718,6 +719,7 @@ fn secondary_pool() -> PoolHealthSnapshot {
         queued_total: 0,
         queue_timeouts: 0,
         queue_cancellations: 0,
+        canary: None,
         endpoints: vec![EndpointHealthSnapshot {
             active_connections: 0,
             administrative_state: AdministrativeState::Ready,

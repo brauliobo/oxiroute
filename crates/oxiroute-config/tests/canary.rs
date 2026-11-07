@@ -1,7 +1,7 @@
 use oxiroute_config::{ConfigDraft, ConfigError, PoolCanary};
 use serde_json::{Value, json};
 
-fn config(canary: Value, extra: Value) -> Result<oxiroute_config::ValidatedConfig, ConfigError> {
+fn config(canary: &Value, extra: &Value) -> Result<oxiroute_config::ValidatedConfig, ConfigError> {
     let mut pool = json!({
         "name": "farm",
         "servers": [{"name": "a", "endpoint": {"type": "socket", "address": "192.0.2.10:9000"}}],
@@ -19,7 +19,7 @@ fn config(canary: Value, extra: Value) -> Result<oxiroute_config::ValidatedConfi
 
 #[test]
 fn a_canary_needs_only_a_path_and_defaults_the_rest() {
-    let validated = config(json!({"path": "/healthz/deep"}), json!({})).expect("valid");
+    let validated = config(&json!({"path": "/healthz/deep"}), &json!({})).expect("valid");
     let canary = validated.as_draft().upstream_pools[0]
         .canary
         .clone()
@@ -44,7 +44,7 @@ fn a_canary_needs_only_a_path_and_defaults_the_rest() {
 
 #[test]
 fn a_pool_without_a_canary_serializes_without_the_key() {
-    let validated = config(Value::Null, json!({})).expect("valid");
+    let validated = config(&Value::Null, &json!({})).expect("valid");
     let rendered = serde_json::to_value(validated.as_draft()).expect("json");
     assert!(rendered["upstream_pools"][0].get("canary").is_none());
 }
@@ -81,7 +81,7 @@ fn canary_bounds_are_validated_with_field_names() {
             "canary.max_latency_ms",
         ),
     ] {
-        let error = config(canary.clone(), json!({})).expect_err("invalid canary");
+        let error = config(&canary, &json!({})).expect_err("invalid canary");
         let pointer = error.pointer().expect("pointer");
         assert!(pointer.ends_with(field), "{canary}: {pointer}");
     }
@@ -90,10 +90,10 @@ fn canary_bounds_are_validated_with_field_names() {
 #[test]
 fn a_canary_speaks_plain_http_to_socket_servers_like_health_checks_do() {
     let tls = json!({"tls": {"server_name": "backend.example.com"}});
-    let error = config(json!({"path": "/x"}), tls).expect_err("tls is not supported");
+    let error = config(&json!({"path": "/x"}), &tls).expect_err("tls is not supported");
     assert!(error.pointer().expect("pointer").ends_with("canary"));
     let unix =
         json!({"servers": [{"name": "a", "endpoint": {"type": "unix", "path": "/run/a.sock"}}]});
-    let error = config(json!({"path": "/x"}), unix).expect_err("unix is not supported");
+    let error = config(&json!({"path": "/x"}), &unix).expect_err("unix is not supported");
     assert!(error.pointer().expect("pointer").ends_with("canary"));
 }

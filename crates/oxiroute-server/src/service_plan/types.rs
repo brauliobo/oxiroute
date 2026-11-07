@@ -67,6 +67,7 @@ pub(crate) struct PoolBlueprint {
     pub(crate) name: String,
     pub(crate) endpoints: Box<[EndpointBlueprint]>,
     pub(crate) health: Option<HealthCheckBlueprint>,
+    pub(crate) canary: Option<crate::health::CanaryBlueprint>,
     pub(crate) passive_health: PassiveFailurePolicy,
     pub(crate) resilience: crate::routing::PoolResiliencePolicy,
     pub(crate) unavailable: crate::upstream_peer::UnavailableResponse,

@@ -10,6 +10,7 @@ use crate::{
     http::inflight::{InflightTotals, PoolInflight, registry},
     observability::status_check::Thresholds,
     registry::service::{RegistrationStatus, RegistrationView, RegistryService, RegistryStatus},
+    routing::{CanaryResult, CanarySnapshot},
     rtmp::api::dto::ReadinessResponse,
 };
 
@@ -66,6 +67,39 @@ pub(crate) struct PoolSummary {
     pub(crate) oldest_queue_wait_ms: u64,
     pub(crate) inflight: u64,
     pub(crate) oldest_inflight_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) canary: Option<CanarySummary>,
+}
+
+/// The synthetic request of a pool: how the last run went and how long ago it ran.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CanarySummary {
+    /// `None` until the canary has run once.
+    pub(crate) result: Option<CanaryResult>,
+    pub(crate) reason: Option<String>,
+    pub(crate) server: Option<String>,
+    pub(crate) duration_ms: u64,
+    pub(crate) last_attempt_age_seconds: Option<u64>,
+    pub(crate) last_success_age_seconds: Option<u64>,
+    pub(crate) consecutive_failures: u64,
+    pub(crate) interval_ms: u64,
+}
+
+impl CanarySummary {
+    fn project(canary: &CanarySnapshot, now_unix_ms: u64) -> Self {
+        let age = |at: Option<u64>| at.map(|at| now_unix_ms.saturating_sub(at) / 1_000);
+        Self {
+            result: canary.result,
+            reason: canary.reason.map(|reason| reason.as_str().to_owned()),
+            server: canary.server.clone(),
+            duration_ms: canary.duration_ms,
+            last_attempt_age_seconds: age(canary.last_attempt_unix_ms),
+            last_success_age_seconds: age(canary.last_success_unix_ms),
+            consecutive_failures: canary.consecutive_failures,
+            interval_ms: canary.interval_ms,
+        }
+    }
 }
 
 /// What the registry says about its leases; absent when the process has no `registry` block.
@@ -98,7 +132,7 @@ impl RegistrySummary {
 }
 
 impl PoolSummary {
-    fn project(pool: &PoolHealthSnapshot, live: PoolInflight) -> Self {
+    fn project(pool: &PoolHealthSnapshot, live: PoolInflight, now_unix_ms: u64) -> Self {
         let mut summary = Self {
             name: pool.name.clone(),
             state: Severity::Ok,
@@ -114,6 +148,10 @@ impl PoolSummary {
             oldest_queue_wait_ms: pool.oldest_queue_wait_ms,
             inflight: live.requests,
             oldest_inflight_ms: live.oldest_age_ms,
+            canary: pool
+                .canary
+                .as_ref()
+                .map(|canary| CanarySummary::project(canary, now_unix_ms)),
         };
         summary.state = StatusSummary::pool_severity(&summary);
         summary
@@ -185,7 +223,7 @@ impl StatusSummary {
             .iter()
             .map(|pool| {
                 let live = inflight.pools.get(&pool.name).copied().unwrap_or_default();
-                PoolSummary::project(pool, live)
+                PoolSummary::project(pool, live, moment.unix_ms)
             })
             .collect::<Vec<_>>();
         let mut summary = Self {
@@ -252,6 +290,7 @@ mod tests {
             queued_total: 0,
             queue_timeouts: 0,
             queue_cancellations: 0,
+            canary: None,
             endpoints: Vec::new(),
         }
     }
@@ -385,6 +424,44 @@ mod tests {
             body,
             serde_json::json!({
                 "degraded": false, "leases": 3, "lateLeases": 1, "shadowed": 1, "orphaned": 1,
+            })
+        );
+    }
+
+    #[test]
+    fn a_pool_canary_is_projected_with_ages_and_marks_a_repeating_failure_critical() {
+        let mut watched = pool("farm", 4, 4);
+        watched.canary = Some(CanarySnapshot {
+            result: Some(CanaryResult::Failed),
+            reason: Some(crate::HealthFailure::UnexpectedStatus),
+            server: Some("a".into()),
+            duration_ms: 12,
+            last_attempt_unix_ms: Some(95_000),
+            last_success_unix_ms: Some(10_000),
+            consecutive_failures: 2,
+            interval_ms: 30_000,
+            runs: BTreeMap::new(),
+        });
+        let mut runtime = RuntimeMetrics::new().snapshot().expect("snapshot");
+        runtime.upstream_pools = vec![watched];
+        let healthy = generation_status();
+        let page = StatusSummary::project(
+            &runtime,
+            Some(&healthy),
+            &InflightTotals::default(),
+            Moment {
+                ready: true,
+                unix_ms: 100_000,
+            },
+        );
+        let body = serde_json::to_value(page).expect("json");
+        assert_eq!(body["pools"][0]["state"], "critical");
+        assert_eq!(
+            body["pools"][0]["canary"],
+            serde_json::json!({
+                "result": "failed", "reason": "unexpected_status", "server": "a",
+                "durationMs": 12, "lastAttemptAgeSeconds": 5, "lastSuccessAgeSeconds": 90,
+                "consecutiveFailures": 2, "intervalMs": 30_000,
             })
         );
     }

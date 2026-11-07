@@ -1073,6 +1073,7 @@ impl EndpointPool {
             queued_total: self.queue.queued_total.load(Ordering::Relaxed),
             queue_timeouts: self.queue.timeouts.load(Ordering::Relaxed),
             queue_cancellations: self.queue.cancellations.load(Ordering::Relaxed),
+            canary: self.health.canary.get().map(|state| state.snapshot()),
             endpoints,
         }
     }
