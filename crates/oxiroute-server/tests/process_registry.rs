@@ -381,6 +381,23 @@ async fn registered_servers_take_traffic_and_leave_by_lease_or_deregistration() 
         ["alpha", "beta", "gamma"].map(String::from).into()
     );
 
+    let metrics = http_request(farm.management, "GET", "/metrics", &[], &[]).await;
+    let metrics = String::from_utf8_lossy(&metrics.body).into_owned();
+    assert!(
+        metrics.contains("oxiroute_registry_servers{pool=\"render\",state=\"active\"} 3"),
+        "registered servers are counted"
+    );
+    assert!(metrics.contains("oxiroute_registry_operations_total{op=\"put\",result=\"ok\"} 4"));
+    assert!(
+        metrics.contains(
+            "oxiroute_registry_lease_remaining_seconds{pool=\"render\",server=\"gamma\"}"
+        )
+    );
+    assert!(
+        metrics.contains("oxiroute_pool_servers{pool=\"render\"} 3"),
+        "pool series follow membership"
+    );
+
     // alpha keeps heartbeating, beta stops: only beta must leave within its lease.
     eventually("beta to expire while alpha stays", async || {
         assert_eq!(farm.beat("render", "alpha").await, 200);

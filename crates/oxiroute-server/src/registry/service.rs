@@ -106,6 +106,8 @@ pub struct RegistryMetrics {
     pub store_errors: u64,
     pub revision: u64,
     pub servers: BTreeMap<(String, &'static str), u64>,
+    /// Milliseconds left on each lease this process tracks, by pool and server.
+    pub lease_remaining_ms: BTreeMap<(String, String), u64>,
 }
 
 #[derive(Default)]
@@ -798,7 +800,14 @@ impl RegistryService {
         let mut metrics = state.metrics.clone();
         let stored = self.store.load().unwrap_or_default();
         metrics.revision = stored.seq;
+        let now = self.clock.now();
         for record in &stored.records {
+            if let Some(left) = state.leases.remaining(&record.key(), now) {
+                metrics.lease_remaining_ms.insert(
+                    (record.pool.clone(), record.name.clone()),
+                    u64::try_from(left.as_millis()).unwrap_or(u64::MAX),
+                );
+            }
             let label = match Self::status_of(&state, record) {
                 RegistrationStatus::Active => "active",
                 RegistrationStatus::Shadowed => "shadowed",
