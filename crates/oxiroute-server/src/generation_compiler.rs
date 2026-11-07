@@ -221,6 +221,7 @@ fn compile_pool_blueprints(
                 pool.passive_health
                     .as_ref()
                     .and_then(|policy| policy.readmission.as_ref()),
+                pool.queue.as_ref(),
             )
             .map_err(|source| ServicePlanError::Pool {
                 pool: pool.name.clone(),

@@ -34,7 +34,7 @@ use pingora::{
     upstreams::peer::HttpPeer,
 };
 
-use crate::routing::EndpointObservation;
+use crate::routing::{EndpointObservation, QueueTag};
 use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
@@ -129,6 +129,7 @@ pub struct HttpRequestContext {
     connection_retryable: bool,
     replay_retryable: bool,
     retry_server: Option<String>,
+    queue_tag: QueueTag,
     retry_delay_pending: bool,
     prior_attempts: usize,
     rescued: bool,

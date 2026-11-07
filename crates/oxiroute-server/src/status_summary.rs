@@ -157,6 +157,7 @@ mod tests {
             unavailable_selections: 0,
             fail_open_selections: 0,
             queued: 0,
+            queued_by_class: Vec::new(),
             oldest_queue_wait_ms: 0,
             queued_total: 0,
             queue_timeouts: 0,

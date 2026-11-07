@@ -13,7 +13,7 @@ use oxiroute_config::{HttpVersion, PoolResilience, UpstreamConnectionReuse};
 use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
 use tokio::time::Instant;
 
-use crate::routing::EndpointObservation;
+use crate::routing::{EndpointObservation, QueueTag};
 use crate::{EndpointLease, H3UpstreamPlan, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
 
 /// Marks the 503 of a node that refused a request because none of its pool's servers can take it.
@@ -142,14 +142,15 @@ impl UpstreamPlan {
     pub(crate) async fn select_endpoint(
         &self,
         excluded: &[String],
+        tag: QueueTag,
     ) -> pingora::Result<SelectedEndpoint> {
         let lease = if self.http_version == HttpVersion::Http3
             || self.connection_reuse == UpstreamConnectionReuse::Never
         {
-            self.selector.select_wait_excluding(excluded).await
+            self.selector.select_wait_excluding(excluded, tag).await
         } else {
             self.selector
-                .select_connection_target_waiting(excluded)
+                .select_connection_target_waiting(excluded, tag)
                 .await
         };
         lease
@@ -160,11 +161,12 @@ impl UpstreamPlan {
     pub(crate) async fn select_server_endpoint(
         &self,
         name: &str,
+        tag: QueueTag,
     ) -> pingora::Result<SelectedEndpoint> {
         let lease = if self.http_version == HttpVersion::Http3
             || self.connection_reuse == UpstreamConnectionReuse::Never
         {
-            self.selector.select_server_wait(name).await
+            self.selector.select_server_wait(name, tag).await
         } else {
             self.selector.select_server_connection_target(name)
         };

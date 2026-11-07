@@ -30,6 +30,7 @@ pub(crate) struct PoolConstructionBlueprint {
     pub(super) algorithm: UpstreamAlgorithm,
     pub(super) weights: Box<[u16]>,
     pub(super) readmission: Option<Arc<ReadmissionProbe>>,
+    pub(super) queue: Option<Arc<QueueSchedule>>,
 }
 
 impl PoolConstructionBlueprint {
@@ -37,6 +38,7 @@ impl PoolConstructionBlueprint {
         algorithm: &UpstreamAlgorithm,
         endpoint_count: usize,
         readmission: Option<&Readmission>,
+        queue: Option<&PoolQueuePolicy>,
     ) -> Result<Self, PoolError> {
         if endpoint_count == 0 {
             return Err(PoolError::Empty);
@@ -50,6 +52,7 @@ impl PoolConstructionBlueprint {
                 .transpose()
                 .map_err(|source| PoolError::InvalidReadmission(source.to_string()))?
                 .map(Arc::new),
+            queue: queue.map(|queue| Arc::new(QueueSchedule::from_config(queue))),
         })
     }
 }

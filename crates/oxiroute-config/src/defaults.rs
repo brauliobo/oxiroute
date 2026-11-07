@@ -674,6 +674,14 @@ pub(crate) const fn default_readmission_timeout_ms() -> u64 {
     DEFAULT_READMISSION_TIMEOUT_MS
 }
 
+pub(crate) const fn default_queue_max_tenants() -> u16 {
+    64
+}
+
+pub(crate) const fn default_queue_class_weight() -> u16 {
+    1
+}
+
 pub(crate) const fn default_affinity_ttl_s() -> u32 {
     3_600
 }

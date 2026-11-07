@@ -183,6 +183,7 @@ impl Balancer {
                 server_timeout_ms: None,
                 connection_reuse: reuse,
                 resilience: PoolResilience::default(),
+                queue: None,
             }],
             http_services: vec![HttpService {
                 drain_deadline_ms: None,

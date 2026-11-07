@@ -25,7 +25,10 @@ impl EndpointPool {
                 ))
             })
             .collect::<Arc<[_]>>();
-        let queue = Arc::new(PoolQueue::new(queue_timeout.is_some()));
+        let queue = Arc::new(PoolQueue::new(
+            queue_timeout.is_some(),
+            blueprint.queue.clone(),
+        ));
         let health = Arc::new(PoolHealthState::new(
             name.clone(),
             Arc::clone(&endpoints),
@@ -180,7 +183,7 @@ impl EndpointPool {
         for server in &servers {
             server.endpoint.preflight()?;
         }
-        let blueprint = PoolConstructionBlueprint::compile(&algorithm, servers.len(), None)?;
+        let blueprint = PoolConstructionBlueprint::compile(&algorithm, servers.len(), None, None)?;
         Ok(Self::acquire_compiled(
             name,
             servers,
@@ -405,10 +408,11 @@ impl EndpointPool {
     pub(crate) async fn select_connection_target_waiting(
         &self,
         excluded: &[String],
+        tag: QueueTag,
     ) -> Option<EndpointLease> {
         if self.queue_timeout.is_some() {
             return self
-                .select_wait_with(|| self.select_attempt(excluded, true))
+                .select_wait_with(tag, || self.select_attempt(excluded, true))
                 .await;
         }
         let recovery_deadline = self.recovery_deadline();
@@ -501,26 +505,45 @@ impl EndpointPool {
     }
 
     pub async fn select_wait(&self) -> Option<EndpointLease> {
-        self.select_wait_excluding(&[]).await
+        self.select_wait_excluding(&[], QueueTag::default()).await
     }
 
-    pub(crate) async fn select_wait_excluding(&self, excluded: &[String]) -> Option<EndpointLease> {
-        self.select_wait_with(|| self.select_server_excluding(excluded))
+    pub(crate) async fn select_wait_excluding(
+        &self,
+        excluded: &[String],
+        tag: QueueTag,
+    ) -> Option<EndpointLease> {
+        self.select_wait_with(tag, || self.select_server_excluding(excluded))
             .await
     }
 
-    pub(crate) async fn select_server_wait(&self, name: &str) -> Option<EndpointLease> {
-        self.select_wait_with(|| self.select_named_server(name))
+    pub(crate) async fn select_server_wait(
+        &self,
+        name: &str,
+        tag: QueueTag,
+    ) -> Option<EndpointLease> {
+        self.select_wait_with(tag, || self.select_named_server(name))
             .await
+    }
+
+    /// Where a request queues in this pool: the route class, else the class header, plus the tenant.
+    pub(crate) fn queue_tag(&self, route_class: Option<&str>, headers: &HeaderMap) -> QueueTag {
+        self.queue
+            .schedule
+            .as_ref()
+            .map_or_else(QueueTag::default, |schedule| {
+                schedule.tag(route_class, headers)
+            })
     }
 
     async fn select_wait_with(
         &self,
+        tag: QueueTag,
         mut select: impl FnMut() -> SelectionAttempt,
     ) -> Option<EndpointLease> {
         let recovery_deadline = self.recovery_deadline();
         loop {
-            let (lease, unavailable) = self.select_wait_once(&mut select).await;
+            let (lease, unavailable) = self.select_wait_once(tag, &mut select).await;
             if !unavailable || !self.await_recovery(recovery_deadline).await {
                 if unavailable {
                     self.note_unavailable_selection();
@@ -533,6 +556,7 @@ impl EndpointPool {
     /// One queued selection; the flag reports that no server was selectable.
     async fn select_wait_once(
         &self,
+        tag: QueueTag,
         select: &mut impl FnMut() -> SelectionAttempt,
     ) -> (Option<EndpointLease>, bool) {
         let Some(queue_timeout) = self.queue_timeout else {
@@ -541,7 +565,7 @@ impl EndpointPool {
             return (attempt.lease, unavailable);
         };
         let deadline = Instant::now() + queue_timeout;
-        let mut waiting = QueueWaitGuard::new(Arc::clone(&self.queue), &self.name);
+        let mut waiting = QueueWaitGuard::new(Arc::clone(&self.queue), &self.name, tag);
         loop {
             let waiter = Arc::clone(&waiting.waiter);
             let notified = waiter.notify.notified();
@@ -551,7 +575,7 @@ impl EndpointPool {
                 let attempt = select();
                 if let Some(lease) = attempt.lease {
                     lease.note_selector_position(waiting.position());
-                    waiting.complete();
+                    waiting.serve();
                     return (Some(lease), false);
                 }
                 if !attempt.pool_available || !attempt.saturated {
@@ -991,6 +1015,7 @@ impl EndpointPool {
             unavailable_selections: self.unavailable_selections.load(Ordering::Relaxed),
             fail_open_selections: self.fail_open_selections.load(Ordering::Relaxed),
             queued: self.queue.queued.load(Ordering::Relaxed),
+            queued_by_class: self.queue.depth_by_class(),
             oldest_queue_wait_ms: u64::try_from(self.queue.ledger.oldest().as_millis())
                 .unwrap_or(u64::MAX),
             queued_total: self.queue.queued_total.load(Ordering::Relaxed),

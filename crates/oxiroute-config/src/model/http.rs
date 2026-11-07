@@ -335,6 +335,9 @@ pub struct HttpProxyPolicy {
     /// Sends requests of one client or key to the same server of the pool while it is selectable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub affinity: Option<HttpAffinity>,
+    /// Queue class of this route's requests in pools with a `queue` policy; wins over `class_header`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_class: Option<String>,
 }
 
 /// Sticky sessions. A preferred server that is not selectable is replaced by the normal algorithm.

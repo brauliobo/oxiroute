@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::routing::QueueTag;
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(super) async fn dispatch_h3_upstream_request<S>(
@@ -55,7 +56,7 @@ where
                     let _ = changed;
                     return None;
                 }
-                result = timeout_at(deadline, proxy.pool.select_server_endpoint(&server)) => {
+                result = timeout_at(deadline, proxy.pool.select_server_endpoint(&server, QueueTag::default())) => {
                     match result {
                         Ok(Ok(selected)) => selected,
                         Ok(Err(_)) => break,
@@ -72,7 +73,7 @@ where
                     let _ = changed;
                     return None;
                 }
-                result = timeout_at(deadline, proxy.pool.select_endpoint(&attempted)) => {
+                result = timeout_at(deadline, proxy.pool.select_endpoint(&attempted, QueueTag::default())) => {
                     match result {
                         Ok(Ok(selected)) => selected,
                         Ok(Err(_)) => break,

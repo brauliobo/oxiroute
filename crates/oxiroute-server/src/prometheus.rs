@@ -423,6 +423,14 @@ fn render_prometheus_snapshot(
             &[("pool", pool.name.as_str())],
             pool.queued,
         )?;
+        for (class, depth) in &pool.queued_by_class {
+            labels(
+                &mut output,
+                "oxiroute_pool_queue_class_depth",
+                &[("pool", pool.name.as_str()), ("class", class.as_str())],
+                *depth,
+            )?;
+        }
         labels(
             &mut output,
             "oxiroute_pool_queue_oldest_wait_seconds",

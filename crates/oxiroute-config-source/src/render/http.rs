@@ -412,6 +412,7 @@ impl Renderer {
             select,
             affinity,
             queue_headers,
+            queue_class,
         } = policy;
         self.begin_table_field("upstream_host");
         self.http_upstream_host(upstream_host);
@@ -470,6 +471,9 @@ impl Renderer {
             self.begin_table_field("select");
             self.http_pool_select(select);
             self.end_table();
+        }
+        if let Some(class) = queue_class {
+            self.string_field("queue_class", class);
         }
         if let Some(affinity) = affinity {
             self.begin_table_field("affinity");

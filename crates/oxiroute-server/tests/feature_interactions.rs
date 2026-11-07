@@ -286,6 +286,7 @@ fn pool(name: &str, algorithm: UpstreamAlgorithm, servers: Vec<UpstreamServer>) 
         server_timeout_ms: None,
         connection_reuse: UpstreamConnectionReuse::default(),
         resilience: PoolResilience::default(),
+        queue: None,
     }
 }
 

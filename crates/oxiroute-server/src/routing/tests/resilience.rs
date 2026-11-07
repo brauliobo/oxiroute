@@ -409,7 +409,11 @@ async fn connection_targets_wait_for_a_recovering_server() {
     let pool = waiting_pool(Duration::from_secs(5), None);
     let waiter = tokio::spawn({
         let pool = Arc::clone(&pool);
-        async move { pool.select_connection_target_waiting(&[]).await.is_some() }
+        async move {
+            pool.select_connection_target_waiting(&[], QueueTag::default())
+                .await
+                .is_some()
+        }
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -423,7 +427,11 @@ async fn the_wait_for_a_recovering_server_is_bounded_and_counted_once() {
     let pool = waiting_pool(Duration::from_millis(300), None);
 
     assert!(pool.select_wait().await.is_none());
-    assert!(pool.select_connection_target_waiting(&[]).await.is_none());
+    assert!(
+        pool.select_connection_target_waiting(&[], QueueTag::default())
+            .await
+            .is_none()
+    );
 
     assert_eq!(pool.health_snapshot().unavailable_selections, 2);
 }
@@ -442,7 +450,11 @@ async fn pools_without_a_recovery_wait_fail_at_once() {
     );
     let started = Instant::now();
 
-    assert!(pool.select_connection_target_waiting(&[]).await.is_none());
+    assert!(
+        pool.select_connection_target_waiting(&[], QueueTag::default())
+            .await
+            .is_none()
+    );
     assert!(pool.select_wait().await.is_none());
 
     assert!(started.elapsed() < Duration::from_millis(100));

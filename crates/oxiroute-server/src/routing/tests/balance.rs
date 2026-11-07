@@ -116,7 +116,7 @@ fn probed_pool(address: SocketAddr, successes: u16) -> RoundRobinPool {
         }),
     };
     let blueprint =
-        PoolConstructionBlueprint::compile(&UpstreamAlgorithm::First, 1, Some(&readmission))
+        PoolConstructionBlueprint::compile(&UpstreamAlgorithm::First, 1, Some(&readmission), None)
             .expect("blueprint");
     let mut policy =
         PassiveFailurePolicy::new(1, Duration::from_millis(50), Duration::from_millis(200));
@@ -534,4 +534,78 @@ fn routes_are_judged_separately() {
     }
 
     assert!(ejected(&pool).is_empty(), "long jobs are not slow servers");
+}
+
+fn classed_pool(discipline: oxiroute_config::QueueDiscipline) -> Arc<RoundRobinPool> {
+    let class = |name: &str, weight| oxiroute_config::PoolQueueClass {
+        name: name.into(),
+        weight,
+    };
+    let policy = PoolQueuePolicy {
+        classes: vec![class("interactive", 8), class("batch", 1)],
+        discipline,
+        class_header: Some("x-priority".into()),
+        default_class: Some("batch".into()),
+        tenant_header: None,
+        max_tenants: 8,
+        aging_ms: None,
+    };
+    let blueprint =
+        PoolConstructionBlueprint::compile(&UpstreamAlgorithm::First, 1, None, Some(&policy))
+            .expect("blueprint");
+    Arc::new(RoundRobinPool::acquire_compiled(
+        "classed".into(),
+        [runtime_server("only", 3000, Some(1))],
+        None,
+        Some(Duration::from_secs(5)),
+        PassiveFailurePolicy::default(),
+        PoolResiliencePolicy::default(),
+        &blueprint,
+    ))
+}
+
+fn queue_as(
+    pool: &Arc<RoundRobinPool>,
+    class: &str,
+) -> tokio::task::JoinHandle<Option<EndpointLease>> {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-priority", class.parse().expect("class"));
+    let tag = pool.queue_tag(None, &headers);
+    let pool = Arc::clone(pool);
+    tokio::spawn(async move { pool.select_wait_excluding(&[], tag).await })
+}
+
+#[tokio::test]
+async fn a_higher_class_overtakes_earlier_lower_class_waiters_when_capacity_frees() {
+    for discipline in [
+        oxiroute_config::QueueDiscipline::Strict,
+        oxiroute_config::QueueDiscipline::Weighted,
+    ] {
+        let pool = classed_pool(discipline);
+        let held = pool.select().expect("capacity");
+        let batch = queue_as(&pool, "batch");
+        super::queue::wait_for_queued(&pool, 1).await;
+        let interactive = queue_as(&pool, "interactive");
+        super::queue::wait_for_queued(&pool, 2).await;
+        assert_eq!(
+            pool.health_snapshot().queued_by_class,
+            [("interactive".to_owned(), 1), ("batch".to_owned(), 1)]
+        );
+
+        drop(held);
+
+        let served = tokio::time::timeout(Duration::from_secs(1), interactive)
+            .await
+            .expect("interactive served first")
+            .expect("task")
+            .expect("lease");
+        assert!(
+            !batch.is_finished(),
+            "the earlier batch waiter keeps waiting"
+        );
+        drop(served);
+        let batch = batch.await.expect("task").expect("batch lease");
+        drop(batch);
+        assert_eq!(pool.health_snapshot().queued, 0);
+    }
 }

@@ -31,6 +31,7 @@ impl ProxyHttp for HttpReverseProxy {
             connection_retryable: false,
             replay_retryable: false,
             retry_server: None,
+            queue_tag: QueueTag::default(),
             retry_delay_pending: false,
             prior_attempts: 0,
             rescued: false,
@@ -226,14 +227,17 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.enter_phase(Phase::Queued);
             let selection_started = Instant::now();
             let selected = if let Some(server) = ctx.retry_server.take() {
-                pool.select_server_endpoint(&server).await?
+                pool.select_server_endpoint(&server, ctx.queue_tag).await?
             } else if let Some(server) = affinity_server(session, ctx) {
-                pool.select_server_endpoint(&server).await?
+                pool.select_server_endpoint(&server, ctx.queue_tag).await?
             } else {
                 let wait = ctx.remaining(true)?;
-                tokio::time::timeout(wait, pool.select_endpoint(&ctx.attempted_upstreams))
-                    .await
-                    .map_err(|_| Error::new_up(ErrorType::ReadTimedout))??
+                tokio::time::timeout(
+                    wait,
+                    pool.select_endpoint(&ctx.attempted_upstreams, ctx.queue_tag),
+                )
+                .await
+                .map_err(|_| Error::new_up(ErrorType::ReadTimedout))??
             };
             ctx.trace.queue_wait += selection_started.elapsed();
             ctx.trace.attempt_started = Some(Instant::now());

@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     error::Error,
     fmt,
     hash::{BuildHasher as _, RandomState},
@@ -15,13 +14,14 @@ use std::{
 
 use crate::health::ReadmissionProbe;
 use http::{
-    Method, Uri,
+    HeaderMap, Method, Uri,
     uri::{Authority, PathAndQuery},
 };
 use oxiroute_config::{
     CircuitBreaker, HealthStartup, HttpHostSelector, HttpPathSelector, OutlierDetection,
     PassiveHealthPolicy as ConfigPassiveHealthPolicy, PassiveObserve, PassiveOnError,
-    PoolResilience, Readmission, UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
+    PoolQueuePolicy, PoolResilience, Readmission, UpstreamAlgorithm, UpstreamEndpoint,
+    canonicalize_http_path,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::{
@@ -39,6 +39,7 @@ mod pool;
 mod queue;
 mod queue_wait;
 mod route;
+mod schedule;
 mod server;
 
 pub use breaker::CircuitBreakerPolicy;
@@ -54,6 +55,8 @@ pub use policy::*;
 use queue::*;
 use queue_wait::{WaitLedger, WaitTicket};
 pub use route::*;
+pub use schedule::QueueTag;
+use schedule::{QueueSchedule, WaitQueue};
 pub(crate) use server::*;
 
 #[cfg(test)]
