@@ -183,6 +183,7 @@ function canonicalConfig(): CanonicalConfig {
                   body_safety: 'empty',
                 },
                 timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
+                rescue: null,
                 cache: structuredClone(expanded.http_services[0]!.routes[0]!.action.type === 'proxy'
                   ? expanded.http_services[0]!.routes[0]!.action.policy.cache
                   : null),
@@ -571,6 +572,7 @@ describe('ConfigurationWorkspace', () => {
           final_redispatch: true,
         },
         timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
+        rescue: null,
       },
     })
   })
@@ -1094,6 +1096,7 @@ describe('ConfigurationWorkspace', () => {
             body_safety: 'empty',
           },
           timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
+          rescue: null,
           cache: expect.objectContaining({ store: 'responses' }),
         },
       },

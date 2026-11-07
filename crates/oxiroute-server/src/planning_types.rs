@@ -106,6 +106,7 @@ pub(crate) struct HttpRouteBlueprint {
 pub(crate) enum HttpActionBlueprint {
     Proxy {
         pool: usize,
+        rescue_pool: Option<usize>,
         policy: ProxyPolicyPlan,
         cache: Option<CachePolicyBlueprint>,
     },

@@ -405,6 +405,7 @@ impl Renderer {
             response_cookie_attributes,
             retry,
             timeouts,
+            rescue,
             cache,
         } = policy;
         self.begin_table_field("upstream_host");
@@ -444,6 +445,14 @@ impl Renderer {
         self.begin_table_field("timeouts");
         self.http_proxy_timeouts(timeouts);
         self.end_table();
+        match rescue {
+            Some(rescue) => {
+                self.begin_table_field("rescue");
+                self.http_rescue_policy(rescue);
+                self.end_table();
+            }
+            None => self.nil_field("rescue"),
+        }
         match cache {
             Some(cache) => {
                 self.begin_table_field("cache");
@@ -453,6 +462,18 @@ impl Renderer {
             None => self.nil_field("cache"),
         }
         Ok(())
+    }
+
+    fn http_rescue_policy(&mut self, rescue: &HttpRescuePolicy) {
+        self.integer_list_field("statuses", &rescue.statuses);
+        self.string_field(
+            "target",
+            match rescue.target {
+                HttpRescueTarget::NextServer => "next_server",
+                HttpRescueTarget::Pool => "pool",
+            },
+        );
+        self.optional_string_field("pool", rescue.pool.as_deref());
     }
 
     fn http_proxy_timeouts(&mut self, timeouts: &HttpProxyTimeouts) {
