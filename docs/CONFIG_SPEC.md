@@ -1010,6 +1010,29 @@ schema.
 - Proxy, redirect, static response, or reject action.
 - Explicit URI transformation rather than implicit trailing-slash behavior.
 
+#### Request ids and access log fields
+
+Every HTTP request is tagged with `x-request-id`; there is no configuration to switch it on. A
+well formed incoming value (at most 64 bytes of letters, digits, `-`, `_`, `.`, `:`) is kept; a
+missing or malformed one is replaced, never rejected, by a generated `rq-<boot8>-<seq12>` that
+cannot collide across restarts or parallel workers. The id is sent to the backend on every attempt
+(including retries and rescues) and returned on every response, including responses the router
+writes itself. A request id the backend returns is kept as `x-upstream-request-id`.
+
+The access log (`access_log = { type = "file", path }`) adds, next to the existing keys,
+`requestId` (also `correlationId`), `idemKey`, `pool`, `server` (the last one tried), `servers`
+(all tried, comma separated), `attempts`, `rescued`, `queueWaitMs`, `connectMs`, `headerMs`,
+`wasStuck` and one bounded `reason` that is empty on success: `connect_failed`, `connect_timeout`,
+`upstream_header_timeout`, `upstream_idle_timeout`, `upstream_write_timeout`, `total_deadline`,
+`pool_unavailable`, `queue_timeout`, `retry_budget_spent`, `client_closed`, `upstream_reset`,
+`protocol_error`. The `Idempotency-Key` header of the route (`retry.idempotency_header`, default
+`Idempotency-Key`) is never logged: `idemKey` holds the first 8 hex digits of its hash, so a
+client re-issue can be matched with the original. A request that is quiet for 60 seconds writes one
+extra line `{"event":"stuck","requestId","phase","ageMs","pool","server"}` while it is still alive.
+
+Planned and not yet configurable: switching the request id off or renaming its header, and the
+opt-in `x-oxiroute-queue-position`, `x-oxiroute-queue-wait-ms` and `Server-Timing` response headers.
+
 ### Upstream pool
 
 - Protocol and endpoint list.

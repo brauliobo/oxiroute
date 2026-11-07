@@ -87,6 +87,11 @@ pub enum Command {
         #[command(subcommand)]
         command: EventsCommand,
     },
+    /// Inspect the requests currently inside the router.
+    Requests {
+        #[command(subcommand)]
+        command: RequestsCommand,
+    },
     Server {
         #[command(subcommand)]
         command: ServerCommand,
@@ -242,6 +247,67 @@ pub enum EventsCommand {
         #[arg(long, default_value_t = 1_000)]
         interval_ms: u64,
     },
+}
+
+#[derive(Subcommand)]
+pub enum RequestsCommand {
+    /// List live requests, oldest first.
+    List {
+        #[arg(long)]
+        pool: Option<String>,
+        #[arg(long)]
+        route: Option<String>,
+        /// Only requests older than this, for example 500ms, 30s, 2m or 1h.
+        #[arg(long, value_parser = parse_age_ms)]
+        older_than: Option<u64>,
+        /// One of `routed`, `queued`, `connecting`, `awaiting_headers`, `streaming`, `retry_wait`.
+        #[arg(long)]
+        phase: Option<String>,
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u16).range(1..=1000))]
+        limit: u16,
+    },
+    /// Show one live request by its request id.
+    Show {
+        #[arg(value_name = "REQUEST_ID")]
+        id: String,
+    },
+}
+
+fn parse_age_ms(value: &str) -> Result<u64, String> {
+    let (digits, unit_ms) = [("ms", 1), ("s", 1_000), ("m", 60_000), ("h", 3_600_000)]
+        .into_iter()
+        .find_map(|(suffix, unit)| value.strip_suffix(suffix).map(|digits| (digits, unit)))
+        .ok_or("expected a number with a unit: ms, s, m or h")?;
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|count| count.checked_mul(unit_ms))
+        .ok_or_else(|| "age is not a valid number".to_owned())
+}
+
+fn requests_path(command: &RequestsCommand) -> String {
+    match command {
+        RequestsCommand::Show { id } => format!("/api/v1/requests?requestId={id}"),
+        RequestsCommand::List {
+            pool,
+            route,
+            older_than,
+            phase,
+            limit,
+        } => {
+            let filters = [
+                pool.as_ref().map(|pool| format!("pool={pool}")),
+                route.as_ref().map(|route| format!("route={route}")),
+                phase.as_ref().map(|phase| format!("phase={phase}")),
+                older_than.map(|age| format!("min_age_ms={age}")),
+                Some(format!("limit={limit}")),
+            ];
+            format!(
+                "/api/v1/requests?{}",
+                filters.into_iter().flatten().collect::<Vec<_>>().join("&")
+            )
+        }
+    }
 }
 
 #[derive(Subcommand)]

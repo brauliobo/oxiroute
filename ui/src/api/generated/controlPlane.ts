@@ -214,6 +214,25 @@ export interface HttpOperationDto {
 
 export type HttpOperationResultDto = "success" | "client_error" | "server_error" | "upstream_error" | "timeout" | "cancelled" | "internal_error"
 
+export interface InflightView {
+  ageMs: string
+  attempts: number
+  clientIp: string | null
+  host: string | null
+  listener: string
+  method: string
+  overdue: boolean
+  path: string
+  phase: Phase
+  pool: string | null
+  queuePosition?: number | null
+  requestId: string
+  route: string | null
+  server: string | null
+  startedAtUnixMs: number
+  waitedMs?: string | null
+}
+
 export interface LatencyBucketDto {
   count: DecimalCounter
   upperBoundMs: number | null
@@ -250,6 +269,8 @@ export interface ListenerInventoryResponse {
 export type ListenerRuntimeStateDto = "configured" | "listening" | "stopped" | "failed"
 
 export type NoneDto = "none"
+
+export type Phase = "routed" | "queued" | "connecting" | "awaiting_headers" | "streaming" | "retry_wait"
 
 export interface PoolDto {
   algorithm: string
@@ -289,6 +310,12 @@ export interface RejectionDiagnostic {
   message: string
   path?: string | null
   stage: string
+}
+
+export interface RequestListResponse {
+  requests: Array<InflightView>
+  total: DecimalCounter
+  truncated: boolean
 }
 
 export type RuntimeModeDto = "direct" | "supervised"
@@ -377,6 +404,7 @@ export interface ControlPlaneResponses {
   getGenerations: GenerationResponse
   getListeners: ListenerInventoryResponse
   getPools: PoolInventoryResponse
+  getRequests: RequestListResponse
   getServers: ServerInventoryResponse
   getStatus: StatusResponse
 }

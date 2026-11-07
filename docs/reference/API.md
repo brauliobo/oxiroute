@@ -5,7 +5,7 @@ the corrected event-only contract under `/api/v2/events`. Exact errors, response
 [API_UI_SPEC.md](../API_UI_SPEC.md).
 
 The checked [OpenAPI 3.1 control-plane artifact](../../contracts/control-plane.openapi.json) currently
-covers the five protected read-only status, listener, pool, server, and generation operations. Its
+covers the six protected read-only status, listener, pool, server, generation, and in-flight request operations. Its
 freshness gate is `scripts/verify-control-plane-contract.sh`; routes outside that registry remain
 documented by this page and the normative API/UI specification until their DTO and endpoint metadata
 are migrated.
@@ -31,10 +31,11 @@ are migrated.
 | RTMP controls | `POST .../recorders/{recorderId}/start|stop` | Management bearer token; loopback management listener and exact-ID manual controls |
 | RTMP VOD | `GET /api/v1/rtmp/vod/{service}/{application}/{source}/{path}` | Management bearer token; one contiguous byte range and bounded source/session policy |
 | RTMP HLS/DASH media | `GET /api/v1/rtmp/media/{service}/{application}/{stream}/{object}` | Management bearer token; bounded HLS playlists/fragments or DASH `manifest.mpd`, `init.mp4`, and `.m4s` objects; one contiguous byte range |
-| Statistics | `GET /ready`, `GET /metrics`, `GET /stats`, `POST /stats/admin` | Exact `GET /ready` and `GET /metrics` are public; restricted statistics reads/mutations use loopback plus the statistics token/revision |
+| In-flight requests | `GET /api/v1/requests?pool=&route=&phase=&min_age_ms=&limit=&requestId=` | Management bearer token; live requests oldest first (default limit 100, at most 1000) with `total` and `truncated`; in the OpenAPI artifact as `getRequests` |
+| Statistics | `GET /ready`, `GET /metrics`, `GET /status.json`, `GET /stats`, `POST /stats/admin` | Exact `GET /ready`, `GET /metrics` and `GET /status.json` are public; restricted statistics reads/mutations use loopback plus the statistics token/revision |
 
 Every recognized `/api/v1` or `/api/v2` route requires exactly one management Bearer token. The only public
-recognized API probes are exact `GET /ready` and `GET /metrics`. Separately configured
+recognized API probes are exact `GET /ready`, `GET /metrics` and `GET /status.json`. Separately configured
 `stats.pages[]` listeners are public page-only contracts with their own loopback same-origin form
 policy; they are not remote management routes.
 

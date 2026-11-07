@@ -1,5 +1,5 @@
 use std::{
-    sync::Arc,
+    sync::{Arc, atomic::Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -39,7 +39,7 @@ use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
-        HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan, ProxyPolicyPlan,
+        AccessLog, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan, ProxyPolicyPlan,
         RedirectLocationPlan, StaticErrorTarget, StaticFile, StaticRequestDecision,
         StaticServeError, StaticTarget,
     },
@@ -59,6 +59,10 @@ use crate::{
     },
 };
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+
+use crate::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};
+use crate::request_id::{REQUEST_ID_HEADER, RequestIdBuilder};
+use crate::upstream_stats::{AttemptOutcome, ServerStats, upstream_stats};
 
 pub struct HttpReverseProxy {
     challenge_store: Option<ChallengeStore>,
@@ -138,6 +142,35 @@ pub struct HttpRequestContext {
     cache_capture: Option<CacheCapture>,
     response_buffer: Option<ResponseBuffer>,
     cache_response_handled: bool,
+    trace: AttemptTrace,
+    inflight: Option<InflightGuard>,
+}
+
+/// What the access log and per-server counters need to know about the attempts of one request.
+#[derive(Default)]
+struct AttemptTrace {
+    servers: Vec<String>,
+    failure_reason: Option<&'static str>,
+    budget_spent: std::sync::atomic::AtomicBool,
+    queue_wait: Duration,
+    queue_position: u64,
+    attempt_started: Option<Instant>,
+    connect: Option<Duration>,
+    connected_at: Option<Instant>,
+    header: Option<Duration>,
+    stats: Option<Arc<ServerStats>>,
+    responded: bool,
+    pending_outcome: Option<AttemptOutcome>,
+}
+
+impl AttemptTrace {
+    /// Counts the attempt on its server and forgets the server until the next selection.
+    fn finish(&mut self, outcome: AttemptOutcome, status: Option<u16>) {
+        if let Some(stats) = self.stats.take() {
+            stats.record_attempt(outcome);
+            stats.record_response(status);
+        }
+    }
 }
 
 struct CacheCapture {
@@ -157,7 +190,42 @@ struct ResponseBuffer {
 }
 
 impl HttpRequestContext {
+    fn enter_phase(&self, phase: Phase) {
+        if let Some(inflight) = &self.inflight {
+            inflight.set_phase(phase);
+        }
+    }
+
+    fn register_inflight(&mut self, session: &Session, access_log: Option<&Arc<AccessLog>>) {
+        let request = session.req_header();
+        let header = |name| {
+            request
+                .headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.chars().take(inflight::MAX_PATH_BYTES).collect())
+        };
+        self.inflight = Some(
+            inflight::registry().register(InflightArrival {
+                request_id: header(&REQUEST_ID_HEADER).unwrap_or_default(),
+                listener: self.listener.name().to_owned(),
+                method: request.method.as_str().to_owned(),
+                host: header(&HOST),
+                path: bounded_path(request.uri.path()),
+                client_ip: session
+                    .client_addr()
+                    .and_then(|address| address.as_inet())
+                    .map(|address| address.ip().to_string()),
+                deadline: self.deadline.saturating_duration_since(self.started_at),
+                access_log: access_log.cloned(),
+            }),
+        );
+    }
+
     fn observe(&mut self, session: &Session) {
+        if let Some(inflight) = &self.inflight {
+            inflight.progress();
+        }
         observe_counter(
             &self.listener,
             session.body_bytes_read(),
@@ -194,19 +262,78 @@ impl HttpRequestContext {
         self.listener.record_rescue(&route, status);
     }
 
+    /// A failed attempt is counted now when the request moves on, otherwise when the request ends.
+    fn settle_attempt(&mut self, error: &Error, retried: bool) {
+        let outcome = attempt_outcome(error);
+        if retried {
+            self.trace.finish(outcome, None);
+        } else {
+            self.trace.pending_outcome = Some(outcome);
+        }
+    }
+
+    /// Settles the last attempt and adds what the finished request sent and received to its server.
+    fn account_final_attempt(&mut self, session: &Session) {
+        if self.trace.responded {
+            if let (Some(stats), Some(connected)) = (&self.trace.stats, self.trace.connected_at) {
+                let bytes = |count: usize| u64::try_from(count).unwrap_or(u64::MAX);
+                stats.record_request_duration(connected.elapsed());
+                stats.record_bytes(
+                    bytes(session.body_bytes_read()),
+                    bytes(session.body_bytes_sent()),
+                );
+            }
+        } else {
+            let fallback = match self.trace.failure_reason {
+                Some("client_closed") => AttemptOutcome::ClientClosed,
+                _ => AttemptOutcome::ProtocolError,
+            };
+            let outcome = self.trace.pending_outcome.take().unwrap_or(fallback);
+            self.trace.finish(outcome, None);
+        }
+    }
+
+    /// The attempt produced the response the client gets.
+    fn note_response(&mut self, status: u16) {
+        let trace = &mut self.trace;
+        trace.responded = true;
+        trace.header = trace.connected_at.map(|connected| connected.elapsed());
+        if let Some(stats) = &trace.stats {
+            stats.record_attempt(AttemptOutcome::Ok);
+            stats.record_response(Some(status));
+            if let Some(header) = trace.header {
+                stats.record_header_duration(header);
+            }
+        }
+    }
+
+    fn note_queue_wait(&mut self) {
+        if let Some(selected) = &self.selected {
+            selected.end_queue_wait();
+            self.trace.queue_wait += selected.queue_wait();
+            self.trace.queue_position = self.trace.queue_position.max(selected.queue_position());
+        }
+    }
+
     fn spend_retry_budget(&self) -> bool {
-        proxy_policy(self)
+        let spent = proxy_policy(self)
             .retry_budget
             .as_ref()
-            .is_none_or(|budget| budget.try_spend(Instant::now()))
+            .is_none_or(|budget| budget.try_spend(Instant::now()));
+        if !spent {
+            self.trace.budget_spent.store(true, Ordering::Relaxed);
+        }
+        spent
     }
 
     fn release_lease(&mut self) {
+        self.note_queue_wait();
         self.selected.take();
         self.selected_observation.take();
     }
 
     fn detach_lease(&mut self) {
+        self.note_queue_wait();
         self.selected.take();
     }
 
@@ -248,6 +375,9 @@ impl HttpRequestContext {
         self.deadline = self.client_deadline.map_or(self.total_deadline, |client| {
             client.min(self.total_deadline)
         });
+        if let Some(inflight) = &self.inflight {
+            inflight.set_deadline(self.deadline.saturating_duration_since(self.started_at));
+        }
     }
 
     fn client_deadline_expired(&self) -> bool {
@@ -297,6 +427,7 @@ impl Drop for HttpRequestContext {
     }
 }
 
+mod access_record;
 mod action;
 mod cache;
 mod compression;

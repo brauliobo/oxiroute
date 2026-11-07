@@ -410,3 +410,40 @@ fn rejects_empty_batch_targets() {
     assert!(Cli::try_parse_from(["oxiroute", "listener", "ready", ""]).is_err());
     assert!(Cli::try_parse_from(["oxiroute", "server", "show", "--pool", "", "origin"]).is_err());
 }
+
+#[test]
+fn requests_list_builds_one_filtered_query() {
+    let cli = Cli::try_parse_from([
+        "oxiroute",
+        "requests",
+        "list",
+        "--pool",
+        "farm",
+        "--older-than",
+        "30s",
+        "--phase",
+        "queued",
+    ])
+    .expect("CLI");
+    let Command::Requests { command } = cli.command() else {
+        panic!("requests command")
+    };
+    assert_eq!(
+        requests_path(command),
+        "/api/v1/requests?pool=farm&phase=queued&min_age_ms=30000&limit=100"
+    );
+    let show = Cli::try_parse_from(["oxiroute", "requests", "show", "rq-1"]).expect("CLI");
+    let Command::Requests { command } = show.command() else {
+        panic!("requests command")
+    };
+    assert_eq!(requests_path(command), "/api/v1/requests?requestId=rq-1");
+}
+
+#[test]
+fn request_ages_need_a_unit() {
+    assert_eq!(parse_age_ms("500ms"), Ok(500));
+    assert_eq!(parse_age_ms("2m"), Ok(120_000));
+    assert_eq!(parse_age_ms("1h"), Ok(3_600_000));
+    assert!(parse_age_ms("30").is_err());
+    assert!(parse_age_ms("xs").is_err());
+}
