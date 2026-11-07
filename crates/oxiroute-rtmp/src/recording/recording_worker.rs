@@ -12,7 +12,7 @@ use std::{
 use crate::{
     FlvMuxer, MediaEvent, MediaEventKind, RecorderLease, RecordingCommit, RecordingDateTime,
     RecordingFile, RecordingPathPolicy, RecordingStore, RecordingStoreError, RecordingTimeBasis,
-    recording_store::{
+    recording::recording_store::{
         FinalizerTicket, MAX_PENDING_FINALIZATIONS_PER_RECORDER, RecordingCommitCancellation,
     },
 };

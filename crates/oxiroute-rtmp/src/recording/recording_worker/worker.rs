@@ -274,7 +274,7 @@ impl RecorderWorker {
     #[cfg(test)]
     pub(crate) fn install_publication_gate(
         &self,
-    ) -> Arc<crate::recording_store::RecordingPublicationGate> {
+    ) -> Arc<crate::recording::recording_store::RecordingPublicationGate> {
         self.shared
             .commit_cancellation
             .lock()

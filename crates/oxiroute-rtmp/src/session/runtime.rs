@@ -15,8 +15,8 @@ use crate::{
     RtmpRegistry, SessionId, StreamKey, VodApplication, VodError,
     auto_push::AutoPushCoordinator,
     exec::ExecProfile,
-    exec_worker::ExecProfileSet,
-    recording_runtime::{
+    exec::worker::ExecProfileSet,
+    recording::runtime::{
         RecorderController, RecorderReaperHandle, RecorderReaperOwner, RecorderShutdownControl,
         RtmpRecorderShutdown,
     },
@@ -32,11 +32,8 @@ use super::{
     vod_playback::{VodPlaybackSession, VodPlaybackStart},
 };
 
-#[path = "session_runtime/application.rs"]
 mod application;
-#[path = "session_runtime/policy.rs"]
 mod policy;
-#[path = "session_runtime/service.rs"]
 mod service;
 
 pub use application::*;
@@ -58,5 +55,4 @@ std::thread_local! {
 }
 
 #[cfg(test)]
-#[path = "session_runtime/tests.rs"]
 mod tests;
