@@ -143,7 +143,7 @@ fn compile_proxy_action(
                 .collect();
             PoolSelectPlan::compile(select, rule_pools)
         }),
-        policy: policy.clone_with_cache(cache),
+        policy: Box::new(policy.clone_with_cache(cache)),
     }))
 }
 

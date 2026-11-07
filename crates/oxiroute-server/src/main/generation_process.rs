@@ -452,6 +452,41 @@ pub(super) fn shutdown_generation_processes(
     clean
 }
 
+/// Finishes the retired generations that left and asks the ones past their deadline to leave.
+/// Returns whether every finished generation shut down cleanly.
+fn reap_retired(manager: &GenerationManager, retired: &mut Vec<GenerationProcess>) -> bool {
+    let mut successful = true;
+    *retired = std::mem::take(retired)
+        .into_iter()
+        .filter_map(|process| {
+            let drained = process.generation.drained();
+            if drained {
+                process.request_shutdown();
+            }
+            if process.is_finished() {
+                let deadline = std::time::Instant::now() + GENERATION_SHUTDOWN_TIMEOUT;
+                successful &= if drained {
+                    finish_drained_generation_process(manager, process, deadline)
+                } else {
+                    finish_generation_process(process, deadline)
+                };
+                None
+            } else {
+                Some(process)
+            }
+        })
+        .collect();
+    for expired in manager.expire_retired() {
+        if let Some(process) = retired
+            .iter()
+            .find(|process| Arc::ptr_eq(&process.generation, &expired))
+        {
+            process.request_shutdown();
+        }
+    }
+    successful
+}
+
 pub(super) fn supervise_generations(
     manager: &GenerationManager,
     coordinator: &CanonicalConfigCoordinator,
@@ -468,34 +503,7 @@ pub(super) fn supervise_generations(
             successful = false;
             break;
         }
-        retired = retired
-            .into_iter()
-            .filter_map(|process| {
-                let drained = process.generation.drained();
-                if drained {
-                    process.request_shutdown();
-                }
-                if process.is_finished() {
-                    let deadline = std::time::Instant::now() + GENERATION_SHUTDOWN_TIMEOUT;
-                    successful &= if drained {
-                        finish_drained_generation_process(manager, process, deadline)
-                    } else {
-                        finish_generation_process(process, deadline)
-                    };
-                    None
-                } else {
-                    Some(process)
-                }
-            })
-            .collect();
-        for expired in manager.expire_retired() {
-            if let Some(process) = retired
-                .iter()
-                .find(|process| Arc::ptr_eq(&process.generation, &expired))
-            {
-                process.request_shutdown();
-            }
-        }
+        successful &= reap_retired(manager, &mut retired);
         let Some(candidate) = manager.candidate() else {
             thread::sleep(Duration::from_millis(20));
             continue;

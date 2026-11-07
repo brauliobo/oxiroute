@@ -206,8 +206,8 @@ pub(super) fn jittered_delay(delay: Duration, jitter_percent: u8, unit: f64) -> 
 
 pub(super) fn random_unit() -> f64 {
     use std::hash::{BuildHasher as _, Hasher as _, RandomState};
-    let bits = RandomState::new().build_hasher().finish() >> 11;
-    bits as f64 / (1_u64 << 53) as f64
+    let bits = RandomState::new().build_hasher().finish() >> 32;
+    f64::from(u32::try_from(bits).expect("a u64 shifted by 32 fits u32")) / 4_294_967_296.0
 }
 
 /// Caps the retries of a route per second and as a ratio of its recent requests, so that retries

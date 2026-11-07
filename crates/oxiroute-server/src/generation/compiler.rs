@@ -149,6 +149,34 @@ fn compile_forward_blueprints(
         .collect()
 }
 
+fn compile_endpoint_blueprints(
+    pool: &oxiroute_config::UpstreamPool,
+) -> Result<Box<[EndpointBlueprint]>, ServicePlanError> {
+    pool.servers
+        .iter()
+        .map(|server| {
+            let endpoint = crate::RuntimeEndpoint::compile(&server.endpoint).map_err(|source| {
+                ServicePlanError::Pool {
+                    pool: pool.name.clone(),
+                    source,
+                }
+            })?;
+            let startup_dns = (server.dns_resolution == DnsResolutionPolicy::Startup).then(|| {
+                match &server.endpoint {
+                    oxiroute_config::UpstreamEndpoint::Dns { host, port } => (host.clone(), *port),
+                    _ => unreachable!("validated startup DNS endpoint"),
+                }
+            });
+            Ok(EndpointBlueprint {
+                name: server.name.clone(),
+                endpoint,
+                startup_dns,
+                max_connections: server.max_connections,
+            })
+        })
+        .collect()
+}
+
 fn compile_pool_blueprints(
     config: &oxiroute_config::ConfigDraft,
 ) -> Result<Box<[PoolBlueprint]>, ServicePlanError> {
@@ -156,31 +184,7 @@ fn compile_pool_blueprints(
         .upstream_pools
         .iter()
         .map(|pool| {
-            let endpoints =
-                pool.servers
-                    .iter()
-                    .map(|server| {
-                        let endpoint = crate::RuntimeEndpoint::compile(&server.endpoint).map_err(
-                            |source| ServicePlanError::Pool {
-                                pool: pool.name.clone(),
-                                source,
-                            },
-                        )?;
-                        let startup_dns = (server.dns_resolution == DnsResolutionPolicy::Startup)
-                            .then(|| match &server.endpoint {
-                                oxiroute_config::UpstreamEndpoint::Dns { host, port } => {
-                                    (host.clone(), *port)
-                                }
-                                _ => unreachable!("validated startup DNS endpoint"),
-                            });
-                        Ok(EndpointBlueprint {
-                            name: server.name.clone(),
-                            endpoint,
-                            startup_dns,
-                            max_connections: server.max_connections,
-                        })
-                    })
-                    .collect::<Result<Box<[_]>, ServicePlanError>>()?;
+            let endpoints = compile_endpoint_blueprints(pool)?;
             let passive_health = pool
                 .passive_health
                 .as_ref()
@@ -411,7 +415,7 @@ fn compile_http_route_blueprint(
                 pool: pool_index(upstream_pool)?,
                 rescue_pool,
                 select,
-                policy: ProxyPolicyPlan::compile(policy),
+                policy: Box::new(ProxyPolicyPlan::compile(policy)),
                 cache: compile_cache_policy_blueprint(config, service, route_index, route, policy)?,
             }
         }

@@ -94,7 +94,7 @@ pub(super) fn refusal(
     file: &AuthoredRevision,
     code: &'static str,
     message: &'static str,
-    detail: impl ToString,
+    detail: String,
 ) -> ConfigRejection {
     ConfigRejection::new(
         Some(file),
@@ -104,7 +104,7 @@ pub(super) fn refusal(
             stage: ConfigDiagnosticStage::Validation,
             message,
             path: None,
-            detail: Some(detail.to_string()),
+            detail: Some(detail),
             line: None,
         }],
     )

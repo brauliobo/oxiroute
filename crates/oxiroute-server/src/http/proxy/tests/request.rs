@@ -64,7 +64,7 @@ async fn unix_downstream_preserves_existing_x_forwarded_for_without_an_ip_peer()
             )),
             rescue_pool: None,
             select: None,
-            policy,
+            policy: Box::new(policy),
         }),
         policy: crate::http::action::RoutePolicyPlan::compile(
             oxiroute_config::HttpRoutePolicy::default(),

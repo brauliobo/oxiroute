@@ -506,21 +506,7 @@ impl Lowerer<'_> {
                 Some(existing) => match (existing.as_mut(), info.health.as_ref()) {
                     (None, None) => {}
                     (Some(existing), Some(candidate)) if existing.check == candidate.check => {
-                        for (path, origins) in &candidate.provenance {
-                            if let Some((_, existing_origins)) = existing
-                                .provenance
-                                .iter_mut()
-                                .find(|(existing_path, _)| existing_path == path)
-                            {
-                                for origin in origins {
-                                    if !existing_origins.contains(origin) {
-                                        existing_origins.push(origin.clone());
-                                    }
-                                }
-                            } else {
-                                existing.provenance.push((path.clone(), origins.clone()));
-                            }
-                        }
+                        existing.merge_provenance(candidate);
                     }
                     _ => {
                         self.block_director(

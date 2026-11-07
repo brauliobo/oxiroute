@@ -88,7 +88,7 @@ async fn request_preparation_fixture(
             pool: Arc::clone(&plan),
             rescue_pool: None,
             select: None,
-            policy: ProxyPolicyPlan::compile(&policy),
+            policy: Box::new(ProxyPolicyPlan::compile(&policy)),
         }),
         policy: crate::http::action::RoutePolicyPlan::compile(
             oxiroute_config::HttpRoutePolicy::default(),

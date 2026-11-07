@@ -56,6 +56,23 @@ pub(super) struct HealthProbeInfo {
     pub(super) provenance: Vec<(String, Vec<Provenance>)>,
 }
 
+impl HealthProbeInfo {
+    pub(super) fn merge_provenance(&mut self, other: &Self) {
+        for (path, origins) in &other.provenance {
+            let Some((_, existing)) = self.provenance.iter_mut().find(|(known, _)| known == path)
+            else {
+                self.provenance.push((path.clone(), origins.clone()));
+                continue;
+            };
+            for origin in origins {
+                if !existing.contains(origin) {
+                    existing.push(origin.clone());
+                }
+            }
+        }
+    }
+}
+
 pub(super) struct ProbeError {
     pub(super) provenance: Provenance,
     pub(super) message: &'static str,
