@@ -13,6 +13,9 @@ pub struct RuntimeGeneration {
     pub(super) revision: GenerationRevision,
     runtime_lifecycle: AtomicU8,
     runtime_failed: AtomicBool,
+    /// What the previous generation's operators changed, kept to re-apply to registered servers
+    /// that only join this generation's pools at activation.
+    carried_states: Mutex<Vec<ServerAdminState>>,
 }
 
 const RUNTIME_PREPARED: u8 = 0;
@@ -34,6 +37,7 @@ impl RuntimeGeneration {
             revision: prepared.revision,
             runtime_lifecycle: AtomicU8::new(RUNTIME_PREPARED),
             runtime_failed: AtomicBool::new(false),
+            carried_states: Mutex::new(Vec::new()),
         }
     }
 
@@ -73,6 +77,22 @@ impl RuntimeGeneration {
     pub fn restore_administrative_states(&self, states: &[ServerAdminState]) {
         for pool in self.pools() {
             pool.restore_administrative_states(states);
+        }
+        *self
+            .carried_states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = states.to_vec();
+    }
+
+    /// Applies the carried states again, to servers that joined the pools after the first pass.
+    pub(crate) fn restore_carried_states(&self) {
+        let states = self
+            .carried_states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        for pool in self.pools() {
+            pool.restore_administrative_states(&states);
         }
     }
 

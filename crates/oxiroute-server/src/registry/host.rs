@@ -65,6 +65,7 @@ impl RegistryHost {
             (None, None) => return,
         };
         service.attach(bindings(generation, config));
+        generation.restore_carried_states();
     }
 
     fn start_listeners(&self, service: &Arc<RegistryService>, registry: &Registry) {
