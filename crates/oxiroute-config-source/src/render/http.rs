@@ -404,6 +404,7 @@ impl Renderer {
             response_cookie_path_rewrites,
             response_cookie_attributes,
             retry,
+            timeouts,
             cache,
         } = policy;
         self.begin_table_field("upstream_host");
@@ -440,6 +441,9 @@ impl Renderer {
         self.begin_table_field("retry");
         self.http_retry_policy(retry);
         self.end_table();
+        self.begin_table_field("timeouts");
+        self.http_proxy_timeouts(timeouts);
+        self.end_table();
         match cache {
             Some(cache) => {
                 self.begin_table_field("cache");
@@ -449,6 +453,13 @@ impl Renderer {
             None => self.nil_field("cache"),
         }
         Ok(())
+    }
+
+    fn http_proxy_timeouts(&mut self, timeouts: &HttpProxyTimeouts) {
+        self.optional_integer_field("connect_ms", timeouts.connect_ms);
+        self.optional_integer_field("header_ms", timeouts.header_ms);
+        self.optional_integer_field("idle_ms", timeouts.idle_ms);
+        self.optional_integer_field("total_ms", timeouts.total_ms);
     }
 
     fn http_cookie_attribute(&mut self, policy: &HttpCookieAttributePolicy) {

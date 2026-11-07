@@ -191,6 +191,24 @@
         @update:model-value="action.policy.retry.response_statuses = $event"
       )
 
+    fieldset.object-block(data-field="http_services[].routes[].action.policy.timeouts")
+      legend Upstream timeouts
+      small.field-hint
+        | Leave a phase empty to inherit the pool, route policy or service timeout. The total never exceeds the service upstream I/O timeout.
+      .field-grid
+        label.field(data-field="http_services[].routes[].action.policy.timeouts.connect_ms")
+          span Connect timeout per attempt (ms)
+          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.connect_ms ?? ''" @input="setTimeoutMs('connect_ms', $event)")
+        label.field(data-field="http_services[].routes[].action.policy.timeouts.header_ms")
+          span Response start timeout per attempt (ms)
+          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.header_ms ?? ''" @input="setTimeoutMs('header_ms', $event)")
+        label.field(data-field="http_services[].routes[].action.policy.timeouts.idle_ms")
+          span Idle timeout between body chunks (ms)
+          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.idle_ms ?? ''" @input="setTimeoutMs('idle_ms', $event)")
+        label.field(data-field="http_services[].routes[].action.policy.timeouts.total_ms")
+          span Total request deadline (ms)
+          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.total_ms ?? ''" @input="setTimeoutMs('total_ms', $event)")
+
     HttpCachePolicyEditor(
       :model-value="action.policy.cache"
       field-path="http_services[].routes[].action.policy.cache"
@@ -232,6 +250,11 @@ const retryTriggerLabels: Record<HttpRetryTrigger, string> = {
   empty_response: 'Empty response',
   response_timeout: 'Response timeout',
   junk_response: 'Malformed response',
+}
+
+function setTimeoutMs(key: keyof HttpProxyActionConfig['policy']['timeouts'], event: Event): void {
+  const value = (event.target as HTMLInputElement).value
+  props.action.policy.timeouts[key] = value === '' ? null : Number(value)
 }
 
 function setMaxRetries(event: Event): void {

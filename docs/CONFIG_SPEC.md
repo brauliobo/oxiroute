@@ -481,6 +481,23 @@ Current constraints:
   `final_redispatch = true` changes only the last configured retry from `same_server` to
   `next_server`; it requires positive `max_retries` and `target = "same_server"` and otherwise
   fails validation. It defaults to `false`.
+- Proxy `policy.timeouts` optionally refines the upstream timeouts of one route, each phase `null` by
+  default and between `1` and `86400000` milliseconds: `connect_ms` (per attempt, until the upstream
+  connection is established), `header_ms` (per attempt, from the sent request until the first
+  response byte), `idle_ms` (between upstream response body reads) and `total_ms` (the whole request
+  including retries; it only shortens the service deadline). A phase may not exceed `total_ms`.
+  Precedence for each phase, first match wins: the route `timeouts` field, the pool
+  `connect_timeout_ms`/`server_timeout_ms`, the route `policy` `connect_timeout_ms`/`read_timeout_ms`,
+  the service `upstream_io_timeout_ms`; `header_ms` and `idle_ms` both fall back to the pool
+  `server_timeout_ms` or route `read_timeout_ms`. So a pool `server_timeout_ms` still shadows the
+  route `read_timeout_ms`, but never `timeouts`. Every attempt is clamped to the time left of the
+  total deadline, so a `header_ms` shorter than the total leaves budget for the next retry. When an
+  upstream timeout or the total deadline ends a request before a response header was sent, the client
+  receives `504` with `x-oxiroute-reason` set to `connect_timeout`, `upstream_header_timeout`,
+  `upstream_write_timeout` or `total_deadline`. A stalled body after the response header cannot change
+  the status already sent; it closes the connection (`upstream_idle_timeout` is logged at debug level). A client
+  that disconnects first gets no response and the upstream request is cancelled. The listener
+  `client_timeout_ms`/`request_timeout_ms` still bound the request and also cut it without a status.
 - L4 services reference a pool. Connect and idle timeouts default to `10000` and `300000`
   milliseconds; an optional lifetime timeout has no default. Configured timeout values MUST be
   nonzero. An L4 service MUST NOT reference a TLS-enabled upstream pool; opaque TLS pass-through

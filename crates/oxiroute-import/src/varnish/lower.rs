@@ -1476,6 +1476,7 @@ impl<'a> Lowerer<'a> {
                     response_cookie_path_rewrites: Vec::new(),
                     response_cookie_attributes: Vec::new(),
                     retry: oxiroute_config::HttpRetryPolicy::default(),
+                    timeouts: oxiroute_config::HttpProxyTimeouts::default(),
                     cache,
                 },
             },

@@ -1019,6 +1019,40 @@ fn validates_secret_backed_bearer_access_without_inline_tokens() {
 }
 
 #[test]
+fn validates_proxy_timeouts_and_roundtrips_them() {
+    let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
+    let route = proxy_route(
+        "",
+        "              timeouts = { connect_ms = 500, header_ms = 2000, idle_ms = 1500, total_ms = 9000 },",
+    );
+    let loaded = load_lua(&config(&route, endpoint)).expect("proxy timeouts");
+    let timeouts = &first_route(&config(&route, endpoint))["action"]["policy"]["timeouts"];
+    assert_eq!(timeouts["header_ms"], 2000);
+    assert_eq!(timeouts["total_ms"], 9000);
+    let rendered = render_lua(&loaded).expect("render proxy timeouts");
+    assert_eq!(load_lua(&rendered).expect("timeouts roundtrip"), loaded);
+
+    let defaults = first_route(&config(&proxy_route("", ""), endpoint));
+    assert_eq!(
+        defaults["action"]["policy"]["timeouts"],
+        json!({ "connect_ms": null, "header_ms": null, "idle_ms": null, "total_ms": null })
+    );
+
+    for policy in [
+        "              timeouts = { header_ms = 0 },",
+        "              timeouts = { idle_ms = 86400001 },",
+        "              timeouts = { header_ms = 5000, total_ms = 1000 },",
+        "              timeouts = { read_ms = 1000 },",
+    ] {
+        let error = error(&config(&proxy_route("", policy), endpoint));
+        assert!(
+            error.contains("timeouts") || error.contains("unknown field"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn validates_explicit_retry_triggers_and_safety_rules() {
     let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
     for policy in [

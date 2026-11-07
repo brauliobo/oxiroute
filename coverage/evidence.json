@@ -33,7 +33,9 @@
         "crates/oxiroute-config-source/tests/http_routes.rs#canonicalizes_ascii_case_insensitive_exact_authority_without_dropping_ports",
         "crates/oxiroute-config-source/tests/http_routes.rs#renders_every_proxy_policy_variant_and_field",
         "crates/oxiroute-config-source/tests/http_routes.rs#validates_secret_backed_bearer_access_without_inline_tokens",
-        "crates/oxiroute-config-source/tests/http_routes.rs#validates_explicit_retry_triggers_and_safety_rules"
+        "crates/oxiroute-config-source/tests/http_routes.rs#validates_explicit_retry_triggers_and_safety_rules",
+        "crates/oxiroute-config-source/tests/http_routes.rs#validates_proxy_timeouts_and_roundtrips_them",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#header_timeout_answers_504_and_leaves_budget_for_the_retry"
       ]
     },
     {

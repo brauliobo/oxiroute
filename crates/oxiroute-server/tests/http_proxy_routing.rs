@@ -23,9 +23,9 @@ use oxiroute_config::{
     ConfigDraft, DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType,
     HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipMinimumVersion,
     HttpGzipPolicy, HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPathRewrite,
-    HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-    HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryTarget,
-    HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpSameSite, HttpService,
+    HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation, HttpRequestHeaderMutation,
+    HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety,
+    HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpSameSite, HttpService,
     HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
     HttpUpstreamHost, HttpVersionPolicy, Listener, Protocol, UpstreamAlgorithm, UpstreamEndpoint,
     UpstreamPool, UpstreamServer,
@@ -2320,7 +2320,7 @@ async fn route_local_read_timeouts_are_independent() {
         let timed_out = proxy
             .request("GET /short HTTP/1.1\r\nHost: timeout.test\r\n")
             .await;
-        assert_eq!(timed_out.status, 502, "response: {}", timed_out.text());
+        assert_eq!(timed_out.status, 504, "response: {}", timed_out.text());
         let completed = proxy
             .request("GET /long HTTP/1.1\r\nHost: timeout.test\r\n")
             .await;
@@ -2331,6 +2331,281 @@ async fn route_local_read_timeouts_are_independent() {
     })
     .await
     .expect("route timeout test timed out");
+}
+
+fn proxy_policy_mut(route: &mut HttpRoute) -> &mut HttpProxyPolicy {
+    let HttpRouteAction::Proxy { policy, .. } = &mut route.action else {
+        panic!("proxy route");
+    };
+    policy
+}
+
+fn timeout_route(timeouts: HttpProxyTimeouts) -> HttpRoute {
+    let mut route = route(None, "/", &[], "origin");
+    proxy_policy_mut(&mut route).timeouts = timeouts;
+    route
+}
+
+async fn timed_get(proxy: &ProxyHarness, host: &str) -> (RawResponse, Duration) {
+    let started = Instant::now();
+    let response = proxy
+        .request(&format!("GET / HTTP/1.1\r\nHost: {host}\r\n"))
+        .await;
+    (response, started.elapsed())
+}
+
+#[tokio::test]
+async fn silent_upstream_past_the_service_deadline_answers_504_with_a_reason() {
+    timeout(TEST_TIMEOUT, async {
+        let silent = Origin::start_silent().await;
+        let proxy = ProxyHarness::start(
+            vec![pool("origin", &[silent.address])],
+            vec![route(None, "/", &[], "origin")],
+            1024,
+            1,
+        )
+        .await;
+
+        let (response, elapsed) = timed_get(&proxy, "deadline.test").await;
+
+        assert_eq!(response.status, 504, "response: {}", response.text());
+        assert_eq!(response.header("x-oxiroute-reason"), Some("total_deadline"));
+        assert!(elapsed < Duration::from_millis(1_800), "{elapsed:?}");
+        proxy.finish().await;
+        silent.finish().await;
+    })
+    .await
+    .expect("service deadline test timed out");
+}
+
+#[tokio::test]
+async fn route_total_timeout_shortens_the_service_deadline() {
+    timeout(TEST_TIMEOUT, async {
+        let silent = Origin::start_silent().await;
+        let route = timeout_route(HttpProxyTimeouts {
+            total_ms: Some(150),
+            ..HttpProxyTimeouts::default()
+        });
+        let proxy = ProxyHarness::start(
+            vec![pool("origin", &[silent.address])],
+            vec![route],
+            1024,
+            1,
+        )
+        .await;
+
+        let (response, elapsed) = timed_get(&proxy, "total.test").await;
+
+        assert_eq!(response.status, 504, "response: {}", response.text());
+        assert_eq!(response.header("x-oxiroute-reason"), Some("total_deadline"));
+        assert!(elapsed < Duration::from_millis(600), "{elapsed:?}");
+        proxy.finish().await;
+        silent.finish().await;
+    })
+    .await
+    .expect("route total test timed out");
+}
+
+#[tokio::test]
+async fn header_timeout_answers_504_and_leaves_budget_for_the_retry() {
+    timeout(TEST_TIMEOUT, async {
+        let first = Origin::start_silent().await;
+        let second = Origin::start_silent().await;
+        let healthy = Origin::start("retried-after-header-timeout", 1).await;
+        let mut hung = timeout_route(HttpProxyTimeouts {
+            header_ms: Some(100),
+            ..HttpProxyTimeouts::default()
+        });
+        proxy_policy_mut(&mut hung).retry.triggers = vec![HttpRetryTrigger::ResponseTimeout];
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("origin", &[first.address, second.address])],
+            vec![hung.clone()],
+            1,
+            1,
+        )
+        .await;
+        let (response, elapsed) = timed_get(&proxy, "header.test").await;
+        assert_eq!(response.status, 504, "response: {}", response.text());
+        assert_eq!(
+            response.header("x-oxiroute-reason"),
+            Some("upstream_header_timeout")
+        );
+        assert!(elapsed < Duration::from_millis(800), "{elapsed:?}");
+        assert!(elapsed >= Duration::from_millis(200), "{elapsed:?}");
+        proxy.finish().await;
+
+        let third = Origin::start_silent().await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("origin", &[third.address, healthy.address])],
+            vec![hung],
+            1,
+            1,
+        )
+        .await;
+        let (response, _) = timed_get(&proxy, "header.test").await;
+        assert_origin_response(&response, "retried-after-header-timeout");
+        proxy.finish().await;
+    })
+    .await
+    .expect("header timeout test timed out");
+}
+
+#[tokio::test]
+async fn route_header_timeout_takes_precedence_over_the_pool_server_timeout() {
+    timeout(TEST_TIMEOUT, async {
+        let silent = Origin::start_silent().await;
+        let mut slow_pool = pool("origin", &[silent.address]);
+        slow_pool.server_timeout_ms = Some(800);
+        let route = timeout_route(HttpProxyTimeouts {
+            header_ms: Some(100),
+            ..HttpProxyTimeouts::default()
+        });
+        let proxy = ProxyHarness::start(vec![slow_pool], vec![route], 1024, 1).await;
+
+        let (response, elapsed) = timed_get(&proxy, "precedence.test").await;
+
+        assert_eq!(response.status, 504, "response: {}", response.text());
+        assert!(elapsed < Duration::from_millis(500), "{elapsed:?}");
+        proxy.finish().await;
+    })
+    .await
+    .expect("timeout precedence test timed out");
+}
+
+#[tokio::test]
+async fn pool_server_timeout_still_shadows_the_legacy_route_read_timeout() {
+    timeout(TEST_TIMEOUT, async {
+        let silent = Origin::start_silent().await;
+        let mut slow_pool = pool("origin", &[silent.address]);
+        slow_pool.server_timeout_ms = Some(300);
+        let mut route = route(None, "/", &[], "origin");
+        route.policy.read_timeout_ms = 20;
+        let proxy = ProxyHarness::start(vec![slow_pool], vec![route], 1024, 1).await;
+
+        let (response, elapsed) = timed_get(&proxy, "legacy.test").await;
+
+        assert_eq!(response.status, 504, "response: {}", response.text());
+        assert!(elapsed >= Duration::from_millis(250), "{elapsed:?}");
+        proxy.finish().await;
+    })
+    .await
+    .expect("legacy timeout test timed out");
+}
+
+async fn stalling_origin(
+    first_wait: Duration,
+    partial: &'static [u8],
+) -> (SocketAddr, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("stall bind");
+    let address = listener.local_addr().expect("stall address");
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("stall accept");
+        read_request_head(&mut stream).await.expect("stall request");
+        sleep(first_wait).await;
+        let _ = stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n")
+            .await;
+        let _ = stream.write_all(partial).await;
+        sleep(Duration::from_millis(1_500)).await;
+    });
+    (address, task)
+}
+
+#[tokio::test]
+async fn idle_timeout_cuts_a_stalled_body_without_limiting_the_header_wait() {
+    timeout(TEST_TIMEOUT, async {
+        let timeouts = HttpProxyTimeouts {
+            header_ms: Some(600),
+            idle_ms: Some(100),
+            ..HttpProxyTimeouts::default()
+        };
+        let (stalled, stalled_task) = stalling_origin(Duration::ZERO, b"abc").await;
+        let proxy = ProxyHarness::start(
+            vec![pool("origin", &[stalled])],
+            vec![timeout_route(timeouts)],
+            1024,
+            1,
+        )
+        .await;
+        let started = Instant::now();
+        let mut client = TcpStream::connect(proxy.address)
+            .await
+            .expect("idle client");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: idle.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("idle request");
+        let mut received = Vec::new();
+        let _ = timeout(Duration::from_secs(2), client.read_to_end(&mut received)).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(700),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(received.starts_with(b"HTTP/1.1 200"), "{received:?}");
+        assert!(received.ends_with(b"abc"), "{received:?}");
+        proxy.finish().await;
+        stalled_task.abort();
+
+        let (slow_start, slow_task) =
+            stalling_origin(Duration::from_millis(250), b"0123456789").await;
+        let proxy = ProxyHarness::start(
+            vec![pool("origin", &[slow_start])],
+            vec![timeout_route(timeouts)],
+            1024,
+            1,
+        )
+        .await;
+        let (response, _) = timed_get(&proxy, "idle.test").await;
+        assert_eq!(response.status, 200, "response: {}", response.text());
+        assert_eq!(response.body(), b"0123456789");
+        proxy.finish().await;
+        slow_task.abort();
+    })
+    .await
+    .expect("idle timeout test timed out");
+}
+
+#[tokio::test]
+async fn client_disconnect_cancels_the_pending_upstream_request() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let (closed_tx, closed_rx) = oneshot::channel();
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("origin accept");
+            read_request_head(&mut stream)
+                .await
+                .expect("origin request");
+            let mut rest = Vec::new();
+            let _ = stream.read_to_end(&mut rest).await;
+            let _ = closed_tx.send(());
+        });
+        let proxy = ProxyHarness::start(
+            vec![pool("origin", &[address])],
+            vec![route(None, "/", &[], "origin")],
+            1024,
+            1,
+        )
+        .await;
+        let mut client = TcpStream::connect(proxy.address).await.expect("client");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: cancel.test\r\n\r\n")
+            .await
+            .expect("client request");
+        sleep(Duration::from_millis(150)).await;
+        drop(client);
+
+        timeout(Duration::from_millis(800), closed_rx)
+            .await
+            .expect("origin did not observe the client disconnect")
+            .expect("origin close signal");
+        proxy.wait_for_no_active_leases().await;
+        proxy.finish().await;
+        origin.await.expect("origin task");
+    })
+    .await
+    .expect("client disconnect test timed out");
 }
 
 #[tokio::test]
@@ -3238,7 +3513,7 @@ async fn does_not_retry_a_default_json_post_after_an_upstream_response_timeout()
             )
             .await;
 
-        assert_eq!(response.status, 502, "response: {}", response.text());
+        assert_eq!(response.status, 504, "response: {}", response.text());
         proxy.finish().await;
         silent.finish().await;
         unused.assert_not_contacted().await;

@@ -83,6 +83,7 @@ export function defaultHttpProxyPolicy(): HttpProxyPolicyConfig {
       method_safety: 'get_head',
       body_safety: 'empty',
     },
+    timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
     cache: null,
   }
 }

@@ -31,9 +31,10 @@ use openssl::{
 use oxiroute_config::{
     AccessLogPolicy, HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
     HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpProxyPathRewrite,
-    HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-    HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryTarget,
-    HttpRetryTrigger, HttpRoutePolicy, HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
+    HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation, HttpRequestHeaderMutation,
+    HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety,
+    HttpRetryTarget, HttpRetryTrigger, HttpRoutePolicy, HttpStaticPathMapping, HttpStaticTryFile,
+    HttpUpstreamHost,
 };
 use rustix::{
     fd::OwnedFd,
@@ -348,6 +349,7 @@ pub(crate) struct ProxyPolicyPlan {
     pub(crate) retry_target: HttpRetryTarget,
     pub(crate) retry_delay: Duration,
     pub(crate) final_redispatch: bool,
+    pub(crate) timeouts: HttpProxyTimeouts,
     pub(crate) cache: Option<Arc<HttpCachePlan>>,
     pub(crate) nginx_error_server: Option<HeaderValue>,
 }
@@ -377,6 +379,7 @@ impl ProxyPolicyPlan {
             retry_target: self.retry_target,
             retry_delay: self.retry_delay,
             final_redispatch: self.final_redispatch,
+            timeouts: self.timeouts,
             cache,
             nginx_error_server: self.nginx_error_server.clone(),
         }
@@ -446,6 +449,7 @@ impl ProxyPolicyPlan {
             retry_target: policy.retry.target,
             retry_delay: Duration::from_millis(policy.retry.delay_ms),
             final_redispatch: policy.retry.final_redispatch,
+            timeouts: policy.timeouts,
             cache,
             nginx_error_server,
         }

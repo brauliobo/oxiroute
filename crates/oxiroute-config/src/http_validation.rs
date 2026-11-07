@@ -26,10 +26,11 @@ use crate::{
     model::{
         AccessLogPolicy, ConfigError, HttpAccessPolicy, HttpCookieAttributePolicy,
         HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector,
-        HttpProxyPathRewrite, HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation,
-        HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger,
-        HttpRoute, HttpRouteAction, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
-        HttpStaticTryFile, HttpUpstreamHost, UpstreamEndpoint, UpstreamPool,
+        HttpProxyPathRewrite, HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation,
+        HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
+        HttpRetryPolicy, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpService,
+        HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticTryFile, HttpUpstreamHost,
+        UpstreamEndpoint, UpstreamPool,
     },
 };
 
@@ -547,6 +548,7 @@ fn validate_proxy_policy(
     validate_cookie_rewrites(service, route_index, &policy.response_cookie_path_rewrites)?;
     validate_cookie_attributes(service, route_index, &mut policy.response_cookie_attributes)?;
     validate_retry(service, route_index, &mut policy.retry, route_policy)?;
+    validate_proxy_timeouts(service, route_index, policy.timeouts)?;
     if let Some(cache) = &mut policy.cache {
         crate::cache_validation::validate_cache_policy(service, route_index, cache, cache_stores)?;
     }
@@ -1014,6 +1016,43 @@ fn validate_cookie_path(path: &str) -> Result<(), &'static str> {
         .any(|byte| byte == 0 || byte == b';' || byte.is_ascii_control())
     {
         return Err("cookie path contains an invalid byte");
+    }
+    Ok(())
+}
+
+fn validate_proxy_timeouts(
+    service: &str,
+    route_index: usize,
+    timeouts: HttpProxyTimeouts,
+) -> Result<(), ConfigError> {
+    for (field, timeout) in [
+        ("action.policy.timeouts.connect_ms", timeouts.connect_ms),
+        ("action.policy.timeouts.header_ms", timeouts.header_ms),
+        ("action.policy.timeouts.idle_ms", timeouts.idle_ms),
+        ("action.policy.timeouts.total_ms", timeouts.total_ms),
+    ] {
+        if timeout.is_some_and(|value| value == 0 || value > MAX_HTTP_TIMEOUT_MS) {
+            return Err(invalid_route(
+                service,
+                route_index,
+                field,
+                "must be null or between 1 and 86400000 milliseconds",
+            ));
+        }
+    }
+    let phase_over_total = timeouts.total_ms.is_some_and(|total| {
+        [timeouts.connect_ms, timeouts.header_ms, timeouts.idle_ms]
+            .into_iter()
+            .flatten()
+            .any(|phase| phase > total)
+    });
+    if phase_over_total {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.timeouts.total_ms",
+            "must not be shorter than the connect, header or idle timeout",
+        ));
     }
     Ok(())
 }

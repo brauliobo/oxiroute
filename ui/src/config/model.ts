@@ -388,6 +388,13 @@ export interface HttpRetryPolicyConfig {
   body_safety: 'empty' | 'buffered'
 }
 
+export interface HttpProxyTimeoutsConfig {
+  connect_ms: number | null
+  header_ms: number | null
+  idle_ms: number | null
+  total_ms: number | null
+}
+
 export interface HttpProxyPolicyConfig {
   upstream_host: HttpUpstreamHostConfig
   upstream_path_rewrite?: HttpProxyPathRewriteConfig | null
@@ -396,6 +403,7 @@ export interface HttpProxyPolicyConfig {
   response_cookie_path_rewrites: HttpCookiePathRewriteConfig[]
   response_cookie_attributes: HttpCookieAttributePolicyConfig[]
   retry: HttpRetryPolicyConfig
+  timeouts: HttpProxyTimeoutsConfig
   cache: HttpCachePolicyConfig | null
 }
 
