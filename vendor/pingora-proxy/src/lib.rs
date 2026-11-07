@@ -210,6 +210,7 @@ where
     async fn handle_new_request(
         &self,
         mut downstream_session: Box<HttpSession>,
+        shutdown: Option<&ShutdownWatch>,
     ) -> Option<Box<HttpSession>>
     where
         SV: ProxyHttp + Send + Sync,
@@ -222,6 +223,19 @@ where
             res = downstream_session.read_request() => { res }
             _ = self.shutdown.notified() => {
                 // service shutting down, dropping the connection to stop more req from coming in
+                return None;
+            }
+            // The owner of this connection asked it to end, for example because the generation
+            // serving it was replaced. The watch is level triggered, so no signal can be missed
+            // between requests.
+            _ = async {
+                match shutdown {
+                    Some(shutdown) => {
+                        let _ = shutdown.clone().wait_for(|stopping| *stopping).await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
                 return None;
             }
         };
@@ -1061,7 +1075,7 @@ where
     ) {
         debug!("starting subrequest");
 
-        let mut session = match self.handle_new_request(session).await {
+        let mut session = match self.handle_new_request(session, None).await {
             Some(downstream_session) => Session::new(
                 downstream_session,
                 &self.downstream_modules,
@@ -1185,7 +1199,7 @@ where
         let session = Box::new(session);
 
         // TODO: keepalive pool, use stack
-        let mut session = match self.handle_new_request(session).await {
+        let mut session = match self.handle_new_request(session, Some(shutdown)).await {
             Some(downstream_session) => Session::new(
                 downstream_session,
                 &self.downstream_modules,

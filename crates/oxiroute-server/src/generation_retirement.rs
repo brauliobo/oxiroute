@@ -103,6 +103,7 @@ pub(crate) struct RetiredGenerations {
 
 impl RetiredGenerations {
     pub(crate) fn retire(&mut self, generation: Arc<RuntimeGeneration>, now: Instant) {
+        generation.mark_retired();
         let deadline = Duration::from_millis(generation.config().retirement_deadline_ms());
         operational_event::emit(
             "generation_retire",

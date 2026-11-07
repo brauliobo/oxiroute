@@ -134,6 +134,7 @@ pub struct HttpRequestContext {
     deadline: Instant,
     operation_result: Option<HttpOperationResult>,
     websocket_reference: Option<GenerationReference>,
+    generation: Option<Arc<RuntimeGeneration>>,
     cache_transaction: Option<CacheTransaction>,
     cache_capture: Option<CacheCapture>,
     response_buffer: Option<ResponseBuffer>,
@@ -266,6 +267,18 @@ impl HttpRequestContext {
             session.set_total_drain_timeout(Some(remaining));
             session.set_close_on_response_before_downstream_finish(false);
             session.set_keepalive(Some(0));
+            self.close_when_retired(session);
+        }
+    }
+
+    /// A replaced generation finishes the request in progress and then closes the connection.
+    fn close_when_retired(&self, session: &mut Session) {
+        if self
+            .generation
+            .as_ref()
+            .is_some_and(|generation| !generation.accepting())
+        {
+            session.set_keepalive(None);
         }
     }
 }
@@ -332,6 +345,7 @@ impl ProxyHttp for HttpReverseProxy {
             deadline: started_at + self.service.upstream_io_timeout(),
             operation_result: None,
             websocket_reference: None,
+            generation: self.generation.clone(),
             cache_transaction: None,
             cache_capture: None,
             response_buffer: None,
@@ -867,6 +881,7 @@ impl ProxyHttp for HttpReverseProxy {
             .get_write_timeout()
             .map_or(remaining, |timeout| timeout.min(remaining));
         session.set_write_timeout(Some(write_timeout));
+        ctx.close_when_retired(session);
         let refused = response.status == StatusCode::SERVICE_UNAVAILABLE
             && response.headers.contains_key(POOL_UNAVAILABLE_HEADER);
         let status = response.status.as_u16();
