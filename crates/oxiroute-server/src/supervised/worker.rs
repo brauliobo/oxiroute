@@ -13,7 +13,9 @@ use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
     AdministrativeState, GenerationManager, ListenerRuntimeState, RuntimeGeneration,
     RuntimeSnapshot,
-    config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
+    config_coordinator::{
+        CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRejection, EffectiveRevision,
+    },
     worker_event_page,
 };
 use oxiroute_supervision::GenerationId;
@@ -340,6 +342,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                     lifecycle,
                 )?;
             }
+            ControlPhase::Notice => apply_config_notice(&manager, request.attachment())?,
             ControlPhase::AdoptListeners | ControlPhase::Activate | ControlPhase::Drain => {
                 control.acknowledge(&request, ControlOutcome::Rejected(REJECT_INVALID_STATE))?;
                 report_status(
@@ -354,6 +357,20 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             }
         }
     }
+}
+
+/// Records what the master decided about the configuration file, or forgets it when accepted.
+fn apply_config_notice(
+    manager: &GenerationManager,
+    notice: &[u8],
+) -> Result<(), serde_json::Error> {
+    match serde_json::from_slice::<Option<ConfigRejection>>(notice)? {
+        Some(rejection) => {
+            manager.reject_configuration(rejection);
+        }
+        None => manager.accept_configuration(),
+    }
+    Ok(())
 }
 
 fn finish_worker_generation_process(
@@ -421,10 +438,18 @@ fn report_status(
     } else if event_page.cursor_lost {
         Some("event_cursor_lost".to_owned())
     } else if generation_status.degraded {
-        generation_status.last_failure.map_or_else(
-            || Some("generation_degraded".to_owned()),
-            |value| Some(value.into()),
-        )
+        generation_status
+            .last_failure
+            .or_else(|| {
+                generation_status
+                    .last_rejection
+                    .as_ref()
+                    .map(|_| "config_rejected")
+            })
+            .map_or_else(
+                || Some("generation_degraded".to_owned()),
+                |value| Some(value.into()),
+            )
     } else if generation.runtime_failed() {
         Some("runtime_failed".to_owned())
     } else {

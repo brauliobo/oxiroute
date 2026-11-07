@@ -60,7 +60,15 @@ state. Canonical management writes remain revision-checked and invalid drafts do
 
 The watcher observes the parent directory so rename-based replacement is visible, debounces event
 bursts, and periodically reconciles exact SHA-256 disk revisions. Invalid snapshots are rejected and
-do not replace active generation state. Operational logs on the `oxiroute::operations` target are
+do not replace active generation state: each one is logged at error level on the `oxiroute::config`
+target (once per distinct rejection, not at every reconciliation), emits a `configuration_reload`
+event with the outcome `rejected`, raises `oxiroute_config_rejections_total` and is shown as
+`lastRejection` in `generation status` and `GET /api/v1/generations` until a later file is accepted,
+in the plain and the supervised runtime. The master reports a rejection to the active worker, so
+`lastRejection` also covers a reload the master refused (unsupported configuration, a listener that
+cannot be bound) or whose replacement worker failed. `degraded` is true while a rejection is
+unresolved; `GET /ready` stays 200 because the active generation keeps serving. Operational logs on
+the `oxiroute::operations` target are
 structured JSON and never include source text, secret values, configured paths, or OS error strings.
 
 For compositional KDL/HOCON/UCI roots, periodic reconciliation re-resolves templates and native
