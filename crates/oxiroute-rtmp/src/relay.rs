@@ -35,7 +35,7 @@ use crate::{
     RtmpTransport, SessionId, StreamKey, VideoCodec,
     client::{self, RtmpStream},
     clock::unix_time_ms,
-    media_snapshot::MediaSnapshotAccumulator,
+    media::snapshot::MediaSnapshotAccumulator,
 };
 
 const HANDSHAKE_RESPONSE_BYTES: usize = 3_073;

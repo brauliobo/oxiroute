@@ -13,19 +13,14 @@ mod catalog;
 mod client;
 mod clock;
 mod composition;
-mod dash_segmenter;
 mod exec;
 mod exec_worker;
 mod flv;
 mod live;
-mod media_parser;
-mod media_segmenter;
-mod media_snapshot;
-mod media_storage;
+mod media;
 mod recording;
 mod relay;
 mod runtime_handles;
-mod segment_window;
 mod session;
 mod session_control;
 mod vod;
@@ -58,7 +53,6 @@ pub use composition::{
     RtmpPullPlan, RtmpPushPlan, RtmpRecorderPlan, RtmpRelayPlan, RtmpServicePlan, RtmpTokenPlan,
     RtmpVodPlan,
 };
-pub use dash_segmenter::{DashOutputConfig, DashSegmentNaming};
 pub use exec::{
     ExecEnvironment, ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecProfile,
     ExecProfileError, ExecTrigger,
@@ -75,12 +69,15 @@ pub use live::{
     LiveHubError, LiveHubLimits, LiveHubStats, MediaEvent, MediaEventError, MediaEventKind,
     PublishReport, PublisherIncarnation, VideoCodec, VideoCodecIdentifier,
 };
-pub use media_segmenter::{
+pub use media::dash::{DashOutputConfig, DashSegmentNaming};
+pub use media::segmenter::{
     HlsFragmentNaming, HlsKeyConfig, HlsOutputConfig, HlsValueError, HlsVariant, MediaApplication,
     MediaCatalog, MediaEnqueueResult, MediaObject, MediaOutputError, MediaPublisher,
 };
-pub use media_storage::{MAX_MEDIA_PATH_BYTES, MediaStoreError, MediaStoreLimits, MediaStoreStats};
-pub(crate) use media_storage::{MediaStore, RtmpMediaStoreRegistry};
+pub use media::storage::{
+    MAX_MEDIA_PATH_BYTES, MediaStoreError, MediaStoreLimits, MediaStoreStats,
+};
+pub(crate) use media::storage::{MediaStore, RtmpMediaStoreRegistry};
 pub use recording::path::{
     MAX_RECORDING_FILENAME_BYTES, MAX_RECORDING_SUFFIX_TEMPLATE_BYTES, RecordingDateTime,
     RecordingPathError, RecordingPathPolicy, RecordingSegmentNaming, RecordingTimeBasis,
