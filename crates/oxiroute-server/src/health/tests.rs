@@ -59,7 +59,7 @@ async fn health_falls_back_to_the_second_resolved_address() {
         check: Arc::<AddressFallbackCheck>::clone(&check),
         down_interval: Duration::from_secs(1),
         endpoint,
-        endpoint_index: 0,
+        server: pool.handle(0),
         fast_interval: Duration::from_secs(1),
         healthy_threshold: 1,
         interval: Duration::from_secs(1),
@@ -97,7 +97,7 @@ fn health_intervals_follow_checking_down_and_healthy_state() {
         check: Arc::new(TcpHealthCheck::default()),
         down_interval: Duration::from_secs(5),
         endpoint,
-        endpoint_index: 0,
+        server: pool.handle(0),
         fast_interval: Duration::from_secs(1),
         healthy_threshold: 1,
         interval: Duration::from_secs(2),
@@ -109,9 +109,9 @@ fn health_intervals_follow_checking_down_and_healthy_state() {
     };
 
     assert_eq!(target.next_interval(), Duration::from_secs(1));
-    pool.record_health(0, false, Some(HealthFailure::ConnectFailed), Some(1), 1, 1);
+    pool.record_health(&pool.handle(0), false, Some(HealthFailure::ConnectFailed), Some(1), 1, 1);
     assert_eq!(target.next_interval(), Duration::from_secs(5));
-    pool.record_health(0, true, None, Some(2), 1, 1);
+    pool.record_health(&pool.handle(0), true, None, Some(2), 1, 1);
     assert_eq!(target.next_interval(), Duration::from_secs(2));
 }
 
@@ -158,11 +158,11 @@ async fn probes_share_a_global_concurrency_bound() {
     let targets = addresses
         .into_iter()
         .enumerate()
-        .map(|(endpoint_index, address)| HealthTarget {
+        .map(|(index, address)| HealthTarget {
             check: Arc::<BlockingCheck>::clone(&check),
             down_interval: Duration::from_secs(1),
             endpoint: RuntimeEndpoint::from(address),
-            endpoint_index,
+            server: pool.handle(index),
             fast_interval: Duration::from_secs(1),
             healthy_threshold: 1,
             interval: Duration::from_secs(1),

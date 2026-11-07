@@ -905,6 +905,24 @@ impl Admission {
     }
 }
 
+/// Addresses one server of a pool without a position, so membership can change under it.
+#[derive(Clone, Debug)]
+pub(crate) struct ServerHandle(Arc<PoolEndpoint>);
+
+impl ServerHandle {
+    pub(crate) fn state(&self) -> EndpointHealthState {
+        self.0.state()
+    }
+
+    pub(crate) fn checks_running(&self) -> bool {
+        self.0.checks_running()
+    }
+
+    pub(crate) fn passively_ejected(&self) -> bool {
+        self.0.passively_ejected_at(now_unix_ms())
+    }
+}
+
 #[derive(Debug)]
 struct PoolEndpoint {
     active_work: AtomicU64,
@@ -2759,33 +2777,36 @@ impl EndpointPool {
             .ok_or_else(|| PoolAdminError::UnknownServer(name.to_owned()))
     }
 
-    pub(crate) fn endpoints(&self) -> impl Iterator<Item = (usize, RuntimeEndpoint)> + '_ {
+    pub(crate) fn endpoints(&self) -> impl Iterator<Item = (ServerHandle, RuntimeEndpoint)> + '_ {
         self.endpoints
             .iter()
-            .enumerate()
-            .map(|(index, server)| (index, server.endpoint.clone()))
+            .map(|server| (ServerHandle(Arc::clone(server)), server.endpoint.clone()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle(&self, index: usize) -> ServerHandle {
+        ServerHandle(Arc::clone(&self.endpoints[index]))
     }
 
     pub(crate) fn record_health(
         &self,
-        index: usize,
+        server: &ServerHandle,
         healthy: bool,
         failure: Option<HealthFailure>,
         at_unix_ms: Option<u64>,
         healthy_threshold: u16,
         unhealthy_threshold: u16,
     ) -> Option<(EndpointHealthState, EndpointHealthState)> {
-        let update = self.endpoints.get(index).map(|server| {
-            self.health.record_health(
-                server,
+        self.health
+            .record_health(
+                &server.0,
                 healthy,
                 failure,
                 at_unix_ms,
                 healthy_threshold,
                 unhealthy_threshold,
             )
-        });
-        update.and_then(|update| update.transition)
+            .transition
     }
 
     #[cfg(test)]
@@ -2801,22 +2822,6 @@ impl EndpointPool {
             self.health
                 .record_passive_failure_at(server, failure, at_unix_ms);
         }
-    }
-
-    pub(crate) fn health_state(&self, index: usize) -> Option<EndpointHealthState> {
-        self.endpoints.get(index).map(|server| server.state())
-    }
-
-    pub(crate) fn health_checks_running(&self, index: usize) -> bool {
-        self.endpoints
-            .get(index)
-            .is_some_and(|server| server.checks_running())
-    }
-
-    pub(crate) fn passive_ejected(&self, index: usize) -> bool {
-        self.endpoints
-            .get(index)
-            .is_some_and(|server| server.passively_ejected_at(now_unix_ms()))
     }
 
     /// Resolves one server immediately without mutating runtime state.
@@ -2849,12 +2854,9 @@ impl EndpointPool {
 
     pub(crate) async fn resolve_server_addresses(
         &self,
-        index: usize,
+        server: &ServerHandle,
     ) -> io::Result<Vec<SocketAddr>> {
-        let server = self.endpoints.get(index).cloned().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "upstream server index is invalid")
-        })?;
-        server.resolve_addresses().await
+        server.0.resolve_addresses().await
     }
 
     #[must_use]

@@ -283,15 +283,15 @@ fn maintenance_suspends_checks_while_drain_keeps_checks_running() {
 
     pool.set_server_administrative_state("one", AdministrativeState::Drain)
         .expect("drain");
-    assert!(pool.health_checks_running(0));
+    assert!(pool.handle(0).checks_running());
     pool.set_server_administrative_state("one", AdministrativeState::Maintenance)
         .expect("maintenance");
-    assert!(!pool.health_checks_running(0));
+    assert!(!pool.handle(0).checks_running());
     pool.set_server_checks_enabled("one", false)
         .expect("disable checks");
     pool.set_server_administrative_state("one", AdministrativeState::Ready)
         .expect("ready");
-    assert!(!pool.health_checks_running(0));
+    assert!(!pool.handle(0).checks_running());
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn health_override_is_independent_from_observed_health_and_resets_to_auto() {
         None,
     )
     .expect("pool");
-    pool.record_health(0, false, Some(HealthFailure::ConnectFailed), Some(1), 1, 1);
+    pool.record_health(&pool.handle(0), false, Some(HealthFailure::ConnectFailed), Some(1), 1, 1);
     assert!(pool.select().is_none());
 
     pool.set_server_health_override("one", HealthOverride::Up)
@@ -367,7 +367,7 @@ fn first_uses_the_first_healthy_administrative_server_with_capacity() {
     );
     drop(backup);
 
-    pool.record_health(0, false, Some(HealthFailure::ConnectFailed), Some(1), 1, 1);
+    pool.record_health(&pool.handle(0), false, Some(HealthFailure::ConnectFailed), Some(1), 1, 1);
     assert_eq!(
         pool.select().expect("healthy backup").server_name(),
         "backup"
@@ -1303,18 +1303,17 @@ fn checked_endpoints_transition_through_thresholds() {
         EndpointHealthState::Unknown
     );
 
-    pool.record_health(0, true, None, Some(100), 2, 2);
+    pool.record_health(&pool.handle(0), true, None, Some(100), 2, 2);
     assert!(
         !pool.has_available(),
         "one success remains below startup threshold"
     );
-    pool.record_health(0, true, None, Some(150), 2, 2);
+    pool.record_health(&pool.handle(0), true, None, Some(150), 2, 2);
     assert!(
         pool.has_available(),
         "the startup threshold establishes state"
     );
-    pool.record_health(
-        0,
+    pool.record_health(&pool.handle(0),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(200),
@@ -1322,8 +1321,7 @@ fn checked_endpoints_transition_through_thresholds() {
         2,
     );
     assert!(pool.has_available(), "one failure remains below threshold");
-    pool.record_health(
-        0,
+    pool.record_health(&pool.handle(0),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(300),
@@ -1334,12 +1332,12 @@ fn checked_endpoints_transition_through_thresholds() {
         !pool.has_available(),
         "the failure threshold removes the endpoint"
     );
-    pool.record_health(0, true, None, Some(400), 2, 2);
+    pool.record_health(&pool.handle(0), true, None, Some(400), 2, 2);
     assert!(
         !pool.has_available(),
         "one success remains below recovery threshold"
     );
-    pool.record_health(0, true, None, Some(500), 2, 2);
+    pool.record_health(&pool.handle(0), true, None, Some(500), 2, 2);
     assert!(
         pool.has_available(),
         "the recovery threshold restores the endpoint"
@@ -1458,16 +1456,15 @@ fn health_aware_selection_is_fair_across_available_endpoints() {
         true,
     )
     .expect("checked pool");
-    pool.record_health(
-        0,
+    pool.record_health(&pool.handle(0),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(100),
         1,
         1,
     );
-    pool.record_health(1, true, None, Some(100), 1, 1);
-    pool.record_health(2, true, None, Some(100), 1, 1);
+    pool.record_health(&pool.handle(1), true, None, Some(100), 1, 1);
+    pool.record_health(&pool.handle(2), true, None, Some(100), 1, 1);
 
     let selected = (0..6)
         .map(|_| pool.select().map(|lease| lease.endpoint().clone()))
@@ -1544,8 +1541,7 @@ fn weighted_round_robin_skips_unhealthy_endpoints_and_recovers_them() {
         None,
     )
     .expect("weighted health pool");
-    pool.record_health(
-        1,
+    pool.record_health(&pool.handle(1),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(100),
@@ -1567,7 +1563,7 @@ fn weighted_round_robin_skips_unhealthy_endpoints_and_recovers_them() {
         EndpointHealthState::Unhealthy
     );
 
-    pool.record_health(1, true, None, Some(200), 1, 1);
+    pool.record_health(&pool.handle(1), true, None, Some(200), 1, 1);
     let recovered = (0..4)
         .map(|_| {
             pool.select()
@@ -1655,7 +1651,7 @@ fn passive_ejection_is_deterministic_and_active_health_reentry_preserves_weighti
         .collect::<Vec<_>>();
     assert!(selected_while_ejected.iter().all(|name| name == "backup"));
 
-    pool.record_health(0, true, None, Some(base + 10), 1, 1);
+    pool.record_health(&pool.handle(0), true, None, Some(base + 10), 1, 1);
     let recovered = pool.health_snapshot();
     assert!(!recovered.endpoints[0].passive_ejected);
     assert_eq!(recovered.endpoints[0].passive_recovery_count, 1);
@@ -1691,8 +1687,7 @@ fn passive_ejection_backoff_is_bounded_and_active_failures_are_not_double_counte
     .expect("passive backoff pool");
     let base = now_unix_ms();
 
-    pool.record_health(
-        0,
+    pool.record_health(&pool.handle(0),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(base.saturating_sub(500)),
@@ -1898,16 +1893,15 @@ fn concurrent_health_aware_selection_distributes_every_available_turn() {
         )
         .expect("checked pool"),
     );
-    pool.record_health(
-        0,
+    pool.record_health(&pool.handle(0),
         false,
         Some(HealthFailure::ConnectFailed),
         Some(100),
         1,
         1,
     );
-    pool.record_health(1, true, None, Some(100), 1, 1);
-    pool.record_health(2, true, None, Some(100), 1, 1);
+    pool.record_health(&pool.handle(1), true, None, Some(100), 1, 1);
+    pool.record_health(&pool.handle(2), true, None, Some(100), 1, 1);
 
     let selected = (0..THREADS)
         .map(|_| {
@@ -2113,7 +2107,7 @@ fn fail_open_pool(servers: &[(&str, Option<u64>)], algorithm: UpstreamAlgorithm)
 fn mark_unhealthy(pool: &EndpointPool, index: usize, failed_checks: u64) {
     for _ in 0..failed_checks {
         pool.record_health(
-            index,
+            &pool.handle(index),
             false,
             Some(HealthFailure::UnexpectedStatus),
             None,
@@ -2535,7 +2529,7 @@ async fn requests_wait_for_a_recovering_server_instead_of_failing_at_once() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!waiter.is_finished());
 
-        pool.record_health(0, true, None, None, 1, 1);
+        pool.record_health(&pool.handle(0), true, None, None, 1, 1);
 
         assert_eq!(waiter.await.expect("waiter").as_deref(), Some("only"));
         assert_eq!(pool.health_snapshot().unavailable_selections, 0);
@@ -2551,7 +2545,7 @@ async fn connection_targets_wait_for_a_recovering_server() {
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    pool.record_health(0, true, None, None, 1, 1);
+    pool.record_health(&pool.handle(0), true, None, None, 1, 1);
 
     assert!(waiter.await.expect("waiter"));
 }
