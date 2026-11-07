@@ -584,6 +584,13 @@ pub struct PoolResilience {
     /// Serve the least-bad member when health or ejection leaves none selectable.
     #[serde(default)]
     pub fail_open: bool,
+    /// Passive ejection never leaves fewer selectable servers than this; defaults to 1 with
+    /// `fail_open` and 0 without.
+    #[serde(default)]
+    pub min_members: Option<u16>,
+    /// Randomizes each passive ejection duration by up to this many percent either way.
+    #[serde(default)]
+    pub ejection_jitter_percent: u8,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

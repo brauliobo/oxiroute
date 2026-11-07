@@ -120,7 +120,7 @@ function canonicalConfig(): CanonicalConfig {
         connect_timeout_ms: null,
         server_timeout_ms: null,
         connection_reuse: 'safe',
-        resilience: { fail_open: false },
+        resilience: { fail_open: false, min_members: null, ejection_jitter_percent: 0 },
       },
       {
         name: 'secure-origins',
@@ -137,7 +137,7 @@ function canonicalConfig(): CanonicalConfig {
         connect_timeout_ms: null,
         server_timeout_ms: null,
         connection_reuse: 'safe',
-        resilience: { fail_open: false },
+        resilience: { fail_open: false, min_members: null, ejection_jitter_percent: 0 },
       },
     ],
     http_services: [

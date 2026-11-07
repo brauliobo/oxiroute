@@ -1044,6 +1044,8 @@ mod tests {
                 ),
                 PoolResiliencePolicy::from_config(&oxiroute_config::PoolResilience {
                     fail_open: true,
+                    min_members: Some(0),
+                    ..oxiroute_config::PoolResilience::default()
                 }),
             )
             .expect("pool"),

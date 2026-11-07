@@ -46,7 +46,7 @@ return {
       connect_timeout_ms = 5000,
       server_timeout_ms = 50000,
       connection_reuse = "safe",
-      resilience = { fail_open = true },
+      resilience = { fail_open = true, min_members = 1, ejection_jitter_percent = 20 },
       health_check = {
         type = "http",
         startup = "checking",
@@ -219,7 +219,10 @@ fn round_trips_the_complete_host_replacement_foundation() {
         recorder.segment_naming,
         RtmpRecorderSegmentNaming::NginxCompatible
     );
-    assert!(config.upstream_pools[0].resilience.fail_open);
+    let resilience = &config.upstream_pools[0].resilience;
+    assert!(resilience.fail_open);
+    assert_eq!(resilience.min_members, Some(1));
+    assert_eq!(resilience.ejection_jitter_percent, 20);
     let gzip = config.http_services[0].gzip.as_ref().expect("gzip policy");
     assert_eq!(gzip.min_length_bytes, 20);
     assert_eq!(gzip.min_http_version, HttpGzipMinimumVersion::Http10);
@@ -237,6 +240,8 @@ fn round_trips_the_complete_host_replacement_foundation() {
         "connection_reuse",
         "resilience",
         "fail_open",
+        "min_members",
+        "ejection_jitter_percent",
         "fast_interval_ms",
         "expected_status",
         "response_cookie_attributes",

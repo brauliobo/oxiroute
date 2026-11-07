@@ -1,6 +1,8 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+const MAX_EJECTION_JITTER_PERCENT: u8 = 50;
+
 /// Validates upstream-pool identities, resources, endpoints, and health policies.
 ///
 /// # Errors
@@ -166,7 +168,34 @@ fn validate_upstream_pool_definition(
             pool: pool.name.clone(),
         });
     }
-    validate_upstream_pool_timeouts(pool)
+    validate_upstream_pool_timeouts(pool)?;
+    validate_pool_resilience(pool)
+}
+
+fn validate_pool_resilience(pool: &UpstreamPool) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidUpstreamServer {
+        pool: pool.name.clone(),
+        server: "<pool>".into(),
+        field,
+        detail,
+    };
+    let resilience = &pool.resilience;
+    if resilience
+        .min_members
+        .is_some_and(|members| usize::from(members) > pool.servers.len())
+    {
+        return Err(invalid(
+            "resilience.min_members",
+            "must not exceed the number of servers",
+        ));
+    }
+    if resilience.ejection_jitter_percent > MAX_EJECTION_JITTER_PERCENT {
+        return Err(invalid(
+            "resilience.ejection_jitter_percent",
+            "must not exceed 50",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_upstream_algorithm(pool: &UpstreamPool) -> Result<(), ConfigError> {

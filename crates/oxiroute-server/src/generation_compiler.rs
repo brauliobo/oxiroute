@@ -184,7 +184,8 @@ fn compile_pool_blueprints(
                 .passive_health
                 .as_ref()
                 .map(PassiveFailurePolicy::from_config)
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .with_ejection_jitter_percent(pool.resilience.ejection_jitter_percent);
             let health = pool
                 .health_check
                 .as_ref()

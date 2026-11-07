@@ -1893,6 +1893,64 @@ async fn pool_without_fail_open_answers_an_empty_503_when_its_health_path_fails(
     .expect("closed pool test timed out");
 }
 
+async fn statuses_while_every_app_server_fails(
+    resilience: oxiroute_config::PoolResilience,
+) -> Vec<u16> {
+    let origins = [AppErrorOrigin::start().await, AppErrorOrigin::start().await];
+    let mut app = pool("app", &[origins[0].address, origins[1].address]);
+    app.passive_health = Some(oxiroute_config::PassiveHealthPolicy {
+        error_limit: 1,
+        ..oxiroute_config::PassiveHealthPolicy::default()
+    });
+    app.resilience = resilience;
+    let mut app_route = route(None, "/", &[], "app");
+    let HttpRouteAction::Proxy { policy, .. } = &mut app_route.action else {
+        panic!("proxy route");
+    };
+    policy.retry.response_statuses = vec![500];
+    let proxy = ProxyHarness::start_with_retries(vec![app], vec![app_route], 1, 3).await;
+    let mut statuses = Vec::new();
+    for _ in 0..3 {
+        statuses.push(
+            proxy
+                .request("GET / HTTP/1.1\r\nHost: app.test\r\n")
+                .await
+                .status,
+        );
+    }
+    proxy.finish().await;
+    statuses
+}
+
+#[tokio::test]
+async fn passive_ejection_stops_before_the_last_server_of_a_fail_open_pool() {
+    timeout(TEST_TIMEOUT, async {
+        let resilience = oxiroute_config::PoolResilience {
+            fail_open: true,
+            ..oxiroute_config::PoolResilience::default()
+        };
+
+        assert_eq!(
+            statuses_while_every_app_server_fails(resilience).await,
+            [500, 500, 500]
+        );
+    })
+    .await
+    .expect("ejection floor test timed out");
+}
+
+#[tokio::test]
+async fn passive_ejection_without_a_floor_turns_the_apps_500s_into_503s() {
+    timeout(TEST_TIMEOUT, async {
+        assert_eq!(
+            statuses_while_every_app_server_fails(oxiroute_config::PoolResilience::default()).await,
+            [500, 503, 503]
+        );
+    })
+    .await
+    .expect("ejection without floor test timed out");
+}
+
 #[tokio::test]
 async fn rejects_oversized_content_length_before_contacting_an_origin() {
     timeout(TEST_TIMEOUT, async {
@@ -6420,7 +6478,10 @@ fn app_error_pool(address: SocketAddr, fail_open: bool) -> UpstreamPool {
             expected_status: None,
             http_version: None,
         }),
-        resilience: oxiroute_config::PoolResilience { fail_open },
+        resilience: oxiroute_config::PoolResilience {
+            fail_open,
+            ..oxiroute_config::PoolResilience::default()
+        },
         ..pool("app", &[address])
     }
 }
