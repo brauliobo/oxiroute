@@ -2917,6 +2917,35 @@ impl EndpointPool {
             .ok_or_else(|| PoolAdminError::UnknownServer(name.to_owned()))
     }
 
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Origin and endpoint of the member with this name.
+    pub(crate) fn member(&self, name: &str) -> Option<(ServerOrigin, RuntimeEndpoint)> {
+        self.server_endpoint(name)
+            .map(|server| (server.origin, server.endpoint.clone()))
+    }
+
+    /// The member that already uses `endpoint`, if any.
+    pub(crate) fn member_at(&self, endpoint: &RuntimeEndpoint) -> Option<String> {
+        self.members()
+            .endpoints
+            .iter()
+            .find(|server| server.endpoint == *endpoint)
+            .map(|server| server.name.clone())
+    }
+
+    /// Number of members that joined at runtime.
+    pub(crate) fn dynamic_count(&self) -> usize {
+        self.members()
+            .endpoints
+            .iter()
+            .filter(|server| server.origin == ServerOrigin::Dynamic)
+            .count()
+    }
+
     pub(crate) fn server_handle(&self, name: &str) -> Option<ServerHandle> {
         self.server_endpoint(name).map(ServerHandle)
     }

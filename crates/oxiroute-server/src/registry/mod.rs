@@ -5,5 +5,6 @@ pub mod error;
 pub mod lease;
 pub mod limits;
 pub mod record;
+pub mod service;
 pub mod store;
 pub mod validate;
