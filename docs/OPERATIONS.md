@@ -67,7 +67,8 @@ event with the outcome `rejected`, raises `oxiroute_config_rejections_total` and
 in the plain and the supervised runtime. The master reports a rejection to the active worker, so
 `lastRejection` also covers a reload the master refused (unsupported configuration, a listener that
 cannot be bound) or whose replacement worker failed. `degraded` is true while a rejection is
-unresolved; `GET /ready` stays 200 because the active generation keeps serving. Operational logs on
+unresolved; `GET /ready` stays 200 because the active generation keeps serving. `config check`, `422` responses
+and startup failures name the failing setting (`path`, `detail`, `line`). Operational logs on
 the `oxiroute::operations` target are
 structured JSON and never include source text, secret values, configured paths, or OS error strings.
 

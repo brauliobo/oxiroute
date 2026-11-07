@@ -65,9 +65,9 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     let coordinator = CanonicalConfigCoordinator::new(&metadata.config_path)?;
     let document = match coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => document,
-        ConfigLoadOutcome::Rejected(_) => {
+        ConfigLoadOutcome::Rejected(rejection) => {
             control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_CONFIG))?;
-            return Err("canonical configuration was rejected".into());
+            return Err(rejection.message().into());
         }
     };
     if document.effective_revision != metadata.revision {

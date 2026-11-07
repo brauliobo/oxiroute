@@ -244,6 +244,14 @@ pub struct ConfigLoadRejection {
     pub diagnostics: Vec<ConfigDiagnostic>,
 }
 
+impl ConfigLoadRejection {
+    /// The one-line reason the file was refused, for startup failures and offline checks.
+    #[must_use]
+    pub fn message(&self) -> String {
+        ConfigRejection::new(self.disk_revision.as_ref(), &self.diagnostics).message()
+    }
+}
+
 /// The newest configuration the process refused to run and why.
 ///
 /// Reported by `generation status` until a later configuration is accepted.
@@ -260,7 +268,9 @@ pub struct ConfigRejection {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct RejectionDiagnostic {
     pub code: String,
+    #[serde(default)]
     pub stage: String,
+    #[serde(default)]
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -287,11 +297,15 @@ impl RejectionDiagnostic {
     /// A stable code, the failing setting or line, and the explanation, on one line.
     #[must_use]
     pub fn summary(&self) -> String {
-        let mut summary = format!(
-            "{}: {}",
-            self.code,
-            self.detail.as_deref().unwrap_or(&self.message)
-        );
+        let mut summary = self.code.clone();
+        if let Some(reason) = self
+            .detail
+            .as_deref()
+            .or(Some(&self.message))
+            .filter(|reason| !reason.is_empty())
+        {
+            let _ = write!(summary, ": {reason}");
+        }
         if let Some(path) = &self.path {
             let _ = write!(summary, " at {path}");
         }
@@ -303,6 +317,22 @@ impl RejectionDiagnostic {
 }
 
 impl ConfigRejection {
+    /// The one-line reason a file was refused, for startup failures and offline checks.
+    #[must_use]
+    pub fn message(&self) -> String {
+        let summaries = self
+            .diagnostics
+            .iter()
+            .map(RejectionDiagnostic::summary)
+            .collect::<Vec<_>>()
+            .join("; ");
+        if summaries.is_empty() {
+            "canonical configuration was rejected".to_owned()
+        } else {
+            format!("canonical configuration was rejected ({summaries})")
+        }
+    }
+
     /// Logs the refusal once per diagnostic, naming the setting and never quoting the source.
     pub fn log(&self) {
         let revision = self.revision.as_deref().unwrap_or("unreadable");
@@ -627,14 +657,15 @@ impl fmt::Debug for CanonicalConfigCoordinator {
 }
 
 fn prepare_candidate(format: ConfigFormat, draft: ConfigDraft) -> ConfigValidationOutcome {
-    let Ok(validated_config) = compose_validated_configs(vec![draft]) else {
-        return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
-            diagnostics: vec![diagnostic(
-                "E_INVALID_VALUE",
-                ConfigDiagnosticStage::Validation,
-                "configuration values or references are invalid",
-            )],
-        });
+    let validated_config = match compose_validated_configs(vec![draft]) {
+        Ok(validated_config) => validated_config,
+        Err(error) => {
+            return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
+                diagnostics: vec![source_error_diagnostic(&ConfigSourceError::Composition(
+                    error,
+                ))],
+            });
+        }
     };
     let canonical_kdl = match render_config(ConfigFormat::Kdl, &validated_config) {
         Ok(preview) => preview,
@@ -707,7 +738,7 @@ fn source_error_location(
 }
 
 /// Serde quotes the rejected value in type and value errors; keep only what was expected.
-fn without_values(message: &str) -> String {
+pub(crate) fn without_values(message: &str) -> String {
     if message.starts_with("invalid type: ") || message.starts_with("invalid value: ") {
         let kind = message.split_once(':').map_or("value", |(kind, _)| kind);
         let expected = message.split_once(", expected ").map_or("", |(_, e)| e);

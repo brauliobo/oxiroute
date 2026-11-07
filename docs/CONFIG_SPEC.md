@@ -1146,6 +1146,12 @@ restricted Lua, UCI, or HOCON.
   generation keeps serving. Diagnostics name settings and rules; they never quote the source or the
   rejected value.
 
+Every diagnostic carries `code`, `stage`, `message` and, when known, `path` (the failing setting as
+a JSON pointer), `detail` (the rule that failed, with values stripped) and `line` (KDL syntax
+errors). `422` responses of `config validate`, `config apply` and `generation reload`, `config
+check`, and startup failures print them the same way, for example a root without `version 1`
+reports `/version` and "add `version 1`" instead of a generic rejection.
+
 ## Diagnostics
 
 Offline native import reports retain rich evidence: stable code, severity, stage, source range,

@@ -129,6 +129,11 @@ fn inline_config(mut value: Value) -> Result<Option<ConfigDraft>, ConfigSourceEr
     if root.keys().all(|key| key == "version") {
         return Ok(None);
     }
+    if !root.contains_key("version") {
+        return Err(ConfigSourceError::TypedConfig(
+            "missing required top-level setting `version` (add `version 1`)".to_owned(),
+        ));
+    }
     root.entry("listeners")
         .or_insert_with(|| Value::Array(Vec::new()));
     serde_json::from_value(value)
