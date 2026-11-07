@@ -495,14 +495,26 @@ Current constraints:
   requests that can create a duplicate side effect. The values are a pair: mixed `get_head`/`buffered`
   or `all`/`empty` policies fail validation. Every retry also requires the configured
   `target` to be selectable. `target = "next_server"` requires a distinct named server;
-  `target = "same_server"` reselects the same named server. `delay_ms` defaults to `0`, is bounded to
-  `60000`, and is applied before each route retry. A `503` that carries the
+  `target = "same_server"` reselects the same named server. A replay never returns to a server that
+  already answered the request when `target = "next_server"`; it is not attempted at all when every
+  other server was tried. `delay_ms` defaults to `0`, is bounded to
+  `60000`, and is applied before each same-server route retry; `jitter_percent` (default `0`, at most
+  `100`) adds a random share of up to that percentage of the delay, so that clients do not retry in
+  lockstep. `idempotency_header` (default `null`, requires `method_safety = "all"`) limits the replay
+  of a method other than `GET` and `HEAD` after the request was sent (response-phase retries and
+  rescue) to requests that carry that header with a non-empty value, such as `Idempotency-Key`; the
+  backend must honour the key. `budget` (default `null`) caps the retries of the route so that
+  they cannot amplify an outage: `per_second` (1 to 100000) bounds the retries started in each
+  second and `ratio_percent` (1 to 100) bounds them to that share, rounded up, of the route requests
+  of the last 10 seconds; when either is spent, the client receives the failing response or error
+  instead of a retry. The budget is not supported for HTTP/3 upstream pools. A `503` that carries the
   `x-oxiroute-pool-unavailable` header, which an OxiRoute node adds when no server of its own pool is
   selectable (for example every server is drained), was never forwarded, so it is redispatched to
   the next server of the pool like a connection failure: any non-upgrade request, within
   `max_retries`, and whatever the triggers, `response_statuses`, `target` and replay-safety policy
-  say. `response_statuses` optionally lists unique 5xx
-  statuses that trigger bounded retries; a status-only policy is valid when its trigger list is
+  say. `response_statuses` optionally lists unique
+  statuses between `100` and `599` (a 4xx included) that trigger bounded retries and count as
+  passive failures of the server; a status-only policy is valid when its trigger list is
   empty. The `empty_response`, `response_timeout`, and `junk_response` triggers cover bounded
   pre-body response failures. Trying alternate addresses for one DNS endpoint is transport fallback
   and does not consume `max_retries`; route retry begins only after that bounded address set is
@@ -513,6 +525,35 @@ Current constraints:
   `final_redispatch = true` changes only the last configured retry from `same_server` to
   `next_server`; it requires positive `max_retries` and `target = "same_server"` and otherwise
   fails validation. It defaults to `false`.
+- Proxy `policy.rescue` (default `null`) replays a request on another server when the backend
+  answers a status of `statuses` (1 to 100 unique statuses between `100` and `599`, for example a
+  `404` from a node that lacks a model), without treating that status as a server failure. It spends
+  the retry budget (`retry.max_retries` MUST be positive) and follows the same method and body safety
+  rules as response-phase retries, so a `POST` is rescued only with the `all`/`buffered` pair. With
+  `target = "next_server"` (default, `pool = null`) the replay goes to a server of the route pool
+  that was not tried yet; with `target = "pool"` and `pool` naming another pool, it goes to that pool,
+  each of its servers at most once. A rescue replay never targets the same server, whatever
+  `retry.target`. When the retry budget or the candidate servers run out, or the request is not
+  replayable, the client receives the last backend response unchanged (status, headers, body) and
+  nothing is synthesized. Rescues are counted in `oxiroute_http_rescues_total{route,status}` and
+  logged at debug level. Rescue is not supported for HTTP/3 upstream pools and is rejected there.
+- Proxy `policy.timeouts` optionally refines the upstream timeouts of one route, each phase `null` by
+  default and between `1` and `86400000` milliseconds: `connect_ms` (per attempt, until the upstream
+  connection is established), `header_ms` (per attempt, from the sent request until the first
+  response byte), `idle_ms` (between upstream response body reads) and `total_ms` (the whole request
+  including retries; it only shortens the service deadline). A phase may not exceed `total_ms`.
+  Precedence for each phase, first match wins: the route `timeouts` field, the pool
+  `connect_timeout_ms`/`server_timeout_ms`, the route `policy` `connect_timeout_ms`/`read_timeout_ms`,
+  the service `upstream_io_timeout_ms`; `header_ms` and `idle_ms` both fall back to the pool
+  `server_timeout_ms` or route `read_timeout_ms`. So a pool `server_timeout_ms` still shadows the
+  route `read_timeout_ms`, but never `timeouts`. Every attempt is clamped to the time left of the
+  total deadline, so a `header_ms` shorter than the total leaves budget for the next retry. When an
+  upstream timeout or the total deadline ends a request before a response header was sent, the client
+  receives `504` with `x-oxiroute-reason` set to `connect_timeout`, `upstream_header_timeout`,
+  `upstream_write_timeout` or `total_deadline`. A stalled body after the response header cannot change
+  the status already sent; it closes the connection (`upstream_idle_timeout` is logged at debug level). A client
+  that disconnects first gets no response and the upstream request is cancelled. The listener
+  `client_timeout_ms`/`request_timeout_ms` still bound the request and also cut it without a status.
 - L4 services reference a pool. Connect and idle timeouts default to `10000` and `300000`
   milliseconds; an optional lifetime timeout has no default. Configured timeout values MUST be
   nonzero. An L4 service MUST NOT reference a TLS-enabled upstream pool; opaque TLS pass-through

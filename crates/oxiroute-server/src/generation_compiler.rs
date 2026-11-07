@@ -363,17 +363,26 @@ fn compile_http_route_blueprint(
             upstream_pool,
             policy,
         } => {
-            let pool = config
-                .upstream_pools
-                .iter()
-                .position(|pool| pool.name == *upstream_pool)
-                .ok_or_else(|| ServicePlanError::UnknownHttpPool {
-                    service: service.name.clone(),
-                    route: route_index,
-                    pool: upstream_pool.clone(),
-                })?;
+            let pool_index = |name: &String| {
+                config
+                    .upstream_pools
+                    .iter()
+                    .position(|pool| pool.name == *name)
+                    .ok_or_else(|| ServicePlanError::UnknownHttpPool {
+                        service: service.name.clone(),
+                        route: route_index,
+                        pool: name.clone(),
+                    })
+            };
+            let rescue_pool = policy
+                .rescue
+                .as_ref()
+                .and_then(|rescue| rescue.pool.as_ref())
+                .map(pool_index)
+                .transpose()?;
             HttpActionBlueprint::Proxy {
-                pool,
+                pool: pool_index(upstream_pool)?,
+                rescue_pool,
                 policy: ProxyPolicyPlan::compile(policy),
                 cache: compile_cache_policy_blueprint(config, service, route_index, route, policy)?,
             }

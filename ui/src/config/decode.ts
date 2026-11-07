@@ -437,7 +437,8 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
       (policy.same_site === null || ['strict', 'lax', 'none'].includes(String(policy.same_site)))) &&
     isRecord(value.retry) && integerInRange(value.retry.max_retries, 0, 3) &&
     ['same_server', 'next_server'].includes(String(value.retry.target)) &&
-    integerInRange(value.retry.delay_ms, 0, 60_000) &&
+    integerInRange(value.retry.delay_ms, 0, 60_000) && integerInRange(value.retry.jitter_percent, 0, 100) &&
+    nullableString(value.retry.idempotency_header) && isHttpRetryBudget(value.retry.budget) &&
     typeof value.retry.final_redispatch === 'boolean' &&
     (!value.retry.final_redispatch ||
       (value.retry.max_retries > 0 && value.retry.target === 'same_server')) &&
@@ -445,7 +446,26 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
     isHttpRetryTriggers(value.retry.triggers, hasResponseStatuses || value.retry.max_retries === 0) &&
     ((value.retry.method_safety === 'get_head' && value.retry.body_safety === 'empty') ||
       (value.retry.method_safety === 'all' && value.retry.body_safety === 'buffered')) &&
+    isHttpProxyTimeouts(value.timeouts) && isHttpRescue(value.rescue) &&
     (value.cache === null || isHttpCachePolicy(value.cache))
+}
+
+function isHttpRetryBudget(value: unknown): boolean {
+  return value === null || (isRecord(value) && (value.per_second !== null || value.ratio_percent !== null) &&
+    (value.per_second === null || integerInRange(value.per_second, 1, 100_000)) &&
+    (value.ratio_percent === null || integerInRange(value.ratio_percent, 1, 100)))
+}
+
+function isHttpRescue(value: unknown): boolean {
+  return value === null || (isRecord(value) && isHttpRetryStatuses(value.statuses) &&
+    Array.isArray(value.statuses) && value.statuses.length > 0 &&
+    ((value.target === 'next_server' && value.pool === null) ||
+      (value.target === 'pool' && typeof value.pool === 'string')))
+}
+
+function isHttpProxyTimeouts(value: unknown): boolean {
+  return isRecord(value) && ['connect_ms', 'header_ms', 'idle_ms', 'total_ms'].every((key) =>
+    value[key] === null || integerInRange(value[key], 1, 86_400_000))
 }
 
 function isHttpCachePolicy(value: unknown): value is HttpCachePolicyConfig {
@@ -489,7 +509,7 @@ function isHttpRetryTriggers(value: unknown, allowEmpty = false): value is HttpR
 
 function isHttpRetryStatuses(value: unknown): value is number[] {
   return Array.isArray(value) && value.length <= 100 &&
-    value.every((status) => integerInRange(status, 500, 599)) &&
+    value.every((status) => integerInRange(status, 100, 599)) &&
     new Set(value).size === value.length
 }
 

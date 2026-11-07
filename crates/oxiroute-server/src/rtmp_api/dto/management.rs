@@ -1263,6 +1263,7 @@ mod tests {
                 max_connections: None,
                 rejected_connections: 0,
                 retry_attempts: 0,
+                rescues: Vec::new(),
                 resident_memory_bytes: None,
                 virtual_memory_bytes: None,
                 thread_count: None,

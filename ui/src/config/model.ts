@@ -387,15 +387,36 @@ export interface HttpCookieAttributePolicyConfig {
   same_site: 'strict' | 'lax' | 'none' | null
 }
 
+export interface HttpRetryBudgetConfig {
+  per_second: number | null
+  ratio_percent: number | null
+}
+
 export interface HttpRetryPolicyConfig {
   max_retries: number
   target: 'same_server' | 'next_server'
   delay_ms: number
+  jitter_percent: number
   final_redispatch: boolean
+  idempotency_header: string | null
+  budget: HttpRetryBudgetConfig | null
   triggers: HttpRetryTrigger[]
   response_statuses?: number[]
   method_safety: 'get_head' | 'all'
   body_safety: 'empty' | 'buffered'
+}
+
+export interface HttpProxyTimeoutsConfig {
+  connect_ms: number | null
+  header_ms: number | null
+  idle_ms: number | null
+  total_ms: number | null
+}
+
+export interface HttpRescuePolicyConfig {
+  statuses: number[]
+  target: 'next_server' | 'pool'
+  pool: string | null
 }
 
 export interface HttpProxyPolicyConfig {
@@ -406,6 +427,8 @@ export interface HttpProxyPolicyConfig {
   response_cookie_path_rewrites: HttpCookiePathRewriteConfig[]
   response_cookie_attributes: HttpCookieAttributePolicyConfig[]
   retry: HttpRetryPolicyConfig
+  timeouts: HttpProxyTimeoutsConfig
+  rescue: HttpRescuePolicyConfig | null
   cache: HttpCachePolicyConfig | null
 }
 

@@ -26,10 +26,11 @@ use crate::{
     model::{
         AccessLogPolicy, ConfigError, HttpAccessPolicy, HttpCookieAttributePolicy,
         HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector,
-        HttpProxyPathRewrite, HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation,
-        HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger,
-        HttpRoute, HttpRouteAction, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
-        HttpStaticTryFile, HttpUpstreamHost, UpstreamEndpoint, UpstreamPool,
+        HttpProxyPathRewrite, HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation,
+        HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpRescueTarget,
+        HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger, HttpRoute, HttpRouteAction,
+        HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticTryFile,
+        HttpUpstreamHost, UpstreamEndpoint, UpstreamPool,
     },
 };
 
@@ -464,6 +465,7 @@ fn validate_action(
                 policy,
                 route_policy,
                 pool,
+                pools,
                 cache_stores,
             )
         }
@@ -508,6 +510,7 @@ fn validate_proxy_policy(
     policy: &mut HttpProxyPolicy,
     route_policy: crate::model::HttpRoutePolicy,
     pool: &UpstreamPool,
+    pools: &HashMap<&str, &UpstreamPool>,
     cache_stores: &HashMap<String, crate::cache_validation::CacheStoreBounds>,
 ) -> Result<(), ConfigError> {
     match &mut policy.upstream_host {
@@ -547,6 +550,16 @@ fn validate_proxy_policy(
     validate_cookie_rewrites(service, route_index, &policy.response_cookie_path_rewrites)?;
     validate_cookie_attributes(service, route_index, &mut policy.response_cookie_attributes)?;
     validate_retry(service, route_index, &mut policy.retry, route_policy)?;
+    if policy.retry.budget.is_some() && pool.http_versions.max == crate::model::HttpVersion::Http3 {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.budget",
+            "is not supported for HTTP/3 upstream pools",
+        ));
+    }
+    validate_proxy_timeouts(service, route_index, policy.timeouts)?;
+    validate_rescue(service, route_index, policy, pool, pools)?;
     if let Some(cache) = &mut policy.cache {
         crate::cache_validation::validate_cache_policy(service, route_index, cache, cache_stores)?;
     }
@@ -1018,6 +1031,95 @@ fn validate_cookie_path(path: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn validate_rescue(
+    service: &str,
+    route_index: usize,
+    policy: &mut HttpProxyPolicy,
+    pool: &UpstreamPool,
+    pools: &HashMap<&str, &UpstreamPool>,
+) -> Result<(), ConfigError> {
+    let Some(rescue) = &mut policy.rescue else {
+        return Ok(());
+    };
+    let invalid =
+        |detail: &'static str| invalid_route(service, route_index, "action.policy.rescue", detail);
+    if rescue.statuses.is_empty()
+        || rescue.statuses.len() > crate::defaults::MAX_HTTP_RETRY_RESPONSE_STATUSES
+    {
+        return Err(invalid("statuses must contain between 1 and 100 statuses"));
+    }
+    if rescue
+        .statuses
+        .iter()
+        .any(|status| !(100..=599).contains(status))
+    {
+        return Err(invalid("statuses must be between 100 and 599"));
+    }
+    rescue.statuses.sort_unstable();
+    if rescue.statuses.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(invalid("statuses must not contain duplicates"));
+    }
+    if policy.retry.max_retries == 0 {
+        return Err(invalid("requires retry.max_retries of at least 1"));
+    }
+    let target_pool = match (rescue.target, &rescue.pool) {
+        (HttpRescueTarget::NextServer, None) => None,
+        (HttpRescueTarget::Pool, Some(name)) => Some(pools.get(name.as_str()).ok_or_else(
+            || ConfigError::UnknownRouteUpstreamPool {
+                service: service.into(),
+                route: route_index,
+                pool: name.clone(),
+            },
+        )?),
+        _ => return Err(invalid("pool is required exactly when target is `pool`")),
+    };
+    if target_pool.is_some_and(|target| target.name == pool.name) {
+        return Err(invalid("pool must differ from the route pool"));
+    }
+    let http3 = |pool: &UpstreamPool| pool.http_versions.max == crate::model::HttpVersion::Http3;
+    if http3(pool) || target_pool.is_some_and(|target| http3(target)) {
+        return Err(invalid("is not supported for HTTP/3 upstream pools"));
+    }
+    Ok(())
+}
+
+fn validate_proxy_timeouts(
+    service: &str,
+    route_index: usize,
+    timeouts: HttpProxyTimeouts,
+) -> Result<(), ConfigError> {
+    for (field, timeout) in [
+        ("action.policy.timeouts.connect_ms", timeouts.connect_ms),
+        ("action.policy.timeouts.header_ms", timeouts.header_ms),
+        ("action.policy.timeouts.idle_ms", timeouts.idle_ms),
+        ("action.policy.timeouts.total_ms", timeouts.total_ms),
+    ] {
+        if timeout.is_some_and(|value| value == 0 || value > MAX_HTTP_TIMEOUT_MS) {
+            return Err(invalid_route(
+                service,
+                route_index,
+                field,
+                "must be null or between 1 and 86400000 milliseconds",
+            ));
+        }
+    }
+    let phase_over_total = timeouts.total_ms.is_some_and(|total| {
+        [timeouts.connect_ms, timeouts.header_ms, timeouts.idle_ms]
+            .into_iter()
+            .flatten()
+            .any(|phase| phase > total)
+    });
+    if phase_over_total {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.timeouts.total_ms",
+            "must not be shorter than the connect, header or idle timeout",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_retry(
     service: &str,
     route_index: usize,
@@ -1040,6 +1142,16 @@ fn validate_retry(
             "retry delay must not exceed 60000 milliseconds",
         ));
     }
+    if retry.jitter_percent > 100 {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.jitter_percent",
+            "jitter must not exceed 100 percent",
+        ));
+    }
+    validate_retry_idempotency_header(service, route_index, retry)?;
+    validate_retry_budget(service, route_index, retry.budget)?;
     if retry.final_redispatch
         && (retry.max_retries == 0 || retry.target != crate::model::HttpRetryTarget::SameServer)
     {
@@ -1090,12 +1202,12 @@ fn validate_retry(
     }
     let mut response_statuses = HashSet::with_capacity(retry.response_statuses.len());
     for status in &retry.response_statuses {
-        if !(500..=599).contains(status) {
+        if !(100..=599).contains(status) {
             return Err(invalid_route(
                 service,
                 route_index,
                 "action.policy.retry.response_statuses",
-                "must contain only 5xx statuses",
+                "must contain only statuses between 100 and 599",
             ));
         }
         if !response_statuses.insert(*status) {
@@ -1108,6 +1220,61 @@ fn validate_retry(
         }
     }
     retry.response_statuses.sort_unstable();
+    Ok(())
+}
+
+fn validate_retry_idempotency_header(
+    service: &str,
+    route_index: usize,
+    retry: &mut HttpRetryPolicy,
+) -> Result<(), ConfigError> {
+    let Some(header) = &mut retry.idempotency_header else {
+        return Ok(());
+    };
+    normalize_header_name(header).map_err(|detail| {
+        invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.idempotency_header",
+            detail,
+        )
+    })?;
+    if retry.method_safety != crate::model::HttpRetryMethodSafety::All {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.idempotency_header",
+            "requires method_safety = \"all\"",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_retry_budget(
+    service: &str,
+    route_index: usize,
+    budget: Option<crate::model::HttpRetryBudget>,
+) -> Result<(), ConfigError> {
+    let Some(budget) = budget else {
+        return Ok(());
+    };
+    let invalid =
+        |detail| invalid_route(service, route_index, "action.policy.retry.budget", detail);
+    if budget.per_second.is_none() && budget.ratio_percent.is_none() {
+        return Err(invalid("requires per_second or ratio_percent"));
+    }
+    if budget
+        .per_second
+        .is_some_and(|rate| !(1..=100_000).contains(&rate))
+    {
+        return Err(invalid("per_second must be between 1 and 100000"));
+    }
+    if budget
+        .ratio_percent
+        .is_some_and(|ratio| !(1..=100).contains(&ratio))
+    {
+        return Err(invalid("ratio_percent must be between 1 and 100"));
+    }
     Ok(())
 }
 
