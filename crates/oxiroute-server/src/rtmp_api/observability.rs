@@ -18,6 +18,7 @@ pub(super) enum Route {
     Metrics,
     Readiness,
     Status,
+    StatusJson,
     Capabilities,
 }
 
@@ -27,6 +28,7 @@ pub(super) fn match_route(path: &str) -> Option<Route> {
         "/api/v1/monitoring" => Some(Route::Monitoring),
         "/api/v1/capabilities" => Some(Route::Capabilities),
         "/ready" => Some(Route::Readiness),
+        "/status.json" => Some(Route::StatusJson),
         "/metrics" => Some(Route::Metrics),
         _ => None,
     }
@@ -49,6 +51,7 @@ pub(super) fn handle(
         Route::Metrics => metrics_response(metrics, control, generations),
         Route::Readiness => readiness_response(metrics, generations),
         Route::Status => status_response(metrics, generations, topology),
+        Route::StatusJson => crate::status_summary::status_json_response(metrics, generations),
         Route::Capabilities => capabilities_response(metrics),
     }
 }
