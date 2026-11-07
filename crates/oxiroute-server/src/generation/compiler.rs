@@ -16,14 +16,14 @@ use crate::{
         FixedResponsePlan, HttpGzipPlan, ProxyPolicyPlan, RedirectPlan, RoutePolicyPlan,
         StaticFilesBlueprint,
     },
-    planning_errors::{ServicePlanError, rtmp_preparation_error},
-    planning_types::{
+    rtmp::value_plan::compile_rtmp_value_plans_from_draft,
+    runtime_policy::reject_unimplemented_runtime_policies,
+    service_plan::errors::{ServicePlanError, rtmp_preparation_error},
+    service_plan::types::{
         CachePolicyBlueprint, CacheStoreBlueprint, EndpointBlueprint, HttpActionBlueprint,
         HttpRouteBlueprint, HttpServiceBlueprint, L4ServiceBlueprint, ListenerBlueprint,
         PoolBlueprint, RtmpSpec, ServiceReference,
     },
-    rtmp::value_plan::compile_rtmp_value_plans_from_draft,
-    runtime_policy::reject_unimplemented_runtime_policies,
 };
 
 /// Immutable, value-only decisions for one validated generation.

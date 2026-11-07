@@ -3,7 +3,8 @@ use std::error::Error as _;
 use oxiroute_config::ConfigDraft;
 
 use crate::{
-    planning_errors::rtmp_preparation_error, rtmp::value_plan::compile_rtmp_value_plans_from_draft,
+    rtmp::value_plan::compile_rtmp_value_plans_from_draft,
+    service_plan::errors::rtmp_preparation_error,
 };
 
 use super::*;

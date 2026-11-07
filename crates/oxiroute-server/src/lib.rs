@@ -21,8 +21,6 @@ mod listener;
 mod logging;
 mod monitoring;
 mod operational_event;
-mod planning_errors;
-mod planning_types;
 mod prometheus;
 mod proxy_protocol;
 mod registry;
