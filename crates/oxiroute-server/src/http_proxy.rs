@@ -60,6 +60,8 @@ use crate::{
 };
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
+use crate::request_id::{REQUEST_ID_HEADER, RequestIdBuilder};
+
 pub struct HttpReverseProxy {
     challenge_store: Option<ChallengeStore>,
     generation: Option<Arc<RuntimeGeneration>>,
@@ -295,6 +297,7 @@ impl ProxyHttp for HttpReverseProxy {
     type CTX = HttpRequestContext;
 
     fn init_downstream_modules(&self, modules: &mut HttpModules) {
+        modules.add_module(Box::new(RequestIdBuilder));
         if let Some(gzip) = self.service.gzip() {
             modules.add_module(Box::new(ConfiguredCompressionBuilder {
                 gzip: Arc::clone(gzip),
@@ -401,7 +404,7 @@ impl ProxyHttp for HttpReverseProxy {
                 .as_ref()
                 .and_then(|generation| generation.begin_reference(RuntimeReferenceKind::WebSocket))
             else {
-                session.respond_error(503).await?;
+                respond_status(session, 503).await?;
                 ctx.allow_downstream_drain(session);
                 return Ok(true);
             };
@@ -409,16 +412,15 @@ impl ProxyHttp for HttpReverseProxy {
         }
 
         let Ok(authority) = authority else {
-            session.respond_error(400).await?;
+            respond_status(session, 400).await?;
             return Ok(true);
         };
         if content_length.is_err() || !is_unambiguous_http_path(uri.path()) {
-            session.respond_error(400).await?;
+            respond_status(session, 400).await?;
             return Ok(true);
         }
         let Some(route) = self.service.select_route(authority.as_ref(), &uri, &method) else {
-            session
-                .respond_error_with_body(404, Bytes::from_static(b"route not found\n"))
+            respond_status_with_body(session, 404, Bytes::from_static(b"route not found\n"))
                 .await?;
             ctx.allow_downstream_drain(session);
             return Ok(true);
@@ -430,7 +432,7 @@ impl ProxyHttp for HttpReverseProxy {
             .expect("checked content length")
             .is_some_and(|length| route.policy.exceeds_body_limit(length))
         {
-            session.respond_error(413).await?;
+            respond_status(session, 413).await?;
             ctx.allow_downstream_drain(session);
             return Ok(true);
         }
@@ -452,7 +454,7 @@ impl ProxyHttp for HttpReverseProxy {
         match pingora_request_header_decisions(session, &route, ctx.authority.as_ref()) {
             Ok(decisions) => ctx.request_header_decisions = decisions,
             Err(RequestPolicyError::SourceTooLarge) => {
-                session.respond_error(431).await?;
+                respond_status(session, 431).await?;
                 ctx.allow_downstream_drain(session);
                 return Ok(true);
             }
@@ -1239,7 +1241,7 @@ async fn cache_request_filter(
             Ok(true)
         }
         CacheStart::OnlyIfCached => {
-            session.respond_error(504).await?;
+            respond_status(session, 504).await?;
             Ok(true)
         }
         CacheStart::MissLeader(transaction) | CacheStart::RevalidationLeader(transaction) => {
@@ -1295,7 +1297,7 @@ async fn cache_purge_filter(
         (request_authority(request), request.headers.clone())
     };
     let Ok(Some(authority)) = authority_result else {
-        session.respond_error(400).await?;
+        respond_status(session, 400).await?;
         return Ok(true);
     };
     let scheme = if session
@@ -1362,7 +1364,7 @@ async fn cache_purge_filter(
         Err(error) => {
             warn!("cache purge failed: {error}");
             let status = if error.is_invalid_request() { 400 } else { 503 };
-            session.respond_error(status).await?;
+            respond_status(session, status).await?;
         }
     }
     Ok(true)
@@ -1738,7 +1740,7 @@ async fn execute_route_action(
                 let Some(location) =
                     redirect_location(&redirect.location, session, ctx.authority.as_ref(), &uri)
                 else {
-                    session.respond_error(400).await?;
+                    respond_status(session, 400).await?;
                     return Ok(true);
                 };
                 let mut headers = redirect.headers.to_vec();
@@ -1916,7 +1918,7 @@ async fn execute_route_action(
                 request.method = method.clone();
                 request.uri = uri.clone();
                 let Some(next) = service.select_route(ctx.authority.as_ref(), &uri, &method) else {
-                    session.respond_error(404).await?;
+                    respond_status(session, 404).await?;
                     return Ok(true);
                 };
                 if let Some(access) = &next.access
@@ -1947,7 +1949,7 @@ async fn respond_error(
 ) -> pingora::Result<()> {
     let pool_unavailable = is_pool_unavailable(error);
     if !pool_unavailable && reason.is_none() {
-        return session.respond_error(code).await;
+        return respond_status(session, code).await;
     }
     let mut response = ServerSession::generate_error(code);
     // Pingora's error responder carries a placeholder Date that only the automatic headers replace.
@@ -1962,6 +1964,35 @@ async fn respond_error(
             body = unavailable_body(session, &mut response, plan.unavailable_response())?;
         }
     }
+    stamp_request_id(session, &mut response)?;
+    session.write_error_response(response, body).await
+}
+
+/// Error responses bypass Pingora's response modules, so they copy the id the request filter set.
+fn stamp_request_id(
+    session: &Session,
+    response: &mut pingora::http::ResponseHeader,
+) -> pingora::Result<()> {
+    if let Some(id) = session.req_header().headers.get(&REQUEST_ID_HEADER) {
+        response.insert_header(REQUEST_ID_HEADER, id.clone())?;
+    }
+    Ok(())
+}
+
+async fn respond_status(session: &mut Session, code: u16) -> pingora::Result<()> {
+    respond_status_with_body(session, code, Bytes::new()).await
+}
+
+async fn respond_status_with_body(
+    session: &mut Session,
+    code: u16,
+    body: Bytes,
+) -> pingora::Result<()> {
+    let mut response = ServerSession::generate_error(code);
+    if !body.is_empty() {
+        response.set_content_length(body.len())?;
+    }
+    stamp_request_id(session, &mut response)?;
     session.write_error_response(response, body).await
 }
 

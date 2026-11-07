@@ -30,6 +30,7 @@ mod planning_errors;
 mod planning_types;
 mod prometheus;
 mod proxy_protocol;
+mod request_id;
 mod routing;
 mod rtmp_api;
 mod rtmp_generation_runtime;
