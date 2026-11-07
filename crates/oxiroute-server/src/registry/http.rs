@@ -77,7 +77,7 @@ pub struct Reply {
 }
 
 impl Reply {
-    fn json(status: u16, body: &impl Serialize) -> Self {
+    pub(super) fn json(status: u16, body: &impl Serialize) -> Self {
         Self {
             status,
             body: Some(serde_json::to_value(body).expect("registry DTO serializes")),

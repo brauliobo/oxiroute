@@ -6,10 +6,11 @@ use std::{
     },
 };
 
-use oxiroute_config::{ConfigDraft, ListenerBind, RegistryEndpoint};
+use oxiroute_config::{ConfigDraft, ListenerBind, Registry, RegistryEndpoint};
 
 use super::{
     lease::SystemClock,
+    listener::RegistryListeners,
     service::{PoolBinding, RegistryService},
 };
 use crate::RuntimeGeneration;
@@ -18,6 +19,7 @@ use crate::RuntimeGeneration;
 /// has a `registry` block, and every later generation is attached to the same service.
 pub(crate) struct RegistryHost {
     service: OnceLock<Arc<RegistryService>>,
+    listeners: OnceLock<RegistryListeners>,
     writer: AtomicBool,
 }
 
@@ -26,6 +28,7 @@ impl RegistryHost {
     pub(crate) const fn new(writer: bool) -> Self {
         Self {
             service: OnceLock::new(),
+            listeners: OnceLock::new(),
             writer: AtomicBool::new(writer),
         }
     }
@@ -50,6 +53,7 @@ impl RegistryHost {
                 match RegistryService::open(registry, Arc::new(SystemClock)) {
                     Ok(service) => {
                         service.set_writer(self.writer.load(Ordering::Acquire));
+                        self.start_listeners(&service, registry);
                         Arc::clone(self.service.get_or_init(|| service))
                     }
                     Err(error) => {
@@ -61,6 +65,13 @@ impl RegistryHost {
             (None, None) => return,
         };
         service.attach(bindings(generation, config));
+    }
+
+    fn start_listeners(&self, service: &Arc<RegistryService>, registry: &Registry) {
+        match RegistryListeners::start(service, &registry.endpoints) {
+            Ok(listeners) => drop(self.listeners.set(listeners)),
+            Err(error) => log::error!("registry endpoints are not serving: {error}"),
+        }
     }
 }
 
