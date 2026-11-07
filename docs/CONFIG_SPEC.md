@@ -346,19 +346,25 @@ Current constraints:
   cannot directly target the loopback management endpoint because that would bypass its exposure
   boundary. Pools containing any Unix endpoint cannot enable upstream TLS or active health checks.
 - `algorithm` accepts `round_robin` (the default), bounded `weighted_round_robin` with one weight
-  from 1 through 100 per server, `least_connections`, or `first`. All skip unavailable and
-  request-excluded servers. Weighted round-robin preserves server order and distributes turns by
-  the configured weights. `first` chooses the first healthy administrative server with capacity.
-  Least-connections selects the eligible named server with the least active work and rotates
-  deterministic ties from the pool cursor. A capacity permit is acquired before connection
+  from 1 through 100 per server, `least_connections`, `power_of_two_choices`, or `first`. All skip
+  unavailable and request-excluded servers. Weighted round-robin is smooth: turns follow the
+  weights without clumping (weights 3 and 1 give `a a b a`), computed from the live weights so an
+  operator override takes effect on the next request. `first` chooses the first healthy
+  administrative server with capacity. Least-connections selects the eligible named server with the
+  lowest load, which is active work per unit of capacity (its `max_connections` when set, otherwise
+  its weight), so a server of capacity 2 carries twice the work of a server of capacity 1; equal
+  loads rotate from the pool cursor. `power_of_two_choices` picks two distinct eligible servers at
+  random and uses the less loaded one; it does not need to compare every server. A capacity permit is acquired before connection
   preparation and, for reusable HTTP, remains held by the physical upstream socket through idle
   pooling and later requests. Nonreusable HTTP and L4 attempts release it at transport teardown.
   When every eligible server is at capacity, `queue_timeout_ms` bounds the wait for a released slot.
-  L4 and `connection_reuse = "never"` HTTP requests join one pool-level FIFO at scheduler admission;
-  only its head can claim whichever eligible server releases capacity next. Timeout and cancellation
-  remove exactly one waiter and advance the next head. Reusable HTTP retains the connector's
-  reuse-first capacity path, so this FIFO guarantee does not apply to requests sharing upstream
-  connections or HTTP/2 streams.
+  Requests of every kind join one pool-level FIFO at scheduler admission; only its head claims
+  whichever eligible server releases capacity (or an idle pooled connection) next, so a request is
+  never bound to one busy server while another is free. Timeout and cancellation remove exactly one
+  waiter and advance the next head. Reusable HTTP still reuses an idle pooled connection before it
+  asks for a new permit, and a pool without `queue_timeout_ms` keeps binding the request to the
+  server picked at arrival. Waiters are counted in `queued`, `queued_total` and the queue timeout and
+  cancellation counters on every path.
 - `passive_health` is optional per pool. `observe = "layer4"` counts only connect failures and
   timeouts; `observe = "layer7"` counts every attributed upstream failure. `on_error = "count"`
   ejects after `error_limit` consecutive observed failures, while `"immediately"` ejects on the
@@ -371,8 +377,20 @@ Current constraints:
   `max_backoff_ms = 300000`, `recovery_threshold = 1`, `mark_down` and `mark_up` false). A failed
   connect, a timeout or a protocol error counts when observed; an HTTP status counts only when the
   route's `retry.response_statuses` lists it, so a pool whose routes retry no status never ejects a
-  server for answering `500`. A server returns when its backoff expires. Ejection and recovery
-  remain generation-owned and never revoke an existing lease.
+  server for answering `500`. A response that is not a counted failure ends the run: `error_limit`
+  counts consecutive failures, so unrelated errors separated by successful requests never eject a
+  healthy server. A server returns when its backoff expires. Ejection and recovery remain
+  generation-owned and never revoke an existing lease.
+- `passive_health.readmission` (optional) replaces that last step. When the backoff expires the
+  server stays out of rotation while a probe runs against it every `interval_ms` (default 1000,
+  100 through 3600000) with `timeout_ms` (default 2000): `successes` (default 2, at most 100)
+  passing probes in a row return it, and one failed probe re-ejects it for the next, longer backoff
+  step, so no client request ever tests a failing server. `probe` is `{ path, host, expected_status }`
+  for an HTTP `GET` (`expected_status` defaults to 200; use a deeper path than the shallow health
+  check when the server can pass that while failing real work); without it the probe is a TCP
+  connect. An active `health_check` no longer returns a passively ejected server on its own while
+  `readmission` is set. Probing needs a socket or DNS endpoint; the first ejection behaves like
+  today's, the probe only decides the return.
 - `resilience` is an optional per-pool object whose options all default to the strict behavior.
   `fail_open = true` keeps a pool serving when health checks or passive ejection leave none of its
   servers selectable: instead of answering `503`, it selects the least bad server that is not
