@@ -550,6 +550,7 @@ impl EndpointPool {
             if waiting.is_front() {
                 let attempt = select();
                 if let Some(lease) = attempt.lease {
+                    lease.note_selector_position(waiting.position());
                     waiting.complete();
                     return (Some(lease), false);
                 }

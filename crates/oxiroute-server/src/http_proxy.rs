@@ -107,6 +107,9 @@ impl HttpReverseProxy {
     }
 }
 
+const QUEUE_POSITION_HEADER: HeaderName = HeaderName::from_static("x-oxiroute-queue-position");
+const QUEUE_WAIT_HEADER: HeaderName = HeaderName::from_static("x-oxiroute-queue-wait-ms");
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "retry and cache state are independent protocol decisions"
@@ -314,6 +317,22 @@ impl HttpRequestContext {
             self.trace.queue_wait += selected.queue_wait();
             self.trace.queue_position = self.trace.queue_position.max(selected.queue_position());
         }
+    }
+
+    /// Tells the client how long it waited for capacity, when its route opted in.
+    fn stamp_queue_headers(
+        &self,
+        response: &mut pingora::http::ResponseHeader,
+    ) -> pingora::Result<()> {
+        if !proxy_policy(self).queue_headers || self.trace.queue_position == 0 {
+            return Ok(());
+        }
+        response.insert_header(QUEUE_POSITION_HEADER, self.trace.queue_position.to_string())?;
+        response.insert_header(
+            QUEUE_WAIT_HEADER,
+            self.trace.queue_wait.as_millis().to_string(),
+        )?;
+        Ok(())
     }
 
     fn spend_retry_budget(&self) -> bool {

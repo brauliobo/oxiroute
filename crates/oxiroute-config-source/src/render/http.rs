@@ -409,6 +409,7 @@ impl Renderer {
             timeouts,
             rescue,
             cache,
+            queue_headers,
         } = policy;
         self.begin_table_field("upstream_host");
         self.http_upstream_host(upstream_host);
@@ -463,6 +464,7 @@ impl Renderer {
             }
             None => self.nil_field("cache"),
         }
+        self.boolean_field("queue_headers", *queue_headers);
         Ok(())
     }
 
