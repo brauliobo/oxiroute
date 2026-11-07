@@ -88,7 +88,7 @@ pub(crate) struct ProxyActionPlan {
     pub(crate) pool: Arc<UpstreamPlan>,
     pub(crate) rescue_pool: Option<Arc<UpstreamPlan>>,
     pub(crate) select: Option<PoolSelectPlan>,
-    pub(crate) policy: ProxyPolicyPlan,
+    pub(crate) policy: Box<ProxyPolicyPlan>,
 }
 
 #[derive(Clone, Debug)]

@@ -43,8 +43,11 @@ use crate::{
 };
 
 pub(crate) const GENERATION_PREPARATION_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_MAX_RETIRED_GENERATIONS: usize =
-    oxiroute_config::Retirement::DEFAULT_MAX_RETIRED_GENERATIONS as usize;
+
+fn default_max_retired_generations() -> usize {
+    usize::try_from(oxiroute_config::Retirement::DEFAULT_MAX_RETIRED_GENERATIONS)
+        .expect("the default retirement cap fits usize")
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum RuntimeReferenceKind {

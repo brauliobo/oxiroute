@@ -471,7 +471,8 @@ fn a_repeated_rejection_is_reported_once_until_the_file_is_accepted() {
     let file = AuthoredRevision::from_str(&"a".repeat(64)).expect("revision");
     let other = AuthoredRevision::from_str(&"b".repeat(64)).expect("revision");
     let mut reports = ConfigReports::default();
-    let refused = |file: &AuthoredRevision, code| refusal(file, code, "refused", "why");
+    let refused =
+        |file: &AuthoredRevision, code| refusal(file, code, "refused", String::from("why"));
 
     assert!(reports.record(&refused(&file, "E_LISTENER_BIND")));
     assert!(!reports.record(&refused(&file, "E_LISTENER_BIND")));

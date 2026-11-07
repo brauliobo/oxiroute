@@ -181,7 +181,7 @@ impl GenerationManager {
             max_retired_generations: state
                 .active
                 .as_ref()
-                .map_or(DEFAULT_MAX_RETIRED_GENERATIONS, |active| {
+                .map_or_else(default_max_retired_generations, |active| {
                     active.config().retired_generation_limit()
                 }),
             pending_apply: state

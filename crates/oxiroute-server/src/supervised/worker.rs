@@ -293,7 +293,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                             process.take().expect("generation process is owned"),
                             Instant::now() + SHUTDOWN_TIMEOUT,
                         );
-                        return Err(error.into());
+                        return Err(error);
                     }
                 }
             }

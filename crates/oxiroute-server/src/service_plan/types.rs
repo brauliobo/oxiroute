@@ -111,7 +111,7 @@ pub(crate) enum HttpActionBlueprint {
         pool: usize,
         rescue_pool: Option<usize>,
         select: Option<(oxiroute_config::HttpPoolSelect, Vec<usize>)>,
-        policy: ProxyPolicyPlan,
+        policy: Box<ProxyPolicyPlan>,
         cache: Option<CachePolicyBlueprint>,
     },
     Fixed(FixedResponsePlan),

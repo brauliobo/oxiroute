@@ -76,7 +76,7 @@ async fn http_falls_back_to_the_second_address_without_route_retry_budget() {
             pool: Arc::clone(&plan),
             rescue_pool: None,
             select: None,
-            policy,
+            policy: Box::new(policy),
         }),
         policy: crate::http::action::RoutePolicyPlan::compile(
             oxiroute_config::HttpRoutePolicy::default(),

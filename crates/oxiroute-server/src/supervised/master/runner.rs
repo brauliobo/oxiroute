@@ -294,7 +294,7 @@ impl MasterRunner {
             let message = "the configuration cannot run under the supervising master";
             reports.reject(
                 master,
-                refusal(file, "E_UNSUPPORTED_CONFIG", message, error),
+                refusal(file, "E_UNSUPPORTED_CONFIG", message, error.to_string()),
             );
             return Ok(());
         }
@@ -328,7 +328,10 @@ impl MasterRunner {
             Ok(reservations) => reservations,
             Err(error) => {
                 let message = "the configuration's listeners cannot be bound";
-                reports.reject(master, refusal(file, "E_LISTENER_BIND", message, error));
+                reports.reject(
+                    master,
+                    refusal(file, "E_LISTENER_BIND", message, error.to_string()),
+                );
                 return Ok(());
             }
         };
@@ -336,38 +339,21 @@ impl MasterRunner {
             Ok(listeners) => listeners,
             Err(error) => {
                 let message = "the configuration's listeners cannot be handed to a worker";
-                reports.reject(master, refusal(file, "E_LISTENER_EXPORT", message, error));
+                reports.reject(
+                    master,
+                    refusal(file, "E_LISTENER_EXPORT", message, error.to_string()),
+                );
                 return Ok(());
             }
         };
         let changes = book.active_manifest.changes(listeners.manifest());
         let manifest = listeners.manifest().clone();
 
-        let candidate = self.next_launch_document(
-            catalog,
-            coordinator.canonical_path(),
-            new_config.clone(),
-            revision.clone(),
-        )?;
-        catalog.begin_candidate(candidate)?;
-        let candidate = worker_input(
-            catalog
-                .candidate()
-                .expect("candidate was inserted immediately before launch"),
-        );
+        let candidate = self.begin_candidate(catalog, coordinator, new_config, &revision)?;
         book.begin(reservations, manifest, &changes, &revision);
         reports.candidate_file = Some(file.clone());
         reports.accept(master);
-        let window = retirement_window(
-            &catalog.active().payload().config,
-            std::env::var_os(RELOAD_DRAIN_ENV).as_deref(),
-        );
-        info!(
-            "supervised master lets the replaced worker drain for up to {} seconds",
-            window.as_secs()
-        );
-        reports.retired.begin(window);
-        master.set_retirement_deadline(window + RETIREMENT_BACKSTOP);
+        begin_retirement(master, catalog, reports);
         if let Err(error) =
             master.replace_with_listeners(factory, candidate, listeners, Instant::now())
         {
@@ -379,6 +365,25 @@ impl MasterRunner {
             return Ok(());
         }
         Ok(())
+    }
+
+    fn begin_candidate(
+        &self,
+        catalog: &mut GenerationCatalog,
+        coordinator: &CanonicalConfigCoordinator,
+        config: &ValidatedConfig,
+        revision: &EffectiveRevision,
+    ) -> Result<WorkerInput<WorkerCommand>, Box<dyn Error>> {
+        let document = self.next_launch_document(
+            catalog,
+            coordinator.canonical_path(),
+            config.clone(),
+            revision.clone(),
+        )?;
+        catalog.begin_candidate(document)?;
+        Ok(worker_input(catalog.candidate().expect(
+            "candidate was inserted immediately before launch",
+        )))
     }
 
     fn next_launch_document(
@@ -393,6 +398,19 @@ impl MasterRunner {
         let (instance_id, identity) = replacement_worker_identity(token, generation)?;
         self.build_launch_document(config_path, config, revision, instance_id, identity)
     }
+}
+
+fn begin_retirement(master: &mut Master, catalog: &GenerationCatalog, reports: &mut ConfigReports) {
+    let window = retirement_window(
+        &catalog.active().payload().config,
+        std::env::var_os(RELOAD_DRAIN_ENV).as_deref(),
+    );
+    info!(
+        "supervised master lets the replaced worker drain for up to {} seconds",
+        window.as_secs()
+    );
+    reports.retired.begin(window);
+    master.set_retirement_deadline(window + RETIREMENT_BACKSTOP);
 }
 
 fn log_master_events(events: &[MasterEvent]) {
