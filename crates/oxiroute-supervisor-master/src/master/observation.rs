@@ -4,6 +4,7 @@ use super::{ControlAck, ExitStatus, InstanceId, WorkerStatus};
 pub(super) enum Observation {
     Ack(ControlAck),
     Status(Box<WorkerStatus>),
+    State(Vec<u8>),
     Exit(ExitStatus),
     Disconnected,
     ProtocolFailure,

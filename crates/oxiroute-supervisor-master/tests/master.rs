@@ -304,6 +304,30 @@ fn replaces_a_with_b_using_the_same_tcp_and_unix_listener_identities() {
     );
 }
 
+#[test]
+fn a_replacement_activates_with_the_state_its_predecessor_reported_and_notices_reach_the_active() {
+    let mut harness = Harness::launch("echo-state");
+    harness.replace("echo-state", 2);
+    harness.until(committed_as_b);
+    harness.until(|master| {
+        master
+            .worker_status(WorkerRole::Active)
+            .is_some_and(|status| {
+                status.degradation.as_deref() == Some("state-of-the-quiesced-worker|")
+            })
+    });
+
+    harness.master.notify_active(b"rejected-file").unwrap();
+    harness.until(|master| {
+        master
+            .worker_status(WorkerRole::Active)
+            .is_some_and(|status| {
+                status.degradation.as_deref() == Some("state-of-the-quiesced-worker|rejected-file")
+            })
+    });
+    harness.shutdown();
+}
+
 fn committed_as_b(master: &Master<SystemActionExecutor>) -> bool {
     master.state() == MasterState::Running
         && master
