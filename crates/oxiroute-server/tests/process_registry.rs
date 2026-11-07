@@ -667,3 +667,42 @@ async fn the_lan_endpoint_needs_a_scoped_token_and_a_peer_in_range() {
     );
     server.shutdown();
 }
+
+#[tokio::test]
+async fn draining_a_registered_server_through_the_server_api_survives_restart() {
+    let farm = Farm::new();
+    let server = farm.start().await;
+    let (alpha, _a) = stub("alpha").await;
+    let (beta, _b) = stub("beta").await;
+    farm.register("render", "alpha", alpha, 60_000).await;
+    farm.register("render", "beta", beta, 60_000).await;
+    let (_, generations) = farm
+        .api("GET", "/api/v1/generations", TOKEN, &Value::Null)
+        .await;
+    let (status, _) = farm
+        .api(
+            "POST",
+            "/api/v1/servers/administrative-state",
+            TOKEN,
+            &json!({
+                "targets": [{"pool": "render", "server": "beta"}],
+                "expectedActiveRevision": generations["generation"]["activeRevision"],
+                "state": "drain",
+            }),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        farm.served_by("/", 8).await,
+        ["alpha"].map(String::from).into()
+    );
+
+    server.shutdown_gracefully();
+    let restarted = farm.start().await;
+    assert_eq!(
+        farm.served_by("/", 8).await,
+        ["alpha"].map(String::from).into(),
+        "the drain outlives a restart"
+    );
+    restarted.shutdown();
+}
