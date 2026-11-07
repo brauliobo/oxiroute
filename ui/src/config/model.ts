@@ -395,6 +395,12 @@ export interface HttpProxyTimeoutsConfig {
   total_ms: number | null
 }
 
+export interface HttpRescuePolicyConfig {
+  statuses: number[]
+  target: 'next_server' | 'pool'
+  pool: string | null
+}
+
 export interface HttpProxyPolicyConfig {
   upstream_host: HttpUpstreamHostConfig
   upstream_path_rewrite?: HttpProxyPathRewriteConfig | null
@@ -404,6 +410,7 @@ export interface HttpProxyPolicyConfig {
   response_cookie_attributes: HttpCookieAttributePolicyConfig[]
   retry: HttpRetryPolicyConfig
   timeouts: HttpProxyTimeoutsConfig
+  rescue: HttpRescuePolicyConfig | null
   cache: HttpCachePolicyConfig | null
 }
 

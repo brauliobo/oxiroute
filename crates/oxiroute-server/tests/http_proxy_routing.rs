@@ -24,11 +24,11 @@ use oxiroute_config::{
     HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipMinimumVersion,
     HttpGzipPolicy, HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPathRewrite,
     HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation, HttpRequestHeaderMutation,
-    HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety,
-    HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpSameSite, HttpService,
-    HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
-    HttpUpstreamHost, HttpVersionPolicy, Listener, Protocol, UpstreamAlgorithm, UpstreamEndpoint,
-    UpstreamPool, UpstreamServer,
+    HttpRequestHeaderValue, HttpRescuePolicy, HttpRescueTarget, HttpResponseHeaderMutation,
+    HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryTarget, HttpRetryTrigger, HttpRoute,
+    HttpRouteAction, HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
+    HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersionPolicy, Listener,
+    Protocol, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
 use oxiroute_import::nginx::{
     NginxDefaultErrorPageOverlay, NginxImportOptions, import_root_with_options,
@@ -2606,6 +2606,312 @@ async fn client_disconnect_cancels_the_pending_upstream_request() {
     })
     .await
     .expect("client disconnect test timed out");
+}
+
+/// An origin that answers every request with `status`, naming itself in the body and `X-Origin`.
+struct StatusOrigin {
+    address: SocketAddr,
+    bodies: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    task: JoinHandle<()>,
+}
+
+impl StatusOrigin {
+    async fn start(status: u16, name: &'static str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&bodies);
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("origin accept");
+                let mut request = read_request_head_bytes(&mut stream)
+                    .await
+                    .expect("origin request");
+                let head_end = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .expect("request head")
+                    + 4;
+                let head = String::from_utf8_lossy(&request[..head_end]).to_ascii_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .map_or(0, |value| value.trim().parse::<usize>().expect("length"));
+                let mut chunk = [0_u8; 1024];
+                while request.len() < head_end + length {
+                    let read = stream.read(&mut chunk).await.expect("origin body");
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                recorded
+                    .lock()
+                    .expect("recorded bodies")
+                    .push(request[head_end..].to_vec());
+                let response = format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nX-Origin: {name}\r\nConnection: close\r\n\r\n{name}",
+                    name.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        Self {
+            address,
+            bodies,
+            task,
+        }
+    }
+
+    fn hits(&self) -> usize {
+        self.bodies.lock().expect("recorded bodies").len()
+    }
+}
+
+impl Drop for StatusOrigin {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn rescue_route(statuses: &[u16], target: HttpRescueTarget, pool_name: Option<&str>) -> HttpRoute {
+    let mut route = route(None, "/", &[], "primary");
+    proxy_policy_mut(&mut route).rescue = Some(HttpRescuePolicy {
+        statuses: statuses.to_vec(),
+        target,
+        pool: pool_name.map(str::to_owned),
+    });
+    route
+}
+
+fn buffered_post_replay(route: &mut HttpRoute) {
+    route.policy.request_buffering = true;
+    let retry = &mut proxy_policy_mut(route).retry;
+    retry.method_safety = HttpRetryMethodSafety::All;
+    retry.body_safety = HttpRetryBodySafety::Buffered;
+}
+
+const JSON_POST: &[u8] = b"POST /api/chat HTTP/1.1\r\nHost: rescue.test\r\nContent-Type: application/json\r\nContent-Length: 16\r\nConnection: close\r\n\r\n{\"model\":\"qwen\"}";
+
+#[tokio::test]
+async fn rescue_replays_a_rescued_status_on_the_other_server() {
+    timeout(TEST_TIMEOUT, async {
+        let missing = StatusOrigin::start(404, "missing-model").await;
+        let healthy = StatusOrigin::start(200, "has-model").await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("primary", &[missing.address, healthy.address])],
+            vec![rescue_route(&[404], HttpRescueTarget::NextServer, None)],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET /api/tags HTTP/1.1\r\nHost: rescue.test\r\n")
+            .await;
+
+        assert_eq!(response.status, 200, "response: {}", response.text());
+        assert_eq!(response.body(), b"has-model");
+        assert_eq!((missing.hits(), healthy.hits()), (1, 1));
+        proxy.wait_for_no_active_leases().await;
+        let rescues = proxy.metrics.snapshot().expect("metrics").process.rescues;
+        assert_eq!(rescues.len(), 1);
+        assert_eq!(
+            (
+                rescues[0].route.as_str(),
+                rescues[0].status,
+                rescues[0].count
+            ),
+            ("0", 404, 1)
+        );
+        proxy.finish().await;
+    })
+    .await
+    .expect("rescue test timed out");
+}
+
+#[tokio::test]
+async fn rescue_delivers_the_last_backend_response_unchanged_when_every_server_answers_it() {
+    timeout(TEST_TIMEOUT, async {
+        let first = StatusOrigin::start(404, "first-404").await;
+        let second = StatusOrigin::start(404, "second-404").await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("primary", &[first.address, second.address])],
+            vec![rescue_route(&[404], HttpRescueTarget::NextServer, None)],
+            3,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET /api/tags HTTP/1.1\r\nHost: rescue.test\r\n")
+            .await;
+
+        assert_eq!(response.status, 404, "response: {}", response.text());
+        assert_eq!(response.header("x-origin"), Some("second-404"));
+        assert_eq!(response.body(), b"second-404");
+        assert_eq!(
+            (first.hits(), second.hits()),
+            (1, 1),
+            "each server at most once"
+        );
+        proxy.finish().await;
+    })
+    .await
+    .expect("rescue exhaustion test timed out");
+}
+
+#[tokio::test]
+async fn rescue_spends_the_retry_budget() {
+    timeout(TEST_TIMEOUT, async {
+        let origins = [
+            StatusOrigin::start(404, "one").await,
+            StatusOrigin::start(404, "two").await,
+            StatusOrigin::start(404, "three").await,
+        ];
+        let addresses = origins
+            .iter()
+            .map(|origin| origin.address)
+            .collect::<Vec<_>>();
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("primary", &addresses)],
+            vec![rescue_route(&[404], HttpRescueTarget::NextServer, None)],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: rescue.test\r\n")
+            .await;
+
+        assert_eq!(response.status, 404);
+        assert_eq!(origins.iter().map(StatusOrigin::hits).sum::<usize>(), 2);
+        proxy.finish().await;
+    })
+    .await
+    .expect("rescue budget test timed out");
+}
+
+#[tokio::test]
+async fn rescue_leaves_unlisted_statuses_alone() {
+    timeout(TEST_TIMEOUT, async {
+        let failing = StatusOrigin::start(500, "failing").await;
+        let spare = StatusOrigin::start(200, "spare").await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("primary", &[failing.address, spare.address])],
+            vec![rescue_route(&[404], HttpRescueTarget::NextServer, None)],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: rescue.test\r\n")
+            .await;
+
+        assert_eq!(response.status, 500);
+        assert_eq!(spare.hits(), 0);
+        proxy.finish().await;
+    })
+    .await
+    .expect("unlisted status test timed out");
+}
+
+#[tokio::test]
+async fn rescue_replays_a_buffered_post_with_its_body() {
+    timeout(TEST_TIMEOUT, async {
+        let missing = StatusOrigin::start(404, "missing-model").await;
+        let healthy = StatusOrigin::start(200, "has-model").await;
+        let mut route = rescue_route(&[404], HttpRescueTarget::NextServer, None);
+        buffered_post_replay(&mut route);
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("primary", &[missing.address, healthy.address])],
+            vec![route],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy.request_bytes(JSON_POST).await;
+
+        assert_eq!(response.status, 200, "response: {}", response.text());
+        assert_eq!(
+            healthy.bodies.lock().expect("bodies").as_slice(),
+            [b"{\"model\":\"qwen\"}".to_vec()]
+        );
+        proxy.finish().await;
+    })
+    .await
+    .expect("buffered rescue test timed out");
+}
+
+#[tokio::test]
+async fn rescue_does_not_replay_a_post_outside_the_method_and_body_safety_rules() {
+    timeout(TEST_TIMEOUT, async {
+        let missing = StatusOrigin::start(404, "missing-model").await;
+        let healthy = StatusOrigin::start(200, "has-model").await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("primary", &[missing.address, healthy.address])],
+            vec![rescue_route(&[404], HttpRescueTarget::NextServer, None)],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy.request_bytes(JSON_POST).await;
+
+        assert_eq!(response.status, 404);
+        assert_eq!(response.body(), b"missing-model");
+        assert_eq!(healthy.hits(), 0);
+        proxy.finish().await;
+    })
+    .await
+    .expect("unsafe rescue test timed out");
+}
+
+#[tokio::test]
+async fn rescue_can_replay_on_a_named_pool() {
+    timeout(TEST_TIMEOUT, async {
+        let missing = StatusOrigin::start(404, "missing-model").await;
+        let spare = StatusOrigin::start(200, "spare-pool").await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![
+                pool("primary", &[missing.address]),
+                pool("spare", &[spare.address]),
+            ],
+            vec![rescue_route(&[404], HttpRescueTarget::Pool, Some("spare"))],
+            1,
+            1,
+        )
+        .await;
+
+        let rescued = proxy
+            .request("GET / HTTP/1.1\r\nHost: rescue.test\r\n")
+            .await;
+        assert_eq!(rescued.status, 200, "response: {}", rescued.text());
+        assert_eq!(rescued.body(), b"spare-pool");
+        assert_eq!((missing.hits(), spare.hits()), (1, 1));
+        proxy.finish().await;
+
+        let still_missing = StatusOrigin::start(404, "spare-missing").await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![
+                pool("primary", &[missing.address]),
+                pool("spare", &[still_missing.address]),
+            ],
+            vec![rescue_route(&[404], HttpRescueTarget::Pool, Some("spare"))],
+            1,
+            1,
+        )
+        .await;
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: rescue.test\r\n")
+            .await;
+        assert_eq!(response.status, 404);
+        assert_eq!(response.body(), b"spare-missing");
+        proxy.finish().await;
+    })
+    .await
+    .expect("rescue pool test timed out");
 }
 
 #[tokio::test]

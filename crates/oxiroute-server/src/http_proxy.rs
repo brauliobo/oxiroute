@@ -39,8 +39,9 @@ use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
-        HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyPolicyPlan, RedirectLocationPlan,
-        StaticErrorTarget, StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
+        HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan, ProxyPolicyPlan,
+        RedirectLocationPlan, StaticErrorTarget, StaticFile, StaticRequestDecision,
+        StaticServeError, StaticTarget,
     },
     http_cache::{
         CacheFailureClass, CacheRequest, CacheStart, CacheStartFailure, CacheTransaction,
@@ -122,6 +123,8 @@ pub struct HttpRequestContext {
     replay_retryable: bool,
     retry_server: Option<String>,
     retry_delay_pending: bool,
+    prior_attempts: usize,
+    rescued: bool,
     response_status_override: Option<u16>,
     response_header_overrides: Vec<(HeaderName, HeaderValue)>,
     started_at: Instant,
@@ -166,6 +169,27 @@ impl HttpRequestContext {
             &mut self.observed_sent,
             false,
         );
+    }
+
+    /// Servers tried over the whole request, including those of a rescue pool already left.
+    fn attempt_count(&self) -> usize {
+        self.prior_attempts + self.attempted_upstreams.len()
+    }
+
+    /// Moves a rescued request to the route's rescue pool, if any; each pool tries a server once.
+    fn begin_rescue(&mut self, status: u16) {
+        self.rescued = true;
+        if let Some(rescue_pool) = proxy_action(self).rescue_pool.clone() {
+            self.prior_attempts += self.attempted_upstreams.len();
+            self.attempted_upstreams.clear();
+            self.pool = Some(rescue_pool);
+        }
+        let route = proxy_route(self).route_id.clone();
+        debug!(
+            "rescuing route {route} status {status} after {} tries",
+            self.attempt_count()
+        );
+        self.listener.record_rescue(&route, status);
     }
 
     fn release_lease(&mut self) {
@@ -288,6 +312,8 @@ impl ProxyHttp for HttpReverseProxy {
             replay_retryable: false,
             retry_server: None,
             retry_delay_pending: false,
+            prior_attempts: 0,
+            rescued: false,
             response_status_override: None,
             response_header_overrides: Vec::new(),
             started_at,
@@ -530,8 +556,8 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.release_lease();
         }
         let policy = proxy_policy(ctx);
-        let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
-        let retry_target = policy.target_for_retry(ctx.attempted_upstreams.len());
+        let has_budget = ctx.attempt_count() <= usize::from(policy.max_retries);
+        let retry_target = retry_target_for(ctx, false);
         let target_available = match retry_target {
             HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
             HttpRetryTarget::NextServer => ctx
@@ -569,13 +595,14 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
         _client_reused: bool,
     ) -> Box<Error> {
-        if let Some(failure) = passive_failure_for_error(&error) {
+        let rescue_only = is_rescue_only(&error, proxy_policy(ctx));
+        if let Some(failure) = passive_failure_for_error(&error).filter(|_| !rescue_only) {
             ctx.record_passive_failure(failure);
         }
         ctx.release_lease();
         let policy = proxy_policy(ctx);
         let refused = is_pool_unavailable(&error);
-        let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
+        let has_budget = ctx.attempt_count() <= usize::from(policy.max_retries);
         let retry_target = retry_target_for(ctx, refused);
         let target_available = match retry_target {
             HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
@@ -826,9 +853,13 @@ impl ProxyHttp for HttpReverseProxy {
         session.set_write_timeout(Some(write_timeout));
         let refused = response.status == StatusCode::SERVICE_UNAVAILABLE
             && response.headers.contains_key(POOL_UNAVAILABLE_HEADER);
-        let retries_on_status =
-            refused || proxy_policy(ctx).retries_on_status(response.status.as_u16());
-        if retries_on_status && response_status_retryable(session, ctx, refused) {
+        let status = response.status.as_u16();
+        let rescued = !refused && proxy_policy(ctx).rescues_status(status);
+        let retries_on_status = refused || rescued || proxy_policy(ctx).retries_on_status(status);
+        if retries_on_status && response_status_retryable(session, ctx, refused, rescued) {
+            if rescued {
+                ctx.begin_rescue(status);
+            }
             let mut error = if refused {
                 Error::new_up(POOL_UNAVAILABLE)
             } else {
@@ -837,7 +868,7 @@ impl ProxyHttp for HttpReverseProxy {
             error.set_retry(true);
             return Err(error);
         }
-        if retries_on_status {
+        if retries_on_status && !rescued {
             ctx.record_passive_failure(HealthFailure::UnexpectedStatus);
         }
         let had_uncacheable_framing = response.headers.contains_key(TRANSFER_ENCODING)
@@ -2199,11 +2230,14 @@ fn static_validator_headers(
 }
 
 fn proxy_policy(ctx: &HttpRequestContext) -> &ProxyPolicyPlan {
-    let route = proxy_route(ctx);
-    let HttpActionPlan::Proxy(proxy) = &route.action else {
+    &proxy_action(ctx).policy
+}
+
+fn proxy_action(ctx: &HttpRequestContext) -> &ProxyActionPlan {
+    let HttpActionPlan::Proxy(proxy) = &proxy_route(ctx).action else {
         unreachable!("upstream hooks only run for proxy actions");
     };
-    &proxy.policy
+    proxy
 }
 
 fn proxy_route(ctx: &HttpRequestContext) -> &HttpRoutePlan {
@@ -2511,16 +2545,21 @@ fn connect_retry_trigger(error: &Error) -> Option<HttpRetryTrigger> {
 }
 
 /// A refused request was never forwarded, so it may move to the next server whatever its method or
-/// body, within the retry budget.
+/// body, within the retry budget. A rescued request always moves to another server.
 fn retry_target_for(ctx: &HttpRequestContext, refused: bool) -> HttpRetryTarget {
-    if refused {
+    if refused || ctx.rescued {
         HttpRetryTarget::NextServer
     } else {
-        proxy_policy(ctx).target_for_retry(ctx.attempted_upstreams.len())
+        proxy_policy(ctx).target_for_retry(ctx.attempt_count())
     }
 }
 
-fn response_status_retryable(session: &Session, ctx: &HttpRequestContext, refused: bool) -> bool {
+fn response_status_retryable(
+    session: &Session,
+    ctx: &HttpRequestContext,
+    refused: bool,
+    rescued: bool,
+) -> bool {
     let eligible = if refused {
         ctx.connection_retryable
     } else {
@@ -2534,16 +2573,34 @@ fn response_status_retryable(session: &Session, ctx: &HttpRequestContext, refuse
         return false;
     }
     let policy = proxy_policy(ctx);
-    let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
-    let retry_target = retry_target_for(ctx, refused);
-    let target_available = match retry_target {
-        HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
-        HttpRetryTarget::NextServer => ctx
+    let has_budget = ctx.attempt_count() <= usize::from(policy.max_retries);
+    let retry_target = retry_target_for(ctx, refused || rescued);
+    let target_available = match (retry_target, rescue_pool_to_enter(ctx, rescued)) {
+        (_, Some(rescue_pool)) => rescue_pool.has_unattempted(&[]),
+        (HttpRetryTarget::SameServer, None) => ctx.attempted_upstreams.last().is_some(),
+        (HttpRetryTarget::NextServer, None) => ctx
             .pool
             .as_ref()
             .is_some_and(|pool| pool.has_unattempted(&ctx.attempted_upstreams)),
     };
     has_budget && target_available && ctx.remaining(true).is_ok()
+}
+
+/// The rescue pool a rescued request is about to move to, until it has moved.
+fn rescue_pool_to_enter(ctx: &HttpRequestContext, rescued: bool) -> Option<&Arc<UpstreamPlan>> {
+    let rescue_pool = proxy_action(ctx).rescue_pool.as_ref()?;
+    (rescued
+        && !ctx
+            .pool
+            .as_ref()
+            .is_some_and(|pool| Arc::ptr_eq(pool, rescue_pool)))
+    .then_some(rescue_pool)
+}
+
+/// A status listed only by `rescue` is a routing decision, not a sign of an unhealthy server.
+fn is_rescue_only(error: &Error, policy: &ProxyPolicyPlan) -> bool {
+    matches!(error.etype(), ErrorType::HTTPStatus(status)
+        if policy.rescues_status(*status) && !policy.retries_on_status(*status))
 }
 
 fn response_is_retryable(session: &Session) -> bool {
@@ -2560,7 +2617,9 @@ fn request_body_replayable(session: &Session) -> bool {
 
 fn retryable_upstream_error(error: &Error, session: &Session, policy: &ProxyPolicyPlan) -> bool {
     match error.etype() {
-        ErrorType::HTTPStatus(status) => policy.retries_on_status(*status),
+        ErrorType::HTTPStatus(status) => {
+            policy.retries_on_status(*status) || policy.rescues_status(*status)
+        }
         _ => {
             response_retry_trigger(error, session).is_some_and(|trigger| policy.retries_on(trigger))
         }
@@ -2724,6 +2783,26 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
+
+    #[test]
+    fn rescue_only_statuses_are_not_passive_failures() {
+        let policy = ProxyPolicyPlan::compile(&HttpProxyPolicy {
+            retry: HttpRetryPolicy {
+                response_statuses: vec![503],
+                ..HttpRetryPolicy::default()
+            },
+            rescue: Some(oxiroute_config::HttpRescuePolicy {
+                statuses: vec![404, 503],
+                target: oxiroute_config::HttpRescueTarget::NextServer,
+                pool: None,
+            }),
+            ..HttpProxyPolicy::default()
+        });
+        let status = |code| Error::new_up(ErrorType::HTTPStatus(code));
+        assert!(is_rescue_only(&status(404), &policy));
+        assert!(!is_rescue_only(&status(503), &policy));
+        assert!(!is_rescue_only(&status(500), &policy));
+    }
 
     #[test]
     fn upstream_path_rewrite_preserves_the_query() {
@@ -2892,6 +2971,7 @@ mod tests {
             access: None,
             action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
                 pool: Arc::clone(&plan),
+                rescue_pool: None,
                 policy: ProxyPolicyPlan::compile(&policy),
             }),
             policy: crate::http_action::RoutePolicyPlan::compile(
@@ -2982,6 +3062,7 @@ mod tests {
                     None,
                     UpstreamConnectionReuse::Safe,
                 )),
+                rescue_pool: None,
                 policy,
             }),
             policy: crate::http_action::RoutePolicyPlan::compile(
@@ -3710,6 +3791,7 @@ mod tests {
             access: None,
             action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
                 pool: Arc::clone(&plan),
+                rescue_pool: None,
                 policy,
             }),
             policy: crate::http_action::RoutePolicyPlan::compile(

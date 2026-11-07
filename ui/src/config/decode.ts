@@ -439,8 +439,15 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
     isHttpRetryTriggers(value.retry.triggers, hasResponseStatuses || value.retry.max_retries === 0) &&
     ((value.retry.method_safety === 'get_head' && value.retry.body_safety === 'empty') ||
       (value.retry.method_safety === 'all' && value.retry.body_safety === 'buffered')) &&
-    isHttpProxyTimeouts(value.timeouts) &&
+    isHttpProxyTimeouts(value.timeouts) && isHttpRescue(value.rescue) &&
     (value.cache === null || isHttpCachePolicy(value.cache))
+}
+
+function isHttpRescue(value: unknown): boolean {
+  return value === null || (isRecord(value) && isHttpRetryStatuses(value.statuses) &&
+    Array.isArray(value.statuses) && value.statuses.length > 0 &&
+    ((value.target === 'next_server' && value.pool === null) ||
+      (value.target === 'pool' && typeof value.pool === 'string')))
 }
 
 function isHttpProxyTimeouts(value: unknown): boolean {
@@ -489,7 +496,7 @@ function isHttpRetryTriggers(value: unknown, allowEmpty = false): value is HttpR
 
 function isHttpRetryStatuses(value: unknown): value is number[] {
   return Array.isArray(value) && value.length <= 100 &&
-    value.every((status) => integerInRange(status, 500, 599)) &&
+    value.every((status) => integerInRange(status, 100, 599)) &&
     new Set(value).size === value.length
 }
 

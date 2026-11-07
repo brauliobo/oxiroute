@@ -469,8 +469,9 @@ Current constraints:
   selectable (for example every server is drained), was never forwarded, so it is redispatched to
   the next server of the pool like a connection failure: any non-upgrade request, within
   `max_retries`, and whatever the triggers, `response_statuses`, `target` and replay-safety policy
-  say. `response_statuses` optionally lists unique 5xx
-  statuses that trigger bounded retries; a status-only policy is valid when its trigger list is
+  say. `response_statuses` optionally lists unique
+  statuses between `100` and `599` (a 4xx included) that trigger bounded retries and count as
+  passive failures of the server; a status-only policy is valid when its trigger list is
   empty. The `empty_response`, `response_timeout`, and `junk_response` triggers cover bounded
   pre-body response failures. Trying alternate addresses for one DNS endpoint is transport fallback
   and does not consume `max_retries`; route retry begins only after that bounded address set is
@@ -481,6 +482,18 @@ Current constraints:
   `final_redispatch = true` changes only the last configured retry from `same_server` to
   `next_server`; it requires positive `max_retries` and `target = "same_server"` and otherwise
   fails validation. It defaults to `false`.
+- Proxy `policy.rescue` (default `null`) replays a request on another server when the backend
+  answers a status of `statuses` (1 to 100 unique statuses between `100` and `599`, for example a
+  `404` from a node that lacks a model), without treating that status as a server failure. It spends
+  the retry budget (`retry.max_retries` MUST be positive) and follows the same method and body safety
+  rules as response-phase retries, so a `POST` is rescued only with the `all`/`buffered` pair. With
+  `target = "next_server"` (default, `pool = null`) the replay goes to a server of the route pool
+  that was not tried yet; with `target = "pool"` and `pool` naming another pool, it goes to that pool,
+  each of its servers at most once. A rescue replay never targets the same server, whatever
+  `retry.target`. When the retry budget or the candidate servers run out, or the request is not
+  replayable, the client receives the last backend response unchanged (status, headers, body) and
+  nothing is synthesized. Rescues are counted in `oxiroute_http_rescues_total{route,status}` and
+  logged at debug level. Rescue is not supported for HTTP/3 upstream pools and is rejected there.
 - Proxy `policy.timeouts` optionally refines the upstream timeouts of one route, each phase `null` by
   default and between `1` and `86400000` milliseconds: `connect_ms` (per attempt, until the upstream
   connection is established), `header_ms` (per attempt, from the sent request until the first

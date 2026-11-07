@@ -330,6 +330,7 @@ pub(crate) enum HttpActionPlan {
 #[derive(Debug)]
 pub(crate) struct ProxyActionPlan {
     pub(crate) pool: Arc<UpstreamPlan>,
+    pub(crate) rescue_pool: Option<Arc<UpstreamPlan>>,
     pub(crate) policy: ProxyPolicyPlan,
 }
 
@@ -350,6 +351,7 @@ pub(crate) struct ProxyPolicyPlan {
     pub(crate) retry_delay: Duration,
     pub(crate) final_redispatch: bool,
     pub(crate) timeouts: HttpProxyTimeouts,
+    pub(crate) rescue_statuses: Box<[u16]>,
     pub(crate) cache: Option<Arc<HttpCachePlan>>,
     pub(crate) nginx_error_server: Option<HeaderValue>,
 }
@@ -380,6 +382,7 @@ impl ProxyPolicyPlan {
             retry_delay: self.retry_delay,
             final_redispatch: self.final_redispatch,
             timeouts: self.timeouts,
+            rescue_statuses: self.rescue_statuses.clone(),
             cache,
             nginx_error_server: self.nginx_error_server.clone(),
         }
@@ -450,6 +453,10 @@ impl ProxyPolicyPlan {
             retry_delay: Duration::from_millis(policy.retry.delay_ms),
             final_redispatch: policy.retry.final_redispatch,
             timeouts: policy.timeouts,
+            rescue_statuses: policy
+                .rescue
+                .as_ref()
+                .map_or_else(Box::default, |rescue| rescue.statuses.clone().into()),
             cache,
             nginx_error_server,
         }
@@ -476,6 +483,10 @@ impl ProxyPolicyPlan {
 
     pub(crate) fn retries_on_status(&self, status: u16) -> bool {
         self.retry_response_statuses.contains(&status)
+    }
+
+    pub(crate) fn rescues_status(&self, status: u16) -> bool {
+        self.rescue_statuses.contains(&status)
     }
 
     pub(crate) fn target_for_retry(&self, attempts: usize) -> HttpRetryTarget {

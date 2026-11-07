@@ -184,10 +184,10 @@
         item-label="status"
         field-path="http_services[].routes[].action.policy.retry.response_statuses"
         :default-value="500"
-        :min="500"
+        :min="100"
         :max="599"
         :max-items="100"
-        hint="Retry only on explicitly selected upstream 5xx responses."
+        hint="Retry on explicitly selected upstream response statuses; these also count as passive health failures."
         @update:model-value="action.policy.retry.response_statuses = $event"
       )
 
@@ -208,6 +208,38 @@
         label.field(data-field="http_services[].routes[].action.policy.timeouts.total_ms")
           span Total request deadline (ms)
           input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.total_ms ?? ''" @input="setTimeoutMs('total_ms', $event)")
+
+    fieldset.object-block(data-field="http_services[].routes[].action.policy.rescue")
+      legend Status rescue
+      label.enable-row
+        input(type="checkbox" :checked="action.policy.rescue !== null" @change="toggleRescue")
+        span Replay a request on another server when the backend answers a listed status
+      template(v-if="action.policy.rescue")
+        small.field-hint
+          | Spends the retry budget and follows the method and body safety rules. When no candidate is left, the client receives the last backend response unchanged.
+        NumberListField(
+          :model-value="action.policy.rescue.statuses"
+          label="Rescued statuses"
+          item-label="status"
+          field-path="http_services[].routes[].action.policy.rescue.statuses"
+          :default-value="404"
+          :min="100"
+          :max="599"
+          :min-items="1"
+          :max-items="100"
+          @update:model-value="action.policy.rescue.statuses = $event"
+        )
+        .field-grid
+          label.field(data-field="http_services[].routes[].action.policy.rescue.target")
+            span Replay target
+            select(:value="action.policy.rescue.target" @change="setRescueTarget")
+              option(value="next_server") Another server of the pool
+              option(value="pool") A rescue pool
+          label.field(v-if="action.policy.rescue.target === 'pool'" data-field="http_services[].routes[].action.policy.rescue.pool")
+            span Rescue pool
+            select(v-model="action.policy.rescue.pool" required)
+              option(value="") Select a pool
+              option(v-for="name in poolNames.filter((pool) => pool !== action.upstream_pool)" :key="name" :value="name") {{ name }}
 
     HttpCachePolicyEditor(
       :model-value="action.policy.cache"
@@ -255,6 +287,19 @@ const retryTriggerLabels: Record<HttpRetryTrigger, string> = {
 function setTimeoutMs(key: keyof HttpProxyActionConfig['policy']['timeouts'], event: Event): void {
   const value = (event.target as HTMLInputElement).value
   props.action.policy.timeouts[key] = value === '' ? null : Number(value)
+}
+
+function toggleRescue(event: Event): void {
+  props.action.policy.rescue = (event.target as HTMLInputElement).checked
+    ? { statuses: [404], target: 'next_server', pool: null }
+    : null
+}
+
+function setRescueTarget(event: Event): void {
+  const rescue = props.action.policy.rescue
+  if (!rescue) return
+  rescue.target = (event.target as HTMLSelectElement).value as 'next_server' | 'pool'
+  rescue.pool = rescue.target === 'pool' ? '' : null
 }
 
 function setMaxRetries(event: Event): void {

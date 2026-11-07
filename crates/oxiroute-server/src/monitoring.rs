@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque, hash_map::Entry},
     error::Error,
     fmt, io,
     sync::{
@@ -1264,6 +1264,7 @@ impl RuntimeMetrics {
                     .process_admission
                     .retry_attempts
                     .load(Ordering::Relaxed),
+                rescues: self.inner.process_admission.rescue_snapshots(),
                 resident_memory_bytes,
                 virtual_memory_bytes,
                 thread_count,
@@ -1855,6 +1856,17 @@ impl ListenerMetrics {
         );
     }
 
+    /// Accounts for a request replayed because the backend answered a rescue status.
+    pub fn record_rescue(&self, route: &str, status: u16) {
+        let mut rescues = self
+            .process
+            .rescues
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = rescues.entry((route.to_owned(), status)).or_default();
+        *count = count.saturating_add(1);
+    }
+
     /// Records one terminal reverse-proxy HTTP operation and its latency sample.
     ///
     /// # Errors
@@ -2051,6 +2063,7 @@ struct ProcessAdmissionState {
     limit: AtomicU64,
     rejected: AtomicU64,
     retry_attempts: AtomicU64,
+    rescues: Mutex<BTreeMap<(String, u16), u64>>,
 }
 
 impl ProcessAdmissionState {
@@ -2061,7 +2074,21 @@ impl ProcessAdmissionState {
             limit: AtomicU64::new(encode_limit(limit)),
             rejected: AtomicU64::new(0),
             retry_attempts: AtomicU64::new(0),
+            rescues: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    fn rescue_snapshots(&self) -> Vec<RescueSnapshot> {
+        self.rescues
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|((route, status), count)| RescueSnapshot {
+                route: route.clone(),
+                status: *status,
+                count: *count,
+            })
+            .collect()
     }
 
     fn limit(&self) -> Option<u64> {
@@ -2688,10 +2715,20 @@ pub struct ProcessSnapshot {
     pub rejected_connections: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub retry_attempts: u64,
+    #[serde(skip)]
+    pub rescues: Vec<RescueSnapshot>,
     pub resident_memory_bytes: Option<u64>,
     pub virtual_memory_bytes: Option<u64>,
     pub thread_count: Option<u64>,
     pub open_file_descriptors: Option<u64>,
+}
+
+/// Requests replayed by a route's rescue policy, by route and rescued backend status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RescueSnapshot {
+    pub route: String,
+    pub status: u16,
+    pub count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

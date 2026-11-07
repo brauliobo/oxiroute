@@ -8,17 +8,18 @@ use oxiroute_config::{
     DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HealthStartup,
     HttpAccessPolicy, HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector,
     HttpProxyPathRewrite, HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation,
-    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
-    HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy, HttpRetryTarget, HttpRetryTrigger,
-    HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService, HttpStaticMimePolicy,
-    HttpStaticPathMapping, HttpUpstreamHost, HttpVersion, HttpVersionPolicy, L4Service, Listener,
-    ListenerBind, Management, PassiveHealthPolicy, PassiveObserve, PassiveOnError, Protocol,
-    RtmpAccessPolicy, RtmpApplication, RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode,
-    RtmpExecNetworkPolicy, RtmpExecProfile, RtmpExecTrigger, RtmpRecorder,
-    RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
-    RtmpService, RtmpSessionCeilings, TlsClientAuthMode, TlsClientAuthPolicy, TlsPolicy,
-    TlsProfile, TlsSessionCache, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse,
-    UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
+    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpRescuePolicy, HttpRescueTarget,
+    HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy,
+    HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
+    HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
+    L4Service, Listener, ListenerBind, Management, PassiveHealthPolicy, PassiveObserve,
+    PassiveOnError, Protocol, RtmpAccessPolicy, RtmpApplication, RtmpExecEnvironment,
+    RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy, RtmpExecProfile,
+    RtmpExecTrigger, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
+    RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings,
+    TlsClientAuthMode, TlsClientAuthPolicy, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion,
+    UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
+    UpstreamServer, UpstreamTls,
 };
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -361,6 +362,11 @@ fn test_proxy_policy() -> HttpProxyPolicy {
             idle_ms: Some(1_500),
             total_ms: Some(9_000),
         },
+        rescue: Some(HttpRescuePolicy {
+            statuses: vec![404, 503],
+            target: HttpRescueTarget::Pool,
+            pool: Some("web-backends".into()),
+        }),
         cache: None,
     }
 }
@@ -482,6 +488,7 @@ fn test_http_services() -> Vec<HttpService> {
                         response_cookie_attributes: Vec::new(),
                         retry: HttpRetryPolicy::default(),
                         timeouts: HttpProxyTimeouts::default(),
+                        rescue: None,
                         cache: None,
                     },
                 },
@@ -1209,6 +1216,7 @@ fn service_mutations() -> Vec<Mutation> {
                 panic!("proxy action");
             };
             *upstream_pool = "web-backends".into();
+            policy.rescue = None;
             policy.retry.max_retries = 1;
         }),
         ("L4 service order", |config| config.l4_services.reverse()),

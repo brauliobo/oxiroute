@@ -319,7 +319,31 @@ pub struct HttpProxyPolicy {
     #[serde(default)]
     pub timeouts: HttpProxyTimeouts,
     #[serde(default)]
+    pub rescue: Option<HttpRescuePolicy>,
+    #[serde(default)]
     pub cache: Option<Box<HttpCachePolicy>>,
+}
+
+/// Replays a request that a backend answered with one of `statuses` (any status, for example a 404
+/// from a node that lacks a model) on another server, spending the route retry budget. When no
+/// candidate is left, the client receives the last backend response unchanged.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpRescuePolicy {
+    pub statuses: Vec<u16>,
+    #[serde(default)]
+    pub target: HttpRescueTarget,
+    /// The pool replayed to when `target` is `pool`; otherwise null.
+    #[serde(default)]
+    pub pool: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpRescueTarget {
+    #[default]
+    NextServer,
+    Pool,
 }
 
 /// Optional per-phase upstream timeouts of one proxy route; an omitted phase falls back to the

@@ -1053,6 +1053,71 @@ fn validates_proxy_timeouts_and_roundtrips_them() {
 }
 
 #[test]
+fn validates_rescue_and_any_retry_status() {
+    let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
+    let rescue = proxy_route(
+        "",
+        r#"              retry = { max_retries = 2, response_statuses = { 404, 418 }, triggers = {} },
+              rescue = { statuses = { 404 } },"#,
+    );
+    let loaded = load_lua(&config(&rescue, endpoint)).expect("rescue policy");
+    let policy = &first_route(&config(&rescue, endpoint))["action"]["policy"];
+    assert_eq!(policy["retry"]["response_statuses"], json!([404, 418]));
+    assert_eq!(
+        policy["rescue"],
+        json!({ "statuses": [404], "target": "next_server", "pool": null })
+    );
+    let rendered = render_lua(&loaded).expect("render rescue");
+    assert_eq!(load_lua(&rendered).expect("rescue roundtrip"), loaded);
+
+    for (policy, expected) in [
+        (
+            "retry = { max_retries = 1, response_statuses = { 99 } },",
+            "response_statuses",
+        ),
+        (
+            "retry = { max_retries = 1, response_statuses = { 600 } },",
+            "response_statuses",
+        ),
+        ("rescue = { statuses = { 404 } },", "rescue"),
+        (
+            "retry = { max_retries = 1 }, rescue = { statuses = {} },",
+            "sequence",
+        ),
+        (
+            "retry = { max_retries = 1 }, rescue = { statuses = { 99 } },",
+            "rescue",
+        ),
+        (
+            "retry = { max_retries = 1 }, rescue = { statuses = { 404, 404 } },",
+            "rescue",
+        ),
+        (
+            "retry = { max_retries = 1 }, rescue = { statuses = { 404 }, target = \"pool\" },",
+            "rescue",
+        ),
+        (
+            "retry = { max_retries = 1 }, rescue = { statuses = { 404 }, pool = \"web\" },",
+            "rescue",
+        ),
+        (
+            "retry = { max_retries = 1 }, rescue = { statuses = { 404 }, target = \"pool\", pool = \"web\" },",
+            "rescue",
+        ),
+        (
+            "retry = { max_retries = 1 }, rescue = { statuses = { 404 }, target = \"pool\", pool = \"gone\" },",
+            "gone",
+        ),
+    ] {
+        let message = error(&config(
+            &proxy_route("", &format!("              {policy}")),
+            endpoint,
+        ));
+        assert!(message.contains(expected), "{policy}: {message}");
+    }
+}
+
+#[test]
 fn validates_explicit_retry_triggers_and_safety_rules() {
     let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
     for policy in [

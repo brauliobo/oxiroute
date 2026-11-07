@@ -93,6 +93,17 @@ fn render_prometheus_snapshot(
         "oxiroute_upstream_retry_attempts_total",
         runtime.process.retry_attempts,
     )?;
+    for rescue in &runtime.process.rescues {
+        labels(
+            &mut output,
+            "oxiroute_http_rescues_total",
+            &[
+                ("route", rescue.route.as_str()),
+                ("status", &rescue.status.to_string()),
+            ],
+            rescue.count,
+        )?;
+    }
     if let Some(value) = runtime.process.resident_memory_bytes {
         sample(&mut output, "oxiroute_process_resident_memory_bytes", value)?;
     }
@@ -1009,6 +1020,24 @@ mod tests {
 
         assert!(output.contains("oxiroute_upstream_retry_attempts_total 1"));
         assert!(!output.contains("192.0.2.10"));
+    }
+
+    #[test]
+    fn exposition_counts_rescues_by_route_and_status() {
+        let metrics = RuntimeMetrics::new();
+        let listener = metrics
+            .register_listener("edge", "http", "socket:192.0.2.10:private-port", None)
+            .expect("listener");
+        listener.record_rescue("ollama", 404);
+        listener.record_rescue("ollama", 404);
+        listener.record_rescue("ollama", 503);
+        let control = empty_rtmp_runtime().control();
+
+        let output = render_prometheus_control(&metrics, &control, &GenerationManager::new())
+            .expect("exposition");
+
+        assert!(output.contains("oxiroute_http_rescues_total{route=\"ollama\",status=\"404\"} 2"));
+        assert!(output.contains("oxiroute_http_rescues_total{route=\"ollama\",status=\"503\"} 1"));
     }
 
     #[test]
