@@ -220,6 +220,7 @@ export function contractMonitoring(): MonitoringSnapshot {
       availableEndpoints: 1,
       totalEndpoints: 2,
       unavailableSelections: '18446744073709551615',
+      failOpenSelections: '0',
       queued: 2,
       queuedTotal: '7',
       queueTimeouts: '1',
@@ -426,6 +427,8 @@ export function contractTopology(): TopologySnapshot {
             delayMs: 0,
             finalRedispatch: false,
           },
+          timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
+          rescue: null,
         },
       },
     }, {
@@ -596,6 +599,14 @@ export function contractConfigSnapshot(): ConfigSnapshot {
     connect_timeout_ms: null,
     server_timeout_ms: null,
     connection_reuse: 'safe',
+    resilience: {
+      fail_open: false,
+      min_members: null,
+      ejection_jitter_percent: 0,
+      queue_while_unavailable_ms: null,
+      unavailable_retry_after_seconds: null,
+      unavailable_body: null,
+    },
   }]
   snapshot.config.http_services = [{
     name: 'web',
@@ -640,11 +651,16 @@ export function contractConfigSnapshot(): ConfigSnapshot {
             target: 'next_server',
             delay_ms: 0,
             final_redispatch: false,
+            jitter_percent: 0,
+            idempotency_header: null,
+            budget: null,
             triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
             response_statuses: [],
             method_safety: 'get_head',
             body_safety: 'empty',
           },
+          timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
+          rescue: null,
           cache: {
             store: 'responses',
             methods: ['GET', 'HEAD'],

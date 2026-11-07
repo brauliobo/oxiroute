@@ -13,8 +13,8 @@ task handoffs and response batches, and compatibility with the adjacent patched 
   `../pingora-core` path. The root workspace patches transitive crates.io references to the same
   path, so workspace builds contain one patched core. `pingora-proxy` is a standard workspace member
   while `pingora-core` remains an excluded path dependency. The adjacent core owns the shared
-  `smallvec` task batch. Every published dev dependency is retained unchanged so the published
-  examples remain buildable.
+  `smallvec` task batch. The published dev dependencies are retained, with `reqwest 0.13` (without a bundled TLS
+  provider) and `tokio-tungstenite 0.30`, so the published examples remain buildable.
 - `examples/connection_filter.rs` accepts the patched core's optional peer address, and
   `examples/virtual_l4.rs` initializes its optional connection-lifetime field to `None`, preserving
   the published examples' behavior while keeping all targets buildable.

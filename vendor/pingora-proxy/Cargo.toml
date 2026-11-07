@@ -11,7 +11,7 @@
 
 [package]
 edition = "2021"
-rust-version = "1.84"
+rust-version = "1.97"
 name = "pingora-proxy"
 version = "0.8.1"
 authors = ["Yuchen Wu <yuchen@cloudflare.com>"]
@@ -215,10 +215,10 @@ version = "0"
 default-features = false
 
 [dev-dependencies.reqwest]
-version = "0.12"
+version = "0.13"
 features = [
     "gzip",
-    "rustls-tls",
+    "rustls-no-provider",
     "http2",
 ]
 default-features = false
@@ -237,7 +237,7 @@ version = "0.9"
 version = "0.4"
 
 [dev-dependencies.tokio-tungstenite]
-version = "0.26"
+version = "0.30"
 
 [target."cfg(unix)".dev-dependencies.hyperlocal]
 version = "0.9"

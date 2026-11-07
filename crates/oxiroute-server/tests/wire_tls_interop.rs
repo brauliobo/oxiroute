@@ -1683,7 +1683,7 @@ async fn downstream_h2_deadline_returns_bounded_upstream_error_and_resets_origin
             .request(Method::POST, "/grpc/slow")
             .await
             .expect("deadline error response");
-        assert_eq!(response.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(response.status, StatusCode::GATEWAY_TIMEOUT);
         origin.observations.wait_for_http_requests(1).await;
 
         client.finish().await;

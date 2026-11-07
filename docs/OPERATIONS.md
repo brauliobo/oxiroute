@@ -137,9 +137,9 @@ There is no unbounded event queue. Durable audit history is separate from the ev
 available through authenticated `/api/v1/audit` and `/api/v1/audit/status`.
 
 `GET /metrics` exports process/host sampling state and values, active-generation age, listener,
-pool, server, queue, health, retry, certificate, RTMP relay/recording, generation, and bounded
-audit persistence families in Prometheus text format. Unsupported process/host samples are
-omitted rather than exported as zeroes.
+pool (including fail-open selections), server, queue, health, retry, certificate, RTMP
+relay/recording, generation, and bounded audit persistence families in Prometheus text format.
+Unsupported process/host samples are omitted rather than exported as zeroes.
 `/stats` provides a compact
 read-only HAProxy-oriented pool/server view. `/metrics` and `/ready` are public on a configured
 statistics bind; `/stats` and `/api/v1/status` require a loopback peer and the statistics Bearer

@@ -23,4 +23,7 @@ const MAX_CALL_WALK: usize = 100_000;
 const MAX_CALL_CYCLES: usize = 1_024;
 
 include!("semantic/model.rs");
-include!("semantic/analyzer.rs");
+
+mod analyzer;
+
+pub use analyzer::*;

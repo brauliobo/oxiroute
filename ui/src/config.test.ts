@@ -168,11 +168,25 @@ const currentCanonicalFields = [
   'http_services[].routes[].action.policy.retry.max_retries',
   'http_services[].routes[].action.policy.retry.target',
   'http_services[].routes[].action.policy.retry.delay_ms',
+  'http_services[].routes[].action.policy.retry.jitter_percent',
   'http_services[].routes[].action.policy.retry.final_redispatch',
+  'http_services[].routes[].action.policy.retry.idempotency_header',
+  'http_services[].routes[].action.policy.retry.budget',
+  'http_services[].routes[].action.policy.retry.budget.per_second',
+  'http_services[].routes[].action.policy.retry.budget.ratio_percent',
   'http_services[].routes[].action.policy.retry.triggers',
   'http_services[].routes[].action.policy.retry.response_statuses',
   'http_services[].routes[].action.policy.retry.method_safety',
   'http_services[].routes[].action.policy.retry.body_safety',
+  'http_services[].routes[].action.policy.timeouts',
+  'http_services[].routes[].action.policy.timeouts.connect_ms',
+  'http_services[].routes[].action.policy.timeouts.header_ms',
+  'http_services[].routes[].action.policy.timeouts.idle_ms',
+  'http_services[].routes[].action.policy.timeouts.total_ms',
+  'http_services[].routes[].action.policy.rescue',
+  'http_services[].routes[].action.policy.rescue.statuses',
+  'http_services[].routes[].action.policy.rescue.target',
+  'http_services[].routes[].action.policy.rescue.pool',
   'http_services[].routes[].action.policy.cache',
   'http_services[].routes[].action.policy.cache.store',
   'http_services[].routes[].action.policy.cache.methods',
@@ -378,6 +392,10 @@ describe('canonical field registry', () => {
       final_redispatch: true,
     }
 
+    expect(isCanonicalConfig(config)).toBe(true)
+    route.action.policy.timeouts.header_ms = 0
+    expect(isCanonicalConfig(config)).toBe(false)
+    route.action.policy.timeouts.header_ms = 2_000
     expect(isCanonicalConfig(config)).toBe(true)
     route.action.policy.retry.method_safety = 'all'
     route.action.policy.retry.body_safety = 'buffered'

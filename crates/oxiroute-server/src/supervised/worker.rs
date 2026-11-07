@@ -709,7 +709,7 @@ fn parse_token(value: Option<OsString>) -> Result<[u8; 16], Box<dyn Error>> {
         return Err("worker instance token must contain 32 hexadecimal digits".into());
     }
     let mut token = [0_u8; 16];
-    for (target, pair) in token.iter_mut().zip(bytes.chunks_exact(2)) {
+    for (target, pair) in token.iter_mut().zip(bytes.as_chunks::<2>().0) {
         *target = (nibble(pair[0])? << 4) | nibble(pair[1])?;
     }
     Ok(token)

@@ -106,6 +106,7 @@ where
         SV::CTX: Send + Sync,
     {
         client_session.read_timeout = peer.options.read_timeout;
+        client_session.body_read_timeout = peer.options.body_read_timeout;
         client_session.write_timeout = peer.options.write_timeout;
 
         // phase 2 send to upstream

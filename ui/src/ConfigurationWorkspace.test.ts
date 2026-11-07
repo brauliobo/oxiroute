@@ -120,6 +120,14 @@ function canonicalConfig(): CanonicalConfig {
         connect_timeout_ms: null,
         server_timeout_ms: null,
         connection_reuse: 'safe',
+        resilience: {
+          fail_open: false,
+          min_members: null,
+          ejection_jitter_percent: 0,
+          queue_while_unavailable_ms: null,
+          unavailable_retry_after_seconds: null,
+          unavailable_body: null,
+        },
       },
       {
         name: 'secure-origins',
@@ -136,6 +144,14 @@ function canonicalConfig(): CanonicalConfig {
         connect_timeout_ms: null,
         server_timeout_ms: null,
         connection_reuse: 'safe',
+        resilience: {
+          fail_open: false,
+          min_members: null,
+          ejection_jitter_percent: 0,
+          queue_while_unavailable_ms: null,
+          unavailable_retry_after_seconds: null,
+          unavailable_body: null,
+        },
       },
     ],
     http_services: [
@@ -178,10 +194,15 @@ function canonicalConfig(): CanonicalConfig {
                   target: 'next_server',
                   delay_ms: 0,
                   final_redispatch: false,
+                  jitter_percent: 0,
+                  idempotency_header: null,
+                  budget: null,
                   triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
                   method_safety: 'get_head',
                   body_safety: 'empty',
                 },
+                timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
+                rescue: null,
                 cache: structuredClone(expanded.http_services[0]!.routes[0]!.action.type === 'proxy'
                   ? expanded.http_services[0]!.routes[0]!.action.policy.cache
                   : null),
@@ -496,6 +517,9 @@ describe('ConfigurationWorkspace', () => {
       target: 'same_server',
       delay_ms: 1_000,
       final_redispatch: true,
+      jitter_percent: 0,
+      idempotency_header: null,
+      budget: null,
     }
 
     let saved: CanonicalConfig | undefined
@@ -568,7 +592,12 @@ describe('ConfigurationWorkspace', () => {
           target: 'same_server',
           delay_ms: 1_000,
           final_redispatch: true,
+          jitter_percent: 0,
+          idempotency_header: null,
+          budget: null,
         },
+        timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
+        rescue: null,
       },
     })
   })
@@ -1087,10 +1116,15 @@ describe('ConfigurationWorkspace', () => {
             target: 'next_server',
             delay_ms: 0,
             final_redispatch: false,
+            jitter_percent: 0,
+            idempotency_header: null,
+            budget: null,
             triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
             method_safety: 'get_head',
             body_safety: 'empty',
           },
+          timeouts: { connect_ms: null, header_ms: null, idle_ms: null, total_ms: null },
+          rescue: null,
           cache: expect.objectContaining({ store: 'responses' }),
         },
       },
