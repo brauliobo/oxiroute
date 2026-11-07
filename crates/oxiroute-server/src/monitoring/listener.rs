@@ -132,7 +132,7 @@ impl ListenerMetrics {
                 return Err(error);
             }
         };
-        let admission = self.state.shared.active_connections.fetch_update(
+        let admission = self.state.shared.active_connections.try_update(
             Ordering::AcqRel,
             Ordering::Acquire,
             |current| {
@@ -251,11 +251,22 @@ impl ListenerMetrics {
 
     /// Accounts for a retry that the HTTP proxy handed back to Pingora.
     pub fn record_retry_attempt(&self) {
-        let _ = self.process.retry_attempts.fetch_update(
+        let _ = self.process.retry_attempts.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.saturating_add(1)),
         );
+    }
+
+    /// Accounts for a request replayed because the backend answered a rescue status.
+    pub fn record_rescue(&self, route: &str, status: u16) {
+        let mut rescues = self
+            .process
+            .rescues
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = rescues.entry((route.to_owned(), status)).or_default();
+        *count = count.saturating_add(1);
     }
 
     /// Records one terminal reverse-proxy HTTP operation and its latency sample.
@@ -454,6 +465,7 @@ pub(super) struct ProcessAdmissionState {
     limit: AtomicU64,
     pub(super) rejected: AtomicU64,
     pub(super) retry_attempts: AtomicU64,
+    rescues: Mutex<BTreeMap<(String, u16), u64>>,
 }
 
 impl ProcessAdmissionState {
@@ -464,7 +476,21 @@ impl ProcessAdmissionState {
             limit: AtomicU64::new(encode_limit(limit)),
             rejected: AtomicU64::new(0),
             retry_attempts: AtomicU64::new(0),
+            rescues: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    pub(super) fn rescue_snapshots(&self) -> Vec<RescueSnapshot> {
+        self.rescues
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|((route, status), count)| RescueSnapshot {
+                route: route.clone(),
+                status: *status,
+                count: *count,
+            })
+            .collect()
     }
 
     pub(super) fn limit(&self) -> Option<u64> {
@@ -501,7 +527,7 @@ impl ProcessAdmissionState {
         }
         let admission = self
             .active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 if (enforce_administrative_state
                     && AdministrativeState::from_u8(
                         self.administrative_state.load(Ordering::Acquire),

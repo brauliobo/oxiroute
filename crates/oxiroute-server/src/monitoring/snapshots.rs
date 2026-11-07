@@ -262,10 +262,20 @@ pub struct ProcessSnapshot {
     pub rejected_connections: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub retry_attempts: u64,
+    #[serde(skip)]
+    pub rescues: Vec<RescueSnapshot>,
     pub resident_memory_bytes: Option<u64>,
     pub virtual_memory_bytes: Option<u64>,
     pub thread_count: Option<u64>,
     pub open_file_descriptors: Option<u64>,
+}
+
+/// Requests replayed by a route's rescue policy, by route and rescued backend status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RescueSnapshot {
+    pub route: String,
+    pub status: u16,
+    pub count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

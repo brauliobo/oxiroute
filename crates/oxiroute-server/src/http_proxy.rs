@@ -9,13 +9,13 @@ use http::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
     header::{
         ACCEPT_RANGES, ALLOW, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
-        CONTENT_TYPE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
-        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, RANGE, SERVER, TRAILER, TRANSFER_ENCODING,
-        WWW_AUTHENTICATE,
+        CONTENT_TYPE, DATE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
+        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, RANGE, RETRY_AFTER, SERVER, TRAILER,
+        TRANSFER_ENCODING, WWW_AUTHENTICATE,
     },
     uri::Authority,
 };
-use log::warn;
+use log::{debug, warn};
 use oxiroute_acme::ChallengeStore;
 use oxiroute_cache::{CachedResponse, ResponseTiming};
 use oxiroute_config::{
@@ -39,8 +39,9 @@ use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
-        HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyPolicyPlan, RedirectLocationPlan,
-        StaticErrorTarget, StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
+        HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan, ProxyPolicyPlan,
+        RedirectLocationPlan, StaticErrorTarget, StaticFile, StaticRequestDecision,
+        StaticServeError, StaticTarget,
     },
     http_cache::{
         CacheFailureClass, CacheRequest, CacheStart, CacheStartFailure, CacheTransaction,
@@ -53,8 +54,8 @@ use crate::{
         normalized_redirect_host, normalized_request_host,
     },
     upstream_peer::{
-        POOL_UNAVAILABLE, POOL_UNAVAILABLE_HEADER, SelectedEndpoint, UpstreamPlan,
-        enforce_http_version, is_pool_unavailable, validate_tls_connection,
+        POOL_UNAVAILABLE, POOL_UNAVAILABLE_HEADER, SelectedEndpoint, UnavailableResponse,
+        UpstreamPlan, enforce_http_version, is_pool_unavailable, validate_tls_connection,
     },
 };
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
@@ -122,9 +123,14 @@ pub struct HttpRequestContext {
     replay_retryable: bool,
     retry_server: Option<String>,
     retry_delay_pending: bool,
+    prior_attempts: usize,
+    rescued: bool,
+    retry_prepaid: bool,
     response_status_override: Option<u16>,
     response_header_overrides: Vec<(HeaderName, HeaderValue)>,
     started_at: Instant,
+    total_deadline: Instant,
+    client_deadline: Option<Instant>,
     deadline: Instant,
     operation_result: Option<HttpOperationResult>,
     websocket_reference: Option<GenerationReference>,
@@ -166,6 +172,34 @@ impl HttpRequestContext {
         );
     }
 
+    /// Servers tried over the whole request, including those of a rescue pool already left.
+    fn attempt_count(&self) -> usize {
+        self.prior_attempts + self.attempted_upstreams.len()
+    }
+
+    /// Moves a rescued request to the route's rescue pool, if any; each pool tries a server once.
+    fn begin_rescue(&mut self, status: u16) {
+        self.rescued = true;
+        if let Some(rescue_pool) = proxy_action(self).rescue_pool.clone() {
+            self.prior_attempts += self.attempted_upstreams.len();
+            self.attempted_upstreams.clear();
+            self.pool = Some(rescue_pool);
+        }
+        let route = proxy_route(self).route_id.clone();
+        debug!(
+            "rescuing route {route} status {status} after {} tries",
+            self.attempt_count()
+        );
+        self.listener.record_rescue(&route, status);
+    }
+
+    fn spend_retry_budget(&self) -> bool {
+        proxy_policy(self)
+            .retry_budget
+            .as_ref()
+            .is_none_or(|budget| budget.try_spend(Instant::now()))
+    }
+
     fn release_lease(&mut self) {
         self.selected.take();
         self.selected_observation.take();
@@ -186,12 +220,32 @@ impl HttpRequestContext {
     }
 
     fn adopt_downstream_deadline(&mut self, session: &Session) {
-        for timeout in [session.get_read_timeout(), session.get_write_timeout()]
+        self.client_deadline = [session.get_read_timeout(), session.get_write_timeout()]
             .into_iter()
             .flatten()
-        {
-            self.deadline = std::cmp::min(self.deadline, self.started_at + timeout);
+            .map(|timeout| self.started_at + timeout)
+            .chain(self.client_deadline)
+            .min();
+        self.refresh_deadline();
+    }
+
+    /// A route total shortens the service deadline; it never extends it.
+    fn adopt_route_total(&mut self, total: Option<Duration>) {
+        if let Some(total) = total {
+            self.total_deadline = self.total_deadline.min(self.started_at + total);
+            self.refresh_deadline();
         }
+    }
+
+    fn refresh_deadline(&mut self) {
+        self.deadline = self.client_deadline.map_or(self.total_deadline, |client| {
+            client.min(self.total_deadline)
+        });
+    }
+
+    fn client_deadline_expired(&self) -> bool {
+        self.client_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
     fn remaining(&self, upstream: bool) -> pingora::Result<Duration> {
@@ -266,9 +320,14 @@ impl ProxyHttp for HttpReverseProxy {
             replay_retryable: false,
             retry_server: None,
             retry_delay_pending: false,
+            prior_attempts: 0,
+            rescued: false,
+            retry_prepaid: false,
             response_status_override: None,
             response_header_overrides: Vec::new(),
             started_at,
+            total_deadline: started_at + self.service.upstream_io_timeout(),
+            client_deadline: None,
             deadline: started_at + self.service.upstream_io_timeout(),
             operation_result: None,
             websocket_reference: None,
@@ -438,7 +497,7 @@ impl ProxyHttp for HttpReverseProxy {
         };
         if ctx.selected.is_none() {
             if ctx.retry_delay_pending {
-                let delay = proxy_policy(ctx).retry_delay;
+                let delay = proxy_policy(ctx).next_retry_delay();
                 if delay > remaining {
                     return Err(Error::new_up(ErrorType::ReadTimedout));
                 }
@@ -462,20 +521,29 @@ impl ProxyHttp for HttpReverseProxy {
         }
         let remaining = ctx.remaining(true)?;
         let route_policy = proxy_route(ctx).policy;
-        let peer = ctx
+        let timeouts = proxy_policy(ctx).timeouts;
+        let attempt = |explicit: Option<u64>, inherited: Duration| {
+            explicit
+                .map_or(inherited, Duration::from_millis)
+                .min(remaining)
+        };
+        let response = pool.server_timeout(route_policy.read_timeout);
+        let mut peer = ctx
             .selected
             .as_mut()
             .expect("selected endpoint initialized")
             .prepare_peer_with_timeouts(
                 pool,
-                pool.connect_timeout(route_policy.connect_timeout)
-                    .min(remaining),
-                pool.server_timeout(route_policy.read_timeout)
-                    .min(remaining),
+                attempt(
+                    timeouts.connect_ms,
+                    pool.connect_timeout(route_policy.connect_timeout),
+                ),
+                attempt(timeouts.header_ms, response),
                 pool.server_timeout(route_policy.write_timeout)
                     .min(remaining),
             )
             .await?;
+        peer.options.body_read_timeout = Some(attempt(timeouts.idle_ms, response));
         Ok(Box::new(peer))
     }
 
@@ -497,8 +565,8 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.release_lease();
         }
         let policy = proxy_policy(ctx);
-        let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
-        let retry_target = policy.target_for_retry(ctx.attempted_upstreams.len());
+        let has_budget = ctx.attempt_count() <= usize::from(policy.max_retries);
+        let retry_target = retry_target_for(ctx, false);
         let target_available = match retry_target {
             HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
             HttpRetryTarget::NextServer => ctx
@@ -507,14 +575,14 @@ impl ProxyHttp for HttpReverseProxy {
                 .is_some_and(|pool| pool.has_unattempted(&ctx.attempted_upstreams)),
         };
         let trigger = connect_retry_trigger(&error);
-        let retry = should_retry_connection(
-            has_address_fallback,
-            ctx.connection_retryable
-                && trigger.is_some_and(|trigger| policy.retries_on(trigger))
-                && has_budget
-                && target_available
-                && ctx.remaining(true).is_ok(),
-        );
+        let route_retry_allowed = !has_address_fallback
+            && ctx.connection_retryable
+            && trigger.is_some_and(|trigger| policy.retries_on(trigger))
+            && has_budget
+            && target_available
+            && ctx.remaining(true).is_ok()
+            && ctx.spend_retry_budget();
+        let retry = should_retry_connection(has_address_fallback, route_retry_allowed);
         error.set_retry(retry);
         if retry {
             if !has_address_fallback {
@@ -536,13 +604,15 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
         _client_reused: bool,
     ) -> Box<Error> {
-        if let Some(failure) = passive_failure_for_error(&error) {
+        let prepaid = std::mem::take(&mut ctx.retry_prepaid);
+        let rescue_only = is_rescue_only(&error, proxy_policy(ctx));
+        if let Some(failure) = passive_failure_for_error(&error).filter(|_| !rescue_only) {
             ctx.record_passive_failure(failure);
         }
         ctx.release_lease();
         let policy = proxy_policy(ctx);
         let refused = is_pool_unavailable(&error);
-        let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
+        let has_budget = ctx.attempt_count() <= usize::from(policy.max_retries);
         let retry_target = retry_target_for(ctx, refused);
         let target_available = match retry_target {
             HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
@@ -561,7 +631,8 @@ impl ProxyHttp for HttpReverseProxy {
             && response_is_retryable(session)
             && has_budget
             && target_available
-            && ctx.remaining(true).is_ok();
+            && ctx.remaining(true).is_ok()
+            && (prepaid || ctx.spend_retry_budget());
         error.set_retry(retry);
         if retry {
             if retry_target == HttpRetryTarget::SameServer {
@@ -579,7 +650,7 @@ impl ProxyHttp for HttpReverseProxy {
         error: &Error,
         ctx: &mut Self::CTX,
     ) -> FailToProxy {
-        if ctx.remaining(false).is_err() {
+        if ctx.client_deadline_expired() {
             return FailToProxy {
                 error_code: 0,
                 can_reuse_downstream: false,
@@ -615,22 +686,32 @@ impl ProxyHttp for HttpReverseProxy {
                 };
             }
         }
-        let code = proxy_error_status(error);
+        let reason = timeout_reason(error, ctx, session);
+        let code = reason.map_or_else(|| proxy_error_status(error), |_| 504);
+        if let Some(reason) = reason {
+            debug!("request ended by {}", reason.as_str());
+        }
         let nginx_server = ctx.route.as_ref().and_then(|route| match &route.action {
             HttpActionPlan::Proxy(proxy) => proxy.policy.nginx_error_server.clone(),
             HttpActionPlan::Fixed(_) | HttpActionPlan::Redirect(_) | HttpActionPlan::Static(_) => {
                 None
             }
         });
-        if code == 502
+        if matches!(code, 502 | 504)
             && error.esource() == &ErrorSource::Upstream
             && let Some(server) = nginx_server
         {
-            let headers = [
+            let mut headers = vec![
                 (SERVER, server.clone()),
                 (CONTENT_TYPE, HeaderValue::from_static("text/html")),
             ];
-            let body = nginx_error_body(502, "Bad Gateway", &server);
+            headers.extend(reason.map(TimeoutReason::header));
+            let phrase = if code == 504 {
+                "Gateway Time-out"
+            } else {
+                "Bad Gateway"
+            };
+            let body = nginx_error_body(code, phrase, &server);
             if let Err(write_error) = write_local_response(
                 session,
                 code,
@@ -643,7 +724,8 @@ impl ProxyHttp for HttpReverseProxy {
                 warn!("failed to send nginx proxy error response downstream: {write_error}");
             }
         } else if code > 0
-            && let Err(write_error) = respond_error(session, code, error).await
+            && let Err(write_error) =
+                respond_error(session, code, error, reason, ctx.pool.as_deref()).await
         {
             warn!("failed to send error response downstream: {write_error}");
         }
@@ -783,9 +865,17 @@ impl ProxyHttp for HttpReverseProxy {
         session.set_write_timeout(Some(write_timeout));
         let refused = response.status == StatusCode::SERVICE_UNAVAILABLE
             && response.headers.contains_key(POOL_UNAVAILABLE_HEADER);
-        let retries_on_status =
-            refused || proxy_policy(ctx).retries_on_status(response.status.as_u16());
-        if retries_on_status && response_status_retryable(session, ctx, refused) {
+        let status = response.status.as_u16();
+        let rescued = !refused && proxy_policy(ctx).rescues_status(status);
+        let retries_on_status = refused || rescued || proxy_policy(ctx).retries_on_status(status);
+        if retries_on_status
+            && response_status_retryable(session, ctx, refused, rescued)
+            && ctx.spend_retry_budget()
+        {
+            ctx.retry_prepaid = true;
+            if rescued {
+                ctx.begin_rescue(status);
+            }
             let mut error = if refused {
                 Error::new_up(POOL_UNAVAILABLE)
             } else {
@@ -794,7 +884,7 @@ impl ProxyHttp for HttpReverseProxy {
             error.set_retry(true);
             return Err(error);
         }
-        if retries_on_status {
+        if retries_on_status && !rescued {
             ctx.record_passive_failure(HealthFailure::UnexpectedStatus);
         }
         let had_uncacheable_framing = response.headers.contains_key(TRANSFER_ENCODING)
@@ -1615,13 +1705,19 @@ async fn execute_route_action(
                 ctx.response_header_overrides = std::mem::take(&mut status_headers);
                 ctx.connection_retryable =
                     proxy.policy.max_retries > 0 && !session.is_upgrade_req();
+                let body_is_empty = session.is_body_empty();
                 ctx.replay_retryable = proxy.policy.max_retries > 0
                     && proxy.policy.request_is_replay_safe(
                         &method,
-                        session.is_body_empty(),
+                        &session.req_header().headers,
+                        body_is_empty,
                         route.policy.request_buffering,
                     )
                     && !session.is_upgrade_req();
+                ctx.adopt_route_total(proxy.policy.timeouts.total_ms.map(Duration::from_millis));
+                if let Some(budget) = &proxy.policy.retry_budget {
+                    budget.record_request(Instant::now());
+                }
                 ctx.pool = Some(Arc::clone(&proxy.pool));
                 return Ok(false);
             }
@@ -1842,13 +1938,115 @@ async fn execute_route_action(
     }
 }
 
-async fn respond_error(session: &mut Session, code: u16, error: &Error) -> pingora::Result<()> {
-    if !is_pool_unavailable(error) {
+async fn respond_error(
+    session: &mut Session,
+    code: u16,
+    error: &Error,
+    reason: Option<TimeoutReason>,
+    pool: Option<&UpstreamPlan>,
+) -> pingora::Result<()> {
+    let pool_unavailable = is_pool_unavailable(error);
+    if !pool_unavailable && reason.is_none() {
         return session.respond_error(code).await;
     }
     let mut response = ServerSession::generate_error(code);
-    response.insert_header(POOL_UNAVAILABLE_HEADER, "1")?;
-    session.write_error_response(response, Bytes::new()).await
+    // Pingora's error responder carries a placeholder Date that only the automatic headers replace.
+    response.insert_header(DATE, httpdate::fmt_http_date(SystemTime::now()))?;
+    if let Some((name, value)) = reason.map(TimeoutReason::header) {
+        response.insert_header(name, value)?;
+    }
+    let mut body = Bytes::new();
+    if pool_unavailable {
+        response.insert_header(POOL_UNAVAILABLE_HEADER, "1")?;
+        if let Some(plan) = pool {
+            body = unavailable_body(session, &mut response, plan.unavailable_response())?;
+        }
+    }
+    session.write_error_response(response, body).await
+}
+
+fn unavailable_body(
+    session: &Session,
+    response: &mut pingora::http::ResponseHeader,
+    unavailable: &UnavailableResponse,
+) -> pingora::Result<Bytes> {
+    if let Some(retry_after) = &unavailable.retry_after {
+        response.insert_header(RETRY_AFTER, retry_after.clone())?;
+    }
+    if unavailable.body.is_empty() {
+        return Ok(Bytes::new());
+    }
+    response.insert_header(CONTENT_TYPE, "text/plain; charset=utf-8")?;
+    response.insert_header(CONTENT_LENGTH, unavailable.body.len().to_string())?;
+    let head = session.req_header().method == Method::HEAD;
+    Ok(if head {
+        Bytes::new()
+    } else {
+        unavailable.body.clone()
+    })
+}
+
+const REASON_HEADER: HeaderName = HeaderName::from_static("x-oxiroute-reason");
+
+/// Which upstream or total timeout ended a request that has no complete response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimeoutReason {
+    Connect,
+    UpstreamHeader,
+    UpstreamIdle,
+    UpstreamWrite,
+    TotalDeadline,
+}
+
+impl TimeoutReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Connect => "connect_timeout",
+            Self::UpstreamHeader => "upstream_header_timeout",
+            Self::UpstreamIdle => "upstream_idle_timeout",
+            Self::UpstreamWrite => "upstream_write_timeout",
+            Self::TotalDeadline => "total_deadline",
+        }
+    }
+
+    const fn header(self) -> (HeaderName, HeaderValue) {
+        (REASON_HEADER, HeaderValue::from_static(self.as_str()))
+    }
+}
+
+fn timeout_reason(
+    error: &Error,
+    ctx: &HttpRequestContext,
+    session: &Session,
+) -> Option<TimeoutReason> {
+    let timed_out = matches!(
+        error.etype(),
+        ErrorType::ConnectTimedout
+            | ErrorType::TLSHandshakeTimedout
+            | ErrorType::ReadTimedout
+            | ErrorType::WriteTimedout
+    );
+    if timed_out && ctx.remaining(false).is_err() {
+        return Some(TimeoutReason::TotalDeadline);
+    }
+    if error.esource() != &ErrorSource::Upstream {
+        return None;
+    }
+    match error.etype() {
+        ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout => {
+            Some(TimeoutReason::Connect)
+        }
+        ErrorType::WriteTimedout => Some(TimeoutReason::UpstreamWrite),
+        ErrorType::ReadTimedout if response_started(session) => Some(TimeoutReason::UpstreamIdle),
+        ErrorType::ReadTimedout => Some(TimeoutReason::UpstreamHeader),
+        _ => None,
+    }
+}
+
+fn response_started(session: &Session) -> bool {
+    session
+        .response_written()
+        .is_some_and(|response| !response.status.is_informational())
 }
 
 fn proxy_error_status(error: &Error) -> u16 {
@@ -2081,11 +2279,14 @@ fn static_validator_headers(
 }
 
 fn proxy_policy(ctx: &HttpRequestContext) -> &ProxyPolicyPlan {
-    let route = proxy_route(ctx);
-    let HttpActionPlan::Proxy(proxy) = &route.action else {
+    &proxy_action(ctx).policy
+}
+
+fn proxy_action(ctx: &HttpRequestContext) -> &ProxyActionPlan {
+    let HttpActionPlan::Proxy(proxy) = &proxy_route(ctx).action else {
         unreachable!("upstream hooks only run for proxy actions");
     };
-    &proxy.policy
+    proxy
 }
 
 fn proxy_route(ctx: &HttpRequestContext) -> &HttpRoutePlan {
@@ -2393,16 +2594,21 @@ fn connect_retry_trigger(error: &Error) -> Option<HttpRetryTrigger> {
 }
 
 /// A refused request was never forwarded, so it may move to the next server whatever its method or
-/// body, within the retry budget.
+/// body, within the retry budget. A rescued request always moves to another server.
 fn retry_target_for(ctx: &HttpRequestContext, refused: bool) -> HttpRetryTarget {
-    if refused {
+    if refused || ctx.rescued {
         HttpRetryTarget::NextServer
     } else {
-        proxy_policy(ctx).target_for_retry(ctx.attempted_upstreams.len())
+        proxy_policy(ctx).target_for_retry(ctx.attempt_count())
     }
 }
 
-fn response_status_retryable(session: &Session, ctx: &HttpRequestContext, refused: bool) -> bool {
+fn response_status_retryable(
+    session: &Session,
+    ctx: &HttpRequestContext,
+    refused: bool,
+    rescued: bool,
+) -> bool {
     let eligible = if refused {
         ctx.connection_retryable
     } else {
@@ -2416,16 +2622,34 @@ fn response_status_retryable(session: &Session, ctx: &HttpRequestContext, refuse
         return false;
     }
     let policy = proxy_policy(ctx);
-    let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
-    let retry_target = retry_target_for(ctx, refused);
-    let target_available = match retry_target {
-        HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
-        HttpRetryTarget::NextServer => ctx
+    let has_budget = ctx.attempt_count() <= usize::from(policy.max_retries);
+    let retry_target = retry_target_for(ctx, refused || rescued);
+    let target_available = match (retry_target, rescue_pool_to_enter(ctx, rescued)) {
+        (_, Some(rescue_pool)) => rescue_pool.has_unattempted(&[]),
+        (HttpRetryTarget::SameServer, None) => ctx.attempted_upstreams.last().is_some(),
+        (HttpRetryTarget::NextServer, None) => ctx
             .pool
             .as_ref()
             .is_some_and(|pool| pool.has_unattempted(&ctx.attempted_upstreams)),
     };
     has_budget && target_available && ctx.remaining(true).is_ok()
+}
+
+/// The rescue pool a rescued request is about to move to, until it has moved.
+fn rescue_pool_to_enter(ctx: &HttpRequestContext, rescued: bool) -> Option<&Arc<UpstreamPlan>> {
+    let rescue_pool = proxy_action(ctx).rescue_pool.as_ref()?;
+    (rescued
+        && !ctx
+            .pool
+            .as_ref()
+            .is_some_and(|pool| Arc::ptr_eq(pool, rescue_pool)))
+    .then_some(rescue_pool)
+}
+
+/// A status listed only by `rescue` is a routing decision, not a sign of an unhealthy server.
+fn is_rescue_only(error: &Error, policy: &ProxyPolicyPlan) -> bool {
+    matches!(error.etype(), ErrorType::HTTPStatus(status)
+        if policy.rescues_status(*status) && !policy.retries_on_status(*status))
 }
 
 fn response_is_retryable(session: &Session) -> bool {
@@ -2442,7 +2666,9 @@ fn request_body_replayable(session: &Session) -> bool {
 
 fn retryable_upstream_error(error: &Error, session: &Session, policy: &ProxyPolicyPlan) -> bool {
     match error.etype() {
-        ErrorType::HTTPStatus(status) => policy.retries_on_status(*status),
+        ErrorType::HTTPStatus(status) => {
+            policy.retries_on_status(*status) || policy.rescues_status(*status)
+        }
         _ => {
             response_retry_trigger(error, session).is_some_and(|trigger| policy.retries_on(trigger))
         }
@@ -2606,6 +2832,26 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
+
+    #[test]
+    fn rescue_only_statuses_are_not_passive_failures() {
+        let policy = ProxyPolicyPlan::compile(&HttpProxyPolicy {
+            retry: HttpRetryPolicy {
+                response_statuses: vec![503],
+                ..HttpRetryPolicy::default()
+            },
+            rescue: Some(oxiroute_config::HttpRescuePolicy {
+                statuses: vec![404, 503],
+                target: oxiroute_config::HttpRescueTarget::NextServer,
+                pool: None,
+            }),
+            ..HttpProxyPolicy::default()
+        });
+        let status = |code| Error::new_up(ErrorType::HTTPStatus(code));
+        assert!(is_rescue_only(&status(404), &policy));
+        assert!(!is_rescue_only(&status(503), &policy));
+        assert!(!is_rescue_only(&status(500), &policy));
+    }
 
     #[test]
     fn upstream_path_rewrite_preserves_the_query() {
@@ -2774,6 +3020,7 @@ mod tests {
             access: None,
             action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
                 pool: Arc::clone(&plan),
+                rescue_pool: None,
                 policy: ProxyPolicyPlan::compile(&policy),
             }),
             policy: crate::http_action::RoutePolicyPlan::compile(
@@ -2864,6 +3111,7 @@ mod tests {
                     None,
                     UpstreamConnectionReuse::Safe,
                 )),
+                rescue_pool: None,
                 policy,
             }),
             policy: crate::http_action::RoutePolicyPlan::compile(
@@ -3592,6 +3840,7 @@ mod tests {
             access: None,
             action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
                 pool: Arc::clone(&plan),
+                rescue_pool: None,
                 policy,
             }),
             policy: crate::http_action::RoutePolicyPlan::compile(

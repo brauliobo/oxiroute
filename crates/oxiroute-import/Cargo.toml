@@ -20,7 +20,7 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-syn = { version = "2", features = ["full"] }
+syn = { version = "3", features = ["full"] }
 tempfile.workspace = true
 
 [lints]

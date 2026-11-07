@@ -587,6 +587,7 @@ fn topology_config(temp: &TempDir) -> ConfigDraft {
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
                 connection_reuse: oxiroute_config::UpstreamConnectionReuse::Never,
+                resilience: oxiroute_config::PoolResilience::default(),
             },
             UpstreamPool {
                 name: "database".into(),
@@ -604,6 +605,7 @@ fn topology_config(temp: &TempDir) -> ConfigDraft {
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
                 connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+                resilience: oxiroute_config::PoolResilience::default(),
             },
         ],
         http_services: vec![HttpService {

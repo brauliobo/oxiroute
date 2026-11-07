@@ -86,6 +86,7 @@ pub(crate) enum HttpActionPlan {
 #[derive(Debug)]
 pub(crate) struct ProxyActionPlan {
     pub(crate) pool: Arc<UpstreamPlan>,
+    pub(crate) rescue_pool: Option<Arc<UpstreamPlan>>,
     pub(crate) policy: ProxyPolicyPlan,
 }
 

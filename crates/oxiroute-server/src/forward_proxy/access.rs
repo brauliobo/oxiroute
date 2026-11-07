@@ -21,10 +21,7 @@ impl ForwardHttp1ServicePlan {
                 .as_ref()
                 .ok()
                 .map(|request| request.approved.destination().authority());
-            let authenticated = result
-                .as_ref()
-                .ok()
-                .is_some_and(|request| request.authenticated);
+            let authenticated = result.as_ref().is_ok_and(|request| request.authenticated);
             let event = serde_json::json!({
                 "event": "forward_access",
                 "service": self.name,

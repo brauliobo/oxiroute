@@ -63,9 +63,7 @@ impl CacheRequest {
     }
 
     fn only_if_cached(&self) -> bool {
-        CacheControl::parse(&self.headers)
-            .ok()
-            .is_some_and(|control| control.only_if_cached)
+        CacheControl::parse(&self.headers).is_ok_and(|control| control.only_if_cached)
     }
 }
 

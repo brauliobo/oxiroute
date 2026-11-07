@@ -1,5 +1,5 @@
 use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _, BufWriter, duplex},
+    io::{BufWriter, duplex},
     time::timeout,
 };
 

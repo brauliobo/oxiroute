@@ -149,6 +149,9 @@
         label.field(data-field="http_services[].routes[].action.policy.retry.delay_ms")
           span Delay (milliseconds)
           input(type="number" min="0" max="60000" step="1" v-model.number="action.policy.retry.delay_ms")
+        label.field(data-field="http_services[].routes[].action.policy.retry.jitter_percent")
+          span Delay jitter (percent)
+          input(type="number" min="0" max="100" step="1" v-model.number="action.policy.retry.jitter_percent")
         label.enable-row(data-field="http_services[].routes[].action.policy.retry.method_safety")
           span(data-field="http_services[].routes[].action.policy.retry.body_safety")
             input(
@@ -159,6 +162,9 @@
           span Allow replay of buffered idempotent requests, including POST
         small.field-hint
           | Enable only when every request handled by this route is idempotent. OxiRoute buffers the complete request body before replaying it.
+        label.field(v-if="allowsBufferedIdempotentRetries" data-field="http_services[].routes[].action.policy.retry.idempotency_header")
+          span Replay non-GET requests only with header
+          input(type="text" :value="action.policy.retry.idempotency_header ?? ''" placeholder="Idempotency-Key" @input="setIdempotencyHeader")
         label.enable-row(data-field="http_services[].routes[].action.policy.retry.final_redispatch")
           input(
             type="checkbox"
@@ -167,6 +173,18 @@
             v-model="action.policy.retry.final_redispatch"
           )
           span Redispatch the final retry to another server
+      fieldset.object-block(data-field="http_services[].routes[].action.policy.retry.budget")
+        legend Retry budget
+        label.enable-row
+          input(type="checkbox" :checked="action.policy.retry.budget !== null" @change="toggleRetryBudget")
+          span Cap the retries of this route
+        .field-grid(v-if="action.policy.retry.budget")
+          label.field(data-field="http_services[].routes[].action.policy.retry.budget.per_second")
+            span Retries per second
+            input(type="number" min="1" max="100000" step="1" placeholder="unlimited" :value="action.policy.retry.budget.per_second ?? ''" @input="setBudgetLimit('per_second', $event)")
+          label.field(data-field="http_services[].routes[].action.policy.retry.budget.ratio_percent")
+            span Share of recent requests (percent)
+            input(type="number" min="1" max="100" step="1" placeholder="unlimited" :value="action.policy.retry.budget.ratio_percent ?? ''" @input="setBudgetLimit('ratio_percent', $event)")
       fieldset.retry-triggers(data-field="http_services[].routes[].action.policy.retry.triggers")
         legend Retry triggers
         label.enable-row(v-for="trigger in HTTP_RETRY_TRIGGERS" :key="trigger")
@@ -184,12 +202,62 @@
         item-label="status"
         field-path="http_services[].routes[].action.policy.retry.response_statuses"
         :default-value="500"
-        :min="500"
+        :min="100"
         :max="599"
         :max-items="100"
-        hint="Retry only on explicitly selected upstream 5xx responses."
+        hint="Retry on explicitly selected upstream response statuses; these also count as passive health failures."
         @update:model-value="action.policy.retry.response_statuses = $event"
       )
+
+    fieldset.object-block(data-field="http_services[].routes[].action.policy.timeouts")
+      legend Upstream timeouts
+      small.field-hint
+        | Leave a phase empty to inherit the pool, route policy or service timeout. The total never exceeds the service upstream I/O timeout.
+      .field-grid
+        label.field(data-field="http_services[].routes[].action.policy.timeouts.connect_ms")
+          span Connect timeout per attempt (ms)
+          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.connect_ms ?? ''" @input="setTimeoutMs('connect_ms', $event)")
+        label.field(data-field="http_services[].routes[].action.policy.timeouts.header_ms")
+          span Response start timeout per attempt (ms)
+          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.header_ms ?? ''" @input="setTimeoutMs('header_ms', $event)")
+        label.field(data-field="http_services[].routes[].action.policy.timeouts.idle_ms")
+          span Idle timeout between body chunks (ms)
+          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.idle_ms ?? ''" @input="setTimeoutMs('idle_ms', $event)")
+        label.field(data-field="http_services[].routes[].action.policy.timeouts.total_ms")
+          span Total request deadline (ms)
+          input(type="number" min="1" max="86400000" step="1" placeholder="inherit" :value="action.policy.timeouts.total_ms ?? ''" @input="setTimeoutMs('total_ms', $event)")
+
+    fieldset.object-block(data-field="http_services[].routes[].action.policy.rescue")
+      legend Status rescue
+      label.enable-row
+        input(type="checkbox" :checked="action.policy.rescue !== null" @change="toggleRescue")
+        span Replay a request on another server when the backend answers a listed status
+      template(v-if="action.policy.rescue")
+        small.field-hint
+          | Spends the retry budget and follows the method and body safety rules. When no candidate is left, the client receives the last backend response unchanged.
+        NumberListField(
+          :model-value="action.policy.rescue.statuses"
+          label="Rescued statuses"
+          item-label="status"
+          field-path="http_services[].routes[].action.policy.rescue.statuses"
+          :default-value="404"
+          :min="100"
+          :max="599"
+          :min-items="1"
+          :max-items="100"
+          @update:model-value="action.policy.rescue.statuses = $event"
+        )
+        .field-grid
+          label.field(data-field="http_services[].routes[].action.policy.rescue.target")
+            span Replay target
+            select(:value="action.policy.rescue.target" @change="setRescueTarget")
+              option(value="next_server") Another server of the pool
+              option(value="pool") A rescue pool
+          label.field(v-if="action.policy.rescue.target === 'pool'" data-field="http_services[].routes[].action.policy.rescue.pool")
+            span Rescue pool
+            select(v-model="action.policy.rescue.pool" required)
+              option(value="") Select a pool
+              option(v-for="name in poolNames.filter((pool) => pool !== action.upstream_pool)" :key="name" :value="name") {{ name }}
 
     HttpCachePolicyEditor(
       :model-value="action.policy.cache"
@@ -232,6 +300,41 @@ const retryTriggerLabels: Record<HttpRetryTrigger, string> = {
   empty_response: 'Empty response',
   response_timeout: 'Response timeout',
   junk_response: 'Malformed response',
+}
+
+function setTimeoutMs(key: keyof HttpProxyActionConfig['policy']['timeouts'], event: Event): void {
+  const value = (event.target as HTMLInputElement).value
+  props.action.policy.timeouts[key] = value === '' ? null : Number(value)
+}
+
+function setIdempotencyHeader(event: Event): void {
+  props.action.policy.retry.idempotency_header = (event.target as HTMLInputElement).value || null
+}
+
+function toggleRetryBudget(event: Event): void {
+  props.action.policy.retry.budget = (event.target as HTMLInputElement).checked
+    ? { per_second: 10, ratio_percent: null }
+    : null
+}
+
+function setBudgetLimit(key: 'per_second' | 'ratio_percent', event: Event): void {
+  const budget = props.action.policy.retry.budget
+  if (!budget) return
+  const value = (event.target as HTMLInputElement).value
+  budget[key] = value === '' ? null : Number(value)
+}
+
+function toggleRescue(event: Event): void {
+  props.action.policy.rescue = (event.target as HTMLInputElement).checked
+    ? { statuses: [404], target: 'next_server', pool: null }
+    : null
+}
+
+function setRescueTarget(event: Event): void {
+  const rescue = props.action.policy.rescue
+  if (!rescue) return
+  rescue.target = (event.target as HTMLSelectElement).value as 'next_server' | 'pool'
+  rescue.pool = rescue.target === 'pool' ? '' : null
 }
 
 function setMaxRetries(event: Event): void {

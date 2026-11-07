@@ -57,7 +57,7 @@ pub(super) fn header_has_token(
     expected: &str,
 ) -> bool {
     headers.get_all(name).iter().any(|value| {
-        value.to_str().ok().is_some_and(|value| {
+        value.to_str().is_ok_and(|value| {
             value
                 .split(',')
                 .any(|token| token.trim().eq_ignore_ascii_case(expected))
