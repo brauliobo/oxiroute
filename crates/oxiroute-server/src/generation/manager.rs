@@ -63,6 +63,14 @@ impl GenerationManager {
         self.registry.service()
     }
 
+    /// A handle to the same generations without the registry host, for readers the host owns.
+    pub(crate) fn without_registry(&self) -> Self {
+        Self {
+            registry: Arc::new(crate::registry::host::RegistryHost::new(false)),
+            ..self.clone()
+        }
+    }
+
     /// Lets this process persist and expire registrations, or only follow them.
     pub fn set_registry_writer(&self, writer: bool) {
         self.registry.set_writer(writer);
