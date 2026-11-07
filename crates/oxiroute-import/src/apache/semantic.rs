@@ -19,4 +19,7 @@ use super::{
 };
 
 include!("semantic/model.rs");
-include!("semantic/resolver.rs");
+
+mod resolver;
+
+pub use resolver::resolve;
