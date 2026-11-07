@@ -914,6 +914,85 @@ Each server runs its first probe immediately, then waits `fast_interval_ms` whil
 interval uses `interval_ms`. A slow server does not shift another server's schedule, even within the
 same pool. All pools share a limit of 32 concurrent probes, and a server never overlaps its probes.
 
+### Dynamic server registration
+
+A pool opts in to servers that register themselves at runtime with a `registration` object. A
+pool with `registration` may have no `servers` at all; without it, an empty server list is
+rejected. Registrations never enter the configuration file or its revision: they live in a
+persisted store under `registry.state_dir`, and a reload or `config apply` neither loses nor
+rewrites them. The design and its trade-offs are in
+[`developer/design/DYNAMIC_REGISTRY.md`](developer/design/DYNAMIC_REGISTRY.md); the operator view
+is in [`user/RUNBOOK.md`](user/RUNBOOK.md).
+
+```lua
+registry = {
+  state_dir = "/var/lib/oxiroute/registry",
+  tokens_file = "/etc/oxiroute/registry.tokens",
+  endpoints = {
+    { type = "unix", path = "/run/oxiroute/status.sock", mode = 288, role = "read" },
+    { type = "unix", path = "/run/oxiroute/register.sock", mode = 432, role = "register",
+      pools = { "render" } },
+    { type = "tcp", bind = "192.0.2.5:9911", allow_cidrs = { "192.0.2.0/24" } },
+  },
+},
+upstream_pools = {
+  {
+    name = "render", servers = {}, algorithm = "first",
+    registration = { max_servers = 8, allowed_cidrs = { "192.0.2.0/24" } },
+  },
+},
+```
+
+`registry` is a top-level, process-wide object. Its endpoints serve only the registry routes
+(`/api/v1/registrations`, `/api/v1/pools/{pool}/servers[/{name}[/heartbeat|/state]]`) and `/ready`
+on `read` sockets; every other path is `404`. The management API serves the same routes to the root
+management token. A change to `registry.endpoints` takes effect when the process restarts; a
+supervised worker handover replaces the unix socket atomically and keeps the lease table.
+
+| `registry` field | Required | Default | Constraint |
+| --- | --- | --- | --- |
+| `state_dir` | yes | none | Absolute path of the persisted store (`registrations.json`, a `.bak` copy and a lock). Keep it outside the configuration directory. |
+| `tokens_file` | for `tcp` endpoints | none | Absolute path. One scoped token per line: `<id> <sha256-hex> read` or `<id> <sha256-hex> register pools=a,b [name_prefix=x]`. Mode `0600` or `0640`, never group or world writable. Reloaded when it changes; a broken edit keeps the last good set. Create lines with `oxiroute registry token create`. |
+| `endpoints` | no | none | At most 8 entries, below. |
+
+| Endpoint | Fields | Behaviour |
+| --- | --- | --- |
+| `type = "unix"` | `path` (absolute), `mode` (decimal, default `432` = `0660`, never world writable), `role` (`read` or `register`), `pools` (for `register`; empty means every registering pool) | Access is the socket's file mode and group, so a worker on the host needs no token. The `read` role serves `GET` routes and `/ready`. The `register` role may add, renew and remove servers only in its `pools`. Audit records name the peer uid. |
+| `type = "tcp"` | `bind` (non-zero port; non-loopback allowed here only), `allow_cidrs` (peer addresses; empty means no restriction beyond the token) | Requires a scoped bearer token from `tokens_file`; the root management token is never accepted. |
+
+| `registration` field | Default | Constraint |
+| --- | --- | --- |
+| `max_servers` | `64` | `1` through `1024` registered servers, besides the static ones. |
+| `min_ttl_ms`, `default_ttl_ms`, `max_ttl_ms` | `2000`, `15000`, `3600000` | `0 < min <= default <= max <= 604800000`. A lease must be renewed within its TTL. |
+| `allowed_cidrs` | none | `address/prefix` entries a registered address must fall in; empty allows any address that is not special. |
+| `require_peer_address` | `true` | A TCP peer may only register its own address. Unix sockets have no peer address, so use `allowed_cidrs` there. |
+
+Rules that hold for every transport:
+
+- A registered address must be a literal socket address with a non-zero port; unspecified and
+  multicast addresses, DNS names and unix paths are refused. Loopback and link-local addresses
+  need an `allowed_cidrs` entry that covers them, an address outside a non-empty `allowed_cidrs`
+  is refused, and so is any protected address (an OxiRoute listener, the management, stats or
+  registry bind). A name that matches a static server, or an address another member already uses, is a
+  conflict (`409`); re-registering an existing name at a new address needs the same holder or
+  `?takeover=true` with the root token.
+- Static servers win. Dynamic servers follow them in the pool, ordered by `priority` (default
+  `100`) and then by name. Records of a pool that stops opting in are kept as `orphaned` and
+  return when it opts in again.
+- Leases are in-memory deadlines: a heartbeat renews them without writing, an expired server leaves
+  rotation at once while requests it already holds finish, and every known registration gets a
+  full TTL when the process starts, so a restart never expires a live worker early.
+- Drain and maintenance chosen by an operator (`server drain`, the registry `state` route) are part
+  of the stored record and survive re-registration, reloads and restarts. A worker's own
+  announcement (`state = "draining"`) only adds to them. Live weight, capacity and check overrides
+  are carried across reloads by pool and server name like those of static servers.
+- Health checks, passive ejection, the circuit breaker, fail-open, the queue and every metric
+  treat registered servers like static ones; `origin` (`static` or `dynamic`) is reported in the
+  server inventory, the pool view and the topology.
+- Bodies are limited to 4 KiB, labels to 16 entries of at most 64 + 256 bytes, and callers to a
+  token bucket of 20 requests per second (burst 40) per credential and per TCP peer (`429` with
+  `Retry-After`).
+
 ### Cache policy timeline
 
 Canonical cache stores and reverse per-route or forward per-service cache policies compile into the
