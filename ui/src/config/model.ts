@@ -18,6 +18,7 @@ export interface WeightedRoundRobinAlgorithm {
 export type UpstreamAlgorithm =
   | 'round_robin'
   | 'least_connections'
+  | 'power_of_two_choices'
   | 'first'
   | WeightedRoundRobinAlgorithm
 export type RtmpRecorderStart = 'continuous' | 'manual'

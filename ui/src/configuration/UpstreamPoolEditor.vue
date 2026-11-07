@@ -14,6 +14,7 @@ header.form-heading
       option(value="round_robin") Round robin
       option(value="weighted_round_robin") Weighted round robin
       option(value="least_connections") Least connections
+      option(value="power_of_two_choices") Power of two choices
       option(value="first") First server
 fieldset.route-list.endpoint-editor(data-field="upstream_pools[].servers")
   .route-heading
@@ -249,7 +250,10 @@ function setAlgorithm(event: Event): void {
       type: 'weighted_round_robin',
       weights: props.pool.servers.map(() => UPSTREAM_WEIGHT_MIN),
     }
-  } else if (value === 'round_robin' || value === 'least_connections' || value === 'first') {
+  } else if (
+    value === 'round_robin' || value === 'least_connections' ||
+    value === 'power_of_two_choices' || value === 'first'
+  ) {
     props.pool.algorithm = value
   }
   weightErrors.value = {}

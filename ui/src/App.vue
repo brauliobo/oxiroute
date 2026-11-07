@@ -422,6 +422,7 @@ const poolAlgorithmLabels: Record<MonitoringPool['algorithm'], string> = {
   round_robin:       'Round robin',
   weighted_round_robin: 'Weighted round robin',
   least_connections: 'Least connections',
+  power_of_two_choices: 'Power of two choices',
   first:             'First server',
 }
 const listenerProtocolLabels: Record<MonitoringListenerProtocol, string> = {
