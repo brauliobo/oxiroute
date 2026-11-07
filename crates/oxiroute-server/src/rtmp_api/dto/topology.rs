@@ -572,6 +572,9 @@ enum EndpointAttributesDto {
         address: String,
         max_connections: Option<u64>,
         server_name: String,
+        /// Only present for servers that joined by registration.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<crate::ServerOrigin>,
     },
     Dns {
         host: String,
