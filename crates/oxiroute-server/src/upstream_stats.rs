@@ -252,7 +252,7 @@ mod tests {
         let histogram = Histogram::new(QUEUE_WAIT_BUCKETS_MS);
         histogram.observe(Duration::from_millis(3));
         histogram.observe(Duration::from_secs(90));
-        histogram.observe(Duration::from_secs(900));
+        histogram.observe(Duration::from_mins(15));
         let snapshot = histogram.snapshot();
         assert_eq!((snapshot.count, snapshot.sum_ms), (3, 3 + 90_000 + 900_000));
         let at = |bound: u64| {

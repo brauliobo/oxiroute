@@ -308,12 +308,11 @@ impl HttpRequestContext {
                 );
             }
         } else {
-            let outcome = self.trace.pending_outcome.take().unwrap_or_else(|| {
-                match self.trace.failure_reason {
-                    Some("client_closed") => AttemptOutcome::ClientClosed,
-                    _ => AttemptOutcome::ProtocolError,
-                }
-            });
+            let fallback = match self.trace.failure_reason {
+                Some("client_closed") => AttemptOutcome::ClientClosed,
+                _ => AttemptOutcome::ProtocolError,
+            };
+            let outcome = self.trace.pending_outcome.take().unwrap_or(fallback);
             self.trace.finish(outcome, None);
         }
     }
@@ -810,7 +809,7 @@ impl ProxyHttp for HttpReverseProxy {
         error: &Error,
         ctx: &mut Self::CTX,
     ) -> FailToProxy {
-        ctx.trace.failure_reason = failure_reason(error, ctx, session);
+        ctx.trace.failure_reason = Some(failure_reason(error, ctx, session));
         if ctx.client_deadline_expired() {
             return FailToProxy {
                 error_code: 0,
@@ -2234,21 +2233,17 @@ fn timeout_reason(
 }
 
 /// The single bounded reason an access log line gives for a request that did not end well.
-fn failure_reason(
-    error: &Error,
-    ctx: &HttpRequestContext,
-    session: &Session,
-) -> Option<&'static str> {
+fn failure_reason(error: &Error, ctx: &HttpRequestContext, session: &Session) -> &'static str {
     if ctx.trace.budget_spent.load(Ordering::Relaxed) {
-        return Some("retry_budget_spent");
+        return "retry_budget_spent";
     }
     if let Some(reason) = timeout_reason(error, ctx, session) {
-        return Some(reason.as_str());
+        return reason.as_str();
     }
     if is_pool_unavailable(error) {
-        return Some("pool_unavailable");
+        return "pool_unavailable";
     }
-    Some(match (error.esource(), error.etype()) {
+    match (error.esource(), error.etype()) {
         (ErrorSource::Downstream, _) => "client_closed",
         (_, ErrorType::HTTPStatus(503)) => "queue_timeout",
         (
@@ -2265,7 +2260,7 @@ fn failure_reason(
             "upstream_reset"
         }
         _ => "protocol_error",
-    })
+    }
 }
 
 fn attempt_outcome(error: &Error) -> AttemptOutcome {
