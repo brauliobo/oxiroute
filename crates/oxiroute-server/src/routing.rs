@@ -1718,6 +1718,7 @@ struct EndpointLeaseInner {
     health: Arc<PoolHealthState>,
     queue: Arc<PoolQueue>,
     server: Arc<PoolEndpoint>,
+    waiting: AtomicBool,
 }
 
 impl EndpointLease {
@@ -1734,6 +1735,7 @@ impl EndpointLease {
                 health,
                 queue,
                 server,
+                waiting: AtomicBool::new(false),
             }),
         }
     }
@@ -1753,6 +1755,7 @@ impl EndpointLease {
                 health,
                 queue,
                 server,
+                waiting: AtomicBool::new(false),
             }),
         }
     }
@@ -1796,8 +1799,29 @@ impl EndpointLease {
     }
 }
 
+impl EndpointLeaseInner {
+    /// Counts this lease once in the pool queue while it waits for a permit of its bound server.
+    fn mark_waiting(&self) {
+        if !self.waiting.swap(true, Ordering::AcqRel) {
+            self.queue.queued.fetch_add(1, Ordering::Relaxed);
+            self.queue.queued_total.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn clear_waiting(&self) -> bool {
+        let was_waiting = self.waiting.swap(false, Ordering::AcqRel);
+        if was_waiting {
+            decrement_queue_count(&self.queue.queued);
+        }
+        was_waiting
+    }
+}
+
 impl Drop for EndpointLeaseInner {
     fn drop(&mut self) {
+        if self.clear_waiting() {
+            self.queue.cancellations.fetch_add(1, Ordering::Relaxed);
+        }
         if !self.acquired.load(Ordering::Acquire) {
             return;
         }
@@ -1819,6 +1843,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
             return Ok(false);
         }
         self.acquired.store(true, Ordering::Release);
+        self.clear_waiting();
         Ok(true)
     }
 
@@ -1832,6 +1857,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
         };
         #[cfg(test)]
         let _waiting = LifetimeWaitGuard::new(&self.queue.lifetime_waiters);
+        self.mark_waiting();
         loop {
             if self.queue.generation.load(Ordering::Acquire) != generation {
                 return Ok(());
@@ -1843,6 +1869,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
                 return Ok(());
             }
             if timeout_at(deadline, notified).await.is_err() {
+                self.clear_waiting();
                 self.queue.timeouts.fetch_add(1, Ordering::Relaxed);
                 return Err(pingora::Error::new_up(pingora::ErrorType::HTTPStatus(503)));
             }
