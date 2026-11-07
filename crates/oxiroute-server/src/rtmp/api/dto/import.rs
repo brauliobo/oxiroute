@@ -3,7 +3,7 @@ use oxiroute_import::{CapabilityProfileMetadata, ImportReportEnvelope, OriginEvi
 use serde::{Serialize, Serializer};
 
 use super::RedactedConfigView;
-use crate::config_coordinator::{
+use crate::config::coordinator::{
     AuthoredRevision, ConfigDiagnostic, EffectiveRevision, NativeImportSourceDocument,
 };
 

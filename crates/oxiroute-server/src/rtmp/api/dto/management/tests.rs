@@ -7,7 +7,7 @@ use super::*;
 use crate::{
     AcmeManagedCertificateSnapshot, ComponentState, ComponentStatus, HostSnapshot, ProcessSnapshot,
     RuntimeEndpoint, TrafficSnapshot,
-    config_coordinator::{AuthoredRevision, EffectiveRevision},
+    config::coordinator::{AuthoredRevision, EffectiveRevision},
 };
 
 #[test]

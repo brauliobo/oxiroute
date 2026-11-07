@@ -22,7 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 use super::*;
 use crate::{
     GenerationManager, RuntimeMetrics,
-    config_coordinator::{AuthoredRevision, EffectiveRevision, ResolvedConfigDocument},
+    config::coordinator::{AuthoredRevision, EffectiveRevision, ResolvedConfigDocument},
 };
 
 struct CleanupApp {

@@ -239,7 +239,7 @@ fn save_child(
 ) -> Child {
     Command::new(env::current_exe().unwrap())
         .arg("--exact")
-        .arg("config_coordinator::tests::child_process_save_helper")
+        .arg("config::coordinator::tests::child_process_save_helper")
         .arg("--nocapture")
         .env("OXIROUTE_CONFIG_SAVE_CHILD", mode)
         .env("OXIROUTE_CONFIG_SAVE_PATH", path)

@@ -11,7 +11,7 @@ use oxiroute_supervision::{LifecycleControl, LifecycleOperation, LifecycleReques
 use crate::{
     AdministrativeState, GenerationError, GenerationManager, GenerationStatus,
     RuntimeReferenceKind,
-    config_coordinator::{
+    config::coordinator::{
         CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigLoadRejection, EffectiveRevision,
     },
     generation::GENERATION_PREPARATION_TIMEOUT,

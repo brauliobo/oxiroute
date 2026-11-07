@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AdministrativeState, HealthOverride,
-    config_coordinator::{
+    config::coordinator::{
         AuthoredRevision, ConfigDiagnostic, ConfigDiagnosticSeverity, ConfigDiagnosticStage,
         EffectiveRevision,
     },
