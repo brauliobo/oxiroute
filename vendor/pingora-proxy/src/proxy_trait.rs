@@ -19,7 +19,13 @@ use pingora_cache::{
     RespCacheable::{self, *},
 };
 use proxy_cache::range_filter::{self};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
+
+/// Resolves with the error that ends the upstream attempt in progress, when the application
+/// abandons it.
+pub type UpstreamCancellation = Pin<Box<dyn Future<Output = Box<Error>> + Send + 'static>>;
 
 /// The request header prepared for a plain HTTP/1 upstream attempt.
 ///
@@ -492,6 +498,22 @@ pub trait ProxyHttp {
         e.retry
             .decide_reuse(client_reused && !session.as_ref().retry_buffer_truncated());
         e
+    }
+
+    /// Called once per upstream attempt, right after [Self::upstream_peer()] returned, to let the
+    /// application abandon the attempt while it is in progress.
+    ///
+    /// The returned future is polled for as long as the attempt runs (connect, proxy and release of
+    /// the upstream session). When it resolves first, the attempt is dropped and the error it
+    /// resolved with goes through [Self::error_while_proxy()], so the retry decision, including
+    /// [Error::set_retry()], is the application's. `None` (the default) means the attempt cannot be
+    /// cancelled.
+    fn upstream_attempt_cancelled(
+        &self,
+        _session: &Session,
+        _ctx: &Self::CTX,
+    ) -> Option<UpstreamCancellation> {
+        None
     }
 
     /// This filter is called when there is an error in the process of establishing a connection

@@ -7,7 +7,7 @@ commit `719ef6cd54e40b530127751bab6c1afc5ae815a8`; the package does not identify
 
 `LICENSE` remains a byte-for-byte copy from Cargo's normalized registry extraction. OxiRoute's
 delta is limited to isolated borrowed HTTP/1 upstream request preparation, inline-storage HTTP/1
-task handoffs and response batches, and compatibility with the adjacent patched core:
+task handoffs and response batches, the cancellable upstream attempt, and compatibility with the adjacent patched core:
 
 - `Cargo.toml` resolves its direct `pingora-core 0.8.1` dependency through the adjacent
   `../pingora-core` path. The root workspace patches transitive crates.io references to the same
@@ -22,6 +22,13 @@ task handoffs and response batches, and compatibility with the adjacent patched 
   Its default clones the downstream request and invokes the existing mutable
   `upstream_request_filter`, preserving external implementations and behavior.
 - `lib.rs` re-exports the additive preparation result.
+- `proxy_trait.rs` adds the additive `upstream_attempt_cancelled` hook (default `None`) and the
+  `UpstreamCancellation` future type, re-exported by `lib.rs`. `HttpProxy::proxy_to_upstream` moves the
+  attempt after `upstream_peer` (client session, H1/H2/custom proxying, session release) into
+  `proxy_attempt` and races it against the cancellation with a biased `tokio::select!`. When the
+  cancellation wins, the attempt is dropped (its upstream connection closes without returning to the
+  pool) and its error goes through `error_while_proxy` like any attempt error. Inline tests cover the
+  dropped connection and the unaffected default.
 - `proxy_h1.rs` uses the preparation hook only for plain HTTP/1 requests with inactive caching.
   HTTP/2-to-HTTP/1 conversion and active cache mutation still clone and use the old mutable filter;
   H2 and custom upstream paths are unchanged. Borrowed headers use pingora-core's borrowed request
@@ -54,7 +61,7 @@ workspace lockfile owns dependency resolution.
 3. Bulk-copy only the normalized build source with `cp -a -- "$source/Cargo.toml" "$source/LICENSE"
    "$source/examples" "$source/src" vendor/pingora-proxy/`.
 4. Reapply and review only the adjacent pingora-core dependency, connection-filter and virtual-L4
-   example compatibility changes, additive preparation API, isolated HTTP/1 borrowed path, inline
+   example compatibility changes, additive preparation API, cancellable upstream attempt, isolated HTTP/1 borrowed path, inline
    HTTP/1 task handoff and batch paths, and their focused tests. Restore every published dev
    dependency exactly, then restore this README with the new provenance.
 5. Keep `vendor/pingora-proxy` in the root workspace members and `vendor/pingora-core` in its
