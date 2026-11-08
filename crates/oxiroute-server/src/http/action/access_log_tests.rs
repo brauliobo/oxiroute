@@ -120,9 +120,8 @@ fn access_log_validation_does_not_create_the_target() {
 #[test]
 fn access_log_queue_saturation_never_blocks_the_caller() {
     assert_eq!(ACCESS_LOG_QUEUE_CAPACITY, 1_024);
-    let (sender, _receiver) = mpsc::sync_channel(1);
     let access_log = AccessLog {
-        sender: Some(sender),
+        sink: Arc::new(Sink::new(1)),
         service: "test".into(),
         rtmp_metrics: None,
         worker: Mutex::new(None),
@@ -136,10 +135,9 @@ fn access_log_queue_saturation_never_blocks_the_caller() {
 
 #[test]
 fn rtmp_access_log_queue_saturation_counts_nonblocking_drops() {
-    let (sender, _receiver) = mpsc::sync_channel(1);
     let metrics = Arc::new(crate::observability::logging::RtmpAccessLogMetrics::default());
     let access_log = AccessLog {
-        sender: Some(sender),
+        sink: Arc::new(Sink::new(1)),
         service: "test".into(),
         rtmp_metrics: Some(Arc::clone(&metrics)),
         worker: Mutex::new(None),
@@ -195,4 +193,57 @@ fn rtmp_access_log_drop_flushes_the_bounded_redacted_record() {
     assert!(record.get("query").is_none());
     assert!(record.get("clientIp").is_none());
     assert!(!contents.contains("secret"));
+}
+
+#[test]
+fn access_log_writes_a_burst_as_complete_lines_in_order() {
+    let directory = tempfile::tempdir().expect("access log directory");
+    let path = directory.path().join("access.jsonl");
+    let access_log = AccessLog::open("edge", Some(&AccessLogPolicy::File { path: path.clone() }))
+        .expect("access log preflight")
+        .expect("file sink");
+    for index in 0..200 {
+        access_log
+            .write_record(&serde_json::json!({"seq": index}))
+            .expect("queued line");
+    }
+    drop(access_log);
+
+    let contents = std::fs::read_to_string(path).expect("flushed access log");
+    let sequence: Vec<u64> = contents
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).expect("JSONL")["seq"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(sequence, (0..200).collect::<Vec<_>>());
+    assert!(contents.ends_with('\n'));
+}
+
+#[test]
+fn rtmp_access_log_counts_batches_as_received_and_written() {
+    let directory = tempfile::tempdir().expect("RTMP access log directory");
+    let path = directory.path().join("rtmp-access.jsonl");
+    let metrics = Arc::new(crate::observability::logging::RtmpAccessLogMetrics::default());
+    let access_log = AccessLog::open_with_rtmp_metrics(
+        "live",
+        Some(&AccessLogPolicy::File { path }),
+        Some(Arc::clone(&metrics)),
+    )
+    .expect("RTMP access log preflight")
+    .expect("RTMP file sink");
+    for _ in 0..25 {
+        access_log
+            .write_rtmp(&serde_json::json!({"event": "connect"}))
+            .expect("queued");
+    }
+    drop(access_log);
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        (snapshot.enqueued, snapshot.written, snapshot.queue_depth),
+        (25, 25, 0)
+    );
 }

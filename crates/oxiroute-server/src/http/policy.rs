@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::{borrow::Cow, net::IpAddr};
 
 use http::{
     HeaderMap, HeaderName, HeaderValue, StatusCode,
@@ -247,7 +247,10 @@ pub(crate) fn decide_response_headers(
     policy: &ProxyPolicyPlan,
     remove_hop_by_hop: bool,
 ) -> Result<Vec<ResponseHeaderDecision>, ResponsePolicyError> {
-    let mut resulting = headers.clone();
+    let rewrites_cookies =
+        !(policy.cookie_path_rewrites.is_empty() && policy.cookie_attributes.is_empty());
+    // Only cookie rewriting reads the headers as they are after the decisions, so only it needs a copy.
+    let mut resulting = rewrites_cookies.then(|| headers.clone());
     let mut decisions = Vec::new();
     if remove_hop_by_hop {
         let mut nominations = Vec::new();
@@ -273,8 +276,12 @@ pub(crate) fn decide_response_headers(
             TRANSFER_ENCODING,
             UPGRADE,
         ]) {
-            resulting.remove(&name);
-            decisions.push(ResponseHeaderDecision::Remove(name));
+            if headers.contains_key(&name) {
+                if let Some(resulting) = &mut resulting {
+                    resulting.remove(&name);
+                }
+                decisions.push(ResponseHeaderDecision::Remove(name));
+            }
         }
     }
     for mutation in &policy.response_headers {
@@ -284,7 +291,9 @@ pub(crate) fn decide_response_headers(
                 value,
                 always,
             } if *always || crate::http::action::nginx_add_header_status(status.as_u16()) => {
-                resulting.insert(name.clone(), value.clone());
+                if let Some(resulting) = &mut resulting {
+                    resulting.insert(name.clone(), value.clone());
+                }
                 decisions.push(ResponseHeaderDecision::Set {
                     name: name.clone(),
                     value: value.clone(),
@@ -295,22 +304,26 @@ pub(crate) fn decide_response_headers(
                 value,
                 always,
             } if *always || crate::http::action::nginx_add_header_status(status.as_u16()) => {
-                resulting.append(name.clone(), value.clone());
+                if let Some(resulting) = &mut resulting {
+                    resulting.append(name.clone(), value.clone());
+                }
                 decisions.push(ResponseHeaderDecision::Add {
                     name: name.clone(),
                     value: value.clone(),
                 });
             }
             ResponseHeaderMutationPlan::Remove { name } => {
-                resulting.remove(name);
+                if let Some(resulting) = &mut resulting {
+                    resulting.remove(name);
+                }
                 decisions.push(ResponseHeaderDecision::Remove(name.clone()));
             }
             ResponseHeaderMutationPlan::Set { .. } | ResponseHeaderMutationPlan::Add { .. } => {}
         }
     }
-    if policy.cookie_path_rewrites.is_empty() && policy.cookie_attributes.is_empty() {
+    let Some(resulting) = resulting else {
         return Ok(decisions);
-    }
+    };
     let cookies = resulting
         .get_all(SET_COOKIE)
         .iter()
@@ -435,15 +448,19 @@ const fn same_site_value(value: HttpSameSite) -> &'static str {
     }
 }
 
-pub(crate) fn normalized_request_host(authority: &Authority) -> String {
+pub(crate) fn normalized_request_host(authority: &Authority) -> Cow<'_, str> {
     let host = authority.host();
     let unbracketed = host
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
         .unwrap_or(host);
-    unbracketed
-        .parse::<IpAddr>()
-        .map_or_else(|_| host.to_ascii_lowercase(), |ip| ip.to_string())
+    match unbracketed.parse::<IpAddr>() {
+        Ok(ip) => Cow::Owned(ip.to_string()),
+        Err(_) if host.bytes().any(|byte| byte.is_ascii_uppercase()) => {
+            Cow::Owned(host.to_ascii_lowercase())
+        }
+        Err(_) => Cow::Borrowed(host),
+    }
 }
 
 pub(crate) fn nginx_request_host(

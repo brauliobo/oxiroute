@@ -1,4 +1,5 @@
 use std::{
+    io::Write as _,
     sync::{
         OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -38,18 +39,21 @@ fn boot_tag() -> u32 {
     })
 }
 
-pub(crate) fn generate_request_id() -> String {
+/// `rq-`, boot tag and sequence: fixed width, so it renders without allocating.
+fn generated_request_id() -> HeaderValue {
     static SEQUENCE: AtomicU64 = AtomicU64::new(1);
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed) & 0xffff_ffff_ffff;
-    format!("rq-{:08x}-{sequence:012x}", boot_tag())
+    let mut id = [0; 24];
+    write!(&mut id[..], "rq-{:08x}-{sequence:012x}", boot_tag()).expect("fixed width id");
+    HeaderValue::from_bytes(&id).expect("ASCII id")
 }
 
 /// Keeps a well formed incoming id; anything else is replaced, never rejected.
-pub(crate) fn resolve_request_id(incoming: Option<&HeaderValue>) -> String {
-    incoming
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| valid_correlation_id(value))
-        .map_or_else(generate_request_id, ToOwned::to_owned)
+pub(crate) fn resolve_request_id(incoming: Option<&HeaderValue>) -> HeaderValue {
+    match incoming {
+        Some(id) if id.to_str().is_ok_and(valid_correlation_id) => id.clone(),
+        _ => generated_request_id(),
+    }
 }
 
 /// First 8 hex digits of a stable hash: correlates a client re-issue without logging the key.
@@ -85,8 +89,7 @@ impl HttpModule for RequestIdModule {
         &mut self,
         request: &mut pingora::http::RequestHeader,
     ) -> pingora::Result<()> {
-        let id = resolve_request_id(request.headers.get(&REQUEST_ID_HEADER));
-        let value = HeaderValue::from_str(&id).expect("validated request id");
+        let value = resolve_request_id(request.headers.get(&REQUEST_ID_HEADER));
         request.insert_header(REQUEST_ID_HEADER, value.clone())?;
         self.id = Some(value);
         Ok(())
@@ -132,21 +135,31 @@ mod tests {
     fn malformed_or_oversized_incoming_ids_are_replaced() {
         for bad in ["has space", "semi;colon", ""] {
             let value = HeaderValue::from_str(bad).expect("header value");
-            assert!(resolve_request_id(Some(&value)).starts_with("rq-"), "{bad}");
+            assert!(
+                resolve_request_id(Some(&value))
+                    .as_bytes()
+                    .starts_with(b"rq-"),
+                "{bad}"
+            );
         }
         let long = HeaderValue::from_str(&"a".repeat(65)).expect("header value");
-        assert!(resolve_request_id(Some(&long)).starts_with("rq-"));
-        assert!(resolve_request_id(None).starts_with("rq-"));
+        assert!(
+            resolve_request_id(Some(&long))
+                .as_bytes()
+                .starts_with(b"rq-")
+        );
+        assert!(resolve_request_id(None).as_bytes().starts_with(b"rq-"));
     }
 
     #[test]
     fn generated_ids_have_the_documented_shape_and_never_repeat() {
-        let first = generate_request_id();
-        let second = generate_request_id();
+        let first = generated_request_id();
+        let second = generated_request_id();
         assert_ne!(first, second);
+        let first = first.to_str().expect("ASCII id");
         let parts: Vec<_> = first.split('-').collect();
         assert_eq!((parts[0], parts[1].len(), parts[2].len()), ("rq", 8, 12));
-        assert!(valid_correlation_id(&first));
+        assert!(valid_correlation_id(first));
     }
 
     #[test]

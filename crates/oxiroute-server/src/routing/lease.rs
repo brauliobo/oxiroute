@@ -151,6 +151,11 @@ impl EndpointLease {
         &self.inner.server.name
     }
 
+    /// The server's lifetime counters.
+    pub(crate) fn server_stats(&self) -> &Arc<ServerStats> {
+        &self.inner.server.stats
+    }
+
     /// Reports this lease's place in the pool queue to `cell` while it waits for capacity.
     pub(crate) fn observe_queue_position(&self, cell: Arc<AtomicU64>) {
         *self

@@ -483,10 +483,11 @@ fn exposition_counts_live_requests_per_pool_and_flags_overdue_ones() {
     let arrival = |id: &str, deadline: std::time::Duration| InflightArrival {
         request_id: id.into(),
         listener: "edge".into(),
-        method: "GET".into(),
+        method: http::Method::GET,
         host: None,
         path: "/".into(),
         client_ip: None,
+        started: std::time::Instant::now(),
         deadline,
         access_log: None,
     };

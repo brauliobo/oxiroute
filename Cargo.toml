@@ -29,6 +29,7 @@ rust-version = "1.97"
 version = "6.1.0"
 
 [workspace.dependencies]
+aho-corasick = "1.1.5"
 arc-swap = "1.9.4"
 async-trait = "0.1.92"
 base64 = "0.23"
