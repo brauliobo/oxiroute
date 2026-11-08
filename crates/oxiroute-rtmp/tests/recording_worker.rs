@@ -413,7 +413,7 @@ fn interrupted_segment_keeps_its_final_name_and_resumes_without_a_partial_file()
     .expect("first worker");
     enqueue(&first, aac_header(0, 0x12));
     enqueue(&first, audio(0, 0x11));
-    wait_for_recording(&first);
+    wait_for_processed(&first, 2);
     assert_eq!(
         first.try_enqueue(
             MediaEvent::audio(
@@ -669,7 +669,7 @@ fn a_queue_drop_quarantines_the_active_segment_and_stops_continuation() {
         },
     );
     enqueue(&worker, aac_header(0, 0x12));
-    wait_for_recording(&worker);
+    wait_for_processed(&worker, 1);
     let oversized = MediaEvent::audio(1, vec![0x2f, 1, 2, 3, 4]).expect("oversized event");
     assert_eq!(
         worker.try_enqueue(oversized),
@@ -1024,11 +1024,11 @@ fn wait_for_failure(worker: &RecorderWorker) {
     }
 }
 
-fn wait_for_recording(worker: &RecorderWorker) {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while worker.status().phase != RecorderWorkerPhase::Recording {
-        assert!(Instant::now() < deadline, "recorder start timeout");
-        thread::sleep(Duration::from_millis(5));
+fn wait_for_processed(worker: &RecorderWorker, events: u64) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while worker.status().events_processed < events {
+        assert!(Instant::now() < deadline, "recorder processing timeout");
+        thread::sleep(Duration::from_millis(1));
     }
 }
 
