@@ -68,6 +68,12 @@ no statement-ending commas or semicolons. Properties, typed scalar arguments, un
 non-finite numbers, duplicate nodes, and KDL 1 booleans such as `true` are rejected. KDL 2 booleans
 and null are `#true`, `#false`, and `#null`.
 
+Files in exactly the canonical rendering are decoded by a dedicated single-pass reader; any other
+KDL (comments, `;` separators, raw or escaped strings beyond `\"`, `\\`, `\n`, `\r`, `\t`, `\b`,
+`\f`, CRLF endings, tabs) goes through the generic KDL parser, which also produces every syntax
+diagnostic. Both paths accept the same documents and produce the same values; see
+[config load performance](developer/CONFIG_LOAD_PERFORMANCE.md).
+
 ## Generic Templates
 
 Templates are generic object data, not a second configuration schema or executable text. A template
