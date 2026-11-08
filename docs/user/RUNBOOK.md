@@ -321,7 +321,7 @@ shows as a stale result instead of blocking the answer.
 import os, subprocess, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-MOUNT, GPU, MIN_FREE_MIB, UNIT = "/mnt/models", "0", 4800, "engine@0.service"
+MOUNT, GPU, MIN_FREE_MIB, UNIT = "/path/to/models", "0", 4800, "engine@0.service"
 state = {"ok": False, "why": "starting", "at": 0.0}
 
 def probe():
