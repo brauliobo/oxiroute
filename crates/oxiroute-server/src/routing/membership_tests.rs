@@ -243,3 +243,161 @@ fn selections_never_observe_a_torn_membership_during_churn() {
         0
     );
 }
+
+/// What `install` used to compute by looking every server up in the previous membership.
+fn carried_over(
+    previous: &[Arc<PoolEndpoint>],
+    credit: &[i64],
+    next: usize,
+    endpoints: &[Arc<PoolEndpoint>],
+) -> (Vec<i64>, usize) {
+    let position = |members: &[Arc<PoolEndpoint>], server: &Arc<PoolEndpoint>| {
+        members
+            .iter()
+            .position(|member| Arc::ptr_eq(member, server))
+    };
+    let carried = endpoints
+        .iter()
+        .map(|server| position(previous, server).map_or(0, |index| credit[index]))
+        .collect();
+    let cursor = previous
+        .get(next)
+        .and_then(|server| position(endpoints, server))
+        .unwrap_or(next);
+    (carried, cursor.checked_rem(endpoints.len()).unwrap_or(0))
+}
+
+#[test]
+fn membership_changes_carry_credits_and_the_cursor_like_a_full_lookup_would() {
+    let pool = pool(
+        UpstreamAlgorithm::WeightedRoundRobin {
+            weights: vec![1, 1],
+        },
+        &[("s0", 3000), ("s1", 3001)],
+    );
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut random = move |bound: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        usize::try_from(state % u64::try_from(bound).expect("bound")).expect("index")
+    };
+    for step in 0..600 {
+        {
+            let mut selection = pool.selection.lock().expect("selection");
+            for credit in &mut selection.credit {
+                *credit = i64::try_from(random(50)).expect("credit") - 25;
+            }
+            selection.next = random(selection.credit.len().max(1));
+        }
+        let previous = pool.health.members.load_full().endpoints.to_vec();
+        let (credit, next) = {
+            let selection = pool.selection.lock().expect("selection");
+            (selection.credit.clone(), selection.next)
+        };
+        let name = format!("d{}", random(12));
+        let known = previous.iter().any(|member| member.name == name);
+        match random(3) {
+            0 if !known => {
+                pool.add_server(
+                    runtime_server(&name, 4000, None),
+                    dynamic(1, u16::try_from(random(4)).expect("priority")),
+                )
+                .expect("add");
+            }
+            1 if known => {
+                pool.remove_server(&name).expect("remove");
+            }
+            2 if known => {
+                let priority = u16::try_from(random(4)).expect("priority");
+                pool.update_server(&name, dynamic(1, priority), None)
+                    .expect("update");
+            }
+            _ => continue,
+        }
+        let after = pool.health.members.load_full().endpoints.to_vec();
+        let selection = pool.selection.lock().expect("selection");
+        let expected = carried_over(&previous, &credit, next, &after);
+        assert_eq!(
+            (selection.credit.clone(), selection.next),
+            expected,
+            "step {step}"
+        );
+        let tail = after
+            .iter()
+            .filter(|member| member.origin == ServerOrigin::Dynamic);
+        let keys = tail
+            .map(|member| (member.priority(), member.name.clone()))
+            .collect::<Vec<_>>();
+        assert!(keys.is_sorted(), "dynamic servers stay ordered: {keys:?}");
+    }
+}
+
+#[test]
+fn an_update_that_changes_nothing_publishes_and_wakes_nobody() {
+    let pool = pool(UpstreamAlgorithm::RoundRobin, &[("one", 3000)]);
+    pool.add_server(runtime_server("gpu", 4000, Some(2)), dynamic(3, 100))
+        .expect("gpu");
+    let (members, wakes) = (
+        pool.health.members.load_full(),
+        pool.queue.notifications.load(Ordering::Relaxed),
+    );
+
+    pool.update_server("gpu", dynamic(3, 100), Some(2))
+        .expect("same");
+
+    assert!(Arc::ptr_eq(&members, &pool.health.members.load_full()));
+    assert_eq!(pool.queue.notifications.load(Ordering::Relaxed), wakes);
+    pool.update_server("gpu", dynamic(4, 100), Some(2))
+        .expect("weight");
+    assert!(
+        Arc::ptr_eq(&members, &pool.health.members.load_full()),
+        "a new weight changes no order"
+    );
+    assert_eq!(pool.queue.notifications.load(Ordering::Relaxed), wakes + 1);
+    pool.update_server("gpu", dynamic(4, 50), Some(2))
+        .expect("priority");
+    assert!(!Arc::ptr_eq(&members, &pool.health.members.load_full()));
+}
+
+#[test]
+fn setting_the_state_a_server_already_has_wakes_nobody() {
+    let pool = pool(UpstreamAlgorithm::RoundRobin, &[("one", 3000)]);
+    let wakes = pool.queue.notifications.load(Ordering::Relaxed);
+
+    pool.set_server_administrative_state("one", AdministrativeState::Ready)
+        .expect("same state");
+    assert_eq!(pool.queue.notifications.load(Ordering::Relaxed), wakes);
+    pool.set_server_administrative_state("one", AdministrativeState::Drain)
+        .expect("drain");
+    assert_eq!(pool.queue.notifications.load(Ordering::Relaxed), wakes + 1);
+}
+
+#[test]
+fn several_servers_join_in_one_membership_change_and_a_duplicate_is_refused_alone() {
+    let pool = pool(UpstreamAlgorithm::First, &[("local", 3000)]);
+    let before = pool.health.members.load_full();
+    let join = |name: &str, port, priority, state| NewMember {
+        server: runtime_server(name, port, None),
+        spec: dynamic(1, priority),
+        state,
+    };
+
+    let results = pool.add_servers(vec![
+        join("b", 4001, 100, AdministrativeState::Ready),
+        join("a", 4002, 100, AdministrativeState::Drain),
+        join("b", 4003, 100, AdministrativeState::Ready),
+        join("z", 4004, 10, AdministrativeState::Ready),
+    ]);
+
+    assert!(matches!(&results[2], Err(PoolMembershipError::DuplicateName(name)) if name == "b"));
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 3);
+    assert_eq!(names(&pool), ["local", "z", "a", "b"]);
+    assert!(!Arc::ptr_eq(&before, &pool.health.members.load_full()));
+    let drained = pool.health_snapshot().endpoints[2].administrative_state;
+    assert_eq!(
+        drained,
+        AdministrativeState::Drain,
+        "joins in the state they asked for"
+    );
+}

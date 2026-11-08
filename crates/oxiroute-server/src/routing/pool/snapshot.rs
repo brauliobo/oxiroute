@@ -81,28 +81,58 @@ impl EndpointPool {
         server: RuntimeServer,
         spec: DynamicServer,
     ) -> Result<ServerHandle, PoolMembershipError> {
-        server.endpoint.preflight()?;
+        let join = NewMember {
+            server,
+            spec,
+            state: AdministrativeState::Ready,
+        };
+        self.add_servers(vec![join]).remove(0)
+    }
+
+    /// Adds several registered servers in one membership change, in the given order. Each one
+    /// reports on its own whether it joined, as [`Self::add_server`] would.
+    pub(crate) fn add_servers(
+        &self,
+        joining: Vec<NewMember>,
+    ) -> Vec<Result<ServerHandle, PoolMembershipError>> {
         let mut selection = self.lock_selection();
         let current = self.members();
-        if current.position(&server.name).is_some() {
-            return Err(PoolMembershipError::DuplicateName(server.name));
-        }
-        let endpoint = Arc::new(PoolEndpoint::new(
-            &self.health.pool_name,
-            server,
-            self.startup,
-            spec.weight,
-            ServerOrigin::Dynamic,
-            spec.priority,
-            self.health.breaker_policy(),
-        ));
+        let mut names = current
+            .endpoints
+            .iter()
+            .map(|member| member.name.clone())
+            .collect::<std::collections::HashSet<_>>();
         let mut endpoints = current.endpoints.to_vec();
-        endpoints.insert(
-            current.dynamic_position(spec.priority, &endpoint.name),
-            Arc::clone(&endpoint),
-        );
-        self.install(&mut selection, &current, endpoints);
-        Ok(ServerHandle(endpoint))
+        let results = joining
+            .into_iter()
+            .map(|join| -> Result<ServerHandle, PoolMembershipError> {
+                join.server.endpoint.preflight()?;
+                if !names.insert(join.server.name.clone()) {
+                    return Err(PoolMembershipError::DuplicateName(join.server.name));
+                }
+                let endpoint = Arc::new(PoolEndpoint::new(
+                    &self.health.pool_name,
+                    join.server,
+                    self.startup,
+                    join.spec.weight,
+                    ServerOrigin::Dynamic,
+                    join.spec.priority,
+                    self.health.breaker_policy(),
+                ));
+                endpoint
+                    .administrative_state
+                    .store(join.state as u8, Ordering::Release);
+                let at =
+                    Membership::dynamic_position(&endpoints, join.spec.priority, &endpoint.name);
+                endpoints.insert(at, Arc::clone(&endpoint));
+                selection.insert_at(at);
+                Ok(ServerHandle(endpoint))
+            })
+            .collect::<Vec<_>>();
+        if results.iter().any(Result::is_ok) {
+            self.publish(endpoints);
+        }
+        results
     }
 
     /// Removes a server from selection. Leases it already handed out keep counting against it.
@@ -119,12 +149,14 @@ impl EndpointPool {
         let removed = Arc::clone(&current.endpoints[at]);
         let mut endpoints = current.endpoints.to_vec();
         endpoints.remove(at);
-        self.install(&mut selection, &current, endpoints);
+        selection.remove_at(at, endpoints.len());
+        self.publish(endpoints);
         Ok(ServerHandle(removed))
     }
 
     /// Changes the weight, priority and registered capacity of a member without touching its
-    /// health, leases or administrative state.
+    /// health, leases or administrative state. Only a new priority moves the member in the
+    /// rotation; an update that changes nothing wakes nobody.
     ///
     /// # Errors
     ///
@@ -137,21 +169,32 @@ impl EndpointPool {
     ) -> Result<(), PoolMembershipError> {
         let mut selection = self.lock_selection();
         let current = self.members();
-        let server = self
-            .server_endpoint(name)
+        let at = current
+            .position(name)
             .ok_or_else(|| PoolMembershipError::UnknownServer(name.to_owned()))?;
+        let server = &current.endpoints[at];
+        let limit = max_connections.unwrap_or(0);
+        let capacity_changed = server.configured_weight() != spec.weight
+            || server.configured_max_connections.load(Ordering::Acquire) != limit;
+        let moved = server.priority() != spec.priority;
+        if !capacity_changed && !moved {
+            return Ok(());
+        }
         server.set_configured_weight(spec.weight);
-        server.priority.store(spec.priority, Ordering::Release);
         server
             .configured_max_connections
-            .store(max_connections.unwrap_or(0), Ordering::Release);
-        let mut endpoints = current.endpoints.to_vec();
-        let statics = endpoints
-            .iter()
-            .filter(|member| member.origin == ServerOrigin::Static)
-            .count();
-        endpoints[statics..].sort_by(|a, b| (a.priority(), &a.name).cmp(&(b.priority(), &b.name)));
-        self.install(&mut selection, &current, endpoints);
+            .store(limit, Ordering::Release);
+        if moved {
+            server.priority.store(spec.priority, Ordering::Release);
+            let mut endpoints = current.endpoints.to_vec();
+            let member = endpoints.remove(at);
+            let to = Membership::dynamic_position(&endpoints, spec.priority, name);
+            endpoints.insert(to, member);
+            selection.move_to(at, to);
+            self.publish(endpoints);
+        } else {
+            self.queue.notify_capacity_waiters();
+        }
         Ok(())
     }
 
@@ -161,31 +204,8 @@ impl EndpointPool {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Publishes a new membership, keeping each surviving server's weighted credit and the
-    /// rotation cursor on the same server, and wakes everything that waits on the old one.
-    fn install(
-        &self,
-        selection: &mut SelectionState,
-        previous: &Membership,
-        endpoints: Vec<Arc<PoolEndpoint>>,
-    ) {
-        let position = |members: &[Arc<PoolEndpoint>], server: &Arc<PoolEndpoint>| {
-            members
-                .iter()
-                .position(|member| Arc::ptr_eq(member, server))
-        };
-        selection.credit = endpoints
-            .iter()
-            .map(|server| {
-                position(&previous.endpoints, server).map_or(0, |index| selection.credit[index])
-            })
-            .collect();
-        let next = previous
-            .endpoints
-            .get(selection.next)
-            .and_then(|server| position(&endpoints, server))
-            .unwrap_or(selection.next);
-        selection.next = next.checked_rem(endpoints.len()).unwrap_or(0);
+    /// Publishes a new membership and wakes everything that waits on the old one.
+    fn publish(&self, endpoints: Vec<Arc<PoolEndpoint>>) {
         self.health
             .members
             .store(Arc::new(Membership::new(endpoints)));

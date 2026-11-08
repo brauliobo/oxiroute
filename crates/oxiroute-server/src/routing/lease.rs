@@ -33,6 +33,42 @@ impl SelectionState {
         }
     }
 
+    /// A server joined at `at`; the cursor and the credits stay with the servers they belonged to.
+    pub(super) fn insert_at(&mut self, at: usize) {
+        let before = self.credit.len();
+        self.credit.insert(at, 0);
+        if self.next < before && at <= self.next {
+            self.next += 1;
+        }
+        self.next %= self.credit.len();
+    }
+
+    /// The server at `at` left, `remaining` servers are left.
+    pub(super) fn remove_at(&mut self, at: usize, remaining: usize) {
+        let before = self.credit.len();
+        self.credit.remove(at);
+        if self.next < before && at < self.next {
+            self.next -= 1;
+        }
+        self.next = self.next.checked_rem(remaining).unwrap_or(0);
+    }
+
+    /// The server at `from` moved to `to`, counted once it has left its place.
+    pub(super) fn move_to(&mut self, from: usize, to: usize) {
+        let credit = self.credit.remove(from);
+        self.credit.insert(to, credit);
+        if self.next == from {
+            self.next = to;
+            return;
+        }
+        if self.next > from {
+            self.next -= 1;
+        }
+        if self.next >= to {
+            self.next += 1;
+        }
+    }
+
     pub(super) fn next_random(&mut self) -> u64 {
         self.random ^= self.random << 13;
         self.random ^= self.random >> 7;
