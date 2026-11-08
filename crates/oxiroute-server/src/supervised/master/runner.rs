@@ -269,9 +269,11 @@ impl MasterRunner {
         reload: &mut ConfigReloadMonitor,
         (book, reports): (&mut ListenerBook, &mut ConfigReports),
     ) -> Result<(), Box<dyn Error>> {
-        let document = match coordinator.load() {
-            ConfigLoadOutcome::Loaded(document) => document,
-            ConfigLoadOutcome::Rejected(rejection) => {
+        // The coordinator rereads and hashes the file, and reuses the resolved document while the
+        // bytes are unchanged, so a quiet reconciliation costs one file read.
+        let document = match coordinator.load_shared() {
+            Ok(document) => document,
+            Err(rejection) => {
                 reports.reject(
                     master,
                     ConfigRejection::new(rejection.disk_revision.as_ref(), &rejection.diagnostics),

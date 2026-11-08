@@ -21,6 +21,63 @@ fn rejects_unbounded_or_inverted_timing() {
     assert!(validate_options(invalid).is_err());
 }
 
+fn any_path() -> ConfigEventFilter {
+    ConfigEventFilter::new(Path::new("/etc/example/oxiroute.kdl"), &[])
+}
+
+#[test]
+fn notify_events_for_unrelated_files_do_not_wake_reconciliation() {
+    let (wake, receiver) = mpsc::sync_channel(1);
+    let unrelated = Event::new(EventKind::Create(CreateKind::File))
+        .add_path(PathBuf::from("/etc/example/scratch.out"));
+    let config = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Any)))
+        .add_path(PathBuf::from("/etc/example/oxiroute.kdl"));
+
+    handle_notify_event(&wake, &any_path(), Ok(unrelated));
+    assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    handle_notify_event(&wake, &any_path(), Ok(config));
+    receiver
+        .try_recv()
+        .expect("the configuration file wakes reconciliation");
+}
+
+#[test]
+fn files_written_next_to_the_config_do_not_cause_reconciliations() {
+    let directory = TempDir::new().expect("directory");
+    let path = directory.path().join("oxiroute.lua");
+    let config = empty_config().validate().expect("valid config");
+    let render = |config: &_| {
+        oxiroute_config_source::render_config(oxiroute_config_source::ConfigFormat::Lua, config)
+            .expect("render")
+    };
+    fs::write(&path, render(&config)).expect("config");
+    let manager = GenerationManager::new();
+    let mut watcher = ConfigWatcher::start(
+        CanonicalConfigCoordinator::new(&path).expect("coordinator"),
+        manager,
+        ConfigWatcherOptions {
+            debounce: Duration::from_millis(10),
+            max_debounce: Duration::from_millis(30),
+            reconciliation_interval: Duration::from_hours(1),
+        },
+        RuntimeMode::Direct,
+    )
+    .expect("watcher");
+    wait_until(|| watcher.status().reconciliations >= 1);
+
+    fs::write(directory.path().join("scratch.out"), b"x").expect("scratch file");
+    fs::remove_file(directory.path().join("scratch.out")).expect("remove scratch file");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(watcher.status().events, 0);
+    assert_eq!(watcher.status().reconciliations, 1);
+
+    let mut edited = empty_config();
+    edited.max_connections = Some(7);
+    fs::write(&path, render(&edited.validate().expect("valid edit"))).expect("edit");
+    wait_until(|| watcher.status().reconciliations >= 2);
+    watcher.shutdown();
+}
+
 #[test]
 fn notify_access_events_are_ignored() {
     let (wake, receiver) = mpsc::sync_channel(1);
@@ -29,7 +86,7 @@ fn notify_access_events_are_ignored() {
         AccessKind::Open(AccessMode::Read),
         AccessKind::Close(AccessMode::Read),
     ] {
-        handle_notify_event(&wake, Ok(Event::new(EventKind::Access(kind))));
+        handle_notify_event(&wake, &any_path(), Ok(Event::new(EventKind::Access(kind))));
     }
 
     assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
@@ -52,7 +109,7 @@ fn notify_rescans_changes_and_backend_errors_wake_reconciliation() {
     ];
 
     for event in events {
-        handle_notify_event(&wake, event);
+        handle_notify_event(&wake, &any_path(), event);
         receiver.try_recv().expect("reconciliation wake");
     }
 }
@@ -324,6 +381,9 @@ fn dependency_watch_reconciles_a_deleted_nginx_glob_without_waiting_for_periodic
     )
     .expect("watcher");
 
+    // The startup reconciliation would also see the deletion; wait it out so the event must do it.
+    wait_until(|| watcher.status().reconciliations >= 1);
+    std::thread::sleep(Duration::from_millis(200));
     fs::remove_file(site).expect("delete nginx site");
     wait_until(|| {
         manager

@@ -4,11 +4,7 @@ use super::*;
 impl ManagementState {
     pub(super) fn listeners(&self) -> ApiResponse {
         match self.metrics.snapshot() {
-            Ok(snapshot) => ApiResponse::json(
-                200,
-                &serde_json::to_value(ListenerInventoryResponse::from(snapshot))
-                    .expect("listener inventory DTO serializes"),
-            ),
+            Ok(snapshot) => ApiResponse::dto(200, &ListenerInventoryResponse::from(snapshot)),
             Err(_) => ApiResponse::error(
                 503,
                 "listeners_unavailable",
@@ -27,11 +23,7 @@ impl ManagementState {
             .iter()
             .map(|pool| pool.health_snapshot())
             .collect::<Vec<_>>();
-        ApiResponse::json(
-            200,
-            &serde_json::to_value(PoolInventoryResponse::from(pools))
-                .expect("pool inventory DTO serializes"),
-        )
+        ApiResponse::dto(200, &PoolInventoryResponse::from(pools))
     }
 
     pub(super) fn servers(&self) -> ApiResponse {
@@ -44,11 +36,7 @@ impl ManagementState {
             .iter()
             .map(|pool| pool.health_snapshot())
             .collect::<Vec<_>>();
-        ApiResponse::json(
-            200,
-            &serde_json::to_value(ServerInventoryResponse::from(pools))
-                .expect("server inventory DTO serializes"),
-        )
+        ApiResponse::dto(200, &ServerInventoryResponse::from(pools))
     }
 
     pub(super) fn audit_status(&self) -> ApiResponse {

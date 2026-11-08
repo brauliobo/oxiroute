@@ -69,8 +69,10 @@ TCP, UDP pseudo-sessions, QUIC/H3 connections, and RTMP references are counted i
 drained under a caller-supplied deadline. Failed candidates are dropped without changing active
 state. Canonical management writes remain revision-checked and invalid drafts do not alter disk.
 
-The watcher observes the parent directory so rename-based replacement is visible, debounces event
-bursts, and periodically reconciles exact SHA-256 disk revisions. Invalid snapshots are rejected and
+The watcher observes the parent directory so rename-based replacement is visible, but only an event
+that names the configuration file, the directory itself or a recorded native dependency starts a
+reconciliation (scratch files, editor swap files and tooling output next to the configuration are
+ignored). It debounces event bursts and periodically reconciles exact SHA-256 disk revisions. Invalid snapshots are rejected and
 do not replace active generation state: each one is logged at error level on the `oxiroute::config`
 target (once per distinct rejection, not at every reconciliation), emits a `configuration_reload`
 event with the outcome `rejected`, raises `oxiroute_config_rejections_total` and is shown as
@@ -83,8 +85,11 @@ and startup failures name the failing setting (`path`, `detail`, `line`). Operat
 the `oxiroute::operations` target are
 structured JSON and never include source text, secret values, configured paths, or OS error strings.
 
-For compositional KDL/HOCON/UCI roots, periodic reconciliation re-resolves templates and native
-references even when the root bytes are unchanged. A native change can therefore produce a new
+Reconciliation reads and hashes the file every time but resolves it only when its bytes changed: the
+decoded document is reused while the SHA-256 revision is unchanged, so an unchanged 900 KB
+configuration costs about one million instructions per 30-second reconciliation instead of about
+three billion. For compositional KDL/HOCON/UCI roots with native references, periodic
+reconciliation re-resolves the native references even when the root bytes are unchanged. A native change can therefore produce a new
 candidate revision while `diskRevision` remains unchanged. Native import failure diagnostics crossing
 the management boundary contain stable code counts, not source text, paths, or native diagnostic
 messages.

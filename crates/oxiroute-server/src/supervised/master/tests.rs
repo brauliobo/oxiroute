@@ -722,3 +722,29 @@ fn worker_status_for_test() -> WorkerStatus {
         events: Vec::new(),
     }
 }
+
+#[test]
+fn reload_monitor_ignores_files_that_are_not_the_configuration() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = directory.path().join("oxiroute.kdl");
+    std::fs::write(&path, "version 1\n").unwrap();
+    let mut monitor = ConfigReloadMonitor::start(&path, &[]).unwrap();
+    let start = Instant::now();
+    assert!(
+        monitor.next_trigger(start),
+        "the first reconciliation is immediate"
+    );
+
+    std::fs::write(directory.path().join("scratch.out"), b"x").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let quiet = start + CONFIG_RELOAD_DEBOUNCE * 4;
+    assert!(!monitor.next_trigger(quiet));
+
+    std::fs::write(&path, "version 1\n\n").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !monitor.next_trigger(quiet),
+        "the debounce window opens at the first event"
+    );
+    assert!(monitor.next_trigger(quiet + CONFIG_RELOAD_DEBOUNCE));
+}
