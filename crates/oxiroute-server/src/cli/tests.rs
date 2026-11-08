@@ -1,3 +1,4 @@
+use super::commands::{evacuate_pool_body, evacuate_server_body};
 use super::*;
 
 #[test]
@@ -527,4 +528,74 @@ fn request_ages_need_a_unit() {
     assert_eq!(parse_age_ms("1h"), Ok(3_600_000));
     assert!(parse_age_ms("30").is_err());
     assert!(parse_age_ms("xs").is_err());
+}
+
+#[test]
+fn parses_server_evacuate_with_force_and_repeated_pools() {
+    let cli = Cli::try_parse_from([
+        "oxiroute",
+        "server",
+        "evacuate",
+        "--force",
+        "--pool",
+        "gpu-render",
+        "--pool",
+        "voice-tts",
+        "node-a",
+    ])
+    .expect("CLI");
+    let Command::Server {
+        command: ServerCommand::Evacuate { target, force },
+    } = cli.command()
+    else {
+        panic!("server evacuate command")
+    };
+    assert!(*force);
+    assert_eq!(target.pools, ["gpu-render", "voice-tts"]);
+    assert_eq!(target.server, "node-a");
+}
+
+#[test]
+fn parses_pool_evacuate_without_force_by_default() {
+    let cli = Cli::try_parse_from(["oxiroute", "pool", "evacuate", "gpu-render", "voice-tts"])
+        .expect("CLI");
+    let Command::Pool {
+        command: PoolCommand::Evacuate { pools, force },
+    } = cli.command()
+    else {
+        panic!("pool evacuate command")
+    };
+    assert!(!force);
+    assert_eq!(*pools, ["gpu-render", "voice-tts"]);
+}
+
+#[test]
+fn evacuate_requires_its_targets() {
+    assert!(Cli::try_parse_from(["oxiroute", "pool", "evacuate"]).is_err());
+    assert!(Cli::try_parse_from(["oxiroute", "pool", "evacuate", ""]).is_err());
+    assert!(Cli::try_parse_from(["oxiroute", "server", "evacuate", "node-a"]).is_err());
+    assert!(Cli::try_parse_from(["oxiroute", "server", "evacuate", "--pool", "gpu"]).is_err());
+}
+
+#[test]
+fn evacuate_request_bodies_name_the_targets_and_the_force_flag() {
+    let target = ServerTarget {
+        pools: vec!["gpu-render".into(), "voice-tts".into()],
+        server: "node-a".into(),
+    };
+
+    assert_eq!(
+        evacuate_server_body(&target, true),
+        json!({
+            "targets": [
+                { "pool": "gpu-render", "server": "node-a" },
+                { "pool": "voice-tts", "server": "node-a" },
+            ],
+            "force": true,
+        })
+    );
+    assert_eq!(
+        evacuate_pool_body(&["gpu-render".into()], false),
+        json!({ "pools": ["gpu-render"], "force": false })
+    );
 }

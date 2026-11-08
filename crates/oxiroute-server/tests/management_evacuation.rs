@@ -402,6 +402,24 @@ impl Farm {
             .collect()
     }
 
+    async fn cli(&self, words: &[&str]) -> std::process::Output {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_oxiroute"));
+        command
+            .args(["--endpoint", &format!("http://{}", self.management)])
+            .arg("--token-file")
+            .arg(self.token_path())
+            .args(["--output", "json"])
+            .args(words);
+        tokio::task::spawn_blocking(move || command.output().expect("oxiroute CLI"))
+            .await
+            .expect("CLI task")
+    }
+
+    fn token_path(&self) -> std::path::PathBuf {
+        let server = self.server.as_ref().expect("running server");
+        server.token_path.clone().expect("management token file")
+    }
+
     async fn metrics(&self) -> String {
         let response = http_request(self.management, "GET", "/metrics", &[], &[]).await;
         assert_eq!(response.status, 200);
@@ -658,5 +676,61 @@ async fn evacuations_are_audited_and_published_as_events() {
             .iter()
             .all(|event| event["event"] != "server_evacuation")
     );
+    farm.shutdown();
+}
+
+#[tokio::test]
+async fn the_cli_evacuates_a_server_and_a_pool_against_the_real_api() {
+    let mut farm = Farm::start(&[
+        ("render", &[Mode::Hold, Mode::Reply]),
+        ("voice", &[Mode::Hold, Mode::Reply]),
+    ])
+    .await;
+    let moved = farm.get("render", "cli-moved");
+    farm.origin("render", 0).arrival("cli-moved").await;
+
+    let server = farm
+        .cli(&["server", "evacuate", "--pool", "render", "node-a"])
+        .await;
+
+    assert!(
+        server.status.success(),
+        "{}",
+        String::from_utf8_lossy(&server.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&server.stdout).expect("report JSON"),
+        json!({
+            "outcome": "evacuated", "force": false, "cancelledAndRedispatched": 1,
+            "forced": 0, "leftRunning": {},
+        })
+    );
+    assert_eq!(
+        moved.await.expect("client task").header("x-origin"),
+        Some("node-b")
+    );
+
+    let cut = farm.get("voice", "cli-cut");
+    farm.origin("voice", 0).arrival("cli-cut").await;
+    let pool = farm.cli(&["pool", "evacuate", "--force", "voice"]).await;
+
+    assert!(
+        pool.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pool.stderr)
+    );
+    let report: Value = serde_json::from_slice(&pool.stdout).expect("report JSON");
+    assert_eq!(
+        (report["force"].clone(), report["forced"].clone()),
+        (json!(true), json!(1))
+    );
+    assert_eq!(cut.await.expect("client task").status, 503);
+    assert_eq!(
+        farm.drained().await,
+        ["render/node-a", "voice/node-a", "voice/node-b"]
+    );
+
+    let missing = farm.cli(&["pool", "evacuate", "missing"]).await;
+    assert!(!missing.status.success());
     farm.shutdown();
 }
