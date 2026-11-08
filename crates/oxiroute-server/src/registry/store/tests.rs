@@ -24,7 +24,7 @@ fn record(name: &str) -> Registration {
 fn a_missing_store_loads_empty_and_updates_bump_the_revision() {
     let dir = tempfile::tempdir().expect("dir");
     let store = Store::open(&dir.path().join("registry")).expect("open");
-    assert_eq!(store.load().expect("load"), StoredRegistry::default());
+    assert_eq!(*store.load().expect("load"), StoredRegistry::default());
 
     let ((), seq) = store
         .update(|registry| (registry.upsert(record("a")), ()))
@@ -118,4 +118,60 @@ fn concurrent_writers_never_lose_updates() {
     let loaded = store.load().expect("load");
     assert_eq!(loaded.records.len(), 40);
     assert_eq!(loaded.seq, 40);
+}
+
+#[test]
+fn reads_share_the_parsed_registry_until_the_file_is_replaced() {
+    let dir = tempfile::tempdir().expect("dir");
+    let store = Store::open(dir.path()).expect("open");
+    store
+        .update(|registry| (registry.upsert(record("a")), ()))
+        .expect("write");
+
+    let (first, second) = (store.load().expect("first"), store.load().expect("second"));
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "an unchanged file is not parsed again"
+    );
+
+    let other = Store::open(dir.path()).expect("second handle, as another process");
+    other
+        .update(|registry| (registry.upsert(record("b")), ()))
+        .expect("replace");
+    let third = store.load().expect("third");
+
+    assert_eq!(third.records.len(), 2, "a replaced file is read again");
+    assert!(Arc::ptr_eq(&third, &store.load().expect("fourth")));
+}
+
+#[test]
+fn removing_many_records_is_one_revision() {
+    let dir = tempfile::tempdir().expect("dir");
+    let store = Store::open(dir.path()).expect("open");
+    store
+        .update(|registry| {
+            (0..5).for_each(|index| {
+                registry.upsert(record(&format!("w{index}")));
+            });
+            (true, ())
+        })
+        .expect("seed");
+
+    let (removed, seq) = store
+        .update(|registry| {
+            let keys = ["w1", "w3", "missing"].map(|name| record(name).key());
+            let removed = registry.remove_all(&keys);
+            (removed > 0, removed)
+        })
+        .expect("remove");
+
+    assert_eq!((removed, seq), (2, 2));
+    let names = store
+        .load()
+        .expect("load")
+        .records
+        .iter()
+        .map(|record| record.name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["w0", "w2", "w4"]);
 }

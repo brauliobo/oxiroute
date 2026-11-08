@@ -243,6 +243,15 @@ impl EndpointPool {
             .map(|server| (server.origin, server.endpoint.clone()))
     }
 
+    /// Where every member comes from, by name.
+    pub(crate) fn member_origins(&self) -> std::collections::HashMap<String, ServerOrigin> {
+        self.members()
+            .endpoints
+            .iter()
+            .map(|server| (server.name.clone(), server.origin))
+            .collect()
+    }
+
     /// The member that already uses `endpoint`, if any.
     pub(crate) fn member_at(&self, endpoint: &RuntimeEndpoint) -> Option<String> {
         self.members()
