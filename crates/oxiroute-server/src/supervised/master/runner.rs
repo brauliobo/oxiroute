@@ -68,9 +68,13 @@ impl MasterRunner {
         let catalog = SupervisedGenerationCatalog::new(active);
         let master_config = master_config()?;
         let mut factory = WorkerSpawner::new(&self.launcher_path, WORKER_HANDSHAKE_TIMEOUT)?;
-        let mut reload =
-            ConfigReloadMonitor::start(coordinator.canonical_path(), &document.dependencies)?;
-        let signals = SignalMonitor::new()?;
+        let waker = Waker::new()?;
+        let mut reload = ConfigReloadMonitor::start(
+            coordinator.canonical_path(),
+            &document.dependencies,
+            Arc::clone(&waker),
+        )?;
+        let signals = SignalMonitor::new(waker)?;
         let launch = Master::launch(
             master_config,
             listeners,
@@ -81,8 +85,7 @@ impl MasterRunner {
         let result = match launch {
             Ok(mut master) => self.drive(
                 &mut master,
-                &signals.stop,
-                &signals.reload,
+                &signals,
                 coordinator,
                 catalog,
                 &mut factory,
@@ -163,8 +166,7 @@ impl MasterRunner {
     fn drive(
         &self,
         master: &mut Master,
-        stop: &AtomicBool,
-        reload_requested: &AtomicBool,
+        signals: &SignalMonitor,
         coordinator: &CanonicalConfigCoordinator,
         mut catalog: GenerationCatalog,
         factory: &mut WorkerSpawner,
@@ -174,8 +176,7 @@ impl MasterRunner {
     ) -> Result<(), Box<dyn Error>> {
         let result = self.drive_inner(
             master,
-            stop,
-            reload_requested,
+            signals,
             coordinator,
             &mut catalog,
             factory,
@@ -194,8 +195,7 @@ impl MasterRunner {
     fn drive_inner(
         &self,
         master: &mut Master,
-        stop: &AtomicBool,
-        reload_requested: &AtomicBool,
+        signals: &SignalMonitor,
         coordinator: &CanonicalConfigCoordinator,
         catalog: &mut GenerationCatalog,
         factory: &mut WorkerSpawner,
@@ -207,20 +207,21 @@ impl MasterRunner {
             if master.state() == MasterState::Failed {
                 return Err(master_failure("startup").into());
             }
-            if stop.load(Ordering::Acquire) {
+            if signals.stop.load(Ordering::Acquire) {
                 return shutdown_master(master);
             }
             master.poll(Instant::now())?;
-            thread::sleep(MASTER_POLL_INTERVAL);
+            signals.wait(master, None)?;
         }
 
         loop {
-            if stop.load(Ordering::Acquire) {
+            if signals.stop.load(Ordering::Acquire) {
                 return shutdown_master(master);
             }
+            let now = Instant::now();
+            let mut due = None;
             match master.state() {
                 MasterState::Running => {
-                    let now = Instant::now();
                     let events = master.poll(now)?;
                     log_master_events(&events);
                     if let Some(detail) = apply_catalog_events(catalog, &events, book)? {
@@ -228,35 +229,37 @@ impl MasterRunner {
                     }
                     reports.retired.report(master, now);
                     let forced_reload = catalog.candidate().is_none()
-                        && reload_requested.swap(false, Ordering::AcqRel);
-                    if catalog.candidate().is_none() && (forced_reload || reload.next_trigger(now))
-                    {
-                        self.reconcile(
-                            master,
-                            coordinator,
-                            catalog,
-                            factory,
-                            reload,
-                            (book, reports),
-                        )?;
+                        && signals.reload.swap(false, Ordering::AcqRel);
+                    if catalog.candidate().is_none() {
+                        if forced_reload || reload.next_trigger(now) {
+                            self.reconcile(
+                                master,
+                                coordinator,
+                                catalog,
+                                factory,
+                                reload,
+                                (book, reports),
+                            )?;
+                        }
+                        due = Some(reload.next_deadline());
                     }
-                    thread::sleep(MASTER_POLL_INTERVAL);
+                    due = due.into_iter().chain(reports.retired.next_due()).min();
                 }
                 MasterState::Failed => return Err(master_failure("runtime").into()),
                 MasterState::Stopped => {
                     return Err(master_failure("unexpected early shutdown").into());
                 }
                 _ => {
-                    let now = Instant::now();
                     let events = master.poll(now)?;
                     log_master_events(&events);
                     if let Some(detail) = apply_catalog_events(catalog, &events, book)? {
                         reports.replacement_failed(master, detail);
                     }
                     reports.retired.report(master, now);
-                    thread::sleep(MASTER_POLL_INTERVAL);
+                    due = reports.retired.next_due();
                 }
             }
+            signals.wait(master, due)?;
         }
     }
 

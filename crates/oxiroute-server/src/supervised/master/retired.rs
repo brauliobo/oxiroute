@@ -10,7 +10,7 @@ const RETIRED_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 pub(super) struct RetiredReports {
     deadline: Duration,
     since: Option<Instant>,
-    last_sent: Option<Instant>,
+    pub(super) last_sent: Option<Instant>,
     listed: bool,
 }
 
@@ -18,6 +18,11 @@ impl RetiredReports {
     /// A replacement is starting; its retired worker may drain for `deadline`.
     pub(super) fn begin(&mut self, deadline: Duration) {
         self.deadline = deadline;
+    }
+
+    /// When the worker the master retired is next due a report; `None` while there is nothing to wait for.
+    pub(super) fn next_due(&self) -> Option<Instant> {
+        self.last_sent.map(|sent| sent + RETIRED_REPORT_INTERVAL)
     }
 
     pub(super) fn report(&mut self, master: &mut Master, now: Instant) {

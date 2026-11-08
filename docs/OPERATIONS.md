@@ -105,6 +105,19 @@ while UDP keeps the existing session on the retired generation and admits new se
 the candidate commits. A rejected candidate leaves the active worker and its listener ownership
 unchanged.
 
+## Idle behaviour
+
+An instance with no traffic does almost no work and takes almost no wakeups. The supervising master sleeps
+until a worker sends a frame, a worker exits, a signal or a configuration file event arrives, or the next
+deadline falls due (the 30-second configuration reconciliation, a pending replacement phase, the
+once-per-second report of a draining worker). The worker sleeps on its control channel; it checks its
+runtime and sends its status every second while nothing changes, every 250 ms while counters or events
+change or a retired generation drains, and sends nothing when the status is unchanged. A request from the
+master is served at once. The status carries traffic and listener counters only; process, host, pool and
+certificate sampling happens when the management API or `/metrics` asks for it. The shared Pingora timer
+thread sleeps until its earliest armed timer (and wakes once a second at most while none is armed).
+`docs/developer/PERF_6_2_IDLE_AUDIT.md` has the measurements.
+
 ## Shutdown
 
 Pingora is configured with a 3-second connection grace period followed by a 2-second runtime

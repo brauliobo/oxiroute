@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     error::Error,
     fmt, io,
-    os::fd::{AsFd as _, OwnedFd},
+    os::fd::{AsFd as _, BorrowedFd, OwnedFd},
     process::ExitStatus,
     time::{Duration, Instant},
 };
@@ -17,6 +17,7 @@ use oxiroute_supervisor_process::{
     AuthenticatedChannelError, SpawnError, WorkerCommand, WorkerEvent, WorkerIdentity,
     WorkerProcess, WorkerSpawner,
 };
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use thiserror::Error;
 
 use crate::{
