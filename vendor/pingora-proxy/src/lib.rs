@@ -92,7 +92,7 @@ use subrequest::{BodyMode, Ctx as SubrequestCtx};
 
 pub use proxy_cache::range_filter::{range_header_filter, MultiRangeInfo, RangeType};
 pub use proxy_purge::PurgeStatus;
-pub use proxy_trait::{FailToProxy, PreparedUpstreamRequest, ProxyHttp};
+pub use proxy_trait::{FailToProxy, PreparedUpstreamRequest, ProxyHttp, UpstreamCancellation};
 
 pub mod prelude {
     pub use crate::{http_proxy, http_proxy_service, ProxyHttp, Session};
@@ -305,29 +305,55 @@ where
             Err(e) => return (false, Some(e)),
         };
 
-        let client_session = self.client_upstream.get_http_session(&*peer).await;
+        // The attempt is dropped when the application abandons it, which closes its upstream
+        // connection without returning it to the pool.
+        let cancelled = self
+            .inner
+            .upstream_attempt_cancelled(session, ctx)
+            .unwrap_or_else(|| Box::pin(std::future::pending()));
+        tokio::select! {
+            biased;
+            error = cancelled => {
+                (false, Some(self.inner.error_while_proxy(&peer, session, error, ctx, false)))
+            }
+            attempt = self.proxy_attempt(session, ctx, &peer) => attempt,
+        }
+    }
+
+    // One attempt on the selected peer: connect, proxy and release the upstream session
+    async fn proxy_attempt(
+        &self,
+        session: &mut Session,
+        ctx: &mut SV::CTX,
+        peer: &HttpPeer,
+    ) -> (bool, Option<Box<Error>>)
+    where
+        SV: ProxyHttp + Send + Sync,
+        SV::CTX: Send + Sync,
+    {
+        let client_session = self.client_upstream.get_http_session(peer).await;
         match client_session {
             Ok((client_session, client_reused)) => {
                 let (server_reused, error) = match client_session {
                     ClientSession::H1(mut h1) => {
                         let (server_reused, client_reuse, error) = self
-                            .proxy_to_h1_upstream(session, &mut h1, client_reused, &peer, ctx)
+                            .proxy_to_h1_upstream(session, &mut h1, client_reused, peer, ctx)
                             .await;
                         if client_reuse {
                             let session = ClientSession::H1(h1);
                             self.client_upstream
-                                .release_http_session(session, &*peer, peer.idle_timeout())
+                                .release_http_session(session, peer, peer.idle_timeout())
                                 .await;
                         }
                         (server_reused, error)
                     }
                     ClientSession::H2(mut h2) => {
                         let (server_reused, mut error) = self
-                            .proxy_to_h2_upstream(session, &mut h2, client_reused, &peer, ctx)
+                            .proxy_to_h2_upstream(session, &mut h2, client_reused, peer, ctx)
                             .await;
                         let session = ClientSession::H2(h2);
                         self.client_upstream
-                            .release_http_session(session, &*peer, peer.idle_timeout())
+                            .release_http_session(session, peer, peer.idle_timeout())
                             .await;
 
                         if let Some(e) = error.as_mut() {
@@ -340,7 +366,7 @@ where
                                 {
                                     // Add the peer to prefer h1 so that all following requests
                                     // will use h1
-                                    self.client_upstream.prefer_h1(&*peer);
+                                    self.client_upstream.prefer_h1(peer);
                                 } else {
                                     // the peer doesn't allow downgrading to h1 (e.g. gRPC)
                                     e.retry = false.into();
@@ -352,11 +378,11 @@ where
                     }
                     ClientSession::Custom(mut c) => {
                         let (server_reused, error) = self
-                            .proxy_to_custom_upstream(session, &mut c, client_reused, &peer, ctx)
+                            .proxy_to_custom_upstream(session, &mut c, client_reused, peer, ctx)
                             .await;
                         let session = ClientSession::Custom(c);
                         self.client_upstream
-                            .release_http_session(session, &*peer, peer.idle_timeout())
+                            .release_http_session(session, peer, peer.idle_timeout())
                             .await;
                         (server_reused, error)
                     }
@@ -365,13 +391,13 @@ where
                     server_reused,
                     error.map(|e| {
                         self.inner
-                            .error_while_proxy(&peer, session, e, ctx, client_reused)
+                            .error_while_proxy(peer, session, e, ctx, client_reused)
                     }),
                 )
             }
             Err(mut e) => {
                 e.as_up();
-                let new_err = self.inner.fail_to_connect(session, &peer, ctx, e);
+                let new_err = self.inner.fail_to_connect(session, peer, ctx, e);
                 (false, Some(new_err.into_up()))
             }
         }
@@ -1621,5 +1647,131 @@ mod response_task_tests {
         let output = String::from_utf8(vec_output).unwrap().to_ascii_lowercase();
         assert!(output.contains("x-module: yes\r\n"));
         assert!(output.ends_with("\r\n\r\nab"));
+    }
+}
+
+#[cfg(test)]
+mod upstream_cancellation_tests {
+    use std::sync::Mutex;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    struct Cancellable {
+        address: String,
+        cancel: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+
+    #[async_trait]
+    impl ProxyHttp for Cancellable {
+        type CTX = ();
+
+        fn new_ctx(&self) -> Self::CTX {}
+
+        async fn upstream_peer(
+            &self,
+            _session: &mut Session,
+            _ctx: &mut (),
+        ) -> Result<Box<HttpPeer>> {
+            Ok(Box::new(HttpPeer::new(
+                self.address.as_str(),
+                false,
+                String::new(),
+            )))
+        }
+
+        fn upstream_attempt_cancelled(
+            &self,
+            _session: &Session,
+            _ctx: &(),
+        ) -> Option<UpstreamCancellation> {
+            let cancel = self.cancel.lock().unwrap().take()?;
+            Some(Box::pin(async move {
+                let _ = cancel.await;
+                Error::explain(Custom("cancelled"), "attempt abandoned")
+            }))
+        }
+
+        fn error_while_proxy(
+            &self,
+            _peer: &HttpPeer,
+            _session: &mut Session,
+            mut error: Box<Error>,
+            _ctx: &mut (),
+            _client_reused: bool,
+        ) -> Box<Error> {
+            error.set_retry(true);
+            error
+        }
+    }
+
+    async fn request_session() -> (Session, tokio::io::DuplexStream) {
+        let (mut client, server) = tokio::io::duplex(4096);
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+            .await
+            .unwrap();
+        let mut session = Session::new_h1_with_modules(Box::new(server), &HttpModules::new());
+        session.as_downstream_mut().read_request().await.unwrap();
+        (session, client)
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_attempt_closes_its_upstream_connection_and_reports_the_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (cancel, cancelled) = oneshot::channel();
+        let app = Cancellable {
+            address: listener.local_addr().unwrap().to_string(),
+            cancel: Mutex::new(Some(cancelled)),
+        };
+        let proxy = HttpProxy::new(app, Arc::new(ServerConf::default()));
+        let (mut session, _client) = request_session().await;
+
+        let mut ctx = ();
+        let attempt = proxy.proxy_to_upstream(&mut session, &mut ctx);
+        let upstream = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut head = [0; 1];
+            stream.read_exact(&mut head).await.unwrap();
+            cancel.send(()).unwrap();
+            let mut rest = Vec::new();
+            stream.read_to_end(&mut rest).await.unwrap();
+        };
+        let ((reuse, error), ()) = tokio::join!(attempt, upstream);
+
+        let error = error.expect("the cancelled attempt fails");
+        assert!(!reuse);
+        assert_eq!(error.etype(), &Custom("cancelled"));
+        assert!(error.retry());
+    }
+
+    #[tokio::test]
+    async fn an_attempt_without_a_cancellation_is_not_affected() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let app = Cancellable {
+            address: listener.local_addr().unwrap().to_string(),
+            cancel: Mutex::new(None),
+        };
+        let proxy = HttpProxy::new(app, Arc::new(ServerConf::default()));
+        let (mut session, _client) = request_session().await;
+
+        let mut ctx = ();
+        let attempt = proxy.proxy_to_upstream(&mut session, &mut ctx);
+        let upstream = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 64];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(request[..read].starts_with(b"GET / HTTP/1.1"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        };
+        let ((_, error), ()) = tokio::join!(attempt, upstream);
+
+        assert!(error.is_none(), "{error:?}");
     }
 }
