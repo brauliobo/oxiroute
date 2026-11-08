@@ -72,37 +72,26 @@ impl AffinityPlan {
         pool: &RoundRobinPool,
         request: &AffinityRequest<'_>,
     ) -> Option<String> {
-        let servers = pool.selectable_servers();
         match self {
             Self::Cookie { name, .. } => {
-                let id = cookie_value(request.headers, name)?;
-                servers
-                    .into_iter()
-                    .map(|(server, _)| server)
-                    .find(|server| server_id(pool.name(), server) == id)
+                pool.server_with_cookie_id(parse_cookie_id(&cookie_value(request.headers, name)?)?)
             }
-            Self::Header(name) => {
-                let wanted = request.headers.get(name)?.to_str().ok()?;
-                servers
-                    .into_iter()
-                    .map(|(server, _)| server)
-                    .find(|server| server == wanted)
-            }
-            Self::Hash(key) => rendezvous(&servers, &key.bytes(request)?),
+            Self::Header(name) => pool.selectable_server(request.headers.get(name)?.to_str().ok()?),
+            Self::Hash(key) => pool.rendezvous_server(&key.bytes(request)?),
         }
     }
 
     /// The `Set-Cookie` that pins the client to `server`, unless the request already carries it.
     pub(crate) fn set_cookie(
         &self,
-        pool: &str,
+        pool: &RoundRobinPool,
         server: &str,
         request: &HeaderMap,
     ) -> Option<HeaderValue> {
         let Self::Cookie { name, attributes } = self else {
             return None;
         };
-        let id = server_id(pool, server);
+        let id = format!("{:016x}", pool.cookie_id(server)?);
         if cookie_value(request, name).as_deref() == Some(id.as_str()) {
             return None;
         }
@@ -123,14 +112,13 @@ impl AffinityKey {
     }
 }
 
-/// Opaque cookie value naming one server of one pool; stable across reloads and workers.
-fn server_id(pool: &str, server: &str) -> String {
-    sha256(format!("oxiroute-affinity\0{pool}\0{server}").as_bytes())[..8]
-        .iter()
-        .fold(String::with_capacity(16), |mut id, byte| {
-            let _ = write!(id, "{byte:02x}");
-            id
-        })
+/// The 16 lowercase hex digits of a cookie value that names a server.
+fn parse_cookie_id(value: &str) -> Option<u64> {
+    let valid = value.len() == 16
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+    valid.then(|| u64::from_str_radix(value, 16).ok()).flatten()
 }
 
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -145,69 +133,9 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
         })
 }
 
-/// Weighted rendezvous hashing: the key moves only when its own server leaves.
-fn rendezvous(servers: &[(String, u16)], key: &[u8]) -> Option<String> {
-    servers
-        .iter()
-        .map(|(server, weight)| {
-            let digest = sha256(&[key, b"\0", server.as_bytes()].concat());
-            let bits = u32::from_be_bytes(digest[..4].try_into().expect("four bytes"));
-            let unit = (f64::from(bits) + 1.0) / 4_294_967_296.0;
-            (-unit.ln() / f64::from(*weight), server)
-        })
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, server)| server.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn farm(weights: &[u16]) -> Vec<(String, u16)> {
-        weights
-            .iter()
-            .enumerate()
-            .map(|(index, weight)| (format!("s{index}"), *weight))
-            .collect()
-    }
-
-    fn owners(servers: &[(String, u16)]) -> Vec<String> {
-        (0..1000)
-            .map(|key| rendezvous(servers, format!("key-{key}").as_bytes()).expect("server"))
-            .collect()
-    }
-
-    #[test]
-    fn a_key_always_maps_to_the_same_server() {
-        let servers = farm(&[1, 1, 1]);
-        assert_eq!(owners(&servers), owners(&servers));
-    }
-
-    #[test]
-    fn removing_a_server_remaps_only_its_own_keys() {
-        let full = farm(&[1, 1, 1, 1]);
-        let before = owners(&full);
-        let after = owners(&full[..3]);
-        for (old, new) in before.iter().zip(&after) {
-            assert!(old == new || old == "s3", "{old} moved to {new}");
-        }
-        assert!(before.iter().any(|owner| owner == "s3"));
-    }
-
-    #[test]
-    fn weights_scale_the_share_of_keys() {
-        let counts = owners(&farm(&[3, 1]))
-            .iter()
-            .fold([0_u32; 2], |mut counts, owner| {
-                counts[usize::from(owner == "s1")] += 1;
-                counts
-            });
-        assert!(
-            (650..850).contains(&counts[0]),
-            "heavy server got {}",
-            counts[0]
-        );
-    }
 
     #[test]
     fn path_prefix_keys_use_the_leading_segments() {
@@ -222,6 +150,21 @@ mod tests {
         };
         assert_eq!(bytes("/a/b/c/d"), bytes("/a/b/z"));
         assert_ne!(bytes("/a/b/c"), bytes("/a/x/c"));
+    }
+
+    #[test]
+    fn only_sixteen_lowercase_hex_digits_name_a_server() {
+        assert_eq!(parse_cookie_id("00000000000000ff"), Some(255));
+        for invalid in [
+            "",
+            "ff",
+            "00000000000000FF",
+            "+0000000000000ff",
+            "000000000000000g",
+            "00000000000000ff0",
+        ] {
+            assert_eq!(parse_cookie_id(invalid), None, "{invalid:?}");
+        }
     }
 
     #[test]

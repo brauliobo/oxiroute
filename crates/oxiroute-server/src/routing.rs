@@ -43,6 +43,7 @@ mod policy;
 mod pool;
 mod queue;
 mod queue_wait;
+mod rendezvous;
 mod resolved;
 mod route;
 mod schedule;

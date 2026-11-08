@@ -176,6 +176,7 @@ impl EndpointPool {
             selection.move_to(at, to);
             self.publish(endpoints);
         } else {
+            self.health.selectable_changed();
             self.queue.notify_capacity_waiters();
         }
         Ok(())

@@ -46,16 +46,6 @@ impl EndpointPool {
             .any(|index| members.endpoints[index].has_capacity())
     }
 
-    /// Name and weight of every server that could be chosen now, in pool order.
-    pub(crate) fn selectable_servers(&self) -> Vec<(String, u16)> {
-        let members = self.members();
-        let view = self.health.selectable_view(&members, now_unix_ms());
-        view.rotation(0)
-            .map(|index| &members.endpoints[index])
-            .map(|server| (server.name.clone(), server.weight()))
-            .collect()
-    }
-
     /// Whether any server could be chosen now, ignoring whether it has spare capacity.
     #[must_use]
     pub fn has_selectable(&self) -> bool {
@@ -167,6 +157,7 @@ impl EndpointPool {
         self.server(name)?
             .weight_override
             .store(weight.unwrap_or(0), Ordering::Release);
+        self.health.selectable_changed();
         self.queue.notify_capacity_waiters();
         Ok(())
     }
