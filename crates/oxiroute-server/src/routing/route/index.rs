@@ -1,4 +1,8 @@
-use std::{cmp::Reverse, collections::HashMap};
+use std::{
+    cmp::Reverse,
+    collections::HashMap,
+    hash::{BuildHasherDefault, Hasher},
+};
 
 use http::{Method, uri::Authority};
 
@@ -34,7 +38,31 @@ impl Rank {
     }
 }
 
-type HostMap = HashMap<Box<str>, PathIndex>;
+/// FNV-1a. The keys come from the configuration, never from requests, so the table cannot be
+/// flooded with colliding keys, and a request key is hashed in a few instructions per byte.
+#[derive(Default)]
+pub(super) struct Fnv(u64);
+
+impl Hasher for Fnv {
+    fn write(&mut self, bytes: &[u8]) {
+        let seed = if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        };
+        self.0 = bytes.iter().fold(seed, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+pub(super) type FnvMap<V> = HashMap<Box<str>, V, BuildHasherDefault<Fnv>>;
+
+type HostMap = FnvMap<PathIndex>;
 
 /// Routes grouped by host selector so a request only visits routes whose host can match.
 ///
@@ -55,15 +83,15 @@ pub(super) struct RouteIndex {
 #[derive(Default)]
 struct Groups {
     any: Vec<u32>,
-    exact: HashMap<Box<str>, Vec<u32>>,
-    ascii_ci: HashMap<Box<str>, Vec<u32>>,
-    normalized: HashMap<Box<str>, Vec<u32>>,
-    wildcard: HashMap<Box<str>, Vec<u32>>,
-    nginx_wildcard: HashMap<Box<str>, Vec<u32>>,
-    nginx_dot: HashMap<Box<str>, Vec<u32>>,
+    exact: FnvMap<Vec<u32>>,
+    ascii_ci: FnvMap<Vec<u32>>,
+    normalized: FnvMap<Vec<u32>>,
+    wildcard: FnvMap<Vec<u32>>,
+    nginx_wildcard: FnvMap<Vec<u32>>,
+    nginx_dot: FnvMap<Vec<u32>>,
 }
 
-fn paths(groups: HashMap<Box<str>, Vec<u32>>, routes: &[Route]) -> HostMap {
+fn paths(groups: FnvMap<Vec<u32>>, routes: &[Route]) -> HostMap {
     groups
         .into_iter()
         .map(|(host, members)| (host, PathIndex::new(&members, routes)))

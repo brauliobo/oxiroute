@@ -313,3 +313,110 @@ fn an_authority_in_the_uri_is_used_when_the_request_has_none() {
         Some("b")
     );
 }
+
+fn reference_is_dns_name(host: &str) -> bool {
+    !host.is_empty()
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+        })
+}
+
+fn reference_parse_host_ip(host: &str) -> Option<IpAddr> {
+    host.parse::<IpAddr>().ok().or_else(|| {
+        host.strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .and_then(|host| host.parse::<IpAddr>().ok())
+            .filter(IpAddr::is_ipv6)
+    })
+}
+
+fn walk(alphabet: &[u8], left: usize, text: &mut Vec<u8>, check: &mut impl FnMut(&str)) {
+    check(std::str::from_utf8(text).expect("ascii"));
+    if left == 0 {
+        return;
+    }
+    for &byte in alphabet {
+        text.push(byte);
+        walk(alphabet, left - 1, text, check);
+        text.pop();
+    }
+}
+
+fn every_string(alphabet: &[u8], length: usize, check: &mut impl FnMut(&str)) {
+    walk(alphabet, length, &mut Vec::new(), check);
+}
+
+#[test]
+fn the_single_pass_dns_name_check_matches_the_label_by_label_check() {
+    every_string(b"a-.1_", 8, &mut |host| {
+        assert_eq!(is_dns_name(host), reference_is_dns_name(host), "{host:?}");
+    });
+    for length in [62, 63, 64, 65] {
+        let label = "a".repeat(length);
+        for host in [
+            label.clone(),
+            format!("{label}.{label}"),
+            format!("{label}-"),
+            format!("-{label}"),
+        ] {
+            assert_eq!(is_dns_name(&host), reference_is_dns_name(&host), "{host:?}");
+        }
+    }
+}
+
+#[test]
+fn only_hosts_that_can_be_ip_literals_are_parsed_as_ip_addresses() {
+    every_string(b"1.:[]af", 7, &mut |host| {
+        assert_eq!(
+            parse_host_ip(host),
+            reference_parse_host_ip(host),
+            "{host:?}"
+        );
+    });
+    for host in [
+        "1.2.3.4",
+        "[::1]",
+        "::ffff:1.2.3.4",
+        "[1.2.3.4]",
+        "fe80::1",
+        "2001:db8::1",
+        "example.com",
+    ] {
+        assert_eq!(
+            parse_host_ip(host),
+            reference_parse_host_ip(host),
+            "{host:?}"
+        );
+    }
+}
+
+#[test]
+fn the_host_of_an_authority_is_what_http_reports() {
+    for text in [
+        "a.example.com",
+        "A.Example.com:8080",
+        "[::1]",
+        "[::1]:8080",
+        "u@a.example.com",
+        "u:p@a.example.com:81",
+        "192.0.2.254:80",
+        "a.example.com.",
+        "a_b.example.com:1",
+        "a:1",
+    ] {
+        let authority: Authority = text.parse().expect("authority");
+        assert_eq!(host_of(&authority), authority.host(), "{text}");
+    }
+}
