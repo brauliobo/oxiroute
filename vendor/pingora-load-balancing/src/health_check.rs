@@ -24,8 +24,15 @@ use pingora_core::protocols::http::custom::client::Session;
 use pingora_core::upstreams::peer::{BasicPeer, HttpPeer, Peer};
 use pingora_error::{Error, ErrorType::CustomCode, Result};
 use pingora_http::{RequestHeader, ResponseHeader};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+
+// Checks that keep the default connector probe over fresh connections, so they share one connector
+// (and its TLS client context) instead of each building and holding their own.
+static SHARED_TCP_CONNECTOR: LazyLock<Arc<TransportConnector>> =
+    LazyLock::new(|| Arc::new(TransportConnector::new(None)));
+static SHARED_HTTP_CONNECTOR: LazyLock<Arc<HttpConnector>> =
+    LazyLock::new(|| Arc::new(HttpConnector::new(None)));
 
 /// [HealthObserve] is an interface for observing health changes of backends,
 /// this is what's used for our health observation callback.
@@ -80,7 +87,7 @@ pub struct TcpHealthCheck {
     /// By default, this check will try to establish a TCP connection. When the `sni` field is
     /// set, it will also try to establish a TLS connection on top of the TCP connection.
     pub peer_template: BasicPeer,
-    connector: TransportConnector,
+    connector: Arc<TransportConnector>,
     /// A callback that is invoked when the `healthy` status changes for a [Backend].
     pub health_changed_callback: Option<HealthObserveCallback>,
 }
@@ -93,7 +100,7 @@ impl Default for TcpHealthCheck {
             consecutive_success: 1,
             consecutive_failure: 1,
             peer_template,
-            connector: TransportConnector::new(None),
+            connector: Arc::clone(&SHARED_TCP_CONNECTOR),
             health_changed_callback: None,
         }
     }
@@ -118,8 +125,8 @@ impl TcpHealthCheck {
     }
 
     /// Replace the internal tcp connector with the given [TransportConnector]
-    pub fn set_connector(&mut self, connector: TransportConnector) {
-        self.connector = connector;
+    pub fn set_connector(&mut self, connector: impl Into<Arc<TransportConnector>>) {
+        self.connector = connector.into();
     }
 }
 
@@ -176,7 +183,7 @@ where
     pub reuse_connection: bool,
     /// The request header to send to the backend
     pub req: RequestHeader,
-    connector: HttpConnector<C>,
+    connector: Arc<HttpConnector<C>>,
     /// Optional field to define how to validate the response from the server.
     ///
     /// If not set, any response with a `200 OK` is considered a successful check.
@@ -210,7 +217,7 @@ impl HttpHealthCheck<()> {
             consecutive_success: 1,
             consecutive_failure: 1,
             peer_template,
-            connector: HttpConnector::new(None),
+            connector: Arc::clone(&SHARED_HTTP_CONNECTOR),
             reuse_connection: false,
             req,
             validator: None,
@@ -244,7 +251,7 @@ where
             consecutive_success: 1,
             consecutive_failure: 1,
             peer_template,
-            connector: custom,
+            connector: Arc::new(custom),
             reuse_connection: false,
             req,
             validator: None,
@@ -255,8 +262,8 @@ where
     }
 
     /// Replace the internal http connector with the given [HttpConnector]
-    pub fn set_connector(&mut self, connector: HttpConnector<C>) {
-        self.connector = connector;
+    pub fn set_connector(&mut self, connector: impl Into<Arc<HttpConnector<C>>>) {
+        self.connector = connector.into();
     }
 
     pub fn set_backend_summary<F>(&mut self, callback: F)
