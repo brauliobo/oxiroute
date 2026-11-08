@@ -83,10 +83,12 @@ impl EndpointPool {
         state: AdministrativeState,
     ) -> Result<(), PoolAdminError> {
         let server = self.server(name)?;
-        server
+        let previous = server
             .administrative_state
-            .store(state as u8, Ordering::Release);
-        self.queue.notify_capacity_waiters();
+            .swap(state as u8, Ordering::AcqRel);
+        if previous != state as u8 {
+            self.queue.notify_capacity_waiters();
+        }
         Ok(())
     }
 

@@ -36,6 +36,14 @@ pub enum ServerOrigin {
     Dynamic,
 }
 
+/// A registered server about to join a pool, with the administrative state it joins in.
+#[derive(Debug)]
+pub(crate) struct NewMember {
+    pub(crate) server: RuntimeServer,
+    pub(crate) spec: DynamicServer,
+    pub(crate) state: AdministrativeState,
+}
+
 /// Placement and balancing weight of a server that joins a pool at runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DynamicServer {
@@ -62,14 +70,17 @@ impl Membership {
     }
 
     /// Where a dynamic server belongs: after every static one, by priority and then name.
-    pub(super) fn dynamic_position(&self, priority: u16, name: &str) -> usize {
-        let statics = self
-            .endpoints
+    pub(super) fn dynamic_position(
+        endpoints: &[Arc<PoolEndpoint>],
+        priority: u16,
+        name: &str,
+    ) -> usize {
+        let statics = endpoints
             .iter()
             .take_while(|server| server.origin == ServerOrigin::Static)
             .count();
         statics
-            + self.endpoints[statics..].partition_point(|server| {
+            + endpoints[statics..].partition_point(|server| {
                 (server.priority(), server.name.as_str()) < (priority, name)
             })
     }
