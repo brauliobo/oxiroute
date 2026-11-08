@@ -80,7 +80,7 @@ fn generated_openapi() -> Value {
         "openapi": "3.1.0",
         "info": {
             "title": "OxiRoute Server Registry API",
-            "version": "6.0.0",
+            "version": "6.1.0",
             "description": "Lease-based dynamic server registration. The same routes are served by the management API (root token), by the registry TCP endpoint (scoped tokens) and by the registry unix sockets (access is the file mode, so no token). Every other path returns 404 on the registry endpoints."
         },
         "paths": paths,
