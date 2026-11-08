@@ -143,6 +143,8 @@ pub(super) struct PoolEndpoint {
     pub(super) endpoint: RuntimeEndpoint,
     /// Counters outlive generations; resolved once here instead of on every request.
     pub(super) stats: Arc<ServerStats>,
+    /// Names this server in a sticky-session cookie; hashed on first use.
+    pub(super) cookie_id: std::sync::OnceLock<u64>,
     /// Zero means unlimited; registered servers may change it while they are members.
     pub(super) configured_max_connections: AtomicU64,
     pub(super) max_connections_override: AtomicU64,
@@ -204,6 +206,7 @@ impl PoolEndpoint {
             health_override: AtomicU8::new(HealthOverride::Auto as u8),
             endpoint: server.endpoint,
             stats: upstream_stats().server(pool, &server.name),
+            cookie_id: std::sync::OnceLock::new(),
             configured_max_connections: AtomicU64::new(server.max_connections.unwrap_or(0)),
             max_connections_override: AtomicU64::new(0),
             name: server.name,

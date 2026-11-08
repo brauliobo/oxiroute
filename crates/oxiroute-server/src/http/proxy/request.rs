@@ -80,11 +80,7 @@ pub(super) fn apply_affinity_cookie(
     ) else {
         return Ok(());
     };
-    match affinity.set_cookie(
-        pool.selector().name(),
-        server,
-        &session.req_header().headers,
-    ) {
+    match affinity.set_cookie(pool.selector(), server, &session.req_header().headers) {
         Some(cookie) => response
             .append_header(http::header::SET_COOKIE, cookie)
             .map(drop),

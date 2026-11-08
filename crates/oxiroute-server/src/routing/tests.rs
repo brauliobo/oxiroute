@@ -64,6 +64,7 @@ fn waiting_pool(wait: Duration, queue_timeout: Option<Duration>) -> Arc<Endpoint
 }
 
 mod admin;
+mod affinity;
 mod balance;
 mod dns;
 mod evacuate;

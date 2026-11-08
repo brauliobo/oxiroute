@@ -1,5 +1,5 @@
 #[allow(clippy::wildcard_imports)]
-use super::*;
+use super::{rendezvous, *};
 
 /// The servers of one membership that may be chosen, published once per change of their state.
 ///
@@ -20,6 +20,9 @@ pub(super) struct SelectableView {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct SelectableEntry {
     pub(super) index: u32,
+    /// The weight when the view was built; a weight change retires the view.
+    pub(super) weight: u16,
+    pub(super) hash: u64,
 }
 
 impl SelectableView {
@@ -41,8 +44,10 @@ impl SelectableView {
                 valid_until_unix_ms = valid_until_unix_ms.min(server.selectable_after(now_unix_ms));
                 server.selectable_at(now_unix_ms)
             })
-            .map(|(index, _)| SelectableEntry {
+            .map(|(index, server)| SelectableEntry {
                 index: u32::try_from(index).expect("pool size fits u32"),
+                weight: server.weight(),
+                hash: rendezvous::name_hash(&server.name),
             })
             .collect();
         Self {
