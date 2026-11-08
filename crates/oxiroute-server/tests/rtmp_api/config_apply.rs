@@ -409,3 +409,35 @@ pub(super) async fn chunked_config_body_is_bounded_while_streaming() {
     assert_eq!(response.status, 413);
     assert_eq!(response.json()["error"]["code"], "config_body_too_large");
 }
+
+#[tokio::test]
+pub(super) async fn config_snapshot_follows_every_change_to_the_persisted_file() {
+    let active = editable_config();
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
+    let original = fs::read(&harness.config_path).unwrap();
+    let get = || harness.request("GET", "/api/v1/config", None, None);
+
+    let first = get().await;
+    assert_eq!(first.status, 200);
+    assert_eq!(get().await.body, first.body);
+
+    let edited = candidate_config(&active, "edited").validate().unwrap();
+    fs::write(&harness.config_path, render_lua(&edited).unwrap()).unwrap();
+    let changed = get().await;
+    assert_eq!(changed.status, 200);
+    assert_ne!(changed.json()["diskRevision"], first.json()["diskRevision"]);
+    assert!(
+        changed.json()["configPreview"]
+            .as_str()
+            .unwrap()
+            .contains("edited")
+    );
+
+    fs::write(&harness.config_path, original).unwrap();
+    assert_eq!(get().await.body, first.body);
+}

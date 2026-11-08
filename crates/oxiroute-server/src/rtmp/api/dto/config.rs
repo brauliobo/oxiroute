@@ -28,6 +28,21 @@ pub(crate) struct RedactedConfigView {
 }
 
 impl RedactedConfigView {
+    /// The view of a configuration whose `preview` is already rendered in `format`.
+    ///
+    /// Without RTMP tokens there is nothing to redact, so the config and preview are reused
+    /// instead of being validated and rendered a second time.
+    pub(crate) fn of(config: &ValidatedConfig, format: ConfigFormat, preview: &str) -> Self {
+        if !has_rtmp_token(config.as_draft()) {
+            return Self {
+                config: config.clone(),
+                preview: preview.to_owned(),
+                lua_preview: (format == ConfigFormat::Lua).then(|| preview.to_owned()),
+            };
+        }
+        Self::new(config, format)
+    }
+
     pub(crate) fn new(config: &ValidatedConfig, format: ConfigFormat) -> Self {
         let mut config = config.to_draft();
         for service in &mut config.rtmp_services {
@@ -76,15 +91,15 @@ pub(crate) struct ConfigSnapshotResponse {
 
 impl ConfigSnapshotResponse {
     pub(crate) fn new(
-        document: ResolvedConfigDocument,
+        document: &ResolvedConfigDocument,
         active_revision: EffectiveRevision,
         view: RedactedConfigView,
     ) -> Self {
         let (config, config_preview, lua_preview) = view.into_parts();
         Self {
             schema_version: 1,
-            disk_revision: document.authored_revision,
-            candidate_revision: document.effective_revision,
+            disk_revision: document.authored_revision.clone(),
+            candidate_revision: document.effective_revision.clone(),
             active_revision,
             config,
             config_format: document.format,
@@ -92,7 +107,7 @@ impl ConfigSnapshotResponse {
             dependency_count: document.dependencies.len(),
             config_preview,
             lua_preview,
-            diagnostics: document.diagnostics,
+            diagnostics: document.diagnostics.clone(),
         }
     }
 }
@@ -188,6 +203,16 @@ impl ConfigConflictResponse {
             diagnostics,
         }
     }
+}
+
+fn has_rtmp_token(config: &ConfigDraft) -> bool {
+    config.rtmp_services.iter().any(|service| {
+        service.applications.iter().any(|application| {
+            [&application.publish, &application.play]
+                .into_iter()
+                .any(|policy| policy.token.is_some())
+        })
+    })
 }
 
 pub(crate) fn contains_redacted_rtmp_token_secret(config: &ConfigDraft) -> bool {

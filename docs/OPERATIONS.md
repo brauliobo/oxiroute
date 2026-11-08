@@ -83,8 +83,11 @@ and startup failures name the failing setting (`path`, `detail`, `line`). Operat
 the `oxiroute::operations` target are
 structured JSON and never include source text, secret values, configured paths, or OS error strings.
 
-For compositional KDL/HOCON/UCI roots, periodic reconciliation re-resolves templates and native
-references even when the root bytes are unchanged. A native change can therefore produce a new
+Reconciliation reads and hashes the file every time but resolves it only when its bytes changed: the
+decoded document is reused while the SHA-256 revision is unchanged, so an unchanged 900 KB
+configuration costs about one million instructions per 30-second reconciliation instead of about
+three billion. For compositional KDL/HOCON/UCI roots with native references, periodic
+reconciliation re-resolves the native references even when the root bytes are unchanged. A native change can therefore produce a new
 candidate revision while `diskRevision` remains unchanged. Native import failure diagnostics crossing
 the management boundary contain stable code counts, not source text, paths, or native diagnostic
 messages.
