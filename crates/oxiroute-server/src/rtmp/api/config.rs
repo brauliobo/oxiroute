@@ -1,4 +1,7 @@
-use std::str::FromStr;
+use std::{
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use oxiroute_config::{ConfigDraft, ValidatedConfig};
@@ -24,6 +27,7 @@ use crate::{
         AuthoredRevision, CanonicalConfigCoordinator, ConfigConflict, ConfigDiagnostic,
         ConfigLoadOutcome, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
         EffectiveRevision, NativeImportSourceOutcome, PersistableConfigCandidate,
+        ResolvedConfigDocument,
     },
     listener::inventory::{ListenerChangeSummary, ListenerRestartReason},
     service_plan::validation_plan,
@@ -46,6 +50,16 @@ pub(super) struct ConfigApiState {
     coordinator: CanonicalConfigCoordinator,
     generations: Option<GenerationManager>,
     mode: RuntimeMode,
+    snapshot: Mutex<Option<CachedSnapshot>>,
+}
+
+/// The `GET /config` body for one persisted document and active revision.
+///
+/// Rendering it validates and serializes the whole configuration, so it is built once per change.
+struct CachedSnapshot {
+    disk: AuthoredRevision,
+    active: EffectiveRevision,
+    body: Arc<[u8]>,
 }
 
 impl ConfigApiState {
@@ -59,6 +73,7 @@ impl ConfigApiState {
             coordinator,
             generations: None,
             mode,
+            snapshot: Mutex::new(None),
         }
     }
 
@@ -142,9 +157,9 @@ impl ConfigApiState {
         if !contains_redacted_rtmp_token_secret(draft) {
             return Ok(());
         }
-        let authoritative = match self.coordinator.load() {
-            ConfigLoadOutcome::Loaded(document) => document.validated_config.to_draft(),
-            ConfigLoadOutcome::Rejected(rejection) => {
+        let authoritative = match self.coordinator.load_shared() {
+            Ok(document) => document.validated_config.to_draft(),
+            Err(rejection) => {
                 return Err(ApiResponse::json(
                     503,
                     &json!({
@@ -172,15 +187,9 @@ impl ConfigApiState {
     }
 
     fn config_response(&self) -> ApiResponse {
-        match self.coordinator.load() {
-            ConfigLoadOutcome::Loaded(document) => {
-                let view = RedactedConfigView::new(&document.validated_config, document.format);
-                typed_json_response(
-                    200,
-                    &ConfigSnapshotResponse::new(*document, self.active_revision(), view),
-                )
-            }
-            ConfigLoadOutcome::Rejected(rejection) => ApiResponse::json(
+        match self.coordinator.load_shared() {
+            Ok(document) => self.snapshot_response(&document),
+            Err(rejection) => ApiResponse::json(
                 503,
                 &json!({
                     "schemaVersion": 1,
@@ -194,6 +203,35 @@ impl ConfigApiState {
                 }),
             ),
         }
+    }
+
+    fn snapshot_response(&self, document: &ResolvedConfigDocument) -> ApiResponse {
+        let active = self.active_revision();
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cached = snapshot
+            .as_ref()
+            .filter(|cached| cached.disk == document.authored_revision && cached.active == active);
+        if let Some(cached) = cached {
+            return ApiResponse::bytes(200, cached.body.to_vec(), "application/json");
+        }
+        let view = RedactedConfigView::of(
+            &document.validated_config,
+            document.format,
+            &document.config_preview,
+        );
+        let response = typed_json_response(
+            200,
+            &ConfigSnapshotResponse::new(document, active.clone(), view),
+        );
+        *snapshot = Some(CachedSnapshot {
+            disk: document.authored_revision.clone(),
+            active,
+            body: Arc::from(response.body.as_slice()),
+        });
+        response
     }
 
     fn import_reports_response(&self, selection: Option<usize>) -> ApiResponse {
@@ -270,8 +308,11 @@ impl ConfigApiState {
             Ok(candidate) => candidate,
             Err(response) => return response,
         };
-        let view =
-            RedactedConfigView::new(candidate.draft.validated_config(), candidate.draft.format());
+        let view = RedactedConfigView::of(
+            candidate.draft.validated_config(),
+            candidate.draft.format(),
+            candidate.draft.config_preview(),
+        );
         let mut diagnostics = diagnostics_json(candidate.draft.diagnostics(), false);
         if let Some(reason) = candidate.restart_reason {
             diagnostics.push(restart_required_diagnostic(reason));
@@ -389,9 +430,9 @@ impl ConfigApiState {
             |mutation| inspect(mutation.generation()),
         );
         if let Some(generations) = &self.generations {
-            let disk_revision = match self.coordinator.load() {
-                ConfigLoadOutcome::Loaded(document) => document.authored_revision.clone(),
-                ConfigLoadOutcome::Rejected(_) => {
+            let disk_revision = match self.coordinator.load_shared() {
+                Ok(document) => document.authored_revision.clone(),
+                Err(_) => {
                     return Err(ApiResponse::error(
                         503,
                         "canonical_config_unavailable",

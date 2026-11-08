@@ -129,7 +129,7 @@ fn snapshot_dto_has_the_exact_top_level_json_contract() {
         diagnostics: Vec::new(),
     };
     let response = ConfigSnapshotResponse::new(
-        document,
+        &document,
         EffectiveRevision::from_bytes(b"active"),
         RedactedConfigView::new(&validated, ConfigFormat::Kdl),
     );

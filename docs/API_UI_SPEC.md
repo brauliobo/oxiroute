@@ -162,7 +162,10 @@ apply the same authentication check; only exact `GET /ready`, `GET /metrics` and
 format-preserving `configPreview`, and `diagnostics`. A restricted-Lua root also receives the legacy
 `luaPreview` alias. If the persisted canonical file cannot be read and decoded, it returns
 `503 canonical_config_unavailable`, the known disk revision or `null`, the unchanged active
-revision, and redacted diagnostics.
+revision, and redacted diagnostics. The file is read and hashed on every request; the decoded
+document and the response body are reused while the bytes and the active revision are unchanged
+(sources with native references are always resolved again), so a repeated read of a large
+configuration costs one file read instead of a full parse, validation and rendering.
 
 `POST /api/v1/config/validate` accepts exactly `{ "config": <canonical object> }`. A `200` response
 contains `candidateRevision`, `normalizedConfig`, `configFormat`, `compositional`, `dependencyCount`,

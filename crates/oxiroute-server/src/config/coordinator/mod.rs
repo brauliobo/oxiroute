@@ -17,10 +17,12 @@ use oxiroute_config_source::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+mod cache;
 mod candidate;
 mod storage;
 
 use crate::encoding::lower_hex;
+use cache::LoadCache;
 pub use candidate::PersistableConfigCandidate;
 use storage::{CanonicalStorage, ReplaceControl, ReplaceResult};
 
@@ -423,7 +425,7 @@ pub enum ConfigCoordinatorPathError {
 pub struct CanonicalConfigCoordinator {
     canonical_path: PathBuf,
     format: ConfigFormat,
-    operation_lock: Arc<Mutex<()>>,
+    operation_lock: Arc<Mutex<LoadCache>>,
 }
 
 impl CanonicalConfigCoordinator {
@@ -440,7 +442,7 @@ impl CanonicalConfigCoordinator {
         Ok(Self {
             canonical_path,
             format,
-            operation_lock: Arc::new(Mutex::new(())),
+            operation_lock: Arc::new(Mutex::new(LoadCache::default())),
         })
     }
 
@@ -457,21 +459,35 @@ impl CanonicalConfigCoordinator {
     /// Reads one stable no-follow snapshot and returns its normalized typed representation.
     #[must_use]
     pub fn load(&self) -> ConfigLoadOutcome {
-        let (disk_revision, resolved) = match self.read_resolved_source() {
-            Ok(resolved) => resolved,
-            Err(rejection) => return ConfigLoadOutcome::Rejected(rejection),
-        };
-        let config_preview = match render_config(resolved.format, &resolved.config) {
-            Ok(preview) => preview,
-            Err(error) => {
-                return ConfigLoadOutcome::Rejected(ConfigLoadRejection {
-                    disk_revision: Some(disk_revision),
-                    diagnostics: vec![source_error_diagnostic(&error)],
-                });
-            }
-        };
+        match self.load_shared() {
+            Ok(document) => ConfigLoadOutcome::Loaded(Box::new(Arc::unwrap_or_clone(document))),
+            Err(rejection) => ConfigLoadOutcome::Rejected(rejection),
+        }
+    }
 
-        ConfigLoadOutcome::Loaded(Box::new(ResolvedConfigDocument {
+    /// Like [`Self::load`], without copying the document.
+    ///
+    /// The file is always read and hashed; the parse, validation and rendering are reused while the
+    /// bytes are unchanged and the source reads no other file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the redacted rejection when the snapshot cannot be read or resolved.
+    pub fn load_shared(&self) -> Result<Arc<ResolvedConfigDocument>, ConfigLoadRejection> {
+        let mut cache = self.lock();
+        let (disk, disk_revision) = self.read_disk()?;
+        if let Some(document) = cache.get(&disk_revision) {
+            return Ok(document);
+        }
+        let resolved = self.resolve_disk(&disk, &disk_revision)?;
+        let config_preview = if resolved.format == ConfigFormat::Kdl {
+            resolved.canonical_kdl.clone()
+        } else {
+            render_config(resolved.format, &resolved.config).map_err(|error| {
+                rejection(Some(disk_revision.clone()), source_error_diagnostic(&error))
+            })?
+        };
+        Ok(cache.store(ResolvedConfigDocument {
             authored_revision: disk_revision,
             effective_revision: EffectiveRevision::from_bytes(resolved.canonical_kdl.as_bytes()),
             validated_config: resolved.config,
@@ -486,42 +502,49 @@ impl CanonicalConfigCoordinator {
     /// Reads the same stable source snapshot as [`Self::load`] while retaining native import evidence.
     #[must_use]
     pub fn load_native_import_source(&self) -> NativeImportSourceOutcome {
-        let (disk_revision, resolved) = match self.read_resolved_source() {
-            Ok(resolved) => resolved,
-            Err(rejection) => return NativeImportSourceOutcome::Rejected(rejection),
-        };
-        NativeImportSourceOutcome::Loaded(Box::new(NativeImportSourceDocument {
-            disk_revision,
-            candidate_revision: EffectiveRevision::from_bytes(resolved.canonical_kdl.as_bytes()),
-            format: resolved.format,
-            compositional: resolved.compositional,
-            native_references: resolved.native_references,
-        }))
+        let _operation = self.lock();
+        let resolved = self
+            .read_disk()
+            .and_then(|(disk, revision)| Ok((self.resolve_disk(&disk, &revision)?, revision)));
+        match resolved {
+            Ok((resolved, disk_revision)) => {
+                NativeImportSourceOutcome::Loaded(Box::new(NativeImportSourceDocument {
+                    disk_revision,
+                    candidate_revision: EffectiveRevision::from_bytes(
+                        resolved.canonical_kdl.as_bytes(),
+                    ),
+                    format: resolved.format,
+                    compositional: resolved.compositional,
+                    native_references: resolved.native_references,
+                }))
+            }
+            Err(rejection) => NativeImportSourceOutcome::Rejected(rejection),
+        }
     }
 
-    fn read_resolved_source(
-        &self,
-    ) -> Result<(AuthoredRevision, ResolvedSource), ConfigLoadRejection> {
-        let _operation = self
-            .operation_lock
+    fn lock(&self) -> std::sync::MutexGuard<'_, LoadCache> {
+        self.operation_lock
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let storage =
-            CanonicalStorage::open(&self.canonical_path).map_err(|error| ConfigLoadRejection {
-                disk_revision: None,
-                diagnostics: vec![error.diagnostic()],
-            })?;
-        let disk = storage.read().map_err(|error| ConfigLoadRejection {
-            disk_revision: None,
-            diagnostics: vec![error.diagnostic()],
-        })?;
-        let disk_revision = AuthoredRevision::from_bytes(&disk);
-        let resolved =
-            resolve_source(&self.canonical_path, &disk).map_err(|error| ConfigLoadRejection {
-                disk_revision: Some(disk_revision.clone()),
-                diagnostics: vec![source_error_diagnostic(&error)],
-            })?;
-        Ok((disk_revision, resolved))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn read_disk(&self) -> Result<(Vec<u8>, AuthoredRevision), ConfigLoadRejection> {
+        let storage = CanonicalStorage::open(&self.canonical_path)
+            .map_err(|error| rejection(None, error.diagnostic()))?;
+        let disk = storage
+            .read()
+            .map_err(|error| rejection(None, error.diagnostic()))?;
+        let revision = AuthoredRevision::from_bytes(&disk);
+        Ok((disk, revision))
+    }
+
+    fn resolve_disk(
+        &self,
+        disk: &[u8],
+        revision: &AuthoredRevision,
+    ) -> Result<ResolvedSource, ConfigLoadRejection> {
+        resolve_source(&self.canonical_path, disk)
+            .map_err(|error| rejection(Some(revision.clone()), source_error_diagnostic(&error)))
     }
 
     /// Validates and normalizes a typed draft without reading or writing the canonical file.
@@ -565,10 +588,7 @@ impl CanonicalConfigCoordinator {
         F: FnOnce() -> Result<(), ()>,
         G: FnOnce(),
     {
-        let _operation = self
-            .operation_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _operation = self.lock();
         let storage = match CanonicalStorage::open(&self.canonical_path) {
             Ok(storage) => storage,
             Err(error) => return failed_save(None, candidate, error.diagnostic()),
@@ -656,6 +676,16 @@ impl fmt::Debug for CanonicalConfigCoordinator {
     }
 }
 
+fn rejection(
+    disk_revision: Option<AuthoredRevision>,
+    diagnostic: ConfigDiagnostic,
+) -> ConfigLoadRejection {
+    ConfigLoadRejection {
+        disk_revision,
+        diagnostics: vec![diagnostic],
+    }
+}
+
 fn prepare_candidate(format: ConfigFormat, draft: ConfigDraft) -> ConfigValidationOutcome {
     let validated_config = match compose_validated_configs(vec![draft]) {
         Ok(validated_config) => validated_config,
@@ -675,12 +705,16 @@ fn prepare_candidate(format: ConfigFormat, draft: ConfigDraft) -> ConfigValidati
             });
         }
     };
-    let config_preview = match render_config(format, &validated_config) {
-        Ok(preview) => preview,
-        Err(error) => {
-            return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
-                diagnostics: vec![source_error_diagnostic(&error)],
-            });
+    let config_preview = if format == ConfigFormat::Kdl {
+        canonical_kdl.clone()
+    } else {
+        match render_config(format, &validated_config) {
+            Ok(preview) => preview,
+            Err(error) => {
+                return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
+                    diagnostics: vec![source_error_diagnostic(&error)],
+                });
+            }
         }
     };
 
