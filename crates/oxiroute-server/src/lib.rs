@@ -24,6 +24,10 @@ mod topology;
 mod upstream_peer;
 mod wire;
 
+#[cfg(test)]
+#[path = "../../../benchmarks/r3-routing-control/internal/mod.rs"]
+mod r3_bench;
+
 pub use config::coordinator as config_coordinator;
 pub use config::watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
 pub use forward_proxy::{
