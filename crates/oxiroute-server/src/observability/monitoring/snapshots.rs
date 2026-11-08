@@ -313,6 +313,15 @@ pub struct TrafficSnapshot {
     pub bytes_sent: u64,
 }
 
+/// What a supervised worker reports to its master: the process state, the public traffic totals and
+/// every registered listener. It reads counters only, so a worker can build it every few seconds for free.
+#[derive(Clone, Debug)]
+pub struct WorkerReport {
+    pub administrative_state: AdministrativeState,
+    pub traffic: TrafficSnapshot,
+    pub listeners: Vec<ListenerSnapshot>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListenerSnapshot {

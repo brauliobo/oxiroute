@@ -295,13 +295,27 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
     assert!(metrics.contains("@stats-page-0"));
     let page = control_http_response(stats_page, "/stats");
     assert!(page.starts_with("HTTP/1.1 200"), "{page}");
-    thread::sleep(Duration::from_millis(300));
-    harness.master.poll(Instant::now()).expect("status poll");
-
-    let status = harness
-        .master
-        .worker_status(WorkerRole::Active)
-        .expect("active worker status");
+    // An idle worker looks for a change once a second.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        harness.master.poll(Instant::now()).expect("status poll");
+        let status = harness
+            .master
+            .worker_status(WorkerRole::Active)
+            .expect("active worker status");
+        if status
+            .listeners
+            .iter()
+            .all(|listener| listener.accepted_connections > 0)
+        {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the counters never reached the master"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
     assert_eq!(status.listeners.len(), 3);
     for name in ["@management", "@stats-0", "@stats-page-0"] {
         let matching = status

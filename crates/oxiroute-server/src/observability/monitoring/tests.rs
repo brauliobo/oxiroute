@@ -220,6 +220,46 @@ fn public_snapshots_sort_by_display_name_while_internal_snapshots_keep_inventory
 }
 
 #[test]
+fn the_worker_report_matches_the_full_snapshot_without_sampling_the_host() {
+    let metrics = RuntimeMetrics::for_process(ProcessRuntime::new(None));
+    let mut entries = vec![
+        inventory_entry(
+            ListenerId::Traffic("web".into()),
+            "web",
+            ListenerBind::Socket {
+                address: "127.0.0.1:8080".parse().unwrap(),
+            },
+        ),
+        inventory_entry(
+            ListenerId::Management,
+            "@management",
+            ListenerBind::Socket {
+                address: "127.0.0.1:9900".parse().unwrap(),
+            },
+        ),
+    ];
+    entries[1].metric_policy = ListenerMetricPolicy::InternalOnly;
+    metrics
+        .register_inventory(&entries)
+        .unwrap()
+        .commit()
+        .unwrap();
+
+    let report = metrics.worker_report().unwrap();
+    let snapshot = metrics.snapshot().unwrap();
+
+    assert_eq!(report.traffic, snapshot.traffic);
+    assert_eq!(
+        report.listeners,
+        metrics.internal_listener_snapshots().unwrap()
+    );
+    assert_eq!(
+        report.administrative_state,
+        snapshot.process.administrative_state
+    );
+}
+
+#[test]
 fn administration_targets_public_traffic_when_hidden_control_name_collides() {
     let process = ProcessRuntime::new(None);
     let metrics = RuntimeMetrics::for_process(process);
