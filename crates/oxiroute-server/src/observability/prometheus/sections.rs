@@ -36,64 +36,50 @@ pub(super) fn render_inflight(output: &mut String) -> Result<(), PrometheusError
 pub(super) fn render_server_traffic(
     output: &mut String,
     pool: &str,
+    identity: &str,
     server: &crate::EndpointHealthSnapshot,
     histograms: bool,
 ) -> Result<(), PrometheusError> {
-    let stats = crate::observability::upstream_stats::upstream_stats()
-        .server(pool, &server.name)
-        .snapshot();
-    let identity = [("pool", pool), ("server", server.name.as_str())];
-    let with = |label: (&'static str, &'static str)| [identity[0], identity[1], label];
-    for (class, count) in crate::observability::upstream_stats::RESPONSE_CLASSES
-        .iter()
-        .zip(stats.responses)
-    {
-        labels(
+    use crate::observability::upstream_stats::{
+        AttemptOutcome, EvacuationResult, RESPONSE_CLASSES, upstream_stats,
+    };
+    let stats = upstream_stats().server(pool, &server.name).snapshot();
+    let series = |output: &mut String, name, extra, value: u64| {
+        with_prefix(output, name, identity, extra, value);
+    };
+    for (class, count) in RESPONSE_CLASSES.iter().zip(stats.responses) {
+        series(
             output,
             "oxiroute_server_responses_total",
-            &with(("class", *class)),
+            Some(("class", class)),
             count,
-        )?;
+        );
     }
-    for (outcome, count) in crate::observability::upstream_stats::AttemptOutcome::ALL
-        .iter()
-        .zip(stats.attempts)
-    {
-        let outcome = outcome.as_str();
-        labels(
-            output,
-            "oxiroute_server_attempts_total",
-            &with(("outcome", outcome)),
-            count,
-        )?;
+    for (outcome, count) in AttemptOutcome::ALL.iter().zip(stats.attempts) {
+        let extra = Some(("outcome", outcome.as_str()));
+        series(output, "oxiroute_server_attempts_total", extra, count);
     }
-    for (result, count) in crate::observability::upstream_stats::EvacuationResult::ALL
-        .iter()
-        .zip(stats.evacuated)
-    {
-        labels(
-            output,
-            "oxiroute_evacuated_requests_total",
-            &with(("result", result.as_str())),
-            count,
-        )?;
+    for (result, count) in EvacuationResult::ALL.iter().zip(stats.evacuated) {
+        let extra = Some(("result", result.as_str()));
+        series(output, "oxiroute_evacuated_requests_total", extra, count);
     }
-    labels(
+    series(
         output,
         "oxiroute_server_bytes_sent_total",
-        &identity,
+        None,
         stats.bytes_sent,
-    )?;
-    labels(
+    );
+    series(
         output,
         "oxiroute_server_bytes_received_total",
-        &identity,
+        None,
         stats.bytes_received,
-    )?;
+    );
     if let Some(limit) = server.max_connections {
-        labels(output, "oxiroute_server_max_connections", &identity, limit)?;
+        series(output, "oxiroute_server_max_connections", None, limit);
     }
     if histograms {
+        let identity = [("pool", pool), ("server", server.name.as_str())];
         let request = "oxiroute_server_request_duration_milliseconds";
         render_histogram(output, request, &identity, &stats.request_duration)?;
         let header = "oxiroute_server_header_duration_milliseconds";
