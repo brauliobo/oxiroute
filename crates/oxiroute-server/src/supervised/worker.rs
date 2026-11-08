@@ -1,10 +1,14 @@
 use std::{
     error::Error,
     ffi::OsString,
+    fmt::Display,
     io,
     os::unix::ffi::OsStrExt as _,
     path::PathBuf,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -19,7 +23,7 @@ use oxiroute_server::{
 use oxiroute_supervision::GenerationId;
 use oxiroute_supervision_unix::InstanceToken;
 use oxiroute_supervisor_master::{
-    CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, MAX_STATUS_EVENTS,
+    CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, ControlRequest, MAX_STATUS_EVENTS,
     WorkerAdministrativeState, WorkerControl, WorkerEventRecord, WorkerGenerationStatus,
     WorkerLifecycle, WorkerListenerState, WorkerListenerStatus, WorkerMetrics, WorkerStatus,
 };
@@ -57,29 +61,49 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     let metadata = RuntimeMetadata::parse(&mut arguments)?;
     let mut adoption = control.receive()?;
     if adoption.phase() != ControlPhase::AdoptListeners {
-        control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_INVALID_STATE))?;
-        return Err("first worker control phase was not listener adoption".into());
+        return Err(reject(
+            &mut control,
+            &adoption,
+            REJECT_INVALID_STATE,
+            "first worker control phase was not listener adoption".into(),
+        ));
     }
     let Some(listeners) = adoption.take_listeners() else {
-        control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_INVALID_STATE))?;
-        return Err("listener adoption omitted its descriptor set".into());
+        return Err(reject(
+            &mut control,
+            &adoption,
+            REJECT_INVALID_STATE,
+            "listener adoption omitted its descriptor set".into(),
+        ));
     };
 
     let coordinator = CanonicalConfigCoordinator::new(&metadata.config_path)?;
     let document = match coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => document,
         ConfigLoadOutcome::Rejected(rejection) => {
-            control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_CONFIG))?;
-            return Err(rejection.message().into());
+            return Err(reject(
+                &mut control,
+                &adoption,
+                REJECT_CONFIG,
+                rejection.message().into(),
+            ));
         }
     };
     if document.effective_revision != metadata.revision {
-        control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_REVISION))?;
-        return Err("canonical configuration revision did not match worker metadata".into());
+        return Err(reject(
+            &mut control,
+            &adoption,
+            REJECT_REVISION,
+            "canonical configuration revision did not match worker metadata".into(),
+        ));
     }
     if let Err(error) = validate_stage_one_config(&document.validated_config) {
-        control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_UNSUPPORTED))?;
-        return Err(error.into());
+        return Err(reject(
+            &mut control,
+            &adoption,
+            REJECT_UNSUPPORTED,
+            error.into(),
+        ));
     }
     let startup_deadline = Instant::now() + LIFECYCLE_PHASE_TIMEOUT;
     let manager = GenerationManager::new_supervised();
@@ -87,15 +111,18 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         match manager.prepare_adopted_with_deadline(*document, listeners, startup_deadline) {
             Ok(candidate) => candidate,
             Err(error) => {
-                control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_CONFIG))?;
-                return Err(error.into());
+                return Err(reject(&mut control, &adoption, REJECT_CONFIG, error.into()));
             }
         };
     let mut startup = match manager.begin_candidate_start(&candidate) {
         Ok(startup) => Some(startup),
         Err(error) => {
-            control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_RUNTIME))?;
-            return Err(error.into());
+            return Err(reject(
+                &mut control,
+                &adoption,
+                REJECT_RUNTIME,
+                error.into(),
+            ));
         }
     };
     let generation = match startup
@@ -105,8 +132,12 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     {
         Ok(generation) => generation,
         Err(error) => {
-            control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_RUNTIME))?;
-            return Err(error.into());
+            return Err(reject(
+                &mut control,
+                &adoption,
+                REJECT_RUNTIME,
+                error.into(),
+            ));
         }
     };
     let stop = Arc::new(AtomicBool::new(false));
@@ -126,8 +157,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     ) {
         Ok(process) => Some(process),
         Err(error) => {
-            control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_RUNTIME))?;
-            return Err(error);
+            return Err(reject(&mut control, &adoption, REJECT_RUNTIME, error));
         }
     };
     if let Err(error) = wait_for_generation_marker(
@@ -141,8 +171,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             Instant::now() + SHUTDOWN_TIMEOUT,
         );
         drop(startup.take());
-        control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_RUNTIME))?;
-        return Err(error);
+        return Err(reject(&mut control, &adoption, REJECT_RUNTIME, error));
     }
     let mut lifecycle = WorkerLifecycle::Ready;
     let mut reporter = StatusReporter::new(identity.generation, &generation, &manager);
@@ -155,6 +184,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             || (!forced_close && process.as_ref().is_some_and(GenerationProcess::is_finished))
         {
             lifecycle = WorkerLifecycle::Failed;
+            report_failure(&"generation runtime terminated unexpectedly");
             let _ = reporter.report(&mut control, lifecycle);
             drop(control);
             let process = process.take().expect("generation process is owned");
@@ -243,6 +273,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                     Err(error) => {
                         manager.set_registry_writer(false);
                         lifecycle = WorkerLifecycle::Failed;
+                        report_failure(&error);
                         control.acknowledge(&request, ControlOutcome::Rejected(REJECT_RUNTIME))?;
                         let _ = reporter.report(&mut control, lifecycle);
                         let _ = finish_candidate_generation_process(
@@ -359,6 +390,30 @@ fn hand_over(
     match control.report_state(&state) {
         Ok(_) => ControlOutcome::Accepted,
         Err(_) => ControlOutcome::Rejected(REJECT_RUNTIME),
+    }
+}
+
+static FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// Prints why this worker is failing, once. The master kills a worker as soon as it rejects a phase or
+/// reports itself failed, so the reason is printed before either.
+pub(super) fn report_failure(error: &dyn Display) {
+    if !FAILURE_REPORTED.swap(true, Ordering::AcqRel) {
+        eprintln!("OxiRoute supervised process failed: {error}");
+    }
+}
+
+/// Rejects the startup request `request` with `code`, after reporting `error`.
+fn reject(
+    control: &mut WorkerControl,
+    request: &ControlRequest,
+    code: u8,
+    error: Box<dyn Error>,
+) -> Box<dyn Error> {
+    report_failure(&error);
+    match control.acknowledge(request, ControlOutcome::Rejected(code)) {
+        Ok(_) => error,
+        Err(acknowledgement) => acknowledgement.into(),
     }
 }
 
