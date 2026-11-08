@@ -7,6 +7,7 @@
 use std::{
     collections::BTreeMap,
     collections::HashMap,
+    net::IpAddr,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
@@ -14,6 +15,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use http::Method;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -86,12 +88,11 @@ pub(crate) struct InflightEntry {
     key: u64,
     request_id: String,
     listener: String,
-    method: String,
+    method: Method,
     host: Option<String>,
     path: String,
-    client_ip: Option<String>,
+    client_ip: Option<IpAddr>,
     started: Instant,
-    started_unix_ms: u64,
     phase: AtomicU8,
     phase_since_ms: AtomicU64,
     progress_ms: AtomicU64,
@@ -108,10 +109,12 @@ pub(crate) struct InflightEntry {
 pub(crate) struct InflightArrival {
     pub(crate) request_id: String,
     pub(crate) listener: String,
-    pub(crate) method: String,
+    pub(crate) method: Method,
     pub(crate) host: Option<String>,
     pub(crate) path: String,
-    pub(crate) client_ip: Option<String>,
+    pub(crate) client_ip: Option<IpAddr>,
+    /// When the request arrived, so the registry reads the clock no more than the proxy already did.
+    pub(crate) started: Instant,
     pub(crate) deadline: Duration,
     pub(crate) access_log: Option<Arc<AccessLog>>,
 }
@@ -179,9 +182,7 @@ impl InflightEntry {
             route: view.route.as_deref().map(Safe::from),
             server: view.server.as_deref().map(Safe::from),
             service: log.service().into(),
-            timestamp_unix_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, duration_ms),
+            timestamp_unix_ms: unix_ms(),
         };
         if let Err(error) = log.write_record(&line) {
             log::warn!("stuck request access log write failed: {error}");
@@ -206,28 +207,33 @@ impl InflightEntry {
     pub(crate) fn view(&self) -> InflightView {
         let place = self.place();
         let phase = self.phase();
+        let age_ms = self.age_ms();
         InflightView {
             request_id: self.request_id.clone(),
             listener: self.listener.clone(),
             route: place.route.clone(),
             pool: place.pool.clone(),
             server: place.server.clone(),
-            method: self.method.clone(),
+            method: self.method.to_string(),
             host: self.host.clone(),
             path: self.path.clone(),
-            client_ip: self.client_ip.clone(),
+            client_ip: self.client_ip.map(|ip| ip.to_string()),
             phase,
-            started_at_unix_ms: self.started_unix_ms,
-            age_ms: self.age_ms(),
-            waited_ms: (phase == Phase::Queued).then(|| {
-                self.age_ms()
-                    .saturating_sub(self.phase_since_ms.load(Ordering::Relaxed))
-            }),
+            started_at_unix_ms: unix_ms().saturating_sub(age_ms),
+            age_ms,
+            waited_ms: (phase == Phase::Queued)
+                .then(|| age_ms.saturating_sub(self.phase_since_ms.load(Ordering::Relaxed))),
             queue_position: Some(self.queue_position.load(Ordering::Relaxed)).filter(|p| *p > 0),
             attempts: self.attempts.load(Ordering::Relaxed),
             overdue: self.overdue(),
         }
     }
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, duration_ms)
 }
 
 fn duration_ms(duration: Duration) -> u64 {
@@ -377,9 +383,6 @@ impl InflightRegistry {
 
     pub(crate) fn register(&'static self, arrival: InflightArrival) -> InflightGuard {
         let key = self.next_key.fetch_add(1, Ordering::Relaxed);
-        let started_unix_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, duration_ms);
         let entry = Arc::new(InflightEntry {
             key,
             request_id: arrival.request_id,
@@ -388,8 +391,7 @@ impl InflightRegistry {
             host: arrival.host,
             path: arrival.path,
             client_ip: arrival.client_ip,
-            started: Instant::now(),
-            started_unix_ms,
+            started: arrival.started,
             phase: AtomicU8::new(Phase::Routed as u8),
             phase_since_ms: AtomicU64::new(0),
             progress_ms: AtomicU64::new(0),
@@ -508,11 +510,10 @@ impl InflightRegistry {
 impl InflightGuard {
     pub(crate) fn set_phase(&self, phase: Phase) {
         let entry = &self.entry;
+        let now = entry.age_ms();
         entry.phase.store(phase as u8, Ordering::Relaxed);
-        entry
-            .phase_since_ms
-            .store(entry.age_ms(), Ordering::Relaxed);
-        entry.progress_ms.store(entry.age_ms(), Ordering::Relaxed);
+        entry.phase_since_ms.store(now, Ordering::Relaxed);
+        entry.progress_ms.store(now, Ordering::Relaxed);
     }
 
     pub(crate) fn progress(&self) {
@@ -569,10 +570,11 @@ mod tests {
         InflightArrival {
             request_id: request_id.into(),
             listener: "edge".into(),
-            method: "POST".into(),
+            method: Method::POST,
             host: Some("app.test".into()),
             path: "/v1/render".into(),
-            client_ip: Some("192.0.2.9".into()),
+            client_ip: Some("192.0.2.9".parse().expect("test address")),
+            started: Instant::now(),
             deadline,
             access_log: None,
         }
