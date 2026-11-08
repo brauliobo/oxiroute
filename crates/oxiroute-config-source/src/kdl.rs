@@ -10,6 +10,20 @@ use crate::native::{
     NativeDirective, decode_apache, decode_haproxy, decode_nginx, decode_squid, decode_varnish,
 };
 
+mod canonical;
+
+const DIRECTIVE_NODES: [&str; 5] = [
+    "nginx_server",
+    "haproxy_server",
+    "squid_server",
+    "apache_server",
+    "varnish_server",
+];
+
+fn has_directive(root: &Value) -> bool {
+    DIRECTIVE_NODES.iter().any(|name| root.get(name).is_some())
+}
+
 /// Reports the first KDL diagnostic: its static message and the line it points at, never the text.
 fn parse_error(error: &kdl::KdlError) -> ConfigSourceError {
     let first = error.diagnostics.first();
@@ -24,6 +38,13 @@ fn parse_error(error: &kdl::KdlError) -> ConfigSourceError {
 }
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
+    match canonical::decode(source) {
+        Some(value) => Ok(value),
+        None => decode_generic(source),
+    }
+}
+
+fn decode_generic(source: &str) -> Result<Value, ConfigSourceError> {
     check_source_depth(source)?;
     let document = KdlDocument::parse(source).map_err(|error| parse_error(&error))?;
     check_document(document.nodes())?;
@@ -33,9 +54,15 @@ pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
     Ok(value)
 }
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn decode_with_directives(
     source: &str,
 ) -> Result<(Value, Vec<NativeDirective>), ConfigSourceError> {
+    if let Some(value) = canonical::decode(source).filter(|value| !has_directive(value)) {
+        return Ok((value, Vec::new()));
+    }
     check_source_depth(source)?;
     let document = KdlDocument::parse(source).map_err(|error| parse_error(&error))?;
     check_document(document.nodes())?;
@@ -564,50 +591,70 @@ fn render_node(
     depth: usize,
     output: &mut BoundedOutput,
 ) -> Result<(), ConfigSourceError> {
-    let indent = "  ".repeat(depth);
-    let name = kdl::KdlIdentifier::from(name).to_string();
+    write_indent(depth, output)?;
+    let (container, children) = match value {
+        Value::Object(_) => ("(object)", true),
+        Value::Array(_) => ("(array)", true),
+        _ => ("", false),
+    };
+    write_str(output, container)?;
+    if canonical::is_bare_name(name) {
+        write_str(output, name)?;
+    } else {
+        write!(output, "{}", kdl::KdlIdentifier::from(name))
+            .map_err(|_| ConfigSourceError::OutputTooLarge)?;
+    }
+    if !children {
+        write_str(output, " ")?;
+        write_scalar(value, output)?;
+        return write_str(output, "\n");
+    }
+    write_str(output, " {\n")?;
     match value {
-        Value::Object(object) => {
-            writeln!(output, "{indent}(object){name} {{")
-                .map_err(|_| ConfigSourceError::OutputTooLarge)?;
-            render_object(object, depth + 1, output)?;
-            writeln!(output, "{indent}}}").map_err(|_| ConfigSourceError::OutputTooLarge)?;
-        }
+        Value::Object(object) => render_object(object, depth + 1, output)?,
         Value::Array(values) => {
-            writeln!(output, "{indent}(array){name} {{")
-                .map_err(|_| ConfigSourceError::OutputTooLarge)?;
             for value in values {
                 render_node("-", value, depth + 1, output)?;
             }
-            writeln!(output, "{indent}}}").map_err(|_| ConfigSourceError::OutputTooLarge)?;
         }
-        value => {
-            let scalar = scalar_text(value)?;
-            writeln!(output, "{indent}{name} {scalar}")
-                .map_err(|_| ConfigSourceError::OutputTooLarge)?;
-        }
+        _ => unreachable!("only containers have children"),
     }
-    Ok(())
+    write_indent(depth, output)?;
+    write_str(output, "}\n")
 }
 
-fn scalar_text(value: &Value) -> Result<String, ConfigSourceError> {
+fn write_str(output: &mut BoundedOutput, text: &str) -> Result<(), ConfigSourceError> {
+    output
+        .write_str(text)
+        .map_err(|_| ConfigSourceError::OutputTooLarge)
+}
+
+fn write_indent(depth: usize, output: &mut BoundedOutput) -> Result<(), ConfigSourceError> {
+    (0..depth).try_for_each(|_| write_str(output, "  "))
+}
+
+fn write_scalar(value: &Value, output: &mut BoundedOutput) -> Result<(), ConfigSourceError> {
+    let too_large = |_| ConfigSourceError::OutputTooLarge;
     match value {
-        Value::Null => Ok(KdlValue::Null.to_string()),
-        Value::Bool(value) => Ok(KdlValue::Bool(*value).to_string()),
+        Value::Null => write_str(output, "#null"),
+        Value::Bool(value) => write!(output, "#{value}").map_err(too_large),
         Value::Number(value) => {
             if let Some(value) = value.as_i64() {
-                Ok(KdlValue::Integer(i128::from(value)).to_string())
+                write!(output, "{value}").map_err(too_large)
             } else if let Some(value) = value.as_u64() {
-                Ok(KdlValue::Integer(i128::from(value)).to_string())
+                write!(output, "{value}").map_err(too_large)
             } else {
-                value.as_f64().map_or_else(
-                    || Err(ConfigSourceError::render("KDL 2", "invalid JSON number")),
-                    |value| Ok(KdlValue::Float(value).to_string()),
-                )
+                let value = value
+                    .as_f64()
+                    .ok_or_else(|| ConfigSourceError::render("KDL 2", "invalid JSON number"))?;
+                write!(output, "{}", KdlValue::Float(value)).map_err(too_large)
             }
         }
-        Value::String(value) => serde_json::to_string(value)
-            .map_err(|error| ConfigSourceError::render("KDL 2", error.to_string())),
+        Value::String(value) => {
+            let text = serde_json::to_string(value)
+                .map_err(|error| ConfigSourceError::render("KDL 2", error.to_string()))?;
+            write_str(output, &text)
+        }
         Value::Array(_) | Value::Object(_) => unreachable!("containers are rendered separately"),
     }
 }
