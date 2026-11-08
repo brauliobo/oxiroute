@@ -19,6 +19,9 @@ use crate::listener::inventory::{
     ListenerInventory,
 };
 
+#[cfg(unix)]
+mod quic;
+
 #[derive(Clone)]
 pub struct ListenerReservation {
     inner: Arc<ReservationInner>,
@@ -31,6 +34,8 @@ struct ReservationInner {
     socket: ReservedSocket,
     #[cfg(unix)]
     unix_socket: Option<UnixSocketIdentity>,
+    #[cfg(unix)]
+    quic: std::sync::Mutex<Option<quic::QuicHost>>,
 }
 
 #[cfg(unix)]
@@ -347,6 +352,7 @@ impl ListenerReservation {
                     bind_text,
                     socket,
                     unix_socket,
+                    quic: std::sync::Mutex::default(),
                 }),
             })
         }
@@ -424,6 +430,39 @@ impl ListenerReservation {
         Ok(std::net::UdpSocket::from(self.duplicate_owned_fd()?))
     }
 
+    /// Returns the QUIC endpoint that reads this UDP reservation, starting it on first use.
+    ///
+    /// Every generation that reuses the reservation shares the endpoint, so the socket never has
+    /// two readers. `config` is only used to start the endpoint; connections are accepted with
+    /// their generation's own configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this reservation is not a UDP socket or the endpoint cannot start.
+    #[cfg(unix)]
+    pub fn quic_endpoint(&self, config: quinn::ServerConfig) -> io::Result<quinn::Endpoint> {
+        let mut host = self
+            .inner
+            .quic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let started = match host.take() {
+            Some(started) => started,
+            None => quic::QuicHost::start(self.duplicate_udp_socket()?, config)?,
+        };
+        let endpoint = started.endpoint();
+        *host = Some(started);
+        Ok(endpoint)
+    }
+
+    #[cfg(not(unix))]
+    pub fn quic_endpoint(&self, _config: quinn::ServerConfig) -> io::Result<quinn::Endpoint> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "UDP listener reservations are unsupported on this platform",
+        ))
+    }
+
     #[cfg(not(unix))]
     pub fn duplicate_udp_socket(&self) -> io::Result<std::net::UdpSocket> {
         Err(io::Error::new(
@@ -450,6 +489,7 @@ impl ListenerReservation {
                 bind_text,
                 socket,
                 unix_socket: None,
+                quic: std::sync::Mutex::default(),
             }),
         }
     }

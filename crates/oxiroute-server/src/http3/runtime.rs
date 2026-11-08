@@ -188,14 +188,8 @@ fn run_forward(
 ) -> Result<(), Box<dyn Error>> {
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async move {
-        let socket = reservation.duplicate_udp_socket()?;
-        let server_config = server_config(&tls, None)?;
-        let endpoint = Endpoint::new(
-            EndpointConfig::default(),
-            Some(server_config),
-            socket,
-            Arc::new(quinn::TokioRuntime),
-        )?;
+        let server_config = Arc::new(server_config(&tls, None)?);
+        let endpoint = reservation.quic_endpoint(ServerConfig::clone(&server_config))?;
         metrics.mark_listening();
         ready
             .send(Ok(()))
@@ -206,6 +200,7 @@ fn run_forward(
         let orderly = serve_endpoint(
             listener_name,
             endpoint,
+            server_config,
             service,
             generation,
             listener,
@@ -238,19 +233,13 @@ fn run_reverse(
 ) -> Result<(), Box<dyn Error>> {
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async move {
-        let socket = reservation.duplicate_udp_socket()?;
-        let server_config = server_config(
+        let server_config = Arc::new(server_config(
             &tls,
             downstream_timeouts
                 .keepalive_timeout_ms
                 .map(Duration::from_millis),
-        )?;
-        let endpoint = Endpoint::new(
-            EndpointConfig::default(),
-            Some(server_config),
-            socket,
-            Arc::new(quinn::TokioRuntime),
-        )?;
+        )?);
+        let endpoint = reservation.quic_endpoint(ServerConfig::clone(&server_config))?;
         metrics.mark_listening();
         ready
             .send(Ok(()))
@@ -261,6 +250,7 @@ fn run_reverse(
         let orderly = serve_reverse_endpoint(
             listener_name,
             endpoint,
+            server_config,
             service,
             generation,
             listener,
@@ -342,6 +332,7 @@ pub(super) fn h3_drain_window(
 async fn serve_endpoint(
     listener_name: &str,
     endpoint: Endpoint,
+    server_config: Arc<ServerConfig>,
     service: Arc<ForwardHttp1ServicePlan>,
     generation: Arc<RuntimeGeneration>,
     listener: ListenerRuntime,
@@ -355,6 +346,7 @@ async fn serve_endpoint(
     let mut gate_state = accept_gate.state();
     let orderly = loop {
         tokio::select! {
+            biased;
             state = accept_gate.changed() => {
                 let Ok(state) = state else { break false };
                 let gate_closed = !state.accepting && state.epoch > gate_state.epoch;
@@ -370,7 +362,7 @@ async fn serve_endpoint(
                 let _ = drain_tx.send(true);
                 break true;
             }
-            incoming = endpoint.accept() => {
+            incoming = endpoint.accept(), if gate_state.accepting => {
                 let Some(incoming) = incoming else { break false };
                 if !accept_gate.state().accepting || *drain_rx.borrow() || *shutdown.borrow() {
                     incoming.refuse();
@@ -386,9 +378,11 @@ async fn serve_endpoint(
                 let metrics = metrics.clone();
                 let shutdown = shutdown.clone();
                 let drain = drain_rx.clone();
+                let server_config = Arc::clone(&server_config);
                 connections.spawn(async move {
                     run_connection(
                         incoming,
+                        server_config,
                         service,
                         generation,
                         listener,
@@ -403,7 +397,7 @@ async fn serve_endpoint(
         }
     };
     let window = h3_drain_window(&generation, &shutdown);
-    finish_h3_connections(listener_name, &endpoint, &mut connections, window).await;
+    finish_h3_connections(listener_name, &mut connections, window).await;
     orderly
 }
 
@@ -411,6 +405,7 @@ async fn serve_endpoint(
 async fn serve_reverse_endpoint(
     listener_name: &str,
     endpoint: Endpoint,
+    server_config: Arc<ServerConfig>,
     service: Arc<HttpServicePlan>,
     generation: Arc<RuntimeGeneration>,
     listener: ListenerRuntime,
@@ -425,6 +420,7 @@ async fn serve_reverse_endpoint(
     let mut gate_state = accept_gate.state();
     let orderly = loop {
         tokio::select! {
+            biased;
             state = accept_gate.changed() => {
                 let Ok(state) = state else { break false };
                 let gate_closed = !state.accepting && state.epoch > gate_state.epoch;
@@ -440,7 +436,7 @@ async fn serve_reverse_endpoint(
                 let _ = drain_tx.send(true);
                 break true;
             }
-            incoming = endpoint.accept() => {
+            incoming = endpoint.accept(), if gate_state.accepting => {
                 let Some(incoming) = incoming else { break false };
                 if !accept_gate.state().accepting || *drain_rx.borrow() || *shutdown.borrow() {
                     incoming.refuse();
@@ -456,9 +452,11 @@ async fn serve_reverse_endpoint(
                 let metrics = metrics.clone();
                 let shutdown = shutdown.clone();
                 let drain = drain_rx.clone();
+                let server_config = Arc::clone(&server_config);
                 connections.spawn(async move {
                     run_reverse_connection(
                         incoming,
+                        server_config,
                         service,
                         generation,
                         listener,
@@ -474,13 +472,12 @@ async fn serve_reverse_endpoint(
         }
     };
     let window = h3_drain_window(&generation, &shutdown);
-    finish_h3_connections(listener_name, &endpoint, &mut connections, window).await;
+    finish_h3_connections(listener_name, &mut connections, window).await;
     orderly
 }
 
 async fn finish_h3_connections(
     listener_name: &str,
-    endpoint: &Endpoint,
     connections: &mut tokio::task::JoinSet<()>,
     window: Duration,
 ) {
@@ -503,7 +500,6 @@ async fn finish_h3_connections(
             }
         }
     }
-    endpoint.close(H3_CLOSE_CODE, b"generation draining");
     if timed_out {
         connections.abort_all();
     }

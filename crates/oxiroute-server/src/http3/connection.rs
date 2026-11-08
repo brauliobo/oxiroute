@@ -1,9 +1,18 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+/// Accepts a connection of the shared endpoint under the configuration of the accepting generation.
+async fn accept_incoming(
+    incoming: quinn::Incoming,
+    server_config: Arc<ServerConfig>,
+) -> Result<quinn::Connection, quinn::ConnectionError> {
+    incoming.accept_with(server_config)?.await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_reverse_connection(
     incoming: quinn::Incoming,
+    server_config: Arc<ServerConfig>,
     service: Arc<HttpServicePlan>,
     generation: Arc<RuntimeGeneration>,
     listener: ListenerRuntime,
@@ -13,7 +22,7 @@ pub(super) async fn run_reverse_connection(
     mut drain: watch::Receiver<bool>,
     _handshake: OwnedSemaphorePermit,
 ) {
-    let connection = match incoming.await {
+    let connection = match accept_incoming(incoming, server_config).await {
         Ok(connection) => connection,
         Err(error) => {
             warn!("reverse HTTP/3 QUIC handshake failed: {error}");
@@ -111,6 +120,7 @@ pub(super) async fn run_reverse_connection(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_connection(
     incoming: quinn::Incoming,
+    server_config: Arc<ServerConfig>,
     service: Arc<ForwardHttp1ServicePlan>,
     generation: Arc<RuntimeGeneration>,
     listener: ListenerRuntime,
@@ -119,7 +129,7 @@ pub(super) async fn run_connection(
     mut drain: watch::Receiver<bool>,
     _handshake: tokio::sync::OwnedSemaphorePermit,
 ) {
-    let connection = match incoming.await {
+    let connection = match accept_incoming(incoming, server_config).await {
         Ok(connection) => connection,
         Err(error) => {
             warn!("HTTP/3 QUIC handshake failed: {error}");
