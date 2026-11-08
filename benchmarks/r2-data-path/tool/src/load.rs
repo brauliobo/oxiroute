@@ -479,11 +479,14 @@ async fn initial_clients(spec: &Spec) -> io::Result<Vec<Option<Client>>> {
 
 async fn hook(command: Option<&String>) {
     if let Some(command) = command {
-        let status = tokio::process::Command::new("sh")
+        let running = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(command)
-            .status()
+            .kill_on_drop(true)
+            .status();
+        let status = tokio::time::timeout(std::time::Duration::from_secs(60), running)
             .await
+            .unwrap_or_else(|_| panic!("hook timed out: {command}"))
             .expect("spawn hook");
         assert!(status.success(), "hook failed: {command}");
     }
