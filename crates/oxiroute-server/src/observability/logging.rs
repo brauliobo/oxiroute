@@ -1,8 +1,12 @@
-use std::sync::{
-    Arc, OnceLock,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    borrow::Cow,
+    sync::{
+        Arc, LazyLock, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
+use aho_corasick::AhoCorasick;
 use serde_json::{Map, Value};
 
 pub(crate) const REDACTED: &str = "<redacted>";
@@ -26,21 +30,42 @@ const SENSITIVE_MARKERS: &[&str] = &[
     "token",
 ];
 
-pub(crate) fn redact_text(value: &str) -> String {
-    let bounded: String = value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(MAX_SAFE_TEXT_BYTES)
-        .collect();
-    let normalized = bounded.to_ascii_lowercase();
-    if SENSITIVE_MARKERS
-        .iter()
-        .any(|marker| normalized.contains(marker))
-    {
-        REDACTED.to_owned()
+/// Control characters removed and the length bounded; borrowed when the text is already clean.
+fn bounded_text(value: &str) -> Cow<'_, str> {
+    if value.len() <= MAX_SAFE_TEXT_BYTES && !value.chars().any(char::is_control) {
+        return Cow::Borrowed(value);
+    }
+    Cow::Owned(
+        value
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(MAX_SAFE_TEXT_BYTES)
+            .collect(),
+    )
+}
+
+fn is_sensitive(text: &str) -> bool {
+    static MARKERS: LazyLock<AhoCorasick> = LazyLock::new(|| {
+        AhoCorasick::builder()
+            .ascii_case_insensitive(true)
+            .build(SENSITIVE_MARKERS)
+            .expect("sensitive markers compile")
+    });
+    MARKERS.is_match(text)
+}
+
+/// Allocation-free [`redact_text`] for the per-request path.
+pub(crate) fn redact_text_cow(value: &str) -> Cow<'_, str> {
+    let bounded = bounded_text(value);
+    if is_sensitive(&bounded) {
+        Cow::Borrowed(REDACTED)
     } else {
         bounded
     }
+}
+
+pub(crate) fn redact_text(value: &str) -> String {
+    redact_text_cow(value).into_owned()
 }
 
 pub(crate) fn redact_identifier(value: &str) -> String {
@@ -52,10 +77,24 @@ pub(crate) fn redact_identifier(value: &str) -> String {
     }
 }
 
+/// A process-unique correlation id that renders without allocating.
+pub(crate) struct CorrelationId(u64);
+
+impl CorrelationId {
+    pub(crate) fn next() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl std::fmt::Display for CorrelationId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "op-{:08x}-{:016x}", std::process::id(), self.0)
+    }
+}
+
 pub(crate) fn next_correlation_id() -> String {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-    let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    format!("op-{:08x}-{:016x}", std::process::id(), sequence)
+    CorrelationId::next().to_string()
 }
 
 pub(crate) fn valid_correlation_id(value: &str) -> bool {
@@ -93,7 +132,7 @@ impl RtmpAccessLogMetrics {
     }
 
     pub(crate) fn queue_event_rejected(&self, saturated: bool) {
-        self.decrement_queue_depth();
+        self.decrement_queue_depth(1);
         self.enqueued.fetch_sub(1, Ordering::Relaxed);
         self.dropped.fetch_add(1, Ordering::Relaxed);
         if saturated {
@@ -103,20 +142,20 @@ impl RtmpAccessLogMetrics {
         }
     }
 
-    pub(crate) fn worker_received(&self) {
-        self.decrement_queue_depth();
+    pub(crate) fn worker_received(&self, lines: u64) {
+        self.decrement_queue_depth(lines);
     }
 
-    fn decrement_queue_depth(&self) {
+    fn decrement_queue_depth(&self, lines: u64) {
         let _ = self
             .queue_depth
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
-                Some(depth.saturating_sub(1))
+                Some(depth.saturating_sub(lines))
             });
     }
 
-    pub(crate) fn worker_written(&self) {
-        self.written.fetch_add(1, Ordering::Relaxed);
+    pub(crate) fn worker_written(&self, lines: u64) {
+        self.written.fetch_add(lines, Ordering::Relaxed);
     }
 
     pub(crate) fn worker_failed(&self) {
@@ -374,7 +413,7 @@ mod tests {
     fn rtmp_queue_depth_does_not_underflow_when_rejection_races_delivery() {
         let metrics = RtmpAccessLogMetrics::default();
         metrics.queue_event();
-        metrics.worker_received();
+        metrics.worker_received(1);
         metrics.queue_event_rejected(true);
 
         assert_eq!(metrics.snapshot().queue_depth, 0);

@@ -1,4 +1,7 @@
-use crate::http::evacuation::{EVACUATED, Fate};
+use crate::{
+    http::evacuation::{EVACUATED, Fate},
+    observability::upstream_stats::upstream_stats,
+};
 
 use super::*;
 

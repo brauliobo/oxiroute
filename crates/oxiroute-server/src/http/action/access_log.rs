@@ -1,10 +1,18 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-pub(super) const ACCESS_LOG_QUEUE_CAPACITY: usize = 1_024;
+mod sink;
+
+pub(super) use sink::QUEUE_CAPACITY_LINES as ACCESS_LOG_QUEUE_CAPACITY;
+use sink::Rejected;
+pub(super) use sink::Sink;
+
+std::thread_local! {
+    static LINE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
 pub(crate) struct AccessLog {
-    pub(super) sender: Option<SyncSender<Vec<u8>>>,
+    pub(super) sink: Arc<Sink>,
     pub(super) service: String,
     pub(super) rtmp_metrics: Option<Arc<crate::observability::logging::RtmpAccessLogMetrics>>,
     pub(super) worker: Mutex<Option<JoinHandle<()>>>,
@@ -66,7 +74,7 @@ impl AccessLog {
         )
     }
 
-    fn open_with_rtmp_metrics(
+    pub(super) fn open_with_rtmp_metrics(
         service: &str,
         policy: Option<&AccessLogPolicy>,
         rtmp_metrics: Option<Arc<crate::observability::logging::RtmpAccessLogMetrics>>,
@@ -88,8 +96,7 @@ impl AccessLog {
         if !FileType::from_raw_mode(metadata.st_mode).is_file() {
             return Err(AccessPreflightError);
         }
-        let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(ACCESS_LOG_QUEUE_CAPACITY);
-        let worker_metrics = rtmp_metrics.clone();
+        let sink = Arc::new(Sink::new(ACCESS_LOG_QUEUE_CAPACITY));
         let worker_name = if rtmp_metrics.is_some() {
             "rtmp-access-log"
         } else {
@@ -97,69 +104,57 @@ impl AccessLog {
         };
         let worker = std::thread::Builder::new()
             .name(format!("{worker_name}-{service}"))
-            .spawn(move || {
-                let mut file = File::from(descriptor);
-                while let Ok(line) = receiver.recv() {
-                    if let Some(metrics) = &worker_metrics {
-                        metrics.worker_received();
-                    }
-                    if file.write_all(&line).is_err() || file.write_all(b"\n").is_err() {
-                        if let Some(metrics) = &worker_metrics {
-                            metrics.worker_failed();
-                            for _ in receiver.try_iter() {
-                                metrics.worker_received();
-                            }
-                        }
-                        break;
-                    }
-                    if let Some(metrics) = &worker_metrics {
-                        metrics.worker_written();
-                    }
-                }
+            .spawn({
+                let (sink, metrics) = (Arc::clone(&sink), rtmp_metrics.clone());
+                move || write_batches(&sink, File::from(descriptor), metrics.as_deref())
             })
             .map_err(|_| AccessPreflightError)?;
         Ok(Some(Self {
-            sender: Some(sender),
+            sink,
             service: service.to_owned(),
             rtmp_metrics,
             worker: Mutex::new(Some(worker)),
         }))
     }
 
+    /// Redacts a generic event to the HTTP allowlist and queues it.
     pub(crate) fn write(&self, event: &serde_json::Value) -> std::io::Result<()> {
-        self.enqueue(serde_json::to_vec(
-            &crate::observability::logging::redact_access_record(event),
-        )?)
+        self.write_record(&crate::observability::logging::redact_access_record(event))
     }
 
     pub(crate) fn write_rtmp(&self, event: &serde_json::Value) -> std::io::Result<()> {
-        self.enqueue(serde_json::to_vec(
-            &crate::observability::logging::redact_rtmp_access_record(event),
-        )?)
+        self.write_record(&crate::observability::logging::redact_rtmp_access_record(
+            event,
+        ))
     }
 
-    fn enqueue(&self, line: Vec<u8>) -> std::io::Result<()> {
+    /// Serializes `record` into a reused per-thread buffer and queues the line.
+    pub(crate) fn write_record(&self, record: &impl serde::Serialize) -> std::io::Result<()> {
+        LINE.with_borrow_mut(|line| {
+            line.clear();
+            serde_json::to_writer(&mut *line, record)?;
+            line.push(b'\n');
+            self.enqueue(line)
+        })
+    }
+
+    fn enqueue(&self, line: &[u8]) -> std::io::Result<()> {
         if let Some(metrics) = &self.rtmp_metrics {
             metrics.queue_event();
         }
-        self.sender
-            .as_ref()
-            .expect("access log sender exists until final drop")
-            .try_send(line)
-            .map_err(|error| match error {
-                TrySendError::Full(_) => {
-                    if let Some(metrics) = &self.rtmp_metrics {
-                        metrics.queue_event_rejected(true);
-                    }
+        self.sink.push(line).map_err(|rejected| {
+            if let Some(metrics) = &self.rtmp_metrics {
+                metrics.queue_event_rejected(rejected == Rejected::Full);
+            }
+            match rejected {
+                Rejected::Full => {
                     std::io::Error::new(std::io::ErrorKind::WouldBlock, "access log queue is full")
                 }
-                TrySendError::Disconnected(_) => {
-                    if let Some(metrics) = &self.rtmp_metrics {
-                        metrics.queue_event_rejected(false);
-                    }
+                Rejected::Stopped => {
                     std::io::Error::new(std::io::ErrorKind::BrokenPipe, "access log writer stopped")
                 }
-            })
+            }
+        })
     }
 
     pub(crate) fn service(&self) -> &str {
@@ -169,7 +164,7 @@ impl AccessLog {
 
 impl Drop for AccessLog {
     fn drop(&mut self) {
-        self.sender.take();
+        self.sink.close();
         if let Some(worker) = self
             .worker
             .get_mut()
@@ -177,6 +172,32 @@ impl Drop for AccessLog {
             .take()
         {
             let _ = worker.join();
+        }
+    }
+}
+
+/// Writes each batch with one call; the first failure stops the log and counts what it lost.
+fn write_batches(
+    sink: &Sink,
+    mut file: File,
+    metrics: Option<&crate::observability::logging::RtmpAccessLogMetrics>,
+) {
+    let mut batch = Vec::new();
+    while let Some(lines) = sink.next_batch(&mut batch) {
+        if let Some(metrics) = metrics {
+            metrics.worker_received(lines);
+        }
+        if file.write_all(&batch).is_err() {
+            if let Some(metrics) = metrics {
+                metrics.worker_failed();
+                metrics.worker_received(sink.fail());
+            } else {
+                sink.fail();
+            }
+            return;
+        }
+        if let Some(metrics) = metrics {
+            metrics.worker_written(lines);
         }
     }
 }

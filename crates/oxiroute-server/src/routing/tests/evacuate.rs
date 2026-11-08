@@ -28,10 +28,11 @@ fn attempt(pool: &str, server: &str, unmovable: Option<LeftRunning>) -> Inflight
     let guard = registry().register(InflightArrival {
         request_id: format!("{pool}-{server}-{unmovable:?}"),
         listener: "edge".into(),
-        method: "GET".into(),
+        method: http::Method::GET,
         host: None,
         path: "/".into(),
         client_ip: None,
+        started: std::time::Instant::now(),
         deadline: Duration::from_secs(30),
         access_log: None,
     });

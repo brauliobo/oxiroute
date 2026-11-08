@@ -15,6 +15,7 @@ name = "oxiroute"
 path = "src/main.rs"
 
 [dependencies]
+aho-corasick.workspace = true
 arc-swap.workspace = true
 async-trait.workspace = true
 base64.workspace = true

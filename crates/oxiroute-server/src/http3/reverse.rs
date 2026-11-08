@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::observability::access_record::{Correlation, Count, Http3Access, SafeId};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_reverse_request<C>(
@@ -88,16 +89,16 @@ pub(super) async fn handle_reverse_request<C>(
         HttpOperationResult::from_status(Some(status))
     });
     if let Some(access_log) = service.access_log()
-        && let Err(error) = access_log.write(&serde_json::json!({
-            "timestampUnixMs": unix_time_ms(),
-            "service": access_log.service(),
-            "protocol": "h3",
-            "host": authority.as_ref().map(Authority::host),
-            "method": method.as_str(),
-            "status": response_status,
-            "clientIp": client_addr.map(|address| address.ip().to_string()),
-            "durationMs": started_at.elapsed().as_millis().to_string(),
-        }))
+        && let Err(error) = access_log.write_record(&Http3Access {
+            correlation_id: Correlation(None),
+            duration_ms: Count(started_at.elapsed().as_millis()),
+            host: authority.as_ref().map(|authority| authority.host().into()),
+            method: method.as_str().into(),
+            protocol: SafeId("h3"),
+            service: access_log.service().into(),
+            status: response_status,
+            timestamp_unix_ms: unix_time_ms(),
+        })
     {
         warn!("reverse HTTP/3 access log write failed: {error}");
     }
