@@ -1816,6 +1816,28 @@ fn built_process_fails_before_runtime_when_a_tcp_listener_cannot_bind() {
     );
 }
 
+#[test]
+fn built_direct_process_reports_the_tcp_bind_cause() {
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupied listener");
+    let address = occupied.local_addr().expect("occupied address");
+    let directory = TempDir::new().expect("direct bind failure case");
+    let config_path = directory.path().join("oxiroute.lua");
+    write_config(
+        &config_path,
+        &rtmp_listener_config(socket_bind(address))
+            .validate()
+            .expect("valid RTMP listener config"),
+    );
+    let token_path = write_token(directory.path(), TOKEN, 0o600);
+
+    let failure = run_to_failure(&config_path, Some(&token_path));
+
+    assert!(!failure.status.success());
+    let output = output_text(&failure);
+    assert!(output.contains("could not bind socket"), "{output}");
+    assert!(output.contains(&address.to_string()), "{output}");
+}
+
 #[cfg(unix)]
 #[test]
 fn built_process_does_not_unlink_an_existing_unix_listener_path() {

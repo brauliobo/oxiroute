@@ -45,7 +45,7 @@ pub enum GenerationError {
     RuntimePrepare,
     #[error("candidate preparation exceeded its deadline")]
     PreparationTimedOut,
-    #[error("candidate listener reservation failed")]
+    #[error("candidate listener reservation failed: {0}")]
     Listener(#[from] io::Error),
     #[error("candidate metrics preparation failed")]
     Metrics(#[from] crate::MetricsError),

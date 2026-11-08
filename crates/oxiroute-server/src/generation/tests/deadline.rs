@@ -109,6 +109,9 @@ fn ordinary_preparation_failure_quarantines_even_after_deadline() {
         panic!("occupied listener preparation succeeded")
     };
     assert!(matches!(error, GenerationError::Listener(_)));
+    let message = error.to_string();
+    assert!(message.contains("could not bind socket"), "{message}");
+    assert!(message.contains(&address.to_string()), "{message}");
     assert_eq!(manager.status().quarantined_revision, Some(revision));
 }
 
