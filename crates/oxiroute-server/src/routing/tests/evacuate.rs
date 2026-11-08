@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
     LeftRunning,
-    http::inflight::{InflightArrival, InflightGuard, registry},
+    http::{
+        evacuation::Cancellation,
+        inflight::{InflightArrival, InflightGuard, registry},
+    },
     observability::upstream_stats::upstream_stats,
 };
 
@@ -173,4 +176,17 @@ fn cancelling_without_draining_leaves_the_state_to_the_caller() {
     assert_eq!(report.redispatched, 1, "the other server is a destination");
     assert!(pool.administrative_states().is_empty());
     assert!(request.evacuation().settle().is_some());
+}
+
+#[test]
+fn forcing_kills_the_requests_of_the_last_server() {
+    let pool = farm("evacuate-last-forced", None, None);
+    pool.set_server_administrative_state("node-b", AdministrativeState::Maintenance)
+        .expect("maintenance");
+    let request = attempt("evacuate-last-forced", "node-a", None);
+
+    let report = pool.evacuate_server("node-a", true).expect("evacuate");
+
+    assert_eq!((report.redispatched, report.forced), (0, 1));
+    assert_eq!(request.evacuation().settle(), Some(Cancellation::Kill));
 }

@@ -782,6 +782,26 @@ async fn the_only_server_keeps_its_requests() {
 }
 
 #[tokio::test]
+async fn forcing_cuts_the_requests_of_the_only_server() {
+    timeout(TEST_TIMEOUT, async {
+        let mut farm = Farm::start(Layout::new("farm-alone-forced", &[Mode::Hold])).await;
+        let client = farm.get("alone-forced");
+        farm.origins[0].arrival("alone-forced").await;
+
+        let report = farm.evacuate("node-a", true);
+
+        assert_report(&report, 0, 1, &[]);
+        farm.origins[0].dropped("alone-forced").await;
+        let response = client.await.expect("client");
+        assert_eq!(response.status, 503, "{}", response.text());
+        assert_eq!(response.header("x-oxiroute-reason"), Some("evacuated"));
+        assert_eq!(response.header("x-request-id"), Some("alone-forced"));
+    })
+    .await
+    .expect("forced only server test timed out");
+}
+
+#[tokio::test]
 async fn a_pool_queue_holds_the_moved_request_until_a_server_frees() {
     timeout(TEST_TIMEOUT, async {
         let layout = Layout::new("farm-queue", &[Mode::Hold, Mode::Hold])
