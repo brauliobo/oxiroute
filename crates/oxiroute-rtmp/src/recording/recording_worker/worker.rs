@@ -62,6 +62,7 @@ pub(super) struct QueueState {
     pub(super) events_dropped: u64,
     pub(super) discontinuities: u64,
     pub(super) discontinuity_pending: bool,
+    pub(super) finalization_completed: bool,
 }
 
 pub(super) struct QueuedMediaEvent {
@@ -161,6 +162,7 @@ impl RecorderWorker {
                 events_dropped: 0,
                 discontinuities: 0,
                 discontinuity_pending: false,
+                finalization_completed: false,
             }),
             available: Condvar::new(),
             status: Mutex::new(WorkerStatusState {

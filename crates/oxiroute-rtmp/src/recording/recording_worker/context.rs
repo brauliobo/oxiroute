@@ -87,6 +87,13 @@ pub(super) fn run_worker(shared: &Arc<WorkerShared>, setup: WorkerSetup) {
                 shared.fail(WorkerError::new(RecorderFailure::Discontinuity));
                 return;
             }
+            NextEvent::FinalizationCompleted => {
+                if let Err(failure) = context.poll_finalization() {
+                    context.preserve_segment();
+                    shared.fail(failure);
+                    return;
+                }
+            }
             NextEvent::Finished => break,
         }
     }
@@ -421,6 +428,7 @@ impl WorkerContext {
         let completion = Arc::clone(&state);
         let panic_partial_relative_name = partial_relative_name.clone();
         let finalizer = segment.finalizer.clone();
+        let shared = Arc::clone(&self.shared);
         let ticket = finalizer.submit(Box::new(move || {
             if !completion.try_claim() {
                 return;
@@ -433,6 +441,7 @@ impl WorkerContext {
                         published_but_not_durable_relative_name: None,
                     }));
             completion.complete(result);
+            shared.notify_finalization_completed();
         }));
         state.set_ticket(ticket);
         self.pending_finalizations.push_back(PendingFinalization {
