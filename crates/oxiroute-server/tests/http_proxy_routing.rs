@@ -12,7 +12,7 @@ use std::{
     os::unix::fs::symlink,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -48,7 +48,7 @@ use pingora::{
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpSocket, TcpStream},
     sync::{oneshot, watch},
     task::JoinHandle,
     time::{sleep, timeout},
@@ -3896,7 +3896,7 @@ async fn retry_budget_ratio_limits_retries_to_a_share_of_the_requests() {
 #[tokio::test]
 async fn retry_jitter_stretches_each_same_server_retry_delay() {
     timeout(Duration::from_secs(8), async {
-        let unavailable = unused_address().await;
+        let unavailable = unused_address();
         let healthy = Origin::start("jittered", 1).await;
         let mut route = route(None, "/", &[], "retry");
         let retry = &mut proxy_policy_mut(&mut route).retry;
@@ -4066,7 +4066,7 @@ async fn enforces_the_connection_cap_in_the_production_http_wrapper() {
 #[tokio::test]
 async fn retries_a_bodyless_get_on_a_distinct_endpoint_after_connect_failure() {
     timeout(TEST_TIMEOUT, async {
-        let unavailable = unused_address().await;
+        let unavailable = unused_address();
         let healthy = Origin::start("retry-success", 1).await;
         let proxy = ProxyHarness::start_with_retries(
             vec![pool("retry", &[unavailable, healthy.address])],
@@ -4154,14 +4154,11 @@ async fn preserves_the_origin_status_when_status_retry_has_no_target() {
 #[tokio::test]
 async fn delayed_same_server_retry_waits_and_reselects_the_original_server() {
     timeout(TEST_TIMEOUT, async {
-        let reservation = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("late origin reservation");
+        let reservation = unlistened_socket();
         let address = reservation.local_addr().expect("late origin address");
-        drop(reservation);
         let origin = tokio::spawn(async move {
             sleep(Duration::from_millis(75)).await;
-            let listener = TcpListener::bind(address).await.expect("late origin bind");
+            let listener = reservation.listen(16).expect("late origin listen");
             let (mut stream, _) = listener.accept().await.expect("late origin accept");
             read_request_head(&mut stream)
                 .await
@@ -4202,7 +4199,7 @@ async fn delayed_same_server_retry_waits_and_reselects_the_original_server() {
 #[tokio::test]
 async fn final_redispatch_retries_same_server_then_selects_an_available_server() {
     timeout(TEST_TIMEOUT, async {
-        let unavailable = unused_address().await;
+        let unavailable = unused_address();
         let healthy = Origin::start("redispatched", 1).await;
         let mut retry_route = route(None, "/", &[], "retry");
         let HttpRouteAction::Proxy { policy, .. } = &mut retry_route.action else {
@@ -4251,7 +4248,7 @@ fn pingora_attempt_cap_covers_four_route_attempts_with_sixteen_dns_addresses_eac
 #[tokio::test]
 async fn retries_a_bodyless_head_after_connect_failure() {
     timeout(TEST_TIMEOUT, async {
-        let unavailable = unused_address().await;
+        let unavailable = unused_address();
         let healthy = Origin::start("head-success", 1).await;
         let proxy = ProxyHarness::start_with_retries(
             vec![pool("retry", &[unavailable, healthy.address])],
@@ -4276,7 +4273,7 @@ async fn retries_a_bodyless_head_after_connect_failure() {
 #[tokio::test]
 async fn an_omitted_retry_budget_fails_after_the_first_endpoint() {
     timeout(TEST_TIMEOUT, async {
-        let unavailable = unused_address().await;
+        let unavailable = unused_address();
         let unused = Origin::start("must-not-receive", 1).await;
         let proxy = ProxyHarness::start(
             vec![pool("retry", &[unavailable, unused.address])],
@@ -4301,7 +4298,7 @@ async fn an_omitted_retry_budget_fails_after_the_first_endpoint() {
 #[tokio::test]
 async fn retries_a_post_before_any_bytes_are_sent_upstream() {
     timeout(TEST_TIMEOUT, async {
-        let unavailable = unused_address().await;
+        let unavailable = unused_address();
         let healthy = Origin::start("post-retry", 1).await;
         let proxy = ProxyHarness::start_with_retries(
             vec![pool("retry", &[unavailable, healthy.address])],
@@ -4326,7 +4323,7 @@ async fn retries_a_post_before_any_bytes_are_sent_upstream() {
 #[tokio::test]
 async fn retries_a_request_body_when_connection_failure_happens_before_send() {
     timeout(TEST_TIMEOUT, async {
-        let unavailable = unused_address().await;
+        let unavailable = unused_address();
         let healthy = Origin::start("body-retry", 1).await;
         let proxy = ProxyHarness::start_with_retries(
             vec![pool("retry", &[unavailable, healthy.address])],
@@ -4867,7 +4864,7 @@ async fn does_not_retry_a_default_json_post_after_an_upstream_response_timeout()
 #[tokio::test]
 async fn does_not_retry_an_upgrade_request() {
     timeout(TEST_TIMEOUT, async {
-        let unavailable = unused_address().await;
+        let unavailable = unused_address();
         let unused = Origin::start("must-not-receive", 1).await;
         let proxy = ProxyHarness::start_with_retries(
             vec![pool("retry", &[unavailable, unused.address])],
@@ -5008,7 +5005,7 @@ async fn answers_503_when_every_cluster_node_has_every_local_server_drained() {
 #[tokio::test]
 async fn stops_when_the_configured_retry_budget_is_exhausted() {
     timeout(TEST_TIMEOUT, async {
-        let unavailable = unused_addresses(2).await;
+        let unavailable = unused_addresses(2);
         let unused = Origin::start("over-budget", 1).await;
         let proxy = ProxyHarness::start_with_retries(
             vec![pool(
@@ -5036,7 +5033,7 @@ async fn stops_when_the_configured_retry_budget_is_exhausted() {
 #[tokio::test]
 async fn permits_two_retries_and_succeeds_on_the_third_endpoint() {
     timeout(TEST_TIMEOUT, async {
-        let unavailable = unused_addresses(2).await;
+        let unavailable = unused_addresses(2);
         let healthy = Origin::start("third-attempt", 1).await;
         let proxy = ProxyHarness::start_with_retries(
             vec![pool(
@@ -6426,7 +6423,7 @@ async fn rejects_bounded_request_header_expansion_before_contacting_the_origin()
 #[tokio::test]
 async fn retries_only_for_a_configured_trigger() {
     timeout(TEST_TIMEOUT, async {
-        let unavailable = unused_address().await;
+        let unavailable = unused_address();
         let unused = Origin::start("must-not-receive", 1).await;
         let mut proxy_route = route(None, "/", &[], "retry");
         let HttpRouteAction::Proxy { policy, .. } = &mut proxy_route.action else {
@@ -7707,23 +7704,29 @@ impl ProxyHarness {
     }
 }
 
-async fn unused_address() -> SocketAddr {
-    unused_addresses(1).await[0]
+/// Binds a loopback socket that does not listen: connections to it are refused, and no other test
+/// of this process can be handed its port by `bind(:0)` while the socket stays bound.
+fn unlistened_socket() -> TcpSocket {
+    let socket = TcpSocket::new_v4().expect("unlistened socket");
+    socket
+        .bind("127.0.0.1:0".parse().expect("loopback address"))
+        .expect("unlistened socket bind");
+    socket
 }
 
-async fn unused_addresses(count: usize) -> Vec<SocketAddr> {
-    let mut listeners = Vec::with_capacity(count);
-    for _ in 0..count {
-        listeners.push(
-            TcpListener::bind("127.0.0.1:0")
-                .await
-                .expect("unused address bind"),
-        );
-    }
-    listeners
+fn unused_address() -> SocketAddr {
+    unused_addresses(1)[0]
+}
+
+fn unused_addresses(count: usize) -> Vec<SocketAddr> {
+    static HELD: Mutex<Vec<TcpSocket>> = Mutex::new(Vec::new());
+    let sockets: Vec<_> = (0..count).map(|_| unlistened_socket()).collect();
+    let addresses = sockets
         .iter()
-        .map(|listener| listener.local_addr().expect("unused address"))
-        .collect()
+        .map(|socket| socket.local_addr().expect("unused address"))
+        .collect();
+    HELD.lock().unwrap().extend(sockets);
+    addresses
 }
 
 impl Drop for ProxyHarness {
