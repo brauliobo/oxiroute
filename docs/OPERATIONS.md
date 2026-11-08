@@ -69,8 +69,10 @@ TCP, UDP pseudo-sessions, QUIC/H3 connections, and RTMP references are counted i
 drained under a caller-supplied deadline. Failed candidates are dropped without changing active
 state. Canonical management writes remain revision-checked and invalid drafts do not alter disk.
 
-The watcher observes the parent directory so rename-based replacement is visible, debounces event
-bursts, and periodically reconciles exact SHA-256 disk revisions. Invalid snapshots are rejected and
+The watcher observes the parent directory so rename-based replacement is visible, but only an event
+that names the configuration file, the directory itself or a recorded native dependency starts a
+reconciliation (scratch files, editor swap files and tooling output next to the configuration are
+ignored). It debounces event bursts and periodically reconciles exact SHA-256 disk revisions. Invalid snapshots are rejected and
 do not replace active generation state: each one is logged at error level on the `oxiroute::config`
 target (once per distinct rejection, not at every reconciliation), emits a `configuration_reload`
 event with the outcome `rejected`, raises `oxiroute_config_rejections_total` and is shown as
