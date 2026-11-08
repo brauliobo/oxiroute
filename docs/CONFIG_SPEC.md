@@ -588,6 +588,10 @@ Current constraints:
   `final_redispatch = true` changes only the last configured retry from `same_server` to
   `next_server`; it requires positive `max_retries` and `target = "same_server"` and otherwise
   fails validation. It defaults to `false`.
+  `server evacuate` and `pool evacuate` re-dispatch in-flight requests under the same replay-safety fields
+  (`method_safety`, `idempotency_header`, `body_safety`, `request_buffering`) but do not need
+  `max_retries > 0` and spend neither `max_retries` nor `budget`; a request is moved at most 3 times.
+  See [the runbook](user/RUNBOOK.md#evacuate-a-server).
 - Proxy `policy.rescue` (default `null`) replays a request on another server when the backend
   answers a status of `statuses` (1 to 100 unique statuses between `100` and `599`, for example a
   `404` from a node that lacks a model), without treating that status as a server failure. It spends
@@ -645,7 +649,8 @@ Current constraints:
   total deadline, so a `header_ms` shorter than the total leaves budget for the next retry. When an
   upstream timeout or the total deadline ends a request before a response header was sent, the client
   receives `504` with `x-oxiroute-reason` set to `connect_timeout`, `upstream_header_timeout`,
-  `upstream_write_timeout` or `total_deadline`. A stalled body after the response header cannot change
+  `upstream_write_timeout` or `total_deadline`; a request cancelled by `evacuate --force` before any response
+  byte is answered with `503` and `x-oxiroute-reason: evacuated`. A stalled body after the response header cannot change
   the status already sent; it closes the connection (`upstream_idle_timeout` is logged at debug level). A client
   that disconnects first gets no response and the upstream request is cancelled. The listener
   `client_timeout_ms`/`request_timeout_ms` still bound the request and also cut it without a status.

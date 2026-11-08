@@ -64,11 +64,13 @@ Status meanings:
 | Listener | capacity mutation | Config generation | Change `listeners[].max_connections`, validate, and activate. |
 | Pool | list/show | Supported | `oxiroute pool list|show NAME`; includes queue and availability counters. |
 | Pool | ready/drain | Supported | Batch changes every server in each exact pool. Drain keeps health checks running. |
+| Pool | evacuate | Supported | `oxiroute pool evacuate [--force] POOL...`; drains every server of each pool and moves their in-flight requests (see Server evacuate). |
 | Server | list/show | Supported | `oxiroute server list [--pool POOL] [--origin static|dynamic]` and `server show --pool POOL SERVER`. `list --pool` also works on a registry read socket or with a read token and adds the lease time left of registered servers. |
 | Server | register/renew | Supported | `oxiroute server register --pool POOL SERVER --address A [--weight N] [--priority N] [--max-connections N] [--ttl 15s] [--label K=V]... [--metadata-file F] [--heartbeat]` for pools with `registration`; `--heartbeat` stays in the foreground, renews at a third of the TTL, registers again if the lease was lost, and on SIGTERM or SIGINT announces `draining` and deregisters. |
 | Server | deregister | Supported | `oxiroute server deregister --pool POOL SERVER [--missing-ok]`; exit `6` when not registered unless `--missing-ok`. |
 | Registry | scoped tokens | Supported | `oxiroute registry token create --tokens-file FILE --id ID (--pool POOL... [--name-prefix P] | --read)` appends a digest line to the tokens file (mode `0640` when created) and prints the secret once; ids are never reused. Offline command: no daemon needed. |
 | Server | ready/drain/maintenance | Supported | Atomic administrative state. Drain rejects new selections while existing leases complete and checks continue; maintenance also suspends checks. |
+| Server | evacuate | Supported | `oxiroute server evacuate [--force] --pool POOL... SERVER`; atomic `drain` plus a one-shot cancel and transparent re-dispatch to another server of the pool of the HTTP reverse proxy requests that sent no response and are replayable under the route's `retry` policy (at most 3 times each). Prints `{outcome, force, cancelledAndRedispatched, forced, leftRunning}` with `leftRunning` counting by reason (`response_started`, `not_replayable`, `body_not_replayable`, `upgraded`, `limit_reached`, `no_destination`). `--force` also cancels the rest (`503` with `x-oxiroute-reason: evacuated`, or a closed connection once the response started). Upgrades, forward proxy/CONNECT, HTTP/3, L4 and RTMP are drain only. The cancel is not persisted; `server ready` un-drains. |
 | Server | health override auto/up/down | Supported | `server set-health`; override is separate from observed health and `auto` restores observed-health selection. |
 | Server | checks enable/disable | Supported | `server check`; maintenance still suspends enabled checks. |
 | Server | max-connections set/reset | Supported | Runtime override; reset restores configured capacity. |
@@ -121,6 +123,10 @@ one command:
 oxiroute server drain --pool public-v4 --pool public-v6 origin-a
 ```
 
+`server evacuate` takes the same repeated `--pool` and sends the same exact-target batch to
+`POST /api/v1/servers/evacuate`; `pool evacuate` sends `POST /api/v1/pools/evacuate`. Both print the JSON
+report and honour `--output`.
+
 ## HAProxy Runtime API mapping
 
 OxiRoute does not emulate HAProxy's text socket. The following table maps intent to typed client/API
@@ -145,7 +151,7 @@ operations and calls out cases that must use canonical generations or external o
 | DNS resolver commands | `oxiroute server refresh-dns --pool B S`; no resolver hold/timeout mutation is exposed. |
 | `pause frontend F` | `oxiroute listener maintenance F`; rejects new admissions without closing established connections. |
 | `resume frontend F` | `oxiroute listener ready F`. |
-| `shutdown sessions server B/S` / frontend session shutdown | Intentionally unsupported. OxiRoute tracks aggregate leases/connections, not cancellable per-session handles. Drain is safe and supported. |
+| `shutdown sessions server B/S` / frontend session shutdown | Partly supported. `server evacuate` cancels the in-flight HTTP requests of a server that can be replayed on another one; there is no per-session shutdown, and `--force` is the only way to cut the rest. L4 sessions are drain only. |
 | `clear counters`, `clear counters all` | Intentionally unsupported. Counters are monotonic process/generation evidence; scrape deltas or activate a new generation. |
 | `show map`, `set map`, ACL commands | Config generation. Routes and access policy compile into immutable generation tables; there is no detached mutable map store. |
 | certificate show/set/commit commands | Status and Certbot reconcile are supported. Certificate material transactions are externally written and atomically activated by configured reconcilers; raw key/certificate upload is intentionally absent. |
