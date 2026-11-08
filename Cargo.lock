@@ -3313,8 +3313,6 @@ dependencies = [
 [[package]]
 name = "pingora-timeout"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e3e321452eaa461e0b6c5aaa35b7e42527ee89df33710279f37fae7f066b68e"
 dependencies = [
  "once_cell",
  "parking_lot 0.12.5",
