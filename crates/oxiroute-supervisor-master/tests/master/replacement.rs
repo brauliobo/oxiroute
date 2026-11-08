@@ -479,7 +479,8 @@ pub(super) fn candidate_crash_rolls_back_and_active_crash_fails_closed() {
     )));
     candidate.shutdown();
 
-    let mut active = Harness::launch("crash-after-activate");
+    let mut active = Harness::launch("crash-notice");
+    active.crash_active();
     let events = active.until(|master| master.state() == MasterState::Failed);
     assert!(events.iter().any(|event| matches!(
         event,
