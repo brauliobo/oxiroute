@@ -356,6 +356,8 @@ fn publish(
         state.events.pop_front();
     }
     state.events.push_back(value.clone());
+    #[cfg(test)]
+    thread_events::record(value);
     value.clone()
 }
 
@@ -513,5 +515,26 @@ impl EventLog {
             latest_cursor: self.next_cursor,
             cursor_lost: oldest_cursor.is_some_and(|oldest| after < oldest.saturating_sub(1)),
         }
+    }
+}
+
+/// Events published by the current thread only, so a test can count its own events while the
+/// process-wide log is also written by tests running in parallel.
+#[cfg(test)]
+pub(crate) mod thread_events {
+    use std::cell::RefCell;
+
+    use super::OperationalEvent;
+
+    thread_local! {
+        static EVENTS: RefCell<Vec<OperationalEvent>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn record(event: &OperationalEvent) {
+        EVENTS.with_borrow_mut(|events| events.push(event.clone()));
+    }
+
+    pub(crate) fn count(event: &str) -> usize {
+        EVENTS.with_borrow(|events| events.iter().filter(|e| e.event.as_str() == event).count())
     }
 }
