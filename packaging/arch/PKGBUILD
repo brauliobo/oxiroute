@@ -41,7 +41,7 @@ build() {
   cd "oxiroute-${pkgver}"
   export CARGO_NET_OFFLINE=true
   export OPENSSL_NO_VENDOR=1
-  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${srcdir}=/usr/src/debug/${pkgname}"
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${srcdir}=/usr/src/debug/${pkgname} --remap-path-prefix=${CARGO_HOME:-${HOME}/.cargo}=/usr/src/debug/${pkgname}/cargo"
   cargo build --frozen --release \
     --package oxiroute \
     --package oxiroute-supervisor-process \
