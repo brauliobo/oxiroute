@@ -12,6 +12,35 @@ pub(super) async fn reverse_h3_request_outlives_the_old_five_second_retirement_d
     reload_reverse_h3_while_a_request_is_in_flight(Duration::from_millis(6_500)).await;
 }
 
+/// Far below the first QUIC retransmission, so a datagram taken by another reader fails the test.
+const CANDIDATE_CONNECTION_BUDGET: Duration = Duration::from_millis(800);
+const CANDIDATE_CONNECTIONS: usize = 16;
+
+async fn fetch_candidate_body(endpoint: &quinn::Endpoint, listener_address: SocketAddr) -> Bytes {
+    let connection = endpoint
+        .connect(listener_address, support::PROXY_SERVER_NAME)
+        .expect("candidate H3 connect")
+        .await
+        .expect("candidate QUIC handshake");
+    let (driver, mut sender) = h3::client::new(h3_quinn::Connection::new(connection.clone()))
+        .await
+        .expect("candidate H3 client connection");
+    let driver = drive_client(driver);
+    let mut stream = sender
+        .send_request(fixed_request("/candidate"))
+        .await
+        .expect("send candidate H3 request");
+    stream.finish().await.expect("finish candidate H3 request");
+    let response = stream.recv_response().await.expect("candidate H3 response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = recv_body(&mut stream).await;
+    drop(sender);
+    connection.close(quinn::VarInt::from_u32(0), b"candidate probe complete");
+    driver.abort();
+    let _ = driver.await;
+    body
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) async fn reload_reverse_h3_while_a_request_is_in_flight(hold: Duration) {
     let (origin_address, origin_started, release_origin, origin_task) = spawn_slow_h3_origin();
@@ -71,42 +100,15 @@ pub(super) async fn reload_reverse_h3_while_a_request_is_in_flight(hold: Duratio
         "active H3 request completed before the origin was released"
     );
 
-    timeout(Duration::from_secs(10), async {
-        loop {
-            let candidate_connection = connect_h3(&endpoint, listener_address).await;
-            let raw_connection = candidate_connection.clone();
-            let (candidate_driver, mut candidate_sender) =
-                h3::client::new(h3_quinn::Connection::new(candidate_connection))
-                    .await
-                    .expect("candidate H3 client connection");
-            let candidate_driver = drive_client(candidate_driver);
-            let response = timeout(Duration::from_millis(500), async {
-                let mut stream = candidate_sender
-                    .send_request(fixed_request("/candidate"))
-                    .await
-                    .ok()?;
-                stream.finish().await.ok()?;
-                let response = stream.recv_response().await.ok()?;
-                if response.status() != StatusCode::OK {
-                    return None;
-                }
-                Some(recv_body(&mut stream).await)
-            })
-            .await
-            .ok()
-            .flatten();
-            drop(candidate_sender);
-            raw_connection.close(quinn::VarInt::from_u32(0), b"candidate probe complete");
-            candidate_driver.abort();
-            let _ = candidate_driver.await;
-            if response == Some(Bytes::from_static(b"candidate-h3")) {
-                return;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("candidate H3 generation activation timeout");
+    for _ in 0..CANDIDATE_CONNECTIONS {
+        let body = timeout(
+            CANDIDATE_CONNECTION_BUDGET,
+            fetch_candidate_body(&endpoint, listener_address),
+        )
+        .await
+        .expect("candidate H3 connection was delayed or lost while the old generation drained");
+        assert_eq!(body, Bytes::from_static(b"candidate-h3"));
+    }
 
     sleep(hold).await;
     release_origin.send(()).expect("release active H3 request");

@@ -24,7 +24,7 @@ use oxiroute_config::{
 };
 use pingora::apps::AcceptGateParticipant;
 use quinn::crypto::rustls::QuicServerConfig;
-use quinn::{Endpoint, EndpointConfig, ServerConfig, TransportConfig, VarInt};
+use quinn::{Endpoint, ServerConfig, TransportConfig, VarInt};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use tokio::{
     fs::File as TokioFile,
