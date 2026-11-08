@@ -27,6 +27,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 LOCK_FILE = "/tmp/oxiroute-bench.lock"
+LANE_TIMEOUT = 600  # seconds; a hung load run must never hold the shared bench lock
 SIZES = {"b0": 0, "b1k": 1024, "b64k": 65536, "b1m": 1048576}
 
 PORT_FIRST, PORT_LAST, PORT_SPAN = int(os.environ.get("R2_PORT_BASE", "20300")), 20499, 40
@@ -46,6 +47,7 @@ class Lane:
     warmup: int = 1000
     listeners: int = 1
     servers: int = 1
+    target_offset: int = 0  # proxy port offset the load goes to (forward listener: 3, TCP listener: 1)
     note: str = ""
 
 
@@ -122,7 +124,15 @@ def build_lanes():
                  requests=20000 * listeners, warmup=2000, listeners=listeners))
         add(lane(f"scale_all_l{listeners}", ["--path", "/b1k", "--expect-len", "1024", "--conns", str(32 * listeners)],
                  features=FEATURES_6_0, requests=20000 * listeners, warmup=2000, listeners=listeners))
+    for feature in FEATURES_6_0:
+        add(lane(f"scale4_{feature}", ["--path", "/b1k", "--expect-len", "1024", "--conns", "128"], features=[feature],
+                 requests=80000, warmup=4000, listeners=4))
+    add(lane("fwd_h1_b1k", ["--path", "http://127.0.0.1:{UP}/b1k", "--expect-len", "1024"] + base, features=["forward"],
+             target_offset=3))
     add(lane("pool_s2", work, servers=2))
+    add(lane("pool_s64", work, servers=64))
+    add(lane("pool_s64_passive", work, features=["passive", "breaker", "outlier"], servers=64))
+    add(lane("pool_s1_passive", work, features=["passive", "breaker", "outlier"]))
     add(lane("dns_on_connect", work, features=["dns"]))
     add(lane("dns_startup", work, features=["dns_startup"]))
     return {item.name: item for item in lanes}
@@ -137,18 +147,28 @@ DEFAULT_LANES = [
 ]
 
 
+_LOCK_DEPTH = 0
+
+
 @contextmanager
 def bench_lock():
+    """Exclusive host lock; re-entrant within this process so --lock-batch can hold it across a few lanes."""
+    global _LOCK_DEPTH
+    if _LOCK_DEPTH:
+        yield
+        return
     with open(LOCK_FILE, "w", encoding="utf-8") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
+        _LOCK_DEPTH += 1
         try:
             yield
         finally:
+            _LOCK_DEPTH -= 1
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def port_offsets(lane):
-    return [*range(lane.servers), 10, 20, 21, 22, *(30 + index for index in range(1, lane.listeners))]
+    return [*range(1 if lane.servers > 2 else lane.servers), 10, 20, 21, 22, *(30 + index for index in range(1, lane.listeners))]
 
 
 def pick_ports(lane):
@@ -256,9 +276,12 @@ class Env:
              "--upstream-port", str(UPSTREAM_PORT), "--echo-port", str(ECHO_PORT), "--servers", str(lane.servers),
              "--listeners", str(lane.listeners), "--run-dir", str(self.work)]
             + [item for feature in lane.features for item in ("--feature", feature)],
-            check=True, capture_output=True, text=True)
+            check=True, capture_output=True, text=True, timeout=LANE_TIMEOUT)
         self.generated = generated.stdout
-        listen = ",".join(f"127.0.0.1:{UPSTREAM_PORT + index}" for index in range(lane.servers))
+        if lane.servers > 2:  # many servers share one port on 127.0.0.1 .. 127.0.0.N
+            listen = ",".join(f"127.0.0.{index + 1}:{UPSTREAM_PORT}" for index in range(lane.servers))
+        else:
+            listen = ",".join(f"127.0.0.1:{UPSTREAM_PORT + index}" for index in range(lane.servers))
         self.upstream = spawn([self.args.tool, "upstream", "--listen", listen,
                                "--echo-listen", f"127.0.0.1:{ECHO_PORT}"], UPSTREAM_CPUS, self.work / "upstream.log")
         wait_port(UPSTREAM_PORT, self.upstream)
@@ -283,8 +306,10 @@ class Env:
         targets = ",".join(f"127.0.0.1:{port}" for port in self.http_ports())
         if "--proto" in lane.load and lane.load[lane.load.index("--proto") + 1] == "tcp":
             targets = f"127.0.0.1:{PROXY_PORT + 1}"
+        if lane.target_offset:
+            targets = f"127.0.0.1:{PROXY_PORT + lane.target_offset}"
         command = [self.args.tool, "load", "--target", targets, "--requests", str(requests), "--warmup", str(warmup)]
-        command += lane.load
+        command += [item.replace("{UP}", str(UPSTREAM_PORT)) for item in lane.load]
         for name, value in hooks:
             command += [f"--{name}", value]
         return ["taskset", "-c", LOAD_CPUS] + command
@@ -329,7 +354,7 @@ def measured_rep(env, rep, idle):
     hooks = [("hook-start", f"{switches('a')}; echo enable > {ctl}; read _ < {ack}"),
              ("hook-stop", f"echo disable > {ctl}; read _ < {ack}; {switches('b')}")]
     lane = env.lane
-    result = subprocess.run(env.load_command(lane.requests, lane.warmup, hooks), capture_output=True, text=True)
+    result = subprocess.run(env.load_command(lane.requests, lane.warmup, hooks), capture_output=True, text=True, timeout=LANE_TIMEOUT)
     perf.send_signal(signal.SIGINT)
     perf.wait()
     load = parse_kv(result.stdout)
@@ -394,7 +419,7 @@ def measure_syscalls(args, lane):
         summary = env.work / "strace.txt"
         try:
             env.start(wrap=["env", "LC_ALL=C", "strace", "-f", "-c", "-o", str(summary)])
-            subprocess.run(env.load_command(requests, lane.warmup), capture_output=True, text=True, check=True)
+            subprocess.run(env.load_command(requests, lane.warmup), capture_output=True, text=True, check=True, timeout=LANE_TIMEOUT)
         finally:
             env.stop()
         totals.append(strace_counts(summary))
@@ -423,7 +448,7 @@ def measure_allocs(args, lane):
         env.start(proxy_env={"LD_PRELOAD": str(build_alloc_shim(args)), "R2_ALLOC_FILE": str(snapshots)})
         pid = env.proxy.pid
         hooks = [("hook-start", f"kill -USR1 {pid}"), ("hook-stop", f"kill -USR1 {pid}")]
-        result = subprocess.run(env.load_command(args.alloc_requests, args.alloc_warmup, hooks), capture_output=True, text=True)
+        result = subprocess.run(env.load_command(args.alloc_requests, args.alloc_warmup, hooks), capture_output=True, text=True, timeout=LANE_TIMEOUT)
         load = parse_kv(result.stdout)
         if not load:
             raise RuntimeError(f"alloc load failed: {result.stderr}")
@@ -456,7 +481,7 @@ def measure_memory(args, lane):
             time.sleep(0.02)
         command = env.load_command(connections, connections, [("hook-start", f"kill -USR1 {pid}")])
         command[command.index("--conns") + 1] = str(connections)
-        subprocess.run(command, capture_output=True, text=True, check=True)
+        subprocess.run(command, capture_output=True, text=True, check=True, timeout=LANE_TIMEOUT)
         deadline = time.monotonic() + 5
         while len(snapshots.read_text().splitlines()) < 2 and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -471,7 +496,7 @@ def measure_memory(args, lane):
 def measure_profile(args, lane):
     """perf record sampled by user-space instructions (deterministic attribution), DWARF call graphs."""
     env = Env(args, lane, args.profile_bin)
-    call_graph = ["--call-graph", "fp"] if args.profile_bin else []
+    call_graph = [] if args.flat else ["--user-callchains", "--call-graph", "fp" if args.profile_bin else "dwarf,16384"]
     ctl, ack = env.work / "ctl", env.work / "ack"
     os.mkfifo(ctl)
     os.mkfifo(ack)
@@ -483,7 +508,7 @@ def measure_profile(args, lane):
             ["perf", "record", "-D", "-1", "-e", "instructions:u", "-c", str(args.profile_period), *call_graph, "-p", str(env.proxy.pid), "--control", f"fifo:{ctl},{ack}", "-o", str(data)],
             stdout=subprocess.DEVNULL, stderr=open(env.work / "record.log", "w"))
         hooks = [("hook-start", f"echo enable > {ctl}; read _ < {ack}"), ("hook-stop", f"echo disable > {ctl}; read _ < {ack}")]
-        result = subprocess.run(env.load_command(args.profile_requests, args.profile_warmup, hooks), capture_output=True, text=True)
+        result = subprocess.run(env.load_command(args.profile_requests, args.profile_warmup, hooks), capture_output=True, text=True, timeout=LANE_TIMEOUT)
         recorder.send_signal(signal.SIGINT)
         recorder.wait()
         load = parse_kv(result.stdout)
@@ -550,6 +575,7 @@ def main():
     parser.add_argument("--mem-conns", type=int, default=2000)
     parser.add_argument("--profile", action="store_true", help="also perf-record per-function instruction samples")
     parser.add_argument("--profile-period", type=int, default=20011)
+    parser.add_argument("--flat", action="store_true", help="--profile without call graphs")
     parser.add_argument("--profile-bin", default=os.environ.get("R2_PROFILE_BIN"),
                         help="frame-pointer build used with --call-graph fp (default: --bin, flat profile)")
     parser.add_argument("--profile-requests", type=int, default=3000)
@@ -561,6 +587,8 @@ def main():
     parser.add_argument("--scale", type=float, default=1.0, help="multiply every lane's request counts (smoke runs)")
     parser.add_argument("--proxy-env", action="append", default=[], metavar="KEY=VALUE",
                         help="extra proxy environment, e.g. LD_PRELOAD=/usr/lib/libjemalloc.so.2 for allocator A/B")
+    parser.add_argument("--lock-batch", type=int, default=1,
+                        help="hold the shared bench lock across this many consecutive lanes (keep batches to a few minutes)")
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
     if args.list:
@@ -579,13 +607,15 @@ def main():
             selected.append(name)
     args.out.mkdir(parents=True, exist_ok=True)
     rows = []
-    for name in selected:
-        chosen = LANES[name]
-        chosen.requests = max(50, int(chosen.requests * args.scale))
-        chosen.warmup = max(20, int(chosen.warmup * args.scale))
-        row = run_lane(args, chosen)
-        rows.append(row)
-        print(render(row), flush=True)
+    for start in range(0, len(selected), args.lock_batch):
+        with bench_lock():
+            for name in selected[start:start + args.lock_batch]:
+                chosen = LANES[name]
+                chosen.requests = max(50, int(chosen.requests * args.scale))
+                chosen.warmup = max(20, int(chosen.warmup * args.scale))
+                row = run_lane(args, chosen)
+                rows.append(row)
+                print(render(row), flush=True)
     (args.out / "results.json").write_text(json.dumps(rows, indent=2))
     return 0
 

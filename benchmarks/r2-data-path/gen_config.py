@@ -6,7 +6,7 @@ Usage: gen_config.py OUT --proxy-port P --upstream-port U [--servers N] [--echo-
 
 Every feature is an independent A/B switch on top of the minimal reverse-proxy configuration:
   access_log timeouts retry queue capacity passive breaker outlier gzip cache reqbuf respbuf
-  dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host
+  forward dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host
 """
 
 import argparse
@@ -112,10 +112,8 @@ def build(args):
 
     servers = []
     for index in range(args.servers):
-        server = {
-            "name": f"origin-{index + 1}",
-            "endpoint": {"type": "socket", "address": f"127.0.0.1:{args.upstream_port + index}"},
-        }
+        address = f"127.0.0.{index + 1}:{args.upstream_port}" if args.servers > 2 else f"127.0.0.1:{args.upstream_port + index}"
+        server = {"name": f"origin-{index + 1}", "endpoint": {"type": "socket", "address": address}}
         if on("capacity"):
             server["max_connections"] = 100000
         if on("dns") or on("dns_startup"):
@@ -197,6 +195,16 @@ def build(args):
             "bind": {"type": "socket", "address": f"127.0.0.1:{args.proxy_port + 1}"},
             "protocol": "tcp",
             "service": "echo",
+        })
+    if on("forward"):
+        config["forward_proxy_services"].append({
+            "name": "fwd", "tls_required": False, "destination_policy": {"deny_private": False},
+        })
+        config["listeners"].append({
+            "name": "fwd",
+            "bind": {"type": "socket", "address": f"127.0.0.1:{args.proxy_port + 3}"},
+            "protocol": "forward_http1",
+            "service": "fwd",
         })
     if on("stats"):
         config["stats"] = {"binds": [f"127.0.0.1:{args.proxy_port + 2}"]}
