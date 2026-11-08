@@ -57,6 +57,12 @@ struct Harness<E: ActionExecutor = SystemActionExecutor> {
     master: Master<E>,
 }
 
+fn is_zombie(pid: u32) -> bool {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    stat.rsplit_once(") ")
+        .is_some_and(|(_, rest)| rest.starts_with('Z'))
+}
+
 /// Test-side handles on the sockets the master owns, so a later listener set can keep them.
 struct KeptListeners {
     tcp: TcpListener,
@@ -171,6 +177,68 @@ impl<E: ActionExecutor> Harness<E> {
             thread::sleep(POLL_INTERVAL);
         }
         events.extend(self.master.poll(Instant::now()).unwrap());
+        events
+    }
+
+    /// Polls with the master clock held at `now` until an event matches, so deadlines cannot fire
+    /// while the test waits for a worker process to react.
+    fn until_event_at(
+        &mut self,
+        now: Instant,
+        wanted: impl Fn(&MasterEvent) -> bool,
+    ) -> Vec<MasterEvent> {
+        let started = Instant::now();
+        let mut events = Vec::new();
+        while !events.iter().any(&wanted) {
+            events.extend(self.master.poll(now).unwrap());
+            assert!(
+                started.elapsed() < TEST_TIMEOUT,
+                "master remained in {:?}; events: {events:?}",
+                self.master.state(),
+            );
+            thread::sleep(POLL_INTERVAL);
+        }
+        events
+    }
+
+    /// Crashes the active worker and waits until its launcher is a zombie, so the master first
+    /// sees the exit rather than the closing channel that precedes it.
+    fn crash_active(&mut self) {
+        let launcher = self
+            .master
+            .worker_process_group_id(WorkerRole::Active)
+            .unwrap();
+        self.master.notify_active(b"crash").unwrap();
+        let started = Instant::now();
+        while !is_zombie(launcher) {
+            assert!(
+                started.elapsed() < TEST_TIMEOUT,
+                "launcher {launcher} did not exit"
+            );
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    /// Crashes the old active worker while the candidate activates and returns the events that
+    /// report its exit. The master clock stays before the activation deadline meanwhile.
+    fn crash_active_while_activating(&mut self) -> Vec<MasterEvent> {
+        let held = self
+            .master
+            .next_deadline()
+            .unwrap()
+            .checked_sub(POLL_INTERVAL)
+            .unwrap();
+        self.crash_active();
+        let events = self.until_event_at(held, |event| {
+            matches!(
+                event,
+                MasterEvent::WorkerExited {
+                    role: WorkerRole::Active,
+                    ..
+                }
+            )
+        });
+        assert_eq!(self.master.state(), MasterState::ActivatingCandidate);
         events
     }
 

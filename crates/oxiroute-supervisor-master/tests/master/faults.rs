@@ -273,19 +273,10 @@ pub(super) fn preparation_faults_after_lifecycle_mutation_compensate_or_fail_clo
 
 #[test]
 pub(super) fn shutdown_consumes_deferred_active_exit_and_completes() {
-    let mut harness = Harness::launch("crash-after-quiesce");
-    harness.replace("delay-activate", 2);
+    let mut harness = Harness::launch("crash-notice");
+    harness.replace("hold-activate", 2);
     harness.until(|master| master.state() == MasterState::ActivatingCandidate);
-    thread::sleep(Duration::from_millis(75));
-    let events = harness.master.poll(Instant::now()).unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        MasterEvent::WorkerExited {
-            role: WorkerRole::Active,
-            ..
-        }
-    )));
-    assert_eq!(harness.master.state(), MasterState::ActivatingCandidate);
+    harness.crash_active_while_activating();
 
     assert_eq!(
         harness.master.shutdown(Instant::now()).unwrap(),

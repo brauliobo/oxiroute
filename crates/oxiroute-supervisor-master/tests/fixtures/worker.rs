@@ -88,6 +88,9 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             control.acknowledge(&request, ControlOutcome::Rejected(7))?;
             continue;
         }
+        if behavior == "hold-activate" && phase == ControlPhase::Activate {
+            continue;
+        }
         if behavior == crash_behavior(phase) {
             std::process::abort();
         }
@@ -222,10 +225,6 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         if behavior == "crash-after-quiesce" && phase == ControlPhase::Quiesce {
             thread::sleep(Duration::from_millis(50));
-            std::process::abort();
-        }
-        if behavior == "crash-after-activate" && phase == ControlPhase::Activate {
-            thread::sleep(Duration::from_millis(100));
             std::process::abort();
         }
         if behavior == "delay-exit-after-shutdown" && phase == ControlPhase::Shutdown {

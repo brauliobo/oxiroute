@@ -290,19 +290,10 @@ pub(super) fn rollback_completes_after_reactivation_and_reap_in_either_order() {
 
 #[test]
 pub(super) fn deferred_old_active_exit_precedes_candidate_timeout_and_fails_closed() {
-    let mut harness = Harness::launch("crash-after-quiesce");
-    harness.replace("timeout-activate", 2);
+    let mut harness = Harness::launch("crash-notice");
+    harness.replace("hold-activate", 2);
     harness.until(|master| master.state() == MasterState::ActivatingCandidate);
-    thread::sleep(Duration::from_millis(75));
-    let mut events = harness.master.poll(Instant::now()).unwrap();
-    assert_eq!(harness.master.state(), MasterState::ActivatingCandidate);
-    assert!(events.iter().any(|event| matches!(
-        event,
-        MasterEvent::WorkerExited {
-            role: WorkerRole::Active,
-            ..
-        }
-    )));
+    let mut events = harness.crash_active_while_activating();
 
     let deadline = harness.master.next_deadline().unwrap();
     events.extend(harness.master.poll(deadline + POLL_INTERVAL).unwrap());
@@ -372,10 +363,13 @@ pub(super) fn retired_shutdown_ack_keeps_exit_deadline_until_delayed_reap() {
     );
 
     let mut events = harness.master.poll(deadline + POLL_INTERVAL).unwrap();
-    assert_eq!(
-        harness.master.worker_state(WorkerRole::Retired),
-        Some(WorkerState::Terminating { forced: true })
-    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        MasterEvent::TerminationRequested {
+            role: WorkerRole::Retired,
+            forced: true
+        }
+    )));
     events.extend(harness.until(|master| master.state() == MasterState::Running));
     assert!(events.iter().any(|event| matches!(
         event,
