@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering, fence},
+        atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, AtomicUsize, Ordering, fence},
     },
     time::{Duration, SystemTime},
 };

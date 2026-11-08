@@ -393,6 +393,15 @@ impl EndpointPool {
             let unavailable = attempt.lease.is_none() && !attempt.pool_available;
             return (attempt.lease, unavailable);
         };
+        if self.queue.is_unqueued() {
+            let attempt = select();
+            if attempt.lease.is_some() {
+                return (attempt.lease, false);
+            }
+            if !attempt.pool_available || !attempt.saturated {
+                return (None, !attempt.pool_available);
+            }
+        }
         let deadline = Instant::now() + queue_timeout;
         let mut waiting = QueueWaitGuard::new(Arc::clone(&self.queue), &self.name, tag);
         loop {
