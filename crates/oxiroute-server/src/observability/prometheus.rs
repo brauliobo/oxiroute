@@ -11,8 +11,9 @@ mod format;
 mod registry;
 mod sections;
 use format::{
-    component_state, endpoint_state, labels, listener_state, metric, render_histogram,
-    render_latency_histogram, render_transport_latency_histogram, sample,
+    component_state, endpoint_state, label_prefix, labels, listener_state, metric,
+    render_histogram, render_latency_histogram, render_transport_latency_histogram, sample,
+    with_prefix,
 };
 
 #[allow(clippy::wildcard_imports)]
@@ -382,120 +383,91 @@ fn render_prometheus_snapshot(
             pool.queue_cancellations,
         )?;
         for server in &pool.endpoints {
-            labels(
+            let identity = label_prefix(&[
+                ("pool", pool.name.as_str()),
+                ("server", server.name.as_str()),
+            ]);
+            let series = |output: &mut String, name, extra, value: u64| {
+                with_prefix(output, name, &identity, extra, value);
+            };
+            series(
                 &mut output,
                 "oxiroute_server_health",
-                &[
-                    ("pool", pool.name.as_str()),
-                    ("server", server.name.as_str()),
-                    ("state", endpoint_state(server.state)),
-                ],
+                Some(("state", endpoint_state(server.state))),
                 1,
-            )?;
-            labels(
+            );
+            series(
                 &mut output,
                 "oxiroute_server_active_connections",
-                &[
-                    ("pool", pool.name.as_str()),
-                    ("server", server.name.as_str()),
-                ],
+                None,
                 server.active_connections,
-            )?;
-            labels(
+            );
+            for (result, count) in [
+                ("success", server.successful_checks),
+                ("failure", server.failed_checks),
+            ] {
+                series(
+                    &mut output,
+                    "oxiroute_health_checks_total",
+                    Some(("result", result)),
+                    count,
+                );
+            }
+            render_server_traffic(
                 &mut output,
-                "oxiroute_health_checks_total",
-                &[
-                    ("pool", pool.name.as_str()),
-                    ("server", server.name.as_str()),
-                    ("result", "success"),
-                ],
-                server.successful_checks,
+                pool.name.as_str(),
+                &identity,
+                server,
+                server_histograms,
             )?;
-            labels(
-                &mut output,
-                "oxiroute_health_checks_total",
-                &[
-                    ("pool", pool.name.as_str()),
-                    ("server", server.name.as_str()),
-                    ("result", "failure"),
-                ],
-                server.failed_checks,
-            )?;
-            render_server_traffic(&mut output, pool.name.as_str(), server, server_histograms)?;
             let passive_reason = server
                 .passive_ejection_reason
                 .map_or("none", crate::HealthFailure::as_str);
-            labels(
+            let reason = Some(("reason", passive_reason));
+            series(
                 &mut output,
                 "oxiroute_server_passive_ejected",
-                &[
-                    ("pool", pool.name.as_str()),
-                    ("server", server.name.as_str()),
-                    ("reason", passive_reason),
-                ],
-                u8::from(server.passive_ejected),
-            )?;
-            labels(
+                reason,
+                u64::from(server.passive_ejected),
+            );
+            series(
                 &mut output,
                 "oxiroute_server_passive_failures_total",
-                &[
-                    ("pool", pool.name.as_str()),
-                    ("server", server.name.as_str()),
-                    ("reason", passive_reason),
-                ],
+                reason,
                 server.passive_failure_count,
-            )?;
-            labels(
+            );
+            series(
                 &mut output,
                 "oxiroute_server_passive_ejections_total",
-                &[
-                    ("pool", pool.name.as_str()),
-                    ("server", server.name.as_str()),
-                ],
+                None,
                 server.passive_ejection_count,
-            )?;
-            labels(
+            );
+            series(
                 &mut output,
                 "oxiroute_server_passive_recoveries_total",
-                &[
-                    ("pool", pool.name.as_str()),
-                    ("server", server.name.as_str()),
-                ],
+                None,
                 server.passive_recovery_count,
-            )?;
-            labels(
+            );
+            let seconds =
+                |timestamp: Option<u64>| timestamp.map_or(0, |timestamp| timestamp / 1_000);
+            series(
                 &mut output,
                 "oxiroute_server_passive_ejection_started_unix_seconds",
-                &[
-                    ("pool", pool.name.as_str()),
-                    ("server", server.name.as_str()),
-                ],
-                server
-                    .passive_ejected_at_unix_ms
-                    .map_or(0, |timestamp| timestamp / 1_000),
-            )?;
-            labels(
+                None,
+                seconds(server.passive_ejected_at_unix_ms),
+            );
+            series(
                 &mut output,
                 "oxiroute_server_passive_ejection_until_unix_seconds",
-                &[
-                    ("pool", pool.name.as_str()),
-                    ("server", server.name.as_str()),
-                ],
-                server
-                    .passive_ejection_until_unix_ms
-                    .map_or(0, |timestamp| timestamp / 1_000),
-            )?;
-            labels(
+                None,
+                seconds(server.passive_ejection_until_unix_ms),
+            );
+            series(
                 &mut output,
                 "oxiroute_server_passive_last_recovery_unix_seconds",
-                &[
-                    ("pool", pool.name.as_str()),
-                    ("server", server.name.as_str()),
-                ],
-                server
-                    .passive_last_recovery_at_unix_ms
-                    .map_or(0, |timestamp| timestamp / 1_000),
-            )?;
+                None,
+                seconds(server.passive_last_recovery_at_unix_ms),
+            );
         }
     }
 
