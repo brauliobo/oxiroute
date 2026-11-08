@@ -11,9 +11,16 @@ const checked = new Map([
   ['src/composition.rs', {
     std: new Set(['fmt', 'net::SocketAddr', 'path::{Path, PathBuf}', 'sync::Arc', 'time::Duration']),
     external: new Set(),
-    modules: new Set(),
+    modules: new Set(['access', 'error', 'media', 'plans', 'relay', 'service', 'validate']),
   }],
 ])
+// The submodules of the plan module may only reuse what the facade above imports.
+for (const name of fs.readdirSync(path.join(crate, 'src/composition'))) {
+  const source = fs.readFileSync(path.join(crate, 'src/composition', name), 'utf8')
+  for (const declaration of imports(source)) {
+    if (declaration !== 'super::*') throw new Error(`src/composition/${name}: unapproved import ${declaration}`)
+  }
+}
 const allowedCrateSymbols = new Set([
   'DashOutputConfig', 'DashSegmentNaming', 'DestinationPolicyError', 'ExecEnvironment', 'ExecFilesystemPolicy',
   'ExecLimits', 'ExecMode', 'ExecNetworkPolicy', 'ExecProfile', 'ExecProfileError', 'ExecTrigger',
@@ -88,6 +95,7 @@ for (const [relative, policy] of checked) {
       continue
     }
     const dependency = declaration.split('::', 1)[0]
+    if (policy.modules.has(dependency)) continue
     if (!policy.external.has(dependency)) {
       throw new Error(`${relative}: unapproved external import ${dependency}`)
     }
