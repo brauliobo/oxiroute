@@ -1,6 +1,10 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+/// `poll` acts on a passed deadline, but a shutdown deadline stays in force while the workers exit; waiting
+/// on it again must not spin.
+const DEADLINE_WAIT_FLOOR: Duration = Duration::from_millis(5);
+
 impl<E: ActionExecutor> Master<E> {
     /// Returns the current public state.
     ///
@@ -110,6 +114,59 @@ impl<E: ActionExecutor> Master<E> {
     /// Returns mutable access to the injected action executor.
     pub const fn action_executor_mut(&mut self) -> &mut E {
         &mut self.executor
+    }
+
+    /// Blocks until a worker channel has a frame or closes, a worker exits, one of `extra` is readable,
+    /// `timeout` elapses or the earliest state-machine deadline passes, whichever comes first.
+    ///
+    /// It consumes nothing: [`Self::poll`] follows. A signal that interrupts the wait ends it early.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the timeout does not fit a poll timespec or polling fails.
+    pub fn wait(&self, extra: &[BorrowedFd<'_>], timeout: Option<Duration>) -> io::Result<()> {
+        // These stages have nothing to wait for: the caller acts on them.
+        if matches!(
+            self.stage,
+            Stage::Failing { .. } | Stage::Failed | Stage::Stopped { .. }
+        ) {
+            return Ok(());
+        }
+        let mut descriptors: Vec<_> = extra
+            .iter()
+            .map(|descriptor| PollFd::from_borrowed_fd(*descriptor, PollFlags::IN))
+            .collect();
+        for worker in [&self.active, &self.candidate, &self.retired]
+            .into_iter()
+            .flatten()
+        {
+            let channel = worker
+                .channel_open
+                .then(|| worker.process.channel_descriptor())
+                .flatten();
+            descriptors.extend(
+                channel
+                    .into_iter()
+                    .chain(worker.process.exit_descriptor())
+                    .map(|descriptor| PollFd::from_borrowed_fd(descriptor, PollFlags::IN)),
+            );
+        }
+        let now = Instant::now();
+        let timeout = timeout
+            .into_iter()
+            .chain(self.next_deadline().map(|deadline| {
+                deadline
+                    .saturating_duration_since(now)
+                    .max(DEADLINE_WAIT_FLOOR)
+            }))
+            .min()
+            .map(Timespec::try_from)
+            .transpose()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "wait timeout overflow"))?;
+        match poll(&mut descriptors, timeout.as_ref()) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Returns the earliest state-machine deadline, if any.

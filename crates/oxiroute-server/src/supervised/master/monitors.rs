@@ -12,7 +12,11 @@ pub(super) struct ConfigReloadMonitor {
 }
 
 impl ConfigReloadMonitor {
-    pub(super) fn start(path: &Path, dependencies: &[PathBuf]) -> notify::Result<Self> {
+    pub(super) fn start(
+        path: &Path,
+        dependencies: &[PathBuf],
+        waker: Arc<Waker>,
+    ) -> notify::Result<Self> {
         let parent = path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -33,6 +37,7 @@ impl ConfigReloadMonitor {
                 };
                 if relevant {
                     let _ = watcher_wake.try_send(());
+                    waker.wake();
                 }
             },
             notify::Config::default(),
@@ -68,6 +73,16 @@ impl ConfigReloadMonitor {
         Ok(())
     }
 
+    /// When `next_trigger` next has something to report without a new file event.
+    pub(super) fn next_deadline(&self) -> Instant {
+        match (self.first_event, self.last_event) {
+            (Some(first), Some(last)) => {
+                (last + CONFIG_RELOAD_DEBOUNCE).min(first + CONFIG_RELOAD_MAX_DEBOUNCE)
+            }
+            _ => self.next_reconciliation,
+        }
+    }
+
     pub(super) fn next_trigger(&mut self, now: Instant) -> bool {
         if self.events.try_iter().next().is_some() {
             self.first_event.get_or_insert(now);
@@ -95,18 +110,20 @@ impl ConfigReloadMonitor {
 pub(super) struct SignalMonitor {
     pub(super) stop: Arc<AtomicBool>,
     pub(super) reload: Arc<AtomicBool>,
+    pub(super) waker: Arc<Waker>,
     pub(super) handle: Handle,
     pub(super) thread: JoinHandle<()>,
 }
 
 impl SignalMonitor {
-    pub(super) fn new() -> Result<Self, Box<dyn Error>> {
+    pub(super) fn new(waker: Arc<Waker>) -> Result<Self, Box<dyn Error>> {
         let stop = Arc::new(AtomicBool::new(false));
         let reload = Arc::new(AtomicBool::new(false));
         let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP])?;
         let handle = signals.handle();
         let signal_stop = Arc::clone(&stop);
         let signal_reload = Arc::clone(&reload);
+        let signal_waker = Arc::clone(&waker);
         let thread = thread::Builder::new()
             .name("oxiroute-master-signals".into())
             .spawn(move || {
@@ -114,9 +131,13 @@ impl SignalMonitor {
                     match signal {
                         SIGTERM | SIGINT => {
                             signal_stop.store(true, Ordering::Release);
+                            signal_waker.wake();
                             break;
                         }
-                        SIGHUP => signal_reload.store(true, Ordering::Release),
+                        SIGHUP => {
+                            signal_reload.store(true, Ordering::Release);
+                            signal_waker.wake();
+                        }
                         _ => {}
                     }
                 }
@@ -124,15 +145,27 @@ impl SignalMonitor {
         Ok(Self {
             stop,
             reload,
+            waker,
             handle,
             thread,
         })
+    }
+
+    /// Sleeps until a worker event, a signal, a file event or `due`; the master's own deadlines also end it.
+    pub(super) fn wait(&self, master: &Master, due: Option<Instant>) -> io::Result<()> {
+        master.wait(
+            &[self.waker.descriptor()],
+            due.map(|due| due.saturating_duration_since(Instant::now())),
+        )?;
+        self.waker.drain();
+        Ok(())
     }
 
     pub(super) fn finish(self, result: Result<(), Box<dyn Error>>) -> Result<(), Box<dyn Error>> {
         let Self {
             stop: _,
             reload: _,
+            waker: _,
             handle,
             thread,
         } = self;

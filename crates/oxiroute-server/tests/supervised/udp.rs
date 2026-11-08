@@ -78,29 +78,10 @@ pub(super) fn supervised_worker_replaces_an_active_udp_session_without_rebinding
         2,
         false,
     );
-    let quiesce_started = Instant::now();
-    loop {
-        harness
-            .master
-            .poll(Instant::now())
-            .expect("master poll during UDP quiesce");
-        if matches!(harness.master.state(), MasterState::ActivatingCandidate)
-            || harness
-                .master
-                .worker_status(WorkerRole::Active)
-                .is_some_and(|status| {
-                    status.lifecycle == WorkerLifecycle::Quiescing && !status.accepting
-                })
-        {
-            break;
-        }
-        assert!(
-            quiesce_started.elapsed() < TEST_TIMEOUT,
-            "UDP replacement skipped the quiesce barrier in {:?}",
-            harness.master.state()
-        );
-        thread::sleep(POLL_INTERVAL);
-    }
+    // The master sends the quiesce request and then stops polling, so it cannot activate the candidate
+    // while the old worker closes its UDP gate.
+    harness.poll_until(MasterState::Quiescing);
+    thread::sleep(Duration::from_millis(300));
 
     let rejected_client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("new UDP client");
     rejected_client

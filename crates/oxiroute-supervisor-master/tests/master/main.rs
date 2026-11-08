@@ -2,10 +2,10 @@ use std::{
     ffi::OsString,
     fmt::Write as _,
     fs,
-    io::{self, Read as _},
+    io::{self, Read as _, Write as _},
     net::{SocketAddr, TcpListener, TcpStream},
     os::{
-        fd::{AsRawFd, OwnedFd},
+        fd::{AsFd as _, AsRawFd, BorrowedFd, OwnedFd},
         unix::{
             ffi::{OsStrExt as _, OsStringExt as _},
             net::{UnixListener, UnixStream},
@@ -40,6 +40,7 @@ use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 mod faults;
 mod lifecycle;
 mod replacement;
+mod wait;
 
 #[allow(clippy::wildcard_imports)]
 use faults::*;

@@ -449,6 +449,7 @@ pub(super) fn shutdown_generation_processes(
         clean &= finish_generation_process(process, deadline);
     }
     manager.prune_completed();
+    oxiroute_server::flush_audit();
     clean
 }
 
