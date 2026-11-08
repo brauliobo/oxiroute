@@ -7,10 +7,12 @@ the requests running on it. The release remains pre-alpha and retains conservati
 
 - `oxiroute server evacuate [--force] --pool <pool> [--pool <pool> ...] <server>` and
   `oxiroute pool evacuate [--force] <pool> [<pool> ...]` (`POST /api/v1/servers/evacuate` and
-  `POST /api/v1/pools/evacuate`) drain the server or pool and cancel its in-flight HTTP requests, each of
-  which is dispatched again to another server of the same pool. The caller gets the response of the second
-  server with the same `x-request-id` and sees no error. This replaces killing the worker process to
-  reclaim a machine that runs minutes-long renders or speech jobs.
+  `POST /api/v1/pools/evacuate`) drain the server or pool. `server evacuate` also cancels its in-flight HTTP
+  requests, each of which is dispatched again to another server of the same pool; the caller gets the
+  response of the second server with the same `x-request-id` and sees no error. This replaces killing the
+  worker process to reclaim a machine that runs minutes-long renders or speech jobs. `pool evacuate` drains
+  every server of the pool, so its requests have nowhere to move: they keep running (`no_destination`)
+  unless `--force` cuts them.
 - A request moves only while no response byte was sent and the backend has not answered with its response
   header, and only when the route's `retry` policy allows replaying it (`method_safety`,
   `idempotency_header`, `body_safety`, `request_buffering`). Retries do not need to be enabled and a moved
@@ -23,7 +25,8 @@ the requests running on it. The release remains pre-alpha and retains conservati
 - The state is `drain`: it follows the server by pool and server name across generations, `server ready`
   un-drains, and the cancel itself is never replayed by a later generation or a restart.
 - Observability: `oxiroute_evacuated_requests_total{pool,server,result}`, the attempt outcome `evacuated` on
-  `oxiroute_server_attempts_total`, the `server_evacuation` event and the audit entry.
+  `oxiroute_server_attempts_total`, the `server_evacuation` event (one per server or pool of the call) and the audit entries
+  `server_evacuate` and `pool_evacuate`.
 - Limits: WebSocket and other upgrades, forward proxy and `CONNECT`, HTTP/3, TCP, UDP and RTMP traffic is
   drain only (`--force` closes upgraded connections).
 

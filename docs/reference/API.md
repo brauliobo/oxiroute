@@ -100,18 +100,20 @@ safe correlation is persisted on the bounded job record and audit event.
 ## Evacuate
 
 `POST /api/v1/servers/evacuate` and `POST /api/v1/pools/evacuate` drain servers like the administrative-state
-routes (same persistence across generations by pool and server name; `ready` through
-`/servers/administrative-state` un-drains) and cancel their in-flight HTTP requests that can be served again
-by another server of the pool. They use the management bearer token and, like every other mutation, are
-refused on the registry read socket and the public status socket, and are audited as `server_control` and
-`pool_control`.
+routes (same persistence across generations by pool and server name, dynamic servers through the registry
+operator state; `ready` through `/servers/administrative-state` un-drains). The servers route also cancels the
+in-flight HTTP requests of each server that can be served again by another server of its pool. The pools route
+drains every server of each pool first, so no server is left to take a moved request: by default it only drains
+and reports the running requests as `no_destination`, and `force` cuts them. Both use the management bearer
+token and, like every other mutation, are not served on the registry sockets or the public status socket (`401` on the management bind
+without the token), and are audited as `server_evacuate` and `pool_evacuate` (category `control`).
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"targets":[{"pool":"gpu-render","server":"node-a"}],"force":false,"expectedActiveRevision":"..."}' \
   http://127.0.0.1:9080/api/v1/servers/evacuate
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"pools":["gpu-render","voice-tts"],"force":false}' \
+  -d '{"pools":["gpu-render","voice-tts"],"force":false,"expectedActiveRevision":"..."}' \
   http://127.0.0.1:9080/api/v1/pools/evacuate
 ```
 
@@ -120,10 +122,11 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 | `targets` | servers | non-empty list of exact `{pool, server}` pairs |
 | `pools` | pools | non-empty list of pool names; every server of each pool |
 | `force` | both | default `false`; also cancel requests that cannot move |
-| `expectedActiveRevision` | servers | optional, checked like the other server mutations |
+| `expectedActiveRevision` | both | required, checked like the other mutations (`409` `generation_conflict` when stale) |
 
+Unknown fields are rejected (`400`), as is an empty or oversized batch (`400` `invalid_batch`, 1 to 256 targets).
 All targets are validated before anything changes: an unknown pool or server answers `404`
-(`pool_not_found`, `server_not_found`) and leaves the batch unapplied. Success is `200`:
+(`pool_not_found`, `server_not_found`) and leaves the batch unapplied. `GET` answers `405`. Success is `200`:
 
 ```json
 { "outcome": "evacuated", "force": false, "cancelledAndRedispatched": 3, "forced": 0,
@@ -133,7 +136,9 @@ All targets are validated before anything changes: an unknown pool or server ans
 `cancelledAndRedispatched` requests were cancelled and sent to another server; `forced` were cancelled
 without a retry (only with `force`); `leftRunning` counts the others by reason: `response_started`,
 `not_replayable`, `body_not_replayable`, `upgraded`, `limit_reached`, `no_destination` (absent reasons
-are zero). Counts are per request, summed over every target of the call. Only HTTP reverse proxy
+are zero). Counts are per request, summed over every target of the call; each target also publishes a
+`server_evacuation` event with its own counts in `/api/v2/events` (version 1 shows it as `unknown`; `server` is
+absent in the event of a pool). Only HTTP reverse proxy
 requests are counted; other traffic is drain only. A forced request whose response had not started gets
 `503` with `x-oxiroute-reason: evacuated`. The rules and limits are in the
 [runbook](../user/RUNBOOK.md#evacuate-a-server) and the

@@ -52,10 +52,11 @@ oxiroute server evacuate [--force] --pool POOL [--pool POOL ...] SERVER
 oxiroute pool evacuate [--force] POOL [POOL ...]
 ```
 
-Drains the server (every server of each pool for `pool evacuate`) and cancels its in-flight HTTP reverse
-proxy requests that sent no response and are replayable, which are dispatched again to another server of
-the pool without an error for the caller. `--force` also cancels the requests that cannot move. The command
-prints the JSON report (`outcome`, `force`, `cancelledAndRedispatched`, `forced`, `leftRunning` by reason)
+`server evacuate` drains the server and cancels its in-flight HTTP reverse proxy requests that sent no
+response and are replayable, which are dispatched again to another server of the pool without an error for
+the caller. `--force` also cancels the requests that cannot move. `pool evacuate` drains every server of
+each pool, so there is no other server left in the pool: by default it only drains and reports the running
+requests as `no_destination`, and `--force` cuts them. The command prints the JSON report (`outcome`, `force`, `cancelledAndRedispatched`, `forced`, `leftRunning` by reason)
 and honours `--output`. `server ready` un-drains. Details and limits:
 [runbook](../user/RUNBOOK.md#evacuate-a-server).
 

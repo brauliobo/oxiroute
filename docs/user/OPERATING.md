@@ -67,7 +67,9 @@ oxiroute server evacuate --force --pool web endpoint-1   # also cancel what cann
 oxiroute pool evacuate web
 ```
 
-Upgrades, forward proxy and `CONNECT`, HTTP/3, TCP, UDP and RTMP traffic is drain only. The rules, the
+`pool evacuate` drains every server of the pool, so its requests have nowhere to move: by default they keep
+running (reported as `no_destination`) and `--force` cuts them. Upgrades, forward proxy and `CONNECT`,
+HTTP/3, TCP, UDP and RTMP traffic is drain only. The rules, the
 route settings that make a `POST` replayable and the report are in the
 [runbook](RUNBOOK.md#evacuate-a-server).
 
