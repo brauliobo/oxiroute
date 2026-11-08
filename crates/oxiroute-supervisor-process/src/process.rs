@@ -51,6 +51,21 @@ impl WorkerProcess {
         }
     }
 
+    /// The channel descriptor, readable when the worker sent a frame or closed the channel.
+    #[must_use]
+    pub fn channel_descriptor(&self) -> Option<BorrowedFd<'_>> {
+        self.endpoint.as_ref().map(AsFd::as_fd)
+    }
+
+    /// A descriptor that becomes readable when the launcher exits, until the exit is observed.
+    ///
+    /// It is absent when the kernel offers no process descriptors; the closing channel then reports
+    /// the worker's death.
+    #[must_use]
+    pub fn exit_descriptor(&self) -> Option<BorrowedFd<'_>> {
+        self.leader.pidfd.as_ref().map(AsFd::as_fd)
+    }
+
     /// Reports a newly observed launcher/process-group-leader exit exactly once.
     ///
     /// Reaping atomically invalidates the PGID. No later operation can signal that numeric group.
@@ -334,6 +349,7 @@ impl AuthenticatedFrame {
 #[derive(Debug)]
 pub(super) struct LeaderState {
     child: Option<Child>,
+    pidfd: Option<OwnedFd>,
     pgid: Option<Pid>,
     cgroup: Option<WorkerCgroupLease>,
     status: Option<ExitStatus>,
@@ -342,8 +358,13 @@ pub(super) struct LeaderState {
 
 impl LeaderState {
     pub(super) fn new(child: Child, pgid: Pid, cgroup: Option<WorkerCgroupLease>) -> Self {
+        let pidfd = i32::try_from(child.id())
+            .ok()
+            .and_then(Pid::from_raw)
+            .and_then(|pid| pidfd_open(pid, PidfdFlags::empty()).ok());
         Self {
             child: Some(child),
+            pidfd,
             pgid: Some(pgid),
             cgroup,
             status: None,
@@ -361,6 +382,7 @@ impl LeaderState {
         if let Some(status) = child.try_wait()? {
             self.status = Some(status);
             self.child = None;
+            self.pidfd = None;
             self.pgid = None;
             self.release_cgroup();
         }
@@ -384,6 +406,7 @@ impl LeaderState {
         {
             self.status = Some(child.wait()?);
             self.child = None;
+            self.pidfd = None;
             self.pgid = None;
             self.release_cgroup();
         }

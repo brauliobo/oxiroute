@@ -109,7 +109,7 @@ pub(super) fn shutdown_master(master: &mut Master) -> Result<(), Box<dyn Error>>
             MasterState::Failed => return Err(master_failure("shutdown").into()),
             _ => {
                 master.poll(Instant::now())?;
-                thread::sleep(MASTER_POLL_INTERVAL);
+                master.wait(&[], None)?;
             }
         }
     }
@@ -124,10 +124,10 @@ pub(super) fn cleanup_master(master: &mut Master) {
     while !matches!(master.state(), MasterState::Stopped | MasterState::Failed)
         && Instant::now() < deadline
     {
-        if master.poll(Instant::now()).is_err() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if master.poll(Instant::now()).is_err() || master.wait(&[], Some(remaining)).is_err() {
             break;
         }
-        thread::sleep(MASTER_POLL_INTERVAL);
     }
 }
 
