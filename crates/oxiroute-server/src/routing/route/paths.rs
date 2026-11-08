@@ -1,8 +1,9 @@
-use std::collections::HashMap;
-
 use http::Method;
 
-use super::{PathMatcher, Route, index::Rank};
+use super::{
+    PathMatcher, Route,
+    index::{FnvMap, Rank},
+};
 
 /// Groups with at most this many routes are checked in precedence order; larger ones use a trie.
 const LINEAR_LIMIT: usize = 8;
@@ -83,7 +84,7 @@ pub(super) struct PathTrie {
     /// The `/` segment prefix matches every path, including those that do not start with `/`.
     root: Members,
     /// ASCII case-insensitive exact paths by lowercase value.
-    folded: HashMap<Box<str>, Members>,
+    folded: FnvMap<Members>,
 }
 
 impl PathTrie {

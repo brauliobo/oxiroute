@@ -265,6 +265,10 @@ fn normalize_host(host: Option<HttpHostSelector>) -> Result<HostMatcher, RouteEr
 }
 
 fn parse_host_ip(host: &str) -> Option<IpAddr> {
+    // An IPv4 literal starts with a digit and every IPv6 literal, bracketed or not, has a colon.
+    if !host.starts_with(|c: char| c.is_ascii_digit()) && !host.contains(':') {
+        return None;
+    }
     host.parse::<IpAddr>().ok().or_else(|| {
         host.strip_prefix('[')
             .and_then(|host| host.strip_suffix(']'))
@@ -274,22 +278,29 @@ fn parse_host_ip(host: &str) -> Option<IpAddr> {
 }
 
 pub(super) fn is_dns_name(host: &str) -> bool {
-    !host.is_empty()
-        && host.split('.').all(|label| {
-            !label.is_empty()
-                && label.len() <= 63
-                && label
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-                && label
-                    .as_bytes()
-                    .first()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-                && label
-                    .as_bytes()
-                    .last()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-        })
+    dns_name_has_uppercase(host).is_some()
+}
+
+/// Whether `host` is a DNS name, and if so whether it has uppercase letters.
+fn dns_name_has_uppercase(host: &str) -> Option<bool> {
+    let (mut label_length, mut last, mut uppercase) = (0_u8, b'.', false);
+    for &byte in host.as_bytes() {
+        if byte == b'.' {
+            if label_length == 0 || last == b'-' {
+                return None;
+            }
+            label_length = 0;
+        } else if !(byte.is_ascii_alphanumeric() || byte == b'-' && label_length > 0)
+            || label_length == 63
+        {
+            return None;
+        } else {
+            label_length += 1;
+            uppercase |= byte.is_ascii_uppercase();
+        }
+        last = byte;
+    }
+    (label_length > 0 && last != b'-').then_some(uppercase)
 }
 
 fn normalize_path(path: HttpPathSelector) -> Result<PathMatcher, RouteError> {
@@ -323,17 +334,25 @@ fn normalize_path(path: HttpPathSelector) -> Result<PathMatcher, RouteError> {
 }
 
 pub(super) fn normalized_authority_host(authority: &Authority) -> Option<Cow<'_, str>> {
-    let authority_host = authority.host();
+    let authority_host = host_of(authority);
     let host = authority_host.strip_suffix('.').unwrap_or(authority_host);
     if let Some(ip) = parse_host_ip(host) {
-        Some(ip.to_string().into())
-    } else if is_dns_name(host) {
-        Some(if host.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Some(ip.to_string().into());
+    }
+    dns_name_has_uppercase(host).map(|uppercase| {
+        if uppercase {
             host.to_ascii_lowercase().into()
         } else {
             host.into()
-        })
-    } else {
-        None
+        }
+    })
+}
+
+/// The host of an authority, without scanning for the forms that need `Authority::host`.
+fn host_of(authority: &Authority) -> &str {
+    let text = authority.as_str();
+    if text.starts_with('[') || text.contains('@') {
+        return authority.host();
     }
+    text.split_once(':').map_or(text, |(host, _)| host)
 }
