@@ -114,10 +114,6 @@ except the drain of a registered machine, which is stored with its registration.
 
 Drain waits for running requests to end; to free the machine now, [evacuate it](#evacuate-a-server).
 
-> **0.5.4:** drain resets on every generation change and on restart. After any change run
-> `oxiroute --output json server list` and re-drain what must stay drained (for example a machine in use
-> by its owner).
-
 ## Evacuate a server
 
 Drain waits for running requests. When the owner needs the machine now (a render that takes twenty minutes,
