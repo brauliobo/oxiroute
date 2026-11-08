@@ -163,8 +163,10 @@ told from one that never arrived. The same id is in the access log (`requestId`)
 `x-request-id` header of the response and of every backend attempt. A request that is quiet for 60
 seconds is logged once as stuck and counted in `oxiroute_http_stuck_requests_total{pool,phase}`.
 
-Each `server evacuate` or `pool evacuate` is an event (`server_evacuation` with `pool`, `server` and the counts of
-moved, forced and left-running requests) and an audit entry; version 1 of the events API reports it as `unknown`
+Each target of a `server evacuate` or `pool evacuate` call is an event (`server_evacuation`, outcome `evacuated`
+with `pool`, `server` (absent for a pool), `force` and the counts `cancelledAndRedispatched`, `forced` and
+`leftRunning` by reason), published with the correlation id of the call, next to the audit entry of the request
+(`server_evacuate` or `pool_evacuate`, category `control`). Version 1 of the events API reports it as `unknown`
 and a request ended by `--force` is logged with the failure reason `evacuated`.
 
 Every change of a server's health state reported by its active check is an event

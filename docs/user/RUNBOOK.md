@@ -128,13 +128,19 @@ no error; it gets the response of the second server, with the same `x-request-id
 ```sh
 oxiroute server evacuate --pool gpu-render node-a             # moves what can move
 oxiroute server evacuate --pool gpu-render --pool voice-tts node-a
-oxiroute pool evacuate gpu-render voice-tts                   # every server of the pools
+oxiroute pool evacuate gpu-render voice-tts                   # drain every server of the pools
 oxiroute server evacuate --force --pool gpu-render node-a     # also kills what cannot move
 ```
 
 The state is `drain`: `server list` shows it, it follows the server by pool and server name across
 generations exactly like drain, and `oxiroute server ready --pool gpu-render node-a` hands the machine back.
 Only the cancel is one-shot; a later generation or restart never repeats it.
+
+**`pool evacuate` only drains by default.** It drains every server of each pool first, so no server of the
+pool is left to take a moved request: running requests are reported as `no_destination` and finish as in
+drain. Add `--force` to cut them (callers get `503` with `x-oxiroute-reason: evacuated`, or a closed
+connection once the response started). To move requests to other servers, evacuate the servers one by one
+with `server evacuate`, not the pool.
 
 **What moves.** An HTTP request (HTTP/1.1 or HTTP/2 from the client, to an HTTP/1.1 or HTTP/2 backend, on a
 reverse proxy route) is moved while no response byte reached the caller and the backend has not answered
@@ -198,7 +204,8 @@ need `total_ms` above their runtime.
 **What to watch.** `oxiroute_evacuated_requests_total{pool,server,result}` (`redispatched`, `left_running`,
 `forced`, `failed`; `failed` is a cancelled request that then could not be served and ended with an error),
 `oxiroute_server_attempts_total{outcome="evacuated"}` on the machine that was freed, and the `server_evacuation`
-event in `/api/v2/events` (pool, server and the counts). Evacuation is audited like drain.
+events in `/api/v2/events` (one per server, or one per pool without `server` for `pool evacuate`, with the
+counts and `force`). Evacuation is audited like drain, as `server_evacuate` and `pool_evacuate`.
 
 ### Worked example: a machine needed by its owner
 

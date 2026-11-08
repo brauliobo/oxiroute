@@ -64,7 +64,7 @@ Status meanings:
 | Listener | capacity mutation | Config generation | Change `listeners[].max_connections`, validate, and activate. |
 | Pool | list/show | Supported | `oxiroute pool list|show NAME`; includes queue and availability counters. |
 | Pool | ready/drain | Supported | Batch changes every server in each exact pool. Drain keeps health checks running. |
-| Pool | evacuate | Supported | `oxiroute pool evacuate [--force] POOL...`; drains every server of each pool and moves their in-flight requests (see Server evacuate). |
+| Pool | evacuate | Supported | `oxiroute pool evacuate [--force] POOL...`; drains every server of each pool. No server is left to take a moved request, so running requests are reported as `no_destination` and finish as in drain unless `--force` cuts them (see Server evacuate). |
 | Server | list/show | Supported | `oxiroute server list [--pool POOL] [--origin static|dynamic]` and `server show --pool POOL SERVER`. `list --pool` also works on a registry read socket or with a read token and adds the lease time left of registered servers. |
 | Server | register/renew | Supported | `oxiroute server register --pool POOL SERVER --address A [--weight N] [--priority N] [--max-connections N] [--ttl 15s] [--label K=V]... [--metadata-file F] [--heartbeat]` for pools with `registration`; `--heartbeat` stays in the foreground, renews at a third of the TTL, registers again if the lease was lost, and on SIGTERM or SIGINT announces `draining` and deregisters. |
 | Server | deregister | Supported | `oxiroute server deregister --pool POOL SERVER [--missing-ok]`; exit `6` when not registered unless `--missing-ok`. |
