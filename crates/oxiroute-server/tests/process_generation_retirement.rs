@@ -64,9 +64,9 @@ impl Instance {
     }
 
     async fn start_tcp(retirement: Retirement, supervised: bool) -> Self {
+        let (upstream_address, upstream) = start_echo_upstream().await;
         let management = reserve_tcp_address();
         let listener = reserve_tcp_address();
-        let (upstream_address, upstream) = start_echo_upstream().await;
         let config = tcp_config(management, listener, upstream_address, retirement);
         let mut server = start_server(&config, supervised);
         server.wait_for_tcp(management).await;
@@ -87,10 +87,10 @@ impl Instance {
     }
 
     async fn start_http_mode(retirement: Retirement, supervised: bool) -> Self {
-        let management = reserve_tcp_address();
-        let listener = reserve_tcp_address();
         let release = Arc::new(Semaphore::new(0));
         let (upstream_address, upstream) = start_held_http_upstream(Arc::clone(&release)).await;
+        let management = reserve_tcp_address();
+        let listener = reserve_tcp_address();
         let config = http_config(management, listener, upstream_address, retirement);
         let mut server = start_server(&config, supervised);
         server.wait_for_tcp(management).await;
@@ -622,11 +622,16 @@ async fn an_idle_http_keepalive_connection_is_closed_at_retirement() {
     send_get(&mut fresh, "/rev").await;
     assert_eq!(read_response(&mut fresh).await.body, b"revision-1");
 
-    let status = instance.apply().await;
-    assert!(
-        status["retiredGenerations"].as_array().unwrap().is_empty(),
-        "{status}"
-    );
+    instance.apply().await;
+    let status = wait_until("the idle generations leave the list", || async {
+        let status = instance.generation().await;
+        status["retiredGenerations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+            .then_some(status)
+    })
+    .await;
     assert!(status["pendingApply"].is_null());
     assert_closed(&mut fresh).await;
     instance.stop();
