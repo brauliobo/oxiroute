@@ -30,6 +30,28 @@ impl EndpointPool {
         force: bool,
     ) -> Result<EvacuationReport, PoolAdminError> {
         self.server(name)?;
+        Ok(self.cancel_requests(name, force))
+    }
+
+    /// Drains every server like `set_administrative_state` does, then cancels the requests of each.
+    /// A pool has no destination inside itself once it is drained, so by default the requests are
+    /// left running as in a drain, and `force` cuts them.
+    pub fn evacuate_all_servers(&self, force: bool) -> EvacuationReport {
+        self.set_administrative_state(AdministrativeState::Drain);
+        let names = self
+            .members()
+            .endpoints
+            .iter()
+            .map(|server| server.name.clone())
+            .collect::<Vec<_>>();
+        let mut report = EvacuationReport::default();
+        for name in names {
+            report.merge(self.cancel_requests(&name, force));
+        }
+        report
+    }
+
+    fn cancel_requests(&self, name: &str, force: bool) -> EvacuationReport {
         let report = inflight::registry().evacuate_server(
             &self.name,
             name,
@@ -39,7 +61,7 @@ impl EndpointPool {
         upstream_stats()
             .server(&self.name, name)
             .record_evacuation_report(&report);
-        Ok(report)
+        report
     }
 
     /// Whether a request cancelled on `evacuated` would find another server to run on: one that can
