@@ -643,6 +643,7 @@ export type OperationalEventName =
   | 'upstream_endpoint_ejection'
   | 'upstream_endpoint_recovery'
   | 'upstream_endpoint_health'
+  | 'server_evacuation'
 
 export type OperationalEventSimpleOutcome = OperationalEventSimpleOutcomes[OperationalEventSimpleName]
 
@@ -678,11 +679,22 @@ export interface OperationalEndpointHealthOutcome {
   changedAtUnixMs: number
 }
 
+export interface OperationalEvacuationOutcome {
+  type: 'evacuated'
+  pool: string
+  server?: string
+  force: boolean
+  cancelledAndRedispatched: number
+  forced: number
+  leftRunning: Record<string, number>
+}
+
 export type OperationalEventOutcome =
   | OperationalEventSimpleOutcome
   | OperationalEndpointEjectionOutcome
   | OperationalEndpointRecoveryOutcome
   | OperationalEndpointHealthOutcome
+  | OperationalEvacuationOutcome
 
 interface OperationalEventBase {
   cursor: number
@@ -703,6 +715,10 @@ export type OperationalEvent =
   | OperationalEventBase & {
     event: 'upstream_endpoint_health'
     outcome: OperationalEndpointHealthOutcome
+  }
+  | OperationalEventBase & {
+    event: 'server_evacuation'
+    outcome: OperationalEvacuationOutcome
   }
   | {
     [Event in OperationalEventSimpleName]: OperationalEventBase & {
@@ -1139,6 +1155,7 @@ const OPERATIONAL_EVENT_NAMES: readonly OperationalEventName[] = [
   'upstream_endpoint_ejection',
   'upstream_endpoint_recovery',
   'upstream_endpoint_health',
+  'server_evacuation',
   'unknown',
 ]
 const OPERATIONAL_EVENT_OUTCOMES: {
@@ -1277,6 +1294,11 @@ function parseOperationalEvent(
   }
   if (event === 'upstream_endpoint_health') {
     return typeof outcome !== 'string' && outcome.type === 'health_changed'
+      ? { ...common, event, outcome }
+      : null
+  }
+  if (event === 'server_evacuation') {
+    return typeof outcome !== 'string' && outcome.type === 'evacuated'
       ? { ...common, event, outcome }
       : null
   }
@@ -1563,12 +1585,31 @@ function parseOperationalEventOutcome(
       changedAtUnixMs: value.changedAtUnixMs,
     }
   }
+  if (event === 'server_evacuation' && isRecord(value) && value.type === 'evacuated' &&
+    typeof value.pool === 'string' && (value.server === undefined || typeof value.server === 'string') &&
+    typeof value.force === 'boolean' && safeInteger(value.cancelledAndRedispatched) &&
+    safeInteger(value.forced) && isCountMap(value.leftRunning)
+  ) {
+    return {
+      type: 'evacuated',
+      pool: value.pool,
+      ...(value.server === undefined ? {} : { server: value.server }),
+      force: value.force,
+      cancelledAndRedispatched: value.cancelledAndRedispatched,
+      forced: value.forced,
+      leftRunning: value.leftRunning,
+    }
+  }
   if (event === 'upstream_endpoint_ejection' || event === 'upstream_endpoint_recovery' ||
-    event === 'upstream_endpoint_health' || typeof value !== 'string'
+    event === 'upstream_endpoint_health' || event === 'server_evacuation' || typeof value !== 'string'
   ) return null
   return (OPERATIONAL_EVENT_OUTCOMES[event] as readonly string[]).includes(value)
     ? value as OperationalEventSimpleOutcome
     : null
+}
+
+function isCountMap(value: unknown): value is Record<string, number> {
+  return isRecord(value) && Object.values(value).every(safeInteger)
 }
 
 function isEndpointHealthState(value: unknown): value is EndpointHealthStateName {
@@ -1760,6 +1801,26 @@ export async function setServerMaxConnections(
   targets: ServerTarget[], maxConnections: number | null, expectedActiveRevision: string, token: string,
 ): Promise<MutationResponse> {
   return putRevisionMutation('/api/v1/servers/max-connections', { targets, maxConnections }, expectedActiveRevision, token)
+}
+
+export interface EvacuationResponse {
+  outcome: 'evacuated'
+  force: boolean
+  cancelledAndRedispatched: number
+  forced: number
+  leftRunning: Record<string, number>
+}
+
+export async function evacuateServers(
+  targets: ServerTarget[], force: boolean, expectedActiveRevision: string, token: string,
+): Promise<EvacuationResponse> {
+  return postEvacuation('/api/v1/servers/evacuate', { targets, force }, expectedActiveRevision, token)
+}
+
+export async function evacuatePools(
+  pools: string[], force: boolean, expectedActiveRevision: string, token: string,
+): Promise<EvacuationResponse> {
+  return postEvacuation('/api/v1/pools/evacuate', { pools, force }, expectedActiveRevision, token)
 }
 
 export async function refreshServerDns(
@@ -1960,6 +2021,15 @@ async function postRevisionMutation(
   }))
 }
 
+async function postEvacuation(
+  url: string, body: Record<string, unknown>, expectedActiveRevision: string, token: string,
+): Promise<EvacuationResponse> {
+  return parseEvacuationResponse(await request(url, {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ ...body, expectedActiveRevision }),
+  }))
+}
+
 async function putRevisionMutation(
   url: string, body: Record<string, unknown>, expectedActiveRevision: string, token: string,
 ): Promise<MutationResponse> {
@@ -2125,6 +2195,20 @@ function parseMutationResponse(value: unknown): MutationResponse {
     (value.changed !== undefined && !safeInteger(value.changed))
   ) return invalidPayload('management mutation')
   return { outcome: value.outcome, ...(value.changed === undefined ? {} : { changed: value.changed }) }
+}
+
+function parseEvacuationResponse(value: unknown): EvacuationResponse {
+  if (!isRecord(value) || value.outcome !== 'evacuated' || typeof value.force !== 'boolean' ||
+    !safeInteger(value.cancelledAndRedispatched) || !safeInteger(value.forced) ||
+    !isCountMap(value.leftRunning)
+  ) return invalidPayload('evacuation')
+  return {
+    outcome: 'evacuated',
+    force: value.force,
+    cancelledAndRedispatched: value.cancelledAndRedispatched,
+    forced: value.forced,
+    leftRunning: value.leftRunning,
+  }
 }
 
 function parseDnsRefreshResponse(value: unknown): DnsRefreshResponse {

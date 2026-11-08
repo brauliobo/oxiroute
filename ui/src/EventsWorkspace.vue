@@ -59,6 +59,7 @@ import {
   fetchEvents,
   type EventPage,
   type EventStreamClient,
+  type OperationalEvacuationOutcome,
   type OperationalEvent,
   type OperationalEventName,
   type OperationalEventOutcome,
@@ -185,8 +186,15 @@ function eventOutcomeType(outcome: OperationalEventOutcome): string {
 
 function eventOutcomeDetail(outcome: OperationalEventOutcome): string | null {
   if (typeof outcome === 'string') return null
+  if (outcome.type === 'evacuated') return evacuationDetail(outcome)
   const reason = outcome.reason === null ? '' : ` / ${outcome.reason.replaceAll('_', ' ')}`
   return `${outcome.pool} / ${outcome.server}${reason}`
+}
+
+function evacuationDetail(outcome: OperationalEvacuationOutcome): string {
+  const target = outcome.server === undefined ? outcome.pool : `${outcome.pool} / ${outcome.server}`
+  const left = Object.values(outcome.leftRunning).reduce((total, count) => total + count, 0)
+  return `${target} / ${outcome.cancelledAndRedispatched} moved, ${outcome.forced} forced, ${left} left running`
 }
 
 watch(() => props.token, async (token) => {
