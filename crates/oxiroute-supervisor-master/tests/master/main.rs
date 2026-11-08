@@ -63,6 +63,17 @@ fn is_zombie(pid: u32) -> bool {
         .is_some_and(|(_, rest)| rest.starts_with('Z'))
 }
 
+fn wait_for_launcher_exit(launcher: u32) {
+    let started = Instant::now();
+    while !is_zombie(launcher) {
+        assert!(
+            started.elapsed() < TEST_TIMEOUT,
+            "launcher {launcher} did not exit"
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
 /// Test-side handles on the sockets the master owns, so a later listener set can keep them.
 struct KeptListeners {
     tcp: TcpListener,
@@ -164,7 +175,14 @@ impl<E: ActionExecutor> Harness<E> {
             .unwrap();
     }
 
-    fn until(&mut self, mut predicate: impl FnMut(&Master<E>) -> bool) -> Vec<MasterEvent> {
+    fn until(&mut self, predicate: impl FnMut(&Master<E>) -> bool) -> Vec<MasterEvent> {
+        let mut events = self.poll_until(predicate);
+        events.extend(self.master.poll(Instant::now()).unwrap());
+        events
+    }
+
+    /// Polls until the predicate holds and stops there, without the extra poll `until` adds.
+    fn poll_until(&mut self, mut predicate: impl FnMut(&Master<E>) -> bool) -> Vec<MasterEvent> {
         let started = Instant::now();
         let mut events = Vec::new();
         while !predicate(&self.master) {
@@ -176,7 +194,6 @@ impl<E: ActionExecutor> Harness<E> {
             );
             thread::sleep(POLL_INTERVAL);
         }
-        events.extend(self.master.poll(Instant::now()).unwrap());
         events
     }
 
@@ -209,14 +226,20 @@ impl<E: ActionExecutor> Harness<E> {
             .worker_process_group_id(WorkerRole::Active)
             .unwrap();
         self.master.notify_active(b"crash").unwrap();
-        let started = Instant::now();
-        while !is_zombie(launcher) {
-            assert!(
-                started.elapsed() < TEST_TIMEOUT,
-                "launcher {launcher} did not exit"
-            );
-            thread::sleep(POLL_INTERVAL);
-        }
+        wait_for_launcher_exit(launcher);
+    }
+
+    /// Waits until the candidate, which aborts on the activation the master just sent, has
+    /// exited. The master has not polled since sending it, so it first sees the exit rather than
+    /// the closing channel that precedes it.
+    fn candidate_crashes_on_activation(&mut self) -> Vec<MasterEvent> {
+        let events = self.poll_until(|master| master.state() == MasterState::ActivatingCandidate);
+        wait_for_launcher_exit(
+            self.master
+                .worker_process_group_id(WorkerRole::Candidate)
+                .unwrap(),
+        );
+        events
     }
 
     /// Crashes the old active worker while the candidate activates and returns the events that
