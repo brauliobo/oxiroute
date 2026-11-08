@@ -457,12 +457,13 @@ pub(super) fn stale_acknowledgement_is_observed_without_advancing_the_phase() {
 pub(super) fn candidate_crash_rolls_back_and_active_crash_fails_closed() {
     let mut candidate = Harness::launch("normal");
     candidate.replace("crash-activate", 2);
-    let events = candidate.until(|master| {
+    let mut events = candidate.candidate_crashes_on_activation();
+    events.extend(candidate.until(|master| {
         master.state() == MasterState::Running
             && master
                 .active_instance()
                 .is_some_and(|id| id.as_str() == "a")
-    });
+    }));
     assert!(events.iter().any(|event| matches!(
         event,
         MasterEvent::RollbackStarted {
