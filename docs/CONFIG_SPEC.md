@@ -635,7 +635,9 @@ Current constraints:
   `cache` because `Set-Cookie` responses bypass it. `type = "hash"` takes `key = "header:<name>"`,
   `"client_ip"` or `"path_prefix:<segments>"` (1 through 8) and maps it with weighted rendezvous
   hashing over the selectable servers: the mapping is stateless, honors weights and, when a server
-  leaves, remaps only that server's keys. `type = "header"` reads `name` as a server name. Not
+  leaves, remaps only that server's keys. The mapping is the same on every worker and across reloads, but a release may change the
+  hash function (6.2 did), in which case sessions pinned by a hash key move once on upgrade; cookie
+  values never change. `type = "header"` reads `name` as a server name. Not
   supported for HTTP/3 upstream pools.
 - Proxy `policy.queue_headers` (default `false`) adds `x-oxiroute-queue-position` (how many requests
   were waiting when this one joined the pool queue, itself included) and `x-oxiroute-queue-wait-ms`
