@@ -257,7 +257,8 @@ fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> Co
                             },
                         ],
                         ..HttpProxyPolicy::default()
-                    },
+                    }
+                    .into(),
                 },
             }],
             automatic_response_headers: true,

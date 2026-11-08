@@ -25,7 +25,7 @@ pub(super) fn reload_config(shape: &ReloadShape<'_>) -> ConfigDraft {
         config.http_services[0].upstream_io_timeout_ms = 120_000;
         config.http_services[0].routes[0].action = HttpRouteAction::Proxy {
             upstream_pool: "origin".into(),
-            policy: HttpProxyPolicy::default(),
+            policy: HttpProxyPolicy::default().into(),
         };
     }
     config.listeners = shape

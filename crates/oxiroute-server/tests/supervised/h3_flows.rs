@@ -574,7 +574,7 @@ pub(super) fn h3_proxy_config(
     });
     config.http_services[0].routes[0].action = HttpRouteAction::Proxy {
         upstream_pool: "origin".into(),
-        policy: HttpProxyPolicy::default(),
+        policy: HttpProxyPolicy::default().into(),
     };
     config
 }

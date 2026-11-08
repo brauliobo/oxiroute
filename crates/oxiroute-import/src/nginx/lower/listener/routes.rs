@@ -111,7 +111,7 @@ impl Lowerer {
                 Some(proxy) => (
                     HttpRouteAction::Proxy {
                         upstream_pool: proxy.pool.pool.name.clone(),
-                        policy: proxy.policy,
+                        policy: proxy.policy.into(),
                     },
                     Some(proxy.pool),
                     Some(proxy.timeouts),

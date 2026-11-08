@@ -87,7 +87,7 @@ impl Scratch {
             policy: oxiroute_config::HttpRoutePolicy::default(),
             action: HttpRouteAction::Proxy {
                 upstream_pool: "farm".into(),
-                policy: HttpProxyPolicy::default(),
+                policy: HttpProxyPolicy::default().into(),
             },
         };
         ConfigDraft {

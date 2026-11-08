@@ -509,7 +509,7 @@ fn http_config(
                 "/held",
                 HttpRouteAction::Proxy {
                     upstream_pool: "upstream".into(),
-                    policy: HttpProxyPolicy::default(),
+                    policy: HttpProxyPolicy::default().into(),
                 },
             ),
         ],

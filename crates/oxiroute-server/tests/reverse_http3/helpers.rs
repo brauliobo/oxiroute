@@ -60,7 +60,7 @@ pub(super) fn fixed_service() -> HttpService {
 pub(super) fn proxy_service(max_request_body_bytes: u64) -> HttpService {
     let mut service = reverse_service(HttpRouteAction::Proxy {
         upstream_pool: "origin".into(),
-        policy: HttpProxyPolicy::default(),
+        policy: HttpProxyPolicy::default().into(),
     });
     service.max_request_body_bytes = Some(max_request_body_bytes);
     service.routes[0].policy.max_request_body_bytes = Some(max_request_body_bytes);

@@ -23,7 +23,7 @@ pub(super) async fn reload_reverse_h3_while_a_request_is_in_flight(hold: Duratio
         key.path(),
         reverse_service(HttpRouteAction::Proxy {
             upstream_pool: "origin".into(),
-            policy: HttpProxyPolicy::default(),
+            policy: HttpProxyPolicy::default().into(),
         }),
         vec![h3_pool(origin_address)],
         Some(8),

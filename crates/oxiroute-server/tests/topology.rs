@@ -636,7 +636,8 @@ fn topology_config(temp: &TempDir) -> ConfigDraft {
                             ..oxiroute_config::HttpRetryPolicy::default()
                         },
                         ..HttpProxyPolicy::default()
-                    },
+                    }
+                    .into(),
                 },
             }],
             automatic_response_headers: true,

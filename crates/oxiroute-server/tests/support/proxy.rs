@@ -122,7 +122,7 @@ pub fn proxy_config(
                 policy: oxiroute_config::HttpRoutePolicy::default(),
                 action: HttpRouteAction::Proxy {
                     upstream_pool: "origin".into(),
-                    policy: HttpProxyPolicy::default(),
+                    policy: HttpProxyPolicy::default().into(),
                 },
             }],
             automatic_response_headers: true,
