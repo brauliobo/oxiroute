@@ -56,6 +56,11 @@ impl WorkerShared {
         self.available.notify_all();
     }
 
+    pub(super) fn notify_finalization_completed(&self) {
+        self.lock_queue().finalization_completed = true;
+        self.available.notify_one();
+    }
+
     pub(super) fn record_failed_event(&self) {
         let mut queue = self.lock_queue();
         queue.events_dropped = queue.events_dropped.saturating_add(1);
@@ -77,6 +82,10 @@ impl WorkerShared {
             }
             if !queue.accepting {
                 return NextEvent::Finished;
+            }
+            if queue.finalization_completed {
+                queue.finalization_completed = false;
+                return NextEvent::FinalizationCompleted;
             }
             queue = self
                 .available
@@ -221,6 +230,7 @@ impl WorkerShared {
 pub(super) enum NextEvent {
     Event(QueuedMediaEvent),
     Discontinuity,
+    FinalizationCompleted,
     Finished,
 }
 

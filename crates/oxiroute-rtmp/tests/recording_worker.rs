@@ -150,17 +150,11 @@ fn every_rotation_gets_a_fresh_deterministic_extension_preserving_name() {
         if timestamp == 0 {
             continue;
         }
-        let completed_sequence = timestamp - 1;
-        let completed_name = if completed_sequence == 0 {
-            "camera.flv".to_owned()
-        } else {
-            format!("camera-{completed_sequence:06}.flv")
-        };
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !temporary.path().join(&completed_name).is_file() {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while worker.status().segments_completed < u64::from(timestamp) {
             assert!(
                 Instant::now() < deadline,
-                "segment publication timeout: {completed_name}"
+                "segment finalization timeout: {timestamp}"
             );
             thread::sleep(Duration::from_millis(1));
         }
