@@ -30,6 +30,9 @@ impl ProxyHttp for HttpReverseProxy {
             request_header_decisions: Box::new([]),
             connection_retryable: false,
             replay_retryable: false,
+            evacuation_pin: None,
+            evacuations: 0,
+            evacuated_from: Vec::new(),
             retry_server: None,
             queue_tag: QueueTag::default(),
             retry_delay_pending: false,
@@ -288,6 +291,14 @@ impl ProxyHttp for HttpReverseProxy {
         Ok(Box::new(peer))
     }
 
+    fn upstream_attempt_cancelled(
+        &self,
+        session: &Session,
+        ctx: &Self::CTX,
+    ) -> Option<UpstreamCancellation> {
+        ctx.arm_evacuation(session)
+    }
+
     fn fail_to_connect(
         &self,
         _session: &mut Session,
@@ -295,6 +306,9 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
         mut error: Box<Error>,
     ) -> Box<Error> {
+        if let Some(cancelled) = ctx.cancelled_by_operator() {
+            return cancelled;
+        }
         let has_address_fallback = ctx
             .selected
             .as_ref()
@@ -349,6 +363,9 @@ impl ProxyHttp for HttpReverseProxy {
         _client_reused: bool,
     ) -> Box<Error> {
         let prepaid = std::mem::take(&mut ctx.retry_prepaid);
+        if let Some(cancelled) = ctx.cancelled_by_operator() {
+            return cancelled;
+        }
         let rescue_only = is_rescue_only(&error, proxy_policy(ctx));
         if let Some(failure) = passive_failure_for_error(&error).filter(|_| !rescue_only) {
             ctx.record_passive_failure(failure);
@@ -432,8 +449,8 @@ impl ProxyHttp for HttpReverseProxy {
                 };
             }
         }
-        let reason = timeout_reason(error, ctx, session);
-        let code = reason.map_or_else(|| proxy_error_status(error), |_| 504);
+        let reason = error_reason(error, ctx, session);
+        let code = reason.map_or_else(|| proxy_error_status(error), ErrorReason::status);
         if let Some(reason) = reason {
             debug!("request ended by {}", reason.as_str());
         }
@@ -451,7 +468,7 @@ impl ProxyHttp for HttpReverseProxy {
                 (SERVER, server.clone()),
                 (CONTENT_TYPE, HeaderValue::from_static("text/html")),
             ];
-            headers.extend(reason.map(TimeoutReason::header));
+            headers.extend(reason.map(ErrorReason::header));
             let phrase = if code == 504 {
                 "Gateway Time-out"
             } else {
@@ -491,6 +508,9 @@ impl ProxyHttp for HttpReverseProxy {
         ctx.observe(session);
         if session.was_upgraded() {
             return Ok(());
+        }
+        if session.retry_buffer_truncated() {
+            ctx.pin_evacuation(LeftRunning::BodyNotReplayable);
         }
         let remaining = ctx.remaining(false)?;
         if session.is_http2() {
@@ -637,6 +657,7 @@ impl ProxyHttp for HttpReverseProxy {
             error.set_retry(true);
             return Err(error);
         }
+        ctx.commit_response(response.status)?;
         if !retries_on_status {
             ctx.record_passive_success();
         } else if !rescued {
@@ -890,6 +911,7 @@ impl ProxyHttp for HttpReverseProxy {
         ctx.observe(session);
         ctx.release_lease();
         ctx.account_final_attempt(session);
+        ctx.record_failed_evacuations(error);
         if let Some(access_log) = self.service.access_log() {
             let event = access_record::build(ctx, session, response_status, access_log.service());
             if let Err(error) = access_log.write(&event) {

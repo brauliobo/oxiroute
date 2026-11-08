@@ -41,6 +41,7 @@ pub use generation::{
     PreparedGeneration, RuntimeGeneration, RuntimeReferenceKind,
 };
 pub use health::{HealthBuildError, HealthSupervisor};
+pub use http::evacuation::{EvacuationReport, LeftRunning};
 pub use http::inflight::live_requests;
 pub use http::proxy::{HttpRequestContext, HttpReverseProxy};
 pub use http::server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp};

@@ -144,6 +144,7 @@ async fn unix_request_session(request: &[u8]) -> (Session, tokio::net::UnixStrea
     (session, client)
 }
 
+mod evacuation;
 mod request;
 mod response;
 mod upstream;

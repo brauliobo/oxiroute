@@ -17,7 +17,10 @@ use std::{
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::http::action::AccessLog;
+use crate::http::{
+    action::AccessLog,
+    evacuation::{Evacuation, EvacuationReport, Fate},
+};
 
 const SHARDS: usize = 16;
 pub(crate) const MAX_PATH_BYTES: usize = 128;
@@ -94,6 +97,7 @@ pub(crate) struct InflightEntry {
     queue_position: Arc<AtomicU64>,
     stuck_reported: AtomicBool,
     place: Mutex<Place>,
+    evacuation: Arc<Evacuation>,
     access_log: Option<Arc<AccessLog>>,
 }
 
@@ -179,6 +183,21 @@ impl InflightEntry {
         if let Err(error) = log.write(&line) {
             log::warn!("stuck request access log write failed: {error}");
         }
+    }
+
+    /// Acts on the attempt running on this pool and server. The place stays locked across the
+    /// compare-and-swap, so an attempt that just moved on to another server is never taken by mistake.
+    fn evacuate_on(
+        &self,
+        pool: &str,
+        server: &str,
+        force: bool,
+        has_destination: bool,
+    ) -> Option<Fate> {
+        let place = self.place();
+        let here = place.pool.as_deref() == Some(pool) && place.server.as_deref() == Some(server);
+        here.then(|| self.evacuation.evacuate(force, has_destination))
+            .flatten()
     }
 
     pub(crate) fn view(&self) -> InflightView {
@@ -376,6 +395,7 @@ impl InflightRegistry {
             queue_position: Arc::new(AtomicU64::new(0)),
             stuck_reported: AtomicBool::new(false),
             place: Mutex::new(Place::default()),
+            evacuation: Arc::new(Evacuation::new()),
             access_log: arrival.access_log,
         });
         self.shard(key).insert(key, Arc::clone(&entry));
@@ -405,6 +425,23 @@ impl InflightRegistry {
             total,
             requests: views,
         }
+    }
+
+    /// Cancels the attempts running on `server` of `pool`, in any generation, and reports what happened.
+    pub(crate) fn evacuate_server(
+        &self,
+        pool: &str,
+        server: &str,
+        force: bool,
+        has_destination: bool,
+    ) -> EvacuationReport {
+        let mut report = EvacuationReport::default();
+        for entry in self.entries() {
+            if let Some(fate) = entry.evacuate_on(pool, server, force, has_destination) {
+                report.record(fate);
+            }
+        }
+        report
     }
 
     #[cfg(test)]
@@ -508,6 +545,10 @@ impl InflightGuard {
     pub(crate) fn stuck(&self) -> bool {
         self.entry.stuck_reported.load(Ordering::Relaxed)
     }
+
+    pub(crate) fn evacuation(&self) -> &Arc<Evacuation> {
+        &self.entry.evacuation
+    }
 }
 
 impl Drop for InflightGuard {
@@ -519,6 +560,7 @@ impl Drop for InflightGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::evacuation::{Cancellation, LeftRunning};
 
     fn arrival(request_id: &str, deadline: Duration) -> InflightArrival {
         InflightArrival {
@@ -656,6 +698,111 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         guard.progress();
         assert!(registry.report_stuck(Duration::from_millis(20)).is_empty());
+    }
+
+    fn attempt_on(
+        registry: &'static InflightRegistry,
+        id: &str,
+        pool: &str,
+        server: &str,
+        unmovable: Option<LeftRunning>,
+    ) -> InflightGuard {
+        let guard = registry.register(arrival(id, Duration::from_secs(30)));
+        guard.set_pool(pool);
+        guard.set_server(server);
+        guard.evacuation().begin_attempt(unmovable);
+        guard
+    }
+
+    #[test]
+    fn evacuation_reaches_the_attempts_on_one_pool_and_server_of_any_generation() {
+        let registry = registry_for_test();
+        let movable = [
+            attempt_on(registry, "old-generation", "farm", "node-a", None),
+            attempt_on(registry, "new-generation", "farm", "node-a", None),
+        ];
+        let pinned = attempt_on(
+            registry,
+            "post",
+            "farm",
+            "node-a",
+            Some(LeftRunning::NotReplayable),
+        );
+        let elsewhere = [
+            attempt_on(registry, "other-server", "farm", "node-b", None),
+            attempt_on(registry, "other-pool", "web", "node-a", None),
+        ];
+        let queued = registry.register(arrival("queued", Duration::from_secs(30)));
+        queued.set_pool("farm");
+        let retrying = attempt_on(registry, "retrying", "farm", "node-a", None);
+        retrying.evacuation().settle();
+
+        let report = registry.evacuate_server("farm", "node-a", false, true);
+
+        assert_eq!(report.redispatched, 2);
+        assert_eq!(report.forced, 0);
+        assert_eq!(
+            report.left_running.get(&LeftRunning::NotReplayable),
+            Some(&1)
+        );
+        assert_eq!(report.left_running_total(), 1);
+        assert!(
+            movable
+                .iter()
+                .all(|guard| guard.evacuation().settle() == Some(Cancellation::Move))
+        );
+        assert_eq!(pinned.evacuation().settle(), None);
+        assert!(
+            elsewhere
+                .iter()
+                .all(|guard| guard.evacuation().settle().is_none())
+        );
+        assert_eq!(
+            registry
+                .evacuate_server("farm", "node-a", false, true)
+                .redispatched,
+            0
+        );
+    }
+
+    #[test]
+    fn a_forced_evacuation_kills_what_cannot_move_and_still_moves_the_rest() {
+        let registry = registry_for_test();
+        let streaming = attempt_on(
+            registry,
+            "stream",
+            "farm",
+            "node-a",
+            Some(LeftRunning::ResponseStarted),
+        );
+        let movable = attempt_on(registry, "movable", "farm", "node-a", None);
+
+        let report = registry.evacuate_server("farm", "node-a", true, true);
+
+        assert_eq!(
+            (
+                report.redispatched,
+                report.forced,
+                report.left_running_total()
+            ),
+            (1, 1, 0)
+        );
+        assert_eq!(streaming.evacuation().settle(), Some(Cancellation::Kill));
+        assert_eq!(movable.evacuation().settle(), Some(Cancellation::Move));
+    }
+
+    #[test]
+    fn without_a_destination_movable_requests_stay_where_they_are() {
+        let registry = registry_for_test();
+        let movable = attempt_on(registry, "stuck-here", "farm", "node-a", None);
+
+        let report = registry.evacuate_server("farm", "node-a", true, false);
+
+        assert_eq!(
+            report.left_running.get(&LeftRunning::NoDestination),
+            Some(&1)
+        );
+        assert_eq!(movable.evacuation().settle(), None);
     }
 
     #[test]

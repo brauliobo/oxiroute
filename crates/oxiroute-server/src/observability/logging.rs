@@ -168,6 +168,7 @@ pub(crate) fn redact_access_record(value: &Value) -> Value {
         "server",
         "servers",
         "attempts",
+        "evacuations",
         "queueWaitMs",
         "connectMs",
         "headerMs",

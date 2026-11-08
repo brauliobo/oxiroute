@@ -398,6 +398,15 @@ fn exposition_has_per_server_responses_attempts_bytes_and_latency() {
     stats.record_response(Some(200));
     stats.record_response(Some(503));
     stats.record_attempt(crate::observability::upstream_stats::AttemptOutcome::Timeout);
+    stats.record_attempt(crate::observability::upstream_stats::AttemptOutcome::Evacuated);
+    stats.record_evacuation(
+        crate::observability::upstream_stats::EvacuationResult::Redispatched,
+        2,
+    );
+    stats.record_evacuation(
+        crate::observability::upstream_stats::EvacuationResult::LeftRunning,
+        1,
+    );
     stats.record_bytes(7, 11);
     stats.record_request_duration(std::time::Duration::from_millis(40));
     stats.record_header_duration(std::time::Duration::from_millis(8));
@@ -414,6 +423,11 @@ fn exposition_has_per_server_responses_attempts_bytes_and_latency() {
         "oxiroute_server_responses_total{pool=\"server-series\",server=\"gpu-1\",class=\"5xx\"} 1",
         "oxiroute_server_responses_total{pool=\"server-series\",server=\"gpu-1\",class=\"none\"} 0",
         "oxiroute_server_attempts_total{pool=\"server-series\",server=\"gpu-1\",outcome=\"timeout\"} 1",
+        "oxiroute_server_attempts_total{pool=\"server-series\",server=\"gpu-1\",outcome=\"evacuated\"} 1",
+        "oxiroute_evacuated_requests_total{pool=\"server-series\",server=\"gpu-1\",result=\"redispatched\"} 2",
+        "oxiroute_evacuated_requests_total{pool=\"server-series\",server=\"gpu-1\",result=\"left_running\"} 1",
+        "oxiroute_evacuated_requests_total{pool=\"server-series\",server=\"gpu-1\",result=\"forced\"} 0",
+        "oxiroute_evacuated_requests_total{pool=\"server-series\",server=\"gpu-1\",result=\"failed\"} 0",
         "oxiroute_server_bytes_sent_total{pool=\"server-series\",server=\"gpu-1\"} 7",
         "oxiroute_server_bytes_received_total{pool=\"server-series\",server=\"gpu-1\"} 11",
         "oxiroute_server_max_connections{pool=\"server-series\",server=\"gpu-1\"} 4",

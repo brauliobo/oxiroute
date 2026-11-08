@@ -5,7 +5,7 @@ pub(super) async fn respond_error(
     session: &mut Session,
     code: u16,
     error: &Error,
-    reason: Option<TimeoutReason>,
+    reason: Option<ErrorReason>,
     pool: Option<&UpstreamPlan>,
 ) -> pingora::Result<()> {
     let pool_unavailable = is_pool_unavailable(error);
@@ -15,7 +15,7 @@ pub(super) async fn respond_error(
     let mut response = ServerSession::generate_error(code);
     // Pingora's error responder carries a placeholder Date that only the automatic headers replace.
     response.insert_header(DATE, httpdate::fmt_http_date(SystemTime::now()))?;
-    if let Some((name, value)) = reason.map(TimeoutReason::header) {
+    if let Some((name, value)) = reason.map(ErrorReason::header) {
         response.insert_header(name, value)?;
     }
     let mut body = Bytes::new();
@@ -80,17 +80,19 @@ fn unavailable_body(
 
 const REASON_HEADER: HeaderName = HeaderName::from_static("x-oxiroute-reason");
 
-/// Which upstream or total timeout ended a request that has no complete response.
+/// The bounded reason a request ended without a complete response, which callers see in
+/// `x-oxiroute-reason`: an upstream or total timeout, or an operator evacuation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum TimeoutReason {
+pub(super) enum ErrorReason {
     Connect,
     UpstreamHeader,
     UpstreamIdle,
     UpstreamWrite,
     TotalDeadline,
+    Evacuated,
 }
 
-impl TimeoutReason {
+impl ErrorReason {
     pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Connect => "connect_timeout",
@@ -98,6 +100,18 @@ impl TimeoutReason {
             Self::UpstreamIdle => "upstream_idle_timeout",
             Self::UpstreamWrite => "upstream_write_timeout",
             Self::TotalDeadline => "total_deadline",
+            Self::Evacuated => "evacuated",
+        }
+    }
+
+    pub(super) const fn status(self) -> u16 {
+        match self {
+            Self::Evacuated => 503,
+            Self::Connect
+            | Self::UpstreamHeader
+            | Self::UpstreamIdle
+            | Self::UpstreamWrite
+            | Self::TotalDeadline => 504,
         }
     }
 
@@ -106,11 +120,14 @@ impl TimeoutReason {
     }
 }
 
-pub(super) fn timeout_reason(
+pub(super) fn error_reason(
     error: &Error,
     ctx: &HttpRequestContext,
     session: &Session,
-) -> Option<TimeoutReason> {
+) -> Option<ErrorReason> {
+    if is_evacuated(error) {
+        return Some(ErrorReason::Evacuated);
+    }
     let timed_out = matches!(
         error.etype(),
         ErrorType::ConnectTimedout
@@ -119,18 +136,16 @@ pub(super) fn timeout_reason(
             | ErrorType::WriteTimedout
     );
     if timed_out && ctx.remaining(false).is_err() {
-        return Some(TimeoutReason::TotalDeadline);
+        return Some(ErrorReason::TotalDeadline);
     }
     if error.esource() != &ErrorSource::Upstream {
         return None;
     }
     match error.etype() {
-        ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout => {
-            Some(TimeoutReason::Connect)
-        }
-        ErrorType::WriteTimedout => Some(TimeoutReason::UpstreamWrite),
-        ErrorType::ReadTimedout if response_started(session) => Some(TimeoutReason::UpstreamIdle),
-        ErrorType::ReadTimedout => Some(TimeoutReason::UpstreamHeader),
+        ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout => Some(ErrorReason::Connect),
+        ErrorType::WriteTimedout => Some(ErrorReason::UpstreamWrite),
+        ErrorType::ReadTimedout if response_started(session) => Some(ErrorReason::UpstreamIdle),
+        ErrorType::ReadTimedout => Some(ErrorReason::UpstreamHeader),
         _ => None,
     }
 }
@@ -144,7 +159,7 @@ pub(super) fn failure_reason(
     if ctx.trace.budget_spent.load(Ordering::Relaxed) {
         return "retry_budget_spent";
     }
-    if let Some(reason) = timeout_reason(error, ctx, session) {
+    if let Some(reason) = error_reason(error, ctx, session) {
         return reason.as_str();
     }
     if is_pool_unavailable(error) {

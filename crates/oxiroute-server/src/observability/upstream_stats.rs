@@ -13,7 +13,9 @@ use std::{
     time::Duration,
 };
 
-use crate::{LatencyBucketSnapshot, LatencySnapshot, OPERATION_LATENCY_BUCKETS_MS};
+use crate::{
+    EvacuationReport, LatencyBucketSnapshot, LatencySnapshot, OPERATION_LATENCY_BUCKETS_MS,
+};
 
 /// Request latency bounds plus the waits a saturated pool can produce.
 pub(crate) const QUEUE_WAIT_BUCKETS_MS: &[u64] = &[
@@ -32,10 +34,11 @@ pub(crate) enum AttemptOutcome {
     StatusRetry,
     Rescued,
     ClientClosed,
+    Evacuated,
 }
 
 impl AttemptOutcome {
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Ok,
         Self::ConnectFailed,
         Self::Timeout,
@@ -43,6 +46,7 @@ impl AttemptOutcome {
         Self::StatusRetry,
         Self::Rescued,
         Self::ClientClosed,
+        Self::Evacuated,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -54,6 +58,35 @@ impl AttemptOutcome {
             Self::StatusRetry => "status_retry",
             Self::Rescued => "rescued",
             Self::ClientClosed => "client_closed",
+            Self::Evacuated => "evacuated",
+        }
+    }
+}
+
+/// What an evacuation did to the requests of a server.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EvacuationResult {
+    Redispatched,
+    LeftRunning,
+    Forced,
+    /// A moved request that ended with an error instead of a response.
+    Failed,
+}
+
+impl EvacuationResult {
+    pub(crate) const ALL: [Self; 4] = [
+        Self::Redispatched,
+        Self::LeftRunning,
+        Self::Forced,
+        Self::Failed,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Redispatched => "redispatched",
+            Self::LeftRunning => "left_running",
+            Self::Forced => "forced",
+            Self::Failed => "failed",
         }
     }
 }
@@ -120,6 +153,7 @@ pub(crate) fn response_class_index(status: Option<u16>) -> usize {
 pub(crate) struct ServerStats {
     responses: [AtomicU64; RESPONSE_CLASSES.len()],
     attempts: [AtomicU64; AttemptOutcome::ALL.len()],
+    evacuated: [AtomicU64; EvacuationResult::ALL.len()],
     request_duration: Histogram,
     header_duration: Histogram,
     bytes_sent: AtomicU64,
@@ -129,6 +163,7 @@ pub(crate) struct ServerStats {
 pub(crate) struct ServerStatsSnapshot {
     pub(crate) responses: [u64; RESPONSE_CLASSES.len()],
     pub(crate) attempts: [u64; AttemptOutcome::ALL.len()],
+    pub(crate) evacuated: [u64; EvacuationResult::ALL.len()],
     pub(crate) request_duration: LatencySnapshot,
     pub(crate) header_duration: LatencySnapshot,
     pub(crate) bytes_sent: u64,
@@ -140,6 +175,7 @@ impl ServerStats {
         Self {
             responses: std::array::from_fn(|_| AtomicU64::new(0)),
             attempts: std::array::from_fn(|_| AtomicU64::new(0)),
+            evacuated: std::array::from_fn(|_| AtomicU64::new(0)),
             request_duration: Histogram::new(OPERATION_LATENCY_BUCKETS_MS),
             header_duration: Histogram::new(OPERATION_LATENCY_BUCKETS_MS),
             bytes_sent: AtomicU64::new(0),
@@ -159,6 +195,20 @@ impl ServerStats {
         self.attempts[index].fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_evacuation(&self, result: EvacuationResult, requests: u64) {
+        let index = EvacuationResult::ALL
+            .iter()
+            .position(|candidate| *candidate == result)
+            .expect("listed result");
+        self.evacuated[index].fetch_add(requests, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_evacuation_report(&self, report: &EvacuationReport) {
+        self.record_evacuation(EvacuationResult::Redispatched, report.redispatched);
+        self.record_evacuation(EvacuationResult::LeftRunning, report.left_running_total());
+        self.record_evacuation(EvacuationResult::Forced, report.forced);
+    }
+
     pub(crate) fn record_header_duration(&self, duration: Duration) {
         self.header_duration.observe(duration);
     }
@@ -176,6 +226,7 @@ impl ServerStats {
         ServerStatsSnapshot {
             responses: std::array::from_fn(|index| self.responses[index].load(Ordering::Relaxed)),
             attempts: std::array::from_fn(|index| self.attempts[index].load(Ordering::Relaxed)),
+            evacuated: std::array::from_fn(|index| self.evacuated[index].load(Ordering::Relaxed)),
             request_duration: self.request_duration.snapshot(),
             header_duration: self.header_duration.snapshot(),
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
@@ -283,6 +334,21 @@ mod tests {
         ]
         .map(response_class_index);
         assert_eq!(classes, [0, 1, 2, 3, 4, 5, 5]);
+    }
+
+    #[test]
+    fn evacuations_are_counted_per_server_and_result() {
+        let stats = UpstreamStats::default();
+        let server = stats.server("farm", "node-a");
+        server.record_evacuation(EvacuationResult::Redispatched, 3);
+        server.record_evacuation(EvacuationResult::LeftRunning, 2);
+        server.record_evacuation(EvacuationResult::Failed, 1);
+        server.record_attempt(AttemptOutcome::Evacuated);
+        let snapshot = stats.server("farm", "node-a").snapshot();
+        assert_eq!(snapshot.evacuated, [3, 2, 0, 1]);
+        assert_eq!(snapshot.attempts[7], 1);
+        assert_eq!(stats.server("farm", "node-b").snapshot().evacuated, [0; 4]);
+        assert_eq!(AttemptOutcome::Evacuated.as_str(), "evacuated");
     }
 
     #[test]

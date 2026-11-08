@@ -30,7 +30,7 @@ use pingora::{
         ServerSession,
         compression::{Algorithm, ResponseCompressionCtx},
     },
-    proxy::{FailToProxy, PreparedUpstreamRequest, ProxyHttp, Session},
+    proxy::{FailToProxy, PreparedUpstreamRequest, ProxyHttp, Session, UpstreamCancellation},
     upstreams::peer::HttpPeer,
 };
 
@@ -60,9 +60,12 @@ use crate::{
 };
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
+use crate::http::evacuation::{Cancellation, EVACUATED, LeftRunning, is_evacuated};
 use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};
 use crate::http::request_id::{REQUEST_ID_HEADER, RequestIdBuilder};
-use crate::observability::upstream_stats::{AttemptOutcome, ServerStats, upstream_stats};
+use crate::observability::upstream_stats::{
+    AttemptOutcome, EvacuationResult, ServerStats, upstream_stats,
+};
 
 pub struct HttpReverseProxy {
     challenge_store: Option<ChallengeStore>,
@@ -128,6 +131,9 @@ pub struct HttpRequestContext {
     request_header_decisions: Box<[RequestHeaderDecision]>,
     connection_retryable: bool,
     replay_retryable: bool,
+    evacuation_pin: Option<LeftRunning>,
+    evacuations: usize,
+    evacuated_from: Vec<Arc<ServerStats>>,
     retry_server: Option<String>,
     queue_tag: QueueTag,
     retry_delay_pending: bool,
@@ -247,7 +253,16 @@ impl HttpRequestContext {
 
     /// Servers tried over the whole request, including those of a rescue pool already left.
     fn attempt_count(&self) -> usize {
-        self.prior_attempts + self.attempted_upstreams.len()
+        self.prior_attempts + self.tried_servers()
+    }
+
+    fn has_attempted(&self) -> bool {
+        self.prior_attempts + self.attempted_upstreams.len() > 0
+    }
+
+    /// Servers tried in the current pool. An evacuated attempt did not fail, so it is not a try.
+    fn tried_servers(&self) -> usize {
+        self.attempted_upstreams.len() - self.evacuations
     }
 
     /// Moves a rescued request to the route's rescue pool the first time; each pool tries a server once.
@@ -255,7 +270,8 @@ impl HttpRequestContext {
         let entering = rescue_pool_to_enter(self, true).cloned();
         self.rescued = true;
         if let Some(rescue_pool) = entering {
-            self.prior_attempts += self.attempted_upstreams.len();
+            self.prior_attempts += self.tried_servers();
+            self.evacuations = 0;
             self.attempted_upstreams.clear();
             self.pool = Some(rescue_pool);
         }
@@ -472,6 +488,7 @@ mod access_record;
 mod action;
 mod cache;
 mod compression;
+mod evacuation;
 mod proxy_http;
 mod request;
 mod response;
