@@ -1,6 +1,16 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+use std::borrow::Cow;
+
+mod index;
+mod paths;
+#[cfg(test)]
+mod reference_tests;
+
+use index::RouteIndex;
+use paths::PathIndex;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum HostMatcher {
     Any,
@@ -12,36 +22,6 @@ enum HostMatcher {
     NginxLeadingDot(String),
 }
 
-impl HostMatcher {
-    fn rank_if_matches(&self, authority: Option<&Authority>) -> Option<(u8, usize)> {
-        match self {
-            Self::Any => Some((0, 0)),
-            Self::ExactAuthority(expected) => authority
-                .is_some_and(|authority| authority.as_str() == expected)
-                .then_some((3, expected.len())),
-            Self::AsciiCaseInsensitiveExactAuthority(expected) => authority
-                .is_some_and(|authority| authority.as_str().eq_ignore_ascii_case(expected))
-                .then_some((3, expected.len())),
-            Self::NormalizedExact(expected) => authority
-                .and_then(normalized_authority_host)
-                .is_some_and(|host| host == *expected)
-                .then_some((2, expected.len())),
-            Self::Wildcard(suffix) => authority
-                .and_then(normalized_authority_host)
-                .is_some_and(|host| wildcard_matches(&host, suffix))
-                .then_some((1, suffix.len())),
-            Self::NginxLeadingWildcard(suffix) => authority
-                .and_then(normalized_authority_host)
-                .is_some_and(|host| nginx_suffix_matches(&host, suffix, false))
-                .then_some((1, suffix.len())),
-            Self::NginxLeadingDot(suffix) => authority
-                .and_then(normalized_authority_host)
-                .is_some_and(|host| nginx_suffix_matches(&host, suffix, true))
-                .then_some((1, suffix.len())),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PathMatcher {
     RawPrefix(String),
@@ -51,22 +31,33 @@ enum PathMatcher {
 }
 
 impl PathMatcher {
-    fn rank_if_matches(&self, path: &str) -> Option<(u8, usize)> {
-        let (rank, value, matches) = match self {
-            Self::RawPrefix(value) => (0, value, path.starts_with(value)),
-            Self::SegmentPrefix(value) => (
-                1,
-                value,
+    /// Path rank (exact, segment prefix, raw prefix) and the length of the matched value.
+    fn precedence(&self) -> (u8, usize) {
+        let rank = match self {
+            Self::RawPrefix(_) => 0,
+            Self::SegmentPrefix(_) => 1,
+            Self::Exact(_) | Self::AsciiCaseInsensitiveExact(_) => 2,
+        };
+        (rank, self.value().len())
+    }
+
+    fn matches(&self, path: &str) -> bool {
+        match self {
+            Self::RawPrefix(value) => path.starts_with(value),
+            Self::SegmentPrefix(value) => {
                 value == "/"
                     || path == value
-                    || path.strip_prefix(value).is_some_and(|remainder| {
-                        value.ends_with('/') || remainder.starts_with('/')
-                    }),
-            ),
-            Self::Exact(value) => (2, value, path == value),
-            Self::AsciiCaseInsensitiveExact(value) => (2, value, path.eq_ignore_ascii_case(value)),
-        };
-        matches.then_some((rank, value.len()))
+                    || path
+                        .strip_prefix(value.as_str())
+                        .is_some_and(|remainder| value.ends_with('/') || remainder.starts_with('/'))
+            }
+            Self::Exact(value) => path == value,
+            Self::AsciiCaseInsensitiveExact(value) => path.eq_ignore_ascii_case(value),
+        }
+    }
+
+    fn rank_if_matches(&self, path: &str) -> Option<(u8, usize)> {
+        self.matches(path).then(|| self.precedence())
     }
 
     fn value(&self) -> &str {
@@ -166,17 +157,28 @@ impl fmt::Display for RouteError {
 
 impl Error for RouteError {}
 
-/// An immutable table that selects from routes in their definition order.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// An immutable table that selects from routes by precedence.
+#[derive(Clone, Debug, Default)]
 pub struct RouteTable {
     routes: Box<[Route]>,
+    index: RouteIndex,
 }
+
+impl PartialEq for RouteTable {
+    fn eq(&self, other: &Self) -> bool {
+        self.routes == other.routes
+    }
+}
+
+impl Eq for RouteTable {}
 
 impl RouteTable {
     #[must_use]
     pub fn new(routes: Vec<Route>) -> Self {
+        let index = RouteIndex::new(&routes);
         Self {
             routes: routes.into_boxed_slice(),
+            index,
         }
     }
 
@@ -185,6 +187,8 @@ impl RouteTable {
     /// Host precedence is exact authority, normalized exact/IP, wildcard, then catch-all. Path
     /// precedence is exact, segment prefix, then raw prefix, with longer prefixes winning within a
     /// kind. A method-specific route precedes an any-method route and source order resolves ties.
+    /// The cost does not grow with the number of routes: the request authority is normalized once
+    /// and only routes whose host selector can match are visited.
     #[must_use]
     pub fn select(
         &self,
@@ -194,28 +198,8 @@ impl RouteTable {
     ) -> Option<&Route> {
         let authority = authority.or_else(|| uri.authority());
         let path = canonicalize_http_path(uri.path())?;
-        let mut best = None;
-
-        for route in &self.routes {
-            if !route.matches_method(method) {
-                continue;
-            }
-            let Some(host_rank) = route.host.rank_if_matches(authority) else {
-                continue;
-            };
-            let Some((path_rank, path_length)) = route.path.rank_if_matches(path.as_ref()) else {
-                continue;
-            };
-            let method_rank = u8::from(route.methods.is_some());
-            let score = (host_rank, path_rank, path_length, method_rank);
-
-            match best {
-                Some((_, best_score)) if best_score >= score => {}
-                _ => best = Some((route, score)),
-            }
-        }
-
-        best.map(|(route, _)| route)
+        let best = self.index.best(&self.routes, authority, &path, method)?;
+        Some(&self.routes[best.order()])
     }
 }
 
@@ -338,39 +322,17 @@ fn normalize_path(path: HttpPathSelector) -> Result<PathMatcher, RouteError> {
     })
 }
 
-fn wildcard_matches(host: &str, suffix: &str) -> bool {
-    let Some(suffix_start) = host.len().checked_sub(suffix.len()) else {
-        return false;
-    };
-    let Some(dot_index) = suffix_start.checked_sub(1) else {
-        return false;
-    };
-
-    host.as_bytes().get(dot_index) == Some(&b'.')
-        && host[suffix_start..].eq_ignore_ascii_case(suffix)
-        && dot_index > 0
-        && !host[..dot_index].contains('.')
-}
-
-fn nginx_suffix_matches(host: &str, suffix: &str, include_base: bool) -> bool {
-    if include_base && host == suffix {
-        return true;
-    }
-    host.len() > suffix.len()
-        && host.ends_with(suffix)
-        && host
-            .as_bytes()
-            .get(host.len() - suffix.len() - 1)
-            .is_some_and(|separator| *separator == b'.')
-}
-
-pub(super) fn normalized_authority_host(authority: &Authority) -> Option<String> {
+pub(super) fn normalized_authority_host(authority: &Authority) -> Option<Cow<'_, str>> {
     let authority_host = authority.host();
     let host = authority_host.strip_suffix('.').unwrap_or(authority_host);
     if let Some(ip) = parse_host_ip(host) {
-        Some(ip.to_string())
+        Some(ip.to_string().into())
     } else if is_dns_name(host) {
-        Some(host.to_ascii_lowercase())
+        Some(if host.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            host.to_ascii_lowercase().into()
+        } else {
+            host.into()
+        })
     } else {
         None
     }
