@@ -510,6 +510,9 @@ async fn process_shutdown_waits_for_stalled_recorder_cleanup_without_exceeding_t
     let mut server = ServerProcess::start(&config.clone().validate().unwrap(), Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(rtmp_address).await;
+    // Listeners bind before the recording store opens; only an answer from the management API
+    // shows the store is open, and stalling it earlier would stall startup instead.
+    active_revision(management_address, &format!("Bearer {TOKEN}")).await;
     let ownership = fs::File::open(&continuous_root).expect("recording root ownership");
     flock(&ownership, FlockOperation::LockExclusive).expect("stall recording storage");
     let mut publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
