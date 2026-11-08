@@ -415,3 +415,73 @@ fn health_changes_serialize_both_states_and_the_failure() {
     assert_eq!(v1_event_value(&event)["event"], "unknown");
     assert_eq!(event.event.as_str(), "upstream_endpoint_health");
 }
+
+fn evacuation_event(server: Option<&str>) -> OperationalEvent {
+    let mut report = crate::EvacuationReport {
+        redispatched: 3,
+        forced: 1,
+        ..crate::EvacuationReport::default()
+    };
+    report
+        .left_running
+        .insert(crate::LeftRunning::ResponseStarted, 2);
+    OperationalEvent {
+        cursor: 1,
+        timestamp_unix_ms: Some(10),
+        event: EventName::ServerEvacuation,
+        outcome: EventOutcome::Evacuated {
+            pool: "gpu-render".into(),
+            server: server.map(Into::into),
+            force: true,
+            report,
+        },
+        revision: None,
+        certificate: None,
+        correlation_id: None,
+        actor: None,
+        source: None,
+        operation: None,
+    }
+}
+
+#[test]
+fn evacuations_serialize_the_counts_and_name_the_server_only_when_there_is_one() {
+    let server = v2_event_value(&evacuation_event(Some("node-a")));
+    let pool_event = evacuation_event(None);
+    let pool = v2_event_value(&pool_event);
+
+    assert_eq!(server["event"], "server_evacuation");
+    assert_eq!(
+        server["outcome"],
+        serde_json::json!({
+            "type": "evacuated",
+            "pool": "gpu-render",
+            "server": "node-a",
+            "force": true,
+            "cancelledAndRedispatched": 3,
+            "forced": 1,
+            "leftRunning": { "response_started": 2 },
+        })
+    );
+    assert!(pool["outcome"].get("server").is_none());
+    assert_eq!(v1_event_value(&pool_event)["event"], "unknown");
+    assert_eq!(
+        EventName::parse("server_evacuation").as_str(),
+        "server_evacuation"
+    );
+}
+
+#[test]
+fn an_emitted_evacuation_is_one_event_in_the_log() {
+    let report = crate::EvacuationReport::default();
+
+    emit_server_evacuation(
+        &AuditContext::generated(),
+        "gpu-render",
+        Some("node-a"),
+        false,
+        &report,
+    );
+
+    assert_eq!(thread_events::count("server_evacuation"), 1);
+}

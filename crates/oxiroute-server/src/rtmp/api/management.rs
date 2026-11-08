@@ -9,20 +9,22 @@ use super::{
     config::read_config_body,
     dto::{
         AuditPageResponse, AuditStatusResponse, ConfigRejectedResponse, DnsRefreshResponse,
-        DnsRefreshServer, DrainRequest, DrainResponse, EventPageV1Response, EventPageV2Response,
-        GenerationActionResponse, GenerationResponse, ListenerInventoryResponse,
-        ListenerStateRequest, MutationResponse, PoolInventoryResponse, PoolStateRequest,
-        ProcessMutationResponse, RevisionRequest, ServerCapacityRequest, ServerChange,
-        ServerChecksRequest, ServerHealthRequest, ServerInventoryResponse, ServerStateRequest,
-        ServerWeightRequest, TlsActionResponse, TlsCertificateDto, TlsInventoryResponse,
-        TlsJobControlResponse, TlsReconcileOutcome, TlsReconcileResponse, TlsRenewResponse,
-        TlsRequest, TlsRevokeRequest,
+        DnsRefreshServer, DrainRequest, DrainResponse, EvacuationResponse, EventPageV1Response,
+        EventPageV2Response, GenerationActionResponse, GenerationResponse,
+        ListenerInventoryResponse, ListenerStateRequest, MutationResponse, PoolEvacuateRequest,
+        PoolInventoryResponse, PoolStateRequest, ProcessMutationResponse, RevisionRequest,
+        ServerCapacityRequest, ServerChange, ServerChecksRequest, ServerEvacuateRequest,
+        ServerHealthRequest, ServerInventoryResponse, ServerStateRequest, ServerWeightRequest,
+        TlsActionResponse, TlsCertificateDto, TlsInventoryResponse, TlsJobControlResponse,
+        TlsReconcileOutcome, TlsReconcileResponse, TlsRenewResponse, TlsRequest, TlsRevokeRequest,
     },
 };
 use crate::{
-    AdministrativeState, GenerationManager, RuntimeGeneration, RuntimeMetrics,
+    AdministrativeState, EvacuationReport, GenerationManager, RuntimeGeneration, RuntimeMetrics,
     lifecycle_control::{LifecycleError, LifecycleOutcome, LifecyclePort},
-    observability::operational_event::{AuditCategory, AuditContext, AuditResult, AuditStore},
+    observability::operational_event::{
+        AuditCategory, AuditContext, AuditResult, AuditStore, emit_server_evacuation,
+    },
 };
 
 const MAX_BATCH_TARGETS: usize = 256;
@@ -67,8 +69,10 @@ impl ManagementState {
             (Route::ListenerState, "POST") => self.listener_state(session).await,
             (Route::Pools, "GET") => self.pools(),
             (Route::PoolState, "POST") => self.pool_state(session).await,
+            (Route::PoolEvacuate, "POST") => self.pool_evacuate(session, context).await,
             (Route::Servers, "GET") => self.servers(),
             (Route::ServerState, "POST") => self.server_state(session).await,
+            (Route::ServerEvacuate, "POST") => self.server_evacuate(session, context).await,
             (Route::ServerHealth, "POST") => self.server_health(session).await,
             (Route::ServerChecks, "POST") => self.server_checks(session).await,
             (Route::ServerMaxConnections, "PUT") => self.server_max_connections(session).await,
@@ -144,6 +148,23 @@ fn find_pool(active: &RuntimeGeneration, name: &str) -> Option<Arc<crate::RoundR
         .iter()
         .find(|pool| pool.health_snapshot().name == name)
         .cloned()
+}
+
+fn select_pools(
+    active: &RuntimeGeneration,
+    names: &[String],
+) -> Result<Vec<Arc<crate::RoundRobinPool>>, ApiResponse> {
+    if names.is_empty() || names.len() > MAX_BATCH_TARGETS {
+        return Err(invalid_batch());
+    }
+    names
+        .iter()
+        .map(|name| {
+            find_pool(active, name).ok_or_else(|| {
+                ApiResponse::error(404, "pool_not_found", "an upstream pool was not found")
+            })
+        })
+        .collect()
 }
 
 fn mutation_response(operation: &str, changed: usize) -> ApiResponse {

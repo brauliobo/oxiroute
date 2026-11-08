@@ -107,3 +107,18 @@ fn version_two_sse_uses_the_complete_matching_event_vocabulary() {
     assert!(frame.contains(r#""event":"certificate_revocation""#));
     assert!(frame.contains(r#""outcome":"requested""#));
 }
+
+#[test]
+fn evacuations_are_audited_as_control_operations() {
+    for (path, operation) in [
+        ("/api/v1/servers/evacuate", "server_evacuate"),
+        ("/api/v1/pools/evacuate", "pool_evacuate"),
+    ] {
+        assert!(matches!(
+            audited_api_operation("POST", path),
+            Some((name, crate::observability::operational_event::AuditCategory::Control))
+                if name == operation
+        ));
+        assert!(audited_api_operation("GET", path).is_none());
+    }
+}

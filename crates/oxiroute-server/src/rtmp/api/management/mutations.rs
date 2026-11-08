@@ -54,17 +54,10 @@ impl ManagementState {
             Ok(mutation) => mutation,
             Err(response) => return response,
         };
-        let active = mutation.generation();
-        if request.pools.is_empty() || request.pools.len() > MAX_BATCH_TARGETS {
-            return invalid_batch();
-        }
-        let mut selected = Vec::with_capacity(request.pools.len());
-        for name in &request.pools {
-            let Some(pool) = find_pool(active, name) else {
-                return ApiResponse::error(404, "pool_not_found", "an upstream pool was not found");
-            };
-            selected.push(pool);
-        }
+        let selected = match select_pools(mutation.generation(), &request.pools) {
+            Ok(selected) => selected,
+            Err(response) => return response,
+        };
         for pool in selected {
             pool.set_administrative_state(request.state);
         }
@@ -77,21 +70,96 @@ impl ManagementState {
             Err(response) => return response,
         };
         self.apply_servers(&request.change, |pool, server| {
-            match (pool.member(server), self.generations.registry()) {
-                (Some((crate::ServerOrigin::Dynamic, _)), Some(registry)) => registry
-                    .set_operator_state(
-                        &crate::registry::auth::Principal::admin("management"),
-                        pool.name(),
-                        server,
-                        request.state,
-                    )
-                    .map(drop)
-                    .map_err(Box::<dyn std::error::Error>::from),
-                _ => pool
-                    .set_server_administrative_state(server, request.state)
-                    .map_err(Box::<dyn std::error::Error>::from),
-            }
+            self.set_server_state(pool, server, request.state)
         })
+    }
+
+    pub(super) async fn server_evacuate(
+        &self,
+        session: &mut ServerSession,
+        context: &AuditContext,
+    ) -> ApiResponse {
+        let request: ServerEvacuateRequest = match body(session).await {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+        let (_mutation, selected) = match self.select_servers(&request.change) {
+            Ok(selected) => selected,
+            Err(response) => return response,
+        };
+        let mut total = EvacuationReport::default();
+        for (pool, server) in &selected {
+            let Ok(report) = self.evacuate_server(pool, server, request.force) else {
+                return ApiResponse::error(
+                    500,
+                    "server_update_failed",
+                    "server state could not be changed",
+                );
+            };
+            emit_server_evacuation(context, pool.name(), Some(server), request.force, &report);
+            total.merge(report);
+        }
+        dto_response(200, &EvacuationResponse::evacuated(request.force, &total))
+    }
+
+    pub(super) async fn pool_evacuate(
+        &self,
+        session: &mut ServerSession,
+        context: &AuditContext,
+    ) -> ApiResponse {
+        let request: PoolEvacuateRequest = match body(session).await {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+        let mutation = match begin_mutation(&self.generations, &request.expected_active_revision) {
+            Ok(mutation) => mutation,
+            Err(response) => return response,
+        };
+        let pools = match select_pools(mutation.generation(), &request.pools) {
+            Ok(pools) => pools,
+            Err(response) => return response,
+        };
+        let mut total = EvacuationReport::default();
+        for pool in pools {
+            let report = pool.evacuate_all_servers(request.force);
+            emit_server_evacuation(context, pool.name(), None, request.force, &report);
+            total.merge(report);
+        }
+        dto_response(200, &EvacuationResponse::evacuated(request.force, &total))
+    }
+
+    /// Drains through the registry operator state for a dynamic server, so the state is stored with
+    /// its registration, and directly on the pool otherwise.
+    fn set_server_state(
+        &self,
+        pool: &Arc<crate::RoundRobinPool>,
+        server: &str,
+        state: AdministrativeState,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match (pool.member(server), self.generations.registry()) {
+            (Some((crate::ServerOrigin::Dynamic, _)), Some(registry)) => registry
+                .set_operator_state(
+                    &crate::registry::auth::Principal::admin("management"),
+                    pool.name(),
+                    server,
+                    state,
+                )
+                .map(drop)
+                .map_err(Box::<dyn std::error::Error>::from),
+            _ => pool
+                .set_server_administrative_state(server, state)
+                .map_err(Box::<dyn std::error::Error>::from),
+        }
+    }
+
+    fn evacuate_server(
+        &self,
+        pool: &Arc<crate::RoundRobinPool>,
+        server: &str,
+        force: bool,
+    ) -> Result<EvacuationReport, Box<dyn std::error::Error>> {
+        self.set_server_state(pool, server, AdministrativeState::Drain)?;
+        Ok(pool.cancel_server_requests(server, force)?)
     }
 
     pub(super) async fn server_health(&self, session: &mut ServerSession) -> ApiResponse {

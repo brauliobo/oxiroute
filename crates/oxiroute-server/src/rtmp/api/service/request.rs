@@ -64,6 +64,8 @@ pub(super) fn audited_api_operation(
         "/api/v1/process/shutdown" => ("process_shutdown", AuditCategory::Control),
         "/api/v1/listeners/administrative-state" => ("listener_control", AuditCategory::Control),
         "/api/v1/pools/administrative-state" => ("pool_control", AuditCategory::Control),
+        "/api/v1/pools/evacuate" => ("pool_evacuate", AuditCategory::Control),
+        "/api/v1/servers/evacuate" => ("server_evacuate", AuditCategory::Control),
         "/api/v1/servers/administrative-state"
         | "/api/v1/servers/health-override"
         | "/api/v1/servers/checks"

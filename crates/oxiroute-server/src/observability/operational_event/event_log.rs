@@ -189,8 +189,8 @@ pub(crate) fn emit_api_operation(
         "certificate_job_control" => "certificate_job_control",
         "process_shutdown" => "process_shutdown",
         "listener_control" => "listener_administrative_state",
-        "pool_control" => "pool_administrative_state",
-        "server_control" | "server_dns_refresh" => "server_update",
+        "pool_control" | "pool_evacuate" => "pool_administrative_state",
+        "server_control" | "server_dns_refresh" | "server_evacuate" => "server_update",
         _ => "control_operation",
     };
     let outcome = match result {
@@ -228,6 +228,7 @@ pub(crate) fn emit_upstream_endpoint_ejection(
     ejection_until_unix_ms: u64,
 ) {
     emit_typed(
+        &AuditContext::generated(),
         EventName::UpstreamEndpointEjection,
         EventOutcome::Ejected {
             pool: redact_identifier(pool),
@@ -249,6 +250,7 @@ pub(crate) fn emit_upstream_endpoint_recovery(
     recovered_at_unix_ms: u64,
 ) {
     emit_typed(
+        &AuditContext::generated(),
         EventName::UpstreamEndpointRecovery,
         EventOutcome::Recovered {
             pool: redact_identifier(pool),
@@ -269,6 +271,7 @@ pub(crate) fn emit_upstream_endpoint_health(
     changed_at_unix_ms: u64,
 ) {
     emit_typed(
+        &AuditContext::generated(),
         EventName::UpstreamEndpointHealth,
         EventOutcome::HealthChanged {
             pool: redact_identifier(pool),
@@ -281,8 +284,28 @@ pub(crate) fn emit_upstream_endpoint_health(
     );
 }
 
-fn emit_typed(event: EventName, outcome: EventOutcome) {
-    let context = AuditContext::generated();
+/// An evacuation of `server`, or of every server of `pool` when `server` is `None`, requested through the
+/// management API; it carries the request context so the event correlates with the audit entry.
+pub(crate) fn emit_server_evacuation(
+    context: &AuditContext,
+    pool: &str,
+    server: Option<&str>,
+    force: bool,
+    report: &EvacuationReport,
+) {
+    emit_typed(
+        context,
+        EventName::ServerEvacuation,
+        EventOutcome::Evacuated {
+            pool: redact_identifier(pool),
+            server: server.map(redact_identifier),
+            force,
+            report: report.clone(),
+        },
+    );
+}
+
+fn emit_typed(context: &AuditContext, event: EventName, outcome: EventOutcome) {
     let category = category_for_event(event);
     let result = result_for_outcome(&outcome);
     let mut state = log()
@@ -303,9 +326,9 @@ fn emit_typed(event: EventName, outcome: EventOutcome) {
         source: None,
         operation: None,
     };
-    let audit_value = publish(&mut state, &mut value, &context, None);
+    let audit_value = publish(&mut state, &mut value, context, None);
     drop(state);
-    persist(audit_value, &context, category, result);
+    persist(audit_value, context, category, result);
 }
 
 fn emit_inner(
@@ -420,6 +443,7 @@ pub(super) const fn category_for_event(event: EventName) -> AuditCategory {
         | EventName::UpstreamEndpointEjection
         | EventName::UpstreamEndpointRecovery
         | EventName::UpstreamEndpointHealth
+        | EventName::ServerEvacuation
         | EventName::Unknown => AuditCategory::Control,
     }
 }
@@ -433,7 +457,8 @@ const fn result_for_outcome(outcome: &EventOutcome) -> AuditResult {
         | EventOutcome::Drained
         | EventOutcome::Ejected { .. }
         | EventOutcome::Recovered { .. }
-        | EventOutcome::HealthChanged { .. } => AuditResult::Succeeded,
+        | EventOutcome::HealthChanged { .. }
+        | EventOutcome::Evacuated { .. } => AuditResult::Succeeded,
         EventOutcome::Requested | EventOutcome::CapReached => AuditResult::Requested,
         EventOutcome::Rejected => AuditResult::Rejected,
         EventOutcome::Failed

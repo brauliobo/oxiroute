@@ -26,9 +26,10 @@ pub(crate) use management::{
 };
 pub(crate) use mutation::{
     ConfigRejectedResponse, DnsRefreshResponse, DnsRefreshServer, DrainRequest, DrainResponse,
-    GenerationActionResponse, ListenerStateRequest, MutationResponse, PoolStateRequest,
-    ProcessMutationResponse, RevisionRequest, ServerCapacityRequest, ServerChange,
-    ServerChecksRequest, ServerHealthRequest, ServerStateRequest, ServerWeightRequest,
+    EvacuationResponse, GenerationActionResponse, ListenerStateRequest, MutationResponse,
+    PoolEvacuateRequest, PoolStateRequest, ProcessMutationResponse, RevisionRequest,
+    ServerCapacityRequest, ServerChange, ServerChecksRequest, ServerEvacuateRequest,
+    ServerHealthRequest, ServerStateRequest, ServerWeightRequest,
 };
 pub(crate) use observability::{
     CapabilitiesResponse, MonitoringResponse, ReadinessResponse, RequestListResponse,

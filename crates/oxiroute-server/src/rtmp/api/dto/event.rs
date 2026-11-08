@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use super::mutation::left_running_by_reason;
 use crate::{
     EndpointHealthState, HealthFailure,
     observability::operational_event::{EventName, EventOutcome, EventPage, OperationalEvent},
@@ -157,6 +160,7 @@ impl From<EventName> for V1EventNameDto {
             | EventName::CertificateJobControl
             | EventName::GenerationRetire
             | EventName::UpstreamEndpointHealth
+            | EventName::ServerEvacuation
             | EventName::Unknown => Self::Unknown,
         }
     }
@@ -192,6 +196,7 @@ pub(crate) enum V2EventNameDto {
     UpstreamEndpointEjection,
     UpstreamEndpointRecovery,
     UpstreamEndpointHealth,
+    ServerEvacuation,
     Unknown,
 }
 
@@ -225,6 +230,7 @@ impl From<EventName> for V2EventNameDto {
             EventName::UpstreamEndpointEjection => Self::UpstreamEndpointEjection,
             EventName::UpstreamEndpointRecovery => Self::UpstreamEndpointRecovery,
             EventName::UpstreamEndpointHealth => Self::UpstreamEndpointHealth,
+            EventName::ServerEvacuation => Self::ServerEvacuation,
             EventName::Unknown => Self::Unknown,
         }
     }
@@ -237,6 +243,7 @@ enum EventOutcomeDto {
     Ejected(EjectedOutcomeDto),
     Recovered(RecoveredOutcomeDto),
     HealthChanged(HealthChangedOutcomeDto),
+    Evacuated(EvacuatedOutcomeDto),
 }
 
 impl From<&EventOutcome> for EventOutcomeDto {
@@ -302,6 +309,20 @@ impl From<&EventOutcome> for EventOutcomeDto {
                 reason: reason.map(Into::into),
                 changed_at_unix_ms: *changed_at_unix_ms,
             }),
+            EventOutcome::Evacuated {
+                pool,
+                server,
+                force,
+                report,
+            } => Self::Evacuated(EvacuatedOutcomeDto {
+                r#type: "evacuated",
+                pool: pool.clone(),
+                server: server.clone(),
+                force: *force,
+                cancelled_and_redispatched: report.redispatched,
+                forced: report.forced,
+                left_running: left_running_by_reason(report),
+            }),
         }
     }
 }
@@ -357,6 +378,19 @@ struct HealthChangedOutcomeDto {
     next: HealthStateDto,
     reason: Option<HealthFailureDto>,
     changed_at_unix_ms: u64,
+}
+
+#[derive(JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EvacuatedOutcomeDto {
+    r#type: &'static str,
+    pool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    server: Option<String>,
+    force: bool,
+    cancelled_and_redispatched: u64,
+    forced: u64,
+    left_running: BTreeMap<&'static str, u64>,
 }
 
 #[derive(JsonSchema, Serialize)]
