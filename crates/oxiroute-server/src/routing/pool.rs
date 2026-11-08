@@ -27,6 +27,7 @@ impl EndpointPool {
             .zip(blueprint.weights.iter().copied())
             .map(|(server, weight)| {
                 Arc::new(PoolEndpoint::new(
+                    &name,
                     server,
                     startup,
                     weight,

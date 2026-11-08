@@ -91,10 +91,12 @@ impl EvacuationResult {
     }
 }
 
+/// Latency histogram. Observations land in one bucket; the cumulative form Prometheus expects is built
+/// when a snapshot is read, so recording costs two atomic additions whatever the latency.
+#[derive(Debug)]
 pub(crate) struct Histogram {
     bounds: &'static [u64],
     buckets: Box<[AtomicU64]>,
-    count: AtomicU64,
     sum_ms: AtomicU64,
 }
 
@@ -103,37 +105,34 @@ impl Histogram {
         Self {
             bounds,
             buckets: (0..=bounds.len()).map(|_| AtomicU64::new(0)).collect(),
-            count: AtomicU64::new(0),
             sum_ms: AtomicU64::new(0),
         }
     }
 
     pub(crate) fn observe(&self, duration: Duration) {
         let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
-        let first = self
-            .bounds
-            .iter()
-            .position(|bound| millis <= *bound)
-            .unwrap_or(self.bounds.len());
-        for bucket in &self.buckets[first..] {
-            bucket.fetch_add(1, Ordering::Relaxed);
-        }
-        self.count.fetch_add(1, Ordering::Relaxed);
+        let bucket = self.bounds.partition_point(|bound| *bound < millis);
+        self.buckets[bucket].fetch_add(1, Ordering::Relaxed);
         self.sum_ms.fetch_add(millis, Ordering::Relaxed);
     }
 
     pub(crate) fn snapshot(&self) -> LatencySnapshot {
-        LatencySnapshot {
-            buckets: self
-                .buckets
-                .iter()
-                .enumerate()
-                .map(|(index, count)| LatencyBucketSnapshot {
+        let mut count = 0;
+        let buckets = self
+            .buckets
+            .iter()
+            .enumerate()
+            .map(|(index, bucket)| {
+                count += bucket.load(Ordering::Relaxed);
+                LatencyBucketSnapshot {
                     upper_bound_ms: self.bounds.get(index).copied(),
-                    count: count.load(Ordering::Relaxed),
-                })
-                .collect(),
-            count: self.count.load(Ordering::Relaxed),
+                    count,
+                }
+            })
+            .collect();
+        LatencySnapshot {
+            buckets,
+            count,
             sum_ms: self.sum_ms.load(Ordering::Relaxed),
         }
     }
@@ -150,6 +149,7 @@ pub(crate) fn response_class_index(status: Option<u16>) -> usize {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ServerStats {
     responses: [AtomicU64; RESPONSE_CLASSES.len()],
     attempts: [AtomicU64; AttemptOutcome::ALL.len()],

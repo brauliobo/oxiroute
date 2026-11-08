@@ -88,6 +88,7 @@ impl EndpointPool {
             return Err(PoolMembershipError::DuplicateName(server.name));
         }
         let endpoint = Arc::new(PoolEndpoint::new(
+            &self.health.pool_name,
             server,
             self.startup,
             spec.weight,

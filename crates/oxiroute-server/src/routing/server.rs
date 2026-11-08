@@ -121,6 +121,8 @@ pub(super) struct PoolEndpoint {
     pub(super) checks_enabled: AtomicBool,
     pub(super) health_override: AtomicU8,
     pub(super) endpoint: RuntimeEndpoint,
+    /// Counters outlive generations; resolved once here instead of on every request.
+    pub(super) stats: Arc<ServerStats>,
     /// Zero means unlimited; registered servers may change it while they are members.
     pub(super) configured_max_connections: AtomicU64,
     pub(super) max_connections_override: AtomicU64,
@@ -156,6 +158,7 @@ pub(super) struct PoolEndpoint {
 
 impl PoolEndpoint {
     pub(super) fn new(
+        pool: &str,
         server: RuntimeServer,
         startup: Option<HealthStartup>,
         weight: u16,
@@ -178,6 +181,7 @@ impl PoolEndpoint {
             checks_enabled: AtomicBool::new(true),
             health_override: AtomicU8::new(HealthOverride::Auto as u8),
             endpoint: server.endpoint,
+            stats: upstream_stats().server(pool, &server.name),
             configured_max_connections: AtomicU64::new(server.max_connections.unwrap_or(0)),
             max_connections_override: AtomicU64::new(0),
             name: server.name,

@@ -11,13 +11,9 @@ pub(super) const LATENCY_BUCKET_COUNT: usize = OPERATION_LATENCY_BUCKETS_MS.len(
 
 pub(super) struct OperationMetricsState {
     http_results: [AtomicU64; HTTP_RESULT_COUNT],
-    http_latency_buckets: [AtomicU64; LATENCY_BUCKET_COUNT],
-    http_latency_count: AtomicU64,
-    http_latency_sum_ms: AtomicU64,
+    http_latency: LatencyCounters,
     tcp_results: [AtomicU64; TCP_RESULT_COUNT],
-    tcp_latency_buckets: [AtomicU64; LATENCY_BUCKET_COUNT],
-    tcp_latency_count: AtomicU64,
-    tcp_latency_sum_ms: AtomicU64,
+    tcp_latency: LatencyCounters,
     proxy_protocol_results: [AtomicU64; PROXY_PROTOCOL_RESULT_COUNT],
     cache_events: [AtomicU64; 4],
 }
@@ -26,13 +22,9 @@ impl OperationMetricsState {
     pub(super) fn new() -> Self {
         Self {
             http_results: std::array::from_fn(|_| AtomicU64::new(0)),
-            http_latency_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
-            http_latency_count: AtomicU64::new(0),
-            http_latency_sum_ms: AtomicU64::new(0),
+            http_latency: LatencyCounters::new(),
             tcp_results: std::array::from_fn(|_| AtomicU64::new(0)),
-            tcp_latency_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
-            tcp_latency_count: AtomicU64::new(0),
-            tcp_latency_sum_ms: AtomicU64::new(0),
+            tcp_latency: LatencyCounters::new(),
             proxy_protocol_results: std::array::from_fn(|_| AtomicU64::new(0)),
             cache_events: std::array::from_fn(|_| AtomicU64::new(0)),
         }
@@ -44,13 +36,7 @@ impl OperationMetricsState {
         duration: Duration,
     ) -> Result<(), MetricsError> {
         checked_atomic_add(&self.http_results[result.index()], 1, "http.operations")?;
-        record_latency(
-            duration,
-            &self.http_latency_buckets,
-            &self.http_latency_count,
-            &self.http_latency_sum_ms,
-            "http.latency",
-        )
+        self.http_latency.record(duration, "http.latency")
     }
 
     pub(super) fn record_tcp_relay(
@@ -59,21 +45,11 @@ impl OperationMetricsState {
         duration: Duration,
     ) -> Result<(), MetricsError> {
         checked_atomic_add(&self.tcp_results[result.index()], 1, "tcp.relays")?;
-        record_latency(
-            duration,
-            &self.tcp_latency_buckets,
-            &self.tcp_latency_count,
-            &self.tcp_latency_sum_ms,
-            "tcp.latency",
-        )
+        self.tcp_latency.record(duration, "tcp.latency")
     }
 
     pub(super) fn http_snapshot(&self) -> Option<HttpOperationSnapshot> {
-        let latency = latency_snapshot(
-            &self.http_latency_buckets,
-            &self.http_latency_count,
-            &self.http_latency_sum_ms,
-        );
+        let latency = self.http_latency.snapshot();
         (latency.count > 0).then(|| HttpOperationSnapshot {
             outcomes: HttpOperationResult::ALL
                 .into_iter()
@@ -135,11 +111,7 @@ impl OperationMetricsState {
     }
 
     pub(super) fn tcp_snapshot(&self) -> Option<TcpRelaySnapshot> {
-        let latency = latency_snapshot(
-            &self.tcp_latency_buckets,
-            &self.tcp_latency_count,
-            &self.tcp_latency_sum_ms,
-        );
+        let latency = self.tcp_latency.snapshot();
         (latency.count > 0).then(|| TcpRelaySnapshot {
             outcomes: TcpRelayResult::ALL
                 .into_iter()
@@ -156,22 +128,16 @@ impl OperationMetricsState {
 
 pub(super) const TRANSPORT_OUTCOME_COUNT: usize = TransportOutcome::ALL.len();
 
-pub(super) const TRANSPORT_LATENCY_BUCKET_COUNT: usize = OPERATION_LATENCY_BUCKETS_MS.len() + 1;
-
 pub(super) struct TransportMetricState {
     outcomes: [AtomicU64; TRANSPORT_OUTCOME_COUNT],
-    latency_buckets: [AtomicU64; TRANSPORT_LATENCY_BUCKET_COUNT],
-    latency_count: AtomicU64,
-    latency_sum_ms: AtomicU64,
+    latency: LatencyCounters,
 }
 
 impl TransportMetricState {
     fn new() -> Self {
         Self {
             outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
-            latency_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
-            latency_count: AtomicU64::new(0),
-            latency_sum_ms: AtomicU64::new(0),
+            latency: LatencyCounters::new(),
         }
     }
 
@@ -182,22 +148,12 @@ impl TransportMetricState {
     ) -> Result<(), MetricsError> {
         checked_atomic_add(&self.outcomes[outcome.index()], 1, "transport.outcomes")?;
         duration.map_or(Ok(()), |duration| {
-            record_latency(
-                duration,
-                &self.latency_buckets,
-                &self.latency_count,
-                &self.latency_sum_ms,
-                "transport.latency",
-            )
+            self.latency.record(duration, "transport.latency")
         })
     }
 
     fn snapshot(&self, transport: ObservedTransport) -> Option<TransportOperationSnapshot> {
-        let latency = latency_snapshot(
-            &self.latency_buckets,
-            &self.latency_count,
-            &self.latency_sum_ms,
-        );
+        let latency = self.latency.snapshot();
         self.outcomes_present().then(|| TransportOperationSnapshot {
             transport,
             outcomes: TransportOutcome::ALL
@@ -283,43 +239,52 @@ pub(super) fn checked_atomic_add(
         .map_err(|_| MetricsError::CounterOverflow(name))
 }
 
-pub(super) fn record_latency(
-    duration: Duration,
-    buckets: &[AtomicU64; LATENCY_BUCKET_COUNT],
-    count: &AtomicU64,
-    sum_ms: &AtomicU64,
-    name: &'static str,
-) -> Result<(), MetricsError> {
-    let duration_ms = u64::try_from(duration.as_millis())
-        .map_err(|_| MetricsError::ValueOutOfRange("operation duration milliseconds"))?;
-    let bucket = OPERATION_LATENCY_BUCKETS_MS
-        .iter()
-        .position(|upper_bound| duration_ms <= *upper_bound)
-        .unwrap_or(OPERATION_LATENCY_BUCKETS_MS.len());
-    for bucket_count in buckets.iter().skip(bucket) {
-        checked_atomic_add(bucket_count, 1, name)?;
-    }
-    checked_atomic_add(count, 1, name)?;
-    checked_atomic_add(sum_ms, duration_ms, name)
+/// Latency counters of one operation kind. A sample lands in a single bucket; the cumulative buckets
+/// and the sample count are summed when a snapshot is read, which keeps recording to two atomic updates.
+pub(super) struct LatencyCounters {
+    buckets: [AtomicU64; LATENCY_BUCKET_COUNT],
+    sum_ms: AtomicU64,
 }
 
-pub(super) fn latency_snapshot(
-    buckets: &[AtomicU64; LATENCY_BUCKET_COUNT],
-    count: &AtomicU64,
-    sum_ms: &AtomicU64,
-) -> LatencySnapshot {
-    let buckets = buckets
-        .iter()
-        .enumerate()
-        .map(|(index, count)| LatencyBucketSnapshot {
-            upper_bound_ms: OPERATION_LATENCY_BUCKETS_MS.get(index).copied(),
-            count: count.load(Ordering::Relaxed),
-        })
-        .collect();
-    LatencySnapshot {
-        buckets,
-        count: count.load(Ordering::Relaxed),
-        sum_ms: sum_ms.load(Ordering::Relaxed),
+impl LatencyCounters {
+    pub(super) fn new() -> Self {
+        Self {
+            buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            sum_ms: AtomicU64::new(0),
+        }
+    }
+
+    pub(super) fn record(
+        &self,
+        duration: Duration,
+        name: &'static str,
+    ) -> Result<(), MetricsError> {
+        let duration_ms = u64::try_from(duration.as_millis())
+            .map_err(|_| MetricsError::ValueOutOfRange("operation duration milliseconds"))?;
+        let bucket = OPERATION_LATENCY_BUCKETS_MS.partition_point(|bound| *bound < duration_ms);
+        checked_atomic_add(&self.buckets[bucket], 1, name)?;
+        checked_atomic_add(&self.sum_ms, duration_ms, name)
+    }
+
+    pub(super) fn snapshot(&self) -> LatencySnapshot {
+        let mut count = 0;
+        let buckets = self
+            .buckets
+            .iter()
+            .enumerate()
+            .map(|(index, bucket)| {
+                count += bucket.load(Ordering::Relaxed);
+                LatencyBucketSnapshot {
+                    upper_bound_ms: OPERATION_LATENCY_BUCKETS_MS.get(index).copied(),
+                    count,
+                }
+            })
+            .collect();
+        LatencySnapshot {
+            buckets,
+            count,
+            sum_ms: self.sum_ms.load(Ordering::Relaxed),
+        }
     }
 }
 
