@@ -220,6 +220,20 @@ impl WorkerEndpoint {
         authenticate_frame(frame, self.expected_parent_pid, self.identity, &self.nonce)
     }
 
+    /// Blocks until the parent sent a frame or closed the channel, or `timeout` elapsed.
+    ///
+    /// Returns whether the channel is readable; it consumes nothing, so [`Self::try_receive`] follows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the timeout does not fit a poll timespec or polling fails.
+    pub fn wait_readable(&self, timeout: Duration) -> io::Result<bool> {
+        let timeout = Timespec::try_from(timeout)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "poll duration overflow"))?;
+        let mut descriptors = [PollFd::new(&self.endpoint, PollFlags::IN)];
+        Ok(poll(&mut descriptors, Some(&timeout)).map_err(io::Error::from)? > 0)
+    }
+
     /// Receives and authenticates one parent frame only when the channel is immediately readable.
     ///
     /// # Errors
