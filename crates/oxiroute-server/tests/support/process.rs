@@ -119,7 +119,7 @@ impl ServerProcess {
         }
     }
 
-    fn assert_running(&mut self) {
+    pub fn assert_running(&mut self) {
         if let Some(status) = self.child.try_wait().expect("inspect server process") {
             let stderr = read_pipe(self.child.stderr.take());
             panic!("server exited early with {status}: {stderr}");

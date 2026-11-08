@@ -74,6 +74,7 @@ pub mod tls;
 #[cfg(not(feature = "any_tls"))]
 pub use crate::tls::listeners as tls;
 
+use crate::apps::ConnectionAdmission;
 use crate::protocols::{l4::socket::SocketAddr, tls::TlsRef, Stream};
 
 #[cfg(unix)]
@@ -182,6 +183,10 @@ pub(crate) struct UninitializedStream {
 }
 
 impl UninitializedStream {
+    pub fn hold_admission(&mut self, admission: ConnectionAdmission) {
+        self.l4.hold_admission(admission);
+    }
+
     pub async fn handshake(mut self) -> Result<Stream> {
         self.l4.set_buffer();
         if let Some(tls) = self.tls {

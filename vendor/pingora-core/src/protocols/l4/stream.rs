@@ -20,6 +20,7 @@ use log::{debug, error};
 
 use pingora_error::{ErrorType::*, OrErr, Result};
 #[cfg(target_os = "linux")]
+use std::any::Any;
 use std::io::IoSliceMut;
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
@@ -372,6 +373,8 @@ const UNBUFFERED_CAPACITY: usize = 1;
 /// A concrete type for transport layer connection + extra fields for logging
 #[derive(Debug)]
 pub struct Stream {
+    // Declared first so it drops before the socket: a closed connection never still holds its slot.
+    admission: Option<Box<dyn Any + Send + Sync>>,
     // Use `Option` to be able to swap to adjust the buffer size. Always safe to unwrap
     stream: Option<BufStream<RawStreamWrapper>>,
     // the data put back at the front of the read buffer, in order to replay the read
@@ -390,6 +393,12 @@ pub struct Stream {
 }
 
 impl Stream {
+    /// Ties application admission state to this connection: it is released right before the
+    /// socket closes, so a client that reconnects on seeing the close is never rejected by it.
+    pub fn hold_admission(&mut self, admission: Box<dyn Any + Send + Sync>) {
+        self.admission = Some(admission);
+    }
+
     fn stream(&self) -> &BufStream<RawStreamWrapper> {
         self.stream.as_ref().expect("stream should always be set")
     }
@@ -473,6 +482,7 @@ impl Stream {
 impl From<TcpStream> for Stream {
     fn from(s: TcpStream) -> Self {
         Stream {
+            admission: None,
             stream: Some(BufStream::with_capacity(
                 UNBUFFERED_CAPACITY,
                 UNBUFFERED_CAPACITY,
@@ -494,6 +504,7 @@ impl From<TcpStream> for Stream {
 impl From<virt::VirtualSocketStream> for Stream {
     fn from(s: virt::VirtualSocketStream) -> Self {
         Stream {
+            admission: None,
             stream: Some(BufStream::with_capacity(
                 UNBUFFERED_CAPACITY,
                 UNBUFFERED_CAPACITY,
@@ -516,6 +527,7 @@ impl From<virt::VirtualSocketStream> for Stream {
 impl From<UnixStream> for Stream {
     fn from(s: UnixStream) -> Self {
         Stream {
+            admission: None,
             stream: Some(BufStream::with_capacity(
                 UNBUFFERED_CAPACITY,
                 UNBUFFERED_CAPACITY,

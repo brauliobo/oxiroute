@@ -250,11 +250,11 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                             continue;
                         };
                         match new_io {
-                            Ok(io) => {
+                            Ok(mut io) => {
+                                io.hold_admission(admission);
                                 let app = app_logic.clone();
                                 let shutdown = shutdown.clone();
                                 current_handle().spawn(async move {
-                                    let _admission = admission;
                                     let peer_addr = io.peer_addr();
                                     match timeout(app.handshake_timeout(), io.handshake()).await {
                                         Ok(handshake) => match handshake {
@@ -298,14 +298,14 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                 }
             };
             match new_io {
-                Ok(io) => {
+                Ok(mut io) => {
                     let Some(admission) = app_logic.admit_connection() else {
                         continue;
                     };
+                    io.hold_admission(admission);
                     let app = app_logic.clone();
                     let shutdown = shutdown.clone();
                     current_handle().spawn(async move {
-                        let _admission = admission;
                         let peer_addr = io.peer_addr();
                         match timeout(app.handshake_timeout(), io.handshake()).await {
                             Ok(handshake) => {
