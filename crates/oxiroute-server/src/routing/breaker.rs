@@ -94,6 +94,11 @@ impl Breaker {
         self.state() == HALF_OPEN
     }
 
+    /// When an open breaker starts allowing trial requests again.
+    pub(super) fn reopens_at(&self) -> Option<u64> {
+        (self.state() == OPEN).then(|| self.open_until_unix_ms.load(Ordering::Acquire))
+    }
+
     /// Whether the server may be selected; an expired open period turns half-open on first look.
     pub(super) fn permits(&self, now_unix_ms: u64) -> bool {
         match self.state() {
@@ -112,13 +117,14 @@ impl Breaker {
         }
     }
 
-    /// Records one request outcome; `may_open` is false when opening would break `min_members`.
+    /// Records one request outcome; `may_open` says whether opening is allowed, and is only asked
+    /// when the outcome would open the breaker.
     pub(super) fn record(
         &self,
         ok: bool,
         now_unix_ms: u64,
         policy: CircuitBreakerPolicy,
-        may_open: bool,
+        may_open: impl FnOnce() -> bool,
     ) -> Option<BreakerTransition> {
         let mut inner = self.lock();
         match self.state() {
@@ -131,15 +137,15 @@ impl Breaker {
                     BreakerTransition::Closed
                 })
             }
-            HALF_OPEN => may_open.then(|| self.open(&mut inner, now_unix_ms, policy)),
+            HALF_OPEN => may_open().then(|| self.open(&mut inner, now_unix_ms, policy)),
             _ => {
                 inner.window.add(ok, now_unix_ms, policy);
                 let (succeeded, failed) = inner.window.totals();
                 let total = succeeded + failed;
                 (total >= u64::from(policy.min_requests)
                     && failed * 100 >= u64::from(policy.failure_ratio_percent) * total
-                    && may_open)
-                    .then(|| self.open(&mut inner, now_unix_ms, policy))
+                    && may_open())
+                .then(|| self.open(&mut inner, now_unix_ms, policy))
             }
         }
     }

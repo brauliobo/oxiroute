@@ -446,6 +446,8 @@ pub(super) struct PoolHealthState {
     pub(super) members: ArcSwap<Membership>,
     pub(super) health_version: AtomicU64,
     pub(super) health_writer: Mutex<()>,
+    /// Bumped after every change that can alter which servers are selectable.
+    selectable_epoch: AtomicU64,
     passive_policy: PassiveFailurePolicy,
     pub(super) pool_name: String,
     queue: Arc<PoolQueue>,
@@ -468,6 +470,7 @@ impl PoolHealthState {
             members: ArcSwap::from_pointee(members),
             health_version: AtomicU64::new(0),
             health_writer: Mutex::new(()),
+            selectable_epoch: AtomicU64::new(0),
             passive_policy,
             pool_name,
             queue,
@@ -482,17 +485,76 @@ impl PoolHealthState {
         self.passive_policy.circuit_breaker
     }
 
+    /// Retires the published selectable views; call after changing what makes a server selectable.
+    pub(super) fn selectable_changed(&self) {
+        self.selectable_epoch.fetch_add(1, Ordering::Release);
+    }
+
+    /// Runs `read` until it sees no health writer mid-update, as the writers' version guards.
+    pub(super) fn read_consistent<T>(&self, read: impl Fn() -> T) -> T {
+        for _ in 0..8 {
+            let version = self.health_version.load(Ordering::Acquire);
+            if !version.is_multiple_of(2) {
+                std::thread::yield_now();
+                continue;
+            }
+            let value = read();
+            fence(Ordering::Acquire);
+            if self.health_version.load(Ordering::Relaxed) == version {
+                return value;
+            }
+        }
+        let _writer = self
+            .health_writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        read()
+    }
+
+    /// The servers of `members` that may be chosen at `now_unix_ms`. A rebuild after a change
+    /// waits for health writers like any other health read.
+    pub(super) fn selectable_view(
+        &self,
+        members: &Membership,
+        now_unix_ms: u64,
+    ) -> arc_swap::Guard<Arc<SelectableView>> {
+        self.view(members, now_unix_ms, |epoch| {
+            self.read_consistent(|| SelectableView::build(&members.endpoints, epoch, now_unix_ms))
+        })
+    }
+
+    /// Like [`Self::selectable_view`] for a caller that is itself a health writer, which must not wait.
+    fn selectable_view_unguarded(
+        &self,
+        members: &Membership,
+        now_unix_ms: u64,
+    ) -> arc_swap::Guard<Arc<SelectableView>> {
+        self.view(members, now_unix_ms, |epoch| {
+            SelectableView::build(&members.endpoints, epoch, now_unix_ms)
+        })
+    }
+
+    fn view(
+        &self,
+        members: &Membership,
+        now_unix_ms: u64,
+        build: impl FnOnce(u64) -> SelectableView,
+    ) -> arc_swap::Guard<Arc<SelectableView>> {
+        let epoch = self.selectable_epoch.load(Ordering::Acquire);
+        let view = members.selectable.load();
+        if view.is_current(epoch, now_unix_ms) {
+            return view;
+        }
+        members.selectable.store(Arc::new(build(epoch)));
+        members.selectable.load()
+    }
+
     /// Whether ejecting `server` still leaves the configured floor of other selectable servers.
     fn may_eject(&self, server: &PoolEndpoint, at_unix_ms: u64) -> bool {
-        self.members
-            .load()
-            .endpoints
-            .iter()
-            .filter(|other| {
-                !std::ptr::eq(other.as_ref(), server) && other.selectable_at(at_unix_ms)
-            })
-            .count()
-            >= self.resilience.min_members
+        let members = self.members.load();
+        let view = self.selectable_view_unguarded(&members, at_unix_ms);
+        let others = view.entries.len() - usize::from(server.selectable_at(at_unix_ms));
+        others >= self.resilience.min_members
     }
 
     pub(super) fn record_passive_failure(
@@ -521,15 +583,16 @@ impl PoolHealthState {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.health_version.fetch_add(1, Ordering::AcqRel);
-            let ejection = server.record_passive_failure(
-                failure,
-                at_unix_ms,
-                self.passive_policy,
-                self.may_eject(server, at_unix_ms),
-            );
+            let ejection =
+                server.record_passive_failure(failure, at_unix_ms, self.passive_policy, || {
+                    self.may_eject(server, at_unix_ms)
+                });
             self.health_version.fetch_add(1, Ordering::Release);
             ejection
         };
+        if ejection.is_some() {
+            self.selectable_changed();
+        }
         if self.passive_policy.observes(failure) {
             self.record_outcome(server, false, at_unix_ms);
         }
@@ -632,6 +695,7 @@ impl PoolHealthState {
             self.health_version.fetch_add(1, Ordering::Release);
             ejection
         };
+        self.selectable_changed();
         self.outliers.forget(&server.name);
         self.announce_ejection(server, &ejection);
     }
@@ -646,9 +710,10 @@ impl PoolHealthState {
         let Some(policy) = self.passive_policy.circuit_breaker else {
             return;
         };
-        let may_open = self.may_eject(server, at_unix_ms);
+        let may_open = || self.may_eject(server, at_unix_ms);
         match server.breaker.record(ok, at_unix_ms, policy, may_open) {
             Some(BreakerTransition::Opened) => {
+                self.selectable_changed();
                 self.queue.notify_capacity_waiters();
                 log::warn!(
                     "upstream pool `{}` server `{}` circuit breaker opened",
@@ -699,6 +764,7 @@ impl PoolHealthState {
             self.health_version.fetch_add(1, Ordering::Release);
             ejection
         };
+        self.selectable_changed();
         crate::observability::operational_event::emit_upstream_endpoint_ejection(
             &self.pool_name,
             &server.name,
@@ -722,6 +788,7 @@ impl PoolHealthState {
             recovery
         };
         if let Some(recovery) = recovery {
+            self.selectable_changed();
             self.queue.notify_capacity_waiters();
             crate::observability::operational_event::emit_upstream_endpoint_recovery(
                 &self.pool_name,
@@ -760,6 +827,7 @@ impl PoolHealthState {
             update
         };
         if update.transition.is_some() || update.passive_recovery.is_some() {
+            self.selectable_changed();
             self.queue.notify_capacity_waiters();
         }
         if let Some((previous, next)) = update.transition {

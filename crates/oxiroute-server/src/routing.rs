@@ -46,6 +46,7 @@ mod queue_wait;
 mod resolved;
 mod route;
 mod schedule;
+mod selectable;
 mod server;
 
 pub use breaker::CircuitBreakerPolicy;
@@ -65,6 +66,7 @@ use resolved::ResolvedAddresses;
 pub use route::*;
 pub use schedule::QueueTag;
 use schedule::{QueueSchedule, WaitQueue};
+use selectable::SelectableView;
 pub use server::ServerOrigin;
 pub(crate) use server::*;
 

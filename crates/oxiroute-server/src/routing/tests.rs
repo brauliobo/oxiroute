@@ -71,5 +71,6 @@ mod health;
 mod lifetime;
 mod passive;
 mod queue;
+mod reference_selection;
 mod resilience;
 mod selection;

@@ -51,24 +51,7 @@ impl EndpointPool {
         members: &Membership,
         read: impl Fn(&Membership) -> T,
     ) -> T {
-        for _ in 0..8 {
-            let version = self.health.health_version.load(Ordering::Acquire);
-            if !version.is_multiple_of(2) {
-                std::thread::yield_now();
-                continue;
-            }
-            let value = read(members);
-            fence(Ordering::Acquire);
-            if self.health.health_version.load(Ordering::Relaxed) == version {
-                return value;
-            }
-        }
-        let _writer = self
-            .health
-            .health_writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        read(members)
+        self.health.read_consistent(|| read(members))
     }
 
     /// Adds a server that registered at runtime. Static servers stay first in file order.
@@ -198,7 +181,7 @@ impl EndpointPool {
         Ok(())
     }
 
-    fn lock_selection(&self) -> std::sync::MutexGuard<'_, SelectionState> {
+    pub(super) fn lock_selection(&self) -> std::sync::MutexGuard<'_, SelectionState> {
         self.selection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

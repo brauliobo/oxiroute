@@ -8,110 +8,6 @@ impl EndpointPool {
         self.health.members.load_full()
     }
 
-    /// Rotation-ordered candidates and whether any server is selectable.
-    fn candidates(
-        &self,
-        members: &Membership,
-        start: usize,
-        excluded: &[String],
-        now_unix_ms: u64,
-    ) -> (Vec<Candidate>, bool) {
-        self.read_health_of(members, |members| {
-            let endpoints = &members.endpoints;
-            let pool_available = endpoints
-                .iter()
-                .any(|server| server.selectable_at(now_unix_ms));
-            let candidates = (0..endpoints.len())
-                .filter_map(|offset| {
-                    let index = (start + offset) % endpoints.len();
-                    let server = &endpoints[index];
-                    (server.selectable_at(now_unix_ms) && !excluded.contains(&server.name)).then(
-                        || Candidate {
-                            index,
-                            load: server.load(),
-                            weight: server.weight(),
-                        },
-                    )
-                })
-                .collect();
-            (candidates, pool_available)
-        })
-    }
-
-    /// Orders `candidates` by the algorithm's preference; the first is its pick.
-    fn rank(&self, selection: &mut SelectionState, candidates: &mut [Candidate]) {
-        match &self.algorithm {
-            UpstreamAlgorithm::RoundRobin => {}
-            UpstreamAlgorithm::First => candidates.sort_by_key(|candidate| candidate.index),
-            UpstreamAlgorithm::LeastConnections => {
-                candidates.sort_by_key(|candidate| candidate.load);
-            }
-            UpstreamAlgorithm::WeightedRoundRobin { .. } => {
-                candidates.sort_by_key(|candidate| {
-                    (
-                        std::cmp::Reverse(
-                            selection.credit[candidate.index] + i64::from(candidate.weight),
-                        ),
-                        candidate.index,
-                    )
-                });
-            }
-            UpstreamAlgorithm::PowerOfTwoChoices => {
-                if candidates.len() > 1 {
-                    let first =
-                        usize::try_from(selection.next_random()).unwrap_or(0) % candidates.len();
-                    let mut second = usize::try_from(selection.next_random()).unwrap_or(0)
-                        % (candidates.len() - 1);
-                    if second >= first {
-                        second += 1;
-                    }
-                    let (better, other) = if candidates[second].load < candidates[first].load {
-                        (second, first)
-                    } else {
-                        (first, second)
-                    };
-                    candidates.swap(0, better);
-                    let other = if other == 0 { better } else { other };
-                    candidates.swap(1, other);
-                }
-            }
-        }
-    }
-
-    /// Records that `chosen` was picked among `candidates`.
-    fn commit(
-        &self,
-        selection: &mut SelectionState,
-        members: &Membership,
-        candidates: &[Candidate],
-        chosen: usize,
-    ) {
-        if matches!(
-            &self.algorithm,
-            UpstreamAlgorithm::WeightedRoundRobin { .. }
-        ) {
-            let total = candidates
-                .iter()
-                .map(|candidate| i64::from(candidate.weight))
-                .sum::<i64>();
-            for candidate in candidates {
-                selection.credit[candidate.index] += i64::from(candidate.weight);
-            }
-            selection.credit[chosen] -= total;
-        }
-        if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
-            selection.next = (chosen + 1) % members.endpoints.len();
-        }
-    }
-
-    /// Where candidates start: weighted rotation must not depend on the last pick.
-    fn rotation_start(&self, selection: &SelectionState) -> usize {
-        match &self.algorithm {
-            UpstreamAlgorithm::WeightedRoundRobin { .. } => 0,
-            _ => selection.next,
-        }
-    }
-
     /// Servers a pool with nothing selectable may still serve, least bad first.
     fn fail_open_ranking(&self, excluded: &[String]) -> Vec<Arc<PoolEndpoint>> {
         let mut ranked = self.read_health(|members| {
@@ -153,18 +49,50 @@ impl EndpointPool {
         self.select_attempt(excluded, false)
     }
 
+    /// The lease of the algorithm's best eligible server, falling back to the next best when a
+    /// permit is lost to a concurrent selection.
+    fn acquire_best(
+        &self,
+        selection: &mut SelectionState,
+        members: &Membership,
+        view: &SelectableView,
+        eligible: &impl Fn(usize) -> bool,
+        reuse_idle: bool,
+        now_unix_ms: u64,
+    ) -> Option<EndpointLease> {
+        let mut tried = Vec::new();
+        loop {
+            let untried = |index: usize| eligible(index) && !tried.contains(&index);
+            let index = self.pick(selection, members, view, &untried)?;
+            let server = &members.endpoints[index];
+            let lease = server
+                .try_acquire(
+                    &self.queue,
+                    &self.health,
+                    Admission::Selectable,
+                    now_unix_ms,
+                )
+                .or_else(|| {
+                    (reuse_idle && server.has_idle_connection())
+                        .then(|| self.pending_lease_for(server, Admission::Selectable))
+                });
+            if lease.is_some() {
+                self.commit(selection, members, view, eligible, index);
+                return lease;
+            }
+            tried.push(index);
+        }
+    }
+
     /// Acquires a permit of the best server. With `reuse_idle`, a server whose pooled connection
     /// is idle also qualifies and gets a pending lease, since the connection serves the request
     /// without a new permit.
     fn select_attempt(&self, excluded: &[String], reuse_idle: bool) -> SelectionAttempt {
-        let mut selection = self
-            .selection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut selection = self.lock_selection();
         let members = self.members();
         let now_unix_ms = now_unix_ms();
-        let start = self.rotation_start(&selection);
-        let (candidates, pool_available) = self.candidates(&members, start, excluded, now_unix_ms);
+        let view = self.health.selectable_view(&members, now_unix_ms);
+        let pool_available = !view.is_empty();
         if !pool_available && self.resilience.fail_open {
             return if reuse_idle {
                 SelectionAttempt {
@@ -176,46 +104,38 @@ impl EndpointPool {
                 self.select_fail_open(excluded)
             };
         }
-        let usable = |server: &PoolEndpoint| {
+        let candidate = |index: usize| !excluded.contains(&members.endpoints[index].name);
+        let usable = |index: usize| {
+            let server = &members.endpoints[index];
             server.has_capacity() || (reuse_idle && server.has_idle_connection())
         };
-        let saturated = candidates
-            .iter()
-            .any(|candidate| !usable(&members.endpoints[candidate.index]));
-        let has_candidates = !candidates.is_empty();
-        let mut ordered = candidates
-            .into_iter()
-            .filter(|candidate| usable(&members.endpoints[candidate.index]))
-            .collect::<Vec<_>>();
-        let pool = ordered.clone();
-        self.rank(&mut selection, &mut ordered);
-        let selected = ordered.iter().find_map(|candidate| {
-            let server = &members.endpoints[candidate.index];
-            server
-                .try_acquire(
-                    &self.queue,
-                    &self.health,
-                    Admission::Selectable,
-                    now_unix_ms,
-                )
-                .or_else(|| {
-                    (reuse_idle && server.has_idle_connection()).then(|| {
-                        self.pending_lease_for(
-                            &members.endpoints[candidate.index],
-                            Admission::Selectable,
-                        )
-                    })
-                })
-                .map(|lease| (lease, candidate.index))
-        });
-        let lease = selected.map(|(lease, index)| {
-            self.commit(&mut selection, &members, &pool, index);
-            lease
-        });
+        let eligible = |index: usize| (excluded.is_empty() || candidate(index)) && usable(index);
+        let lease = if pool_available {
+            self.acquire_best(
+                &mut selection,
+                &members,
+                &view,
+                &eligible,
+                reuse_idle,
+                now_unix_ms,
+            )
+        } else {
+            None
+        };
+        if lease.is_some() {
+            return SelectionAttempt {
+                lease,
+                pool_available,
+                saturated: false,
+            };
+        }
+        let saturated = view
+            .rotation(0)
+            .any(|index| (excluded.is_empty() || candidate(index)) && !usable(index));
         SelectionAttempt {
-            lease,
+            lease: None,
             pool_available,
-            saturated: saturated && has_candidates,
+            saturated,
         }
     }
 
@@ -259,37 +179,29 @@ impl EndpointPool {
 
     /// A connection target, and whether any server was selectable.
     fn connection_target(&self, excluded: &[String]) -> (Option<EndpointLease>, bool) {
-        let mut selection = self
-            .selection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut selection = self.lock_selection();
         let members = self.members();
-        let start = self.rotation_start(&selection);
-        let (candidates, pool_available) =
-            self.candidates(&members, start, excluded, now_unix_ms());
-        if !pool_available && self.resilience.fail_open {
-            return (self.fail_open_connection_target(excluded), false);
+        let now_unix_ms = now_unix_ms();
+        let view = self.health.selectable_view(&members, now_unix_ms);
+        if view.is_empty() {
+            let lease = self
+                .resilience
+                .fail_open
+                .then(|| self.fail_open_connection_target(excluded))
+                .flatten();
+            return (lease, false);
         }
-        let available = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| members.endpoints[candidate.index].has_capacity())
-            .collect::<Vec<_>>();
-        let mut pool = if available.is_empty() {
-            candidates
-        } else {
-            available
+        let candidate = |index: usize| {
+            excluded.is_empty() || !excluded.contains(&members.endpoints[index].name)
         };
-        let pooled = pool.clone();
-        self.rank(&mut selection, &mut pool);
-        let Some(chosen) = pool.first().map(|candidate| candidate.index) else {
-            return (None, pool_available);
-        };
-        self.commit(&mut selection, &members, &pooled, chosen);
-        (
-            Some(self.pending_lease_for(&members.endpoints[chosen], Admission::Selectable)),
-            pool_available,
-        )
+        let with_capacity =
+            |index: usize| candidate(index) && members.endpoints[index].has_capacity();
+        let chosen = self
+            .take(&mut selection, &members, &view, &with_capacity)
+            .or_else(|| self.take(&mut selection, &members, &view, &candidate));
+        let lease = chosen
+            .map(|index| self.pending_lease_for(&members.endpoints[index], Admission::Selectable));
+        (lease, true)
     }
 
     fn fail_open_connection_target(&self, excluded: &[String]) -> Option<EndpointLease> {
@@ -495,11 +407,9 @@ impl EndpointPool {
     /// Whether the pool serves its least-bad servers because none is selectable.
     pub(super) fn failing_open(&self, now_unix_ms: u64) -> bool {
         self.resilience.fail_open
-            && self.read_health(|members| {
-                !members
-                    .endpoints
-                    .iter()
-                    .any(|server| server.selectable_at(now_unix_ms))
-            })
+            && self
+                .health
+                .selectable_view(&self.members(), now_unix_ms)
+                .is_empty()
     }
 }

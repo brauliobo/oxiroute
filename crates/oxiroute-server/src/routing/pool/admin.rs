@@ -24,48 +24,46 @@ impl EndpointPool {
 
     fn has_unattempted_by(&self, attempted: impl Fn(&PoolEndpoint) -> bool) -> bool {
         let now_unix_ms = now_unix_ms();
-        let failing_open = self.failing_open(now_unix_ms);
-        self.read_health(|members| {
-            members.endpoints.iter().any(|server| {
-                !attempted(server) && server.admission(now_unix_ms, failing_open).is_some()
-            })
-        })
+        let members = self.members();
+        let view = self.health.selectable_view(&members, now_unix_ms);
+        if !view.is_empty() {
+            return view
+                .rotation(0)
+                .any(|index| !attempted(&members.endpoints[index]));
+        }
+        self.resilience.fail_open
+            && members
+                .endpoints
+                .iter()
+                .any(|server| !attempted(server) && server.admission(now_unix_ms, true).is_some())
     }
 
     #[must_use]
     pub fn has_available(&self) -> bool {
-        let now_unix_ms = now_unix_ms();
-        self.read_health(|members| {
-            members
-                .endpoints
-                .iter()
-                .any(|server| server.selectable_at(now_unix_ms) && server.has_capacity())
-        })
+        let members = self.members();
+        let view = self.health.selectable_view(&members, now_unix_ms());
+        view.rotation(0)
+            .any(|index| members.endpoints[index].has_capacity())
     }
 
     /// Name and weight of every server that could be chosen now, in pool order.
     pub(crate) fn selectable_servers(&self) -> Vec<(String, u16)> {
-        let now_unix_ms = now_unix_ms();
-        self.read_health(|members| {
-            members
-                .endpoints
-                .iter()
-                .filter(|server| server.selectable_at(now_unix_ms))
-                .map(|server| (server.name.clone(), server.weight()))
-                .collect()
-        })
+        let members = self.members();
+        let view = self.health.selectable_view(&members, now_unix_ms());
+        view.rotation(0)
+            .map(|index| &members.endpoints[index])
+            .map(|server| (server.name.clone(), server.weight()))
+            .collect()
     }
 
     /// Whether any server could be chosen now, ignoring whether it has spare capacity.
     #[must_use]
     pub fn has_selectable(&self) -> bool {
-        let now_unix_ms = now_unix_ms();
-        self.read_health(|members| {
-            members
-                .endpoints
-                .iter()
-                .any(|server| server.selectable_at(now_unix_ms))
-        })
+        let members = self.members();
+        !self
+            .health
+            .selectable_view(&members, now_unix_ms())
+            .is_empty()
     }
 
     pub(crate) fn note_unavailable_selection(&self) {
@@ -87,6 +85,7 @@ impl EndpointPool {
             .administrative_state
             .swap(state as u8, Ordering::AcqRel);
         if previous != state as u8 {
+            self.health.selectable_changed();
             self.queue.notify_capacity_waiters();
         }
         Ok(())
@@ -98,6 +97,7 @@ impl EndpointPool {
                 .administrative_state
                 .store(state as u8, Ordering::Release);
         }
+        self.health.selectable_changed();
         self.queue.notify_capacity_waiters();
     }
 
@@ -114,6 +114,7 @@ impl EndpointPool {
         self.server(name)?
             .health_override
             .store(health_override as u8, Ordering::Release);
+        self.health.selectable_changed();
         self.queue.notify_capacity_waiters();
         Ok(())
     }
@@ -217,6 +218,7 @@ impl EndpointPool {
                 .weight_override
                 .store(state.weight.unwrap_or(0), Ordering::Release);
         }
+        self.health.selectable_changed();
         self.queue.notify_capacity_waiters();
     }
 
