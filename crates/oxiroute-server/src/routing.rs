@@ -43,6 +43,7 @@ mod policy;
 mod pool;
 mod queue;
 mod queue_wait;
+mod resolved;
 mod route;
 mod schedule;
 mod server;
@@ -60,6 +61,7 @@ pub use policy::*;
 #[allow(clippy::wildcard_imports)]
 use queue::*;
 use queue_wait::{WaitLedger, WaitTicket};
+use resolved::ResolvedAddresses;
 pub use route::*;
 pub use schedule::QueueTag;
 use schedule::{QueueSchedule, WaitQueue};

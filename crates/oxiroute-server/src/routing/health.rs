@@ -509,6 +509,12 @@ impl PoolHealthState {
         failure: HealthFailure,
         at_unix_ms: u64,
     ) {
+        if matches!(
+            failure,
+            HealthFailure::ConnectFailed | HealthFailure::Timeout
+        ) {
+            server.forget_resolution();
+        }
         let ejection = {
             let _writer = self
                 .health_writer
@@ -812,7 +818,7 @@ async fn probe_until_readmitted(
             server.probing.store(false, Ordering::Release);
             return;
         }
-        let result = match server.resolve_addresses().await {
+        let result = match server.resolve_probe_addresses().await {
             Ok(addresses) => probe.probe(&addresses).await,
             Err(_) => Err(HealthFailure::ConnectFailed),
         };

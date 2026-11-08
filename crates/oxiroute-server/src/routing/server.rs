@@ -129,6 +129,8 @@ pub(super) struct PoolEndpoint {
     pub(super) name: String,
     pinned_addresses: Option<RwLock<Arc<[SocketAddr]>>>,
     protected_addresses: Arc<[SocketAddr]>,
+    /// The shared lookup of a DNS endpoint that resolves on connect.
+    pub(super) resolved: ResolvedAddresses,
     pub(super) origin: ServerOrigin,
     pub(super) priority: AtomicU16,
     pub(super) state: AtomicU8,
@@ -187,6 +189,7 @@ impl PoolEndpoint {
             name: server.name,
             pinned_addresses: server.pinned_addresses.map(RwLock::new),
             protected_addresses: server.protected_addresses,
+            resolved: ResolvedAddresses::default(),
             origin,
             priority: AtomicU16::new(priority),
             state: AtomicU8::new(state as u8),
@@ -401,17 +404,52 @@ impl PoolEndpoint {
         queue.notify_capacity_waiters();
     }
 
+    /// The addresses to connect to: the pinned ones, else the lookup shared with the other requests.
     pub(super) async fn resolve_addresses(&self) -> io::Result<Vec<SocketAddr>> {
-        let addresses = if let Some(addresses) = &self.pinned_addresses {
+        if let Some(addresses) = self.pinned() {
+            self.reject_protected_addresses(&addresses)?;
+            return Ok(addresses);
+        }
+        if matches!(self.endpoint, RuntimeEndpoint::Dns { .. }) {
+            let shared = self.resolved.get_or_resolve(|| self.lookup()).await?;
+            return Ok(shared.to_vec());
+        }
+        let addresses = self.endpoint.resolve_addresses().await?;
+        self.reject_protected_addresses(&addresses)?;
+        Ok(addresses)
+    }
+
+    /// Like [`Self::resolve_addresses`], but a DNS endpoint is looked up again and the shared
+    /// lookup takes the answer, as for a health probe.
+    pub(super) async fn resolve_probe_addresses(&self) -> io::Result<Vec<SocketAddr>> {
+        if self.pinned_addresses.is_some() || !matches!(self.endpoint, RuntimeEndpoint::Dns { .. })
+        {
+            return self.resolve_addresses().await;
+        }
+        let addresses = self.lookup().await?;
+        self.resolved.store(&addresses);
+        Ok(addresses.to_vec())
+    }
+
+    /// Forgets the shared lookup after a connection to the endpoint failed, since its addresses may
+    /// have changed.
+    pub(super) fn forget_resolution(&self) {
+        self.resolved.invalidate();
+    }
+
+    fn pinned(&self) -> Option<Vec<SocketAddr>> {
+        self.pinned_addresses.as_ref().map(|addresses| {
             addresses
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .to_vec()
-        } else {
-            self.endpoint.resolve_addresses().await?
-        };
+        })
+    }
+
+    async fn lookup(&self) -> io::Result<Arc<[SocketAddr]>> {
+        let addresses = self.endpoint.resolve_addresses().await?;
         self.reject_protected_addresses(&addresses)?;
-        Ok(addresses)
+        Ok(addresses.into())
     }
 
     pub(super) async fn resolve_fresh_dns(&self) -> io::Result<Vec<SocketAddr>> {

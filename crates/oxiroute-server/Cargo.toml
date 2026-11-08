@@ -70,7 +70,7 @@ oxiroute-supervisor-process = { path = "../oxiroute-supervisor-process" }
 rml_rtmp.workspace = true
 rustls.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "test-util", "time"] }
 tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true
 
