@@ -1,0 +1,93 @@
+# R2 data-path harness
+
+Deterministic, instruction-count-first measurements of the OxiRoute proxy data path (HTTP/1.1, HTTP/2,
+TLS termination, static files, compression, cache, WebSocket and TCP passthrough) and of the marginal cost
+of each per-request feature. Wall-clock numbers on a shared host are unreliable, so the primary metric is
+**user-space instructions per request**, attached to the proxy for exactly the measured request window.
+
+## Pieces
+
+| File | Purpose |
+| --- | --- |
+| `run.sh` | Entry point; `run.sh --help` lists every option. Wraps `run.py`. |
+| `run.py` | Lane table, process orchestration, `perf stat` / strace / allocator-shim / `perf record` measurements. |
+| `gen_config.py` | Renders the Lua configuration of a lane from independent feature switches. |
+| `tool/` | `r2tool`: in-tree upstream (0 B, 1 KiB, 64 KiB, 1 MiB, chunked, slow, sink, upgrade echo, TCP echo) and a fixed-count load generator (h1, h1+TLS, h2c, h2+TLS, WebSocket-style upgrade, TCP echo; keep-alive or new connection per request; header padding; request bodies; p50/p99/p99.9). `alloc_count.c` is an `LD_PRELOAD` shim counting allocator and `clock_gettime` calls. |
+| `table.py` | Compact table of a `results.json`, optionally with instruction deltas against a previous run. |
+| `profile_summary.py` | Component and symbol summary of a `--profile` `perf.data`. |
+
+## Method
+
+* The load generator warms up (connections plus `--warmup` requests), runs a synchronous hook (`--hook-start`),
+  sends exactly `--requests` requests, then runs `--hook-stop`. There are no timers used for synchronisation.
+* `perf stat -D -1 --control fifo:...` is attached to the proxy; the hooks enable and disable it, so the counted
+  window is the measured requests only. `instructions:u` and `cycles:u` of an idle window (2 s, same process) are
+  scaled by the elapsed time and subtracted. Result: instructions/request with a typical spread below 1% (the
+  `instr_spread_pct` column is `(max-min)/median` over `--reps` repetitions, default 5).
+* Voluntary and involuntary context switches are the delta of `/proc/PID/task/*/status` over the same window.
+* `--sys`: syscalls per request are the slope of `strace -f -c` totals between two request counts (`--sys-low`,
+  `--sys-high`), so startup syscalls cancel. strace perturbs timing, so batching (`epoll_wait`, `futex`) is
+  indicative; per-request syscalls such as `recvfrom` and `write` are exact.
+* `--alloc`: allocator calls, requested bytes and `clock_gettime` calls per request from the `LD_PRELOAD` shim
+  (valgrind does not run on glibc 2.44 with AVX-512, so callgrind/dhat are unavailable on the reference host).
+* `--mem`: heap and RSS per idle keep-alive connection.
+* `--profile`: `perf record -e instructions:u -c PERIOD` (flat, per-function instruction sampling; instruction
+  sampling skids onto the instruction after long-latency atomics, so lock-heavy libc spots are over-weighted).
+  With `--profile-bin` pointing at a frame-pointer build (`RUSTFLAGS='-C force-frame-pointers=yes'`) it records
+  `--call-graph fp`, and `perf report --children` gives inclusive costs. DWARF unwinding is not permitted by
+  `perf_event_paranoid=2`.
+* Every timed section runs under `flock /tmp/oxiroute-bench.lock`. Ports are taken from `20300-20499` (the
+  ephemeral range overlaps it, so a block is probed first). Everything binds `127.0.0.1`.
+* The proxy runs with `OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME=1` (single process, no supervisor); the data-path code
+  is identical to the supervised worker.
+* Proxy, upstream and load generator are pinned with `taskset` to `R2_PROXY_CPUS` (default `8-11`),
+  `R2_UPSTREAM_CPUS` (`12-13`) and `R2_LOAD_CPUS` (`14-15`). Each Pingora listener is one service with one worker
+  thread, so scaling lanes use `listeners=N` and need `N + 1` proxy CPUs (`R2_PROXY_CPUS=4-11`).
+
+## Build
+
+```sh
+# proxy (the shipped release profile; debug line tables do not change code generation)
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=false \
+  nice cargo build --release --locked -p oxiroute --bin oxiroute -j4
+# harness tool (separate workspace, offline-capable)
+(cd benchmarks/r2-data-path/tool && nice cargo build --release -j2)
+```
+
+## Run
+
+```sh
+export OXIROUTE_BIN=target/release/oxiroute
+benchmarks/r2-data-path/run.sh --lanes default --out /tmp/r2-before          # instructions, latency, RSS
+benchmarks/r2-data-path/run.sh --lanes f_base,f_access_log --no-perf --alloc --sys --out /tmp/r2-before
+benchmarks/r2-data-path/run.sh --lanes f_base --no-perf --mem --out /tmp/r2-before
+benchmarks/r2-data-path/run.sh --lanes f_base --no-perf --profile --out /tmp/r2-before
+python3 benchmarks/r2-data-path/table.py /tmp/r2-after/results.json /tmp/r2-before/results.json   # deltas
+```
+
+`run.sh --list` prints all lanes. Output is one `key=value` line per lane (also stored as `results.json`):
+
+`instr_per_req cycles_per_req vctxsw_per_req nvctxsw_per_req rps p50_us p99_us p999_us connects errors rss_kb
+hwm_kb threads fds` and, with the optional modes, `syscalls_per_req sys_*`, `mallocs_per_req frees_per_req
+alloc_bytes_per_req clock_gettime_per_req`, `heap_live_bytes_per_conn rss_bytes_per_conn`.
+
+## Lanes
+
+* Bodies: `h1_b0 h1_b1k h1_b64k h1_b1m h1_stream h1_slow`; connection counts `h1_b1k_c{1,16,256,512,1024,2048,4096}`;
+  `h1_newconn_b1k`; headers `h1_hdr{2048,8192}`; request bodies `h1_post{4,64,1024}k`, `h1_post64k_reqbuf`,
+  `h1_post64k_retrybuf`.
+* Feature A/B on one workload (16 keep-alive connections, 1 KiB): `f_base f_fixed f_access_log f_timeouts f_retry
+  f_queue f_capacity f_passive f_breaker f_outlier f_nginx_host f_all_6_0`, plus `dns_on_connect`, `dns_startup`,
+  `pool_s2`.
+* Other actions: `gzip_html64k nogzip_html64k cache_hit_b1k cache_hit_b64k static_f{1k,64k,1m} ws_echo_1k l4_echo_1k`.
+* TLS (OpenSSL via Pingora) and HTTP/2: `tls_h1_keepalive tls_hs_full_{tls13,tls12,rsa2048}
+  tls_hs_resume_{cache_tls12,cache_tls13,tickets_tls13,client_only} tls_h1_b1m h2_b1k_c4s16 h2_b64k_c4s16 h2_b0_c1s1`.
+* Scaling over listeners: `scale_l{1,2,4,8}` and `scale_all_l{1,2,4,8}` (all 6.0 features on), and `scale4_<feature>`
+  (one feature at 4 listeners) to bisect which feature breaks scaling. Pool size: `pool_s{2,64}`, `pool_s64_passive`,
+  `pool_s1_passive`.
+* `--lock-batch N` holds the shared benchmark lock across N consecutive lanes (re-entrant) so long runs are not starved.
+
+## Limits
+
+Upstream HTTP/2 is not covered: the proxy requires TLS to the upstream for HTTP/2 and the upstream tool is
+plaintext. Forward-proxy mode, RTMP and HTTP/3 are not covered by this harness.
