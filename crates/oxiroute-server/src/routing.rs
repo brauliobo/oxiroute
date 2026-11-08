@@ -12,7 +12,10 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use crate::health::ReadmissionProbe;
+use crate::{
+    health::ReadmissionProbe,
+    observability::upstream_stats::{ServerStats, upstream_stats},
+};
 use arc_swap::ArcSwap;
 use http::{
     HeaderMap, Method, Uri,

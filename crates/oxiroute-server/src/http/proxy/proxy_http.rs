@@ -245,8 +245,7 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.trace.queue_wait += selection_started.elapsed();
             ctx.trace.attempt_started = Some(Instant::now());
             ctx.trace.servers.push(selected.server_name().to_owned());
-            ctx.trace.stats =
-                Some(upstream_stats().server(pool.selector().name(), selected.server_name()));
+            ctx.trace.stats = Some(Arc::clone(selected.server_stats()));
             if let Some(inflight) = &ctx.inflight {
                 inflight.set_pool(pool.selector().name());
                 inflight.set_server(selected.server_name());

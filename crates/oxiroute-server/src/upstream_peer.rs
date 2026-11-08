@@ -291,6 +291,12 @@ impl SelectedEndpoint {
         self.observation.clone()
     }
 
+    pub(crate) fn server_stats(
+        &self,
+    ) -> &std::sync::Arc<crate::observability::upstream_stats::ServerStats> {
+        self.lease.server_stats()
+    }
+
     pub(crate) fn end_queue_wait(&self) {
         self.lease.end_queue_wait();
     }
