@@ -201,3 +201,111 @@ async fn on_connect_dns_rejects_a_protected_listener_after_resolution() {
         .expect_err("protected address must be rejected after DNS resolution");
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 }
+
+fn on_connect_pool(host: &str) -> RoundRobinPool {
+    RoundRobinPool::new_named_servers(
+        "on-connect".into(),
+        [RuntimeServer {
+            name: "origin".into(),
+            endpoint: RuntimeEndpoint::Dns {
+                host: host.into(),
+                port: 443,
+            },
+            max_connections: None,
+            pinned_addresses: None,
+            protected_addresses: Arc::from([]),
+        }],
+        UpstreamAlgorithm::First,
+        None,
+        None,
+    )
+    .expect("on-connect pool")
+}
+
+#[tokio::test]
+async fn on_connect_dns_requests_share_the_latest_lookup() {
+    let pool = on_connect_pool("localhost");
+    let server = pool.handle(0).0;
+    assert!(server.resolved.fresh().is_none());
+
+    let first = pool.select().expect("lease").resolve_addresses().await;
+    let cached = server
+        .resolved
+        .fresh()
+        .expect("lookup kept for the next request");
+    let second = pool.select().expect("lease").resolve_addresses().await;
+
+    assert_eq!(first.expect("first"), cached.to_vec());
+    assert_eq!(second.expect("second"), cached.to_vec());
+    assert!(Arc::ptr_eq(
+        &cached,
+        &server.resolved.fresh().expect("unchanged")
+    ));
+}
+
+#[tokio::test]
+async fn a_failed_connection_makes_the_next_request_resolve_again() {
+    let pool = on_connect_pool("localhost");
+    let server = pool.handle(0).0;
+    pool.select()
+        .expect("lease")
+        .resolve_addresses()
+        .await
+        .expect("lookup");
+
+    pool.record_passive_failure(0, HealthFailure::UnexpectedStatus);
+    assert!(
+        server.resolved.fresh().is_some(),
+        "an error status says nothing about the address"
+    );
+    pool.record_passive_failure(0, HealthFailure::ConnectFailed);
+
+    assert!(server.resolved.fresh().is_none());
+}
+
+#[tokio::test]
+async fn health_probes_look_up_fresh_and_refresh_the_shared_lookup() {
+    let pool = on_connect_pool("localhost");
+    let server = pool.handle(0).0;
+
+    let probed = pool
+        .resolve_server_addresses(&pool.server_handle("origin").expect("handle"))
+        .await
+        .expect("probe lookup");
+
+    assert_eq!(server.resolved.fresh().expect("stored").to_vec(), probed);
+}
+
+#[tokio::test]
+async fn a_protected_dns_answer_is_never_kept_for_later_requests() {
+    let protected = SocketAddr::from(([127, 0, 0, 1], 18404));
+    let pool = RoundRobinPool::new_named_servers(
+        "protected".into(),
+        [RuntimeServer {
+            name: "rebind".into(),
+            endpoint: RuntimeEndpoint::Dns {
+                host: "localhost".into(),
+                port: protected.port(),
+            },
+            max_connections: None,
+            pinned_addresses: None,
+            protected_addresses: Arc::from([protected]),
+        }],
+        UpstreamAlgorithm::RoundRobin,
+        None,
+        None,
+    )
+    .expect("protected DNS pool");
+
+    for _ in 0..2 {
+        let error = pool
+            .select()
+            .expect("lease")
+            .resolve_addresses()
+            .await
+            .expect_err("rejected on every request");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    assert!(pool.handle(0).0.resolved.fresh().is_none());
+}

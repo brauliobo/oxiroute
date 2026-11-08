@@ -345,8 +345,13 @@ Current constraints:
   with nonempty labels of at most 63 bytes. IP literals, wildcards, trailing dots, non-ASCII bytes,
   and labels with non-alphanumeric edge characters are rejected. Validation does not resolve or
   expand a DNS endpoint. Its normalized host and port remain the stable selection, retry,
-  monitoring, and topology identity; lookup occurs while establishing each connection or probe.
-  A nonempty result is sorted and deduplicated into at most 16 addresses. Health probes, HTTP, and
+  monitoring, and topology identity. An `on_connect` endpoint is looked up while establishing a
+  connection, and the answer is shared by every request, connection, and L4 relay of that endpoint
+  for up to one second, so a busy endpoint costs one lookup per second rather than one per request;
+  a failed or timed-out connection discards the shared answer, and every health probe looks the host
+  up again and refreshes it. The protected-listener check runs on every lookup, and a rejected answer
+  is never shared. A `startup` endpoint keeps its pinned addresses until a DNS refresh commits new
+  ones. A nonempty result is sorted and deduplicated into at most 16 addresses. Health probes, HTTP, and
   L4 traffic try that same deterministic address order until one connects; overflow and empty
   answers fail closed. One configured connect timeout bounds DNS resolution plus all address
   attempts for the logical endpoint.

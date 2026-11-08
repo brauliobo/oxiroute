@@ -342,6 +342,6 @@ impl EndpointPool {
         &self,
         server: &ServerHandle,
     ) -> io::Result<Vec<SocketAddr>> {
-        server.0.resolve_addresses().await
+        server.0.resolve_probe_addresses().await
     }
 }
