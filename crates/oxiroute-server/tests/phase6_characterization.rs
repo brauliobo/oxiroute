@@ -52,34 +52,7 @@ async fn read_only_management_responses_preserve_dto_wire_shapes() {
         assert!(!wire.contains(private_key.trim()));
     }
 
-    let generation = generation.json();
-    let generation = generation["generation"]
-        .as_object()
-        .expect("generation object");
-    assert!(generation["buildVersion"].is_string());
-    for key in [
-        "diskRevision",
-        "candidateRevision",
-        "activeRevision",
-        "previousRevision",
-        "quarantinedRevision",
-    ] {
-        assert!(
-            generation[key].is_string() || generation[key].is_null(),
-            "{key}"
-        );
-    }
-    assert!(generation["activeAccepting"].is_boolean());
-    assert!(generation["degraded"].is_boolean());
-    for key in [
-        "generation",
-        "prepares",
-        "activations",
-        "failures",
-        "rollbacks",
-    ] {
-        assert!(generation[key].is_u64(), "generation counter {key}");
-    }
+    assert_generation_wire_shape(&generation.json());
 
     let listeners = listeners.json();
     let listener = &listeners["listeners"][0];
@@ -221,6 +194,36 @@ fn assert_decimal(value: &Value) {
         }),
         "expected decimal string, got {value}"
     );
+}
+
+fn assert_generation_wire_shape(generation: &Value) {
+    let generation = generation["generation"]
+        .as_object()
+        .expect("generation object");
+    assert!(generation["buildVersion"].is_string());
+    for key in [
+        "diskRevision",
+        "candidateRevision",
+        "activeRevision",
+        "previousRevision",
+        "quarantinedRevision",
+    ] {
+        assert!(
+            generation[key].is_string() || generation[key].is_null(),
+            "{key}"
+        );
+    }
+    assert!(generation["activeAccepting"].is_boolean());
+    assert!(generation["degraded"].is_boolean());
+    for key in [
+        "generation",
+        "prepares",
+        "activations",
+        "failures",
+        "rollbacks",
+    ] {
+        assert!(generation[key].is_u64(), "generation counter {key}");
+    }
 }
 
 fn assert_enum(value: &Value, allowed: &[&str]) {

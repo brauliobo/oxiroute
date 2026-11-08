@@ -1111,8 +1111,8 @@ fn validates_rescue_and_any_retry_status() {
     let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
     let rescue = proxy_route(
         "",
-        r#"              retry = { max_retries = 2, response_statuses = { 404, 418 }, triggers = {} },
-              rescue = { statuses = { 404 } },"#,
+        r"              retry = { max_retries = 2, response_statuses = { 404, 418 }, triggers = {} },
+              rescue = { statuses = { 404 } },",
     );
     let loaded = load_lua(&config(&rescue, endpoint)).expect("rescue policy");
     let policy = &first_route(&config(&rescue, endpoint))["action"]["policy"];

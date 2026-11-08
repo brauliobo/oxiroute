@@ -450,7 +450,7 @@ fn parses_registration_commands_and_socket_endpoints() {
     );
     assert!(Endpoint::parse("unix:relative.sock").is_err());
     assert_eq!(registry::parse_ttl("500ms"), Ok(Duration::from_millis(500)));
-    assert_eq!(registry::parse_ttl("2m"), Ok(Duration::from_secs(120)));
+    assert_eq!(registry::parse_ttl("2m"), Ok(Duration::from_mins(2)));
     assert!(registry::parse_ttl("soon").is_err());
 }
 

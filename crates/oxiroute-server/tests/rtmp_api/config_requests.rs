@@ -504,6 +504,10 @@ pub(super) async fn rejects_invalid_malformed_and_oversized_config_requests() {
             .as_bytes()
     );
 
+    rejects_malformed_and_oversized_validation_bodies(&harness).await;
+}
+
+async fn rejects_malformed_and_oversized_validation_bodies(harness: &ManagementHarness) {
     let malformed = harness
         .raw_request(
             format!(

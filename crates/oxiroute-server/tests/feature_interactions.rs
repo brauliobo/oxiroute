@@ -375,7 +375,7 @@ fn assert_valid_date(response: &HttpResponse) {
     let date = httpdate::parse_http_date(response.header("date").expect("Date header"))
         .expect("HTTP date");
     let age = SystemTime::now().duration_since(date).unwrap_or_default();
-    assert!(age < Duration::from_secs(60), "{age:?}");
+    assert!(age < Duration::from_mins(1), "{age:?}");
 }
 
 fn assert_not_a_pool_refusal(response: &HttpResponse) {

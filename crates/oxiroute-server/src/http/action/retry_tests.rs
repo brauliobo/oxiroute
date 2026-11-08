@@ -52,11 +52,11 @@ fn the_idempotency_header_gates_only_methods_other_than_get_and_head() {
 
 #[test]
 fn jitter_adds_up_to_the_configured_share_of_the_delay() {
-    let base = Duration::from_millis(1_000);
+    let base = Duration::from_secs(1);
     assert_eq!(jittered_delay(base, 0, 0.9), base);
     assert_eq!(jittered_delay(base, 50, 0.0), base);
     assert_eq!(jittered_delay(base, 50, 0.5), Duration::from_millis(1_250));
-    assert_eq!(jittered_delay(base, 100, 1.0), Duration::from_millis(2_000));
+    assert_eq!(jittered_delay(base, 100, 1.0), Duration::from_secs(2));
     for _ in 0..100 {
         let delay = jittered_delay(base, 30, random_unit());
         assert!(

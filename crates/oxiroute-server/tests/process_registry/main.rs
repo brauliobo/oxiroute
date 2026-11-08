@@ -4,6 +4,7 @@ mod config_support;
 mod fixture_support;
 #[path = "../support/http.rs"]
 mod http_support;
+#[allow(dead_code)]
 #[path = "../support/process.rs"]
 mod process_support;
 
