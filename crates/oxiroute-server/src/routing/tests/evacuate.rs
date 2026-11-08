@@ -190,3 +190,78 @@ fn forcing_kills_the_requests_of_the_last_server() {
     assert_eq!((report.redispatched, report.forced), (0, 1));
     assert_eq!(request.evacuation().settle(), Some(Cancellation::Kill));
 }
+
+#[test]
+fn evacuating_every_server_drains_the_pool_before_cancelling_so_nothing_hops() {
+    let pool = farm("evacuate-all", None, None);
+    let on_a = attempt("evacuate-all", "node-a", None);
+    let on_b = attempt("evacuate-all", "node-b", None);
+    let pinned = attempt("evacuate-all", "node-b", Some(LeftRunning::NotReplayable));
+
+    let report = pool.evacuate_all_servers(false);
+
+    assert_eq!((report.redispatched, report.forced), (0, 0));
+    assert_eq!(
+        report.left_running.get(&LeftRunning::NoDestination),
+        Some(&2)
+    );
+    assert_eq!(
+        report.left_running.get(&LeftRunning::NotReplayable),
+        Some(&1)
+    );
+    let states = pool.administrative_states();
+    assert_eq!(states.len(), 2);
+    assert!(
+        states
+            .iter()
+            .all(|state| state.administrative == AdministrativeState::Drain)
+    );
+    assert!(pool.select().is_none());
+    assert!(
+        [&on_a, &on_b, &pinned]
+            .iter()
+            .all(|guard| guard.evacuation().settle().is_none())
+    );
+    let counted = |server| {
+        upstream_stats()
+            .server("evacuate-all", server)
+            .snapshot()
+            .evacuated
+    };
+    assert_eq!(counted("node-a"), [0, 1, 0, 0]);
+    assert_eq!(counted("node-b"), [0, 2, 0, 0]);
+}
+
+#[test]
+fn forcing_every_server_cuts_all_their_requests() {
+    let pool = farm("evacuate-all-forced", None, None);
+    let on_a = attempt("evacuate-all-forced", "node-a", None);
+    let on_b = attempt(
+        "evacuate-all-forced",
+        "node-b",
+        Some(LeftRunning::ResponseStarted),
+    );
+
+    let report = pool.evacuate_all_servers(true);
+
+    assert_eq!(
+        (
+            report.redispatched,
+            report.forced,
+            report.left_running_total()
+        ),
+        (0, 2, 0)
+    );
+    assert_eq!(on_a.evacuation().settle(), Some(Cancellation::Kill));
+    assert_eq!(on_b.evacuation().settle(), Some(Cancellation::Kill));
+    let counted = |server| {
+        upstream_stats()
+            .server("evacuate-all-forced", server)
+            .snapshot()
+            .evacuated
+    };
+    assert_eq!(
+        (counted("node-a"), counted("node-b")),
+        ([0, 0, 1, 0], [0, 0, 1, 0])
+    );
+}
