@@ -78,11 +78,9 @@ impl ManagementState {
             (Route::ServerMaxConnections, "PUT") => self.server_max_connections(session).await,
             (Route::ServerWeight, "PUT") => self.server_weight(session).await,
             (Route::ServerRefreshDns, "POST") => self.server_refresh_dns(session).await,
-            (Route::Generations, "GET") => ApiResponse::json(
-                200,
-                &serde_json::to_value(GenerationResponse::from(self.lifecycle.status()))
-                    .expect("generation response DTO serializes"),
-            ),
+            (Route::Generations, "GET") => {
+                ApiResponse::dto(200, &GenerationResponse::from(self.lifecycle.status()))
+            }
             (Route::GenerationReload, "POST") => self.generation_reload(session).await,
             (Route::GenerationRollback, "POST") => self.generation_rollback(session).await,
             (Route::GenerationDrain, "POST") => self.generation_drain(session).await,
@@ -173,10 +171,7 @@ fn mutation_response(operation: &str, changed: usize) -> ApiResponse {
 }
 
 fn dto_response<T: schemars::JsonSchema + Serialize>(status: u16, response: &T) -> ApiResponse {
-    ApiResponse::json(
-        status,
-        &serde_json::to_value(response).expect("management response DTO serializes"),
-    )
+    ApiResponse::dto(status, response)
 }
 
 fn invalid_batch() -> ApiResponse {
