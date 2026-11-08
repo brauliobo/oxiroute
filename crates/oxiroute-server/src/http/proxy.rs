@@ -218,13 +218,14 @@ impl HttpRequestContext {
             inflight::registry().register(InflightArrival {
                 request_id: header(&REQUEST_ID_HEADER).unwrap_or_default(),
                 listener: self.listener.name().to_owned(),
-                method: request.method.as_str().to_owned(),
+                method: request.method.clone(),
                 host: header(&HOST),
                 path: bounded_path(request.uri.path()),
                 client_ip: session
                     .client_addr()
                     .and_then(|address| address.as_inet())
-                    .map(|address| address.ip().to_string()),
+                    .map(std::net::SocketAddr::ip),
+                started: self.started_at,
                 deadline: self.deadline.saturating_duration_since(self.started_at),
                 access_log: access_log.cloned(),
             }),

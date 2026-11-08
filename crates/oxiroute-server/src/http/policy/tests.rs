@@ -102,17 +102,8 @@ fn response_decisions_order_connection_policy_and_cookie_phases() {
         names,
         [
             "remove:x-first",
-            "remove:keep-alive",
             "remove:x-second",
             "remove:connection",
-            "remove:keep-alive",
-            "remove:proxy-authenticate",
-            "remove:proxy-authorization",
-            "remove:proxy-connection",
-            "remove:te",
-            "remove:trailer",
-            "remove:transfer-encoding",
-            "remove:upgrade",
             "set:x-order",
             "add:x-order",
             "remove:x-remove",
@@ -133,6 +124,22 @@ fn response_decisions_order_connection_policy_and_cookie_phases() {
     for name in ["connection", "x-first", "x-second", "x-remove"] {
         assert!(!headers.contains_key(name), "{name}");
     }
+}
+
+#[test]
+fn absent_hop_by_hop_headers_need_no_removal_decision() {
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", HeaderValue::from_static("text/plain"));
+    let plain = ProxyPolicyPlan::compile(&HttpProxyPolicy::default());
+    assert!(
+        decide_response_headers(StatusCode::OK, &headers, &plain, true)
+            .unwrap()
+            .is_empty()
+    );
+
+    headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+    let decisions = decide_response_headers(StatusCode::OK, &headers, &plain, true).unwrap();
+    assert_eq!(decisions, [ResponseHeaderDecision::Remove(UPGRADE)]);
 }
 
 #[test]
