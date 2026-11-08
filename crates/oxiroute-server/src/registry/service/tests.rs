@@ -506,3 +506,67 @@ fn joins_changes_departures_and_expiries_are_events_but_renewals_are_not() {
     h.service.tick();
     assert_eq!(server_updates(), before + 4, "a join and an expiry");
 }
+
+#[test]
+fn leases_that_lapse_together_leave_the_store_in_one_write() {
+    let h = harness();
+    let render = pool("render", &[]);
+    let wide = PoolRegistration {
+        max_servers: 10,
+        ..policy()
+    };
+    h.service.attach(vec![binding(&render, Some(wide))]);
+    for index in 0..6 {
+        put(
+            &h,
+            &admin(),
+            "render",
+            &format!("w{index}"),
+            &format!("192.0.2.{}:9000", 10 + index),
+        )
+        .expect("registered");
+    }
+    let revision = h.service.status().revision;
+
+    h.clock.advance(Duration::from_mins(1));
+    h.service.tick();
+
+    assert!(members(&render).is_empty());
+    let status = h.service.status();
+    assert_eq!((status.records, status.revision), (0, revision + 1));
+    assert_eq!(h.service.metrics().expirations["render"], 6);
+}
+
+#[test]
+fn attaching_a_generation_joins_every_stored_server_in_priority_order() {
+    let h = harness();
+    let first = pool("render", &[("local", 3000)]);
+    let wide = PoolRegistration {
+        max_servers: 10,
+        ..policy()
+    };
+    h.service.attach(vec![binding(&first, Some(wide.clone()))]);
+    for (name, priority) in [("c", 100), ("a", 200), ("b", 100)] {
+        let mut registration = request(&format!("192.0.2.{}:9000", 10 + name.as_bytes()[0] - b'a'));
+        registration.priority = Some(priority);
+        h.service
+            .put(&admin(), "render", name, registration, None, false)
+            .expect("registered");
+    }
+    h.service
+        .set_operator_state(&admin(), "render", "b", AdministrativeState::Drain)
+        .expect("drain");
+
+    let second = pool("render", &[("local", 3000)]);
+    h.service.attach(vec![binding(&second, Some(wide))]);
+
+    assert_eq!(members(&second), ["local", "b", "c", "a"]);
+    let drained = second
+        .health_snapshot()
+        .endpoints
+        .into_iter()
+        .filter(|member| member.administrative_state == AdministrativeState::Drain)
+        .map(|member| member.name)
+        .collect::<Vec<_>>();
+    assert_eq!(drained, ["b"]);
+}

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     net::{IpAddr, SocketAddr},
     sync::{
         Arc, Condvar, Mutex, MutexGuard, Weak,
@@ -24,7 +24,7 @@ use super::{
 use crate::{
     AdministrativeState, HealthSupervisor, RoundRobinPool, RuntimeEndpoint, ServerOrigin,
     observability::operational_event::{AuditContext, emit_server_registration},
-    routing::{DynamicServer, RuntimeServer},
+    routing::{DynamicServer, NewMember, RuntimeServer},
 };
 
 const POLL: Duration = Duration::from_secs(1);
@@ -87,6 +87,28 @@ pub struct PutOutcome {
     pub expires_in_ms: u64,
     pub registry_revision: u64,
     pub warnings: Vec<&'static str>,
+}
+
+/// What a pool holds while a reconciliation decides who joins: member names and used endpoints.
+struct Members {
+    names: HashMap<String, (ServerOrigin, RuntimeEndpoint)>,
+    endpoints: HashSet<RuntimeEndpoint>,
+}
+
+impl Members {
+    fn of(pool: &RoundRobinPool) -> Self {
+        let members = pool.health_snapshot().endpoints;
+        Self {
+            endpoints: members
+                .iter()
+                .map(|member| member.address.clone())
+                .collect(),
+            names: members
+                .into_iter()
+                .map(|member| (member.name, (member.origin, member.address)))
+                .collect(),
+        }
+    }
 }
 
 /// A registration pool of a live generation, its policy and the addresses it must never reach.
@@ -322,14 +344,90 @@ impl RegistryService {
             .iter()
             .filter(|record| record.pool == binding.name)
             .collect::<Vec<_>>();
+        let mut seen = Members::of(&pool);
+        let mut joining = Vec::new();
         for record in &desired {
-            Self::apply(binding, &pool, record);
+            let endpoint = RuntimeEndpoint::from(record.address);
+            match seen.names.get(record.name.as_str()) {
+                None if seen.endpoints.insert(endpoint.clone()) => {
+                    seen.names.insert(
+                        record.name.clone(),
+                        (ServerOrigin::Dynamic, endpoint.clone()),
+                    );
+                    joining.push((
+                        Self::new_member(binding, record, endpoint.clone()),
+                        endpoint,
+                    ));
+                }
+                Some((ServerOrigin::Dynamic, current)) if *current == endpoint => {
+                    Self::apply(binding, &pool, record);
+                }
+                Some((ServerOrigin::Dynamic, _)) => {
+                    Self::join_all(binding, &pool, &mut joining);
+                    Self::apply(binding, &pool, record);
+                    seen = Members::of(&pool);
+                }
+                Some((ServerOrigin::Static, _)) | None => {}
+            }
         }
+        Self::join_all(binding, &pool, &mut joining);
+        let wanted = desired
+            .iter()
+            .map(|record| record.name.as_str())
+            .collect::<HashSet<_>>();
         for member in pool.health_snapshot().endpoints {
-            let stale = member.origin == ServerOrigin::Dynamic
-                && !desired.iter().any(|record| record.name == member.name);
+            let stale =
+                member.origin == ServerOrigin::Dynamic && !wanted.contains(member.name.as_str());
             if stale {
                 Self::detach(binding, &pool, &member.name);
+            }
+        }
+    }
+
+    fn new_member(
+        binding: &PoolBinding,
+        record: &Registration,
+        endpoint: RuntimeEndpoint,
+    ) -> NewMember {
+        NewMember {
+            server: RuntimeServer {
+                name: record.name.clone(),
+                endpoint,
+                max_connections: record.max_connections,
+                pinned_addresses: None,
+                protected_addresses: Arc::clone(&binding.protected),
+            },
+            spec: DynamicServer {
+                weight: record.weight,
+                priority: record.priority,
+            },
+            state: record.effective_state(),
+        }
+    }
+
+    /// Adds the servers that are waiting to join with one membership change.
+    fn join_all(
+        binding: &PoolBinding,
+        pool: &Arc<RoundRobinPool>,
+        joining: &mut Vec<(NewMember, RuntimeEndpoint)>,
+    ) {
+        let (members, endpoints): (Vec<_>, Vec<_>) = joining.drain(..).unzip();
+        let names = members
+            .iter()
+            .map(|member| member.server.name.clone())
+            .collect::<Vec<_>>();
+        let results = pool.add_servers(members);
+        for ((result, name), endpoint) in results.into_iter().zip(names).zip(endpoints) {
+            match result {
+                Ok(handle) => {
+                    if let Some(health) = &binding.health {
+                        health.add_target(&binding.name, handle, endpoint);
+                    }
+                }
+                Err(error) => log::warn!(
+                    "registry: could not apply `{name}` to pool `{}`: {error}",
+                    binding.name
+                ),
             }
         }
     }
@@ -743,18 +841,21 @@ impl RegistryService {
             .load()
             .map_err(|error| self.store_error(&mut state, &error))?;
         let now = self.clock.now();
-        Ok(stored
+        let records = stored
             .records
-            .into_iter()
+            .iter()
             .filter(|record| pool.is_none_or(|pool| record.pool == pool))
-            .map(|record| {
-                let status = Self::status_of(&state, &record);
+            .collect::<Vec<_>>();
+        Ok(Self::statuses(&state, &records)
+            .into_iter()
+            .zip(records)
+            .map(|(status, record)| {
                 let expires_in_ms = state
                     .leases
                     .remaining(&record.key(), now)
                     .map(|remaining| u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX));
                 RegistrationView {
-                    record,
+                    record: record.clone(),
                     expires_in_ms,
                     status,
                 }
@@ -762,22 +863,29 @@ impl RegistryService {
             .collect())
     }
 
-    fn status_of(state: &State, record: &Registration) -> RegistrationStatus {
-        let newest = state
-            .bindings
+    /// The status of each record, looking at every pool once however many records it holds.
+    fn statuses(state: &State, records: &[&Registration]) -> Vec<RegistrationStatus> {
+        let mut pools: HashMap<&str, Option<HashMap<String, ServerOrigin>>> = HashMap::new();
+        records
             .iter()
-            .rev()
-            .find(|binding| binding.name == record.pool && binding.live().is_some());
-        let Some(pool) = newest
-            .filter(|binding| binding.policy.is_some())
-            .and_then(PoolBinding::live)
-        else {
-            return RegistrationStatus::Orphaned;
-        };
-        match pool.member(&record.name) {
-            Some((ServerOrigin::Dynamic, _)) => RegistrationStatus::Active,
-            _ => RegistrationStatus::Shadowed,
-        }
+            .map(|record| {
+                let origins = pools.entry(record.pool.as_str()).or_insert_with(|| {
+                    state
+                        .bindings
+                        .iter()
+                        .rev()
+                        .find(|binding| binding.name == record.pool && binding.live().is_some())
+                        .filter(|binding| binding.policy.is_some())
+                        .and_then(PoolBinding::live)
+                        .map(|pool| pool.member_origins())
+                });
+                match origins.as_ref().map(|origins| origins.get(&record.name)) {
+                    None => RegistrationStatus::Orphaned,
+                    Some(Some(ServerOrigin::Dynamic)) => RegistrationStatus::Active,
+                    Some(_) => RegistrationStatus::Shadowed,
+                }
+            })
+            .collect()
     }
 
     /// Store revision, role and health of the registry.
@@ -801,14 +909,16 @@ impl RegistryService {
         let stored = self.store.load().unwrap_or_default();
         metrics.revision = stored.seq;
         let now = self.clock.now();
-        for record in &stored.records {
+        let records = stored.records.iter().collect::<Vec<_>>();
+        let statuses = Self::statuses(&state, &records);
+        for (record, status) in records.into_iter().zip(statuses) {
             if let Some(left) = state.leases.remaining(&record.key(), now) {
                 metrics.lease_remaining_ms.insert(
                     (record.pool.clone(), record.name.clone()),
                     u64::try_from(left.as_millis()).unwrap_or(u64::MAX),
                 );
             }
-            let label = match Self::status_of(&state, record) {
+            let label = match status {
                 RegistrationStatus::Active => "active",
                 RegistrationStatus::Shadowed => "shadowed",
                 RegistrationStatus::Orphaned => "orphaned",
@@ -828,9 +938,8 @@ impl RegistryService {
         let now = self.clock.now();
         if self.writer.load(Ordering::Acquire) {
             self.retry_removals(&mut state);
-            for key in state.leases.take_expired(now) {
-                self.expire(&mut state, &key);
-            }
+            let expired = state.leases.take_expired(now);
+            self.expire(&mut state, &expired);
         } else {
             self.follow(&mut state);
         }
@@ -841,40 +950,48 @@ impl RegistryService {
             .clamp(Duration::from_millis(10), POLL)
     }
 
-    fn expire(&self, state: &mut State, key: &RegistrationKey) {
-        Self::detach_everywhere(state, key);
+    /// Detaches the registrations whose lease ran out and removes them from the store in one write.
+    fn expire(&self, state: &mut State, keys: &[RegistrationKey]) {
+        if keys.is_empty() {
+            return;
+        }
+        for key in keys {
+            Self::detach_everywhere(state, key);
+        }
+        self.forget(state, keys);
+        for key in keys {
+            *state
+                .metrics
+                .expirations
+                .entry(key.pool.clone())
+                .or_default() += 1;
+            log::info!(
+                "registry: lease of `{}` in pool `{}` expired",
+                key.name,
+                key.pool
+            );
+            announce("lease_expiry");
+        }
+    }
+
+    /// Removes the records from the store; those it cannot remove now are retried by the next tick.
+    fn forget(&self, state: &mut State, keys: &[RegistrationKey]) {
         match self
             .store
-            .update(|stored| (stored.remove(key).is_some(), ()))
+            .update(|stored| (stored.remove_all(keys) > 0, ()))
         {
             Ok(((), seq)) => state.applied_seq = seq,
             Err(error) => {
                 self.store_error(state, &error);
-                state.pending_removals.push(key.clone());
+                state.pending_removals.extend_from_slice(keys);
             }
         }
-        *state
-            .metrics
-            .expirations
-            .entry(key.pool.clone())
-            .or_default() += 1;
-        log::info!(
-            "registry: lease of `{}` in pool `{}` expired",
-            key.name,
-            key.pool
-        );
-        announce("lease_expiry");
     }
 
     fn retry_removals(&self, state: &mut State) {
-        for key in std::mem::take(&mut state.pending_removals) {
-            match self
-                .store
-                .update(|stored| (stored.remove(&key).is_some(), ()))
-            {
-                Ok(((), seq)) => state.applied_seq = seq,
-                Err(_) => state.pending_removals.push(key),
-            }
+        let pending = std::mem::take(&mut state.pending_removals);
+        if !pending.is_empty() {
+            self.forget(state, &pending);
         }
     }
 
