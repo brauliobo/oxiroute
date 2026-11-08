@@ -62,7 +62,8 @@ the test strategy.
 ## Version Sources
 
 The workspace version is in the root `Cargo.toml`; the server exposes it through `version`. Release
-notes live in `docs/RELEASE_NOTES_<version>.md`. The Arch recipe pins the release archive and checksum.
+notes live in `docs/RELEASE_NOTES_<version>.md`. Notes written ahead of a release are named `docs/RELEASE_NOTES_<version>_DRAFT.md` and renamed when the
+release is cut. The Arch recipe pins the release archive and checksum.
 Keep all three aligned.
 
 ## Package Path
