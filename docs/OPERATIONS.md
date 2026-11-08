@@ -60,6 +60,7 @@ accept gate, and retains the previous generation for explicit rollback. Before t
 accepts, the runtime administrative state of the old one (drain, maintenance, health override,
 check switch, max-connections and weight overrides) is copied to the servers with the same pool and server
 name, so a drained server never takes traffic across a file write, reload, apply or rollback.
+`evacuate` sets the same `drain` state; its one-shot cancel of in-flight requests is never carried over.
 Servers that no longer exist lose their state and new servers start ready. In supervised mode the
 old worker reports that state at quiesce and the master hands it to the replacement at activation;
 a state too large for the control channel (over 48 KiB, hundreds of non-default servers) refuses
@@ -162,6 +163,10 @@ told from one that never arrived. The same id is in the access log (`requestId`)
 `x-request-id` header of the response and of every backend attempt. A request that is quiet for 60
 seconds is logged once as stuck and counted in `oxiroute_http_stuck_requests_total{pool,phase}`.
 
+Each `server evacuate` or `pool evacuate` is an event (`server_evacuation` with `pool`, `server` and the counts of
+moved, forced and left-running requests) and an audit entry; version 1 of the events API reports it as `unknown`
+and a request ended by `--force` is logged with the failure reason `evacuated`.
+
 Every change of a server's health state reported by its active check is an event
 (`upstream_endpoint_health`, outcome `health_changed` with `pool`, `server`, `previous`, `next`, the
 failure `reason` when the server went down and `changedAtUnixMs`), next to the existing
@@ -178,7 +183,8 @@ of the events API reports it with the event name `unknown`; read it from `/api/v
 | `oxiroute_pool_queue_oldest_wait_seconds` | `pool` | wait of the oldest queued request |
 | `oxiroute_pool_queue_wait_milliseconds` | `pool` | histogram of time spent waiting, 1 ms to 600 s |
 | `oxiroute_server_responses_total` | `pool`, `server`, `class` | backend responses by `1xx`..`5xx` or `none` |
-| `oxiroute_server_attempts_total` | `pool`, `server`, `outcome` | `ok`, `connect_failed`, `timeout`, `protocol_error`, `status_retry`, `rescued`, `client_closed` |
+| `oxiroute_server_attempts_total` | `pool`, `server`, `outcome` | `ok`, `connect_failed`, `timeout`, `protocol_error`, `status_retry`, `rescued`, `client_closed`, `evacuated` |
+| `oxiroute_evacuated_requests_total` | `pool`, `server`, `result` | requests an `evacuate` touched: `redispatched`, `left_running`, `forced`, `failed` (cancelled, then could not be served) |
 | `oxiroute_server_request_duration_milliseconds` | `pool`, `server` | histogram, request sent to last byte |
 | `oxiroute_server_header_duration_milliseconds` | `pool`, `server` | histogram, request sent to first response byte |
 | `oxiroute_server_bytes_sent_total`, `oxiroute_server_bytes_received_total` | `pool`, `server` | bytes towards and from the backend |

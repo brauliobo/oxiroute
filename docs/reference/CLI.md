@@ -42,7 +42,22 @@ obsolete, or not planned. Only forms with both runtime integration and failure c
 `oxiroute requests list [--pool P] [--route R] [--older-than 30s] [--phase queued] [--limit N]` lists
 the requests currently inside the router, oldest first, and `oxiroute requests show REQUEST_ID`
 shows one. Phases are `routed`, `queued`, `connecting`, `awaiting_headers`, `streaming` and
-`retry_wait`. There is no command to cancel a request.
+`retry_wait`. There is no command to cancel one request; `server evacuate` and `pool evacuate` move the
+replayable requests of a server (see below).
+
+## `evacuate`
+
+```sh
+oxiroute server evacuate [--force] --pool POOL [--pool POOL ...] SERVER
+oxiroute pool evacuate [--force] POOL [POOL ...]
+```
+
+Drains the server (every server of each pool for `pool evacuate`) and cancels its in-flight HTTP reverse
+proxy requests that sent no response and are replayable, which are dispatched again to another server of
+the pool without an error for the caller. `--force` also cancels the requests that cannot move. The command
+prints the JSON report (`outcome`, `force`, `cancelledAndRedispatched`, `forced`, `leftRunning` by reason)
+and honours `--output`. `server ready` un-drains. Details and limits:
+[runbook](../user/RUNBOOK.md#evacuate-a-server).
 
 ## `check`: monitoring exit codes
 

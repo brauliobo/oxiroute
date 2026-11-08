@@ -19,6 +19,7 @@ are migrated.
 | Observability | `GET /api/v1/monitoring`, `/topology`, `/status` | Management bearer token; redacted active state |
 | Inventory | `GET /api/v1/listeners`, `/pools`, `/servers`, `/generations`, `/tls` | Management bearer token |
 | Listener/pool/server actions | `POST /api/v1/listeners/administrative-state`, `/pools/administrative-state`, `/servers/administrative-state`, `/servers/health-override`, `/servers/checks`; `PUT /api/v1/servers/max-connections`, `PUT /api/v1/servers/weight` | Management bearer token and active-generation revision |
+| Evacuate | `POST /api/v1/servers/evacuate`, `POST /api/v1/pools/evacuate` | Management bearer token; drain plus a one-shot cancel and re-dispatch of in-flight HTTP requests (see below) |
 | DNS | `POST /api/v1/servers/refresh-dns` | Management bearer token; validated target batch and explicit non-atomic outcomes |
 | Generation actions | `POST /api/v1/generations/reload|rollback|drain` | Management bearer token and active-generation revision |
 | TLS/process | `POST /api/v1/tls/reconcile`, `/process/drain`, `/process/shutdown` | Management bearer token and active-generation revision |
@@ -95,6 +96,48 @@ requests accept a `certificate` name; revocation additionally accepts an optiona
 Delete removes only persisted managed ACME state and returns `409 certificate_in_use` while an active
 TLS profile still references the certificate. Every mutation returns `X-Correlation-ID`, and the same
 safe correlation is persisted on the bounded job record and audit event.
+
+## Evacuate
+
+`POST /api/v1/servers/evacuate` and `POST /api/v1/pools/evacuate` drain servers like the administrative-state
+routes (same persistence across generations by pool and server name; `ready` through
+`/servers/administrative-state` un-drains) and cancel their in-flight HTTP requests that can be served again
+by another server of the pool. They use the management bearer token and, like every other mutation, are
+refused on the registry read socket and the public status socket, and are audited as `server_control` and
+`pool_control`.
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"targets":[{"pool":"gpu-render","server":"node-a"}],"force":false,"expectedActiveRevision":"..."}' \
+  http://127.0.0.1:9080/api/v1/servers/evacuate
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"pools":["gpu-render","voice-tts"],"force":false}' \
+  http://127.0.0.1:9080/api/v1/pools/evacuate
+```
+
+| Field | Route | Meaning |
+| --- | --- | --- |
+| `targets` | servers | non-empty list of exact `{pool, server}` pairs |
+| `pools` | pools | non-empty list of pool names; every server of each pool |
+| `force` | both | default `false`; also cancel requests that cannot move |
+| `expectedActiveRevision` | servers | optional, checked like the other server mutations |
+
+All targets are validated before anything changes: an unknown pool or server answers `404`
+(`pool_not_found`, `server_not_found`) and leaves the batch unapplied. Success is `200`:
+
+```json
+{ "outcome": "evacuated", "force": false, "cancelledAndRedispatched": 3, "forced": 0,
+  "leftRunning": { "response_started": 1, "not_replayable": 1 } }
+```
+
+`cancelledAndRedispatched` requests were cancelled and sent to another server; `forced` were cancelled
+without a retry (only with `force`); `leftRunning` counts the others by reason: `response_started`,
+`not_replayable`, `body_not_replayable`, `upgraded`, `limit_reached`, `no_destination` (absent reasons
+are zero). Counts are per request, summed over every target of the call. Only HTTP reverse proxy
+requests are counted; other traffic is drain only. A forced request whose response had not started gets
+`503` with `x-oxiroute-reason: evacuated`. The rules and limits are in the
+[runbook](../user/RUNBOOK.md#evacuate-a-server) and the
+[design](../developer/design/EVACUATE.md).
 
 Avoid putting the token in shell history in long-lived environments; use the installed client or a
 process-safe secret mechanism instead.

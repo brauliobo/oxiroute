@@ -32,7 +32,7 @@ oxiroute metrics
 ## Drain Before Maintenance
 
 Drain rejects new admissions while existing work retains its generation reference. It does not
-pretend to own per-session cancellation handles.
+cancel running work.
 
 ```sh
 oxiroute listener drain web
@@ -52,6 +52,24 @@ For the same server name in several pools, repeat `--pool`; the client sends one
 ```sh
 oxiroute server drain --pool public-v4 --pool public-v6 origin-a
 ```
+
+## Evacuate A Server
+
+`evacuate` is drain plus a one-shot cancel: HTTP requests running on the server that have not started
+responding and can be replayed are cancelled and dispatched again to another server of the same pool, with
+the same request id and no error for the caller. The administrative state is `drain` (same persistence,
+`server ready` un-drains). The command prints how many requests moved, how many were forced and how many were
+left running, by reason:
+
+```sh
+oxiroute server evacuate --pool web endpoint-1
+oxiroute server evacuate --force --pool web endpoint-1   # also cancel what cannot move
+oxiroute pool evacuate web
+```
+
+Upgrades, forward proxy and `CONNECT`, HTTP/3, TCP, UDP and RTMP traffic is drain only. The rules, the
+route settings that make a `POST` replayable and the report are in the
+[runbook](RUNBOOK.md#evacuate-a-server).
 
 ## Reload And Roll Back
 

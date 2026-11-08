@@ -112,9 +112,109 @@ server by pool and server name across every generation change (file write, `gene
 takes traffic. A removed server loses its state and a new one starts `ready`. A restart resets them,
 except the drain of a registered machine, which is stored with its registration.
 
+Drain waits for running requests to end; to free the machine now, [evacuate it](#evacuate-a-server).
+
 > **0.5.4:** drain resets on every generation change and on restart. After any change run
 > `oxiroute --output json server list` and re-drain what must stay drained (for example a machine in use
 > by its owner).
+
+## Evacuate a server
+
+Drain waits for running requests. When the owner needs the machine now (a render that takes twenty minutes,
+a speech job on a workstation), `evacuate` is drain plus a one-shot action: the requests running on the
+server are cancelled and each one is dispatched again to another server of the same pool. The caller sees
+no error; it gets the response of the second server, with the same `x-request-id`.
+
+```sh
+oxiroute server evacuate --pool gpu-render node-a             # moves what can move
+oxiroute server evacuate --pool gpu-render --pool voice-tts node-a
+oxiroute pool evacuate gpu-render voice-tts                   # every server of the pools
+oxiroute server evacuate --force --pool gpu-render node-a     # also kills what cannot move
+```
+
+The state is `drain`: `server list` shows it, it follows the server by pool and server name across
+generations exactly like drain, and `oxiroute server ready --pool gpu-render node-a` hands the machine back.
+Only the cancel is one-shot; a later generation or restart never repeats it.
+
+**What moves.** An HTTP request (HTTP/1.1 or HTTP/2 from the client, to an HTTP/1.1 or HTTP/2 backend, on a
+reverse proxy route) is moved while no response byte reached the caller and the backend has not answered
+with its response header. It must also be replayable under the route's `retry` policy, because the new
+backend receives the whole request again:
+
+- a `GET` or `HEAD` without a body always qualifies;
+- any other method needs `method_safety = "all"` and `body_safety = "buffered"` with route
+  `request_buffering = true` and a positive `max_request_body_bytes`, and, when the route sets
+  `idempotency_header`, that header present and non-empty on the request;
+- a body still arriving is replayed only while what arrived fits the retry buffer.
+
+The route needs no retries to be moved: `max_retries` can be `0`, and a moved request spends neither retry
+budget nor attempt count. It does need those method and body rules. A farm that submits jobs with `POST`
+should have the clients send an idempotency key and the route accept it:
+
+```
+policy = { retry = { max_retries = 0, method_safety = "all", body_safety = "buffered",
+                     idempotency_header = "Idempotency-Key" },
+           timeouts = { total_ms = 3600000 } }
+-- and on the route: request_buffering = true, max_request_body_bytes = 1048576
+```
+
+The backend must honour the key: a job moved after the first server started it may run a second time if the
+first server did not actually stop. The destination is chosen like for any request (never a server already
+tried, the pool queue and `queue_while_unavailable_ms` apply), and a request may be evacuated at most 3 times.
+
+**What does not move** stays running and finishes as in drain. The command prints one count per reason:
+
+```sh
+oxiroute --output json server evacuate --pool gpu-render node-a
+{ "outcome": "evacuated", "force": false, "cancelledAndRedispatched": 3, "forced": 0,
+  "leftRunning": { "response_started": 1, "not_replayable": 1 } }
+```
+
+| `leftRunning` reason | Meaning |
+| --- | --- |
+| `response_started` | the backend answered (a streaming response or a download in progress) |
+| `not_replayable` | method, idempotency header or body policy of the route does not allow a replay |
+| `body_not_replayable` | the request body received so far outgrew the retry buffer |
+| `upgraded` | WebSocket or another upgraded connection |
+| `limit_reached` | already evacuated 3 times |
+| `no_destination` | no other server can take it now (all drained, down or at capacity, and the pool has no queue) |
+
+Counts are per request, summed over every server and pool of the call. Read them as: `cancelledAndRedispatched`
+left the machine; every `leftRunning` request is still using it, so the machine is free only when they end
+(`oxiroute requests list --pool gpu-render` lists them with their server and age). Repeat the command after
+fixing the cause (for example once capacity returns for `no_destination`) or add `--force`.
+
+`--force` also cancels what cannot move, without a second attempt: a caller whose response did not start gets
+`503` with `x-oxiroute-reason: evacuated`; when the response had started the connection is closed. Movable
+requests are still moved, not killed. Use it when the machine must be free regardless of the callers.
+
+**Limits.** Only HTTP requests of reverse proxy routes are moved. WebSocket and other upgrades,
+forward proxy and `CONNECT` tunnels, HTTP/3 reverse proxy requests, TCP and UDP relays and RTMP are
+drain only: the server leaves rotation and the requests finish (`--force` closes upgraded connections, and
+does not affect the other kinds). The report counts HTTP requests only. The route's total deadline keeps running
+during the move; a request that cannot be served before it ends gets the normal `504`, so long jobs already
+need `total_ms` above their runtime.
+
+**What to watch.** `oxiroute_evacuated_requests_total{pool,server,result}` (`redispatched`, `left_running`,
+`forced`, `failed`; `failed` is a cancelled request that then could not be served and ended with an error),
+`oxiroute_server_attempts_total{outcome="evacuated"}` on the machine that was freed, and the `server_evacuation`
+event in `/api/v2/events` (pool, server and the counts). Evacuation is audited like drain.
+
+### Worked example: a machine needed by its owner
+
+`gpu-render` runs Blender jobs and `voice-tts` runs speech synthesis, both on `node-a` (192.0.2.11) and
+`node-b` (192.0.2.12). The owner of `node-a` wants it back.
+
+```sh
+oxiroute --output json server evacuate --pool gpu-render --pool voice-tts node-a
+# { "outcome": "evacuated", "force": false, "cancelledAndRedispatched": 4, "forced": 0,
+#   "leftRunning": { "response_started": 2 } }
+```
+
+Four jobs went to `node-b` and their callers keep waiting for one answer. Two responses were already
+streaming from `node-a`; they finish normally. Check `oxiroute requests list --pool gpu-render`, wait for them
+or run the command with `--force` to cut them, then tell the owner. Later `oxiroute server ready --pool
+gpu-render --pool voice-tts node-a` returns the machine to the pools.
 
 ## Apply configuration safely
 
@@ -197,8 +297,10 @@ machines, lengthen `queue_timeout_ms` to the callers' patience, or for an emerge
 `oxiroute server max-connections set --pool P S 2` then `max-connections reset`. Never exceed what the
 GPU's VRAM holds.
 
-**Hung backend.** It accepts and never answers; its leases stay held. Set it to `maintenance`, then kill
-the process on the worker; OxiRoute cannot cancel a request in flight. `oxiroute requests list --pool P
+**Hung backend.** It accepts and never answers; its leases stay held. Run `oxiroute server evacuate --pool P S`:
+the requests that sent no response and are replayable move to another server and the hung machine is drained,
+so there is no need to kill the worker process unless the report shows requests left running
+(see [Evacuate a server](#evacuate-a-server)); `--force` cancels those too. `oxiroute requests list --pool P
 --older-than 60s` shows which requests are waiting and in which phase (`awaiting_headers` means the worker
 took the request and said nothing). The route's `policy.timeouts` (`connect_ms`, `header_ms`, `idle_ms`,
 `total_ms`) bound each phase; when one fires the client gets `504` with `x-oxiroute-reason`
@@ -406,6 +508,8 @@ groups:
 - Also alert on `increase(oxiroute_config_rejections_total[15m]) > 0` (a refused file) and
   `increase(oxiroute_pool_fail_open_selections_total[5m]) > 0` (serving degraded); `rescue` replays are
   counted by `oxiroute_http_rescues_total`.
+- `increase(oxiroute_evacuated_requests_total{result="failed"}[15m]) > 0` means a cancelled request could not
+  be served by another server; `result="left_running"` shows what an evacuation did not free.
 - `oxiroute_http_inflight_overdue > 0` is a router bug and should page. `oxiroute_canary_success == 0` and
   `time() - oxiroute_canary_last_success_timestamp_seconds > 120` mean a pool's client-side path fails.
   `oxiroute_generation_retired_age_seconds` shows a replaced generation that does not drain.
