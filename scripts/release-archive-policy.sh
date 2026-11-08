@@ -26,7 +26,8 @@ RELEASE_ALLOWED_SECRET_PATHS=(
   crates/oxiroute-import/tests/fixtures/haproxy/tls-no-identities.pem.key
   crates/oxiroute-import/tests/fixtures/nginx/proxy-key.pem
   crates/oxiroute-import/tests/fixtures/nginx/proxy-mismatched-key.pem
-  crates/oxiroute-server/src/tls/tests.rs
+  crates/oxiroute-server/src/tls/tests/certbot_load.rs
+  crates/oxiroute-server/src/tls/tests/material.rs
   crates/oxiroute-server/tests/fixtures/origin-key.pem
   crates/oxiroute-server/tests/fixtures/proxy-a-key.pem
   crates/oxiroute-server/tests/fixtures/proxy-b-key.pem
