@@ -22,7 +22,7 @@ pub(crate) fn dispatch() -> Option<ExitCode> {
     Some(match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("OxiRoute supervised process failed: {error}");
+            worker::report_failure(&error);
             ExitCode::FAILURE
         }
     })

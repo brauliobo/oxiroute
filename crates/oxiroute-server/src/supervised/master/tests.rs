@@ -728,7 +728,7 @@ fn reload_monitor_ignores_files_that_are_not_the_configuration() {
     let directory = tempfile::TempDir::new().unwrap();
     let path = directory.path().join("oxiroute.kdl");
     std::fs::write(&path, "version 1\n").unwrap();
-    let mut monitor = ConfigReloadMonitor::start(&path, &[]).unwrap();
+    let mut monitor = ConfigReloadMonitor::start(&path, &[], Waker::new().unwrap()).unwrap();
     let start = Instant::now();
     assert!(
         monitor.next_trigger(start),
@@ -747,4 +747,79 @@ fn reload_monitor_ignores_files_that_are_not_the_configuration() {
         "the debounce window opens at the first event"
     );
     assert!(monitor.next_trigger(quiet + CONFIG_RELOAD_DEBOUNCE));
+}
+
+fn readable(waker: &Waker, timeout: Duration) -> bool {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
+    let mut descriptors = [PollFd::from_borrowed_fd(waker.descriptor(), PollFlags::IN)];
+    let timeout = Timespec::try_from(timeout).expect("timeout");
+    poll(&mut descriptors, Some(&timeout)).expect("poll") > 0
+}
+
+#[test]
+fn a_waker_wakes_once_until_drained() {
+    let waker = Waker::new().expect("waker");
+    assert!(!readable(&waker, Duration::ZERO));
+
+    waker.wake();
+    waker.wake();
+    assert!(readable(&waker, Duration::ZERO));
+    waker.drain();
+    assert!(!readable(&waker, Duration::ZERO));
+}
+
+#[test]
+fn a_quiet_monitor_waits_for_the_periodic_reconciliation() {
+    let directory = tempfile::tempdir().expect("config directory");
+    let path = directory.path().join("oxiroute.kdl");
+    let mut monitor =
+        ConfigReloadMonitor::start(&path, &[], Waker::new().expect("waker")).expect("monitor");
+    let now = Instant::now();
+
+    assert!(monitor.next_trigger(now), "the first check is immediate");
+
+    assert_eq!(
+        monitor.next_deadline(),
+        now + CONFIG_RECONCILIATION_INTERVAL
+    );
+    assert!(!monitor.next_trigger(now + Duration::from_secs(29)));
+    assert!(monitor.next_trigger(now + CONFIG_RECONCILIATION_INTERVAL));
+}
+
+#[test]
+fn a_file_event_wakes_the_loop_and_moves_the_deadline_to_the_end_of_the_debounce() {
+    let directory = tempfile::tempdir().expect("config directory");
+    let path = directory.path().join("oxiroute.kdl");
+    let waker = Waker::new().expect("waker");
+    let mut monitor = ConfigReloadMonitor::start(&path, &[], Arc::clone(&waker)).expect("monitor");
+    let now = Instant::now();
+    assert!(monitor.next_trigger(now));
+    assert!(!readable(&waker, Duration::ZERO));
+
+    std::fs::write(&path, "x").expect("write config");
+
+    assert!(
+        readable(&waker, Duration::from_secs(10)),
+        "the watcher wakes the loop"
+    );
+    // One write raises several file events; let them all arrive before the monitor reads them.
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        !monitor.next_trigger(now),
+        "the burst is still being debounced"
+    );
+    assert_eq!(monitor.next_deadline(), now + CONFIG_RELOAD_DEBOUNCE);
+    assert!(monitor.next_trigger(now + CONFIG_RELOAD_DEBOUNCE));
+}
+
+#[test]
+fn retired_reports_are_due_a_second_after_the_last_one() {
+    let mut reports = RetiredReports::default();
+    assert_eq!(reports.next_due(), None);
+
+    let sent = Instant::now();
+    reports.last_sent = Some(sent);
+
+    assert_eq!(reports.next_due(), Some(sent + Duration::from_secs(1)));
 }

@@ -75,10 +75,10 @@ pub use observability::monitoring::{
     PoolSelectionSnapshot, ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot,
     ProxyProtocolCountSnapshot, ProxyProtocolSnapshot, RescueSnapshot, RuntimeMetrics, RuntimeMode,
     RuntimeSnapshot, TcpRelayCountSnapshot, TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot,
-    TransportOperationCountSnapshot, TransportOperationSnapshot, TransportOutcome,
+    TransportOperationCountSnapshot, TransportOperationSnapshot, TransportOutcome, WorkerReport,
 };
 pub use observability::operational_event::{
-    WorkerEventPage, WorkerEventSnapshot, worker_event_page,
+    WorkerEventPage, WorkerEventSnapshot, flush_audit, worker_event_page,
 };
 pub use observability::operational_event::{emit_certificate, emit_rtmp_access};
 pub use observability::prometheus::PrometheusError;

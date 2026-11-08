@@ -34,7 +34,7 @@ use oxiroute_supervision::{GenerationId, InstanceId};
 use oxiroute_supervision_unix::{DescriptorManifest, InstanceToken, ListenerChanges};
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, Master, MasterConfig, MasterEvent, MasterState, ShutdownProgress,
-    WorkerInput, WorkerLifecycle, WorkerRole,
+    WorkerInput, WorkerRole,
 };
 use oxiroute_supervisor_process::{WorkerCommand, WorkerIdentity, WorkerSpawner};
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};

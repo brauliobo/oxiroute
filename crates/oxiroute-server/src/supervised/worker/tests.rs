@@ -4,7 +4,7 @@ use oxiroute_config::{ConfigDraft, Protocol, Stats};
 use oxiroute_config_source::{ConfigFormat, render_config};
 use serde_json::json;
 
-use super::*;
+use super::{status::*, *};
 
 #[test]
 fn worker_listener_statuses_are_exact_real_snapshots_without_synthesis() {
@@ -260,4 +260,63 @@ fn a_configuration_notice_still_clears_the_reported_rejection() {
         apply_notice(&manager, b"null").is_err(),
         "the old bare format is gone"
     );
+}
+
+fn observed_status() -> WorkerStatus {
+    WorkerStatus {
+        sequence: 7,
+        generation_id: GenerationId(1),
+        lifecycle: WorkerLifecycle::Active,
+        administrative_state: WorkerAdministrativeState::Ready,
+        accepting: true,
+        runtime_started: true,
+        runtime_failed: false,
+        drained: false,
+        generation: WorkerGenerationStatus {
+            disk_revision: None,
+            candidate_revision: None,
+            active_revision: None,
+            previous_revision: None,
+            quarantined_revision: None,
+            active_accepting: true,
+            degraded: false,
+            last_failure: None,
+            prepares: 1,
+            activations: 1,
+            failures: 0,
+            rollbacks: 0,
+        },
+        metrics: Some(WorkerMetrics::default()),
+        listeners: Vec::new(),
+        degraded: false,
+        degradation: None,
+        event_cursor: 3,
+        event_cursor_lost: false,
+        events: Vec::new(),
+    }
+}
+
+#[test]
+fn a_status_that_only_advances_its_sequence_is_not_a_new_observation() {
+    let last = observed_status();
+    let mut next = observed_status();
+    next.sequence = 8;
+
+    assert!(is_new_observation(None, &next));
+    assert!(!is_new_observation(Some(&last), &next));
+}
+
+#[test]
+fn a_changed_counter_or_event_is_a_new_observation() {
+    let last = observed_status();
+    let mut traffic = observed_status();
+    traffic.metrics = Some(WorkerMetrics {
+        accepted_connections: 1,
+        ..WorkerMetrics::default()
+    });
+    let mut event = observed_status();
+    event.event_cursor = 4;
+
+    assert!(is_new_observation(Some(&last), &traffic));
+    assert!(is_new_observation(Some(&last), &event));
 }

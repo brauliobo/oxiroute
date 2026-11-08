@@ -24,7 +24,7 @@ use std::{
     fs::{self, File},
     io::{self, Read},
     os::{
-        fd::{BorrowedFd, OwnedFd},
+        fd::{AsFd, BorrowedFd, OwnedFd},
         unix::{
             ffi::{OsStrExt, OsStringExt},
             fs::PermissionsExt,
@@ -46,7 +46,7 @@ use oxiroute_supervision_unix::{
 use rustix::{
     event::{PollFd, PollFlags, Timespec, poll},
     io::{FdFlags, fcntl_getfd, fcntl_setfd},
-    process::{Pid, Signal, getpgid, kill_process_group},
+    process::{Pid, PidfdFlags, Signal, getpgid, kill_process_group, pidfd_open},
 };
 use thiserror::Error;
 use zeroize::Zeroizing;

@@ -4,6 +4,7 @@ use std::{
     ffi::OsString,
     fs::File,
     io::{self, Read as _},
+    os::fd::{BorrowedFd, OwnedFd},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -37,6 +38,7 @@ use oxiroute_supervisor_master::{
 use oxiroute_supervisor_process::{
     CgroupV2ProbeStatus, WorkerCommand, WorkerIdentity, WorkerSpawner, probe_cgroup_v2,
 };
+use rustix::event::{EventfdFlags, eventfd};
 use signal_hook::{
     consts::signal::{SIGHUP, SIGINT, SIGTERM},
     iterator::{Handle, Signals},
@@ -52,7 +54,6 @@ const PRODUCTION_LAUNCHER: &str = "/usr/lib/oxiroute/oxiroute-worker-launcher";
 const MASTER_INSTANCE_ID: &str = "oxiroute-stage-3";
 const INITIAL_GENERATION: GenerationId = GenerationId(1);
 const WORKER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-const MASTER_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
 const CONFIG_RELOAD_DEBOUNCE: Duration = Duration::from_millis(250);
 const CONFIG_RELOAD_MAX_DEBOUNCE: Duration = Duration::from_secs(2);
@@ -105,6 +106,7 @@ mod plan;
 mod retired;
 mod runner;
 mod setup;
+mod wake;
 
 #[allow(clippy::wildcard_imports)]
 use catalog::*;
@@ -119,6 +121,7 @@ use runner::*;
 pub(super) use setup::retirement_window;
 #[allow(clippy::wildcard_imports)]
 use setup::*;
+use wake::Waker;
 
 #[cfg(test)]
 mod tests;

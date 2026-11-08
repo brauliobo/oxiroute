@@ -114,6 +114,33 @@ impl RuntimeMetrics {
         Ok(snapshot)
     }
 
+    /// Samples the counters a supervised worker reports to its master, without the process, host,
+    /// pool, certificate or listener-detail sampling that [`Self::snapshot`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the listener registry is poisoned or an aggregate counter overflows.
+    pub fn worker_report(&self) -> Result<WorkerReport, MetricsError> {
+        let mut traffic = TrafficSnapshot::default();
+        let mut snapshots = Vec::new();
+        for (public, snapshot) in self.listener_entries()? {
+            if public {
+                add_traffic(&mut traffic, &snapshot)?;
+            }
+            snapshots.push(snapshot);
+        }
+        Ok(WorkerReport {
+            administrative_state: AdministrativeState::from_u8(
+                self.inner
+                    .process_admission
+                    .administrative_state
+                    .load(Ordering::Acquire),
+            ),
+            traffic,
+            listeners: snapshots,
+        })
+    }
+
     pub(crate) fn topology_health_snapshot(&self) -> Result<RuntimeHealthSnapshot, MetricsError> {
         let (_, listeners) = self.counter_snapshots()?;
         Ok(RuntimeHealthSnapshot {
@@ -282,57 +309,77 @@ impl RuntimeMetrics {
 
     fn counter_snapshots(&self) -> Result<(TrafficSnapshot, Vec<ListenerSnapshot>), MetricsError> {
         let snapshots = self.listener_snapshots(true)?;
-
         let mut traffic = TrafficSnapshot::default();
         for snapshot in &snapshots {
-            add_total(
-                &mut traffic.accepted_connections,
-                snapshot.accepted_connections,
-                "traffic.acceptedConnections",
-            )?;
-            add_total(
-                &mut traffic.rejected_connections,
-                snapshot.rejected_connections,
-                "traffic.rejectedConnections",
-            )?;
-            add_total(
-                &mut traffic.active_connections,
-                snapshot.active_connections,
-                "traffic.activeConnections",
-            )?;
-            add_total(
-                &mut traffic.bytes_received,
-                snapshot.bytes_received,
-                "traffic.bytesReceived",
-            )?;
-            add_total(
-                &mut traffic.bytes_sent,
-                snapshot.bytes_sent,
-                "traffic.bytesSent",
-            )?;
+            add_traffic(&mut traffic, snapshot)?;
         }
         Ok((traffic, snapshots))
     }
 
     fn listener_snapshots(&self, public_only: bool) -> Result<Vec<ListenerSnapshot>, MetricsError> {
-        let listeners = self
-            .inner
-            .listeners
-            .read()
-            .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
-        let mut snapshots = Vec::with_capacity(listeners.order.len());
-        for id in &listeners.order {
-            let state = listeners
-                .states
-                .get(id)
-                .expect("listener order references registered state");
-            if !public_only || state.metric_policy == ListenerMetricPolicy::Public {
-                snapshots.push(state.snapshot());
-            }
-        }
+        let mut snapshots: Vec<_> = self
+            .listener_entries()?
+            .into_iter()
+            .filter(|(public, _)| *public || !public_only)
+            .map(|(_, snapshot)| snapshot)
+            .collect();
         if public_only {
             snapshots.sort_unstable_by(|left, right| left.name.cmp(&right.name));
         }
         Ok(snapshots)
     }
+
+    /// Every registered listener in inventory order, with whether its counters are public.
+    fn listener_entries(&self) -> Result<Vec<(bool, ListenerSnapshot)>, MetricsError> {
+        let listeners = self
+            .inner
+            .listeners
+            .read()
+            .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
+        Ok(listeners
+            .order
+            .iter()
+            .map(|id| {
+                let state = listeners
+                    .states
+                    .get(id)
+                    .expect("listener order references registered state");
+                (
+                    state.metric_policy == ListenerMetricPolicy::Public,
+                    state.snapshot(),
+                )
+            })
+            .collect())
+    }
+}
+
+fn add_traffic(
+    traffic: &mut TrafficSnapshot,
+    snapshot: &ListenerSnapshot,
+) -> Result<(), MetricsError> {
+    add_total(
+        &mut traffic.accepted_connections,
+        snapshot.accepted_connections,
+        "traffic.acceptedConnections",
+    )?;
+    add_total(
+        &mut traffic.rejected_connections,
+        snapshot.rejected_connections,
+        "traffic.rejectedConnections",
+    )?;
+    add_total(
+        &mut traffic.active_connections,
+        snapshot.active_connections,
+        "traffic.activeConnections",
+    )?;
+    add_total(
+        &mut traffic.bytes_received,
+        snapshot.bytes_received,
+        "traffic.bytesReceived",
+    )?;
+    add_total(
+        &mut traffic.bytes_sent,
+        snapshot.bytes_sent,
+        "traffic.bytesSent",
+    )
 }

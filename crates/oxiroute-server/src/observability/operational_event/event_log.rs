@@ -81,6 +81,13 @@ fn current_audit_store() -> Arc<AuditStore> {
     configure_audit_store(None)
 }
 
+/// Commits the audit records that are still waiting for their group commit; a process calls it as it exits.
+pub fn flush_audit() {
+    if let Err(error) = current_audit_store().flush() {
+        log::warn!(target: "oxiroute::audit", "durable audit write failed: {}", error.code());
+    }
+}
+
 pub(crate) fn audit_status() -> AuditStatus {
     current_audit_store().status()
 }
@@ -392,7 +399,8 @@ fn persist(
     result: AuditResult,
 ) {
     let revision = audit_value.revision.as_ref();
-    if let Err(error) = current_audit_store().append(
+    if let Err(error) = current_audit_store().append_with(
+        durability_for_event(audit_value.event),
         context,
         category,
         audit_value.operation.as_deref().unwrap_or("unknown"),
@@ -401,10 +409,28 @@ fn persist(
     ) {
         log::warn!(target: "oxiroute::audit", "durable audit write failed: {}", error.code());
     }
-    if let Ok(json) = serde_json::to_string(&audit_value) {
+    if log::log_enabled!(target: "oxiroute::operations", log::Level::Info)
+        && let Ok(json) = serde_json::to_string(&audit_value)
+    {
         log::info!(target: "oxiroute::operations", "{json}");
     }
     notifications().notify_one();
+}
+
+/// Health checks and RTMP access happen at the rate of the traffic, not of operator actions, so their audit
+/// records are group-committed; everything else is durable before the operation is reported.
+pub(super) const fn durability_for_event(event: EventName) -> AuditDurability {
+    match event {
+        EventName::UpstreamEndpointHealth
+        | EventName::UpstreamEndpointEjection
+        | EventName::UpstreamEndpointRecovery
+        | EventName::RtmpConnect
+        | EventName::RtmpPublish
+        | EventName::RtmpPlay
+        | EventName::RtmpDisconnect
+        | EventName::RtmpAccess => AuditDurability::Batched,
+        _ => AuditDurability::Immediate,
+    }
 }
 
 pub(super) fn unix_time_ms() -> Option<u64> {
