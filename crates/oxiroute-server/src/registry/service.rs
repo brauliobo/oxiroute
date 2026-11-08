@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::HashMap,
     net::{IpAddr, SocketAddr},
     sync::{
         Arc, Condvar, Mutex, MutexGuard, Weak,
@@ -10,7 +10,6 @@ use std::{
 };
 
 use oxiroute_config::{PoolRegistration, Registry, UpstreamAlgorithm};
-use serde::Serialize;
 
 use super::{
     auth::{Principal, TokenStore},
@@ -22,118 +21,22 @@ use super::{
     validate::{Requester, apply_heartbeat, validate_name, validate_put},
 };
 use crate::{
-    AdministrativeState, HealthSupervisor, RoundRobinPool, RuntimeEndpoint, ServerOrigin,
+    AdministrativeState, RoundRobinPool, RuntimeEndpoint, ServerOrigin,
     observability::operational_event::{AuditContext, emit_server_registration},
-    routing::{DynamicServer, NewMember, RuntimeServer},
 };
+
+mod reconcile;
+mod view;
+
+pub use reconcile::PoolBinding;
+pub use view::{PutOutcome, RegistrationStatus, RegistrationView, RegistryMetrics, RegistryStatus};
 
 const POLL: Duration = Duration::from_secs(1);
 const RATE_PER_SECOND: u32 = 20;
 const RATE_BURST: u32 = 40;
 
-/// One pool of one generation and what the registry may do to it.
-pub struct PoolBinding {
-    pool: Weak<RoundRobinPool>,
-    name: String,
-    policy: Option<PoolRegistration>,
-    health: Option<HealthSupervisor>,
-    protected: Arc<[SocketAddr]>,
-}
-
-impl PoolBinding {
-    #[must_use]
-    pub fn new(
-        pool: &Arc<RoundRobinPool>,
-        policy: Option<PoolRegistration>,
-        health: Option<HealthSupervisor>,
-        protected: Arc<[SocketAddr]>,
-    ) -> Self {
-        Self {
-            pool: Arc::downgrade(pool),
-            name: pool.name().to_owned(),
-            policy,
-            health,
-            protected,
-        }
-    }
-
-    fn live(&self) -> Option<Arc<RoundRobinPool>> {
-        self.pool.upgrade()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RegistrationStatus {
-    /// The server is a member of the live pool.
-    Active,
-    /// A static server with the same name or endpoint wins; the record is kept but inactive.
-    Shadowed,
-    /// The pool no longer opts into registration or no longer exists; the record is kept.
-    Orphaned,
-}
-
-#[derive(Clone, Debug)]
-pub struct RegistrationView {
-    pub record: Registration,
-    pub expires_in_ms: Option<u64>,
-    pub status: RegistrationStatus,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PutOutcome {
-    pub created: bool,
-    pub record: Registration,
-    pub expires_in_ms: u64,
-    pub registry_revision: u64,
-    pub warnings: Vec<&'static str>,
-}
-
-/// What a pool holds while a reconciliation decides who joins: member names and used endpoints.
-struct Members {
-    names: HashMap<String, (ServerOrigin, RuntimeEndpoint)>,
-    endpoints: HashSet<RuntimeEndpoint>,
-}
-
-impl Members {
-    fn of(pool: &RoundRobinPool) -> Self {
-        let members = pool.health_snapshot().endpoints;
-        Self {
-            endpoints: members
-                .iter()
-                .map(|member| member.address.clone())
-                .collect(),
-            names: members
-                .into_iter()
-                .map(|member| (member.name, (member.origin, member.address)))
-                .collect(),
-        }
-    }
-}
-
 /// A registration pool of a live generation, its policy and the addresses it must never reach.
 type PoolContext = (Arc<RoundRobinPool>, PoolRegistration, Arc<[SocketAddr]>);
-
-#[derive(Clone, Debug)]
-pub struct RegistryStatus {
-    pub revision: u64,
-    pub writer: bool,
-    pub degraded: Option<String>,
-    pub records: usize,
-}
-
-/// Counters for the metrics page.
-#[derive(Clone, Debug, Default)]
-pub struct RegistryMetrics {
-    pub operations: BTreeMap<(&'static str, &'static str), u64>,
-    pub expirations: BTreeMap<String, u64>,
-    pub rejections: BTreeMap<&'static str, u64>,
-    pub store_errors: u64,
-    pub revision: u64,
-    pub servers: BTreeMap<(String, &'static str), u64>,
-    /// Milliseconds left on each lease this process tracks, by pool and server.
-    pub lease_remaining_ms: BTreeMap<(String, String), u64>,
-}
 
 #[derive(Default)]
 struct State {
@@ -333,194 +236,6 @@ impl RegistryService {
         }
         state.applied_seq = stored.seq;
         self.wake.notify_all();
-    }
-
-    fn reconcile(binding: &PoolBinding, stored: &StoredRegistry) {
-        let (Some(pool), Some(_)) = (binding.live(), &binding.policy) else {
-            return;
-        };
-        let desired = stored
-            .records
-            .iter()
-            .filter(|record| record.pool == binding.name)
-            .collect::<Vec<_>>();
-        let mut seen = Members::of(&pool);
-        let mut joining = Vec::new();
-        for record in &desired {
-            let endpoint = RuntimeEndpoint::from(record.address);
-            match seen.names.get(record.name.as_str()) {
-                None if seen.endpoints.insert(endpoint.clone()) => {
-                    seen.names.insert(
-                        record.name.clone(),
-                        (ServerOrigin::Dynamic, endpoint.clone()),
-                    );
-                    joining.push((
-                        Self::new_member(binding, record, endpoint.clone()),
-                        endpoint,
-                    ));
-                }
-                Some((ServerOrigin::Dynamic, current)) if *current == endpoint => {
-                    Self::apply(binding, &pool, record);
-                }
-                Some((ServerOrigin::Dynamic, _)) => {
-                    Self::join_all(binding, &pool, &mut joining);
-                    Self::apply(binding, &pool, record);
-                    seen = Members::of(&pool);
-                }
-                Some((ServerOrigin::Static, _)) | None => {}
-            }
-        }
-        Self::join_all(binding, &pool, &mut joining);
-        let wanted = desired
-            .iter()
-            .map(|record| record.name.as_str())
-            .collect::<HashSet<_>>();
-        for member in pool.health_snapshot().endpoints {
-            let stale =
-                member.origin == ServerOrigin::Dynamic && !wanted.contains(member.name.as_str());
-            if stale {
-                Self::detach(binding, &pool, &member.name);
-            }
-        }
-    }
-
-    fn new_member(
-        binding: &PoolBinding,
-        record: &Registration,
-        endpoint: RuntimeEndpoint,
-    ) -> NewMember {
-        NewMember {
-            server: RuntimeServer {
-                name: record.name.clone(),
-                endpoint,
-                max_connections: record.max_connections,
-                pinned_addresses: None,
-                protected_addresses: Arc::clone(&binding.protected),
-            },
-            spec: DynamicServer {
-                weight: record.weight,
-                priority: record.priority,
-            },
-            state: record.effective_state(),
-        }
-    }
-
-    /// Adds the servers that are waiting to join with one membership change.
-    fn join_all(
-        binding: &PoolBinding,
-        pool: &Arc<RoundRobinPool>,
-        joining: &mut Vec<(NewMember, RuntimeEndpoint)>,
-    ) {
-        let (members, endpoints): (Vec<_>, Vec<_>) = joining.drain(..).unzip();
-        let names = members
-            .iter()
-            .map(|member| member.server.name.clone())
-            .collect::<Vec<_>>();
-        let results = pool.add_servers(members);
-        for ((result, name), endpoint) in results.into_iter().zip(names).zip(endpoints) {
-            match result {
-                Ok(handle) => {
-                    if let Some(health) = &binding.health {
-                        health.add_target(&binding.name, handle, endpoint);
-                    }
-                }
-                Err(error) => log::warn!(
-                    "registry: could not apply `{name}` to pool `{}`: {error}",
-                    binding.name
-                ),
-            }
-        }
-    }
-
-    fn apply(binding: &PoolBinding, pool: &Arc<RoundRobinPool>, record: &Registration) {
-        let endpoint = RuntimeEndpoint::from(record.address);
-        let spec = DynamicServer {
-            weight: record.weight,
-            priority: record.priority,
-        };
-        let existing = pool.member(&record.name);
-        let result = match &existing {
-            Some((ServerOrigin::Static, _)) => return,
-            Some((ServerOrigin::Dynamic, current)) if *current == endpoint => pool
-                .update_server(&record.name, spec, record.max_connections)
-                .map_err(|error| error.to_string()),
-            Some((ServerOrigin::Dynamic, _)) => {
-                Self::detach(binding, pool, &record.name);
-                Self::join(binding, pool, record, endpoint, spec)
-            }
-            None if pool.member_at(&endpoint).is_some() => return,
-            None => Self::join(binding, pool, record, endpoint, spec),
-        };
-        match result {
-            Ok(()) => {
-                let _ =
-                    pool.set_server_administrative_state(&record.name, record.effective_state());
-            }
-            Err(error) => log::warn!(
-                "registry: could not apply `{}` to pool `{}`: {error}",
-                record.name,
-                binding.name
-            ),
-        }
-    }
-
-    fn join(
-        binding: &PoolBinding,
-        pool: &Arc<RoundRobinPool>,
-        record: &Registration,
-        endpoint: RuntimeEndpoint,
-        spec: DynamicServer,
-    ) -> Result<(), String> {
-        let server = RuntimeServer {
-            name: record.name.clone(),
-            endpoint: endpoint.clone(),
-            max_connections: record.max_connections,
-            pinned_addresses: None,
-            protected_addresses: Arc::clone(&binding.protected),
-        };
-        let handle = pool
-            .add_server(server, spec)
-            .map_err(|error| error.to_string())?;
-        if let Some(health) = &binding.health {
-            health.add_target(&binding.name, handle, endpoint);
-        }
-        Ok(())
-    }
-
-    fn detach(binding: &PoolBinding, pool: &Arc<RoundRobinPool>, name: &str) {
-        if let Ok(handle) = pool.remove_server(name)
-            && let Some(health) = &binding.health
-        {
-            health.remove_target(&binding.name, &handle);
-        }
-    }
-
-    fn apply_everywhere(state: &State, record: &Registration) {
-        for binding in state
-            .bindings
-            .iter()
-            .filter(|binding| binding.name == record.pool)
-        {
-            if let (Some(pool), Some(_)) = (binding.live(), &binding.policy) {
-                Self::apply(binding, &pool, record);
-            }
-        }
-    }
-
-    fn detach_everywhere(state: &State, key: &RegistrationKey) {
-        for binding in state
-            .bindings
-            .iter()
-            .filter(|binding| binding.name == key.pool)
-        {
-            if let (Some(pool), Some(_)) = (binding.live(), &binding.policy)
-                && pool
-                    .member(&key.name)
-                    .is_some_and(|(origin, _)| origin == ServerOrigin::Dynamic)
-            {
-                Self::detach(binding, &pool, &key.name);
-            }
-        }
     }
 
     /// The pool of the newest generation that opts into registration.
