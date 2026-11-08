@@ -1,9 +1,6 @@
-use std::{
-    str::FromStr,
-    sync::{Arc, Mutex},
-};
+use std::{str::FromStr, sync::Arc};
 
-use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
+use http::header::{CONTENT_LENGTH, CONTENT_TYPE, IF_NONE_MATCH};
 use oxiroute_config::{ConfigDraft, ValidatedConfig};
 use pingora::protocols::http::ServerSession;
 use serde::Serialize;
@@ -13,9 +10,9 @@ use super::{
     ApiResponse, MAX_CONFIG_REQUEST_BYTES,
     auth::ManagementAuth,
     dto::{
-        ConfigConflictResponse, ConfigRequest, ConfigSnapshotResponse, ConfigValidationResponse,
-        ImportReportResponse, RedactedConfigView, RedactedImportReport,
-        contains_redacted_rtmp_token_secret, restore_redacted_rtmp_token_secrets,
+        ConfigConflictResponse, ConfigRequest, ConfigValidationResponse, ImportReportResponse,
+        RedactedConfigView, RedactedImportReport, contains_redacted_rtmp_token_secret,
+        restore_redacted_rtmp_token_secrets,
     },
     observability::candidate_topology,
     response::system_time_ms,
@@ -27,11 +24,14 @@ use crate::{
         AuthoredRevision, CanonicalConfigCoordinator, ConfigConflict, ConfigDiagnostic,
         ConfigLoadOutcome, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
         EffectiveRevision, NativeImportSourceOutcome, PersistableConfigCandidate,
-        ResolvedConfigDocument,
     },
     listener::inventory::{ListenerChangeSummary, ListenerRestartReason},
     service_plan::validation_plan,
 };
+
+mod snapshot;
+
+use snapshot::SnapshotCache;
 
 const IF_CONFIG_REVISION: &str = "if-config-revision";
 const IMPORT_REPORTS_PATH: &str = "/api/v1/import-reports";
@@ -50,16 +50,7 @@ pub(super) struct ConfigApiState {
     coordinator: CanonicalConfigCoordinator,
     generations: Option<GenerationManager>,
     mode: RuntimeMode,
-    snapshot: Mutex<Option<CachedSnapshot>>,
-}
-
-/// The `GET /config` body for one persisted document and active revision.
-///
-/// Rendering it validates and serializes the whole configuration, so it is built once per change.
-struct CachedSnapshot {
-    disk: AuthoredRevision,
-    active: EffectiveRevision,
-    body: Arc<[u8]>,
+    snapshot: Arc<SnapshotCache>,
 }
 
 impl ConfigApiState {
@@ -73,7 +64,7 @@ impl ConfigApiState {
             coordinator,
             generations: None,
             mode,
-            snapshot: Mutex::new(None),
+            snapshot: Arc::default(),
         }
     }
 
@@ -112,7 +103,15 @@ impl ConfigApiState {
         }
 
         match (route, method) {
-            (Route::Config, "GET") => self.config_response(),
+            (Route::Config, "GET") => {
+                let if_none_match = session
+                    .req_header()
+                    .headers
+                    .get(IF_NONE_MATCH)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                self.config_response(if_none_match).await
+            }
             (Route::Config, "PUT") => {
                 let revision = match config_revision_header(session) {
                     Ok(revision) => revision,
@@ -186,52 +185,21 @@ impl ConfigApiState {
         Ok(())
     }
 
-    fn config_response(&self) -> ApiResponse {
-        match self.coordinator.load_shared() {
-            Ok(document) => self.snapshot_response(&document),
-            Err(rejection) => ApiResponse::json(
-                503,
-                &json!({
-                    "schemaVersion": 1,
-                    "diskRevision": rejection.disk_revision,
-                    "activeRevision": self.active_revision(),
-                    "diagnostics": rejection.diagnostics,
-                    "error": {
-                        "code": "canonical_config_unavailable",
-                        "message": "the persisted canonical configuration could not be loaded",
-                    },
-                }),
-            ),
-        }
-    }
-
-    fn snapshot_response(&self, document: &ResolvedConfigDocument) -> ApiResponse {
+    async fn config_response(&self, if_none_match: Option<String>) -> ApiResponse {
+        let coordinator = self.coordinator.clone();
+        let snapshot = Arc::clone(&self.snapshot);
         let active = self.active_revision();
-        let mut snapshot = self
-            .snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cached = snapshot
-            .as_ref()
-            .filter(|cached| cached.disk == document.authored_revision && cached.active == active);
-        if let Some(cached) = cached {
-            return ApiResponse::bytes(200, cached.body.to_vec(), "application/json");
-        }
-        let view = RedactedConfigView::of(
-            &document.validated_config,
-            document.format,
-            &document.config_preview,
-        );
-        let response = typed_json_response(
-            200,
-            &ConfigSnapshotResponse::new(document, active.clone(), view),
-        );
-        *snapshot = Some(CachedSnapshot {
-            disk: document.authored_revision.clone(),
-            active,
-            body: Arc::from(response.body.as_slice()),
-        });
-        response
+        tokio::task::spawn_blocking(move || {
+            snapshot.response(&coordinator, &active, if_none_match.as_deref())
+        })
+        .await
+        .unwrap_or_else(|_| {
+            ApiResponse::error(
+                503,
+                "config_read_failed",
+                "the configuration read worker failed",
+            )
+        })
     }
 
     fn import_reports_response(&self, selection: Option<usize>) -> ApiResponse {
@@ -319,7 +287,7 @@ impl ConfigApiState {
         } else if let Some(changes) = &candidate.listener_changes {
             diagnostics.push(listener_changes_diagnostic(self.mode, changes));
         }
-        typed_json_response(
+        ApiResponse::dto(
             200,
             &ConfigValidationResponse::new(
                 candidate.draft.effective_revision().clone(),
@@ -546,7 +514,7 @@ impl ConfigApiState {
         match self.coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => {
                 let view = RedactedConfigView::new(&document.validated_config, document.format);
-                typed_json_response(
+                ApiResponse::dto(
                     409,
                     &ConfigConflictResponse::new(
                         *document,
@@ -656,11 +624,6 @@ fn parse_config_request(body: &[u8]) -> Result<ConfigDraft, ApiResponse> {
                 }),
             )
         })
-}
-
-fn typed_json_response(status: u16, value: &impl Serialize) -> ApiResponse {
-    let value = serde_json::to_value(value).expect("configuration response DTO serializes");
-    ApiResponse::json(status, &value)
 }
 
 fn prepare_config(config: &ValidatedConfig) -> Result<RuntimePlan, ConfigPreparationError> {
