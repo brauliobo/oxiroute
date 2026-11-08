@@ -1,0 +1,540 @@
+//! Deterministic load generator: a fixed number of requests over a fixed set of connections.
+//!
+//! Protocols: `h1`, `h1tls`, `h2c`, `h2tls`, `ws` (HTTP upgrade then byte echo) and `tcp` (byte echo).
+//! A warm-up phase opens the connections and sends `--warmup` requests; `--hook-start` runs to
+//! completion, then exactly `--requests` requests are measured; `--hook-stop` runs afterwards.
+
+use std::{
+    io,
+    net::SocketAddr,
+    process::ExitCode,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Instant,
+};
+
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::{
+    Method, Request, Uri,
+    client::conn::http2::SendRequest,
+    header::{HeaderMap, HeaderName, HeaderValue},
+};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use rustls::{
+    ClientConfig, DigitallySignedStruct, SignatureScheme,
+    client::{
+        Resumption,
+        danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    },
+    crypto::CryptoProvider,
+};
+use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::TcpStream,
+};
+use tokio_rustls::TlsConnector;
+
+use crate::{Flags, flag};
+
+trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
+type Io = Box<dyn Stream>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Proto {
+    H1,
+    H1Tls,
+    H2c,
+    H2Tls,
+    Ws,
+    Tcp,
+}
+
+impl std::str::FromStr for Proto {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, String> {
+        Ok(match value {
+            "h1" => Self::H1,
+            "h1tls" => Self::H1Tls,
+            "h2c" => Self::H2c,
+            "h2tls" => Self::H2Tls,
+            "ws" => Self::Ws,
+            "tcp" => Self::Tcp,
+            other => return Err(format!("unknown protocol {other}")),
+        })
+    }
+}
+
+struct Spec {
+    proto: Proto,
+    targets: Vec<SocketAddr>,
+    host: String,
+    conns: usize,
+    streams: usize,
+    requests: usize,
+    warmup: usize,
+    new_conn: bool,
+    msg_bytes: usize,
+    expect_status: u16,
+    expect_len: Option<usize>,
+    connector: Option<TlsConnector>,
+    h1_request: Vec<u8>,
+    h2_method: Method,
+    h2_uri: Uri,
+    h2_headers: HeaderMap,
+    body: Bytes,
+}
+
+#[derive(Default)]
+struct Stats {
+    latencies_us: Vec<u32>,
+    connect_us: Vec<u32>,
+    ok: u64,
+    errors: u64,
+    bytes: u64,
+    connects: u64,
+}
+
+impl Stats {
+    fn merge(&mut self, other: Self) {
+        self.latencies_us.extend(other.latencies_us);
+        self.connect_us.extend(other.connect_us);
+        self.ok += other.ok;
+        self.errors += other.errors;
+        self.bytes += other.bytes;
+        self.connects += other.connects;
+    }
+}
+
+enum Client {
+    H1(Io),
+    H2(SendRequest<Full<Bytes>>),
+    Raw(Io),
+}
+
+struct Outcome {
+    status: u16,
+    body_len: usize,
+    close: bool,
+}
+
+fn pad_headers(bytes: usize) -> Vec<(String, String)> {
+    (0..bytes.div_ceil(100))
+        .map(|index| (format!("x-pad-{index:02}"), "p".repeat(90)))
+        .collect()
+}
+
+fn h1_request(
+    method: &str,
+    path: &str,
+    host: &str,
+    padding: &[(String, String)],
+    body: &[u8],
+    keepalive: bool,
+) -> Vec<u8> {
+    let mut request = format!("{method} {path} HTTP/1.1\r\nhost: {host}\r\nuser-agent: r2tool\r\naccept: */*\r\n");
+    for (name, value) in padding {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    if !body.is_empty() || method == "POST" {
+        request.push_str(&format!("content-length: {}\r\n", body.len()));
+    }
+    request.push_str(if keepalive {
+        "connection: keep-alive\r\n\r\n"
+    } else {
+        "connection: close\r\n\r\n"
+    });
+    let mut bytes = request.into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+#[derive(Debug)]
+struct NoVerify(Arc<CryptoProvider>);
+
+impl ServerCertVerifier for NoVerify {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+fn tls_connector(alpn: &[u8], version: &str, resume: bool) -> TlsConnector {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let versions: &[&rustls::SupportedProtocolVersion] = match version {
+        "1.2" => &[&rustls::version::TLS12],
+        "1.3" => &[&rustls::version::TLS13],
+        _ => &[&rustls::version::TLS13, &rustls::version::TLS12],
+    };
+    let mut config = ClientConfig::builder_with_provider(Arc::clone(&provider))
+        .with_protocol_versions(versions)
+        .expect("protocol versions")
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerify(provider)))
+        .with_no_client_auth();
+    config.alpn_protocols = vec![alpn.to_vec()];
+    config.resumption = if resume {
+        Resumption::in_memory_sessions(1024)
+    } else {
+        Resumption::disabled()
+    };
+    TlsConnector::from(Arc::new(config))
+}
+
+fn spec_from(flags: &Flags) -> Spec {
+    let proto: Proto = flag(flags, "proto", Proto::H1);
+    let host: String = flag(flags, "host", "bench.example.com".to_owned());
+    let method: String = flag(flags, "method", "GET".to_owned());
+    let path: String = flag(flags, "path", "/b1k".to_owned());
+    let new_conn: bool = flag(flags, "new-conn", false);
+    let mut padding = pad_headers(flag(flags, "hdr-bytes", 0));
+    if let Some(header) = flags.get("extra-header") {
+        let (name, value) = header.split_once(':').expect("--extra-header 'name: value'");
+        padding.push((name.trim().to_ascii_lowercase(), value.trim().to_owned()));
+    }
+    let body = Bytes::from(vec![b'b'; flag(flags, "body-bytes", 0)]);
+    let tls_version: String = flag(flags, "tls-version", "any".to_owned());
+    let resume: bool = flag(flags, "resume", false);
+    let connector = match proto {
+        Proto::H1Tls => Some(tls_connector(b"http/1.1", &tls_version, resume)),
+        Proto::H2Tls => Some(tls_connector(b"h2", &tls_version, resume)),
+        _ => None,
+    };
+    let mut h2_headers = HeaderMap::new();
+    for (name, value) in &padding {
+        h2_headers.insert(
+            HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+            HeaderValue::from_str(value).expect("header value"),
+        );
+    }
+    let scheme = if proto == Proto::H2Tls { "https" } else { "http" };
+    Spec {
+        proto,
+        targets: flag(flags, "target", "127.0.0.1:0".to_owned())
+            .split(',')
+            .map(|address| address.parse().expect("--target address list"))
+            .collect(),
+        conns: flag(flags, "conns", 1),
+        streams: flag(flags, "streams", 1),
+        requests: flag(flags, "requests", 1000),
+        warmup: flag(flags, "warmup", 200),
+        new_conn,
+        msg_bytes: flag(flags, "msg-bytes", 1024),
+        expect_status: flag(flags, "expect-status", 200),
+        expect_len: flags
+            .get("expect-len")
+            .map(|value| value.parse().expect("--expect-len")),
+        connector,
+        h1_request: h1_request(&method, &path, &host, &padding, &body, !new_conn),
+        h2_method: method.parse().expect("method"),
+        h2_uri: format!("{scheme}://{host}{path}").parse().expect("uri"),
+        h2_headers,
+        host,
+        body,
+    }
+}
+
+async fn connect(spec: &Spec, slot: usize) -> io::Result<Client> {
+    let tcp = TcpStream::connect(spec.targets[slot % spec.targets.len()]).await?;
+    tcp.set_nodelay(true)?;
+    let mut io: Io = match &spec.connector {
+        Some(connector) => {
+            let name = ServerName::try_from(spec.host.clone()).map_err(io::Error::other)?;
+            Box::new(connector.connect(name, tcp).await?)
+        }
+        None => Box::new(tcp),
+    };
+    match spec.proto {
+        Proto::H1 | Proto::H1Tls => Ok(Client::H1(io)),
+        Proto::Tcp => Ok(Client::Raw(io)),
+        Proto::H2c | Proto::H2Tls => {
+            let (sender, connection) =
+                hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(io))
+                    .await
+                    .map_err(io::Error::other)?;
+            tokio::spawn(connection);
+            Ok(Client::H2(sender))
+        }
+        Proto::Ws => {
+            let handshake = format!(
+                "GET /ws HTTP/1.1\r\nhost: {}\r\nconnection: upgrade\r\nupgrade: websocket\r\n\
+                 sec-websocket-version: 13\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+                spec.host
+            );
+            io.write_all(handshake.as_bytes()).await?;
+            let mut scratch = Vec::with_capacity(1024);
+            let outcome = read_response(&mut io, &mut scratch).await?;
+            if outcome.status != 101 {
+                return Err(io::Error::other(format!("upgrade answered {}", outcome.status)));
+            }
+            Ok(Client::Raw(io))
+        }
+    }
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines()
+        .find_map(|line| line.strip_prefix(name))
+        .map(str::trim)
+}
+
+async fn read_response(io: &mut Io, buf: &mut Vec<u8>) -> io::Result<Outcome> {
+    buf.clear();
+    let head_end = loop {
+        if let Some(position) = find(buf, b"\r\n\r\n") {
+            break position + 4;
+        }
+        if io.read_buf(buf).await? == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+    };
+    let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| io::Error::other("malformed status line"))?;
+    let mut close = header_value(&head, "connection:").is_some_and(|value| value.contains("close"));
+    if status < 200 || status == 204 || status == 304 {
+        return Ok(Outcome { status, body_len: 0, close });
+    }
+    if header_value(&head, "transfer-encoding:").is_some_and(|value| value.contains("chunked")) {
+        while !buf[head_end..].ends_with(b"0\r\n\r\n") {
+            if io.read_buf(buf).await? == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+        }
+        return Ok(Outcome { status, body_len: buf.len() - head_end, close });
+    }
+    if let Some(length) = header_value(&head, "content-length:").and_then(|value| value.parse::<usize>().ok()) {
+        while buf.len() < head_end + length {
+            if io.read_buf(buf).await? == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+        }
+        return Ok(Outcome { status, body_len: length, close });
+    }
+    close = true;
+    while io.read_buf(buf).await? != 0 {}
+    Ok(Outcome { status, body_len: buf.len() - head_end, close })
+}
+
+async fn exchange(client: &mut Client, spec: &Spec, scratch: &mut Vec<u8>) -> io::Result<Outcome> {
+    match client {
+        Client::H1(io) => {
+            io.write_all(&spec.h1_request).await?;
+            read_response(io, scratch).await
+        }
+        Client::H2(sender) => {
+            let mut request = Request::new(Full::new(spec.body.clone()));
+            *request.method_mut() = spec.h2_method.clone();
+            *request.uri_mut() = spec.h2_uri.clone();
+            *request.headers_mut() = spec.h2_headers.clone();
+            sender.ready().await.map_err(io::Error::other)?;
+            let response = sender.send_request(request).await.map_err(io::Error::other)?;
+            let status = response.status().as_u16();
+            let body = response.into_body().collect().await.map_err(io::Error::other)?;
+            Ok(Outcome { status, body_len: body.to_bytes().len(), close: false })
+        }
+        Client::Raw(io) => {
+            scratch.clear();
+            scratch.resize(spec.msg_bytes, b'm');
+            io.write_all(scratch).await?;
+            io.read_exact(scratch).await?;
+            Ok(Outcome { status: 200, body_len: spec.msg_bytes, close: false })
+        }
+    }
+}
+
+fn micros(started: Instant) -> u32 {
+    u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX)
+}
+
+async fn worker(
+    spec: Arc<Spec>,
+    slot: usize,
+    mut client: Option<Client>,
+    next: Arc<AtomicUsize>,
+    total: usize,
+    record: bool,
+) -> (Option<Client>, Stats) {
+    let mut stats = Stats::default();
+    let mut scratch = Vec::with_capacity(64 * 1024);
+    while next.fetch_add(1, Ordering::Relaxed) < total {
+        let started = Instant::now();
+        if client.is_none() {
+            let connecting = Instant::now();
+            match connect(&spec, slot).await {
+                Ok(connected) => {
+                    stats.connects += 1;
+                    if record {
+                        stats.connect_us.push(micros(connecting));
+                    }
+                    client = Some(connected);
+                }
+                Err(_) => {
+                    stats.errors += 1;
+                    continue;
+                }
+            }
+        }
+        let outcome = exchange(client.as_mut().expect("connected"), &spec, &mut scratch).await;
+        match outcome {
+            Ok(outcome) => {
+                let valid = outcome.status == spec.expect_status
+                    && spec.expect_len.is_none_or(|length| length == outcome.body_len);
+                if valid {
+                    stats.ok += 1;
+                    stats.bytes += outcome.body_len as u64;
+                    if record {
+                        stats.latencies_us.push(micros(started));
+                    }
+                } else {
+                    stats.errors += 1;
+                }
+                if outcome.close || spec.new_conn {
+                    client = None;
+                }
+            }
+            Err(_) => {
+                stats.errors += 1;
+                client = None;
+            }
+        }
+    }
+    (client, stats)
+}
+
+async fn phase(spec: &Arc<Spec>, clients: &mut Vec<Option<Client>>, total: usize, record: bool) -> Stats {
+    let next = Arc::new(AtomicUsize::new(0));
+    let handles: Vec<_> = clients
+        .drain(..)
+        .enumerate()
+        .map(|(slot, client)| tokio::spawn(worker(Arc::clone(spec), slot, client, Arc::clone(&next), total, record)))
+        .collect();
+    let mut merged = Stats::default();
+    for handle in handles {
+        let (client, stats) = handle.await.expect("worker task");
+        clients.push(client);
+        merged.merge(stats);
+    }
+    merged
+}
+
+async fn initial_clients(spec: &Spec) -> io::Result<Vec<Option<Client>>> {
+    let mut clients = Vec::with_capacity(spec.conns * spec.streams);
+    for slot in 0..spec.conns {
+        if spec.new_conn {
+            clients.extend((0..spec.streams).map(|_| None));
+            continue;
+        }
+        match connect(spec, slot).await? {
+            Client::H2(sender) => {
+                clients.extend((0..spec.streams).map(|_| Some(Client::H2(sender.clone()))));
+            }
+            other => clients.push(Some(other)),
+        }
+    }
+    Ok(clients)
+}
+
+async fn hook(command: Option<&String>) {
+    if let Some(command) = command {
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .status()
+            .await
+            .expect("spawn hook");
+        assert!(status.success(), "hook failed: {command}");
+    }
+}
+
+fn percentile(sorted: &[u32], fraction: f64) -> u32 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let rank = (fraction * sorted.len() as f64).ceil() as usize;
+    sorted[rank.clamp(1, sorted.len()) - 1]
+}
+
+async fn drive(spec: Arc<Spec>, flags: &Flags) -> ExitCode {
+    let mut clients = match initial_clients(&spec).await {
+        Ok(clients) => clients,
+        Err(error) => {
+            eprintln!("connect failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let warm = phase(&spec, &mut clients, spec.warmup, false).await;
+    hook(flags.get("hook-start")).await;
+    let started = Instant::now();
+    let mut stats = phase(&spec, &mut clients, spec.requests, true).await;
+    let elapsed = started.elapsed();
+    hook(flags.get("hook-stop")).await;
+    stats.latencies_us.sort_unstable();
+    stats.connect_us.sort_unstable();
+    let seconds = elapsed.as_secs_f64();
+    println!("requests={}", spec.requests);
+    println!("ok={}", stats.ok);
+    println!("errors={}", stats.errors + warm.errors);
+    println!("elapsed_ms={:.1}", seconds * 1000.0);
+    println!("rps={:.0}", stats.ok as f64 / seconds);
+    println!("mbps={:.1}", stats.bytes as f64 * 8.0 / seconds / 1e6);
+    for (label, fraction) in [("p50", 0.5), ("p99", 0.99), ("p999", 0.999), ("max", 1.0)] {
+        println!("{label}_us={}", percentile(&stats.latencies_us, fraction));
+    }
+    println!("connects={}", stats.connects);
+    println!("connect_p50_us={}", percentile(&stats.connect_us, 0.5));
+    println!("connect_p99_us={}", percentile(&stats.connect_us, 0.99));
+    if stats.errors + warm.errors == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+pub fn run(flags: &Flags) -> ExitCode {
+    let spec = Arc::new(spec_from(flags));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(flag(flags, "threads", 2))
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(drive(spec, flags))
+}
