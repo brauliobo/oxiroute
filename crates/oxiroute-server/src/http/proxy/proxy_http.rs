@@ -913,8 +913,8 @@ impl ProxyHttp for HttpReverseProxy {
         ctx.account_final_attempt(session);
         ctx.record_failed_evacuations(error);
         if let Some(access_log) = self.service.access_log() {
-            let event = access_record::build(ctx, session, response_status, access_log.service());
-            if let Err(error) = access_log.write(&event) {
+            let record = access_record::build(ctx, session, response_status, access_log.service());
+            if let Err(error) = access_log.write_record(&record) {
                 warn!("HTTP access log write failed: {error}");
             }
         }

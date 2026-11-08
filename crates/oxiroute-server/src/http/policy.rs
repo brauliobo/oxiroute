@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::{borrow::Cow, net::IpAddr};
 
 use http::{
     HeaderMap, HeaderName, HeaderValue, StatusCode,
@@ -435,15 +435,19 @@ const fn same_site_value(value: HttpSameSite) -> &'static str {
     }
 }
 
-pub(crate) fn normalized_request_host(authority: &Authority) -> String {
+pub(crate) fn normalized_request_host(authority: &Authority) -> Cow<'_, str> {
     let host = authority.host();
     let unbracketed = host
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
         .unwrap_or(host);
-    unbracketed
-        .parse::<IpAddr>()
-        .map_or_else(|_| host.to_ascii_lowercase(), |ip| ip.to_string())
+    match unbracketed.parse::<IpAddr>() {
+        Ok(ip) => Cow::Owned(ip.to_string()),
+        Err(_) if host.bytes().any(|byte| byte.is_ascii_uppercase()) => {
+            Cow::Owned(host.to_ascii_lowercase())
+        }
+        Err(_) => Cow::Borrowed(host),
+    }
 }
 
 pub(crate) fn nginx_request_host(
