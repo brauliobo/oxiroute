@@ -6153,7 +6153,7 @@ async fn applies_host_header_cookie_and_request_response_header_policies() {
         else {
             unreachable!();
         };
-        *route_policy = policy;
+        *route_policy = policy.into();
         let proxy = ProxyHarness::start(
             vec![pool("origin", &[origin_address])],
             vec![proxy_route],
@@ -6289,7 +6289,7 @@ async fn x_forwarded_for_source_exception_preserves_the_incoming_header() {
         else {
             panic!("proxy route")
         };
-        *route_policy = policy;
+        *route_policy = policy.into();
         let proxy = ProxyHarness::start(
             vec![pool("origin", &[origin_address])],
             vec![proxy_route],
@@ -6812,7 +6812,8 @@ async fn queued_request_response(queue_headers: bool) -> (RawResponse, RawRespon
         policy: HttpProxyPolicy {
             queue_headers,
             ..HttpProxyPolicy::default()
-        },
+        }
+        .into(),
     };
     let proxy = Arc::new(
         ProxyHarness::start(
@@ -8443,7 +8444,7 @@ fn route(host: Option<&str>, path: &str, methods: &[&str], pool: &str) -> HttpRo
         policy: oxiroute_config::HttpRoutePolicy::default(),
         action: HttpRouteAction::Proxy {
             upstream_pool: pool.into(),
-            policy: HttpProxyPolicy::default(),
+            policy: HttpProxyPolicy::default().into(),
         },
     }
 }

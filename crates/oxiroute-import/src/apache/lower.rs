@@ -389,7 +389,8 @@ impl Lowerer {
                                 }
                             },
                             ..HttpProxyPolicy::default()
-                        },
+                        }
+                        .into(),
                     },
                 });
                 route_origins.push(host_route_sources);

@@ -121,7 +121,7 @@ pub(super) async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool()
             },
             action: HttpRouteAction::Proxy {
                 upstream_pool: "origin".into(),
-                policy: HttpProxyPolicy::default(),
+                policy: HttpProxyPolicy::default().into(),
             },
         }],
         automatic_response_headers: true,
@@ -347,7 +347,7 @@ pub(super) async fn reverse_h3_cache_serves_a_second_get_without_origin_contact(
             },
             action: HttpRouteAction::Proxy {
                 upstream_pool: "origin".into(),
-                policy: proxy_policy,
+                policy: proxy_policy.into(),
             },
         }],
         automatic_response_headers: true,
@@ -561,7 +561,7 @@ pub(super) async fn reverse_h3_characterizes_http_policy_parity_and_early_origin
                 },
                 action: HttpRouteAction::Proxy {
                     upstream_pool: "origin".into(),
-                    policy,
+                    policy: policy.into(),
                 },
             },
             HttpRoute {

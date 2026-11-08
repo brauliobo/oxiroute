@@ -76,7 +76,7 @@ pub(super) fn deduplicate_routes(routes: Vec<LoweredRoute>) -> Vec<LoweredRoute>
 pub(super) fn proxy_action(upstream_pool: String, policy: HttpProxyPolicy) -> HttpRouteAction {
     HttpRouteAction::Proxy {
         upstream_pool,
-        policy,
+        policy: policy.into(),
     }
 }
 

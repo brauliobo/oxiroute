@@ -198,7 +198,7 @@ impl Balancer {
                     policy: oxiroute_config::HttpRoutePolicy::default(),
                     action: HttpRouteAction::Proxy {
                         upstream_pool: "workers".into(),
-                        policy: HttpProxyPolicy::default(),
+                        policy: HttpProxyPolicy::default().into(),
                     },
                 }],
                 automatic_response_headers: false,

@@ -333,7 +333,8 @@ impl Lowerer<'_> {
                     queue_class: None,
                     cache,
                     queue_headers: false,
-                },
+                }
+                .into(),
             },
         };
         self.draft.http_services.push(HttpService {

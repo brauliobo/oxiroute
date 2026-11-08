@@ -334,7 +334,7 @@ fn route(pool: &str) -> HttpRoute {
         policy: oxiroute_config::HttpRoutePolicy::default(),
         action: HttpRouteAction::Proxy {
             upstream_pool: pool.into(),
-            policy: HttpProxyPolicy::default(),
+            policy: HttpProxyPolicy::default().into(),
         },
     }
 }

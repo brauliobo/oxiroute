@@ -482,7 +482,7 @@ fn test_http_services() -> Vec<HttpService> {
                     policy: HttpRoutePolicy::default(),
                     action: HttpRouteAction::Proxy {
                         upstream_pool: "secure-backends".into(),
-                        policy: test_proxy_policy(),
+                        policy: test_proxy_policy().into(),
                     },
                 },
                 HttpRoute {
@@ -584,7 +584,8 @@ fn test_http_services() -> Vec<HttpService> {
                         queue_class: None,
                         cache: None,
                         queue_headers: false,
-                    },
+                    }
+                    .into(),
                 },
             }],
             automatic_response_headers: false,

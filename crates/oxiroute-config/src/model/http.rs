@@ -187,7 +187,7 @@ pub enum HttpAccessPolicy {
 pub enum HttpRouteAction {
     Proxy {
         upstream_pool: String,
-        policy: HttpProxyPolicy,
+        policy: Box<HttpProxyPolicy>,
     },
     FixedResponse {
         status: u16,
