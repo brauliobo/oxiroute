@@ -30,15 +30,29 @@ fn a_movable_attempt_is_taken_once_and_settles_as_a_move() {
 }
 
 #[test]
-fn a_movable_attempt_without_a_destination_is_left_running_even_when_forced() {
+fn a_movable_attempt_without_a_destination_is_left_running() {
     let evacuation = armed(None);
-    for force in [false, true] {
-        assert_eq!(
-            evacuation.evacuate(force, false),
-            Some(Fate::LeftRunning(LeftRunning::NoDestination))
-        );
-    }
+    assert_eq!(
+        evacuation.evacuate(false, false),
+        Some(Fate::LeftRunning(LeftRunning::NoDestination))
+    );
     assert!(evacuation.commit_response());
+}
+
+#[test]
+fn forcing_kills_a_movable_attempt_that_has_no_destination() {
+    let evacuation = armed(None);
+    assert_eq!(evacuation.evacuate(true, false), Some(Fate::Forced));
+    assert_eq!(evacuation.evacuate(true, false), None);
+    assert!(!evacuation.commit_response());
+    assert_eq!(evacuation.settle(), Some(Cancellation::Kill));
+    assert_eq!(evacuation.redispatches(), 0);
+}
+
+#[test]
+fn forcing_still_moves_a_movable_attempt_that_has_a_destination() {
+    let evacuation = armed(None);
+    assert_eq!(evacuation.evacuate(true, true), Some(Fate::Redispatched));
 }
 
 #[test]

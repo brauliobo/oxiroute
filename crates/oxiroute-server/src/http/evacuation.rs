@@ -156,8 +156,8 @@ impl Evacuation {
             let (next, fate) = match state {
                 State::Idle | State::Moving | State::Killing => return None,
                 State::Movable if has_destination => (State::Moving, Fate::Redispatched),
+                State::Movable | State::Pinned(_) if force => (State::Killing, Fate::Forced),
                 State::Movable => return Some(Fate::LeftRunning(LeftRunning::NoDestination)),
-                State::Pinned(_) if force => (State::Killing, Fate::Forced),
                 State::Pinned(reason) => return Some(Fate::LeftRunning(reason)),
             };
             if self.transition(state, next).is_ok() {

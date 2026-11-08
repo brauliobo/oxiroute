@@ -792,17 +792,23 @@ mod tests {
     }
 
     #[test]
-    fn without_a_destination_movable_requests_stay_where_they_are() {
+    fn without_a_destination_movable_requests_stay_unless_forced() {
         let registry = registry_for_test();
         let movable = attempt_on(registry, "stuck-here", "farm", "node-a", None);
 
-        let report = registry.evacuate_server("farm", "node-a", true, false);
+        let report = registry.evacuate_server("farm", "node-a", false, false);
 
         assert_eq!(
             report.left_running.get(&LeftRunning::NoDestination),
             Some(&1)
         );
         assert_eq!(movable.evacuation().settle(), None);
+        let movable = attempt_on(registry, "cut-here", "farm", "node-a", None);
+
+        let report = registry.evacuate_server("farm", "node-a", true, false);
+
+        assert_eq!((report.forced, report.left_running_total()), (1, 0));
+        assert_eq!(movable.evacuation().settle(), Some(Cancellation::Kill));
     }
 
     #[test]
