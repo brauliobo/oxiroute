@@ -128,10 +128,9 @@ impl WorkerShared {
                 | RecorderFailure::ShutdownTimedOut
                 | RecorderFailure::WorkerPanicked
         ) {
-            if partial_exists {
-                status.recoverable_partial_name = status.current_partial_name.take();
-            } else {
-                status.current_partial_name = None;
+            let current = status.current_partial_name.take();
+            if partial_exists && let Some(name) = current {
+                status.recoverable_partial_name = Some(name);
             }
         }
         if failure.published_but_not_durable_relative_name.is_some() {
