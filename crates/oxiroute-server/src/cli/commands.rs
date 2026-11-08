@@ -98,6 +98,13 @@ fn execute(cli: &Cli, client: &Client) -> Result<FollowOutcome, CliError> {
             command: ServerCommand::Drain(target),
         } => server_state(client, target, "drain")?,
         Command::Server {
+            command: ServerCommand::Evacuate { target, force },
+        } => evacuate(
+            client,
+            "/api/v1/servers/evacuate",
+            &evacuate_server_body(target, *force),
+        )?,
+        Command::Server {
             command: ServerCommand::Maintenance(target),
         } => server_state(client, target, "maintenance")?,
         Command::Server {
@@ -197,6 +204,13 @@ fn execute(cli: &Cli, client: &Client) -> Result<FollowOutcome, CliError> {
         Command::Pool {
             command: PoolCommand::Drain { pools },
         } => pool_state(client, pools, "drain")?,
+        Command::Pool {
+            command: PoolCommand::Evacuate { pools, force },
+        } => evacuate(
+            client,
+            "/api/v1/pools/evacuate",
+            &evacuate_pool_body(pools, *force),
+        )?,
         Command::Listener {
             command: ListenerCommand::List,
         } => (client.get("/api/v1/listeners", true)?, None),
@@ -436,6 +450,22 @@ fn pool_state(
         )?,
         None,
     ))
+}
+
+fn evacuate(
+    client: &Client,
+    path: &str,
+    body: &Value,
+) -> Result<(Response, Option<Selection<'static>>), CliError> {
+    Ok((client.mutation_json("POST", path, body)?, None))
+}
+
+pub(super) fn evacuate_server_body(target: &ServerTarget, force: bool) -> Value {
+    json!({ "targets": server_targets(target), "force": force })
+}
+
+pub(super) fn evacuate_pool_body(pools: &[String], force: bool) -> Value {
+    json!({ "pools": pools, "force": force })
 }
 
 fn listener_state(

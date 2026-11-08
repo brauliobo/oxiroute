@@ -354,6 +354,17 @@ pub enum ServerCommand {
     Show(ServerTarget),
     Ready(ServerTarget),
     Drain(ServerTarget),
+    /// Drain a server, then move the HTTP requests running on it to other servers of its pool.
+    ///
+    /// Requests that sent no response and can be replayed are cancelled and served by another server
+    /// without the caller noticing; the rest keep running as in a drain and are counted in the report.
+    Evacuate {
+        #[command(flatten)]
+        target: ServerTarget,
+        /// Also cancel the requests that cannot move; their callers get an error.
+        #[arg(long)]
+        force: bool,
+    },
     Maintenance(ServerTarget),
     SetHealth {
         #[command(flatten)]
@@ -495,6 +506,15 @@ pub enum PoolCommand {
     Drain {
         #[arg(required = true, value_parser = nonempty_target)]
         pools: Vec<String>,
+    },
+    /// Drain every server of the pools. A drained pool has no other server to move requests to, so they
+    /// keep running unless `--force` cancels them.
+    Evacuate {
+        #[arg(required = true, value_parser = nonempty_target)]
+        pools: Vec<String>,
+        /// Cancel the running requests; their callers get an error.
+        #[arg(long)]
+        force: bool,
     },
 }
 
