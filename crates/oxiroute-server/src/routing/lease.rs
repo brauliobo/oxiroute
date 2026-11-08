@@ -77,14 +77,6 @@ impl SelectionState {
     }
 }
 
-/// A selectable server and what the algorithms rank it by.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Candidate {
-    pub(super) index: usize,
-    pub(super) load: u64,
-    pub(super) weight: u16,
-}
-
 /// Compatibility name retained for monitoring and topology consumers during the pool transition.
 pub type RoundRobinPool = EndpointPool;
 

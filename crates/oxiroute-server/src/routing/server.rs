@@ -56,17 +56,26 @@ pub(crate) struct DynamicServer {
 #[derive(Debug)]
 pub(super) struct Membership {
     pub(super) endpoints: Box<[Arc<PoolEndpoint>]>,
+    positions: std::collections::HashMap<Box<str>, usize>,
+    /// The members that may be chosen; refreshed by [`PoolHealthState::selectable_view`].
+    pub(super) selectable: ArcSwap<SelectableView>,
 }
 
 impl Membership {
     pub(super) fn new(endpoints: Vec<Arc<PoolEndpoint>>) -> Self {
         Self {
+            positions: endpoints
+                .iter()
+                .enumerate()
+                .map(|(index, server)| (server.name.as_str().into(), index))
+                .collect(),
             endpoints: endpoints.into_boxed_slice(),
+            selectable: ArcSwap::from_pointee(SelectableView::unbuilt()),
         }
     }
 
     pub(super) fn position(&self, name: &str) -> Option<usize> {
-        self.endpoints.iter().position(|server| server.name == name)
+        self.positions.get(name).copied()
     }
 
     /// Where a dynamic server belongs: after every static one, by priority and then name.
@@ -237,6 +246,20 @@ impl PoolEndpoint {
             && !self.passively_ejected_at(now_unix_ms)
             && self.breaker_permits(now_unix_ms)
             && self.health_permits()
+    }
+
+    /// The first time at which time alone may make this server selectable again, or `u64::MAX`.
+    pub(super) fn selectable_after(&self, now_unix_ms: u64) -> u64 {
+        let ejection_ends = (self.passive_ejected.load(Ordering::Acquire)
+            && !self.awaiting_probe.load(Ordering::Acquire))
+        .then(|| self.passive_ejection_until_unix_ms.load(Ordering::Acquire))
+        .filter(|until| *until > now_unix_ms);
+        let breaker_closes = self.breaker.reopens_at().filter(|at| *at > now_unix_ms);
+        ejection_ends
+            .into_iter()
+            .chain(breaker_closes)
+            .min()
+            .unwrap_or(u64::MAX)
     }
 
     fn health_permits(&self) -> bool {
@@ -590,7 +613,7 @@ impl PoolEndpoint {
         failure: HealthFailure,
         at_unix_ms: u64,
         policy: PassiveFailurePolicy,
-        may_eject: bool,
+        may_eject: impl FnOnce() -> bool,
     ) -> Option<PassiveEjection> {
         if !policy.observes(failure) {
             return None;
@@ -601,7 +624,7 @@ impl PoolEndpoint {
             .store(failure as u8, Ordering::Relaxed);
         if self.passively_ejected_at(at_unix_ms)
             || consecutive < u64::from(policy.consecutive_failure_threshold)
-            || !may_eject
+            || !may_eject()
         {
             return None;
         }
