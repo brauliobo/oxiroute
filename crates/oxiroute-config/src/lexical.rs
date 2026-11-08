@@ -563,43 +563,51 @@ pub fn is_unambiguous_http_path(path: &str) -> bool {
 #[must_use]
 pub fn canonicalize_http_path(path: &str) -> Option<Cow<'_, str>> {
     let bytes = path.as_bytes();
-    if bytes.contains(&b'\\')
-        || bytes.windows(2).any(|window| window == b"//")
-        || path
-            .split('/')
-            .any(|segment| segment == "." || segment == "..")
-    {
-        return None;
-    }
-
     let mut canonical = None;
+    let mut segment = 0;
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] != b'%' {
-            index += 1;
-            continue;
+        match bytes[index] {
+            b'\\' => return None,
+            b'/' => {
+                if (segment == index && index != 0) || is_dot_segment(&bytes[segment..index]) {
+                    return None;
+                }
+                segment = index + 1;
+                index += 1;
+            }
+            b'%' => {
+                let encoded = bytes
+                    .get(index + 1..index + 3)
+                    .and_then(|digits| decode_hex_byte(digits[0], digits[1]))?;
+                if encoded.is_ascii_alphanumeric()
+                    || matches!(encoded, b'-' | b'.' | b'_' | b'~' | b'/' | b'\\')
+                {
+                    return None;
+                }
+                if bytes[index + 1] != bytes[index + 1].to_ascii_uppercase()
+                    || bytes[index + 2] != bytes[index + 2].to_ascii_uppercase()
+                {
+                    let canonical = canonical.get_or_insert_with(|| bytes.to_vec());
+                    canonical[index + 1] = canonical[index + 1].to_ascii_uppercase();
+                    canonical[index + 2] = canonical[index + 2].to_ascii_uppercase();
+                }
+                index += 3;
+            }
+            _ => index += 1,
         }
-        let encoded = bytes
-            .get(index + 1..index + 3)
-            .and_then(|digits| decode_hex_byte(digits[0], digits[1]))?;
-        if encoded.is_ascii_alphanumeric()
-            || matches!(encoded, b'-' | b'.' | b'_' | b'~' | b'/' | b'\\')
-        {
-            return None;
-        }
-        if bytes[index + 1] != bytes[index + 1].to_ascii_uppercase()
-            || bytes[index + 2] != bytes[index + 2].to_ascii_uppercase()
-        {
-            let canonical = canonical.get_or_insert_with(|| bytes.to_vec());
-            canonical[index + 1] = canonical[index + 1].to_ascii_uppercase();
-            canonical[index + 2] = canonical[index + 2].to_ascii_uppercase();
-        }
-        index += 3;
+    }
+    if is_dot_segment(&bytes[segment..]) {
+        return None;
     }
     canonical.map_or_else(
         || Some(Cow::Borrowed(path)),
         |canonical| String::from_utf8(canonical).ok().map(Cow::Owned),
     )
+}
+
+fn is_dot_segment(segment: &[u8]) -> bool {
+    segment == b"." || segment == b".."
 }
 
 fn decode_hex_byte(high: u8, low: u8) -> Option<u8> {
@@ -630,6 +638,78 @@ pub(crate) fn normalize_http_token(method: &mut str) -> Result<(), LexicalError>
     }
     method.make_ascii_uppercase();
     Ok(())
+}
+
+#[cfg(test)]
+mod path_tests {
+    use std::borrow::Cow;
+
+    use super::canonicalize_http_path;
+
+    /// The original three-pass implementation, kept as the oracle.
+    fn reference(path: &str) -> Option<Cow<'_, str>> {
+        let bytes = path.as_bytes();
+        if bytes.contains(&b'\\')
+            || bytes.windows(2).any(|window| window == b"//")
+            || path
+                .split('/')
+                .any(|segment| segment == "." || segment == "..")
+        {
+            return None;
+        }
+        let mut canonical = None;
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] != b'%' {
+                index += 1;
+                continue;
+            }
+            let digits = bytes.get(index + 1..index + 3)?;
+            let encoded = super::decode_hex_byte(digits[0], digits[1])?;
+            if encoded.is_ascii_alphanumeric()
+                || matches!(encoded, b'-' | b'.' | b'_' | b'~' | b'/' | b'\\')
+            {
+                return None;
+            }
+            if bytes[index + 1] != bytes[index + 1].to_ascii_uppercase()
+                || bytes[index + 2] != bytes[index + 2].to_ascii_uppercase()
+            {
+                let canonical = canonical.get_or_insert_with(|| bytes.to_vec());
+                canonical[index + 1] = canonical[index + 1].to_ascii_uppercase();
+                canonical[index + 2] = canonical[index + 2].to_ascii_uppercase();
+            }
+            index += 3;
+        }
+        canonical.map_or(Some(Cow::Borrowed(path)), |canonical| {
+            String::from_utf8(canonical).ok().map(Cow::Owned)
+        })
+    }
+
+    const ALPHABET: &[u8] = b"/.%\\a2Fe";
+
+    /// Compares both checks on every string of at most `left` more symbols; returns how many.
+    fn walk(path: &mut Vec<u8>, left: usize) -> u32 {
+        let text = std::str::from_utf8(path).expect("ascii");
+        assert_eq!(canonicalize_http_path(text), reference(text), "{text:?}");
+        if left == 0 {
+            return 1;
+        }
+        1 + ALPHABET
+            .iter()
+            .map(|&byte| {
+                path.push(byte);
+                let checked = walk(path, left - 1);
+                path.pop();
+                checked
+            })
+            .sum::<u32>()
+    }
+
+    #[test]
+    fn the_single_pass_check_accepts_exactly_what_the_three_pass_check_accepted() {
+        let checked = walk(&mut Vec::new(), 6);
+        assert_eq!(checked, (0..=6).map(|length| 8_u32.pow(length)).sum());
+    }
 }
 
 #[cfg(test)]
