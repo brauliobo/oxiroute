@@ -598,11 +598,14 @@ fn collect_canonical_fields(
 fn config_source_schema() -> syn::File {
     let mut schema = syn::parse_file("").expect("parse empty configuration schema");
     for path in [
+        "crates/oxiroute-config/src/model/cache_store.rs",
         "crates/oxiroute-config/src/model/core.rs",
         "crates/oxiroute-config/src/model/http.rs",
         "crates/oxiroute-config/src/model/rtmp.rs",
         "crates/oxiroute-config/src/model/forward.rs",
         "crates/oxiroute-config/src/model/errors.rs",
+        "crates/oxiroute-config/src/model/tls.rs",
+        "crates/oxiroute-config/src/model/upstream.rs",
     ] {
         let source = read_source(path);
         let parsed = syn::parse_file(&source).expect("parse authoritative configuration schema");
