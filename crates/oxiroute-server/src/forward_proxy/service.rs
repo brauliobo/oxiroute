@@ -39,9 +39,6 @@ impl ForwardHttp1ServicePlan {
         let mut connector =
             SslConnector::builder(SslMethod::tls_client()).map_err(|_| ForwardPlanError::Tls)?;
         connector.set_verify(SslVerifyMode::PEER);
-        connector
-            .set_default_verify_paths()
-            .map_err(|_| ForwardPlanError::Tls)?;
         let max_connections = blueprint.max_connections;
         let max_header_bytes = blueprint.max_header_bytes;
         let max_request_body_bytes = blueprint.max_request_body_bytes;

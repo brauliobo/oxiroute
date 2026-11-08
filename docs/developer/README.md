@@ -50,3 +50,4 @@ runtime path and failure cases are tested.
 - [Import specification](../IMPORT_SPEC.md)
 - [Compatibility matrix](../COMPATIBILITY.md)
 - [Test strategy](../TEST_STRATEGY.md)
+- [Shared TLS client context and reload cost](TLS_CLIENT_CONTEXT.md)
