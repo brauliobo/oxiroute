@@ -4,8 +4,9 @@ use std::{
     io::{Read as _, Write as _},
     os::fd::OwnedFd,
     path::{Component, Path},
-    sync::{Arc, Mutex, OnceLock, RwLock},
-    time::SystemTime,
+    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, RwLock},
+    thread::{self, JoinHandle},
+    time::{Duration, Instant, SystemTime},
 };
 
 use rustix::{
@@ -52,5 +53,7 @@ pub(crate) use audit_store::*;
 pub(crate) use event::*;
 pub use event_log::*;
 
+#[cfg(test)]
+mod audit_batching_tests;
 #[cfg(test)]
 mod tests;

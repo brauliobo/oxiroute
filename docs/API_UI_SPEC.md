@@ -447,6 +447,18 @@ The store is initialized under the management token directory as `audit/`, or un
 `OXIROUTE_AUDIT_MAX_*` environment variables. Corrupt lines are skipped and reported as degraded;
 control operations continue without treating audit persistence failure as an operation failure.
 
+The store keeps its retained records (at most `OXIROUTE_AUDIT_MAX_RECORDS`) in memory and mirrors them to the
+files, so reading, counting and appending never rescan the files. Operator actions (reloads, imports,
+certificate and administrative operations) are written and synced before the operation is reported. Records
+that follow the rate of the traffic, namely upstream health and passive ejection or recovery events and RTMP
+access events, are group-committed by a writer thread: they are visible in `GET /api/v1/audit` at once, reach
+the disk within half a second with a single sync for the whole batch, and any operator action or a clean
+shutdown commits them first. Consecutive records of the same kind that are still waiting for the commit
+collapse into one record (so the first health observations of every server of a new generation are one record,
+not one per server); `oxiroute_audit_operations_total` still counts every event. A crash can lose the
+batched records of the last half second. The files are trimmed to the record limit when the store is opened,
+and between restarts they are bounded by the file, rotated-file and total-size limits.
+
 The endpoint accepts `after`, `limit` (1-1000), `category` (`reload`, `import`, `certificate`, or
 `control`), and `result` (`requested`, `succeeded`, `failed`, `rejected`, `conflict`, `partial`, or
 `degraded`). `GET /api/v1/audit/status` exposes the current persistence mode and bounded counters.
