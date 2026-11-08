@@ -573,15 +573,16 @@ impl PoolHealthState {
             return;
         };
         let members = self.members.load();
-        let names = members
-            .endpoints
-            .iter()
-            .map(|member| member.name.as_str())
-            .collect::<Vec<_>>();
         let outliers = self.outliers.record(
             route,
             &server.name,
-            &names,
+            || {
+                members
+                    .endpoints
+                    .iter()
+                    .map(|member| member.name.as_str())
+                    .collect()
+            },
             elapsed.as_secs_f64() * 1_000.0,
             at_unix_ms,
             policy,
