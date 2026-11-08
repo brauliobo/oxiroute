@@ -18,6 +18,7 @@ use crate::{
         CanonicalConfigCoordinator, ConfigDiagnostic, ConfigDiagnosticSeverity,
         ConfigDiagnosticStage, ConfigLoadOutcome, ConfigRejection,
     },
+    config::events::ConfigEventFilter,
     generation::GENERATION_PREPARATION_TIMEOUT,
 };
 
@@ -84,16 +85,18 @@ impl ConfigWatcher {
             .to_path_buf();
         let (events_tx, events_rx) = mpsc::sync_channel(1);
         let watcher_events = events_tx.clone();
-        let mut watcher = RecommendedWatcher::new(
-            move |event: notify::Result<notify::Event>| {
-                handle_notify_event(&watcher_events, event);
-            },
-            notify::Config::default(),
-        )?;
         let initial_dependencies = match coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => document.dependencies.clone(),
             ConfigLoadOutcome::Rejected(_) => Vec::new(),
         };
+        let filter = ConfigEventFilter::new(coordinator.canonical_path(), &initial_dependencies);
+        let watcher_filter = filter.clone();
+        let mut watcher = RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                handle_notify_event(&watcher_events, &watcher_filter, event);
+            },
+            notify::Config::default(),
+        )?;
         let mut watched_paths = HashSet::new();
         rebuild_watches(
             &mut watcher,
@@ -113,10 +116,13 @@ impl ConfigWatcher {
                 let mut watched_paths = watched_paths;
                 if let Some(dependencies) =
                     reconcile(&coordinator, &generations, &thread_counters, mode)
-                    && rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
-                        .is_err()
                 {
-                    thread_counters.rejected.fetch_add(1, Ordering::Relaxed);
+                    filter.set_dependencies(&dependencies);
+                    if rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
+                        .is_err()
+                    {
+                        thread_counters.rejected.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 while !thread_shutdown.load(Ordering::Acquire) {
                     let event = events_rx
@@ -141,10 +147,13 @@ impl ConfigWatcher {
                     }
                     if let Some(dependencies) =
                         reconcile(&coordinator, &generations, &thread_counters, mode)
-                        && rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
-                            .is_err()
                     {
-                        thread_counters.rejected.fetch_add(1, Ordering::Relaxed);
+                        filter.set_dependencies(&dependencies);
+                        if rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
+                            .is_err()
+                        {
+                            thread_counters.rejected.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
                 thread_counters.running.store(false, Ordering::Release);
@@ -187,12 +196,16 @@ impl Drop for ConfigWatcher {
     }
 }
 
-fn handle_notify_event(wake: &mpsc::SyncSender<()>, event: notify::Result<notify::Event>) {
+fn handle_notify_event(
+    wake: &mpsc::SyncSender<()>,
+    filter: &ConfigEventFilter,
+    event: notify::Result<notify::Event>,
+) {
     match event {
         Ok(event) if event.need_rescan() => {
             let _ = wake.try_send(());
         }
-        Ok(event) if event.kind.is_access() => {}
+        Ok(event) if event.kind.is_access() || !filter.matches(&event) => {}
         Ok(_) | Err(_) => {
             let _ = wake.try_send(());
         }
