@@ -20,6 +20,7 @@ use tempfile::TempDir;
 
 use super::{storage::StorageFailure, *};
 
+mod cache;
 mod concurrency;
 mod filesystem;
 mod load;

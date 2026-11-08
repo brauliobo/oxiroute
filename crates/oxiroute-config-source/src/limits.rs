@@ -42,8 +42,8 @@ impl BoundedOutput {
         self.exceeded
     }
 
-    fn append(&mut self, bytes: &[u8]) -> Result<(), ()> {
-        let Some(length) = self.output.len().checked_add(bytes.len()) else {
+    fn append(&mut self, value: &str) -> Result<(), ()> {
+        let Some(length) = self.output.len().checked_add(value.len()) else {
             self.exceeded = true;
             return Err(());
         };
@@ -51,7 +51,6 @@ impl BoundedOutput {
             self.exceeded = true;
             return Err(());
         }
-        let value = std::str::from_utf8(bytes).map_err(|_| ())?;
         self.output.push_str(value);
         Ok(())
     }
@@ -59,13 +58,16 @@ impl BoundedOutput {
 
 impl std::fmt::Write for BoundedOutput {
     fn write_str(&mut self, value: &str) -> std::fmt::Result {
-        self.append(value.as_bytes()).map_err(|()| std::fmt::Error)
+        self.append(value).map_err(|()| std::fmt::Error)
     }
 }
 
 impl io::Write for BoundedOutput {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        match self.append(bytes) {
+        match std::str::from_utf8(bytes)
+            .map_err(|_| ())
+            .and_then(|value| self.append(value))
+        {
             Ok(()) => Ok(bytes.len()),
             Err(()) => Err(io::Error::other("bounded output limit exceeded")),
         }

@@ -409,3 +409,69 @@ pub(super) async fn chunked_config_body_is_bounded_while_streaming() {
     assert_eq!(response.status, 413);
     assert_eq!(response.json()["error"]["code"], "config_body_too_large");
 }
+
+#[tokio::test]
+pub(super) async fn config_snapshot_follows_every_change_to_the_persisted_file() {
+    let active = editable_config();
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
+    let original = fs::read(&harness.config_path).unwrap();
+    let get = || harness.request("GET", "/api/v1/config", None, None);
+
+    let first = get().await;
+    assert_eq!(first.status, 200);
+    assert_eq!(get().await.body, first.body);
+
+    let edited = candidate_config(&active, "edited").validate().unwrap();
+    fs::write(&harness.config_path, render_lua(&edited).unwrap()).unwrap();
+    let changed = get().await;
+    assert_eq!(changed.status, 200);
+    assert_ne!(changed.json()["diskRevision"], first.json()["diskRevision"]);
+    assert!(
+        changed.json()["configPreview"]
+            .as_str()
+            .unwrap()
+            .contains("edited")
+    );
+
+    fs::write(&harness.config_path, original).unwrap();
+    assert_eq!(get().await.body, first.body);
+}
+
+async fn get_config(harness: &ManagementHarness, validator: Option<&str>) -> HttpResponse {
+    let authorization = format!("Bearer {TEST_TOKEN}");
+    let mut headers = vec![("Authorization", authorization.as_str())];
+    headers.extend(validator.map(|validator| ("If-None-Match", validator)));
+    http_request(harness.address, "GET", "/api/v1/config", &headers, b"").await
+}
+
+#[tokio::test]
+pub(super) async fn config_snapshot_is_revalidated_with_the_revision_etag() {
+    let active = editable_config();
+    let harness = ManagementHarness::start(
+        &(active.clone())
+            .validate()
+            .expect("valid management fixture"),
+    )
+    .await;
+
+    let first = get_config(&harness, None).await;
+    assert_eq!(first.status, 200);
+    let etag = first.header("etag").expect("snapshot validator").to_owned();
+
+    let revalidated = get_config(&harness, Some(&etag)).await;
+    assert_eq!(revalidated.status, 304);
+    assert!(revalidated.body.is_empty());
+    assert_eq!(revalidated.header("etag"), Some(etag.as_str()));
+    assert_eq!(get_config(&harness, Some("\"stale\"")).await.status, 200);
+
+    let edited = candidate_config(&active, "edited").validate().unwrap();
+    fs::write(&harness.config_path, render_lua(&edited).unwrap()).unwrap();
+    let changed = get_config(&harness, Some(&etag)).await;
+    assert_eq!(changed.status, 200);
+    assert_ne!(changed.header("etag"), Some(etag.as_str()));
+}

@@ -18,7 +18,7 @@ use log::{info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use oxiroute_config::ValidatedConfig;
 use oxiroute_server::{
-    ListenerReservations, RemoteRetired, RuntimeMode, WorkerNotice,
+    ConfigEventFilter, ListenerReservations, RemoteRetired, RuntimeMode, WorkerNotice,
     config_coordinator::{
         AuthoredRevision, CanonicalConfigCoordinator, ConfigDiagnostic, ConfigDiagnosticSeverity,
         ConfigDiagnosticStage, ConfigLoadOutcome, ConfigRejection, EffectiveRevision,

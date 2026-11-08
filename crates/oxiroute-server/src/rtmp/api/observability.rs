@@ -164,8 +164,8 @@ fn serialized_response<T: Serialize>(
     error_code: &'static str,
     error_message: &'static str,
 ) -> ApiResponse {
-    match serde_json::to_value(response) {
-        Ok(value) => ApiResponse::json(status, &value),
+    match serde_json::to_vec(response) {
+        Ok(body) => ApiResponse::bytes(status, body, "application/json"),
         Err(_) => ApiResponse::error(500, error_code, error_message),
     }
 }
@@ -219,8 +219,8 @@ fn monitoring_response(metrics: &RuntimeMetrics, control: &RtmpControlHandle) ->
             "RTMP monitoring totals exceed the supported range",
         );
     };
-    match serde_json::to_value(response) {
-        Ok(value) => ApiResponse::json(200, &value),
+    match serde_json::to_vec(&response) {
+        Ok(body) => ApiResponse::bytes(200, body, "application/json"),
         Err(error) => ApiResponse::error(
             500,
             "monitoring_serialization_failed",

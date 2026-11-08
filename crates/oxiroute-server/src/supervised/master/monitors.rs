@@ -2,6 +2,7 @@
 use super::*;
 
 pub(super) struct ConfigReloadMonitor {
+    filter: ConfigEventFilter,
     watcher: RecommendedWatcher,
     watched_directories: HashSet<PathBuf>,
     events: Receiver<()>,
@@ -19,11 +20,16 @@ impl ConfigReloadMonitor {
             .to_path_buf();
         let (wake, events) = mpsc::sync_channel(1);
         let watcher_wake = wake.clone();
+        let filter = ConfigEventFilter::new(path, dependencies);
+        let watcher_filter = filter.clone();
         let mut watcher = RecommendedWatcher::new(
             move |event: notify::Result<notify::Event>| {
                 let relevant = match event {
                     Err(_) => true,
-                    Ok(event) => event.need_rescan() || !event.kind.is_access(),
+                    Ok(event) => {
+                        event.need_rescan()
+                            || (!event.kind.is_access() && watcher_filter.matches(&event))
+                    }
                 };
                 if relevant {
                     let _ = watcher_wake.try_send(());
@@ -33,6 +39,7 @@ impl ConfigReloadMonitor {
         )?;
         watcher.watch(&parent, RecursiveMode::NonRecursive)?;
         let mut monitor = Self {
+            filter,
             watcher,
             watched_directories: HashSet::from([parent]),
             events,
@@ -45,6 +52,7 @@ impl ConfigReloadMonitor {
     }
 
     pub(super) fn watch_dependencies(&mut self, dependencies: &[PathBuf]) -> notify::Result<()> {
+        self.filter.set_dependencies(dependencies);
         for dependency in dependencies {
             let Some(parent) = dependency
                 .parent()

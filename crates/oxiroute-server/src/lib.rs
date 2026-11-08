@@ -29,6 +29,7 @@ mod wire;
 mod r3_bench;
 
 pub use config::coordinator as config_coordinator;
+pub use config::events::ConfigEventFilter;
 pub use config::watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
 pub use forward_proxy::{
     ForwardAccessMetricsSnapshot, ForwardAccessResult, ForwardConnectionLifecycle,

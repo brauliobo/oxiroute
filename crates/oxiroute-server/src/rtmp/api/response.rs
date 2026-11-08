@@ -2,8 +2,9 @@ use std::time::SystemTime;
 
 use http::{
     HeaderValue, Response, StatusCode,
-    header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE, HeaderName, WWW_AUTHENTICATE},
+    header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName, WWW_AUTHENTICATE},
 };
+use serde::Serialize;
 use serde_json::Value;
 
 use super::dto::ErrorResponse;
@@ -18,6 +19,7 @@ pub struct ApiResponse {
     pub correlation_id: Option<String>,
     pub content_range: Option<String>,
     pub accept_ranges: bool,
+    pub etag: Option<String>,
 }
 
 impl ApiResponse {
@@ -31,7 +33,26 @@ impl ApiResponse {
             correlation_id: None,
             content_range: None,
             accept_ranges: false,
+            etag: None,
         }
+    }
+
+    /// Serializes a response DTO straight to bytes, without an intermediate `serde_json::Value`.
+    pub(crate) fn dto(status: u16, response: &impl Serialize) -> Self {
+        let body = serde_json::to_vec(response).expect("management response DTO serializes");
+        Self::bytes(status, body, "application/json")
+    }
+
+    /// `304 Not Modified` for a validator the client already holds.
+    pub(crate) fn not_modified(etag: String) -> Self {
+        let mut response = Self::bytes(304, Vec::new(), "application/json");
+        response.etag = Some(etag);
+        response
+    }
+
+    pub(crate) fn with_etag(mut self, etag: String) -> Self {
+        self.etag = Some(etag);
+        self
     }
 
     pub(crate) fn json(status: u16, value: &Value) -> Self {
@@ -99,13 +120,21 @@ pub(crate) fn to_http_response(response: ApiResponse) -> Response<Vec<u8>> {
     let mut result = Response::new(response.body);
     *result.status_mut() =
         StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    result.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static(response.content_type),
-    );
-    let content_length = HeaderValue::from_str(&result.body().len().to_string())
-        .expect("decimal content length is a valid header");
-    result.headers_mut().insert(CONTENT_LENGTH, content_length);
+    if result.status() != StatusCode::NOT_MODIFIED {
+        result.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static(response.content_type),
+        );
+        let content_length = HeaderValue::from_str(&result.body().len().to_string())
+            .expect("decimal content length is a valid header");
+        result.headers_mut().insert(CONTENT_LENGTH, content_length);
+    }
+    if let Some(etag) = response.etag {
+        result.headers_mut().insert(
+            ETAG,
+            HeaderValue::from_str(&etag).expect("revision validators are valid headers"),
+        );
+    }
     if let Some(allow) = response.allow {
         result
             .headers_mut()
