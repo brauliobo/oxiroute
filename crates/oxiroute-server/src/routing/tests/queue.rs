@@ -411,3 +411,117 @@ async fn capacity_generation_wrap_still_wakes_registered_waiters() {
     assert_eq!(pool.queue.notifications.load(Ordering::Relaxed), 1);
     assert_eq!(pool.queue.lifetime_waiters.load(Ordering::Relaxed), 0);
 }
+
+fn queued_pool(servers: &[(&str, Option<u64>)]) -> Arc<RoundRobinPool> {
+    Arc::new(
+        RoundRobinPool::new_named_servers(
+            "queued".into(),
+            servers
+                .iter()
+                .zip(3000..)
+                .map(|((name, limit), port)| runtime_server(name, port, *limit)),
+            UpstreamAlgorithm::First,
+            None,
+            Some(Duration::from_secs(30)),
+        )
+        .expect("queued pool"),
+    )
+}
+
+#[tokio::test]
+async fn free_capacity_never_enters_the_wait_queue() {
+    let pool = queued_pool(&[("only", Some(2))]);
+
+    for _ in 0..3 {
+        drop(pool.select_wait().await.expect("free capacity"));
+    }
+
+    assert_eq!(pool.queue.enqueued.load(Ordering::Relaxed), 0);
+    assert_eq!(pool.health_snapshot().queued_total, 0);
+}
+
+#[tokio::test]
+async fn a_saturated_pool_queues_and_leaves_the_queue_when_served() {
+    let pool = queued_pool(&[("only", Some(1))]);
+    let held = pool.select().expect("capacity");
+    let waiting = Arc::clone(&pool);
+    let waiter = tokio::spawn(async move { waiting.select_wait().await });
+    wait_for_queued(&pool, 1).await;
+    assert!(!pool.queue.is_unqueued());
+
+    drop(held);
+    drop(waiter.await.expect("task").expect("served"));
+
+    assert!(pool.queue.is_unqueued());
+    assert_eq!(pool.queue.enqueued.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn an_arrival_does_not_overtake_a_waiter_that_was_already_queued() {
+    let pool = queued_pool(&[("only", Some(1))]);
+    let held = pool.select().expect("capacity");
+    let waiting = Arc::clone(&pool);
+    let first = tokio::spawn(async move { waiting.select_wait().await });
+    wait_for_queued(&pool, 1).await;
+
+    drop(held);
+    let arrival = tokio::time::timeout(Duration::ZERO, pool.select_wait()).await;
+
+    assert!(arrival.is_err(), "the arrival must queue behind the waiter");
+    let first = first
+        .await
+        .expect("task")
+        .expect("the waiter is served first");
+    assert_eq!(first.server_name(), "only");
+}
+
+#[tokio::test]
+async fn many_waiters_are_served_in_arrival_order() {
+    let pool = queued_pool(&[("only", Some(1))]);
+    let held = pool.select().expect("capacity");
+    let (served, mut order) = tokio::sync::mpsc::unbounded_channel();
+    for index in 0..40_u64 {
+        let (waiting, served) = (Arc::clone(&pool), served.clone());
+        tokio::spawn(async move {
+            let lease = waiting.select_wait().await.expect("served");
+            served.send(index).expect("receiver");
+            tokio::task::yield_now().await;
+            drop(lease);
+        });
+        wait_for_queued(&pool, index + 1).await;
+    }
+
+    drop(held);
+    for expected in 0..40 {
+        assert_eq!(order.recv().await, Some(expected));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn contending_requests_never_sleep_through_a_release() {
+    let pool = queued_pool(&[("a", Some(1)), ("b", Some(1))]);
+    let workers = (0..16)
+        .map(|_| {
+            let pool = Arc::clone(&pool);
+            tokio::spawn(async move {
+                for _ in 0..300 {
+                    let lease = pool.select_wait().await.expect("served before the timeout");
+                    tokio::task::yield_now().await;
+                    drop(lease);
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        for worker in workers {
+            worker.await.expect("worker");
+        }
+    })
+    .await
+    .expect("every request was served without waiting for its queue timeout");
+
+    let snapshot = pool.health_snapshot();
+    assert_eq!((snapshot.queued, snapshot.queue_timeouts), (0, 0));
+    assert!(pool.queue.is_unqueued());
+}

@@ -11,11 +11,16 @@ pub(super) struct PoolQueue {
     pub(super) notify: Notify,
     #[cfg(test)]
     pub(super) notifications: AtomicU64,
+    #[cfg(test)]
+    pub(super) enqueued: AtomicU64,
     pub(super) queued: AtomicU64,
     pub(super) queued_total: AtomicU64,
     #[cfg(test)]
     pub(super) lifetime_waiters: AtomicU64,
     pub(super) timeouts: AtomicU64,
+    /// Length of `waiters`, readable without its lock: capacity events and new arrivals only
+    /// involve the queue while somebody is in it.
+    selectors: AtomicUsize,
     waiters: Mutex<WaitQueue>,
     pub(super) schedule: Option<Arc<QueueSchedule>>,
 }
@@ -38,60 +43,104 @@ impl PoolQueue {
             notify: Notify::new(),
             #[cfg(test)]
             notifications: AtomicU64::new(0),
+            #[cfg(test)]
+            enqueued: AtomicU64::new(0),
             queued: AtomicU64::new(0),
             queued_total: AtomicU64::new(0),
             #[cfg(test)]
             lifetime_waiters: AtomicU64::new(0),
             timeouts: AtomicU64::new(0),
+            selectors: AtomicUsize::new(0),
             waiters: Mutex::new(WaitQueue::new(schedule.clone())),
             schedule,
         }
     }
 
     pub(super) fn notify_capacity_waiters(&self) {
-        self.generation.fetch_add(1, Ordering::Release);
         #[cfg(test)]
         self.notifications.fetch_add(1, Ordering::Relaxed);
+        if self.capacity_waiters_possible {
+            self.generation.fetch_add(1, Ordering::AcqRel);
+        }
         self.notify.notify_waiters();
-        self.notify_front();
+        if self.capacity_waiters_possible {
+            // Pairs with the fence in `enqueue`: a selector that queued after this check reads the
+            // state the caller changed before it, so it never sleeps through the event.
+            fence(Ordering::SeqCst);
+            if self.selectors.load(Ordering::Relaxed) != 0 {
+                self.notify_front();
+            }
+        }
     }
 
     fn notify_front(&self) {
         let waiter = self
-            .waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_waiters()
             .head()
-            .cloned();
+            .map(|(_, waiter)| Arc::clone(waiter));
         if let Some(waiter) = waiter {
             waiter.notify.notify_one();
         }
     }
+
+    fn lock_waiters(&self) -> std::sync::MutexGuard<'_, WaitQueue> {
+        self.waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether nobody is queued, so an arrival has nobody to wait behind.
+    pub(super) fn is_unqueued(&self) -> bool {
+        self.selectors.load(Ordering::Relaxed) == 0
+    }
+
+    fn enqueue(&self, waiter: Arc<PoolWaiter>, tag: QueueTag) -> u64 {
+        #[cfg(test)]
+        self.enqueued.fetch_add(1, Ordering::Relaxed);
+        let seq = {
+            let mut waiters = self.lock_waiters();
+            let seq = waiters.push(waiter, tag);
+            self.selectors.store(waiters.len(), Ordering::Relaxed);
+            seq
+        };
+        fence(Ordering::SeqCst);
+        seq
+    }
+
+    /// Removes a waiter and reports whether it was the head.
+    fn dequeue(&self, seq: u64, served: bool) -> bool {
+        let mut waiters = self.lock_waiters();
+        let was_head = waiters.remove(seq, served);
+        self.selectors.store(waiters.len(), Ordering::Relaxed);
+        was_head
+    }
+
+    fn is_head(&self, seq: u64) -> bool {
+        self.lock_waiters().is_head(seq)
+    }
 }
 
-pub(super) struct QueueWaitGuard {
+pub(super) struct QueueWaitGuard<'a> {
     completed: bool,
+    pool: &'a str,
     queue: Arc<PoolQueue>,
-    stats: Arc<crate::observability::upstream_stats::PoolStats>,
+    seq: u64,
     ticket: Option<WaitTicket>,
     pub(super) waiter: Arc<PoolWaiter>,
     waiting: bool,
 }
 
-impl QueueWaitGuard {
-    pub(super) fn new(queue: Arc<PoolQueue>, pool: &str, tag: QueueTag) -> Self {
+impl<'a> QueueWaitGuard<'a> {
+    pub(super) fn new(queue: Arc<PoolQueue>, pool: &'a str, tag: QueueTag) -> Self {
         let waiter = Arc::new(PoolWaiter {
             notify: Notify::new(),
         });
-        queue
-            .waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(Arc::clone(&waiter), tag);
+        let seq = queue.enqueue(Arc::clone(&waiter), tag);
         Self {
             completed: false,
+            pool,
             queue,
-            stats: crate::observability::upstream_stats::upstream_stats().pool(pool),
+            seq,
             ticket: None,
             waiter,
             waiting: false,
@@ -99,11 +148,7 @@ impl QueueWaitGuard {
     }
 
     pub(super) fn is_front(&self) -> bool {
-        self.queue
-            .waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_head(&self.waiter)
+        self.queue.is_head(self.seq)
     }
 
     pub(super) fn mark_waiting(&mut self) {
@@ -152,21 +197,18 @@ impl QueueWaitGuard {
 
     fn leave_ledger(&mut self) {
         if let Some(ticket) = self.ticket.take() {
-            self.stats
+            crate::observability::upstream_stats::upstream_stats()
+                .pool(self.pool)
                 .record_queue_wait(self.queue.ledger.leave(ticket));
         }
     }
 
     fn remove(&self, served: bool) -> bool {
-        self.queue
-            .waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.waiter, served)
+        self.queue.dequeue(self.seq, served)
     }
 }
 
-impl Drop for QueueWaitGuard {
+impl Drop for QueueWaitGuard<'_> {
     fn drop(&mut self) {
         if self.completed {
             return;
@@ -189,11 +231,7 @@ impl PoolQueue {
         let Some(schedule) = &self.schedule else {
             return Vec::new();
         };
-        let depth = self
-            .waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .depth_by_class();
+        let depth = self.lock_waiters().depth_by_class();
         schedule
             .class_names()
             .map(str::to_owned)
