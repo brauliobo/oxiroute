@@ -1,0 +1,17 @@
+# Vendored pingora-timeout patch
+
+This directory contains the published `pingora-timeout 0.8.1` source from crates.io
+(registry checksum `8e3e321452eaa461e0b6c5aaa35b7e42527ee89df33710279f37fae7f066b68e`)
+under its upstream Apache-2.0 license. The benchmark target and its dev-dependency are dropped.
+
+OxiRoute's delta is limited to the clock thread in `src/timer.rs`:
+
+- Upstream wakes the `Timer thread` every 10 ms for the life of the process (about 100 wakeups per
+  second on an idle instance). Here it fires the timers that are due and then parks until the earliest
+  armed timer, or for at most one second while nothing is armed.
+- `register_timer` unparks the thread only when the new timer is due before the time it sleeps until,
+  so the request path costs one atomic load.
+- The one-second heartbeat keeps the clock watchdog fresh, and `DELAYS_SEC` is raised from 2 to 3 to
+  keep a margin over it.
+- Timers are armed one millisecond later than upstream computed, because the thread now wakes at the exact
+  due time and a timer must not fire early.
