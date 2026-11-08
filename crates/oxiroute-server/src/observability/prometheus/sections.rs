@@ -67,6 +67,17 @@ pub(super) fn render_server_traffic(
             count,
         )?;
     }
+    for (result, count) in crate::observability::upstream_stats::EvacuationResult::ALL
+        .iter()
+        .zip(stats.evacuated)
+    {
+        labels(
+            output,
+            "oxiroute_evacuated_requests_total",
+            &with(("result", result.as_str())),
+            count,
+        )?;
+    }
     labels(
         output,
         "oxiroute_server_bytes_sent_total",

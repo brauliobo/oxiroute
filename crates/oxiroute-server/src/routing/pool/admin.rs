@@ -230,7 +230,7 @@ impl EndpointPool {
             .map(|index| Arc::clone(&members.endpoints[index]))
     }
 
-    fn server(&self, name: &str) -> Result<Arc<PoolEndpoint>, PoolAdminError> {
+    pub(super) fn server(&self, name: &str) -> Result<Arc<PoolEndpoint>, PoolAdminError> {
         self.server_endpoint(name)
             .ok_or_else(|| PoolAdminError::UnknownServer(name.to_owned()))
     }

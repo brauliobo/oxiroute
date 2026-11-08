@@ -49,7 +49,7 @@ pub(super) fn proxy_action(ctx: &HttpRequestContext) -> &ProxyActionPlan {
 
 /// The server a sticky session pins the first attempt to; later attempts choose freely.
 pub(super) fn affinity_server(session: &Session, ctx: &HttpRequestContext) -> Option<String> {
-    if ctx.attempt_count() > 0 {
+    if ctx.has_attempted() {
         return None;
     }
     let request = session.req_header();

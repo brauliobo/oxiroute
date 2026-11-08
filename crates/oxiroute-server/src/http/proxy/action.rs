@@ -25,17 +25,17 @@ pub(super) async fn execute_route_action(
             HttpActionPlan::Proxy(proxy) => {
                 ctx.response_status_override = status_override;
                 ctx.response_header_overrides = std::mem::take(&mut status_headers);
-                ctx.connection_retryable =
-                    proxy.policy.max_retries > 0 && !session.is_upgrade_req();
+                let upgrade = session.is_upgrade_req();
+                ctx.connection_retryable = proxy.policy.max_retries > 0 && !upgrade;
                 let body_is_empty = session.is_body_empty();
-                ctx.replay_retryable = proxy.policy.max_retries > 0
-                    && proxy.policy.request_is_replay_safe(
-                        &method,
-                        &session.req_header().headers,
-                        body_is_empty,
-                        route.policy.request_buffering,
-                    )
-                    && !session.is_upgrade_req();
+                let replay_safe = proxy.policy.request_is_replay_safe(
+                    &method,
+                    &session.req_header().headers,
+                    body_is_empty,
+                    route.policy.request_buffering,
+                );
+                ctx.replay_retryable = proxy.policy.max_retries > 0 && replay_safe && !upgrade;
+                ctx.evacuation_pin = LeftRunning::unmovable(upgrade, replay_safe);
                 ctx.adopt_route_total(proxy.policy.timeouts.total_ms.map(Duration::from_millis));
                 if let Some(budget) = &proxy.policy.retry_budget {
                     budget.record_request(Instant::now());

@@ -50,6 +50,7 @@ pub(super) fn build(
         "server": trace.servers.last(),
         "servers": (!servers.is_empty()).then_some(servers),
         "attempts": ctx.attempt_count(),
+        "evacuations": ctx.evacuation().map_or(0, |evacuation| evacuation.redispatches()),
         "rescued": ctx.rescued,
         "wasStuck": ctx.inflight.as_ref().is_some_and(crate::http::inflight::InflightGuard::stuck),
         "queueWaitMs": millis(trace.queue_wait),

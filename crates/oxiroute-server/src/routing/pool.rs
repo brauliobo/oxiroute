@@ -208,5 +208,6 @@ impl EndpointPool {
 }
 
 mod admin;
+mod evacuate;
 mod selection;
 mod snapshot;
