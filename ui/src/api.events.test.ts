@@ -283,6 +283,37 @@ describe('operational event stream client', () => {
     expect(operationalEvent('upstream_endpoint_recovery', changed)).toBeNull()
   })
 
+  it('projects evacuations of a server and of a pool and rejects impossible counts', () => {
+    const server = '{"type":"evacuated","pool":"gpu-render","server":"node-a","force":false,"cancelledAndRedispatched":3,"forced":0,"leftRunning":{"response_started":1},"cookie":"session-secret"}'
+    const pool = '{"type":"evacuated","pool":"gpu-render","force":true,"cancelledAndRedispatched":0,"forced":2,"leftRunning":{}}'
+
+    expect(operationalEvent('server_evacuation', server)).toEqual({
+      type: 'operational',
+      event: {
+        cursor: 30,
+        timestampUnixMs: null,
+        event: 'server_evacuation',
+        outcome: {
+          type: 'evacuated',
+          pool: 'gpu-render',
+          server: 'node-a',
+          force: false,
+          cancelledAndRedispatched: 3,
+          forced: 0,
+          leftRunning: { response_started: 1 },
+        },
+        revision: null,
+      },
+    })
+    const parsed = operationalEvent('server_evacuation', pool)
+    expect(parsed).toMatchObject({ event: { outcome: { force: true, forced: 2 } } })
+    expect(JSON.stringify(parsed)).not.toContain('"server"')
+    expect(operationalEvent('server_evacuation', server.replace('"forced":0', '"forced":-1'))).toBeNull()
+    expect(operationalEvent('server_evacuation', server.replace('"force":false', '"force":"no"'))).toBeNull()
+    expect(operationalEvent('server_evacuation', '"applied"')).toBeNull()
+    expect(operationalEvent('upstream_endpoint_health', server)).toBeNull()
+  })
+
   it('reconnects with the last event id after a bounded stream interruption', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(eventResponse([
