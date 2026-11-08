@@ -22,7 +22,7 @@ use crate::http::action::AccessLog;
 const SHARDS: usize = 16;
 pub(crate) const MAX_PATH_BYTES: usize = 128;
 pub(crate) const OVERDUE_GRACE: Duration = Duration::from_secs(5);
-pub(crate) const DEFAULT_STUCK_AFTER: Duration = Duration::from_secs(60);
+pub(crate) const DEFAULT_STUCK_AFTER: Duration = Duration::from_mins(1);
 const WATCHDOG_TICK: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -627,7 +627,7 @@ mod tests {
         assert_eq!(registry.totals().overdue, 0);
         std::thread::sleep(OVERDUE_GRACE + Duration::from_millis(50));
         assert_eq!(registry.totals().overdue, 1);
-        guard.set_deadline(Duration::from_secs(60));
+        guard.set_deadline(Duration::from_mins(1));
         assert_eq!(registry.totals().overdue, 0);
     }
 

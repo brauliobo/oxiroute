@@ -355,6 +355,28 @@ fn test_queue_policy() -> PoolQueuePolicy {
     }
 }
 
+fn test_retry_policy() -> HttpRetryPolicy {
+    HttpRetryPolicy {
+        max_retries: 2,
+        triggers: vec![
+            HttpRetryTrigger::ConnectTimeout,
+            HttpRetryTrigger::RefusedStream,
+        ],
+        response_statuses: Vec::new(),
+        method_safety: HttpRetryMethodSafety::GetHead,
+        body_safety: HttpRetryBodySafety::Empty,
+        target: HttpRetryTarget::SameServer,
+        delay_ms: 25,
+        jitter_percent: 40,
+        final_redispatch: false,
+        idempotency_header: None,
+        budget: Some(HttpRetryBudget {
+            per_second: Some(20),
+            ratio_percent: Some(25),
+        }),
+    }
+}
+
 fn test_proxy_policy() -> HttpProxyPolicy {
     HttpProxyPolicy {
         upstream_host: HttpUpstreamHost::Endpoint {
@@ -406,25 +428,7 @@ fn test_proxy_policy() -> HttpProxyPolicy {
             to: "/application".into(),
         }],
         response_cookie_attributes: Vec::new(),
-        retry: HttpRetryPolicy {
-            max_retries: 2,
-            triggers: vec![
-                HttpRetryTrigger::ConnectTimeout,
-                HttpRetryTrigger::RefusedStream,
-            ],
-            response_statuses: Vec::new(),
-            method_safety: HttpRetryMethodSafety::GetHead,
-            body_safety: HttpRetryBodySafety::Empty,
-            target: HttpRetryTarget::SameServer,
-            delay_ms: 25,
-            jitter_percent: 40,
-            final_redispatch: false,
-            idempotency_header: None,
-            budget: Some(HttpRetryBudget {
-                per_second: Some(20),
-                ratio_percent: Some(25),
-            }),
-        },
+        retry: test_retry_policy(),
         timeouts: HttpProxyTimeouts {
             connect_ms: Some(500),
             header_ms: Some(2_000),

@@ -14,7 +14,7 @@ fn leases_expire_in_deadline_order_and_only_after_their_ttl() {
     assert_eq!(table.take_expired(clock.now()), Vec::new());
     clock.advance(Duration::from_secs(10));
     assert_eq!(table.take_expired(clock.now()), [key("fast")]);
-    clock.advance(Duration::from_secs(60));
+    clock.advance(Duration::from_mins(1));
     assert_eq!(table.take_expired(clock.now()), [key("slow")]);
     assert_eq!(table.remaining(&key("slow"), clock.now()), None);
 }

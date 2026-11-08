@@ -1,7 +1,7 @@
 use oxiroute_config::{ConfigDraft, ConfigError, PoolRegistration, cidr_contains};
 use serde_json::{Value, json};
 
-fn config(pool: Value, registry: Value) -> Result<oxiroute_config::ValidatedConfig, ConfigError> {
+fn config(pool: &Value, registry: &Value) -> Result<oxiroute_config::ValidatedConfig, ConfigError> {
     serde_json::from_value::<ConfigDraft>(json!({
         "version": 1,
         "registry": registry,
@@ -16,15 +16,15 @@ fn registry() -> Value {
     json!({"state_dir": "/var/lib/oxiroute/registry"})
 }
 
-fn pool(servers: Value, registration: Value) -> Value {
+fn pool(servers: &Value, registration: &Value) -> Value {
     json!({"name": "render", "servers": servers, "registration": registration})
 }
 
 #[test]
 fn only_a_registration_pool_may_start_without_servers() {
-    assert!(config(pool(json!([]), json!({})), registry()).is_ok());
+    assert!(config(&pool(&json!([]), &json!({})), &registry()).is_ok());
     assert!(matches!(
-        config(json!({"name": "render", "servers": []}), registry()),
+        config(&json!({"name": "render", "servers": []}), &registry()),
         Err(ConfigError::EmptyUpstreamEndpoints { .. })
     ));
 }
@@ -32,7 +32,7 @@ fn only_a_registration_pool_may_start_without_servers() {
 #[test]
 fn registration_needs_the_registry_block() {
     assert!(matches!(
-        config(pool(json!([]), json!({})), Value::Null),
+        config(&pool(&json!([]), &json!({})), &Value::Null),
         Err(ConfigError::InvalidRegistry {
             field: "state_dir",
             ..
@@ -50,7 +50,7 @@ fn registration_bounds_are_validated_with_field_names() {
         json!({"allowed_cidrs": ["192.0.2.0"]}),
         json!({"allowed_cidrs": ["192.0.2.0/33"]}),
     ] {
-        let error = config(pool(json!([]), registration.clone()), registry()).expect_err("invalid");
+        let error = config(&pool(&json!([]), &registration), &registry()).expect_err("invalid");
         let pointer = error.pointer().expect("pointer");
         assert!(
             pointer.starts_with("/upstream_pools/render/servers/<pool>/registration"),
@@ -63,8 +63,8 @@ fn registration_bounds_are_validated_with_field_names() {
 fn registry_endpoints_are_checked() {
     let with = |endpoints: Value, tokens: Value| {
         config(
-            pool(json!([]), json!({})),
-            json!({"state_dir": "/s", "tokens_file": tokens, "endpoints": endpoints}),
+            &pool(&json!([]), &json!({})),
+            &json!({"state_dir": "/s", "tokens_file": tokens, "endpoints": endpoints}),
         )
     };
     let unix =

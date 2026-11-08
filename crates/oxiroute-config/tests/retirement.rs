@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 const THREE_HOURS_MS: u64 = 10_800_000;
 const ONE_DAY_MS: u64 = 86_400_000;
 
-fn service(name: &str, extra: Value) -> Value {
+fn service(name: &str, extra: &Value) -> Value {
     let mut service = json!({
         "name": name,
         "routes": [{
@@ -19,11 +19,11 @@ fn service(name: &str, extra: Value) -> Value {
     service
 }
 
-fn draft(extra: Value) -> ConfigDraft {
+fn draft(extra: &Value) -> ConfigDraft {
     let mut config = json!({
         "version": 1,
         "listeners": [],
-        "http_services": [service("web", json!({}))],
+        "http_services": [service("web", &json!({}))],
     });
     config
         .as_object_mut()
@@ -32,7 +32,7 @@ fn draft(extra: Value) -> ConfigDraft {
     serde_json::from_value(config).expect("authored configuration")
 }
 
-fn validate(extra: Value) -> Result<ValidatedConfig, ConfigError> {
+fn validate(extra: &Value) -> Result<ValidatedConfig, ConfigError> {
     draft(extra).validate()
 }
 
@@ -45,7 +45,7 @@ fn retirement(drain_deadline_ms: u64, max_retired_generations: u64) -> Value {
 
 #[test]
 fn an_absent_retirement_block_keeps_the_three_hour_cap_one_default() {
-    let config = validate(json!({})).unwrap();
+    let config = validate(&json!({})).unwrap();
 
     assert_eq!(config.as_draft().retirement, None);
     assert_eq!(config.retired_generation_limit(), 4);
@@ -57,7 +57,7 @@ fn an_absent_retirement_block_keeps_the_three_hour_cap_one_default() {
 #[test]
 fn drain_deadline_and_cap_accept_their_bounds() {
     for (deadline, cap) in [(1_000, 1), (ONE_DAY_MS, 16), (THREE_HOURS_MS, 4)] {
-        let config = validate(retirement(deadline, cap)).expect("bounds are valid");
+        let config = validate(&retirement(deadline, cap)).expect("bounds are valid");
         assert_eq!(config.retirement_deadline_ms(), deadline);
         assert_eq!(
             config.retired_generation_limit(),
@@ -75,7 +75,7 @@ fn drain_deadline_and_cap_reject_values_outside_their_bounds() {
         (THREE_HOURS_MS, 0, "/retirement/max_retired_generations"),
         (THREE_HOURS_MS, 17, "/retirement/max_retired_generations"),
     ] {
-        let error = validate(retirement(deadline, cap)).expect_err("out of bounds");
+        let error = validate(&retirement(deadline, cap)).expect_err("out of bounds");
         assert_eq!(error.pointer().as_deref(), Some(pointer), "{error}");
     }
 }
@@ -83,15 +83,15 @@ fn drain_deadline_and_cap_reject_values_outside_their_bounds() {
 #[test]
 fn an_unset_deadline_follows_the_longest_http_request_deadline() {
     let long = 4 * 3_600_000;
-    let config = validate(json!({"http_services": [
-        service("web", json!({})),
-        service("render", json!({"upstream_io_timeout_ms": long})),
+    let config = validate(&json!({"http_services": [
+        service("web", &json!({})),
+        service("render", &json!({"upstream_io_timeout_ms": long})),
     ]}))
     .unwrap();
     assert_eq!(config.retirement_deadline_ms(), long);
 
-    let config = validate(json!({"retirement": {}, "http_services": [
-        service("render", json!({"upstream_io_timeout_ms": ONE_DAY_MS})),
+    let config = validate(&json!({"retirement": {}, "http_services": [
+        service("render", &json!({"upstream_io_timeout_ms": ONE_DAY_MS})),
     ]}))
     .unwrap();
     assert_eq!(config.retirement_deadline_ms(), ONE_DAY_MS);
@@ -99,9 +99,9 @@ fn an_unset_deadline_follows_the_longest_http_request_deadline() {
 
 #[test]
 fn an_explicit_deadline_wins_over_the_derived_default() {
-    let config = validate(json!({
+    let config = validate(&json!({
         "retirement": {"drain_deadline_ms": 5_000},
-        "http_services": [service("render", json!({"upstream_io_timeout_ms": 7_200_000}))],
+        "http_services": [service("render", &json!({"upstream_io_timeout_ms": 7_200_000}))],
     }))
     .unwrap();
     assert_eq!(config.retirement_deadline_ms(), 5_000);
@@ -113,19 +113,21 @@ fn a_service_deadline_only_raises_the_ceiling() {
         json!({
             "retirement": {"drain_deadline_ms": 60_000},
             "http_services": [
-                service("web", json!({"drain_deadline_ms": 30_000})),
-                service("render", json!({"drain_deadline_ms": render_ms})),
+                service("web", &json!({"drain_deadline_ms": 30_000})),
+                service("render", &json!({"drain_deadline_ms": render_ms})),
             ],
         })
     };
     assert_eq!(
-        validate(services(7_200_000))
+        validate(&services(7_200_000))
             .unwrap()
             .retirement_deadline_ms(),
         7_200_000
     );
     assert_eq!(
-        validate(services(45_000)).unwrap().retirement_deadline_ms(),
+        validate(&services(45_000))
+            .unwrap()
+            .retirement_deadline_ms(),
         60_000
     );
 }
@@ -135,7 +137,7 @@ fn service_deadlines_exist_on_http_forward_proxy_and_l4_services_only() {
     for (key, service) in [
         (
             "http_services",
-            service("a", json!({"drain_deadline_ms": 999})),
+            service("a", &json!({"drain_deadline_ms": 999})),
         ),
         (
             "forward_proxy_services",
@@ -168,7 +170,7 @@ fn service_deadlines_exist_on_http_forward_proxy_and_l4_services_only() {
 
 #[test]
 fn the_retirement_block_survives_a_validate_round_trip() {
-    let config = validate(retirement(90_000, 2)).unwrap();
+    let config = validate(&retirement(90_000, 2)).unwrap();
     let again = config.to_draft().validate().unwrap();
     assert_eq!(again, config);
     assert_eq!(
@@ -179,20 +181,20 @@ fn the_retirement_block_survives_a_validate_round_trip() {
 
 #[test]
 fn a_deployment_default_replaces_only_the_derived_deadline() {
-    let config = validate(json!({})).unwrap();
+    let config = validate(&json!({})).unwrap();
     assert_eq!(
         config.retirement_deadline_ms_with_default(Some(90_000)),
         90_000
     );
 
-    let explicit = validate(retirement(120_000, 4)).unwrap();
+    let explicit = validate(&retirement(120_000, 4)).unwrap();
     assert_eq!(
         explicit.retirement_deadline_ms_with_default(Some(90_000)),
         120_000
     );
 
-    let raised = validate(json!({"http_services": [
-        service("render", json!({"drain_deadline_ms": 7_200_000})),
+    let raised = validate(&json!({"http_services": [
+        service("render", &json!({"drain_deadline_ms": 7_200_000})),
     ]}))
     .unwrap();
     assert_eq!(

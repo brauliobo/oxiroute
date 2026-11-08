@@ -229,7 +229,7 @@ fn a_live_success_resets_consecutive_passive_failures() {
         UpstreamAlgorithm::First,
         Some(HealthStartup::Healthy),
         None,
-        PassiveFailurePolicy::new(3, Duration::from_secs(60), Duration::from_secs(60)),
+        PassiveFailurePolicy::new(3, Duration::from_mins(1), Duration::from_mins(1)),
     )
     .expect("passive success pool");
     let observation = pool.select().expect("lease").observation();
@@ -361,8 +361,7 @@ fn breaker_pool() -> RoundRobinPool {
         half_open_max: 1,
         half_open_successes: 3,
     });
-    let mut policy =
-        PassiveFailurePolicy::new(100, Duration::from_secs(60), Duration::from_secs(60));
+    let mut policy = PassiveFailurePolicy::new(100, Duration::from_mins(1), Duration::from_mins(1));
     policy.circuit_breaker = Some(breaker);
     RoundRobinPool::new_named_servers_with_policy(
         "breaker".into(),
@@ -447,8 +446,7 @@ async fn a_failed_trial_reopens_the_breaker() {
 }
 
 fn outlier_pool(servers: u16, max_ejected_percent: u8) -> RoundRobinPool {
-    let mut policy =
-        PassiveFailurePolicy::new(100, Duration::from_secs(60), Duration::from_secs(60));
+    let mut policy = PassiveFailurePolicy::new(100, Duration::from_mins(1), Duration::from_mins(1));
     policy.outlier = Some(OutlierPolicy::from(&oxiroute_config::OutlierDetection {
         factor_percent: 300,
         min_samples: 5,

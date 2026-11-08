@@ -360,7 +360,7 @@ async fn run(
         })
         .collect::<Vec<_>>();
     for request in requests {
-        let status = timeout(Duration::from_secs(60), request)
+        let status = timeout(Duration::from_mins(1), request)
             .await
             .expect("request finished")
             .expect("request task");

@@ -2092,7 +2092,7 @@ async fn pool_unavailable_503_carries_the_current_date_with_or_without_automatic
                 .duration_since(date)
                 .unwrap_or_default();
             assert!(
-                age < Duration::from_secs(60),
+                age < Duration::from_mins(1),
                 "automatic {automatic}: {age:?}"
             );
             assert_eq!(response.header("retry-after"), None);
@@ -3259,7 +3259,7 @@ fn cookie_affinity() -> HttpAffinity {
 }
 
 struct AffinityFarm {
-    origins: [StatusOrigin; 3],
+    _origins: [StatusOrigin; 3],
     proxy: ProxyHarness,
 }
 
@@ -3278,7 +3278,10 @@ impl AffinityFarm {
             requests,
         )
         .await;
-        Self { origins, proxy }
+        Self {
+            _origins: origins,
+            proxy,
+        }
     }
 
     fn server_name(&self, index: usize) -> String {
@@ -3914,7 +3917,7 @@ async fn retry_jitter_stretches_each_same_server_retry_delay() {
 
         assert_origin_response(&response, "jittered");
         assert!(elapsed >= Duration::from_millis(400), "{elapsed:?}");
-        assert!(elapsed < Duration::from_millis(1_000), "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
         proxy.finish().await;
         healthy.finish().await;
     })

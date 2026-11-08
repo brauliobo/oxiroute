@@ -127,31 +127,7 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
             },
         }],
     });
-    config.upstream_pools = vec![UpstreamPool {
-        name: "public".into(),
-        servers: vec![UpstreamServer {
-            name: "origin-a".into(),
-            endpoint: UpstreamEndpoint::Socket {
-                address: "127.0.0.1:8080".parse().expect("upstream"),
-            },
-            max_connections: None,
-            dns_resolution: DnsResolutionPolicy::OnConnect,
-        }],
-        endpoints: Vec::new(),
-        algorithm: UpstreamAlgorithm::RoundRobin,
-        health_check: None,
-        passive_health: None,
-        tls: None,
-        http_versions: HttpVersionPolicy::default(),
-        queue_timeout_ms: None,
-        connect_timeout_ms: None,
-        server_timeout_ms: None,
-        connection_reuse: UpstreamConnectionReuse::Safe,
-        registration: None,
-        canary: None,
-        resilience: oxiroute_config::PoolResilience::default(),
-        queue: None,
-    }];
+    config.upstream_pools = vec![public_pool()];
     let mut server = ServerProcess::start(
         &config.clone().validate().expect("valid process config"),
         None,
@@ -410,10 +386,8 @@ async fn administrative_state_survives_supervised_worker_replacement() {
     administrative_state_survives_file_writes(true).await;
 }
 
-async fn administrative_state_survives_file_writes(supervised: bool) {
-    let management_address = reserve_tcp_address();
-    let mut config = management_config(management_address, None);
-    config.upstream_pools = vec![UpstreamPool {
+fn public_pool() -> UpstreamPool {
+    UpstreamPool {
         name: "public".into(),
         servers: vec![UpstreamServer {
             name: "origin-a".into(),
@@ -437,7 +411,62 @@ async fn administrative_state_survives_file_writes(supervised: bool) {
         canary: None,
         resilience: oxiroute_config::PoolResilience::default(),
         queue: None,
-    }];
+    }
+}
+
+fn server_state(servers: &Value, name: &str) -> Value {
+    servers["servers"]
+        .as_array()
+        .expect("servers")
+        .iter()
+        .map(|entry| entry["server"].clone())
+        .find(|server| server["name"] == name)
+        .unwrap_or_else(|| panic!("{name} is missing"))
+}
+
+fn override_method(path: &str) -> &'static str {
+    if path.ends_with("max-connections") || path.ends_with("weight") {
+        "PUT"
+    } else {
+        "POST"
+    }
+}
+
+fn administrative_overrides() -> [(&'static str, Value); 5] {
+    [
+        (
+            "/api/v1/servers/administrative-state",
+            json!({"state": "drain"}),
+        ),
+        ("/api/v1/servers/health-override", json!({"health": "down"})),
+        (
+            "/api/v1/servers/max-connections",
+            json!({"maxConnections": 7}),
+        ),
+        ("/api/v1/servers/weight", json!({"weight": 5})),
+        ("/api/v1/servers/checks", json!({"enabled": false})),
+    ]
+}
+
+fn assert_overrides_carried_and_defaults_added(servers: &Value) {
+    let carried = server_state(servers, "origin-a");
+    assert_eq!(carried["administrativeState"], "drain");
+    assert_eq!(carried["healthOverride"], "down");
+    assert_eq!(carried["maxConnections"], 7);
+    assert_eq!(carried["weight"], 5);
+    assert_eq!(carried["checksEnabled"], false);
+    let added = server_state(servers, "origin-b");
+    assert_eq!(added["administrativeState"], "ready");
+    assert_eq!(added["healthOverride"], "auto");
+    assert_eq!(added["checksEnabled"], true);
+    assert!(added["maxConnections"].is_null());
+    assert_eq!(added["weight"], 1);
+}
+
+async fn administrative_state_survives_file_writes(supervised: bool) {
+    let management_address = reserve_tcp_address();
+    let mut config = management_config(management_address, None);
+    config.upstream_pools = vec![public_pool()];
     let validated = config.clone().validate().expect("valid process config");
     let mut server = if supervised {
         ServerProcess::start_supervised(&validated, TOKEN)
@@ -467,11 +496,7 @@ async fn administrative_state_survives_file_writes(supervised: bool) {
             body["targets"] = json!([{"pool": "public", "server": "origin-a"}]);
             let response = http_request(
                 management_address,
-                if path.ends_with("max-connections") || path.ends_with("weight") {
-                    "PUT"
-                } else {
-                    "POST"
-                },
+                override_method(path),
                 path,
                 &[
                     ("Authorization", &authorization),
@@ -497,31 +522,10 @@ async fn administrative_state_survives_file_writes(supervised: bool) {
             }
         }
     };
-    let server_state = |servers: &Value, name: &str| {
-        servers["servers"]
-            .as_array()
-            .expect("servers")
-            .iter()
-            .map(|entry| entry["server"].clone())
-            .find(|server| server["name"] == name)
-            .unwrap_or_else(|| panic!("{name} is missing"))
-    };
     let status = get("/api/v1/generations").await["generation"].clone();
     let first_generation = status["generation"].as_u64().expect("generation number");
     let revision = status["activeRevision"].clone();
-    for (path, body) in [
-        (
-            "/api/v1/servers/administrative-state",
-            json!({"state": "drain"}),
-        ),
-        ("/api/v1/servers/health-override", json!({"health": "down"})),
-        (
-            "/api/v1/servers/max-connections",
-            json!({"maxConnections": 7}),
-        ),
-        ("/api/v1/servers/weight", json!({"weight": 5})),
-        ("/api/v1/servers/checks", json!({"enabled": false})),
-    ] {
+    for (path, body) in administrative_overrides() {
         post(path, revision.clone(), body).await;
     }
 
@@ -538,19 +542,7 @@ async fn administrative_state_survives_file_writes(supervised: bool) {
     let status = wait_for_revision(revision.clone()).await;
     assert!(status["generation"].as_u64().expect("number") > first_generation);
     assert_eq!(status["previousRevision"], revision);
-    let servers = get("/api/v1/servers").await;
-    let carried = server_state(&servers, "origin-a");
-    assert_eq!(carried["administrativeState"], "drain");
-    assert_eq!(carried["healthOverride"], "down");
-    assert_eq!(carried["maxConnections"], 7);
-    assert_eq!(carried["weight"], 5);
-    assert_eq!(carried["checksEnabled"], false);
-    let added = server_state(&servers, "origin-b");
-    assert_eq!(added["administrativeState"], "ready");
-    assert_eq!(added["healthOverride"], "auto");
-    assert_eq!(added["checksEnabled"], true);
-    assert!(added["maxConnections"].is_null());
-    assert_eq!(added["weight"], 1);
+    assert_overrides_carried_and_defaults_added(&get("/api/v1/servers").await);
 
     let origin_a = config.upstream_pools[0].servers.remove(0);
     write_config(
