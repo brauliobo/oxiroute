@@ -126,3 +126,17 @@ fn unresolved_dns_cleanup_blocks_state_deletion_with_a_conflict() {
     let body: serde_json::Value = serde_json::from_slice(&response.body).expect("error JSON");
     assert_eq!(body["error"]["code"], "dns_cleanup_pending");
 }
+
+#[test]
+fn evacuation_routes_are_exact_and_post_only() {
+    assert!(matches!(
+        match_route("/api/v1/servers/evacuate"),
+        Some(Route::ServerEvacuate)
+    ));
+    assert!(matches!(
+        match_route("/api/v1/pools/evacuate"),
+        Some(Route::PoolEvacuate)
+    ));
+    assert!(match_route("/api/v1/servers/evacuate/").is_none());
+    assert!(match_route("/api/v1/pools/evacuate/").is_none());
+}

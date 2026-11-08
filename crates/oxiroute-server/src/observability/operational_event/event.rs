@@ -50,6 +50,7 @@ pub(crate) enum EventName {
     UpstreamEndpointEjection,
     UpstreamEndpointRecovery,
     UpstreamEndpointHealth,
+    ServerEvacuation,
     Unknown,
 }
 
@@ -92,6 +93,7 @@ impl EventName {
             "upstream_endpoint_ejection" => Self::UpstreamEndpointEjection,
             "upstream_endpoint_recovery" => Self::UpstreamEndpointRecovery,
             "upstream_endpoint_health" => Self::UpstreamEndpointHealth,
+            "server_evacuation" => Self::ServerEvacuation,
             _ => Self::Unknown,
         }
     }
@@ -125,6 +127,7 @@ impl EventName {
             Self::UpstreamEndpointEjection => "upstream_endpoint_ejection",
             Self::UpstreamEndpointRecovery => "upstream_endpoint_recovery",
             Self::UpstreamEndpointHealth => "upstream_endpoint_health",
+            Self::ServerEvacuation => "server_evacuation",
             Self::Unknown => "unknown",
         }
     }
@@ -138,7 +141,8 @@ pub(crate) const fn v1_serialized_event_name(event: EventName) -> &'static str {
         | EventName::CertificateAccountRollover
         | EventName::CertificateJobControl
         | EventName::GenerationRetire
-        | EventName::UpstreamEndpointHealth => "unknown",
+        | EventName::UpstreamEndpointHealth
+        | EventName::ServerEvacuation => "unknown",
         _ => event.as_str(),
     }
 }
@@ -149,7 +153,8 @@ pub(crate) const fn v1_sse_event_name(event: EventName) -> &'static str {
         | EventName::CertificateDeletion
         | EventName::CertificateAccountRollover
         | EventName::CertificateJobControl
-        | EventName::GenerationRetire => "unknown",
+        | EventName::GenerationRetire
+        | EventName::ServerEvacuation => "unknown",
         _ => event.as_str(),
     }
 }
@@ -200,6 +205,12 @@ pub(crate) enum EventOutcome {
         next: EndpointHealthState,
         reason: Option<HealthFailure>,
         changed_at_unix_ms: u64,
+    },
+    Evacuated {
+        pool: String,
+        server: Option<String>,
+        force: bool,
+        report: EvacuationReport,
     },
     Unknown,
 }
@@ -276,6 +287,24 @@ impl Serialize for EventOutcome {
                 value.serialize_field("changedAtUnixMs", changed_at_unix_ms)?;
                 value.end()
             }
+            Self::Evacuated {
+                pool,
+                server,
+                force,
+                report,
+            } => {
+                let mut value = serializer.serialize_struct("EventOutcome", 7)?;
+                value.serialize_field("type", "evacuated")?;
+                value.serialize_field("pool", pool)?;
+                if let Some(server) = server {
+                    value.serialize_field("server", server)?;
+                }
+                value.serialize_field("force", force)?;
+                value.serialize_field("cancelledAndRedispatched", &report.redispatched)?;
+                value.serialize_field("forced", &report.forced)?;
+                value.serialize_field("leftRunning", &report.left_running)?;
+                value.end()
+            }
         }
     }
 }
@@ -297,6 +326,7 @@ impl EventOutcome {
             Self::Ejected { .. } => "ejected",
             Self::Recovered { .. } => "recovered",
             Self::HealthChanged { .. } => "health_changed",
+            Self::Evacuated { .. } => "evacuated",
             Self::Unknown => "unknown",
         }
     }

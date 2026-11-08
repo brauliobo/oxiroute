@@ -435,6 +435,69 @@ pub(super) async fn draining_a_registered_server_through_the_server_api_survives
     restarted.shutdown();
 }
 
+#[tokio::test]
+pub(super) async fn evacuating_a_registered_server_drains_it_through_the_registry_and_only_the_api_can()
+ {
+    let farm = Farm::new();
+    let server = farm.start().await;
+    let (alpha, _a) = stub("alpha").await;
+    let (beta, _b) = stub("beta").await;
+    farm.register("render", "alpha", alpha, 60_000).await;
+    farm.register("render", "beta", beta, 60_000).await;
+    let (_, generations) = farm
+        .api("GET", "/api/v1/generations", TOKEN, &Value::Null)
+        .await;
+    let body = json!({
+        "targets": [{"pool": "render", "server": "beta"}],
+        "expectedActiveRevision": generations["generation"]["activeRevision"],
+    });
+
+    for role in ["read", "register"] {
+        let (status, _) = farm
+            .over_socket(role, "POST", "/api/v1/servers/evacuate", &body)
+            .await;
+        assert!(
+            matches!(status, 403 | 404),
+            "{role} socket answered {status}"
+        );
+    }
+    let (status, _) = farm
+        .api("POST", "/api/v1/servers/evacuate", "wrong", &body)
+        .await;
+    assert_eq!(status, 401);
+    assert_eq!(
+        farm.served_by("/", 8).await,
+        ["alpha", "beta"].map(String::from).into()
+    );
+
+    let (status, report) = farm
+        .api("POST", "/api/v1/servers/evacuate", TOKEN, &body)
+        .await;
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["cancelledAndRedispatched"], 0);
+    assert_eq!(
+        farm.served_by("/", 8).await,
+        ["alpha"].map(String::from).into()
+    );
+    let (_, listing) = farm
+        .over_socket("read", "GET", "/api/v1/registrations", &Value::Null)
+        .await;
+    assert_eq!(listing["registrations"][1]["registration"]["name"], "beta");
+    assert_eq!(
+        listing["registrations"][1]["registration"]["operatorState"],
+        "drain"
+    );
+
+    server.shutdown_gracefully();
+    let restarted = farm.start().await;
+    assert_eq!(
+        farm.served_by("/", 8).await,
+        ["alpha"].map(String::from).into(),
+        "the evacuation drain outlives a restart"
+    );
+    restarted.shutdown();
+}
+
 pub(super) fn stdout_json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
         panic!(

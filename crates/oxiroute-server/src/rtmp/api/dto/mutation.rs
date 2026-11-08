@@ -1,10 +1,10 @@
-use std::net::SocketAddr;
+use std::{collections::BTreeMap, net::SocketAddr};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AdministrativeState, HealthOverride,
+    AdministrativeState, EvacuationReport, HealthOverride,
     config::coordinator::{
         AuthoredRevision, ConfigDiagnostic, ConfigDiagnosticSeverity, ConfigDiagnosticStage,
         EffectiveRevision,
@@ -50,6 +50,24 @@ pub(crate) struct ServerStateRequest {
     pub(crate) change: ServerChange,
     #[schemars(with = "AdministrativeStateSchema")]
     pub(crate) state: AdministrativeState,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ServerEvacuateRequest {
+    #[serde(flatten)]
+    pub(crate) change: ServerChange,
+    #[serde(default)]
+    pub(crate) force: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PoolEvacuateRequest {
+    pub(crate) pools: Vec<String>,
+    #[serde(default)]
+    pub(crate) force: bool,
+    pub(crate) expected_active_revision: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -130,6 +148,36 @@ impl MutationResponse {
             changed,
         }
     }
+}
+
+#[derive(JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EvacuationResponse {
+    outcome: &'static str,
+    force: bool,
+    cancelled_and_redispatched: u64,
+    forced: u64,
+    left_running: BTreeMap<&'static str, u64>,
+}
+
+impl EvacuationResponse {
+    pub(crate) fn evacuated(force: bool, report: &EvacuationReport) -> Self {
+        Self {
+            outcome: "evacuated",
+            force,
+            cancelled_and_redispatched: report.redispatched,
+            forced: report.forced,
+            left_running: left_running_by_reason(report),
+        }
+    }
+}
+
+pub(super) fn left_running_by_reason(report: &EvacuationReport) -> BTreeMap<&'static str, u64> {
+    report
+        .left_running
+        .iter()
+        .map(|(reason, count)| (reason.as_str(), *count))
+        .collect()
 }
 
 #[derive(JsonSchema, Serialize)]
@@ -452,6 +500,58 @@ mod tests {
                     { "pool": "pool", "server": "server", "outcome": "refreshed", "addresses": ["127.0.0.1:443"] },
                     { "pool": "pool", "server": "missing", "outcome": "failed", "error": { "code": "dns_refresh_failed" } },
                 ],
+            })
+        );
+    }
+
+    #[test]
+    fn evacuation_requests_default_to_no_force_and_refuse_unknown_fields() {
+        let revision = "a".repeat(64);
+        let servers: ServerEvacuateRequest = serde_json::from_value(json!({
+            "targets": [{ "pool": "gpu-render", "server": "node-a" }],
+            "expectedActiveRevision": revision,
+        }))
+        .expect("server request");
+        let pools: PoolEvacuateRequest = serde_json::from_value(json!({
+            "pools": ["gpu-render"],
+            "force": true,
+            "expectedActiveRevision": revision,
+        }))
+        .expect("pool request");
+
+        assert!(!servers.force);
+        assert!(pools.force);
+        assert!(
+            serde_json::from_value::<ServerEvacuateRequest>(json!({
+                "targets": [], "expectedActiveRevision": revision, "state": "drain",
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PoolEvacuateRequest>(json!({ "pools": [], "force": true }))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_evacuation_response_sums_the_report_by_reason() {
+        let mut report = EvacuationReport {
+            redispatched: 2,
+            forced: 1,
+            ..EvacuationReport::default()
+        };
+        report
+            .left_running
+            .insert(crate::LeftRunning::NoDestination, 4);
+
+        assert_eq!(
+            serde_json::to_value(EvacuationResponse::evacuated(true, &report)).expect("response"),
+            json!({
+                "outcome": "evacuated",
+                "force": true,
+                "cancelledAndRedispatched": 2,
+                "forced": 1,
+                "leftRunning": { "no_destination": 4 },
             })
         );
     }
