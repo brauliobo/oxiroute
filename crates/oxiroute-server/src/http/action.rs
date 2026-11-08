@@ -6,10 +6,7 @@ use std::{
     io::{Read as _, Write as _},
     os::unix::ffi::OsStringExt as _,
     path::{Component, Path},
-    sync::{
-        Arc, Mutex, OnceLock,
-        mpsc::{self, SyncSender, TrySendError},
-    },
+    sync::{Arc, Mutex, OnceLock},
     thread::JoinHandle,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };

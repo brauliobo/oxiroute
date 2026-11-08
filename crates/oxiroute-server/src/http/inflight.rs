@@ -17,9 +17,12 @@ use std::{
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::http::{
-    action::AccessLog,
-    evacuation::{Evacuation, EvacuationReport, Fate},
+use crate::{
+    http::{
+        action::AccessLog,
+        evacuation::{Evacuation, EvacuationReport, Fate},
+    },
+    observability::access_record::{Correlation, Count, Safe, SafeId, StuckAccess},
 };
 
 const SHARDS: usize = 16;
@@ -166,21 +169,21 @@ impl InflightEntry {
         let Some(log) = &self.access_log else {
             return;
         };
-        let line = serde_json::json!({
-            "event": "stuck",
-            "service": log.service(),
-            "requestId": view.request_id,
-            "correlationId": view.request_id,
-            "route": view.route,
-            "pool": view.pool,
-            "server": view.server,
-            "phase": view.phase.as_str(),
-            "ageMs": view.age_ms.to_string(),
-            "timestampUnixMs": SystemTime::now()
+        let line = StuckAccess {
+            age_ms: Count(view.age_ms),
+            correlation_id: Correlation(Some(&view.request_id)),
+            event: SafeId("stuck"),
+            phase: view.phase.as_str().into(),
+            pool: view.pool.as_deref().map(Safe::from),
+            request_id: Some(Safe::from(view.request_id.as_str())),
+            route: view.route.as_deref().map(Safe::from),
+            server: view.server.as_deref().map(Safe::from),
+            service: log.service().into(),
+            timestamp_unix_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, duration_ms),
-        });
-        if let Err(error) = log.write(&line) {
+        };
+        if let Err(error) = log.write_record(&line) {
             log::warn!("stuck request access log write failed: {error}");
         }
     }
