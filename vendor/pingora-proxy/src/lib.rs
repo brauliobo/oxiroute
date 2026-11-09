@@ -1222,28 +1222,38 @@ where
         session: HttpSession,
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream> {
-        let session = Box::new(session);
+        self.process_new_http_inline(session, shutdown).await
+    }
 
-        // A connection that has not served a request yet keeps its place in the queue, so only the
-        // wait between requests ends on shutdown.
-        let between_requests = session.is_reused_connection().then_some(shutdown);
-        // TODO: keepalive pool, use stack
-        let mut session = match self.handle_new_request(session, between_requests).await {
-            Some(downstream_session) => Session::new(
-                downstream_session,
-                &self.downstream_modules,
-                self.shutdown_flag.clone(),
-            ),
-            None => return None, // bad request
-        };
+    fn process_new_http_inline(
+        self: &Arc<Self>,
+        session: HttpSession,
+        shutdown: &ShutdownWatch,
+    ) -> impl std::future::Future<Output = Option<ReusedHttpStream>> + Send {
+        async move {
+            let session = Box::new(session);
 
-        if *shutdown.borrow() {
-            // stop downstream from reusing if this service is shutting down soon
-            session.set_keepalive(None);
+            // A connection that has not served a request yet keeps its place in the queue, so only the
+            // wait between requests ends on shutdown.
+            let between_requests = session.is_reused_connection().then_some(shutdown);
+            // TODO: keepalive pool, use stack
+            let mut session = match self.handle_new_request(session, between_requests).await {
+                Some(downstream_session) => Session::new(
+                    downstream_session,
+                    &self.downstream_modules,
+                    self.shutdown_flag.clone(),
+                ),
+                None => return None, // bad request
+            };
+
+            if *shutdown.borrow() {
+                // stop downstream from reusing if this service is shutting down soon
+                session.set_keepalive(None);
+            }
+
+            let ctx = self.inner.new_ctx();
+            self.process_request(session, ctx).await
         }
-
-        let ctx = self.inner.new_ctx();
-        self.process_request(session, ctx).await
     }
 
     async fn http_cleanup(&self) {
