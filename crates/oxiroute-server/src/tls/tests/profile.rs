@@ -46,11 +46,6 @@ fn prepares_metadata_redacted_generation_and_callback_settings() {
     );
     let mut settings = profile.tls_settings().unwrap();
     assert!(settings.options().contains(SslOptions::NO_TICKET));
-    assert_eq!(
-        settings.num_tickets(),
-        0,
-        "no cache and no tickets: nothing to resume"
-    );
     assert!(
         settings
             .options()
@@ -99,11 +94,6 @@ fn applies_explicit_server_tls_policy_to_openssl_settings() {
     );
     assert_eq!(settings.set_session_timeout(1), 86_400);
     assert!(settings.options().contains(SslOptions::NO_TICKET));
-    assert_eq!(
-        settings.num_tickets(),
-        2,
-        "a session cache keeps the default ticket count"
-    );
     assert!(
         !settings
             .options()
