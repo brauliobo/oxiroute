@@ -6,11 +6,13 @@
   "packageManager": "pnpm@11.3.0",
   "scripts": {
     "build": "vue-tsc --noEmit && vite build",
+    "build:stats": "vue-tsc --noEmit && vite build --config vite.stats.config.ts && pnpm verify:stats-bundle",
     "build:management": "cd .. && nice cargo +1.97.1 build -p oxiroute --bin oxiroute --locked --jobs 4",
     "dev": "vite",
     "generate:control-plane": "node ../scripts/generate-control-plane-types.mjs",
     "generate:stats-page": "node ../scripts/generate-stats-page-types.mjs",
     "verify:bundle": "node ../scripts/verify-ui-bundle.mjs dist",
+    "verify:stats-bundle": "node ../scripts/verify-ui-bundle.mjs dist-stats && node ../scripts/verify-stats-budget.mjs dist-stats",
     "verify:control-plane": "node ../scripts/generate-control-plane-types.mjs --check",
     "verify:stats-page": "node ../scripts/generate-stats-page-types.mjs --check",
     "pretest": "pnpm run build:management",
