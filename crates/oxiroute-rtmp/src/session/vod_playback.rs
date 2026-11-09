@@ -101,10 +101,22 @@ impl VodPlaybackSession {
         protocol: &mut ServerSession,
         maximum_events: usize,
     ) -> Result<Vec<Vec<u8>>, RtmpSessionError> {
-        let events = {
+        let (events, should_complete) = {
             let mut state = self.state.lock().expect("VOD playback mutex poisoned");
             let event_count = maximum_events.min(state.events.len());
-            state.events.drain(..event_count).collect::<Vec<_>>()
+            let events = state.events.drain(..event_count).collect::<Vec<_>>();
+            if events.is_empty() {
+                if let Some(error) = state.error.take() {
+                    return Err(RtmpSessionError::Vod(error));
+                }
+                // Decided under the lock that found the queue empty: the reader may have queued
+                // the media and finished in between, and completion must follow all of it.
+                let complete = state.finished && !state.completed;
+                state.completed |= complete;
+                (events, complete)
+            } else {
+                (events, false)
+            }
         };
         if !events.is_empty() {
             return events
@@ -114,18 +126,6 @@ impl VodPlaybackSession {
                 })
                 .collect();
         }
-        let should_complete = {
-            let mut state = self.state.lock().expect("VOD playback mutex poisoned");
-            if let Some(error) = state.error.take() {
-                return Err(RtmpSessionError::Vod(error));
-            }
-            if state.finished && !state.completed {
-                state.completed = true;
-                true
-            } else {
-                false
-            }
-        };
         if should_complete {
             self.join_worker();
             return Ok(vec![
