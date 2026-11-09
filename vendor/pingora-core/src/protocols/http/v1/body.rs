@@ -46,6 +46,19 @@ const CRLF: &[u8; 2] = &[CR, LF];
 // This is really the CRLF end of the last trailer (or 0 chunk), + the last CRLF.
 const TRAILERS_END: &[u8; 4] = &[CR, LF, CR, LF];
 
+/// The chunk size line (`{size:X}\r\n`) in a stack buffer, and its length.
+fn chunk_size_line(size: usize) -> ([u8; 18], usize) {
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    let mut line = [0_u8; 18];
+    let digits = (usize::BITS - size.leading_zeros()).div_ceil(4).max(1) as usize;
+    for (index, slot) in line[..digits].iter_mut().enumerate() {
+        *slot = DIGITS[(size >> (4 * (digits - 1 - index))) & 0xF];
+    }
+    line[digits] = CR;
+    line[digits + 1] = LF;
+    (line, digits + 2)
+}
+
 pub const INVALID_CHUNK: ErrorType = ErrorType::new("InvalidChunk");
 pub const INVALID_TRAILER_END: ErrorType = ErrorType::new("InvalidTrailerEnd");
 pub const PREMATURE_BODY_END: ErrorType = ErrorType::new("PrematureBodyEnd");
@@ -1133,8 +1146,8 @@ impl BodyWriter {
             BM::ChunkedEncoding(written) => {
                 let chunk_size = buf.len();
 
-                let chuck_size_buf = format!("{:X}\r\n", chunk_size);
-                let mut output_buf = Bytes::from(chuck_size_buf).chain(buf).chain(&b"\r\n"[..]);
+                let (head, head_len) = chunk_size_line(chunk_size);
+                let mut output_buf = Buf::chain(&head[..head_len], buf).chain(&b"\r\n"[..]);
                 stream
                     .write_vec_all(&mut output_buf)
                     .await
@@ -1232,6 +1245,26 @@ impl BodyWriter {
 mod tests {
     use super::*;
     use tokio_test::io::Builder;
+
+    #[test]
+    fn the_chunk_size_line_is_upper_case_hex_without_leading_zeros() {
+        for size in [
+            0_usize,
+            1,
+            9,
+            10,
+            15,
+            16,
+            255,
+            4096,
+            65_535,
+            1 << 20,
+            usize::MAX,
+        ] {
+            let (line, len) = super::chunk_size_line(size);
+            assert_eq!(&line[..len], format!("{size:X}\r\n").as_bytes());
+        }
+    }
 
     fn init_log() {
         let _ = env_logger::builder().is_test(true).try_init();
