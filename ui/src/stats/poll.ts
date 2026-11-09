@@ -5,7 +5,8 @@ import type { StatsSnapshot } from './decode'
 // so the delay is the viewer's interval, else the hint of the latest snapshot, never below one second. One request is
 // in flight at a time. Failures back off exponentially (interval, 2x, 4x ... up to 30 s) with +-10 % jitter and the
 // poller keeps retrying, except for an unsupported schema version, which ends polling. Pausing aborts the request in
-// flight and drops its answer; resuming polls at once. Data that did not refresh for three intervals (at least 10 s)
+// flight and drops its answer; resuming polls at once; `refresh()` and the first load of a page that starts paused still
+// load once. Data that did not refresh for three intervals (at least 10 s)
 // is stale: the last snapshot is kept for display, marked, never replaced by zeros.
 
 export const MIN_INTERVAL_MS = 1000
@@ -126,8 +127,9 @@ export function createPoller(options: PollerOptions): Poller {
     if (remaining > 0) staleTimer = setTimeout(armStale, remaining)
   }
 
-  async function poll() {
-    if (!active() || request) return
+  // Manual loads (refresh, the first load of a page that starts paused) also run while paused and do not schedule more.
+  async function poll(manual = false) {
+    if (request || !(active() || (manual && state.phase === 'paused'))) return
     clearTimeout(pollTimer)
     const own = (request = new AbortController())
     update({ loading: true })
@@ -140,7 +142,7 @@ export function createPoller(options: PollerOptions): Poller {
       update({ loading: false, lastSuccessAtMs: now(), failure: undefined })
       options.onSnapshot(snapshot, state.lastSuccessAtMs!)
       armStale()
-      schedule(baseMs())
+      if (active()) schedule(baseMs())
     } catch (error) {
       if (own.signal.aborted) return
       request = undefined
@@ -158,8 +160,8 @@ export function createPoller(options: PollerOptions): Poller {
     }
     const delay = Math.min(BACKOFF_CAP_MS, baseMs() * 2 ** (attempts - 1))
     const retryInMs = Math.round(delay * (1 - JITTER + 2 * JITTER * random()))
-    update({ loading: false, failure: { kind, message, attempts, retryInMs } })
-    schedule(retryInMs)
+    update({ loading: false, failure: { kind, message, attempts, ...(active() ? { retryInMs } : {}) } })
+    if (active()) schedule(retryInMs)
   }
 
   function halt() {
@@ -178,7 +180,7 @@ export function createPoller(options: PollerOptions): Poller {
     start() {
       if (state.phase !== 'idle') return
       update({ phase: options.paused ? 'paused' : 'running' })
-      if (active()) void poll()
+      void poll(true)
     },
     pause() {
       if (!active()) return
@@ -191,7 +193,7 @@ export function createPoller(options: PollerOptions): Poller {
       armStale()
       void poll()
     },
-    refresh() { void poll() },
+    refresh() { void poll(true) },
     setIntervalMs(next) {
       intervalMs = next
       if (!active()) return
