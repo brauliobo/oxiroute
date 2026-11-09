@@ -426,7 +426,7 @@ def measure_syscalls(args, lane):
         env.close()
     span = args.sys_high - args.sys_low
     per_request = {name: (totals[1].get(name, 0) - totals[0].get(name, 0)) / span for name in totals[1]}
-    top = sorted(per_request.items(), key=lambda item: -item[1])[:8]
+    top = sorted(per_request.items(), key=lambda item: -item[1])[: args.sys_top]
     result = {"syscalls_per_req": round(sum(per_request.values()), 2)}
     result.update({f"sys_{name}": round(value, 3) for name, value in top if value > 0.01})
     return result
@@ -580,6 +580,7 @@ def main():
                         help="frame-pointer build used with --call-graph fp (default: --bin, flat profile)")
     parser.add_argument("--profile-requests", type=int, default=3000)
     parser.add_argument("--profile-warmup", type=int, default=500)
+    parser.add_argument("--sys-top", type=int, default=8, help="how many syscall names --sys reports")
     parser.add_argument("--sys-low", type=int, default=1000)
     parser.add_argument("--sys-high", type=int, default=3000)
     parser.add_argument("--alloc-requests", type=int, default=4000)
