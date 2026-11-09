@@ -251,7 +251,7 @@ kbd {
   .ox-field label { min-width: 0; }
   .ox-field .ox-input { flex: 1 1 9rem; min-width: 0; }
   .ox-search { flex-basis: auto; }
-  .ox-admin-controls .ox-field .ox-input { flex: none; }
+  .ox-admin-controls .ox-field .ox-input { flex: none; width: 100%; }
   .ox-input, .ox-btn, .ox-chip { min-height: 2.5rem; }
   .ox-btn { flex: 1; }
   .ox-banner .ox-btn, .ox-dialog .ox-btn { flex: none; }
