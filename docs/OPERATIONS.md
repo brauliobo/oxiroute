@@ -220,14 +220,61 @@ patience, and `increase(oxiroute_http_stuck_requests_total[10m]) > 0`. `/metrics
 statistics bind; `/stats` and `/api/v1/status` require a loopback peer and the statistics Bearer
 token.
 
-Each canonical `stats.pages[]` socket is separate from those observability binds. It serves only the
-configured public HAProxy-compatible `uri_prefix` and returns `404` for `/metrics`, `/ready`,
-`/stats`, and `/api/v1/status` unless one is itself the configured prefix. `admin = "localhost"`
-adds Ready/Drain/Maintenance forms only to loopback clients. Mutation additionally requires a
-`localhost` or loopback-IP Host, a matching Origin or Origin-absent Referer, no forwarded identity,
-and the active generation revision. Each page enforces its own connection cap and downstream
-timeouts and appears in listener metrics. HEAD preserves GET `Content-Length` without a body; use
-`disabled` for an unconditionally read-only page.
+Each canonical `stats.pages[]` socket is separate from those observability binds. Below its
+`uri_prefix` it serves exactly the page, `snapshot.json` and `stats.csv` (see "Stats page API") and
+returns `404` for every other path, for `/metrics`, `/ready`, `/status.json`, `/api/v1/status` and
+the legacy `/stats` (a path that merely starts with the prefix, such as `/statsfoo`, is not the
+page). The page is public: everyone who can reach the socket sees the same data, including upstream
+addresses, listener binds and revisions, so bind it only where that is acceptable. `admin =
+"localhost"` adds Ready/Drain/Maintenance forms only to loopback clients. Mutation additionally
+requires a `localhost` or loopback-IP Host, a matching Origin or Origin-absent Referer, no forwarded
+identity, and the active generation revision. Each page enforces its own connection cap and
+downstream timeouts and appears in listener metrics. HEAD preserves GET `Content-Length` without a
+body; use `disabled` for an unconditionally read-only page.
+
+### Stats page API
+
+`GET <prefix>/snapshot.json` is the machine-readable form of the page, `GET <prefix>/stats.csv` a
+HAProxy-style export and `GET <prefix>` the table that needs no script. The contract is
+`contracts/stats-page.openapi.json`, generated from the snapshot types and checked by
+`cargo test -p oxiroute --lib stats_page::contract`; regenerate it with
+`cargo test -p oxiroute --lib stats_page::contract::tests::write_checked_artifact -- --ignored`.
+
+- One snapshot is built per second and shared by every client (rebuilt at once after a page
+  administration change), so viewers cost no more than one build per second. Poll no faster than
+  `intervalHintMs` (the configured `refresh_ms`, at least 1000). Responses are `no-store`.
+- `schemaVersion` (1) changes only for incompatible changes. Keys are camelCase. Counters are decimal
+  strings (`"12345"`); gauges and timestamps (`...UnixMs`, `...Ms`) are numbers.
+- A key is absent when the proxy does not know the value; nothing is reported as zero because it is
+  unknown. Never provided: per-route request and status counters, per-listener status classes, peak
+  gauges (`qmax`, `smax`), connect time, health-check duration or history, circuit-breaker state,
+  server backup role and slow-start throttle. Latencies are lifetime histograms, not windows.
+- `admin` is the only peer-dependent key: true for a loopback peer of a page with `admin =
+  "localhost"`. The form is `POST <prefix>` with `application/x-www-form-urlencoded` fields
+  `generation_revision` (= `generation.activeRevision`), `pool`, `server` and `state`
+  (`ready`, `drain` or `maintenance`); `204` on success, `409` when the revision changed.
+
+| Section | Content |
+| --- | --- |
+| `process` | version, uptime, state, CPU, memory, threads, descriptors, connections (active, max, accepted, rejected), bytes in/out, retries, upstream in-flight (count, oldest, overdue, stuck), `host` load and memory |
+| `generation` | number, age, accepting, degraded, active/candidate/previous/disk/quarantined revision, last failure and rejection, counters, `retired` generations still draining |
+| `listeners[]` | name, protocol, bind, service, TLS profile, relay pool, state, administrative state, connections (active, max, accepted, rejected), bytes in/out, `http` outcomes and latency, `tcpRelays`, `proxyProtocol`, `cache` |
+| `routes[]` | id, service, index, listeners, host and path selectors, methods, action, pool, status, max retries, `rescues`, `poolSelections` |
+| `pools[]` | name, algorithm, `status` (`up`, `degraded`, `down`, `empty`), available/total servers, selections, `queue` (current, per class, oldest wait, totals, timeout, wait histogram), `inflight`, summed `traffic` and `latency`, `canary`, `servers[]` |
+| `pools[].servers[]` | name, address, origin, `status` (`up`, `down`, `drain`, `maint`, `ejected`, `unchecked`, `unknown`), available, administrative state, health override, health, weight, connection limits, last transition, downtime, `check` (counters, last check, last failure), `passive` ejection, `traffic` (sessions, bytes, responses `1xx`..`5xx`/`none`, attempts by outcome, evacuations), `latency` (request, header) |
+| `certificates[]`, `certificateWatchers[]` | name, source, expiry (`expiresAt`, `notAfterUnixSeconds`), last outcome and error, watcher health |
+| `warnings[]` | configuration warnings (`W_...` code and message) |
+
+Histograms are `{count, sumMs, buckets}` with cumulative `buckets[i]` for the i-th bound of
+`bucketBoundsMs.operation` or `.queueWait`; the overflow bucket is `count`. A snapshot with 1024
+servers is about 1 MB.
+
+The CSV header is `# pxname,svname,qcur,scur,slim,stot,bin,bout,ereq,econ,eresp,wretr,status,weight,
+chkfail,lastchg,downtime,type,check_status,hrsp_1xx..hrsp_5xx,hrsp_other,req_tot,qtime,rtime,ttime`
+with `type` 0 for a listener (`svname` `FRONTEND`), 1 for a pool (`BACKEND`) and 2 for a server.
+Unknown cells are empty; `econ` is failed connects, `eresp` timeouts and protocol errors, `wretr`
+status retries and rescues, the `*time` columns are lifetime averages in ms and `downtime` is the
+current outage in seconds. Cells starting with `=`, `+`, `-` or `@` get a leading `'`.
 
 Changing the mode of an active Unix listener is not a live reload, even when the candidate contains
 other changes. The configuration API saves the valid candidate as `saved_restart_required` with
