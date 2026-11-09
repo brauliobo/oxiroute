@@ -163,6 +163,12 @@ connection-pool experiments:
   `request_facts()` (`RequestFacts::UNKNOWN` for HTTP/2 and HTTP/3, which makes the caller look the headers up) and
   `modules/http/mod.rs` `HttpModuleCtx::is_empty`. `protocols/http/v1/client.rs` `write_request_header_noted` writes a
   borrowed request with the facts the caller already has (`write_request_header_ref` computes them).
+- `services/listening.rs` spawns every accepted connection through `pingora_runtime::spawn_connection`, which on a
+  non-stealing runtime picks the worker with the fewest open connections (the vendored `pingora-runtime`, see its
+  README). `listeners/mod.rs` records the runtime that accepted a connection and, when the connection task starts on
+  another runtime, `protocols/l4/stream.rs` `set_buffer(own_driver)` moves the socket to the I/O driver of the runtime
+  that serves it (`into_std` then `from_std`: one `epoll_ctl` DELETE and one ADD), so its readiness events are
+  delivered on the serving thread and not forwarded from the accepting one.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.
@@ -180,7 +186,7 @@ upstream packaging commentary; that non-build manifest is intentionally omitted 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
 review the HTTP/2 shutdown accept loop, the header slots, request and response facts, the noted request write, inline request loop, the zero-copy request body and retry buffer, `try_read_response_task`, the connector hook, admission guard and handshake-timeout hook, rendered response write, inline Date and Connection lines, header map headroom, single-clock timeouts, subject conversion, HTTP/1 HEAD informational-response,
 owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, lazy read buffer, pooled
-gzip state, header-name cache, HTTP/2 test lifecycle, connection-pool changes, the idle pool and the listener `TCP_NODELAY`, then rerun the vendored
+gzip state, header-name cache, HTTP/2 test lifecycle, connection-pool changes, the idle pool, the listener `TCP_NODELAY` and the per-worker connection placement, then rerun the vendored
 gzip state, header-name cache, body buffer pool and hand-over, direct large body writes, coalescing write buffer,
 HTTP/2 test lifecycle, and connection-pool changes, then rerun the vendored
 connector pool, BodyReader, H1 client, and H2 server suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.

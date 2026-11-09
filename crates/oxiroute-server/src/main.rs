@@ -409,6 +409,7 @@ fn serve_generation(
         grace_period_seconds: Some(0),
         graceful_shutdown_timeout_seconds: Some(0),
         upstream_keepalive_pool_size: UPSTREAM_IDLE_CONNECTIONS,
+        work_stealing: false,
         ..ServerConf::default()
     };
     let mut server = Server::new_with_opt_and_conf(None, server_config)?;

@@ -1,0 +1,48 @@
+[package]
+edition = "2021"
+name = "pingora-runtime"
+version = "0.8.1"
+authors = ["Yuchen Wu <yuchen@cloudflare.com>"]
+description = """
+Multithreaded Tokio runtime with the option of disabling work stealing.
+"""
+readme = false
+keywords = [
+    "async",
+    "non-blocking",
+    "pingora",
+]
+categories = [
+    "asynchronous",
+    "network-programming",
+]
+license = "Apache-2.0"
+repository = "https://github.com/cloudflare/pingora"
+
+[lib]
+name = "pingora_runtime"
+path = "src/lib.rs"
+
+[dependencies.once_cell]
+version = "1"
+
+[dependencies.rand]
+version = "0.8"
+
+[dependencies.thread_local]
+version = "1"
+
+[dependencies.tokio]
+version = "1"
+features = [
+    "rt-multi-thread",
+    "sync",
+    "time",
+]
+
+[dev-dependencies.tokio]
+version = "1"
+features = [
+    "io-util",
+    "net",
+]
