@@ -10,17 +10,15 @@ pub(super) async fn execute_route_action(
     session: &mut Session,
     ctx: &mut HttpRequestContext,
     mut route: Arc<HttpRoutePlan>,
-    method: &Method,
-    mut uri: http::Uri,
 ) -> pingora::Result<bool> {
     const MAX_INTERNAL_REDIRECTS: usize = 10;
 
     let mut internal_redirects = 0;
     let mut status_override = None;
     let mut status_headers = Vec::new();
-    let mut method = method.clone();
     loop {
         ctx.route = Some(Arc::clone(&route));
+        let head = session.req_header().method == Method::HEAD;
         match &route.action {
             HttpActionPlan::Proxy(proxy) => {
                 ctx.response_status_override = status_override;
@@ -29,7 +27,7 @@ pub(super) async fn execute_route_action(
                 ctx.connection_retryable = proxy.policy.max_retries > 0 && !upgrade;
                 let body_is_empty = session.is_body_empty();
                 let replay_safe = proxy.policy.request_is_replay_safe(
-                    &method,
+                    &session.req_header().method,
                     &session.req_header().headers,
                     body_is_empty,
                     route.policy.request_buffering,
@@ -65,8 +63,7 @@ pub(super) async fn execute_route_action(
             }
             HttpActionPlan::Fixed(response) => {
                 if status_headers.is_empty()
-                    && write_rendered_response(service, session, response, method == Method::HEAD)
-                        .await?
+                    && write_rendered_response(service, session, response, head).await?
                 {
                     return Ok(true);
                 }
@@ -81,12 +78,13 @@ pub(super) async fn execute_route_action(
                     response.status,
                     &headers,
                     response.body.clone(),
-                    method == Method::HEAD,
+                    head,
                 )
                 .await?;
                 return Ok(true);
             }
             HttpActionPlan::Redirect(redirect) => {
+                let uri = session.req_header().uri.clone();
                 let Some(location) =
                     redirect_location(&redirect.location, session, ctx.authority.as_ref(), &uri)
                 else {
@@ -106,17 +104,12 @@ pub(super) async fn execute_route_action(
                         &server,
                     )
                 });
-                write_local_response(
-                    session,
-                    redirect.status,
-                    &headers,
-                    body,
-                    method == Method::HEAD,
-                )
-                .await?;
+                write_local_response(session, redirect.status, &headers, body, head).await?;
                 return Ok(true);
             }
             HttpActionPlan::Static(files) => {
+                let mut method = session.req_header().method.clone();
+                let mut uri = session.req_header().uri.clone();
                 let mut internal_redirect: Option<(String, Vec<(HeaderName, HeaderValue)>)> = None;
                 if method != Method::GET && method != Method::HEAD {
                     internal_redirect = write_static_error(

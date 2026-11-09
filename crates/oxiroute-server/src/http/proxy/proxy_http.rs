@@ -101,15 +101,11 @@ impl ProxyHttp for HttpReverseProxy {
             return Ok(true);
         }
         session.set_automatic_response_headers(self.service.automatic_response_headers());
-        let (authority, content_length, method, uri, upgrade) = {
+        let (authority, content_length, upgrade) = {
             let request = session.req_header();
-            let authority = request_authority(request);
-            let content_length = content_length(&request.headers);
             (
-                authority,
-                content_length,
-                request.method.clone(),
-                request.uri.clone(),
+                request_authority(request),
+                content_length(&request.headers),
                 session.is_upgrade_req(),
             )
         };
@@ -133,11 +129,15 @@ impl ProxyHttp for HttpReverseProxy {
             respond_status(session, 400).await?;
             return Ok(true);
         };
-        if content_length.is_err() || !is_unambiguous_http_path(uri.path()) {
+        let request = session.req_header();
+        if content_length.is_err() || !is_unambiguous_http_path(request.uri.path()) {
             respond_status(session, 400).await?;
             return Ok(true);
         }
-        let Some(route) = self.service.select_route(authority.as_ref(), &uri, &method) else {
+        let Some(route) =
+            self.service
+                .select_route(authority.as_ref(), &request.uri, &request.method)
+        else {
             respond_status_with_body(session, 404, Bytes::from_static(b"route not found\n"))
                 .await?;
             ctx.allow_downstream_drain(session);
@@ -187,6 +187,10 @@ impl ProxyHttp for HttpReverseProxy {
         if let HttpActionPlan::Proxy(proxy) = &route.action
             && let Some(cache) = &proxy.policy.cache
         {
+            let (method, uri) = {
+                let request = session.req_header();
+                (request.method.clone(), request.uri.clone())
+            };
             if method.as_str().eq_ignore_ascii_case("PURGE") {
                 if cache.purge_access.is_some() {
                     let response_sent =
@@ -204,8 +208,7 @@ impl ProxyHttp for HttpReverseProxy {
                 return Ok(true);
             }
         }
-        let response_sent =
-            execute_route_action(&self.service, session, ctx, route, &method, uri).await?;
+        let response_sent = execute_route_action(&self.service, session, ctx, route).await?;
         if response_sent {
             ctx.allow_downstream_drain(session);
         }
