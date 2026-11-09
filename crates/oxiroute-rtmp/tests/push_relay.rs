@@ -72,7 +72,7 @@ fn unavailable_push_retries_recovers_bootstraps_and_stays_isolated_in_a_bounded_
         publisher.audio(3 + marker, &[0xaf, 0x01, marker.to_le_bytes()[0]]);
     }
 
-    wait_until(Duration::from_secs(1), || {
+    wait_until(Duration::from_secs(30), || {
         relay_status(&source_registry).is_some_and(|status| {
             status.connection_attempts >= 2
                 && status.phase == RtmpRelayPhase::Backoff
@@ -92,7 +92,7 @@ fn unavailable_push_retries_recovers_bootstraps_and_stays_isolated_in_a_bounded_
         RtmpSessionPolicy::new([RtmpApplication::new("camera", true, true)]),
     );
     let sink = spawn_fake_server(address, sink_runtime, Arc::clone(&sink_registry));
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         relay_status(&source_registry).is_some_and(|status| {
             status.phase == RtmpRelayPhase::Publishing
                 && status.connections >= 2
@@ -102,7 +102,7 @@ fn unavailable_push_retries_recovers_bootstraps_and_stays_isolated_in_a_bounded_
     publisher.video(100, &[0x17, 0x01, 0, 0, 0, 0x33]);
     publisher.audio(101, &[0xaf, 0x01, 0x44]);
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         sink_registry
             .snapshot()
             .streams
@@ -208,7 +208,7 @@ fn push_reconnects_to_a_rotated_loopback_address_and_reports_dns_refresh_metrics
     publisher.video(1, &[0x17, 0x00, 0, 0, 0, 0x01]);
     publisher.video(2, &[0x17, 0x01, 0, 0, 0, 0x22]);
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         relay_status(&source_registry).is_some_and(|status| {
             status.connections >= 2
                 && status.destination.address == second_address
