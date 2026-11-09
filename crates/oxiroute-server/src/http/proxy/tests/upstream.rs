@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_ports::unused_tcp_address;
 
 #[test]
 fn rescue_only_statuses_are_not_passive_failures() {
@@ -44,16 +45,11 @@ fn cache_etag_matching_uses_weak_comparison_and_wildcards() {
 
 #[tokio::test]
 async fn http_falls_back_to_the_second_address_without_route_retry_budget() {
-    let listener = TcpListener::bind("127.0.0.2:0")
+    let first = unused_tcp_address();
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 2], first.port())))
         .await
         .expect("second address listener");
     let second = listener.local_addr().expect("second address");
-    let first = SocketAddr::from(([127, 0, 0, 1], second.port()));
-    drop(
-        TcpListener::bind(first)
-            .await
-            .expect("first address must be unused"),
-    );
     let endpoint = RuntimeEndpoint::Dns {
         host: "origin.example.test".into(),
         port: second.port(),

@@ -533,16 +533,14 @@ mod tests {
 
     #[tokio::test]
     async fn tcp_connection_falls_back_to_the_second_resolved_address() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.2:0")
-            .await
-            .expect("second address listener");
+        let first = crate::test_ports::unused_tcp_address();
+        let listener = tokio::net::TcpListener::bind(std::net::SocketAddr::from((
+            [127, 0, 0, 2],
+            first.port(),
+        )))
+        .await
+        .expect("second address listener");
         let second = listener.local_addr().expect("second address");
-        let first = std::net::SocketAddr::from(([127, 0, 0, 1], second.port()));
-        drop(
-            tokio::net::TcpListener::bind(first)
-                .await
-                .expect("first address must be unused"),
-        );
 
         let (connection, address) = connect_addresses(&[first, second])
             .await
