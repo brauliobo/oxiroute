@@ -16,7 +16,7 @@
 
 use async_trait::async_trait;
 use futures::FutureExt;
-use log::{debug, error};
+use log::debug;
 
 use pingora_error::{ErrorType::*, OrErr, Result};
 #[cfg(target_os = "linux")]
@@ -641,35 +641,12 @@ impl Drop for Stream {
         if let Some(t) = self.tracer.as_ref() {
             t.0.on_disconnected();
         }
-        /* use nodelay/local_addr function to detect socket status */
-        let ret = match &self.stream().get_ref().stream {
-            RawStream::Tcp(s) => s.nodelay().err(),
-            #[cfg(unix)]
-            RawStream::Unix(s) => s.local_addr().err(),
-            RawStream::Virtual(_) => {
-                // TODO: should this do something?
-                None
-            }
-        };
-        if let Some(e) = ret {
-            match e.kind() {
-                tokio::io::ErrorKind::Other => {
-                    if let Some(ecode) = e.raw_os_error() {
-                        if ecode == 9 {
-                            // Or we could panic here
-                            error!("Crit: socket {:?} is being double closed", self.stream);
-                        }
-                    }
-                }
-                _ => {
-                    debug!("Socket is already broken {:?}", e);
-                }
-            }
-        } else {
-            // try flush the write buffer. We use now_or_never() because
-            // 1. Drop cannot be async
-            // 2. write should usually be ready, unless the buf is full.
-            let _ = self.flush().now_or_never();
+        // Try to flush the write buffer. We use now_or_never() because
+        // 1. Drop cannot be async
+        // 2. write should usually be ready, unless the buf is full.
+        // A broken socket fails the flush; probing it first would cost a syscall per connection.
+        if let Some(Err(e)) = self.flush().now_or_never() {
+            debug!("Socket is already broken {:?}", e);
         }
         debug!("Dropping socket {:?}", self.stream);
     }
