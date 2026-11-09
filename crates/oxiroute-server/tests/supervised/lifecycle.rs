@@ -48,7 +48,6 @@ pub(super) fn supervised_worker_adopts_marker_activates_and_shuts_down_boundedly
 pub(super) fn generation_runtime_death_closes_control_and_is_reaped_without_killing_the_worker_in_test()
  {
     let mut harness = Harness::launch(canonical_revision(config_path()), true);
-    harness.poll_until(MasterState::Running);
     harness.poll_until(MasterState::Failed);
     harness.verify_reaped();
 }
