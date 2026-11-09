@@ -26,10 +26,12 @@ use rml_rtmp::{
     time::RtmpTimestamp,
 };
 
+#[path = "../../oxiroute-server/tests/support/ports.rs"]
+mod ports;
+
 #[test]
 fn unavailable_push_retries_recovers_bootstraps_and_stays_isolated_in_a_bounded_soak() {
-    let address: SocketAddr = "127.0.0.1:1936".parse().expect("fixed push address");
-    drop(TcpListener::bind(address).expect("port 1936 must begin absent"));
+    let address = ports::unused_address();
     let source_registry = Arc::new(RtmpRegistry::new(capabilities()));
     let target = RtmpPushTarget {
         address,
