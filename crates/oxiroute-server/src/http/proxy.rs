@@ -100,6 +100,9 @@ impl HttpReverseProxy {
     ) -> Option<oxiroute_acme::ChallengeHttpResponse> {
         let store = self.challenge_store.as_ref()?;
         let request = session.req_header();
+        if !ChallengeStore::serves(request.uri.path()) {
+            return None;
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs());
