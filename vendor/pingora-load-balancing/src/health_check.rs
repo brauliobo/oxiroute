@@ -431,7 +431,7 @@ mod test {
     };
 
     use super::*;
-    use crate::{discovery, Backends, SocketAddr};
+    use crate::{discovery, test_servers, Backends, SocketAddr};
     use async_trait::async_trait;
     use http::Extensions;
 
@@ -439,16 +439,18 @@ mod test {
     async fn test_tcp_check() {
         let tcp_check = TcpHealthCheck::default();
 
+        let server = test_servers::redirect_server();
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:80".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
 
         assert!(tcp_check.check(&backend).await.is_ok());
 
+        let refused = test_servers::refused();
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:79".parse().unwrap()),
+            addr: SocketAddr::Inet(refused.addr),
             weight: 1,
             ext: Extensions::new(),
         };
@@ -497,8 +499,9 @@ mod test {
             }
         }));
 
+        let server = test_servers::redirect_server();
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:80".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
@@ -522,7 +525,8 @@ mod test {
             }
         }
 
-        let good_backend = Backend::new("127.0.0.1:79").unwrap();
+        let refused = test_servers::refused();
+        let good_backend = Backend::new(&refused.addr.to_string()).unwrap();
         let new_good_backends = || -> (BTreeSet<Backend>, HashMap<u64, bool>) {
             let mut healthy = HashMap::new();
             healthy.insert(good_backend.hash_key(), true);
