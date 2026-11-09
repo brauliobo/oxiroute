@@ -14,6 +14,7 @@
 
 //! Connecting to servers
 
+mod deferred_watch;
 pub mod http;
 pub mod l4;
 mod offload;
@@ -146,6 +147,7 @@ pub struct TransportConnector {
     bind_to_v4: Vec<SocketAddr>,
     bind_to_v6: Vec<SocketAddr>,
     preferred_http_version: PreferredHttpVersion,
+    deferred_watches: Arc<deferred_watch::DeferredWatches>,
 }
 
 const DEFAULT_POOL_SIZE: usize = 128;
@@ -172,6 +174,7 @@ impl TransportConnector {
             bind_to_v4,
             bind_to_v6,
             preferred_http_version: PreferredHttpVersion::new(),
+            deferred_watches: Arc::new(deferred_watch::DeferredWatches::new()),
         }
     }
 
@@ -243,6 +246,19 @@ impl TransportConnector {
         Some(stream)
     }
 
+    /// The stream's mutex once nothing else holds it. The sweeper of the deferred idle watchers can hold it
+    /// for the instant it takes to see that the connection was picked up.
+    async fn sole_owner(mut stream: Arc<Mutex<Stream>>) -> std::result::Result<Mutex<Stream>, ()> {
+        for _ in 0..16 {
+            match Arc::try_unwrap(stream) {
+                Ok(owned) => return Ok(owned),
+                Err(shared) => stream = shared,
+            }
+            tokio::task::yield_now().await;
+        }
+        Err(())
+    }
+
     async fn take_reusable_stream<P: Peer + Send + Sync>(&self, peer: &P) -> Option<Stream> {
         match self.connection_pool.get(&peer.reuse_hash()) {
             Some(s) => {
@@ -250,7 +266,7 @@ impl TransportConnector {
                 {
                     let _ = s.lock().await;
                 } // wait for the idle poll to release it
-                match Arc::try_unwrap(s) {
+                match Self::sole_owner(s).await {
                     Ok(l) => {
                         let mut stream = l.into_inner();
                         // test_reusable_stream: we assume server would never actively send data
@@ -318,17 +334,30 @@ impl TransportConnector {
         let meta = ConnectionMeta::new(key, id);
         debug!("Try to keepalive client session");
         let stream = Arc::new(Mutex::new(stream));
+        let pool = self.connection_pool.clone(); //clone the arc
+        if deferred_watch::defers(idle_timeout) {
+            let watched = Arc::downgrade(&stream);
+            let (notify_close, watch_use) = pool.put(&meta, stream);
+            if let Some(lifetime) = lifetime {
+                lifetime.notify_reusable();
+            }
+            self.deferred_watches
+                .defer(pool, meta, watched, idle_timeout, notify_close, watch_use);
+            return;
+        }
         let locked_stream = stream.clone().try_lock_owned().unwrap(); // safe as we just created it
-        let (notify_close, watch_use) = self.connection_pool.put(&meta, stream);
+        let (notify_close, watch_use) = pool.put(&meta, stream);
         if let Some(lifetime) = lifetime {
             lifetime.notify_reusable();
         }
-        let pool = self.connection_pool.clone(); //clone the arc
-        let rt = pingora_runtime::current_handle();
-        rt.spawn(async move {
-            pool.idle_poll(locked_stream, &meta, idle_timeout, notify_close, watch_use)
-                .await;
-        });
+        deferred_watch::spawn_idle_poll(
+            pool,
+            locked_stream,
+            meta,
+            idle_timeout,
+            notify_close,
+            watch_use,
+        );
     }
 
     /// Get a stream to the given server [Peer]
@@ -975,6 +1004,45 @@ mod tests {
         assert_eq!(stats.reads.load(Ordering::SeqCst), 1);
         assert_eq!(stats.drops.load(Ordering::SeqCst), 1);
         assert_eq!(peer.identity_checks.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn released_stream_is_not_watched_before_the_sweep_and_is_reused() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = PoolTestPeer::new(30);
+        let (stream, stats) = instrumented_stream(130, TestRead::Pending, None);
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 0);
+
+        let reused = connector
+            .reused_stream(&peer)
+            .await
+            .expect("reusable stream");
+        assert_eq!(reused.id(), 130);
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stream_reused_during_the_sweep_is_not_lost() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = PoolTestPeer::new(31);
+        let (stream, stats) = instrumented_stream(131, TestRead::Pending, None);
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+        tokio::time::sleep(deferred_watch::SWEEP_PERIOD * 3).await;
+        // Past the sweep the watcher is running; the checkout still takes the stream from it.
+        assert!(stats.reads.load(Ordering::SeqCst) >= 1);
+        let reused = connector
+            .reused_stream(&peer)
+            .await
+            .expect("reusable stream");
+        assert_eq!(reused.id(), 131);
     }
 
     #[cfg(unix)]
