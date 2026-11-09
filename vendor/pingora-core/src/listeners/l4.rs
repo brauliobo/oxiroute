@@ -392,6 +392,16 @@ impl ListenerEndpoint {
         self.listen_addr.as_ref()
     }
 
+    /// The address a TCP endpoint listens on, for tests that bind port 0.
+    #[cfg(test)]
+    pub(crate) fn tcp_addr(&self) -> std::net::SocketAddr {
+        match self.listener.as_ref() {
+            Listener::Tcp(tcp) => tcp.local_addr().unwrap(),
+            #[cfg(unix)]
+            Listener::Unix(_) => panic!("a TCP listener"),
+        }
+    }
+
     fn apply_stream_settings(&self, stream: &mut Stream) -> Result<()> {
         // `TCP_NODELAY` is inherited from the listening socket (see `set_listener_nodelay`).
         let Some(op) = self.listen_addr.tcp_sock_opts() else {
@@ -463,11 +473,9 @@ mod test {
 
     #[tokio::test]
     async fn test_listen_tcp() {
-        let addr = "127.0.0.1:7100";
-
         let mut builder = ListenerEndpoint::builder();
 
-        builder.listen_addr(ServerAddress::Tcp(addr.into(), None));
+        builder.listen_addr(ServerAddress::Tcp("127.0.0.1:0".into(), None));
 
         #[cfg(unix)]
         let listener = builder.listen(None).await.unwrap();
@@ -475,6 +483,7 @@ mod test {
         #[cfg(windows)]
         let listener = builder.listen().await.unwrap();
 
+        let addr = listener.tcp_addr();
         tokio::spawn(async move {
             // just try to accept once
             listener.accept().await.unwrap();
@@ -507,9 +516,23 @@ mod test {
             ..Default::default()
         });
 
+        if std::net::TcpListener::bind("[::1]:0").is_err() {
+            eprintln!("skipped: the host has no IPv6 loopback");
+            return;
+        }
+
+        // The IPv4 side of the port is held by a socket that does not listen, so connecting to it is refused,
+        // and an IPv6-only listener can only bind the same port if it leaves IPv4 alone.
+        let v4 = tokio::net::TcpSocket::new_v4().unwrap();
+        v4.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let v4_addr = v4.local_addr().unwrap();
+
         let mut builder = ListenerEndpoint::builder();
 
-        builder.listen_addr(ServerAddress::Tcp("[::]:7101".into(), sock_opt));
+        builder.listen_addr(ServerAddress::Tcp(
+            format!("[::]:{}", v4_addr.port()),
+            sock_opt,
+        ));
 
         #[cfg(unix)]
         let listener = builder.listen(None).await.unwrap();
@@ -518,14 +541,13 @@ mod test {
         let listener = builder.listen().await.unwrap();
 
         tokio::spawn(async move {
-            // just try to accept twice
-            listener.accept().await.unwrap();
+            // just try to accept once
             listener.accept().await.unwrap();
         });
-        tokio::net::TcpStream::connect("127.0.0.1:7101")
+        tokio::net::TcpStream::connect(v4_addr)
             .await
             .expect_err("cannot connect to v4 addr");
-        tokio::net::TcpStream::connect("[::1]:7101")
+        tokio::net::TcpStream::connect(("::1", v4_addr.port()))
             .await
             .expect("can connect to v6 addr");
     }
@@ -533,7 +555,7 @@ mod test {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_listen_uds() {
-        let addr = "/tmp/test_listen_uds";
+        let addr = &crate::connectors::test_utils::unique_uds_path("listen_uds");
 
         let mut builder = ListenerEndpoint::builder();
 
@@ -548,12 +570,12 @@ mod test {
         tokio::net::UnixStream::connect(addr)
             .await
             .expect("can connect to UDS listener");
+        std::fs::remove_file(addr).unwrap();
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn test_tcp_so_reuseport() {
-        let addr = "127.0.0.1:7201";
         let sock_opt = TcpSocketOptions {
             so_reuseport: Some(true),
             ..Default::default()
@@ -561,23 +583,26 @@ mod test {
 
         // Create first listener with SO_REUSEPORT
         let mut builder1 = ListenerEndpoint::builder();
-        builder1.listen_addr(ServerAddress::Tcp(addr.into(), Some(sock_opt.clone())));
+        builder1.listen_addr(ServerAddress::Tcp(
+            "127.0.0.1:0".into(),
+            Some(sock_opt.clone()),
+        ));
         let listener1 = builder1.listen(None).await.unwrap();
+        let addr = listener1.tcp_addr().to_string();
 
         // Create second listener with the same address and SO_REUSEPORT
         // This should succeed because SO_REUSEPORT is enabled
         let mut builder2 = ListenerEndpoint::builder();
-        builder2.listen_addr(ServerAddress::Tcp(addr.into(), Some(sock_opt)));
+        builder2.listen_addr(ServerAddress::Tcp(addr.clone(), Some(sock_opt)));
         let listener2 = builder2.listen(None).await.unwrap();
 
         // Both listeners should be able to bind to the same address
-        assert_eq!(listener1.as_str(), addr);
         assert_eq!(listener2.as_str(), addr);
+        assert_eq!(listener2.tcp_addr(), listener1.tcp_addr());
     }
 
     #[tokio::test]
     async fn test_tcp_so_reuseport_false() {
-        let addr = "127.0.0.1:7202";
         let sock_opt_no_reuseport = TcpSocketOptions {
             so_reuseport: Some(false), // Explicitly disable SO_REUSEPORT
             ..Default::default()
@@ -586,15 +611,19 @@ mod test {
         // Create first listener without SO_REUSEPORT
         let mut builder1 = ListenerEndpoint::builder();
         builder1.listen_addr(ServerAddress::Tcp(
-            addr.into(),
+            "127.0.0.1:0".into(),
             Some(sock_opt_no_reuseport.clone()),
         ));
         let listener1 = builder1.listen(None).await.unwrap();
+        let addr = listener1.tcp_addr().to_string();
 
         // Try to create second listener with the same address and no SO_REUSEPORT
         // This should fail with "address already in use"
         let mut builder2 = ListenerEndpoint::builder();
-        builder2.listen_addr(ServerAddress::Tcp(addr.into(), Some(sock_opt_no_reuseport)));
+        builder2.listen_addr(ServerAddress::Tcp(
+            addr.clone(),
+            Some(sock_opt_no_reuseport),
+        ));
         let result = builder2.listen(None).await;
 
         // The second bind should fail
@@ -607,7 +636,7 @@ mod test {
         );
 
         // Verify the first listener still works
-        assert_eq!(listener1.as_str(), addr);
+        assert_eq!(listener1.tcp_addr().to_string(), addr);
     }
 
     #[cfg(feature = "connection_filter")]
@@ -627,7 +656,7 @@ mod test {
         impl ConnectionFilter for CountingFilter {
             async fn should_accept(&self, _addr: Option<&SocketAddr>) -> bool {
                 let count = self.accept_count.fetch_add(1, Ordering::SeqCst);
-                if count % 2 == 0 {
+                if count.is_multiple_of(2) {
                     true
                 } else {
                     self.reject_count.fetch_add(1, Ordering::SeqCst);
@@ -636,7 +665,6 @@ mod test {
             }
         }
 
-        let addr = "127.0.0.1:7300";
         let accept_count = Arc::new(AtomicUsize::new(0));
         let reject_count = Arc::new(AtomicUsize::new(0));
 
@@ -647,7 +675,7 @@ mod test {
 
         let mut builder = ListenerEndpoint::builder();
         builder
-            .listen_addr(ServerAddress::Tcp(addr.into(), None))
+            .listen_addr(ServerAddress::Tcp("127.0.0.1:0".into(), None))
             .connection_filter(filter);
 
         #[cfg(unix)]
@@ -655,19 +683,25 @@ mod test {
         #[cfg(windows)]
         let listener = builder.listen().await.unwrap();
 
+        let addr = listener.tcp_addr();
         let listener_clone = listener.clone();
         tokio::spawn(async move {
             let _stream1 = listener_clone.accept().await.unwrap();
             let _stream2 = listener_clone.accept().await.unwrap();
         });
 
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
         let _conn1 = tokio::net::TcpStream::connect(addr).await.unwrap();
         let _conn2 = tokio::net::TcpStream::connect(addr).await.unwrap();
         let _conn3 = tokio::net::TcpStream::connect(addr).await.unwrap();
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // the filter runs on the accepting task, so wait until it has seen all three connections
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while accept_count.load(Ordering::SeqCst) < 3 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
 
         assert_eq!(accept_count.load(Ordering::SeqCst), 3);
         assert_eq!(reject_count.load(Ordering::SeqCst), 1);
@@ -693,12 +727,11 @@ mod test {
             }
         }
 
-        let addr = "127.0.0.1:7301";
         let reject_count = Arc::new(AtomicUsize::new(0));
 
         let mut builder = ListenerEndpoint::builder();
         builder
-            .listen_addr(ServerAddress::Tcp(addr.into(), None))
+            .listen_addr(ServerAddress::Tcp("127.0.0.1:0".into(), None))
             .connection_filter(Arc::new(RejectAllFilter {
                 reject_count: reject_count.clone(),
             }));
@@ -708,13 +741,12 @@ mod test {
         #[cfg(windows)]
         let listener = builder.listen().await.unwrap();
 
+        let addr = listener.tcp_addr();
         let listener_clone = listener.clone();
         let _accept_handle = tokio::spawn(async move {
             // This will never return since all connections are rejected
             let _ = listener_clone.accept().await;
         });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
 
         let mut handles = vec![];
         for _ in 0..3 {
