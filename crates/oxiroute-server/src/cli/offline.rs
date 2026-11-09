@@ -1,3 +1,7 @@
+use std::fmt::Write as _;
+
+use oxiroute_config::ConfigWarning;
+
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -14,10 +18,11 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
         Command::Config {
             command: ConfigCommand::Check { config },
         } => {
-            check_config(config)?;
-            Ok(Some(
-                "configuration is valid and runtime-preparable\n".into(),
-            ))
+            let mut report = String::from("configuration is valid and runtime-preparable\n");
+            for warning in check_config(config)? {
+                writeln!(report, "warning: {warning}")?;
+            }
+            Ok(Some(report))
         }
         Command::Config {
             command: ConfigCommand::Compose { format, configs },
@@ -130,18 +135,19 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
     }
 }
 
-fn check_config(path: &Path) -> Result<(), Box<dyn Error>> {
+fn check_config(path: &Path) -> Result<Vec<ConfigWarning>, Box<dyn Error>> {
     let coordinator = CanonicalConfigCoordinator::new(path)?;
     let document = match coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => document,
         ConfigLoadOutcome::Rejected(rejection) => return Err(rejection.message().into()),
     };
+    let warnings = document.validated_config.warnings();
     GenerationManager::new()
         .validate_candidate(*document)
         .map_err(|error| {
             format!("configuration cannot be prepared as a complete runtime generation: {error}")
         })?;
-    Ok(())
+    Ok(warnings)
 }
 
 fn compose_config_files(paths: &[PathBuf], format: ConfigFormat) -> Result<String, Box<dyn Error>> {
