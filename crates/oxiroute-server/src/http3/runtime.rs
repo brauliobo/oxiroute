@@ -14,6 +14,7 @@ pub(crate) const H3_MAX_RESPONSE_BODY_BYTES: u64 = 64 * 1024 * 1024;
 const H3_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Bound for H3 work when the whole process is stopping.
 pub(super) const H3_GRACEFUL_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const H3_CLOSE_GRACE: Duration = Duration::from_secs(1);
 pub(super) const H3_CLOSE_CODE: VarInt = VarInt::from_u32(0x100);
 
 pub struct Http3Runtime {
