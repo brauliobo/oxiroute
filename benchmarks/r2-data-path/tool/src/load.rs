@@ -137,13 +137,16 @@ fn h1_request(
     host: &str,
     padding: &[(String, String)],
     body: &[u8],
+    chunk_bytes: usize,
     keepalive: bool,
 ) -> Vec<u8> {
     let mut request = format!("{method} {path} HTTP/1.1\r\nhost: {host}\r\nuser-agent: r2tool\r\naccept: */*\r\n");
     for (name, value) in padding {
         request.push_str(&format!("{name}: {value}\r\n"));
     }
-    if !body.is_empty() || method == "POST" {
+    if chunk_bytes > 0 {
+        request.push_str("transfer-encoding: chunked\r\n");
+    } else if !body.is_empty() || method == "POST" {
         request.push_str(&format!("content-length: {}\r\n", body.len()));
     }
     request.push_str(if keepalive {
@@ -152,7 +155,16 @@ fn h1_request(
         "connection: close\r\n\r\n"
     });
     let mut bytes = request.into_bytes();
-    bytes.extend_from_slice(body);
+    if chunk_bytes > 0 {
+        for chunk in body.chunks(chunk_bytes) {
+            bytes.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+            bytes.extend_from_slice(chunk);
+            bytes.extend_from_slice(b"\r\n");
+        }
+        bytes.extend_from_slice(b"0\r\n\r\n");
+    } else {
+        bytes.extend_from_slice(body);
+    }
     bytes
 }
 
@@ -266,7 +278,7 @@ fn spec_from(flags: &Flags) -> Spec {
             .get("expect-len")
             .map(|value| value.parse().expect("--expect-len")),
         connector,
-        h1_request: h1_request(&method, &path, &host, &padding, &body, !new_conn),
+        h1_request: h1_request(&method, &path, &host, &padding, &body, flag(flags, "chunk-bytes", 0), !new_conn),
         h2_method: method.parse().expect("method"),
         h2_uri: format!("{scheme}://{host}{path}").parse().expect("uri"),
         h2_headers,

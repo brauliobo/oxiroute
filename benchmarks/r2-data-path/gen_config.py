@@ -147,6 +147,8 @@ def build(args):
         "algorithm": algorithm(args, on),
         "http_versions": {"min": "2", "max": "2"} if on("upstream_h2") else {"min": "1.1", "max": "1.1"},
     }
+    if on("upstream_h2"):
+        pool["tls"] = {"server_name": "origin.example.com", "ca_certificate_path": f"{args.run_dir}/origin.pem"}
     if on("queue"):
         pool["queue_timeout_ms"] = 1000
         pool["queue"] = {

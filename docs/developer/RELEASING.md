@@ -87,6 +87,49 @@ Before creating an archive, verify the version metadata and release notes:
 Read [packaging/arch/README.md](../../packaging/arch/README.md) before changing service permissions,
 recording roots, or package files.
 
+## Release Binaries And PGO
+
+`.github/workflows/release.yml` has a second job, `binaries`, that runs after the archive job and builds the
+`x86_64-unknown-linux-gnu` binaries (`oxiroute`, the `oxr` alias and `oxiroute-worker-launcher`) with
+profile-guided optimization, which cuts user-space instructions per request by 14 to 27%
+([PERF_6_3_BUILD_AND_ALLOCATOR.md](PERF_6_3_BUILD_AND_ALLOCATOR.md)). The job is a thin call of
+`scripts/build-release-binaries.sh VERSION OUT_DIR`, which calls `benchmarks/scripts/pgo.sh`:
+
+1. `pgo.sh train`: instrumented build (`-Cprofile-generate`), replay of ten R2 data-path lanes through the
+   instrumented proxy with `benchmarks/r2-data-path/run.sh --train` (loopback only, no `perf`, so it runs on GitHub
+   runners), `llvm-profdata merge` into one profile.
+2. `pgo.sh build`: release build with `-Cprofile-use` and the same cargo command. It parses the compiler's
+   `-pgo-warn-missing-function` diagnostics and fails when more than 5% of the profile's functions were not matched,
+   so a profile the compiler ignored cannot be published as a PGO build.
+3. `pgo.sh smoke`: `oxiroute config check` of a generated configuration and two lanes of proxied requests through the
+   final binary; any load error fails the job.
+
+The tarball `oxiroute-VERSION-TARGET.tar.gz` (layout of the Arch package: `bin/oxiroute`, `bin/oxr`,
+`lib/oxiroute/oxiroute-worker-launcher`, `LICENSE`, `BUILD-INFO.json`), its `.sha256` and `.build.json` (version,
+commit, `rustc --version`, `pgo`, SHA-256 of the profile) are uploaded as workflow artifacts, attested, and attached to
+the tag's release; a line stating that the binaries are PGO builds is appended to the release notes. A training,
+profile or smoke failure fails the job: there is no silent plain build. A manual run can start with the `pgo` input set
+to `false`, which publishes a plain build and says so in the notes line.
+
+Requirements: the toolchain that trains must be the toolchain that builds. The profile is keyed by symbol names, and
+rustc hashes its own version and the unit configuration into every symbol, so the job installs the pinned Rust 1.97.1
+with the `llvm-tools` component (its `llvm-profdata` reads that compiler's raw format) and nothing else compiles
+between training and the final build. The profile is generated in the job and never committed or archived: the source
+archive, its checksum and `scripts/create-release-archive.sh` are unaffected, and the Arch recipe keeps building from
+source without a profile.
+
+To regenerate locally with the same compiler:
+
+```sh
+export PATH=$HOME/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:$PATH   # rustup component add llvm-tools
+PGO_WORK=/dev/shm/oxiroute-pgo ./scripts/build-release-binaries.sh 6.3.0 /tmp/oxiroute-release
+PGO=0 ./scripts/build-release-binaries.sh 6.3.0 /tmp/oxiroute-plain               # plain build of the same command
+```
+
+`PGO_LANES` and `PGO_SCALE` shorten the training for a local check of the flow; a profile from a shortened or different
+workload still builds and passes the gate but gives less than the 14 to 27%. Release binaries are linked against the
+glibc of the runner image (Ubuntu 24.04); older distributions need the Arch-style source build.
+
 ## GitHub Pages
 
 `.github/workflows/release.yml` runs on version tags, verifies Rust 1.97.1 metadata, version alignment,
