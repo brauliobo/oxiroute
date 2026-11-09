@@ -10,6 +10,7 @@ use oxiroute_config::ConfigDraft;
 use tempfile::TempDir;
 
 use super::*;
+use crate::test_ports::unused_tcp_address;
 
 #[test]
 fn rejects_unbounded_or_inverted_timing() {
@@ -240,10 +241,7 @@ fn reconciliation_projects_structural_candidates_by_explicit_runtime_mode() {
         let candidate = manager.prepare(*document).expect("active prepare");
         manager.activate(&candidate).expect("active generation");
 
-        let free_address = std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("free address")
-            .local_addr()
-            .unwrap();
+        let free_address = unused_tcp_address();
         let mut changed = empty_config();
         changed.stats = Some(oxiroute_config::Stats {
             binds: vec![free_address],
@@ -298,9 +296,7 @@ fn periodic_reconciliation_prepares_native_dependency_changes() {
     let native_directory = directory.path().join("native");
     fs::create_dir(&native_directory).expect("native directory");
     let native_path = native_directory.join("haproxy.cfg");
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener port");
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    let port = unused_tcp_address().port();
     fs::write(&native_path, haproxy_source(port, 5432)).expect("native source");
     let path = directory.path().join("oxiroute.kdl");
     fs::write(&path, "haproxy_server \"native/haproxy.cfg\"\n").expect("root source");
@@ -345,9 +341,7 @@ fn dependency_watch_reconciles_a_deleted_nginx_glob_without_waiting_for_periodic
     let native_directory = directory.path().join("native");
     let sites_directory = native_directory.join("sites-enabled");
     fs::create_dir_all(&sites_directory).expect("native directories");
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener port");
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    let port = unused_tcp_address().port();
     fs::write(
         native_directory.join("nginx.conf"),
         b"events {} http { access_log off; include sites-enabled/*.conf; }",
@@ -447,11 +441,7 @@ fn dependency_watch_rebuilds_for_nginx_glob_add_and_rename() {
     .expect("watcher");
     wait_until_watching(&watcher);
 
-    let first_port = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("first listener")
-        .local_addr()
-        .unwrap()
-        .port();
+    let first_port = unused_tcp_address().port();
     let first = sites_directory.join("first.conf");
     fs::write(
         &first,
@@ -469,11 +459,7 @@ fn dependency_watch_rebuilds_for_nginx_glob_add_and_rename() {
 
     let renamed = sites_directory.join("renamed.conf");
     fs::rename(&first, &renamed).expect("rename glob match");
-    let renamed_port = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("renamed listener")
-        .local_addr()
-        .unwrap()
-        .port();
+    let renamed_port = unused_tcp_address().port();
     fs::write(
         &renamed,
         format!(

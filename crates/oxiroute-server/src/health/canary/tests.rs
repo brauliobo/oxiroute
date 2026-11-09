@@ -7,6 +7,7 @@ use tokio::{
 };
 
 use super::*;
+use crate::test_ports::unused_tcp_address;
 use crate::{AdministrativeState, HealthSupervisor, routing::RuntimeServer};
 
 /// Answers every request with `status` after `delay`; returns its address.
@@ -84,9 +85,7 @@ async fn a_wrong_status_fails_with_the_reason_and_counts() {
 
 #[tokio::test]
 async fn a_refused_connection_fails_and_a_slow_answer_is_slow() {
-    let closed = TcpListener::bind("127.0.0.1:0").await.expect("closed");
-    let address = closed.local_addr().expect("address");
-    drop(closed);
+    let address = unused_tcp_address();
     let refused = runner(address, None, &canary(None));
     refused.run_once().await;
     let snapshot = refused.pool.health_snapshot().canary.expect("canary state");

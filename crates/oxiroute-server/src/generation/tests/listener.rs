@@ -11,10 +11,7 @@ fn public_stats_page_name_collision_fails_before_process_registration() {
         .expect("stats")
         .pages
         .push(oxiroute_config::StatsPage {
-            bind: std::net::TcpListener::bind("127.0.0.1:0")
-                .unwrap()
-                .local_addr()
-                .unwrap(),
+            bind: unused_tcp_address(),
             uri_prefix: "/stats".into(),
             refresh_ms: 1_000,
             admin: oxiroute_config::StatsPageAdminPolicy::Disabled,

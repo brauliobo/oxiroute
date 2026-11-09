@@ -26,6 +26,9 @@ mod upstream_peer;
 mod wire;
 
 #[cfg(test)]
+mod test_ports;
+
+#[cfg(test)]
 #[path = "../../../benchmarks/r3-routing-control/internal/mod.rs"]
 mod r3_bench;
 

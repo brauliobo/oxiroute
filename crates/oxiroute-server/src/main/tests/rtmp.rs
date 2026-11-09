@@ -1,14 +1,13 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::test_ports::unused_tcp_address;
 
 #[test]
 fn rtmp_listener_admission_rolls_back_limits_and_retains_owned_drain_lifetime() {
     let directory = tempfile::tempdir().expect("RTMP generation directory");
     let recording_root = directory.path().join("recordings");
     fs::create_dir(&recording_root).expect("RTMP recording root");
-    let socket = std::net::TcpListener::bind("127.0.0.1:0").expect("RTMP listener address");
-    let listener_address = socket.local_addr().expect("RTMP listener address");
-    drop(socket);
+    let listener_address = unused_tcp_address();
     let mut config = recorder_runtime_config(listener_address, &recording_root);
     config.max_connections = Some(1);
     config.listeners[0].max_connections = Some(1);

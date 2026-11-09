@@ -5,6 +5,7 @@ use oxiroute_config_source::{ConfigFormat, render_config};
 use serde_json::json;
 
 use super::{status::*, *};
+use crate::test_ports::unused_tcp_address;
 
 #[test]
 fn worker_listener_statuses_are_exact_real_snapshots_without_synthesis() {
@@ -73,9 +74,7 @@ fn assert_prepublication_recording_cleanup(branch: &str) {
     let directory = tempfile::tempdir().expect("supervised recording directory");
     let root = directory.path().join("recordings");
     std::fs::create_dir(&root).expect("recording root");
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("RTMP listener probe");
-    let listener_address = listener.local_addr().expect("RTMP listener address");
-    drop(listener);
+    let listener_address = unused_tcp_address();
     let config: ConfigDraft = serde_json::from_value(json!({
         "version": 1,
         "listeners": [{

@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::test_ports::unused_tcp_address;
 
 #[tokio::test]
 async fn generation_runtime_marker_publishes_readiness_after_start_claim() {
@@ -191,9 +192,7 @@ fn active_runtime_death_fails_the_generation_supervisor() {
     let path = directory.path().join("oxiroute.kdl");
     let recording_root = directory.path().join("recordings");
     fs::create_dir(&recording_root).expect("recording root");
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener address");
-    let listener_address = listener.local_addr().expect("listener address");
-    drop(listener);
+    let listener_address = unused_tcp_address();
     let config = recorder_runtime_config(listener_address, &recording_root);
     let (coordinator, manager, generation) = activate_test_generation(&path, &config);
     let ownership = fs::File::open(&recording_root).expect("recording root ownership");
@@ -237,9 +236,7 @@ fn post_activation_watcher_failure_runs_bounded_recorder_cleanup() {
     let path = directory.path().join("oxiroute.kdl");
     let recording_root = directory.path().join("recordings");
     fs::create_dir(&recording_root).expect("recording root");
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener address");
-    let listener_address = listener.local_addr().expect("listener address");
-    drop(listener);
+    let listener_address = unused_tcp_address();
     let config = recorder_runtime_config(listener_address, &recording_root);
     let (coordinator, manager, generation) = activate_test_generation(&path, &config);
     let ownership = fs::File::open(&recording_root).expect("recording root ownership");
@@ -347,9 +344,7 @@ fn candidate_failure_cleanup_detaches_at_its_absolute_deadline() {
     let path = directory.path().join("oxiroute.kdl");
     let recording_root = directory.path().join("recordings");
     fs::create_dir(&recording_root).expect("recording root");
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener address");
-    let listener_address = listener.local_addr().expect("listener address");
-    drop(listener);
+    let listener_address = unused_tcp_address();
     let config = recorder_runtime_config(listener_address, &recording_root);
     fs::write(
         &path,
@@ -430,12 +425,8 @@ fn candidate_cleanup_visits_later_services_after_the_first_shutdown_times_out() 
     let second_root = directory.path().join("second-recordings");
     fs::create_dir(&first_root).expect("first recording root");
     fs::create_dir(&second_root).expect("second recording root");
-    let first_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("first listener");
-    let first_address = first_listener.local_addr().expect("first address");
-    drop(first_listener);
-    let second_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("second listener");
-    let second_address = second_listener.local_addr().expect("second address");
-    drop(second_listener);
+    let first_address = unused_tcp_address();
+    let second_address = unused_tcp_address();
     let mut config = recorder_runtime_config(first_address, &first_root);
     let mut second_service = config.rtmp_services[0].clone();
     second_service.name = "second".into();
@@ -488,16 +479,10 @@ fn candidate_cleanup_visits_later_services_after_the_first_shutdown_times_out() 
     let retry_path = directory.path().join("retry.kdl");
     let mut retry_config = config.clone();
     retry_config.listeners[0].bind = ListenerBind::Socket {
-        address: std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("retry listener")
-            .local_addr()
-            .expect("retry listener address"),
+        address: unused_tcp_address(),
     };
     retry_config.listeners[1].bind = ListenerBind::Socket {
-        address: std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("retry second listener")
-            .local_addr()
-            .expect("retry second listener address"),
+        address: unused_tcp_address(),
     };
     fs::write(
         &retry_path,
