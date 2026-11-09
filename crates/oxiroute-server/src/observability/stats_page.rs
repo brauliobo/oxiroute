@@ -4,6 +4,8 @@
 mod admin_form;
 mod builder;
 mod cache;
+#[cfg(test)]
+mod contract;
 mod csv;
 mod html;
 mod model;
