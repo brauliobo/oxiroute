@@ -185,3 +185,13 @@ creating that token with restrictive permissions.
 After changing a drop-in, run `systemctl daemon-reload` and restart the service. Do not add writable
 access for Certbot or static-content trees unless the configured application explicitly needs to
 modify them.
+
+## Profile-guided builds
+
+This recipe builds from source with whatever `rust>=1.97` the builder has and applies no profile, so the package is a
+plain optimised build (`codegen-units = 1`, fat LTO). The binaries attached to a GitHub release are built with
+profile-guided optimization by the release workflow, which is 14 to 27% cheaper per request. A source build can use
+the same recipe (`scripts/build-release-binaries.sh`, `docs/developer/RELEASING.md`), but only with the compiler that
+trained the profile: the profile is keyed by symbol names that rustc hashes with its own version, and a mismatching
+build ignores it (the script then fails instead of producing a plain binary). The recipe does not set it up and its
+checksums, sources and `makepkg` behaviour are unchanged.
