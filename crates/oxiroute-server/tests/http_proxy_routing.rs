@@ -5250,6 +5250,84 @@ async fn serves_fixed_and_redirect_actions_with_exact_get_and_head_semantics() {
 }
 
 #[tokio::test]
+async fn fixed_responses_have_one_wire_shape_and_keep_the_connection_alive() {
+    timeout(TEST_TIMEOUT, async {
+        let route = HttpRoute {
+            host: None,
+            path: HttpPathSelector::Exact {
+                value: "/fixed".into(),
+            },
+            methods: Vec::new(),
+            access_policy: None,
+            policy: oxiroute_config::HttpRoutePolicy::default(),
+            action: HttpRouteAction::FixedResponse {
+                status: 200,
+                body: "fixed body".into(),
+                headers: vec![
+                    HttpLiteralHeader {
+                        name: "content-type".into(),
+                        value: "text/plain".into(),
+                        always: true,
+                    },
+                    HttpLiteralHeader {
+                        name: "x-fixed".into(),
+                        value: "yes".into(),
+                        always: true,
+                    },
+                ],
+            },
+        };
+        let proxy = ProxyHarness::start(Vec::new(), vec![route], 1024, 1).await;
+        let mut stream = TcpStream::connect(proxy.address)
+            .await
+            .expect("connect to the proxy");
+        for (connection, tail) in [("keep-alive", ""), ("close", "Connection: close\r\n")] {
+            let request = format!(
+                "GET /fixed HTTP/1.1\r\nHost: wire.test\r\nX-Request-Id: wire-7\r\n{tail}\r\n"
+            );
+            stream.write_all(request.as_bytes()).await.expect("send");
+            let mut received = Vec::new();
+            while !received.ends_with(b"fixed body") {
+                let mut chunk = [0_u8; 512];
+                let count = stream.read(&mut chunk).await.expect("read the response");
+                assert_ne!(count, 0, "closed before the body: {received:?}");
+                received.extend_from_slice(&chunk[..count]);
+            }
+            let text = String::from_utf8(received).expect("ASCII response");
+            let (head, body) = text.split_once("\r\n\r\n").expect("head and body");
+            let lines: Vec<_> = head.split("\r\n").collect();
+            assert_eq!(
+                lines[..4],
+                [
+                    "HTTP/1.1 200 OK",
+                    "Content-Type: text/plain",
+                    "x-fixed: yes",
+                    "Content-Length: 10",
+                ]
+            );
+            assert_eq!(lines[4], "x-request-id: wire-7");
+            assert!(
+                lines[5].starts_with("Date: ") && lines[5].ends_with(" GMT"),
+                "{}",
+                lines[5]
+            );
+            assert_eq!(lines[6], format!("Connection: {connection}"));
+            assert_eq!(lines.len(), 7);
+            assert_eq!(body, "fixed body");
+        }
+        let mut rest = Vec::new();
+        stream
+            .read_to_end(&mut rest)
+            .await
+            .expect("closed after the second response");
+        assert!(rest.is_empty());
+        proxy.finish().await;
+    })
+    .await
+    .expect("fixed wire test timed out");
+}
+
+#[tokio::test]
 async fn bearer_access_uses_the_configured_header_without_exposing_the_token() {
     timeout(TEST_TIMEOUT, async {
         let directory = tempfile::tempdir().expect("access token directory");

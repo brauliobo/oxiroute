@@ -27,6 +27,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 LOCK_FILE = "/tmp/oxiroute-bench.lock"
+PERF_EXTRA = [event for event in os.environ.get("R2_PERF_EXTRA", "").split(",") if event]  # e.g. cache-misses:u
 LANE_TIMEOUT = 600  # seconds; a hung load run must never hold the shared bench lock
 SIZES = {"b0": 0, "b1k": 1024, "b64k": 65536, "b1m": 1048576}
 
@@ -338,18 +339,20 @@ def context_switches(path):
         sum(int(value) for value in re.findall(r"^nonvoluntary_ctxt_switches:\s+(\d+)", text, re.M))
 
 
-def thread_busy(before, after, elapsed):
-    """CPU share of the busiest threads over the measured window, as percent of one CPU, highest first."""
+def thread_usage(before, after, elapsed):
+    """(busiest-thread shares as percent of one CPU, kernel share of all proxy CPU time in percent) over the window."""
     ticks = os.sysconf("SC_CLK_TCK")
 
     def usage(path):
         # /proc/PID/task/TID/stat: the command is parenthesised and may hold spaces; utime and stime are fields 14 and 15
         rows = (line.rsplit(")", 1) for line in Path(path).read_text().splitlines())
-        return {line[0].split()[0]: sum(int(value) for value in line[1].split()[11:13]) for line in rows}
+        return {line[0].split()[0]: tuple(int(value) for value in line[1].split()[11:13]) for line in rows}
 
     start, end = usage(before), usage(after)
-    shares = sorted(((end[tid] - start.get(tid, 0)) * 100 / ticks / elapsed for tid in end), reverse=True)
-    return [round(share) for share in shares[:4]]
+    spent = {tid: [now - was for now, was in zip(end[tid], start.get(tid, (0, 0)))] for tid in end}
+    shares = sorted(((user + kernel) * 100 / ticks / elapsed for user, kernel in spent.values()), reverse=True)
+    user, kernel = (sum(times[index] for times in spent.values()) for index in (0, 1))
+    return [round(share) for share in shares[:4]], round(100 * kernel / max(user + kernel, 1))
 
 
 def parse_perf(path):
@@ -374,7 +377,7 @@ def measured_rep(env, rep, idle):
     os.mkfifo(ctl)
     os.mkfifo(ack)
     perf = subprocess.Popen(
-        ["env", "LC_ALL=C", "perf", "stat", "-D", "-1", "-x,", "-e", "instructions:u,cycles:u", "-p", str(env.proxy.pid),
+        ["env", "LC_ALL=C", "perf", "stat", "-D", "-1", "-x,", "-e", ",".join(["instructions:u", "cycles:u", *PERF_EXTRA]), "-p", str(env.proxy.pid),
          "--control", f"fifo:{ctl},{ack}", "-o", str(csv)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     pid = env.proxy.pid
     switches = lambda tag: (f"cat /proc/{pid}/task/*/status > {env.work}/sw{rep}.{tag}; "
@@ -393,11 +396,12 @@ def measured_rep(env, rep, idle):
     switched = context_switches(env.work / f"sw{rep}.b")
     elapsed = float(load["elapsed_ms"]) / 1000
     requests = int(load["ok"])
-    busy = thread_busy(env.work / f"st{rep}.a", env.work / f"st{rep}.b", elapsed)
+    busy, kernel_pct = thread_usage(env.work / f"st{rep}.a", env.work / f"st{rep}.b", elapsed)
     return {
-        "busy": busy,
+        "busy": busy, "kernel_pct": kernel_pct,
         "instr": (counters["instructions"] - idle["instructions"] * elapsed) / requests,
         "cycles": (counters["cycles"] - idle["cycles"] * elapsed) / requests,
+        "extra": {event.split(":")[0]: counters.get(event.split(":")[0], 0) / requests for event in PERF_EXTRA},
         "ctxsw": (switched[0] - switched_before[0]) / requests,
         "nvctxsw": (switched[1] - switched_before[1]) / requests,
         "rps": float(load["rps"]), "p50": int(load["p50_us"]), "p99": int(load["p99_us"]),
@@ -424,11 +428,13 @@ def measure_perf(env, reps):
         "instr_per_req": round(median(column("instr"))), "instr_spread_pct": round(spread(column("instr")), 2),
         "cycles_per_req": round(median(column("cycles"))), "cycles_spread_pct": round(spread(column("cycles")), 2),
         "vctxsw_per_req": round(median(column("ctxsw")), 3), "nvctxsw_per_req": round(median(column("nvctxsw")), 3),
+        **{f"ev_{name}_per_req": round(median([sample["extra"][name] for sample in samples]), 1) for name in samples[0]["extra"]},
         "rps": round(median(column("rps"))), "rps_spread_pct": round(spread(column("rps")), 1),
         "p50_us": round(median(column("p50"))), "p99_us": round(median(column("p99"))),
         "p999_us": round(median(column("p999"))), "connect_p50_us": round(median(column("connect_p50"))),
         "connects": round(median(column("connects"))), "errors": sum(column("errors")), "rss_kb": status["rss_kb"], "hwm_kb": status["hwm_kb"],
         "threads": status["threads"], "fds": status["fds"], "busy_threads_pct": "/".join(map(str, samples[-1]["busy"])),
+        "kernel_cpu_pct": round(median(column("kernel_pct"))),
     }
 
 
@@ -526,7 +532,8 @@ def measure_memory(args, lane):
 def measure_profile(args, lane):
     """perf record sampled by user-space instructions (deterministic attribution), DWARF call graphs."""
     env = Env(args, lane, args.profile_bin)
-    call_graph = [] if args.flat else ["--user-callchains", "--call-graph", "fp" if args.profile_bin else "dwarf,16384"]
+    mode = args.profile_call_graph or ("fp" if args.profile_bin else "dwarf,16384")
+    call_graph = [] if args.flat else ["--user-callchains", "--call-graph", mode]
     ctl, ack = env.work / "ctl", env.work / "ack"
     os.mkfifo(ctl)
     os.mkfifo(ack)
@@ -608,6 +615,9 @@ def main():
     parser.add_argument("--profile-event", default="instructions:u",
                         help="sampled event; cycles:u attributes cache-line stalls that instruction sampling hides")
     parser.add_argument("--flat", action="store_true", help="--profile without call graphs")
+    parser.add_argument("--profile-call-graph", default=None,
+                        help="perf --call-graph mode of --profile (default fp with --profile-bin, else dwarf,16384; "
+                             "lbr uses the CPU branch records)")
     parser.add_argument("--profile-bin", default=os.environ.get("R2_PROFILE_BIN"),
                         help="frame-pointer build used with --call-graph fp (default: --bin, flat profile)")
     parser.add_argument("--profile-requests", type=int, default=3000)

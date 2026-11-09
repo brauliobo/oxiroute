@@ -5,13 +5,16 @@
 //! operator takes the request by `Movable -> Moving` (or `Pinned -> Killing` when forcing). Exactly one
 //! wins, so a request is either moved before anything reached the client or finishes untouched.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU8, AtomicUsize, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU8, AtomicUsize, Ordering},
+    },
+    task::Poll,
 };
 
+use futures_util::task::AtomicWaker;
 use pingora::{Error, ErrorType, proxy::UpstreamCancellation};
-use tokio::sync::Notify;
 
 mod report;
 #[cfg(test)]
@@ -83,7 +86,8 @@ pub(crate) enum Cancellation {
 pub(crate) struct Evacuation {
     state: AtomicU8,
     redispatched: AtomicUsize,
-    notify: Notify,
+    /// The proxy task waiting on the cancellation, at most one at a time.
+    waker: AtomicWaker,
 }
 
 impl Evacuation {
@@ -91,7 +95,7 @@ impl Evacuation {
         Self {
             state: AtomicU8::new(State::Idle.encode()),
             redispatched: AtomicUsize::new(0),
-            notify: Notify::new(),
+            waker: AtomicWaker::new(),
         }
     }
 
@@ -161,21 +165,24 @@ impl Evacuation {
                 State::Pinned(reason) => return Some(Fate::LeftRunning(reason)),
             };
             if self.transition(state, next).is_ok() {
-                self.notify.notify_one();
+                self.waker.wake();
                 return Some(fate);
             }
         }
     }
 
-    /// Resolves once the operator cancelled the attempt. A permit left over from an earlier
-    /// cancellation only wakes the loop, which checks the state again.
+    /// Resolves once the operator cancelled the attempt.
     pub(crate) fn cancellation(self: &Arc<Self>) -> UpstreamCancellation {
         let handle = Arc::clone(self);
-        Box::pin(async move {
-            while !handle.load().cancelled() {
-                handle.notify.notified().await;
+        Box::pin(std::future::poll_fn(move |context| {
+            if !handle.load().cancelled() {
+                handle.waker.register(context.waker());
             }
-            Error::new_in(EVACUATED)
-        })
+            if handle.load().cancelled() {
+                Poll::Ready(Error::new_in(EVACUATED))
+            } else {
+                Poll::Pending
+            }
+        }))
     }
 }

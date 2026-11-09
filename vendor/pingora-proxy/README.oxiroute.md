@@ -38,6 +38,22 @@ task handoffs and response batches, the cancellable upstream attempt, and compat
   batch writer. Cache singleton responses also use inline storage. The two plain HTTP/1 task pumps
   use borrowed, stack-owned, four-slot SPSC channels; H2, custom-message, custom-session, and
   subrequest channels are unchanged.
+- `proxy_trait.rs` declares the hooks as `fn ... -> impl Future<Output = ...> + Send` (return-position
+  `impl Trait` in traits) instead of `#[async_trait]`: an implementation still writes `async fn`, and a hook is
+  awaited inside the future of the request instead of being boxed (and its state copied to the heap) for every call.
+  A hook default with no body of its own is an `async move` block that returns at once.
+- `lib.rs` `HttpProxy` implements `HttpServerApp::process_new_http_inline` (see `pingora-core`); `process_new_http`
+  delegates to it.
+- `lib.rs` `handle_new_request` waits for one shutdown signal while it reads a request head: the watch its owner
+  shares for a connection that is between requests, the service `Notify` for the first request. It used to register
+  both for every request.
+- `proxy_h1_inline.rs` relays an HTTP/1 request that has no body, upgrade or cache involvement
+  (`HttpProxy::relays_bodyless`) in one loop: the end of the empty body goes through the same two body filters, the
+  upstream session is read for the response tasks, up to four tasks that are ready are filtered by `h1_response_filter`
+  and written as one batch, and a client that closes before the response ends the request (the idle read of
+  `proxy_handle_downstream`). `proxy_1to1` uses it before creating the channels; everything else keeps the two-future
+  pump. The result, the filters and their order, the error mapping (a failed upstream read or request end becomes a
+  `HttpTask::Failed`) and the downstream reuse decision are the pump's.
 - `spsc.rs` implements the safe fixed-capacity handoff with inline queue storage, single sender and
   receiver ownership, cancellation-safe reservation, close/drop wakeups, and panic-safe queued-value
   destruction.

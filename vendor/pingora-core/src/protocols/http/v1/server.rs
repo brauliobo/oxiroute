@@ -30,7 +30,14 @@ use regex::bytes::Regex;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::body::{BodyReader, BodyWriter};
+/// Header slots a parsed request map has beyond the headers it arrived with, for the request id and the
+/// headers route policy adds, so that adding them does not regrow and rehash the map.
+const REQUEST_HEADER_HEADROOM: usize = 4;
+
+/// The most a connection keeps of the buffer its rendered responses are assembled in.
+const RENDERED_RESPONSE_BUF_KEEP: usize = 64 * 1024;
+
+use super::body::{BodyMode, BodyReader, BodyWriter};
 use super::common::*;
 use crate::protocols::http::{body_buffer::FixedBuffer, date, HttpTask};
 use crate::protocols::{Digest, SocketAddr, Stream};
@@ -92,6 +99,9 @@ pub struct HttpSession {
     /// Number of times the upstream connection associated with this session can be reused
     /// after this session ends
     keepalive_reuses_remaining: Option<u32>,
+
+    /// Reused between responses written by `write_rendered_response()`
+    rendered_response_buf: BytesMut,
 }
 
 impl HttpSession {
@@ -135,6 +145,7 @@ impl HttpSession {
             // default on to avoid rejecting requests after body as pipelined
             close_on_response_before_downstream_finish: true,
             keepalive_reuses_remaining: None,
+            rendered_response_buf: BytesMut::new(),
         }
     }
 
@@ -239,9 +250,9 @@ impl HttpSession {
 
             // Use loop as GOTO to retry escaped request buffer, not a real loop
             loop {
-                let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-                let mut req = httparse::Request::new(&mut headers);
-                let parsed = parse_req_buffer(&mut req, &buf);
+                let mut slots = header_slots();
+                let mut req = httparse::Request::new(&mut []);
+                let parsed = parse_req_buffer(&mut req, &buf, &mut slots);
                 match parsed {
                     HeaderParseState::Complete(s) => {
                         self.raw_header = Some(BufRef(0, s));
@@ -260,7 +271,7 @@ impl HttpSession {
                             req.method.unwrap_or(""),
                             // we path httparse to allow unsafe bytes in the str
                             req.path.unwrap_or("").as_bytes(),
-                            Some(req.headers.len()),
+                            Some(req.headers.len() + REQUEST_HEADER_HEADROOM),
                         )?);
 
                         request_header.set_version(match req.version {
@@ -548,16 +559,13 @@ impl HttpSession {
         }
 
         // no need to add these headers to 1xx responses
-        if !header.status.is_informational() && self.update_resp_headers {
-            /* update headers */
+        let connection_value = (!header.status.is_informational() && self.update_resp_headers)
+            .then(|| self.connection_value());
+        // A response without a case-preserving map gets them while it is serialized, so the map is
+        // not grown for them; any of the two it already holds are replaced by the serializer.
+        let inline_automatic = connection_value.filter(|_| !header.has_case());
+        if let (Some(connection_value), None) = (connection_value, inline_automatic) {
             header.insert_header(header::DATE, date::get_cached_date())?;
-
-            // TODO: make these lazy static
-            let connection_value = if self.will_keepalive() {
-                "keep-alive"
-            } else {
-                "close"
-            };
             header.insert_header(header::CONNECTION, connection_value)?;
         }
 
@@ -620,8 +628,10 @@ impl HttpSession {
         let flush = header.status.is_informational()
             || header.headers.get(header::CONTENT_LENGTH).is_none();
 
-        let mut write_buf = BytesMut::with_capacity(INIT_HEADER_BUF_SIZE);
-        http_resp_header_to_buf(&header, &mut write_buf).unwrap();
+        let mut write_buf = std::mem::take(&mut self.rendered_response_buf);
+        write_buf.clear();
+        write_buf.reserve(INIT_HEADER_BUF_SIZE);
+        http_resp_header_to_buf(&header, &mut write_buf, inline_automatic).unwrap();
         match self.underlying_stream.write_all(&write_buf).await {
             Ok(()) => {
                 // flush the stream if 1xx header or there is no response body
@@ -633,10 +643,95 @@ impl HttpSession {
                 }
                 self.response_written = Some(header);
                 self.body_bytes_sent += write_buf.len();
+                self.keep_rendered_response_buf(write_buf);
                 Ok(())
             }
             Err(e) => Error::e_because(WriteError, "writing response header", e),
         }
+    }
+
+    fn connection_value(&self) -> &'static str {
+        if self.will_keepalive() {
+            "keep-alive"
+        } else {
+            "close"
+        }
+    }
+
+    fn keep_rendered_response_buf(&mut self, buf: BytesMut) {
+        if buf.capacity() <= RENDERED_RESPONSE_BUF_KEEP {
+            self.rendered_response_buf = buf;
+        }
+    }
+
+    /// Writes a complete response of a known length in one buffer and one flush: `rendered_head` is
+    /// the status line and the static header lines, already serialized, and the Content-Length among
+    /// them is the length of `body` (or of the body a `HEAD` request leaves out). The request id, the
+    /// `Date` and the `Connection` lines follow, as `write_response_header()` adds them.
+    ///
+    /// Only for final statuses with a body framed by Content-Length (not 1xx, 204, 205 or 304) and
+    /// without a `Transfer-Encoding`, `Date` or `Connection` among the rendered headers.
+    pub async fn write_rendered_response(
+        &mut self,
+        status: http::StatusCode,
+        rendered_head: &[u8],
+        request_id: Option<&HeaderValue>,
+        body: &[u8],
+    ) -> Result<()> {
+        if self.response_written.is_some() {
+            warn!("Respond header is already sent, cannot send again");
+            return Ok(());
+        }
+        if self.close_on_response_before_downstream_finish
+            && (self.request_header.is_none() || !self.is_body_done())
+        {
+            self.set_keepalive(None);
+        }
+
+        let mut buf = std::mem::take(&mut self.rendered_response_buf);
+        buf.clear();
+        buf.reserve(rendered_head.len() + body.len() + 128);
+        buf.put_slice(rendered_head);
+        if let Some(id) = request_id {
+            buf.put_slice(b"x-request-id: ");
+            buf.put_slice(id.as_bytes());
+            buf.put_slice(CRLF);
+        }
+        if self.update_resp_headers {
+            buf.put_slice(b"Date: ");
+            date::put_cached_date(&mut buf);
+            buf.put_slice(CRLF);
+            buf.put_slice(b"Connection: ");
+            buf.put_slice(self.connection_value().as_bytes());
+            buf.put_slice(CRLF);
+        }
+        buf.put_slice(CRLF);
+        buf.put_slice(body);
+
+        let write_timeout = self.write_timeout(buf.len());
+        let write = async {
+            self.underlying_stream.write_all(&buf).await?;
+            self.underlying_stream.flush().await
+        };
+        let written = match write_timeout {
+            Some(t) => match timeout(t, write).await {
+                Ok(result) => result,
+                Err(_) => {
+                    return Error::e_explain(
+                        WriteTimedout,
+                        format!("writing response, timeout: {t:?}"),
+                    )
+                }
+            },
+            None => write.await,
+        };
+        written.or_err(WriteError, "writing response")?;
+
+        self.body_writer.body_mode = BodyMode::Complete(body.len());
+        self.body_bytes_sent += buf.len();
+        self.response_written = Some(Box::new(ResponseHeader::build_no_case(status, Some(0))?));
+        self.keep_rendered_response_buf(buf);
+        Ok(())
     }
 
     /// Return the response header if it is already sent.
@@ -1376,23 +1471,32 @@ fn escape_illegal_request_line(buf: &BytesMut) -> Option<BytesMut> {
 }
 
 #[inline]
-fn parse_req_buffer<'buf>(
-    req: &mut httparse::Request<'_, 'buf>,
+fn parse_req_buffer<'buf, 'h>(
+    req: &mut httparse::Request<'h, 'buf>,
     buf: &'buf [u8],
+    slots: &'h mut HeaderSlots<'buf>,
 ) -> HeaderParseState {
     use httparse::Result;
 
     #[cfg(feature = "patched_http1")]
-    fn parse<'buf>(req: &mut httparse::Request<'_, 'buf>, buf: &'buf [u8]) -> Result<usize> {
+    fn parse<'buf, 'h>(
+        req: &mut httparse::Request<'h, 'buf>,
+        buf: &'buf [u8],
+        _slots: &'h mut HeaderSlots<'buf>,
+    ) -> Result<usize> {
         req.parse_unchecked(buf)
     }
 
     #[cfg(not(feature = "patched_http1"))]
-    fn parse<'buf>(req: &mut httparse::Request<'_, 'buf>, buf: &'buf [u8]) -> Result<usize> {
-        req.parse(buf)
+    fn parse<'buf, 'h>(
+        req: &mut httparse::Request<'h, 'buf>,
+        buf: &'buf [u8],
+        slots: &'h mut HeaderSlots<'buf>,
+    ) -> Result<usize> {
+        req.parse_with_uninit_headers(buf, slots)
     }
 
-    let res = match parse(req, buf) {
+    let res = match parse(req, buf, slots) {
         Ok(s) => s,
         Err(e) => {
             return HeaderParseState::Invalid(e);
@@ -1405,9 +1509,31 @@ fn parse_req_buffer<'buf>(
 }
 
 #[inline]
+/// The names `pingora_http` writes in title case for a header map without a case-preserving name map.
+fn titled_name(name: &http::HeaderName) -> &str {
+    match *name {
+        header::ACCEPT_RANGES => "Accept-Ranges",
+        header::AGE => "Age",
+        header::CACHE_CONTROL => "Cache-Control",
+        header::CONNECTION => "Connection",
+        header::CONTENT_TYPE => "Content-Type",
+        header::CONTENT_ENCODING => "Content-Encoding",
+        header::CONTENT_LENGTH => "Content-Length",
+        header::DATE => "Date",
+        header::TRANSFER_ENCODING => "Transfer-Encoding",
+        header::HOST => "Host",
+        header::SERVER => "Server",
+        header::SET_COOKIE => "Set-Cookie",
+        _ => name.as_str(),
+    }
+}
+
+/// `automatic` is the `Connection` value of a response that also gets a `Date`: both are written after
+/// the other headers, and a copy of either in `resp` is left out.
 fn http_resp_header_to_buf(
     resp: &ResponseHeader,
     buf: &mut BytesMut,
+    automatic: Option<&str>,
 ) -> std::result::Result<(), ()> {
     // Status-Line
     let version = match resp.version {
@@ -1430,7 +1556,26 @@ fn http_resp_header_to_buf(
 
     // headers
     // TODO: style: make sure Server and Date headers are the first two
-    resp.header_to_h1_wire(buf);
+    match automatic {
+        None => resp.header_to_h1_wire(buf),
+        Some(connection) => {
+            for (name, value) in resp.headers.iter() {
+                if name == header::DATE || name == header::CONNECTION {
+                    continue;
+                }
+                let name = titled_name(name);
+                buf.put_slice(name.as_bytes());
+                buf.put_slice(HEADER_KV_DELIMITER);
+                buf.put_slice(value.as_bytes());
+                buf.put_slice(CRLF);
+            }
+            buf.put_slice(b"Date: ");
+            date::put_cached_date(buf);
+            buf.put_slice(b"\r\nConnection: ");
+            buf.put_slice(connection.as_bytes());
+            buf.put_slice(CRLF);
+        }
+    }
 
     buf.put_slice(CRLF);
     Ok(())
@@ -1619,6 +1764,53 @@ mod tests_stream {
                 assert!(write_tasks(&mut session, api, tasks).await.unwrap());
             }
         }
+    }
+
+    #[tokio::test]
+    async fn rendered_response_is_one_write_with_the_request_id() {
+        let request = b"GET / HTTP/1.1\r\n\r\n";
+        let head = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n";
+        let id = HeaderValue::from_static("rq-1");
+        let expected: &[u8] =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nx-request-id: rq-1\r\n\r\nabc";
+        let mock_io = Builder::new().read(request).write(expected).build();
+        let mut session = HttpSession::new(Box::new(mock_io));
+        session.read_request().await.unwrap();
+        session.update_resp_headers = false;
+        session
+            .write_rendered_response(StatusCode::OK, head, Some(&id), b"abc")
+            .await
+            .unwrap();
+        assert_eq!(session.response_written().unwrap().status, StatusCode::OK);
+        assert_eq!(session.body_bytes_sent(), expected.len());
+        assert!(session.body_writer.finished());
+        assert!(session.will_keepalive());
+        session.finish_body().await.unwrap();
+    }
+
+    #[test]
+    fn automatic_headers_replace_the_response_copies_and_follow_the_other_headers() {
+        let mut response = ResponseHeader::build_no_case(StatusCode::OK, None).unwrap();
+        response.insert_header("Connection", "upgrade").unwrap();
+        response.insert_header("X-Kept", "1").unwrap();
+        response.insert_header("Date", "stale").unwrap();
+        response
+            .insert_header("Content-Type", "text/plain")
+            .unwrap();
+        let mut wire = BytesMut::new();
+        http_resp_header_to_buf(&response, &mut wire, Some("keep-alive")).unwrap();
+        let text = String::from_utf8(wire.to_vec()).unwrap();
+        let lines: Vec<_> = text.split("\r\n").collect();
+        assert_eq!(
+            lines[..3],
+            ["HTTP/1.1 200 OK", "x-kept: 1", "Content-Type: text/plain"]
+        );
+        assert!(
+            lines[3].starts_with("Date: ") && lines[3].ends_with(" GMT"),
+            "{}",
+            lines[3]
+        );
+        assert_eq!(lines[4..], ["Connection: keep-alive", "", ""]);
     }
 
     #[tokio::test]
@@ -3139,7 +3331,7 @@ mod test_sync {
         let mut new_response = ResponseHeader::build(StatusCode::OK, None).unwrap();
         new_response.append_header("Foo", "Bar").unwrap();
         let mut wire = BytesMut::with_capacity(INIT_HEADER_BUF_SIZE);
-        http_resp_header_to_buf(&new_response, &mut wire).unwrap();
+        http_resp_header_to_buf(&new_response, &mut wire, None).unwrap();
         debug!("{}", str::from_utf8(wire.as_ref()).unwrap());
         let mut headers = [httparse::EMPTY_HEADER; 128];
         let mut resp = httparse::Response::new(&mut headers);
