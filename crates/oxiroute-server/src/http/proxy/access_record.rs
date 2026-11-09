@@ -3,6 +3,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use std::sync::Arc;
+
 use pingora::proxy::Session;
 
 use super::{HttpActionPlan, HttpRequestContext, normalized_request_host};
@@ -48,11 +50,8 @@ pub(super) fn build<'a>(
         reason: trace.failure_reason.unwrap_or("").into(),
         request_id: request_id.map(Safe::from),
         rescued: ctx.rescued,
-        route: ctx
-            .route
-            .as_ref()
-            .map(|route| route.route_id.as_str().into()),
-        server: trace.servers.last().map(|server| server.as_str().into()),
+        route: ctx.route.as_ref().map(|route| (&*route.route_id).into()),
+        server: trace.servers.last().map(|server| (&**server).into()),
         servers: tried_servers(&trace.servers).map(Safe::from),
         service: service.into(),
         status: response_status,
@@ -80,10 +79,10 @@ fn idempotency_key(ctx: &HttpRequestContext, session: &Session) -> Option<String
 }
 
 /// Every server tried, comma separated; the single-attempt case borrows.
-fn tried_servers(servers: &[String]) -> Option<Cow<'_, str>> {
+fn tried_servers(servers: &[Arc<str>]) -> Option<Cow<'_, str>> {
     match servers {
         [] => None,
-        [only] => Some(Cow::Borrowed(only)),
+        [only] => Some(Cow::Borrowed(&**only)),
         many => Some(Cow::Owned(many.join(","))),
     }
 }

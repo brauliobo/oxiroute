@@ -146,7 +146,7 @@ impl ProxyHttp for HttpReverseProxy {
         };
         ctx.authority = authority;
         if let Some(inflight) = &ctx.inflight {
-            inflight.set_route(&route.route_id);
+            inflight.place_route(Arc::clone(&route.route_id));
         }
         ctx.route = Some(Arc::clone(&route));
         session.set_total_drain_timeout(Some(
@@ -273,11 +273,12 @@ impl ProxyHttp for HttpReverseProxy {
             }
             ctx.trace.queue_wait += now.saturating_duration_since(selection_started);
             ctx.trace.attempt_started = Some(now);
-            ctx.trace.servers.push(selected.server_name().to_owned());
+            let server: Arc<str> = selected.server_name().into();
+            ctx.trace.servers.push(Arc::clone(&server));
             ctx.trace.stats = Some(Arc::clone(selected.server_stats()));
             if let Some(inflight) = &ctx.inflight {
-                inflight.set_pool(pool.selector().name());
-                inflight.set_server(selected.server_name());
+                inflight.place_pool(Arc::clone(pool.label()));
+                inflight.place_server(server);
                 selected.observe_queue_position(inflight.queue_cell());
                 inflight.set_phase(Phase::Connecting, now);
             }

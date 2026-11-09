@@ -61,7 +61,7 @@ use crate::{
 };
 
 use crate::http::evacuation::{Cancellation, EVACUATED, LeftRunning, is_evacuated};
-use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};
+use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase};
 use crate::http::request_id::{REQUEST_ID_HEADER, stamp_request, stamp_response};
 use crate::observability::upstream_stats::{AttemptOutcome, EvacuationResult, ServerStats};
 
@@ -164,7 +164,7 @@ pub struct HttpRequestContext {
 /// What the access log and per-server counters need to know about the attempts of one request.
 #[derive(Default)]
 struct AttemptTrace {
-    servers: Vec<String>,
+    servers: Vec<Arc<str>>,
     failure_reason: Option<&'static str>,
     budget_spent: std::sync::atomic::AtomicBool,
     queue_wait: Duration,
@@ -218,15 +218,14 @@ impl HttpRequestContext {
                 .headers
                 .get(name)
                 .and_then(|value| value.to_str().ok())
-                .map(inflight::bounded_text)
         };
         self.inflight = Some(
             inflight::registry().register(InflightArrival {
                 request_id: header(&REQUEST_ID_HEADER).unwrap_or_default(),
-                listener: self.listener.name().to_owned(),
+                listener: self.listener.shared_name(),
                 method: request.method.clone(),
                 host: header(&HOST),
-                path: bounded_path(request.uri.path()),
+                path: request.uri.path(),
                 client_ip: session
                     .client_addr()
                     .and_then(|address| address.as_inet())
@@ -281,7 +280,7 @@ impl HttpRequestContext {
             self.attempted_upstreams.clear();
             self.pool = Some(rescue_pool);
         }
-        let route = proxy_route(self).route_id.clone();
+        let route = Arc::clone(&proxy_route(self).route_id);
         debug!(
             "rescuing route {route} status {status} after {} tries",
             self.attempt_count()

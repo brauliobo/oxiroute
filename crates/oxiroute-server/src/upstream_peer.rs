@@ -55,6 +55,8 @@ pub(crate) struct UpstreamPlan {
     connection_reuse: UpstreamConnectionReuse,
     h3: Option<Arc<H3UpstreamPlan>>,
     http_version: HttpVersion,
+    /// The pool's name, shared with the records that say where a request is.
+    label: Arc<str>,
     selector: Arc<RoundRobinPool>,
     server_timeout: Option<Duration>,
     tls: Option<Arc<UpstreamTlsPlan>>,
@@ -71,6 +73,7 @@ impl UpstreamPlan {
             connection_reuse: UpstreamConnectionReuse::Safe,
             h3: None,
             http_version: HttpVersion::Http11,
+            label: selector.name().into(),
             selector,
             server_timeout: None,
             tls,
@@ -111,6 +114,7 @@ impl UpstreamPlan {
             connection_reuse,
             h3,
             http_version,
+            label: selector.name().into(),
             selector,
             server_timeout,
             tls,
@@ -126,6 +130,10 @@ impl UpstreamPlan {
 
     pub(crate) const fn unavailable_response(&self) -> &UnavailableResponse {
         &self.unavailable
+    }
+
+    pub(crate) fn label(&self) -> &Arc<str> {
+        &self.label
     }
 
     pub(crate) fn selector(&self) -> &Arc<RoundRobinPool> {

@@ -95,7 +95,7 @@ fn compile_http_route(
             })?)
         }
     };
-    let route_id = route.route.route_id().to_owned();
+    let route_id = Arc::from(route.route.route_id());
     let plan = Arc::new(HttpRoutePlan {
         access,
         action,

@@ -557,7 +557,7 @@ impl RuntimeMetrics {
             .iter()
             .filter_map(|id| listeners.states.get(id).map(|state| (id, state)))
             .find(|(id, listener)| {
-                listener.name == name
+                &*listener.name == name
                     && listener.metric_policy == ListenerMetricPolicy::Public
                     && matches!(id, ListenerId::Traffic(_) | ListenerId::Legacy(_))
             })
@@ -568,7 +568,7 @@ impl RuntimeMetrics {
                     .iter()
                     .filter_map(|id| listeners.states.get(id))
                     .find(|listener| {
-                        listener.name == name
+                        &*listener.name == name
                             && listener.metric_policy == ListenerMetricPolicy::Public
                     })
             })
