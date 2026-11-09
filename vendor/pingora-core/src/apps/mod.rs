@@ -20,10 +20,10 @@ pub mod prometheus_http_app;
 use crate::server::ShutdownWatch;
 use async_trait::async_trait;
 use log::{debug, error};
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
-use std::any::Any;
 
 use crate::protocols::http::v2::server;
 use crate::protocols::http::ServerSession;
