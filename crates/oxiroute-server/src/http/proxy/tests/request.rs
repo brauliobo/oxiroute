@@ -582,3 +582,32 @@ fn a_request_without_a_client_close_keeps_its_connection_header_untouched() {
     remove_downstream_close(&mut bare).expect("untouched");
     assert!(bare.headers.get(CONNECTION).is_none());
 }
+
+#[test]
+fn a_preserved_host_is_the_host_header_of_an_origin_form_request_and_the_authority_otherwise() {
+    let endpoint = RuntimeEndpoint::Socket {
+        address: "127.0.0.1:9".parse().expect("address"),
+    };
+    let policy = HttpUpstreamHost::PreserveIncoming;
+    let mut origin_form = pingora::http::RequestHeader::build("GET", b"/x", None).expect("request");
+    origin_form
+        .insert_header("host", "Example.test:8080")
+        .expect("host");
+    let authority = request_authority(&origin_form).expect("authority");
+    let host = selected_upstream_host_for(&origin_form, &endpoint, &policy, authority.as_ref())
+        .expect("host");
+    assert_eq!(host, Some(HeaderValue::from_static("Example.test:8080")));
+
+    let mut absolute = pingora::http::RequestHeader::build("GET", b"/x", None).expect("request");
+    absolute.set_uri("http://other.test/x".parse().expect("uri"));
+    let authority = request_authority(&absolute).expect("authority");
+    let host = selected_upstream_host_for(&absolute, &endpoint, &policy, authority.as_ref())
+        .expect("host");
+    assert_eq!(host, Some(HeaderValue::from_static("other.test")));
+
+    let none = pingora::http::RequestHeader::build("GET", b"/x", None).expect("request");
+    assert_eq!(
+        selected_upstream_host_for(&none, &endpoint, &policy, None).expect("host"),
+        None
+    );
+}

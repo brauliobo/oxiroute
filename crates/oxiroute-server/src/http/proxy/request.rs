@@ -206,6 +206,23 @@ pub(crate) fn selected_upstream_host(
     }
 }
 
+/// [`selected_upstream_host`] for a request that is at hand: an origin-form request whose host is passed on
+/// as it came has its `Host` value, already built, instead of a copy made from the parsed authority.
+pub(super) fn selected_upstream_host_for(
+    request: &pingora::http::RequestHeader,
+    endpoint: &RuntimeEndpoint,
+    policy: &HttpUpstreamHost,
+    incoming: Option<&Authority>,
+) -> pingora::Result<Option<HeaderValue>> {
+    if matches!(policy, HttpUpstreamHost::PreserveIncoming)
+        && incoming.is_some()
+        && request.uri.authority().is_none()
+    {
+        return Ok(request.headers.get(HOST).cloned());
+    }
+    selected_upstream_host(endpoint, policy, incoming)
+}
+
 pub(super) fn apply_request_header_mutations(
     request: &mut pingora::http::RequestHeader,
     ctx: &HttpRequestContext,

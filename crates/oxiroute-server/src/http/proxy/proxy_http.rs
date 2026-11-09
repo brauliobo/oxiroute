@@ -284,7 +284,8 @@ impl ProxyHttp for HttpReverseProxy {
                 selected.observe_queue_position(inflight.queue_cell());
                 inflight.set_phase(Phase::Connecting, now);
             }
-            ctx.selected_upstream_host = selected_upstream_host(
+            ctx.selected_upstream_host = selected_upstream_host_for(
+                session.req_header(),
                 selected.endpoint(),
                 &proxy_policy(ctx).upstream_host,
                 ctx.authority.as_ref(),
