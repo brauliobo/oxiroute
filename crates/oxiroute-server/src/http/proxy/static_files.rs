@@ -116,9 +116,7 @@ pub(super) async fn write_static_file_with_status(
     if !session.is_body_empty() {
         session.set_close_on_response_before_downstream_finish(true);
     }
-    session
-        .write_response_header(Box::new(response), head || length == 0)
-        .await?;
+    write_response_header_with_id(session, Box::new(response), head || length == 0).await?;
     if head || length == 0 {
         return Ok(());
     }

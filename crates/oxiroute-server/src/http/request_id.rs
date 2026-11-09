@@ -1,5 +1,4 @@
 use std::{
-    io::Write as _,
     sync::{
         OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -7,9 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use async_trait::async_trait;
 use http::{HeaderName, HeaderValue};
-use pingora::modules::http::{HttpModule, HttpModuleBuilder, Module};
 
 use crate::observability::logging::valid_correlation_id;
 
@@ -42,12 +39,21 @@ fn boot_tag() -> u32 {
     })
 }
 
+/// Lowercase hex of `value` into `out`, most significant digit first, zero padded to the width of `out`.
+fn write_hex(out: &mut [u8], mut value: u64) {
+    for digit in out.iter_mut().rev() {
+        *digit = b"0123456789abcdef"[(value & 0xf) as usize];
+        value >>= 4;
+    }
+}
+
 /// `rq-`, boot tag and sequence: fixed width, so it renders without allocating.
 fn generated_request_id() -> HeaderValue {
     static SEQUENCE: AtomicU64 = AtomicU64::new(1);
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed) & 0xffff_ffff_ffff;
-    let mut id = [0; 24];
-    write!(&mut id[..], "rq-{:08x}-{sequence:012x}", boot_tag()).expect("fixed width id");
+    let mut id = *b"rq-00000000-000000000000";
+    write_hex(&mut id[3..11], u64::from(boot_tag()));
+    write_hex(&mut id[12..], sequence);
     HeaderValue::from_bytes(&id).expect("ASCII id")
 }
 
@@ -68,88 +74,49 @@ pub(crate) fn idempotency_header_or_default(configured: Option<&HeaderName>) -> 
     configured.cloned().unwrap_or(DEFAULT_IDEMPOTENCY_HEADER)
 }
 
-pub(crate) struct RequestIdBuilder;
-
-impl HttpModuleBuilder for RequestIdBuilder {
-    fn init(&self) -> Module {
-        Box::new(RequestIdModule { id: None })
-    }
-
-    fn order(&self) -> i16 {
-        // Pingora negates the order to sort, so `i16::MIN` itself would overflow.
-        i16::MIN + 1
-    }
+/// Tags the request before routing, so every attempt and every response, including proxied ones, shares one
+/// id; returns the id for the response side.
+pub(crate) fn stamp_request(
+    request: &mut pingora::http::RequestHeader,
+) -> pingora::Result<HeaderValue> {
+    let id = resolve_request_id(request.headers.get(&REQUEST_ID_HEADER));
+    request.insert_header(REQUEST_ID_HEADER_NAME, id.clone())?;
+    Ok(id)
 }
 
-/// Tags the request before routing so every attempt and every response, including proxied ones, shares one id.
-struct RequestIdModule {
-    id: Option<HeaderValue>,
-}
-
-#[async_trait]
-impl HttpModule for RequestIdModule {
-    async fn request_header_filter(
-        &mut self,
-        request: &mut pingora::http::RequestHeader,
-    ) -> pingora::Result<()> {
-        let value = resolve_request_id(request.headers.get(&REQUEST_ID_HEADER));
-        request.insert_header(REQUEST_ID_HEADER_NAME, value.clone())?;
-        self.id = Some(value);
-        Ok(())
+/// Gives the response the request's id; one the upstream sent moves to `x-upstream-request-id` when it differs.
+pub(crate) fn stamp_response(
+    response: &mut pingora::http::ResponseHeader,
+    id: &HeaderValue,
+) -> pingora::Result<()> {
+    if let Some(upstream) = response.remove_header(&REQUEST_ID_HEADER)
+        && upstream != *id
+    {
+        response.insert_header(UPSTREAM_REQUEST_ID_HEADER, upstream)?;
     }
-
-    async fn response_header_filter(
-        &mut self,
-        response: &mut pingora::http::ResponseHeader,
-        _end_of_stream: bool,
-    ) -> pingora::Result<()> {
-        let Some(id) = &self.id else {
-            return Ok(());
-        };
-        if let Some(upstream) = response.headers.remove(&REQUEST_ID_HEADER)
-            && upstream != *id
-        {
-            response
-                .headers
-                .insert(UPSTREAM_REQUEST_ID_HEADER, upstream);
-        }
-        // A unique value never matches an HPACK table entry; "never indexed" keeps it out of the table, so the
-        // HTTP/2 encoder neither inserts it nor evicts the entries the other headers reuse.
-        let mut id = id.clone();
-        id.set_sensitive(true);
-        response.insert_header(REQUEST_ID_HEADER_NAME, id)?;
-        Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
+    // A unique value never matches an HPACK table entry; "never indexed" keeps it out of the table, so the
+    // HTTP/2 encoder neither inserts it nor evicts the entries the other headers reuse.
+    let mut id = id.clone();
+    id.set_sensitive(true);
+    response.insert_header(REQUEST_ID_HEADER_NAME, id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn the_response_id_is_never_indexed_by_hpack_and_replaces_the_upstream_one() {
-        let mut module = RequestIdModule { id: None };
+    #[test]
+    fn the_response_id_is_never_indexed_by_hpack_and_replaces_the_upstream_one() {
         let mut request = pingora::http::RequestHeader::build("GET", b"/", None).unwrap();
-        module.request_header_filter(&mut request).await.unwrap();
+        let id = stamp_request(&mut request).unwrap();
         let mut response = pingora::http::ResponseHeader::build(200, None).unwrap();
         response
             .insert_header("x-request-id", "upstream-1")
             .unwrap();
-        module
-            .response_header_filter(&mut response, true)
-            .await
-            .unwrap();
-        let id = &response.headers[&REQUEST_ID_HEADER];
-        assert!(id.is_sensitive());
-        assert_eq!(id, &request.headers[&REQUEST_ID_HEADER]);
+        stamp_response(&mut response, &id).unwrap();
+        let stamped = &response.headers[&REQUEST_ID_HEADER];
+        assert!(stamped.is_sensitive());
+        assert_eq!(stamped, &request.headers[&REQUEST_ID_HEADER]);
         assert_eq!(response.headers[&UPSTREAM_REQUEST_ID_HEADER], "upstream-1");
     }
 
@@ -188,6 +155,19 @@ mod tests {
         let parts: Vec<_> = first.split('-').collect();
         assert_eq!((parts[0], parts[1].len(), parts[2].len()), ("rq", 8, 12));
         assert!(valid_correlation_id(first));
+    }
+
+    #[test]
+    fn generated_ids_render_the_boot_tag_and_the_sequence_as_padded_hex() {
+        let id = generated_request_id();
+        let text = id.to_str().expect("ASCII id");
+        assert_eq!(&text[3..11], format!("{:08x}", boot_tag()));
+        assert!(u64::from_str_radix(&text[12..], 16).is_ok());
+        let mut digits = [0; 4];
+        write_hex(&mut digits, 0xbeef_1234);
+        assert_eq!(&digits, b"1234");
+        write_hex(&mut digits, 0x2f);
+        assert_eq!(&digits, b"002f");
     }
 
     #[test]
