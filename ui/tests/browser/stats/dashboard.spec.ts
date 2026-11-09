@@ -156,6 +156,15 @@ test.describe('stats dashboard on a wide screen', () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0)
   })
 
+  test('keeps check and downtime times on one line without scrolling sideways in a 1280 px window', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await serve(page, [dashboardDocument(0)])
+    await page.goto('/stats.html')
+    await expect(page.getByRole('table', { name: /^Pools with their servers/ })).toBeVisible()
+    expect(await page.locator('td.ox-nowrap .ox-sub').first().evaluate((e) => getComputedStyle(e).whiteSpace)).toBe('nowrap')
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0)
+  })
+
   test('follows a dark colour scheme', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' })
     await serve(page, [dashboardDocument(0)])
