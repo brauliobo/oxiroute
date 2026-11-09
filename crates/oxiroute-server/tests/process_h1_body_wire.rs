@@ -299,6 +299,41 @@ async fn an_origin_that_closes_inside_the_request_body_gives_a_bad_gateway() {
 }
 
 #[tokio::test]
+async fn an_answer_sent_before_the_origin_closed_inside_the_upload_still_reaches_the_client() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("origin accept");
+        let mut buffer = [0_u8; 4096];
+        let mut seen = 0;
+        while seen < 6000 {
+            seen += stream.read(&mut buffer).await.unwrap();
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .unwrap();
+    });
+    let origin = Origin {
+        address,
+        requests: Captured::default(),
+    };
+    let wire = Wire::over(origin, big_bodies).await;
+    let mut client = TcpStream::connect(wire.proxy).await.expect("connect");
+    client.write_all(post(300_000).as_bytes()).await.unwrap();
+    let body = patterned(300_000);
+    let upload = tokio::spawn(async move {
+        let _ = client.write_all(&body).await;
+        client
+    });
+    let mut client = upload.await.unwrap();
+    let (head, body) = read_response(&mut client).await;
+    assert_eq!(status(&head), "HTTP/1.1 200 OK");
+    assert_eq!(body, b"ok");
+    wire.finish();
+}
+
+#[tokio::test]
 async fn a_client_that_aborts_the_upload_aborts_the_origin_request() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
     let address = listener.local_addr().unwrap();

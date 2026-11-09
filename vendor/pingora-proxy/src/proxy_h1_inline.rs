@@ -28,8 +28,9 @@ enum Event {
 struct Exchange {
     /// The client sent all of its request body (or its end was seen), so only a close is waited for.
     reading_done: bool,
-    /// The request body reached the end on the upstream, or the upstream refused to take more of it. It implies
-    /// `reading_done`, which is what the wait on the client looks at.
+    /// The request body reached the end on the upstream, or the upstream failed to take more of it. It implies
+    /// `reading_done`: a client that goes on uploading after the upstream gave up on the request is not drained, its
+    /// extra data ends the exchange (the idle read of a finished body fails on data).
     request_done: bool,
     /// The upstream response ended (or an upgraded connection ended on the client side).
     response_done: bool,
@@ -218,7 +219,7 @@ where
             }
             Err(e) => {
                 warn!("send error, draining read buf: {e}");
-                // The upstream takes no more of the request: stop reading the client and wait for its answer.
+                // The upstream takes no more of the request: stop reading the client and wait for the answer.
                 exchange.request_done = true;
                 exchange.reading_done = true;
                 exchange.send_error = Some(e);
