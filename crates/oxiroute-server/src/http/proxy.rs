@@ -39,8 +39,8 @@ use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http::action::{
-        AccessLog, AffinityRequest, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan,
-        ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget, StaticFile,
+        AccessLog, AffinityRequest, FixedResponsePlan, HttpActionPlan, HttpGzipPlan, HttpRoutePlan,
+        ProxyActionPlan, ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget, StaticFile,
         StaticRequestDecision, StaticServeError, StaticTarget,
     },
     http::cache::{
@@ -61,7 +61,7 @@ use crate::{
 
 use crate::http::evacuation::{Cancellation, EVACUATED, LeftRunning, is_evacuated};
 use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};
-use crate::http::request_id::{REQUEST_ID_HEADER, RequestIdBuilder};
+use crate::http::request_id::{REQUEST_ID_HEADER, stamp_request, stamp_response};
 use crate::observability::upstream_stats::{AttemptOutcome, EvacuationResult, ServerStats};
 
 pub struct HttpReverseProxy {
@@ -100,6 +100,9 @@ impl HttpReverseProxy {
     ) -> Option<oxiroute_acme::ChallengeHttpResponse> {
         let store = self.challenge_store.as_ref()?;
         let request = session.req_header();
+        if !ChallengeStore::serves(request.uri.path()) {
+            return None;
+        }
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs());
@@ -152,6 +155,7 @@ pub struct HttpRequestContext {
     cache_response_handled: bool,
     trace: AttemptTrace,
     inflight: Option<InflightGuard>,
+    request_id: Option<HeaderValue>,
 }
 
 /// What the access log and per-server counters need to know about the attempts of one request.
@@ -211,7 +215,7 @@ impl HttpRequestContext {
                 .headers
                 .get(name)
                 .and_then(|value| value.to_str().ok())
-                .map(|value| value.chars().take(inflight::MAX_PATH_BYTES).collect())
+                .map(inflight::bounded_text)
         };
         self.inflight = Some(
             inflight::registry().register(InflightArrival {
@@ -231,9 +235,10 @@ impl HttpRequestContext {
         );
     }
 
-    fn observe(&mut self, session: &Session) {
+    /// `now` is the caller's reading of the clock for this step.
+    fn observe(&mut self, session: &Session, now: Instant) {
         if let Some(inflight) = &self.inflight {
-            inflight.progress();
+            inflight.progress(now);
         }
         observe_counter(
             &self.listener,

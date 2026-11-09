@@ -15,6 +15,7 @@ of each per-request feature. Wall-clock numbers on a shared host are unreliable,
 | `tool/` | `r2tool`: in-tree upstream (0 B, 1 KiB, 64 KiB, 1 MiB, chunked, slow, sink, upgrade echo, TCP echo) and a fixed-count load generator (h1, h1+TLS, h2c, h2+TLS, WebSocket-style upgrade, TCP echo; keep-alive or new connection per request; header padding; request bodies; p50/p99/p99.9). `alloc_count.c` is an `LD_PRELOAD` shim counting allocator and `clock_gettime` calls. |
 | `table.py` | Compact table of a `results.json`, optionally with instruction deltas against a previous run. |
 | `profile_summary.py` | Component and symbol summary of a `--profile` `perf.data`. |
+| `memcpy_profile.py` | Copies of 48 bytes or more per request, by caller (`tool/memcpy_profile.c` preloaded): shows async state machines moved to the heap or into another future. |
 
 ## Method
 
@@ -35,7 +36,8 @@ of each per-request feature. Wall-clock numbers on a shared host are unreliable,
   sampling skids onto the instruction after long-latency atomics, so lock-heavy libc spots are over-weighted).
   With `--profile-bin` pointing at a frame-pointer build (`RUSTFLAGS='-C force-frame-pointers=yes'`) it records
   `--call-graph fp`, and `perf report --children` gives inclusive costs. DWARF unwinding is not permitted by
-  `perf_event_paranoid=2`.
+  `perf_event_paranoid=2`. `--profile-call-graph MODE` overrides the mode (`lbr` needs a CPU and kernel that allow
+  branch-stack sampling of user space, which a virtualised host often does not).
 * Every timed section runs under `flock /tmp/oxiroute-bench.lock`. Ports are taken from `20300-20499` (the
   ephemeral range overlaps it, so a block is probed first). Everything binds `127.0.0.1`.
 * The proxy runs with `OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME=1` (single process, no supervisor); the data-path code

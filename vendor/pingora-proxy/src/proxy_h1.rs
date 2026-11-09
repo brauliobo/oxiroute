@@ -131,6 +131,10 @@ where
             }
         }
 
+        if Self::relays_bodyless(session) {
+            return self.proxy_1to1_bodyless(session, client_session, ctx).await;
+        }
+
         let mut downstream_custom_message_writer = session
             .downstream_session
             .as_custom_mut()
@@ -631,7 +635,7 @@ where
         Ok(reuse_downstream)
     }
 
-    async fn h1_response_filter(
+    pub(crate) async fn h1_response_filter(
         &self,
         session: &mut Session,
         mut task: HttpTask,
@@ -1072,7 +1076,6 @@ mod pump_saturation_tests {
 
     struct PumpProxy;
 
-    #[async_trait]
     impl ProxyHttp for PumpProxy {
         type CTX = ();
 
@@ -1316,7 +1319,6 @@ mod request_preparation_tests {
 
     struct DefaultProxy;
 
-    #[async_trait]
     impl ProxyHttp for DefaultProxy {
         type CTX = ();
 

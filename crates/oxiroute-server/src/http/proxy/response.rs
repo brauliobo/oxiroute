@@ -29,6 +29,24 @@ pub(super) async fn respond_error(
     session.write_error_response(response, body).await
 }
 
+/// Writes a response header built here, with the request's id on it, as the response of a request filter
+/// action: nothing after this point adds it.
+pub(super) async fn write_response_header_with_id(
+    session: &mut Session,
+    mut response: Box<pingora::http::ResponseHeader>,
+    end_of_stream: bool,
+) -> pingora::Result<()> {
+    if let Some(id) = session
+        .req_header()
+        .headers
+        .get(&REQUEST_ID_HEADER)
+        .cloned()
+    {
+        stamp_response(&mut response, &id)?;
+    }
+    session.write_response_header(response, end_of_stream).await
+}
+
 /// Error responses bypass Pingora's response modules, so they copy the id the request filter set.
 fn stamp_request_id(
     session: &Session,

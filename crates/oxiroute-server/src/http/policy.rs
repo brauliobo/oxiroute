@@ -241,6 +241,20 @@ pub(crate) enum ResponsePolicyError {
     InvalidCookie,
 }
 
+/// The headers a proxy never forwards (RFC 9110 section 7.6.1), apart from the ones `Connection` nominates.
+fn is_hop_by_hop(name: &HeaderName) -> bool {
+    matches!(
+        *name,
+        CONNECTION
+            | PROXY_AUTHENTICATE
+            | PROXY_AUTHORIZATION
+            | TE
+            | TRAILER
+            | TRANSFER_ENCODING
+            | UPGRADE
+    ) || matches!(name.as_str(), "keep-alive" | "proxy-connection")
+}
+
 pub(crate) fn decide_response_headers(
     status: StatusCode,
     headers: &HeaderMap,
@@ -252,7 +266,8 @@ pub(crate) fn decide_response_headers(
     // Only cookie rewriting reads the headers as they are after the decisions, so only it needs a copy.
     let mut resulting = rewrites_cookies.then(|| headers.clone());
     let mut decisions = Vec::new();
-    if remove_hop_by_hop {
+    // `Connection` is one of them, so without any there are no nominations either.
+    if remove_hop_by_hop && headers.keys().any(is_hop_by_hop) {
         let mut nominations = Vec::new();
         for value in headers.get_all(CONNECTION) {
             let value = value

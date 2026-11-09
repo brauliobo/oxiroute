@@ -222,11 +222,17 @@ impl TimerManager {
 
     // False if the clock is already started
     // If true, the caller must start the clock thread next
+    #[cfg(test)]
     pub(crate) fn should_i_start_clock(&self) -> bool {
-        let Err(prev) = self.is_clock_running() else {
+        self.should_i_start_clock_at(Instant::now())
+    }
+
+    // Same, for a caller that already read the clock.
+    pub(crate) fn should_i_start_clock_at(&self, instant: Instant) -> bool {
+        let now = instant.duration_since(self.zero).as_secs() as i64;
+        let Err(prev) = self.clock_running_at(now) else {
             return false;
         };
-        let now = Instant::now().duration_since(self.zero).as_secs() as i64;
         let res =
             self.clock_watchdog
                 .compare_exchange(prev, now, Ordering::SeqCst, Ordering::SeqCst);
@@ -235,8 +241,12 @@ impl TimerManager {
 
     // Ok(()) if clock is running (watch dog is within DELAYS_SEC of now)
     // Err(time) if watch do stopped at `time`
+    #[cfg(test)]
     pub(crate) fn is_clock_running(&self) -> Result<(), i64> {
-        let now = Instant::now().duration_since(self.zero).as_secs() as i64;
+        self.clock_running_at(Instant::now().duration_since(self.zero).as_secs() as i64)
+    }
+
+    fn clock_running_at(&self, now: i64) -> Result<(), i64> {
         let prev = self.clock_watchdog.load(Ordering::SeqCst);
         if now < prev + DELAYS_SEC {
             Ok(())
@@ -249,6 +259,11 @@ impl TimerManager {
     ///
     /// When the timer expires, the [TimerStub] will be notified.
     pub fn register_timer(&self, duration: Duration) -> TimerStub {
+        self.register_timer_at(Instant::now(), duration)
+    }
+
+    /// [Self::register_timer()] for a caller that already read the clock.
+    pub fn register_timer_at(&self, instant: Instant, duration: Duration) -> TimerStub {
         if self.is_paused_for_fork() {
             // Return a dummy TimerStub that will trigger right away.
             // This is fine assuming pause_for_fork() is called right before fork().
@@ -261,7 +276,7 @@ impl TimerManager {
         }
         // The clock thread now sleeps to the exact due time instead of ticking on a 10 ms grid, so
         // round the sub-millisecond part up: a timer must never fire before its duration.
-        let now: Time = (Instant::now() + duration - self.zero + Duration::from_millis(1)).into();
+        let now: Time = (instant + duration - self.zero + Duration::from_millis(1)).into();
         {
             let timers = self.timers.get_or(|| RwLock::new(BTreeMap::new())).read();
             if let Some(t) = timers.get(&now) {

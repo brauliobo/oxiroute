@@ -400,7 +400,7 @@ pub(super) async fn write_cached_response(
     }
     let head = session.req_header().method == Method::HEAD;
     let end = head || body_forbidden || response.body.is_empty();
-    session.write_response_header(Box::new(header), end).await?;
+    write_response_header_with_id(session, Box::new(header), end).await?;
     if !end {
         session
             .write_response_body(Some(response.body.clone()), true)

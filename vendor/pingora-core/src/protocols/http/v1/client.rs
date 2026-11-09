@@ -14,6 +14,10 @@
 
 //! HTTP/1.x client session
 
+/// Header slots a parsed response map has beyond the headers it arrived with, for the request id and the
+/// headers route policy adds, so that adding them does not regrow and rehash the map.
+const RESPONSE_HEADER_HEADROOM: usize = 3;
+
 use bytes::{BufMut, Bytes, BytesMut};
 use http::{header, header::AsHeaderName, HeaderValue, StatusCode, Version};
 use log::{debug, trace};
@@ -53,6 +57,8 @@ pub struct HttpSession {
     keepalive_timeout: KeepaliveStatus,
     pub(crate) digest: Box<Digest>,
     response_header: Option<Box<ResponseHeader>>,
+    // What keepalive and framing need once `response_header` went to the caller of `read_resp_header_parts`.
+    response_facts: Option<ResponseFacts>,
     request_written: Option<RequestMetadata>,
     // Preserve extension and resource lifetime for the legacy owned write API.
     _request_written_owned: Option<Box<RequestHeader>>,
@@ -69,6 +75,33 @@ pub struct HttpSession {
     // If allowed, does not fail with error on invalid content-length
     // (treats as close-delimited response).
     allow_h1_response_invalid_content_length: bool,
+}
+
+/// The parts of a response header the session still reads after the header moved to the caller.
+#[derive(Debug)]
+struct ResponseFacts {
+    status: StatusCode,
+    version: Version,
+    connection: Option<HeaderValue>,
+    keep_alive: Option<HeaderValue>,
+    transfer_encoding: bool,
+}
+
+impl From<&ResponseHeader> for ResponseFacts {
+    fn from(response: &ResponseHeader) -> Self {
+        let connection = response.headers.get(header::CONNECTION).cloned();
+        // Only a `Connection: keep-alive` response is asked for its `Keep-Alive` parameters.
+        let keep_alive = connection
+            .as_ref()
+            .and_then(|_| response.headers.get("Keep-Alive").cloned());
+        Self {
+            status: response.status,
+            version: response.version,
+            connection,
+            keep_alive,
+            transfer_encoding: response.headers.contains_key(header::TRANSFER_ENCODING),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -108,6 +141,7 @@ impl HttpSession {
             body_writer: BodyWriter::new(),
             keepalive_timeout: KeepaliveStatus::Off,
             response_header: None,
+            response_facts: None,
             request_written: None,
             _request_written_owned: None,
             read_timeout: None,
@@ -320,9 +354,9 @@ impl HttpSession {
                 }
             };
             already_read += n;
-            let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-            let mut resp = httparse::Response::new(&mut headers);
-            let parsed = parse_resp_buffer(&mut resp, &buf);
+            let mut slots = header_slots();
+            let mut resp = httparse::Response::new(&mut []);
+            let parsed = parse_resp_buffer(&mut resp, &buf, &mut slots);
             match parsed {
                 HeaderParseState::Complete(s) => {
                     self.raw_header = Some(BufRef(0, s));
@@ -336,7 +370,7 @@ impl HttpSession {
 
                     let mut response_header = Box::new(ResponseHeader::build_no_case(
                         resp.code.unwrap(),
-                        Some(resp.headers.len()),
+                        Some(resp.headers.len() + RESPONSE_HEADER_HEADROOM),
                     )?);
 
                     // TODO: enforce https://datatracker.ietf.org/doc/html/rfc9110#section-15.2
@@ -429,16 +463,51 @@ impl HttpSession {
         }
     }
 
-    /// Similar to [`Self::read_response()`], read the response header and then return a copy of it.
+    /// Similar to [`Self::read_response()`], read the response header and then return it. The header moves
+    /// to the caller: [`Self::resp_header()`] and [`Self::get_header()`] no longer see it, the session keeps
+    /// the status, version and the headers keepalive depends on.
     pub async fn read_resp_header_parts(&mut self) -> Result<Box<ResponseHeader>> {
         self.read_response().await?;
-        // safe to unwrap because it is just read
-        Ok(Box::new(self.resp_header().unwrap().clone()))
+        let header = self
+            .response_header
+            .take()
+            .expect("response header was just read");
+        self.response_facts = Some(ResponseFacts::from(&*header));
+        Ok(header)
     }
 
-    /// Return a reference of the [`ResponseHeader`] if the response is read
+    /// Return a reference of the [`ResponseHeader`] if the response is read and not yet taken by
+    /// [`Self::read_resp_header_parts()`]
     pub fn resp_header(&self) -> Option<&ResponseHeader> {
         self.response_header.as_deref()
+    }
+
+    fn resp_version(&self) -> Option<Version> {
+        match (&self.response_header, &self.response_facts) {
+            (Some(header), _) => Some(header.version),
+            (None, facts) => facts.as_ref().map(|facts| facts.version),
+        }
+    }
+
+    fn resp_connection(&self) -> Option<&HeaderValue> {
+        match (&self.response_header, &self.response_facts) {
+            (Some(header), _) => header.headers.get(header::CONNECTION),
+            (None, facts) => facts.as_ref().and_then(|facts| facts.connection.as_ref()),
+        }
+    }
+
+    fn resp_keep_alive(&self) -> Option<&HeaderValue> {
+        match (&self.response_header, &self.response_facts) {
+            (Some(header), _) => header.headers.get("Keep-Alive"),
+            (None, facts) => facts.as_ref().and_then(|facts| facts.keep_alive.as_ref()),
+        }
+    }
+
+    fn resp_has_transfer_encoding(&self) -> bool {
+        match (&self.response_header, &self.response_facts) {
+            (Some(header), _) => header.headers.contains_key(header::TRANSFER_ENCODING),
+            (None, facts) => facts.as_ref().is_some_and(|facts| facts.transfer_encoding),
+        }
     }
 
     /// Get the header value for the given header name from the response header
@@ -458,7 +527,10 @@ impl HttpSession {
 
     /// Return the status code of the response if read
     pub fn get_status(&self) -> Option<StatusCode> {
-        self.response_header.as_ref().map(|h| h.status)
+        match (&self.response_header, &self.response_facts) {
+            (Some(header), _) => Some(header.status),
+            (None, facts) => facts.as_ref().map(|facts| facts.status),
+        }
     }
 
     async fn do_read_body(&mut self) -> Result<Option<BufRef>> {
@@ -577,12 +649,7 @@ impl HttpSession {
 
         // Per [RFC 9112 Section 6.1-16](https://datatracker.ietf.org/doc/html/rfc9112#section-6.1-16),
         // if Transfer-Encoding is received in HTTP/1.0 response, connection MUST be closed after processing.
-        if self.resp_header().map(|h| h.version) == Some(Version::HTTP_10)
-            && self
-                .resp_header()
-                .and_then(|h| h.headers.get(header::TRANSFER_ENCODING))
-                .is_some()
-        {
+        if self.resp_version() == Some(Version::HTTP_10) && self.resp_has_transfer_encoding() {
             self.set_keepalive(None);
             return;
         }
@@ -597,7 +664,7 @@ impl HttpSession {
             } else {
                 self.set_keepalive(None);
             }
-        } else if self.resp_header().map(|h| h.version) == Some(Version::HTTP_11) {
+        } else if self.resp_version() == Some(Version::HTTP_11) {
             self.set_keepalive(Some(0)); // on by default for http 1.1
         } else {
             self.set_keepalive(None); // off by default for http 1.0
@@ -618,7 +685,7 @@ impl HttpSession {
         match request_keepalive {
             // ignore what the server sends if request disables keepalive explicitly
             Some(false) => Some(false),
-            _ => is_buf_keepalive(self.get_header(header::CONNECTION)),
+            _ => is_buf_keepalive(self.resp_connection()),
         }
     }
 
@@ -627,7 +694,7 @@ impl HttpSession {
     /// it's behavior is different on different platforms.
     /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Keep-Alive
     fn get_keepalive_values(&self) -> (Option<u64>, Option<usize>) {
-        let Some(keep_alive_header) = self.get_header("Keep-Alive") else {
+        let Some(keep_alive_header) = self.resp_keep_alive() else {
             return (None, None);
         };
 
@@ -879,14 +946,15 @@ impl HttpSession {
 }
 
 #[inline]
-fn parse_resp_buffer<'buf>(
-    resp: &mut httparse::Response<'_, 'buf>,
+fn parse_resp_buffer<'buf, 'h>(
+    resp: &mut httparse::Response<'h, 'buf>,
     buf: &'buf [u8],
+    slots: &'h mut HeaderSlots<'buf>,
 ) -> HeaderParseState {
     let mut parser = httparse::ParserConfig::default();
     parser.allow_spaces_after_header_name_in_responses(true);
     parser.allow_obsolete_multiline_headers_in_responses(true);
-    let res = match parser.parse_response(resp, buf) {
+    let res = match parser.parse_response_with_uninit_headers(resp, buf, slots) {
         Ok(s) => s,
         Err(e) => {
             return HeaderParseState::Invalid(e);
