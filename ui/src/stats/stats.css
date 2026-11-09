@@ -188,6 +188,7 @@ kbd {
 .ox-admin-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ox-gap) 1.25rem; }
 .ox-admin-controls p { margin: 0; }
 .ox-admin-result { margin: 0; }
+.ox-admin > div:empty { margin-top: calc(-1 * var(--ox-gap)); } /* live regions stay in the DOM but take no room */
 
 /* Dialogs (native <dialog>: the browser draws the backdrop and traps focus) */
 .ox-dialog {
@@ -228,16 +229,29 @@ kbd {
 }
 .ox-placeholder { margin: 0; padding: 2rem 0; color: var(--ox-muted); text-align: center; }
 
-/* Narrow screens: one control per row, larger touch targets */
+/* Narrow screens: a two-column grid of controls (chips scroll sideways), larger touch targets */
 @media (max-width: 720px) {
   body { font-size: 15px; }
   .ox-app { padding: 0.5rem; }
   .ox-exports { margin-left: 0; }
-  .ox-toolbar { flex-direction: column; align-items: stretch; }
-  .ox-field label { min-width: 6.5rem; }
+  .ox-toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; padding: 0.5rem; }
+  .ox-toolbar > * { min-width: 0; }
+  .ox-search, .ox-chips, .ox-toolbar > .ox-field:has(.ox-btn) { grid-column: 1 / -1; }
+  .ox-toolbar > .ox-field:has(> label:not(.ox-sr-only)) { flex-direction: column; align-items: stretch; gap: 0.15rem; }
+  .ox-toolbar > .ox-field:has(> label:not(.ox-sr-only)) .ox-input { flex: none; }
+  .ox-toolbar > .ox-field:has(#ox-sort) { grid-column: 1 / -1; flex-direction: row; align-items: center; }
+  .ox-toolbar > .ox-field:has(#ox-sort) .ox-input { flex: 1 1 9rem; }
+  .ox-chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 0.25rem; }
+  .ox-chips > * { flex: none; }
+  .ox-toolbar > .ox-chip-problems { grid-column: 1 / -1; }
+  .ox-admin-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  .ox-admin-controls > p, .ox-admin-controls > .ox-field:has(.ox-btn) { grid-column: 1 / -1; }
+  .ox-admin-controls > .ox-field:has(> label) { flex-direction: column; align-items: stretch; gap: 0.15rem; }
+  .ox-admin-controls .ox-input { flex: none; }
+  .ox-field label { min-width: 0; }
   .ox-field .ox-input { flex: 1 1 9rem; min-width: 0; }
   .ox-search { flex-basis: auto; }
-  .ox-input, .ox-btn, .ox-chip { min-height: 2.75rem; }
+  .ox-input, .ox-btn, .ox-chip { min-height: 2.5rem; }
   .ox-btn { flex: 1; }
   .ox-banner .ox-btn, .ox-dialog .ox-btn { flex: none; }
   .ox-shortcut { grid-template-columns: 3.5rem 1fr; }
