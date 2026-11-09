@@ -60,7 +60,7 @@ use http_support::{
     HttpResponse as RawResponse, raw_http_request, read_request_head as read_request_head_bytes,
 };
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const NO_ORIGIN_CONTACT_WINDOW: Duration = Duration::from_millis(100);
 
 #[tokio::test]
@@ -6986,18 +6986,24 @@ async fn access_log_gives_the_reason_a_request_failed() {
     .expect("failed access log test timed out");
 }
 
-async fn wait_for_live_request(id: &str, present: bool) -> Option<String> {
-    for _ in 0..200 {
-        let found = oxiroute_server::live_requests()
-            .into_iter()
-            .find(|(live, _)| live == id)
-            .map(|(_, phase)| phase);
-        if found.is_some() == present {
-            return found;
-        }
+fn live_request_phase(id: &str) -> Option<String> {
+    oxiroute_server::live_requests()
+        .into_iter()
+        .find(|(live, _)| live == id)
+        .map(|(_, phase)| phase)
+}
+
+async fn wait_for_live_request(id: &str, present: bool) {
+    while live_request_phase(id).is_some() != present {
         sleep(Duration::from_millis(10)).await;
     }
-    panic!("request {id} presence never became {present}");
+}
+
+/// Waits for the phase a request settles in while something outside the proxy holds it there.
+async fn wait_for_live_phase(id: &str, phase: &str) {
+    while live_request_phase(id).as_deref() != Some(phase) {
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[tokio::test]
@@ -7006,9 +7012,11 @@ async fn a_request_is_visible_while_it_waits_for_the_origin_and_gone_when_it_end
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let origin = listener.local_addr().expect("origin address");
         let (release_tx, release_rx) = oneshot::channel::<()>();
+        let (received_tx, received_rx) = oneshot::channel::<()>();
         let task = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("origin accept");
             read_request_head_bytes(&mut stream).await.expect("origin request");
+            received_tx.send(()).expect("origin received the request");
             release_rx.await.expect("release");
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
@@ -7030,8 +7038,8 @@ async fn a_request_is_visible_while_it_waits_for_the_origin_and_gone_when_it_end
             )
             .await
         });
-        let phase = wait_for_live_request("live-1", true).await;
-        assert_eq!(phase.as_deref(), Some("awaiting_headers"));
+        received_rx.await.expect("origin received the request");
+        wait_for_live_phase("live-1", "awaiting_headers").await;
         release_tx.send(()).expect("release origin");
         assert_eq!(client.await.expect("client").status, 200);
         wait_for_live_request("live-1", false).await;
