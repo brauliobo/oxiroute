@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-import { wireDocument } from '../../../src/stats/fixtures'
+import { wireDocument, wirePool, wireServer } from '../../../src/stats/fixtures'
 import { PAGE, serveStats } from './support'
 
 const confirmDrain = async (page: import('@playwright/test').Page) => {
@@ -21,11 +21,15 @@ test.describe('stats page administration', () => {
   })
 
   test('fits the screen with its controls, whatever the width', async ({ page }) => {
-    await serveStats(page, { document: { admin: true } })
+    const long = wirePool('static-assets-with-a-long-pool-name', [wireServer('origin-with-a-long-server-name-0123456789', '192.0.2.7:80')])
+    await serveStats(page, { document: { admin: true, pools: [long] } })
     await page.goto(PAGE)
     const admin = page.locator('section.ox-admin')
     await expect(admin).toBeVisible()
     const frame = (await admin.boundingBox())!
+    const pool = (await page.locator('#ox-admin-pool').boundingBox())!
+    const server = (await page.locator('#ox-admin-server').boundingBox())!
+    expect(pool.x + pool.width, 'the pool and server selects do not overlap').toBeLessThanOrEqual(server.x + 1)
     for (const control of await admin.locator('.ox-admin-controls select, .ox-admin-controls button').all()) {
       const box = (await control.boundingBox())!
       expect(box.height, 'a control keeps its own height').toBeLessThan(64)
