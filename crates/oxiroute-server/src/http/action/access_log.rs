@@ -130,9 +130,17 @@ impl AccessLog {
 
     /// Serializes `record` into a reused per-thread buffer and queues the line.
     pub(crate) fn write_record(&self, record: &impl serde::Serialize) -> std::io::Result<()> {
+        self.write_with(|line| Ok(serde_json::to_writer(line, record)?))
+    }
+
+    /// Renders one line with `render` into the reused per-thread buffer and queues it.
+    pub(crate) fn write_with(
+        &self,
+        render: impl FnOnce(&mut Vec<u8>) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         LINE.with_borrow_mut(|line| {
             line.clear();
-            serde_json::to_writer(&mut *line, record)?;
+            render(line)?;
             line.push(b'\n');
             self.enqueue(line)
         })
