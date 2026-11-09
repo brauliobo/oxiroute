@@ -1224,6 +1224,8 @@ where
         self.process_new_http_inline(session, shutdown).await
     }
 
+    // Written out so the trait's `Send` bound is stated, which `async fn` cannot do for a trait method.
+    #[allow(clippy::manual_async_fn)]
     fn process_new_http_inline(
         self: &Arc<Self>,
         session: HttpSession,
