@@ -81,9 +81,11 @@ header-name cache, and stage-1 connection-pool experiments:
   of once per request.
 - `protocols/tls/boringssl_openssl/{stream,server}.rs` lets an accepted OpenSSL stream (`prepare_tls_stream`) share TLS
   records: plain writes are held (up to 1460 bytes, the size of the accepted socket's own write buffer) and vectored
-  writes (HTTP/2 frames, chunked bodies; up to one 16 KiB record) are held until the next `flush` or `shutdown`, so a
-  response head plus body or an HTTP/2 HEADERS plus DATA leaves as one record instead of two. A write that does not fit
-  flushes the held bytes first and goes out by itself. Client streams (upstream TLS) are unchanged. Writers already had
+  writes (HTTP/2 frames, chunked bodies) are held until the next `flush` or `shutdown`, so a response head plus body
+  or an HTTP/2 HEADERS plus DATA leaves as one record instead of two. Vectored bytes are packed into full 16 KiB records
+  (an HTTP/2 DATA frame of 16384 bytes no longer costs a 9 byte record for its frame header), in a buffer taken from a
+  per-thread spare while the connection is writing. A plain write that does not fit flushes the held bytes first and goes
+  out by itself. Client streams (upstream TLS) are unchanged. Writers already had
   to flush for the socket buffer; unflushed small writes were never sent before either.
 - `protocols/mod.rs` `Peek::poll_read_ready` (default: ready, meaning unknown) lets a transport say whether a read could make
   progress without reading; `protocols/l4/stream.rs` answers from the socket's readiness (or its buffered bytes).
