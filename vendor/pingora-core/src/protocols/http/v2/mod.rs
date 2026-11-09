@@ -24,6 +24,8 @@ use h2::SendStream;
 
 pub mod client;
 pub mod server;
+#[cfg(test)]
+mod server_response_tests;
 
 async fn reserve_and_send(
     writer: &mut SendStream<Bytes>,
