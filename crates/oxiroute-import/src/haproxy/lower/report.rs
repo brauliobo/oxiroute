@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use oxiroute_config::{Protocol, Stats, StatsPage, StatsPageAdminPolicy};
 
 use crate::{
-    Diagnostic, DiagnosticStage, E_INVALID_VALUE, OperationalOverlayKind,
+    Diagnostic, DiagnosticCode, DiagnosticStage, E_INVALID_VALUE, OperationalOverlayKind,
     OperationalOverlayRequirement, Report, Severity,
 };
 
@@ -172,7 +172,18 @@ impl<'a> Lowerer<'a> {
             .iter()
             .any(|diagnostic| diagnostic.severity() == Severity::Error);
         match crate::candidate::finalize_candidate(&draft, eligible) {
-            Ok(Some(config)) => crate::candidate::CanonicalCandidateState::Validated(config),
+            Ok(Some(config)) => {
+                self.diagnostics
+                    .extend(config.warnings().into_iter().map(|warning| {
+                        Diagnostic::new(
+                            DiagnosticCode::new(warning.code),
+                            Severity::Warning,
+                            DiagnosticStage::Validate,
+                            warning.message,
+                        )
+                    }));
+                crate::candidate::CanonicalCandidateState::Validated(config)
+            }
             Ok(None) => crate::candidate::CanonicalCandidateState::Blocked(draft),
             Err(error) => {
                 let mut diagnostic = Diagnostic::new(

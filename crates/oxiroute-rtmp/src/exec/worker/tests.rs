@@ -1,4 +1,9 @@
-use std::{path::PathBuf, sync::Arc, thread, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 
 use crate::ExecLimits;
 
@@ -86,14 +91,14 @@ fn wait_for(
     worker: &ExecWorker,
     predicate: impl Fn(&ExecWorkerStatus) -> bool,
 ) -> ExecWorkerStatus {
-    for _ in 0..200 {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
         let status = worker.status();
-        if predicate(&status) {
+        if predicate(&status) || Instant::now() >= deadline {
             return status;
         }
         thread::sleep(Duration::from_millis(5));
     }
-    worker.status()
 }
 
 fn key() -> StreamKey {

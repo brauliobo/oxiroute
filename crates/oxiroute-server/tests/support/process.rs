@@ -104,6 +104,20 @@ impl ServerProcess {
         }
     }
 
+    /// Keeps the connection that proves the bind: a separate readiness probe would itself occupy a
+    /// slot of a connection-limited listener until the server noticed it closed.
+    pub async fn connect_when_bound(&mut self, address: SocketAddr) -> TcpStream {
+        let deadline = Instant::now() + PROCESS_TIMEOUT;
+        loop {
+            self.assert_running();
+            if let Ok(stream) = TcpStream::connect(address).await {
+                return stream;
+            }
+            assert!(Instant::now() < deadline, "server did not bind {address}");
+            sleep(RETRY_DELAY).await;
+        }
+    }
+
     #[cfg(unix)]
     pub async fn wait_for_unix(&mut self, path: &Path) {
         use tokio::net::UnixStream;

@@ -38,18 +38,22 @@ use rustls::{
 };
 use tokio::time::{sleep, timeout};
 
-use support::{
-    TEST_TIMEOUT, TestOnlyEcdsaChain, generate_test_only_client_chain, private_key_fixture,
-};
+use support::{TestOnlyEcdsaChain, generate_test_only_client_chain, private_key_fixture};
 
 const H3_ALPN: &[u8] = b"h3";
 const SERVER_NAME: &str = "proxy.example.test";
+/// Each mode starts server processes and runs several handshakes, which a loaded host stretches.
+const WIRE_TIMEOUT: Duration = Duration::from_mins(2);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// A client that dials a server process still starting retransmits its Initial after about three
+/// times this, instead of after the default second.
+const CLIENT_INITIAL_RTT: Duration = Duration::from_millis(20);
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[tokio::test]
 async fn reverse_h3_client_auth_modes_are_bounded_at_quic_handshake() {
-    timeout(TEST_TIMEOUT, async {
+    timeout(WIRE_TIMEOUT, async {
         for mode in [
             TlsClientAuthMode::Disabled,
             TlsClientAuthMode::Optional,
@@ -64,7 +68,7 @@ async fn reverse_h3_client_auth_modes_are_bounded_at_quic_handshake() {
 
 #[tokio::test]
 async fn forward_h3_client_auth_modes_are_bounded_at_quic_handshake() {
-    timeout(TEST_TIMEOUT, async {
+    timeout(WIRE_TIMEOUT, async {
         for mode in [
             TlsClientAuthMode::Disabled,
             TlsClientAuthMode::Optional,
@@ -425,7 +429,10 @@ fn malformed_client_endpoint(
 
 fn quic_client_endpoint(config: ClientConfig) -> TestResult<quinn::Endpoint> {
     let crypto = QuicClientConfig::try_from(config).map_err(io::Error::other)?;
-    let client_config = quinn::ClientConfig::new(Arc::new(crypto));
+    let mut client_config = quinn::ClientConfig::new(Arc::new(crypto));
+    let mut transport = quinn::TransportConfig::default();
+    transport.initial_rtt(CLIENT_INITIAL_RTT);
+    client_config.transport_config(Arc::new(transport));
     let mut endpoint = quinn::Endpoint::client((Ipv4Addr::LOCALHOST, 0).into())?;
     endpoint.set_default_client_config(client_config);
     Ok(endpoint)
@@ -435,7 +442,7 @@ async fn connect_h3(
     endpoint: &quinn::Endpoint,
     listener_address: SocketAddr,
 ) -> TestResult<quinn::Connection> {
-    timeout(Duration::from_secs(5), async {
+    timeout(HANDSHAKE_TIMEOUT, async {
         loop {
             if let Ok(connecting) = endpoint.connect(listener_address, SERVER_NAME)
                 && let Ok(connection) = connecting.await
@@ -451,8 +458,8 @@ async fn connect_h3(
 
 async fn assert_h3_rejected(label: &str, endpoint: &quinn::Endpoint, listener_address: SocketAddr) {
     let rejected = match endpoint.connect(listener_address, SERVER_NAME) {
-        Ok(connecting) => match timeout(Duration::from_secs(3), connecting).await {
-            Ok(Ok(connection)) => timeout(Duration::from_secs(3), connection.closed())
+        Ok(connecting) => match timeout(HANDSHAKE_TIMEOUT, connecting).await {
+            Ok(Ok(connection)) => timeout(HANDSHAKE_TIMEOUT, connection.closed())
                 .await
                 .is_ok(),
             Ok(Err(_)) | Err(_) => true,
