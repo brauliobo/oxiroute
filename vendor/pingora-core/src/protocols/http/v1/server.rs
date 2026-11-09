@@ -30,6 +30,10 @@ use regex::bytes::Regex;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// Header slots a parsed request map has beyond the headers it arrived with, for the request id and the
+/// headers route policy adds, so that adding them does not regrow and rehash the map.
+const REQUEST_HEADER_HEADROOM: usize = 4;
+
 /// The most a connection keeps of the buffer its rendered responses are assembled in.
 const RENDERED_RESPONSE_BUF_KEEP: usize = 64 * 1024;
 
@@ -264,7 +268,7 @@ impl HttpSession {
                             req.method.unwrap_or(""),
                             // we path httparse to allow unsafe bytes in the str
                             req.path.unwrap_or("").as_bytes(),
-                            Some(req.headers.len()),
+                            Some(req.headers.len() + REQUEST_HEADER_HEADROOM),
                         )?);
 
                         request_header.set_version(match req.version {
