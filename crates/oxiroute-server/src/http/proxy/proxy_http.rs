@@ -1,7 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-#[async_trait]
 impl ProxyHttp for HttpReverseProxy {
     type CTX = HttpRequestContext;
 
