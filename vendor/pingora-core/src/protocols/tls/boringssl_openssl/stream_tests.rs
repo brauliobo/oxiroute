@@ -12,9 +12,6 @@ use tokio::io::{
     duplex, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf,
 };
 
-const CERT: &[u8] = b"-----BEGIN CERTIFICATE-----\nMIIBhTCCASugAwIBAgIUEiPqnvnS9j895PY3Y+MnLPxfLfYwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMcGluZ29yYS50ZXN0MCAXDTI2MTEwOTEyNTcxMFoYDzIxMjYx\nMDE2MTI1NzEwWjAXMRUwEwYDVQQDDAxwaW5nb3JhLnRlc3QwWTATBgcqhkjOPQIB\nBggqhkjOPQMBBwNCAATODJDetmudWR+MH7+HoaFfwEGx6k0kIVuDKD6EHXamPfTt\ncBLl8a5BTI7PD6dqECfQYFYYydQtDRUPz4OBd8Ogo1MwUTAdBgNVHQ4EFgQUYMnW\n0GYyCbLdt0+py5rcGsyr7QwwHwYDVR0jBBgwFoAUYMnW0GYyCbLdt0+py5rcGsyr\n7QwwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEAs6JPrqUn8Jxg\nwrjwp6dWl5O3FfJWX0iirzjOf6E2j1wCIDhQyPE3QyyCrGBuFNK/m2QSS9RC+lD9\nOZqR/75TSNVO\n-----END CERTIFICATE-----\n";
-const KEY: &[u8] = b"-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgEPpWcGySoCGVB4wn\nYDv1VGP4Ow0t0cgMepuAVI70jTuhRANCAATODJDetmudWR+MH7+HoaFfwEGx6k0k\nIVuDKD6EHXamPfTtcBLl8a5BTI7PD6dqECfQYFYYydQtDRUPz4OBd8Og\n-----END PRIVATE KEY-----\n";
-
 /// A transport that remembers the size of every write handed to it and counts its reads.
 struct Recorder {
     inner: DuplexStream,
@@ -74,12 +71,13 @@ fn probe(transport: &mut Recorder, _cx: &mut Context<'_>) -> Poll<io::Result<()>
 
 /// Handshakes a server stream (coalescing or not) and a client.
 async fn connected(coalesce: bool) -> Harness {
+    let (cert, key) = crate::test_tls::generate_pem();
     let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
     acceptor
-        .set_certificate(&X509::from_pem(CERT).unwrap())
+        .set_certificate(&X509::from_pem(&cert).unwrap())
         .unwrap();
     acceptor
-        .set_private_key(&PKey::private_key_from_pem(KEY).unwrap())
+        .set_private_key(&PKey::private_key_from_pem(&key).unwrap())
         .unwrap();
     let acceptor = acceptor.build();
     let (client_io, server_io) = duplex(1 << 20);
