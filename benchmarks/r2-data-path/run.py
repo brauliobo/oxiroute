@@ -338,18 +338,20 @@ def context_switches(path):
         sum(int(value) for value in re.findall(r"^nonvoluntary_ctxt_switches:\s+(\d+)", text, re.M))
 
 
-def thread_busy(before, after, elapsed):
-    """CPU share of the busiest threads over the measured window, as percent of one CPU, highest first."""
+def thread_usage(before, after, elapsed):
+    """(busiest-thread shares as percent of one CPU, kernel share of all proxy CPU time in percent) over the window."""
     ticks = os.sysconf("SC_CLK_TCK")
 
     def usage(path):
         # /proc/PID/task/TID/stat: the command is parenthesised and may hold spaces; utime and stime are fields 14 and 15
         rows = (line.rsplit(")", 1) for line in Path(path).read_text().splitlines())
-        return {line[0].split()[0]: sum(int(value) for value in line[1].split()[11:13]) for line in rows}
+        return {line[0].split()[0]: tuple(int(value) for value in line[1].split()[11:13]) for line in rows}
 
     start, end = usage(before), usage(after)
-    shares = sorted(((end[tid] - start.get(tid, 0)) * 100 / ticks / elapsed for tid in end), reverse=True)
-    return [round(share) for share in shares[:4]]
+    spent = {tid: [now - was for now, was in zip(end[tid], start.get(tid, (0, 0)))] for tid in end}
+    shares = sorted(((user + kernel) * 100 / ticks / elapsed for user, kernel in spent.values()), reverse=True)
+    user, kernel = (sum(times[index] for times in spent.values()) for index in (0, 1))
+    return [round(share) for share in shares[:4]], round(100 * kernel / max(user + kernel, 1))
 
 
 def parse_perf(path):
@@ -393,9 +395,9 @@ def measured_rep(env, rep, idle):
     switched = context_switches(env.work / f"sw{rep}.b")
     elapsed = float(load["elapsed_ms"]) / 1000
     requests = int(load["ok"])
-    busy = thread_busy(env.work / f"st{rep}.a", env.work / f"st{rep}.b", elapsed)
+    busy, kernel_pct = thread_usage(env.work / f"st{rep}.a", env.work / f"st{rep}.b", elapsed)
     return {
-        "busy": busy,
+        "busy": busy, "kernel_pct": kernel_pct,
         "instr": (counters["instructions"] - idle["instructions"] * elapsed) / requests,
         "cycles": (counters["cycles"] - idle["cycles"] * elapsed) / requests,
         "ctxsw": (switched[0] - switched_before[0]) / requests,
@@ -429,6 +431,7 @@ def measure_perf(env, reps):
         "p999_us": round(median(column("p999"))), "connect_p50_us": round(median(column("connect_p50"))),
         "connects": round(median(column("connects"))), "errors": sum(column("errors")), "rss_kb": status["rss_kb"], "hwm_kb": status["hwm_kb"],
         "threads": status["threads"], "fds": status["fds"], "busy_threads_pct": "/".join(map(str, samples[-1]["busy"])),
+        "kernel_cpu_pct": round(median(column("kernel_pct"))),
     }
 
 
