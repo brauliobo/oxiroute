@@ -7,7 +7,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, AtomicUsize, Ordering, fence},
+        atomic::{
+            AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
+        },
     },
     time::{Duration, SystemTime},
 };
@@ -38,6 +40,7 @@ mod canary;
 mod endpoint;
 mod health;
 mod lease;
+mod load_index;
 mod names;
 mod outlier;
 mod policy;
@@ -50,6 +53,7 @@ mod route;
 mod schedule;
 mod selectable;
 mod server;
+mod weight_index;
 
 pub use breaker::CircuitBreakerPolicy;
 #[allow(clippy::wildcard_imports)]
@@ -58,6 +62,7 @@ pub use canary::{CanaryResult, CanaryRun, CanarySelection, CanarySnapshot, Canar
 pub use endpoint::*;
 pub use health::*;
 pub use lease::*;
+use load_index::{LoadIndex, LoadLog};
 use names::NameIndex;
 use outlier::OutlierDetector;
 pub use outlier::OutlierPolicy;
@@ -72,6 +77,7 @@ use schedule::{QueueSchedule, WaitQueue};
 use selectable::SelectableView;
 pub use server::ServerOrigin;
 pub(crate) use server::*;
+use weight_index::WeightIndex;
 
 #[cfg(test)]
 mod membership_tests;

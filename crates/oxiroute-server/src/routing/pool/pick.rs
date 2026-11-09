@@ -8,7 +8,8 @@ impl EndpointPool {
     /// The algorithm's preferred server among the selectable ones that `accept` admits.
     ///
     /// Round robin and first stop at the first acceptable server, power of two choices probes two
-    /// random servers, and the load-aware algorithms make one pass; none of them allocates.
+    /// random servers, least connections reads the load index, and weighted round robin makes one
+    /// pass; none of them allocates unless a retry excludes servers.
     pub(super) fn pick(
         &self,
         selection: &mut SelectionState,
@@ -24,18 +25,20 @@ impl EndpointPool {
             }
             UpstreamAlgorithm::First => view.rotation(0).find(|&index| accept(index)),
             UpstreamAlgorithm::LeastConnections => {
-                Self::least_loaded(view.rotation(selection.next), members, eligible)
+                let start = selection.next;
+                let masked = eligible.masked(members);
+                selection
+                    .loads
+                    .tree(&self.queue.load_log, members, view, eligible.capacity)
+                    .least(start, &masked)
             }
-            UpstreamAlgorithm::WeightedRoundRobin { .. } => view
-                .entries
-                .iter()
-                .filter(|entry| accept(entry.index as usize))
-                .min_by_key(|entry| {
-                    std::cmp::Reverse(
-                        selection.credit[entry.index as usize] + i64::from(entry.weight),
-                    )
-                })
-                .map(|entry| entry.index as usize),
+            UpstreamAlgorithm::WeightedRoundRobin { .. } => {
+                let masked = eligible.masked(members);
+                selection
+                    .weights
+                    .sync(&self.queue.load_log, members, view, &mut selection.credit);
+                selection.weights.best(eligible.capacity, &masked)
+            }
             UpstreamAlgorithm::PowerOfTwoChoices => {
                 let (first, second) = Self::two_random(selection, view, &accept)?;
                 Some(match second {
@@ -44,28 +47,6 @@ impl EndpointPool {
                 })
             }
         }
-    }
-
-    /// The eligible server with the least load, the first in `rotation` among equals. A server
-    /// without work cannot be beaten, so the scan stops at the first one.
-    fn least_loaded(
-        rotation: impl Iterator<Item = usize>,
-        members: &Membership,
-        eligible: &Eligibility,
-    ) -> Option<usize> {
-        let mut best: Option<(u64, usize)> = None;
-        for index in rotation {
-            let Some(load) = eligible.load(members, index) else {
-                continue;
-            };
-            if best.is_none_or(|(least, _)| load < least) {
-                best = Some((load, index));
-                if load == 0 {
-                    break;
-                }
-            }
-        }
-        best.map(|(_, index)| index)
     }
 
     /// Two distinct acceptable servers chosen uniformly, or the only one there is.
@@ -109,7 +90,6 @@ impl EndpointPool {
         &self,
         selection: &mut SelectionState,
         members: &Membership,
-        view: &SelectableView,
         eligible: &Eligibility,
         chosen: usize,
     ) {
@@ -117,15 +97,10 @@ impl EndpointPool {
             &self.algorithm,
             UpstreamAlgorithm::WeightedRoundRobin { .. }
         ) {
-            let mut total = 0;
-            for entry in &view.entries {
-                if eligible.admits(members, entry.index as usize) {
-                    let weight = i64::from(entry.weight);
-                    selection.credit[entry.index as usize] += weight;
-                    total += weight;
-                }
-            }
-            selection.credit[chosen] -= total;
+            let excluded = eligible.excluded_positions(members);
+            selection
+                .weights
+                .select(eligible.capacity, chosen, &excluded);
         }
         if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
             selection.next = (chosen + 1) % members.endpoints.len();
@@ -141,7 +116,7 @@ impl EndpointPool {
         eligible: &Eligibility,
     ) -> Option<usize> {
         let chosen = self.pick(selection, members, view, eligible)?;
-        self.commit(selection, members, view, eligible, chosen);
+        self.commit(selection, members, eligible, chosen);
         Some(chosen)
     }
 }

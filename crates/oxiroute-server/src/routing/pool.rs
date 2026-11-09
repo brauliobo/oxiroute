@@ -40,6 +40,10 @@ impl EndpointPool {
         let queue = Arc::new(PoolQueue::new(
             queue_timeout.is_some(),
             blueprint.queue.clone(),
+            LoadLog::new(matches!(
+                blueprint.algorithm,
+                UpstreamAlgorithm::LeastConnections | UpstreamAlgorithm::WeightedRoundRobin { .. }
+            )),
         ));
         let health = Arc::new(PoolHealthState::new(
             name.clone(),
@@ -216,4 +220,5 @@ mod pick;
 mod selection;
 mod snapshot;
 
-use eligibility::{Capacity, Eligibility};
+pub(super) use eligibility::Capacity;
+use eligibility::Eligibility;
