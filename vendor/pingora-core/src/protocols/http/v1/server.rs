@@ -2982,15 +2982,15 @@ mod tests_stream {
     #[tokio::test]
     async fn a_large_request_body_is_handed_over_and_kept_for_a_retry_without_a_copy() {
         init_log();
-        let head = b"POST /a HTTP/1.1\r\nHost: pingora.org\r\nContent-Length: 20000\r\n\r\n";
-        let body = vec![b'x'; 20_000];
+        let head = b"POST /a HTTP/1.1\r\nHost: pingora.org\r\nContent-Length: 70000\r\n\r\n";
+        let body = vec![b'x'; 70_000];
         let mock_io = Builder::new().read(&head[..]).read(&body[..]).build();
         let mut http_stream = HttpSession::new(Box::new(mock_io));
         http_stream.read_request().await.unwrap();
-        http_stream.enable_retry_buffering();
+        http_stream.enable_retry_buffering_with_capacity(1 << 20);
         let read = http_stream.read_body_bytes().await.unwrap().unwrap();
         assert_eq!(&read[..], &body[..]);
-        assert_eq!(http_stream.body_bytes_read(), 20_000);
+        assert_eq!(http_stream.body_bytes_read(), 70_000);
         assert!(http_stream.is_body_done());
         let kept = http_stream.get_retry_buffer().unwrap();
         assert_eq!(kept.as_ptr(), read.as_ptr());
