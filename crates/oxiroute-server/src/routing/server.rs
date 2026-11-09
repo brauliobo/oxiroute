@@ -313,6 +313,16 @@ impl PoolEndpoint {
             .is_none_or(|limit| self.active_work.load(Ordering::Acquire) < limit)
     }
 
+    /// The load when the server can take work now, from one read of its counters; with
+    /// `reuse_idle` an idle pooled connection also qualifies, since it needs no new permit.
+    pub(super) fn load_if_open(&self, reuse_idle: bool) -> Option<u64> {
+        let limit = self.configured_limit();
+        let active = self.active_work.load(Ordering::Acquire);
+        let open = self.admitting_limit(limit).is_none_or(|max| active < max)
+            || (reuse_idle && self.has_idle_connection());
+        open.then(|| self.load_of(active, limit))
+    }
+
     pub(super) fn configured_weight(&self) -> u16 {
         self.configured_weight.load(Ordering::Acquire)
     }
@@ -330,14 +340,15 @@ impl PoolEndpoint {
 
     /// Work in flight per unit of capacity, so servers of different size compare fairly.
     pub(super) fn load(&self) -> u64 {
-        let divisor = self
-            .configured_limit()
-            .unwrap_or_else(|| u64::from(self.weight()))
-            .max(1);
-        self.active_work
-            .load(Ordering::Acquire)
-            .saturating_mul(LOAD_SCALE)
-            / divisor
+        self.load_of(
+            self.active_work.load(Ordering::Acquire),
+            self.configured_limit(),
+        )
+    }
+
+    fn load_of(&self, active: u64, limit: Option<u64>) -> u64 {
+        let divisor = limit.unwrap_or_else(|| u64::from(self.weight())).max(1);
+        active.saturating_mul(LOAD_SCALE) / divisor
     }
 
     pub(super) fn has_idle_connection(&self) -> bool {
@@ -370,7 +381,10 @@ impl PoolEndpoint {
 
     /// The limit that admits work now: a half-open breaker allows only its trial requests.
     fn max_connections(&self) -> Option<u64> {
-        let limit = self.configured_limit();
+        self.admitting_limit(self.configured_limit())
+    }
+
+    fn admitting_limit(&self, limit: Option<u64>) -> Option<u64> {
         match self.breaker_policy {
             Some(policy) if self.breaker.is_half_open() => {
                 Some(limit.map_or(policy.half_open_max(), |limit| {

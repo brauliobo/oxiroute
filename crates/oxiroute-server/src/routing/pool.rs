@@ -210,7 +210,10 @@ impl EndpointPool {
 
 mod admin;
 mod affinity;
+mod eligibility;
 mod evacuate;
 mod pick;
 mod selection;
 mod snapshot;
+
+use eligibility::{Capacity, Eligibility};
