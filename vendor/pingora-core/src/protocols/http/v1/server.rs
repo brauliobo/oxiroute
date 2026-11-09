@@ -552,16 +552,13 @@ impl HttpSession {
         }
 
         // no need to add these headers to 1xx responses
-        if !header.status.is_informational() && self.update_resp_headers {
-            /* update headers */
+        let connection_value = (!header.status.is_informational() && self.update_resp_headers)
+            .then(|| self.connection_value());
+        // A response without a case-preserving map gets them while it is serialized, so the map is
+        // not grown for them; any of the two it already holds are replaced by the serializer.
+        let inline_automatic = connection_value.filter(|_| !header.has_case());
+        if let (Some(connection_value), None) = (connection_value, inline_automatic) {
             header.insert_header(header::DATE, date::get_cached_date())?;
-
-            // TODO: make these lazy static
-            let connection_value = if self.will_keepalive() {
-                "keep-alive"
-            } else {
-                "close"
-            };
             header.insert_header(header::CONNECTION, connection_value)?;
         }
 
@@ -624,8 +621,10 @@ impl HttpSession {
         let flush = header.status.is_informational()
             || header.headers.get(header::CONTENT_LENGTH).is_none();
 
-        let mut write_buf = BytesMut::with_capacity(INIT_HEADER_BUF_SIZE);
-        http_resp_header_to_buf(&header, &mut write_buf).unwrap();
+        let mut write_buf = std::mem::take(&mut self.rendered_response_buf);
+        write_buf.clear();
+        write_buf.reserve(INIT_HEADER_BUF_SIZE);
+        http_resp_header_to_buf(&header, &mut write_buf, inline_automatic).unwrap();
         match self.underlying_stream.write_all(&write_buf).await {
             Ok(()) => {
                 // flush the stream if 1xx header or there is no response body
@@ -637,9 +636,24 @@ impl HttpSession {
                 }
                 self.response_written = Some(header);
                 self.body_bytes_sent += write_buf.len();
+                self.keep_rendered_response_buf(write_buf);
                 Ok(())
             }
             Err(e) => Error::e_because(WriteError, "writing response header", e),
+        }
+    }
+
+    fn connection_value(&self) -> &'static str {
+        if self.will_keepalive() {
+            "keep-alive"
+        } else {
+            "close"
+        }
+    }
+
+    fn keep_rendered_response_buf(&mut self, buf: BytesMut) {
+        if buf.capacity() <= RENDERED_RESPONSE_BUF_KEEP {
+            self.rendered_response_buf = buf;
         }
     }
 
@@ -680,11 +694,9 @@ impl HttpSession {
             buf.put_slice(b"Date: ");
             date::put_cached_date(&mut buf);
             buf.put_slice(CRLF);
-            buf.put_slice(if self.will_keepalive() {
-                b"Connection: keep-alive\r\n"
-            } else {
-                b"Connection: close\r\n"
-            });
+            buf.put_slice(b"Connection: ");
+            buf.put_slice(self.connection_value().as_bytes());
+            buf.put_slice(CRLF);
         }
         buf.put_slice(CRLF);
         buf.put_slice(body);
@@ -711,9 +723,7 @@ impl HttpSession {
         self.body_writer.body_mode = BodyMode::Complete(body.len());
         self.body_bytes_sent += buf.len();
         self.response_written = Some(Box::new(ResponseHeader::build_no_case(status, Some(0))?));
-        if buf.capacity() <= RENDERED_RESPONSE_BUF_KEEP {
-            self.rendered_response_buf = buf;
-        }
+        self.keep_rendered_response_buf(buf);
         Ok(())
     }
 
@@ -1468,9 +1478,31 @@ fn parse_req_buffer<'buf>(
 }
 
 #[inline]
+/// The names `pingora_http` writes in title case for a header map without a case-preserving name map.
+fn titled_name(name: &http::HeaderName) -> &str {
+    match *name {
+        header::ACCEPT_RANGES => "Accept-Ranges",
+        header::AGE => "Age",
+        header::CACHE_CONTROL => "Cache-Control",
+        header::CONNECTION => "Connection",
+        header::CONTENT_TYPE => "Content-Type",
+        header::CONTENT_ENCODING => "Content-Encoding",
+        header::CONTENT_LENGTH => "Content-Length",
+        header::DATE => "Date",
+        header::TRANSFER_ENCODING => "Transfer-Encoding",
+        header::HOST => "Host",
+        header::SERVER => "Server",
+        header::SET_COOKIE => "Set-Cookie",
+        _ => name.as_str(),
+    }
+}
+
+/// `automatic` is the `Connection` value of a response that also gets a `Date`: both are written after
+/// the other headers, and a copy of either in `resp` is left out.
 fn http_resp_header_to_buf(
     resp: &ResponseHeader,
     buf: &mut BytesMut,
+    automatic: Option<&str>,
 ) -> std::result::Result<(), ()> {
     // Status-Line
     let version = match resp.version {
@@ -1493,7 +1525,26 @@ fn http_resp_header_to_buf(
 
     // headers
     // TODO: style: make sure Server and Date headers are the first two
-    resp.header_to_h1_wire(buf);
+    match automatic {
+        None => resp.header_to_h1_wire(buf),
+        Some(connection) => {
+            for (name, value) in resp.headers.iter() {
+                if name == header::DATE || name == header::CONNECTION {
+                    continue;
+                }
+                let name = titled_name(name);
+                buf.put_slice(name.as_bytes());
+                buf.put_slice(HEADER_KV_DELIMITER);
+                buf.put_slice(value.as_bytes());
+                buf.put_slice(CRLF);
+            }
+            buf.put_slice(b"Date: ");
+            date::put_cached_date(buf);
+            buf.put_slice(b"\r\nConnection: ");
+            buf.put_slice(connection.as_bytes());
+            buf.put_slice(CRLF);
+        }
+    }
 
     buf.put_slice(CRLF);
     Ok(())
@@ -1704,6 +1755,31 @@ mod tests_stream {
         assert!(session.body_writer.finished());
         assert!(session.will_keepalive());
         session.finish_body().await.unwrap();
+    }
+
+    #[test]
+    fn automatic_headers_replace_the_response_copies_and_follow_the_other_headers() {
+        let mut response = ResponseHeader::build_no_case(StatusCode::OK, None).unwrap();
+        response.insert_header("Connection", "upgrade").unwrap();
+        response.insert_header("X-Kept", "1").unwrap();
+        response.insert_header("Date", "stale").unwrap();
+        response
+            .insert_header("Content-Type", "text/plain")
+            .unwrap();
+        let mut wire = BytesMut::new();
+        http_resp_header_to_buf(&response, &mut wire, Some("keep-alive")).unwrap();
+        let text = String::from_utf8(wire.to_vec()).unwrap();
+        let lines: Vec<_> = text.split("\r\n").collect();
+        assert_eq!(
+            lines[..3],
+            ["HTTP/1.1 200 OK", "x-kept: 1", "Content-Type: text/plain"]
+        );
+        assert!(
+            lines[3].starts_with("Date: ") && lines[3].ends_with(" GMT"),
+            "{}",
+            lines[3]
+        );
+        assert_eq!(lines[4..], ["Connection: keep-alive", "", ""]);
     }
 
     #[tokio::test]
@@ -3224,7 +3300,7 @@ mod test_sync {
         let mut new_response = ResponseHeader::build(StatusCode::OK, None).unwrap();
         new_response.append_header("Foo", "Bar").unwrap();
         let mut wire = BytesMut::with_capacity(INIT_HEADER_BUF_SIZE);
-        http_resp_header_to_buf(&new_response, &mut wire).unwrap();
+        http_resp_header_to_buf(&new_response, &mut wire, None).unwrap();
         debug!("{}", str::from_utf8(wire.as_ref()).unwrap());
         let mut headers = [httparse::EMPTY_HEADER; 128];
         let mut resp = httparse::Response::new(&mut headers);
