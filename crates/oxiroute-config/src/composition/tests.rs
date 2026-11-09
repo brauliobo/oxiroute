@@ -100,6 +100,7 @@ fn validates_only_after_complete_drafts_are_composed() {
 
 fn empty_config() -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: None,

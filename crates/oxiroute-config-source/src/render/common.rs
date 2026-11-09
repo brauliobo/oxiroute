@@ -14,6 +14,7 @@ impl Renderer {
         let ConfigDraft {
             version,
             max_connections,
+            listener_workers,
             retirement,
             management,
             registry,
@@ -35,6 +36,9 @@ impl Renderer {
         match max_connections {
             Some(limit) => self.integer_field("max_connections", limit),
             None => self.null_field("max_connections"),
+        }
+        if let Some(workers) = listener_workers {
+            self.integer_field("listener_workers", workers);
         }
         self.optional_table_field("retirement", retirement.as_ref(), Self::retirement);
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;

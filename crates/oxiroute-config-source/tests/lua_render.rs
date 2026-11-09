@@ -716,6 +716,7 @@ fn test_rtmp_services() -> Vec<RtmpService> {
 
 fn complete_config() -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: Some(MAX_SAFE_INTEGER),
@@ -739,6 +740,7 @@ fn complete_config() -> ConfigDraft {
 
 fn minimal_config() -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: None,

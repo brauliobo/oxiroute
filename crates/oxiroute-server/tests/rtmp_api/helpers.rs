@@ -78,6 +78,7 @@ pub(super) fn editable_config() -> ConfigDraft {
         PRIVATE_KEY.get_or_init(|| fixture_support::private_key_fixture("proxy-a-key.pem"));
 
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         certificates: vec![Certificate {
             name: "test-certificate".into(),
