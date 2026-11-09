@@ -7,11 +7,11 @@ pub(super) fn supervised_worker_replaces_an_active_udp_session_without_rebinding
     let directory = tempfile::tempdir().expect("supervised UDP replacement directory");
     let old_upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("old UDP upstream");
     old_upstream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("old UDP upstream timeout");
     let new_upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("new UDP upstream");
     new_upstream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("new UDP upstream timeout");
     let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
         .expect("UDP listener probe")
@@ -45,7 +45,7 @@ pub(super) fn supervised_worker_replaces_an_active_udp_session_without_rebinding
 
     let client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("active UDP client");
     client
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("active UDP client timeout");
     client
         .send_to(b"old-generation", listener_address)
@@ -128,7 +128,7 @@ pub(super) fn supervised_worker_replaces_an_active_udp_session_without_rebinding
 
     let new_client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("candidate UDP client");
     new_client
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("candidate UDP client timeout");
     new_client
         .send_to(b"new-generation", listener_address)
@@ -160,7 +160,7 @@ pub(super) fn supervised_worker_replaces_an_active_udp_session_without_rebinding
     wait_process_gone(candidate_worker);
     wait_process_gone(candidate_launcher);
     drop(harness);
-    StdUdpSocket::bind(listener_address).expect("UDP listener released after master drop");
+    assert_udp_can_bind_again(listener_address);
 }
 
 #[test]
@@ -168,7 +168,7 @@ pub(super) fn supervised_udp_replacement_rolls_back_after_candidate_rejects_adop
     let directory = tempfile::tempdir().expect("supervised UDP rollback directory");
     let upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP upstream");
     upstream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("UDP upstream timeout");
     let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
         .expect("UDP listener probe")
@@ -220,7 +220,7 @@ pub(super) fn supervised_udp_replacement_rolls_back_after_candidate_rejects_adop
 
     let client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("rollback UDP client");
     client
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("rollback UDP client timeout");
     client
         .send_to(b"rollback", listener_address)
@@ -256,7 +256,7 @@ pub(super) fn supervised_udp_replacement_rolls_back_after_candidate_rejects_adop
     harness.verify_reaped();
     wait_process_gone(candidate_launcher);
     drop(harness);
-    StdUdpSocket::bind(listener_address).expect("rollback UDP listener released");
+    assert_udp_can_bind_again(listener_address);
 }
 
 #[test]
@@ -264,7 +264,7 @@ pub(super) fn supervised_worker_restarts_and_serves_new_udp_traffic_after_clean_
     let directory = tempfile::tempdir().expect("supervised UDP restart directory");
     let upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP upstream");
     upstream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("UDP upstream timeout");
     let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
         .expect("UDP listener probe")
@@ -288,7 +288,7 @@ pub(super) fn supervised_worker_restarts_and_serves_new_udp_traffic_after_clean_
     first.poll_until(MasterState::Running);
     let client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("first UDP client");
     client
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("first UDP client timeout");
     client
         .send_to(b"before-restart", listener_address)
@@ -319,7 +319,7 @@ pub(super) fn supervised_worker_restarts_and_serves_new_udp_traffic_after_clean_
     restarted.poll_until(MasterState::Running);
     let client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("restarted UDP client");
     client
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("restarted UDP client timeout");
     client
         .send_to(b"after-restart", listener_address)
@@ -343,7 +343,7 @@ pub(super) fn supervised_worker_restarts_and_serves_new_udp_traffic_after_clean_
     restarted.poll_until(MasterState::Stopped);
     restarted.verify_reaped();
     drop(restarted);
-    StdUdpSocket::bind(listener_address).expect("restarted UDP listener released");
+    assert_udp_can_bind_again(listener_address);
 }
 
 #[test]
@@ -351,7 +351,7 @@ pub(super) fn supervised_worker_crash_with_active_udp_session_is_reaped_and_rele
     let directory = tempfile::tempdir().expect("supervised UDP crash directory");
     let upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP upstream");
     upstream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("UDP upstream timeout");
     let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
         .expect("UDP listener probe")
@@ -397,5 +397,5 @@ pub(super) fn supervised_worker_crash_with_active_udp_session_is_reaped_and_rele
     harness.verify_reaped();
     drop(client);
     drop(harness);
-    StdUdpSocket::bind(listener_address).expect("crashed UDP listener released");
+    assert_udp_can_bind_again(listener_address);
 }

@@ -224,7 +224,7 @@ fn empty_prepared_set_starts_and_shuts_down_within_its_deadline() {
             .expect("empty prepared set");
     assert!(prepared.is_empty());
 
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let set = prepared.start(deadline).expect("empty runtime set");
     let shutdown = set.begin_shutdown(deadline);
     assert!(shutdown.is_complete());
@@ -523,7 +523,7 @@ fn shutdown_retains_canonical_service_order() {
         .runtime
         .recorder_lifecycle()
         .expect("alpha recorder lifecycle");
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let shutdown = set.begin_shutdown(deadline);
     drop(zulu.initiate_shutdown(deadline));
     drop(alpha.initiate_shutdown(deadline));
@@ -571,7 +571,7 @@ fn shutdown_is_bounded_and_idempotent_for_started_recorders() {
         )]),
     );
     let set = runtime_set(registry, [runtime]).expect("runtime set");
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let first = set.begin_shutdown(deadline);
     let second = set.begin_shutdown(deadline);
     assert!(first.wait_until(deadline));

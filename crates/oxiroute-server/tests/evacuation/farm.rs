@@ -257,6 +257,7 @@ pub fn config(
         })
         .collect();
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         listeners: vec![Listener {
             name: "http-loopback".into(),

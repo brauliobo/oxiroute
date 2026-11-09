@@ -87,7 +87,7 @@ where
         };
         let Ok(Some(selected_host)) = selected_upstream_host(
             selected.endpoint(),
-            proxy.policy.upstream_host.clone(),
+            &proxy.policy.upstream_host,
             Some(authority),
         ) else {
             last_error = H3UpstreamError::Protocol;

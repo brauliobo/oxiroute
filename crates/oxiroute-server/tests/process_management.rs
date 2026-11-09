@@ -34,6 +34,11 @@ use process_support::{
     write_token,
 };
 
+const STATS_CLIENT_TIMEOUT_MS: u64 = 10_000;
+const STATS_REQUEST_TIMEOUT_MS: u64 = 1_000;
+const STATS_KEEPALIVE_TIMEOUT_MS: u64 = 5_000;
+/// Far above the server-side timeouts, so only a missing timeout fails the observation.
+const STATS_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(30);
 const TOKEN: &str = "cdb85a91948758cfcb895216a3603c8fcd8aaf691f39f5fd82b5df15af14628e";
 
 #[test]
@@ -121,9 +126,9 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
             admin: StatsPageAdminPolicy::Localhost,
             max_connections: Some(1),
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy {
-                client_timeout_ms: Some(1_000),
-                request_timeout_ms: Some(150),
-                keepalive_timeout_ms: Some(100),
+                client_timeout_ms: Some(STATS_CLIENT_TIMEOUT_MS),
+                request_timeout_ms: Some(STATS_REQUEST_TIMEOUT_MS),
+                keepalive_timeout_ms: Some(STATS_KEEPALIVE_TIMEOUT_MS),
             },
         }],
     });
@@ -132,10 +137,8 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
         &config.clone().validate().expect("valid process config"),
         None,
     );
-    server.wait_for_tcp(page_address).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let page = http_request(page_address, "GET", "/haproxy", &[], &[]).await;
+    let mut first = server.connect_when_bound(page_address).await;
+    let page = http_support::http_request_on(&mut first, "GET", "/haproxy", &[], &[]).await;
     assert_eq!(page.status, 200);
     assert_eq!(page.header("cache-control"), Some("no-store"));
     assert!(page.header("content-security-policy").is_some());
@@ -248,14 +251,21 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
     .await;
     assert_eq!(referer_fallback.status, 204, "{}", referer_fallback.text());
 
+    // The answered keep-alive request proves the server admitted this connection, so the next one
+    // is deterministically the one above the cap.
     let mut stalled = TcpStream::connect(page_address)
         .await
         .expect("held stats connection");
+    assert_eq!(
+        persistent_request(&mut stalled, "GET", "/haproxy", &[], &[])
+            .await
+            .status,
+        200
+    );
     stalled
         .write_all(b"GET /haproxy HTTP/1.1\r\nHost: localhost\r\n")
         .await
         .expect("partial stats request");
-    tokio::time::sleep(Duration::from_millis(25)).await;
     let mut rejected = TcpStream::connect(page_address)
         .await
         .expect("connection above stats cap");
@@ -265,7 +275,7 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
         .expect("request above stats cap");
     let mut rejected_bytes = Vec::new();
     match tokio::time::timeout(
-        Duration::from_secs(1),
+        STATS_OBSERVATION_TIMEOUT,
         rejected.read_to_end(&mut rejected_bytes),
     )
     .await
@@ -278,7 +288,7 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
     assert!(rejected_bytes.is_empty());
     let mut stalled_bytes = Vec::new();
     match tokio::time::timeout(
-        Duration::from_secs(1),
+        STATS_OBSERVATION_TIMEOUT,
         stalled.read_to_end(&mut stalled_bytes),
     )
     .await
@@ -2054,6 +2064,7 @@ fn management_config(
     ui_dir: Option<std::path::PathBuf>,
 ) -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         management: Some(Management {
             bind: management_address,
@@ -2115,6 +2126,7 @@ fn recording_candidate(active: &ConfigDraft, root: &Path) -> ConfigDraft {
 
 fn rtmp_listener_config(bind: ListenerBind) -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         listeners: vec![Listener {
             name: "live".into(),

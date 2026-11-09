@@ -14,10 +14,10 @@ pub(super) fn assert_fixed_response(mut stream: impl Read + Write) {
 }
 
 pub(super) fn control_http_response(address: SocketAddr, path: &str) -> String {
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
-        .expect("connect control HTTP listener");
+    let mut stream =
+        TcpStream::connect_timeout(&address, IO_TIMEOUT).expect("connect control HTTP listener");
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("control listener read timeout");
     write!(
         stream,
@@ -104,6 +104,7 @@ pub(super) fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf)
     })
     .collect();
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -147,6 +148,7 @@ pub(super) fn udp_only_config(
     upstream_address: SocketAddr,
 ) -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -206,6 +208,7 @@ pub(super) fn udp_only_config(
 
 pub(super) fn h3_only_config(listener_address: SocketAddr, private_key_path: &Path) -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -297,7 +300,7 @@ pub(super) fn replace_real_worker(
     if inject_runtime_failure {
         command = command.env(TEST_RUNTIME_FAILURE_ENV, "1");
     }
-    let mut factory = WorkerSpawner::new(supervisor_launcher(), Duration::from_secs(5))
+    let mut factory = WorkerSpawner::new(supervisor_launcher(), TEST_TIMEOUT)
         .expect("production launcher implementation");
     master
         .replace(
@@ -359,11 +362,13 @@ pub(super) fn matching_descriptor_count(targets: &[PathBuf]) -> usize {
 
 pub(super) fn wait_process_gone(pid: u32) {
     let path = PathBuf::from(format!("/proc/{pid}"));
-    let started = Instant::now();
-    while path.exists() && started.elapsed() < Duration::from_secs(2) {
-        thread::sleep(POLL_INTERVAL);
-    }
-    assert!(!path.exists(), "process {pid} was not reaped");
+    eventually(&format!("process {pid} reaping"), || {
+        if path.exists() {
+            Err("still present")
+        } else {
+            Ok(())
+        }
+    });
 }
 
 pub(super) fn config_path() -> &'static Path {

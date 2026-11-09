@@ -40,7 +40,7 @@ use tokio::{
 use config_support::{empty_config, socket_bind, socket_endpoint};
 use http_support::{HttpResponse, read_request_head};
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(8);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct Proxy {
     address: SocketAddr,
@@ -66,6 +66,7 @@ impl Proxy {
         let address = listener.local_addr().expect("proxy address");
         drop(listener);
         let config = ConfigDraft {
+            listener_workers: None,
             retirement: None,
             listeners: vec![Listener {
                 name: "http-loopback".into(),

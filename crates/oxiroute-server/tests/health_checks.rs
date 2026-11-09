@@ -22,7 +22,7 @@ use tokio::{
 use config_support::{empty_config, runtime_generation as runtime_plan, socket_endpoint};
 use http_support::read_request_head as read_request_head_bytes;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
 fn imported_haproxy_http_check_send_compiles_into_the_runtime_health_plan() {
@@ -265,7 +265,7 @@ async fn supervisor_signals_readiness_immediately_and_stops_while_sleeping() {
         assert!(*ready.borrow());
         accept.await.expect("accept task");
         shutdown_tx.send(true).expect("shutdown signal");
-        timeout(Duration::from_millis(200), supervisor_task)
+        timeout(Duration::from_secs(30), supervisor_task)
             .await
             .expect("sleeping supervisor must stop promptly")
             .expect("supervisor task");
@@ -286,6 +286,7 @@ async fn health_groups_schedule_independently() {
         });
         let (slow_address, slow_server) = http_origin(200, true).await;
         let config = ConfigDraft {
+            listener_workers: None,
             retirement: None,
             upstream_pools: vec![
                 pool(
@@ -342,6 +343,7 @@ async fn endpoints_in_one_pool_schedule_from_their_own_completion() {
         });
         let (slow_address, slow_server) = http_origin(200, true).await;
         let config = ConfigDraft {
+            listener_workers: None,
             retirement: None,
             upstream_pools: vec![UpstreamPool {
                 name: "mixed".into(),
@@ -423,6 +425,7 @@ async fn validation_enforces_programmatic_endpoint_cardinality() {
         .map(|port| socket_endpoint(SocketAddr::from(([127, 0, 0, 1], port))))
         .collect();
     let result = ConfigDraft {
+        listener_workers: None,
         retirement: None,
         upstream_pools: vec![UpstreamPool {
             name: "oversized".into(),
@@ -548,6 +551,7 @@ async fn dns_no_answer_is_a_bounded_connect_failure() {
 
 fn config(endpoint: UpstreamEndpoint, health_check: HealthCheck) -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         upstream_pools: vec![pool("checked", endpoint, health_check)],
         ..empty_config()

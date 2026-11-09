@@ -8,6 +8,10 @@ pub struct ConfigDraft {
     /// Aggregate process admission cap. Omitted or explicit null means unbounded.
     #[serde(default)]
     pub max_connections: Option<u64>,
+    /// Worker threads that serve each HTTP, forward HTTP/1, forward HTTP/2 and TCP listener.
+    /// The workers share the listener's socket, pools and limits. Omitted means one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listener_workers: Option<u64>,
     /// Bounds on how long and how many replaced generations keep serving their in-flight work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<Retirement>,
@@ -35,6 +39,10 @@ pub struct ConfigDraft {
     pub rtmp_services: Vec<RtmpService>,
     #[serde(default)]
     pub l4_services: Vec<L4Service>,
+}
+
+impl ConfigDraft {
+    pub const MAX_LISTENER_WORKERS: u64 = 256;
 }
 
 /// Lifetime of a replaced generation. Its accept gate closes at once; work already admitted

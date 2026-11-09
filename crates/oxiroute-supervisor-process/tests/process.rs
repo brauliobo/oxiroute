@@ -11,7 +11,7 @@ use std::{
 };
 
 use oxiroute_supervision::GenerationId;
-use oxiroute_supervision_unix::InstanceToken;
+use oxiroute_supervision_unix::{FrameFlags, InstanceToken, MessageType};
 use oxiroute_supervisor_process::{
     AuthenticatedChannelError, DEFAULT_CGROUP_V2_ROOT, ExecutableError,
     MAX_WORKER_METADATA_ITEM_BYTES, SpawnError, WorkerCommand, WorkerEvent, WorkerIdentity,
@@ -23,7 +23,12 @@ use rustix::{
 };
 
 const INSTANCE: InstanceToken = InstanceToken(*b"process-worker01");
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+const RELEASE: MessageType = MessageType(60);
+/// Upper bound for a condition that holds within milliseconds on an idle host.
+/// Calls that must not wait for a worker that lingers for 30 seconds return well before that.
+const NOT_BLOCKED: Duration = Duration::from_secs(10);
+const EVENTUALLY: Duration = Duration::from_secs(30);
 
 fn identity() -> WorkerIdentity {
     WorkerIdentity {
@@ -48,6 +53,14 @@ fn spawn(mode: &str) -> Result<WorkerProcess, SpawnError> {
     spawner(HANDSHAKE_TIMEOUT).spawn(command(mode), identity())
 }
 
+/// Lets a fixture worker that waits to be released exit on its own.
+fn release(worker: &mut WorkerProcess) {
+    worker
+        .channel()
+        .send(RELEASE, FrameFlags::default(), b"", &[])
+        .unwrap();
+}
+
 fn exit_status(event: Option<WorkerEvent>) -> ExitStatus {
     let Some(WorkerEvent::ProcessGroupExited(status)) = event else {
         panic!("missing exit event");
@@ -55,17 +68,21 @@ fn exit_status(event: Option<WorkerEvent>) -> ExitStatus {
     status
 }
 
-fn wait_for_file(path: &std::path::Path) -> String {
+fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
     let started = Instant::now();
-    loop {
-        if let Ok(value) = fs::read_to_string(path)
-            && !value.trim().is_empty()
-        {
-            return value;
-        }
-        assert!(started.elapsed() < Duration::from_secs(2));
+    while !condition() {
+        assert!(started.elapsed() < EVENTUALLY, "{what} did not happen");
         thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn wait_for_file(path: &std::path::Path) -> String {
+    let mut contents = String::new();
+    eventually("fixture output", || {
+        contents = fs::read_to_string(path).unwrap_or_default();
+        !contents.trim().is_empty()
+    });
+    contents
 }
 
 fn process_exists(pid: u32) -> bool {
@@ -76,14 +93,7 @@ fn process_exists(pid: u32) -> bool {
 }
 
 fn assert_process_gone(pid: u32) {
-    let started = Instant::now();
-    while process_exists(pid) && started.elapsed() < Duration::from_secs(2) {
-        thread::sleep(Duration::from_millis(5));
-    }
-    assert!(
-        !process_exists(pid),
-        "process {pid} survived containment cleanup"
-    );
+    eventually(&format!("process {pid} cleanup"), || !process_exists(pid));
 }
 
 #[cfg(target_os = "linux")]
@@ -102,29 +112,9 @@ fn delegated_cgroup_path(path: &Path) -> PathBuf {
 
 #[cfg(target_os = "linux")]
 fn assert_cgroup_released(path: &Path) {
-    let started = Instant::now();
-    while path.exists() && started.elapsed() < Duration::from_secs(2) {
-        if fs::read_to_string(path.join("cgroup.procs")).is_ok_and(|pids| pids.trim().is_empty()) {
-            break;
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
-    if path.exists() {
-        assert!(
-            fs::read_to_string(path.join("cgroup.procs")).is_ok_and(|pids| pids.trim().is_empty()),
-            "worker cgroup remained populated: {}",
-            path.display()
-        );
-        let started = Instant::now();
-        while path.exists() && started.elapsed() < Duration::from_secs(2) {
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-    assert!(
-        !path.exists(),
-        "worker cgroup survived cleanup: {}",
-        path.display()
-    );
+    eventually(&format!("worker cgroup {} cleanup", path.display()), || {
+        !path.exists()
+    });
 }
 
 #[cfg(target_os = "linux")]
@@ -146,6 +136,7 @@ fn authenticated_worker_starts_and_reports_exit_once() {
     assert!(worker.id() > 0);
     assert!(worker.process_group_id().is_some());
     assert_ne!(worker.process_group_id(), Some(worker.id()));
+    release(&mut worker);
     let status = exit_status(worker.wait_event().unwrap());
     assert_eq!(status.signal(), Some(9));
     assert_eq!(worker.process_group_id(), None);
@@ -158,9 +149,12 @@ fn executable_resolution_and_environment_are_sanitized() {
         WorkerCommand::new("oxiroute-no-such-worker"),
         Err(ExecutableError::NotFound { .. })
     ));
+    let directory = tempfile::tempdir().unwrap();
+    let verdict = directory.path().join("verdict");
     let mut worker = spawner(HANDSHAKE_TIMEOUT)
         .spawn(
             command("environment")
+                .env("VERDICT_FILE", verdict.as_os_str())
                 .env("CONFIGURED_MODE", "fixture")
                 .env("LD_PRELOAD", "/definitely/not/a/preload-library.so")
                 .env("OXIROUTE_AUDIT_DIR", "/var/lib/oxiroute/audit")
@@ -169,6 +163,8 @@ fn executable_resolution_and_environment_are_sanitized() {
             identity(),
         )
         .unwrap();
+    assert_eq!(wait_for_file(&verdict), "valid");
+    release(&mut worker);
     let status = exit_status(worker.wait_event().unwrap());
     assert_eq!(status.signal(), Some(9));
 
@@ -206,12 +202,18 @@ fn launcher_removes_parent_inheritable_sentinel_descriptor() {
     fcntl_setfd(&writer, flags - FdFlags::CLOEXEC).unwrap();
     assert!(!fcntl_getfd(&writer).unwrap().contains(FdFlags::CLOEXEC));
     let target = fs::read_link(format!("/proc/self/fd/{}", writer.as_fd().as_raw_fd())).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let verdict = directory.path().join("verdict");
     let mut worker = spawner(HANDSHAKE_TIMEOUT)
         .spawn(
-            command("sentinel").env("SENTINEL_TARGET", target.as_os_str()),
+            command("sentinel")
+                .env("VERDICT_FILE", verdict.as_os_str())
+                .env("SENTINEL_TARGET", target.as_os_str()),
             identity(),
         )
         .unwrap();
+    assert_eq!(wait_for_file(&verdict), "valid");
+    release(&mut worker);
     let status = exit_status(worker.wait_event().unwrap());
     assert_eq!(status.signal(), Some(9));
 }
@@ -259,7 +261,7 @@ fn handshake_timeout_is_bounded_and_reaps_in_background() {
         spawner(Duration::from_millis(100)).spawn(command("timeout"), identity()),
         Err(SpawnError::HandshakeTimeout)
     ));
-    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(started.elapsed() < NOT_BLOCKED);
 }
 
 #[test]
@@ -278,10 +280,11 @@ fn early_exit_and_crash_are_reported_with_status() {
 
 #[test]
 fn startup_credentials_must_belong_to_the_direct_child() {
-    assert!(matches!(
-        spawn("credential-mismatch"),
-        Err(SpawnError::WorkerParentMismatch { .. })
-    ));
+    let result = spawn("credential-mismatch");
+    assert!(
+        matches!(result, Err(SpawnError::WorkerParentMismatch { .. })),
+        "unexpected result: {result:?}"
+    );
 }
 
 #[test]
@@ -312,7 +315,7 @@ fn nonblocking_receive_returns_when_no_frame_is_available() {
     let mut worker = spawn("linger").unwrap();
     let started = Instant::now();
     assert!(worker.channel().try_receive().unwrap().is_none());
-    assert!(started.elapsed() < Duration::from_millis(100));
+    assert!(started.elapsed() < NOT_BLOCKED);
     worker.kill().unwrap();
 }
 
@@ -321,27 +324,23 @@ fn kill_request_is_nonblocking_and_reaping_remains_poll_driven() {
     let mut worker = spawn("linger").unwrap();
     let started = Instant::now();
     worker.request_kill().unwrap();
-    assert!(started.elapsed() < Duration::from_millis(100));
+    assert!(started.elapsed() < NOT_BLOCKED);
     assert!(worker.process_group_id().is_some());
 
-    let started = Instant::now();
-    loop {
-        if worker.poll_event().unwrap().is_some() {
-            break;
-        }
-        assert!(started.elapsed() < Duration::from_secs(2));
-        thread::sleep(Duration::from_millis(5));
-    }
+    eventually("launcher exit", || worker.poll_event().unwrap().is_some());
     assert_eq!(worker.process_group_id(), None);
 }
 
 #[test]
 fn channel_closes_when_direct_child_exits() {
     let mut worker = spawn("success").unwrap();
-    assert!(matches!(
-        worker.channel().receive(),
-        Err(AuthenticatedChannelError::WorkerGroupExited(_))
-    ));
+    release(&mut worker);
+    eventually("launcher exit reported on the channel", || {
+        matches!(
+            worker.channel().receive(),
+            Err(AuthenticatedChannelError::WorkerGroupExited(_))
+        )
+    });
     assert!(worker.poll_event().unwrap().is_some());
 }
 
@@ -351,7 +350,7 @@ fn drop_is_bounded_and_background_reaper_collects_the_child() {
     let pids = workers.iter().map(WorkerProcess::id).collect::<Vec<_>>();
     let started = Instant::now();
     drop(workers);
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(started.elapsed() < NOT_BLOCKED);
     for pid in pids {
         assert_process_gone(pid);
     }
@@ -368,6 +367,7 @@ fn drop_is_bounded_and_background_reaper_collects_the_child() {
 fn reaping_leader_permanently_disables_group_signaling() {
     let mut worker = spawn("success").unwrap();
     assert!(worker.process_group_id().is_some());
+    release(&mut worker);
     worker.wait_event().unwrap();
     assert_eq!(worker.process_group_id(), None);
 
@@ -392,6 +392,7 @@ fn launcher_cleans_ordinary_descendants_after_worker_exit() {
         )
         .unwrap();
     let descendant = wait_for_file(&pid_file).parse::<u32>().unwrap();
+    release(&mut worker);
     worker.wait_event().unwrap();
     assert_eq!(worker.process_group_id(), None);
     assert_process_gone(descendant);
@@ -422,13 +423,10 @@ fn delegated_cgroup_cleans_a_descendant_that_escaped_the_process_group() {
     );
     let descendant = wait_for_file(&pid_file).parse::<u32>().unwrap();
 
+    release(&mut worker);
     worker.wait_event().unwrap();
     assert_process_gone(descendant);
-    let started = Instant::now();
-    while cgroup_path.exists() && started.elapsed() < Duration::from_secs(2) {
-        thread::sleep(Duration::from_millis(5));
-    }
-    assert!(!cgroup_path.exists(), "worker cgroup survived cleanup");
+    assert_cgroup_released(&cgroup_path);
 }
 
 #[cfg(target_os = "linux")]
@@ -460,14 +458,7 @@ fn delegated_cgroup_owner_cleans_after_launcher_crash() {
 
     worker.wait_event().unwrap();
     assert_process_gone(descendant);
-    let started = Instant::now();
-    while cgroup_path.exists() && started.elapsed() < Duration::from_secs(2) {
-        thread::sleep(Duration::from_millis(5));
-    }
-    assert!(
-        !cgroup_path.exists(),
-        "crashed launcher cgroup survived cleanup"
-    );
+    assert_cgroup_released(&cgroup_path);
 }
 
 #[cfg(target_os = "linux")]

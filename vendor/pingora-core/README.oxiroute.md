@@ -8,7 +8,8 @@ OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS co
 pre-handshake application admission and per-application handshake timeout, a non-truncating certificate subject conversion, correct
 HTTP/1 HEAD informational-response framing, owned HTTP/1 response preread payloads, borrowed HTTP/1
 upstream request writes, parser-owned HTTP/1 header names, an inline HTTP response task batch, an
-HTTP/2 test lifecycle correction, a lazily allocated read buffer, and stage-1 connection-pool experiments:
+HTTP/2 test lifecycle correction, a lazily allocated read buffer, pooled gzip deflate state, a per-thread
+header-name cache, and stage-1 connection-pool experiments:
 
 - `protocols/tls/mod.rs` declares the public `TlsConfigureHook` type.
 - `upstreams/peer.rs` stores the optional hook in `PeerOptions`, omits it from
@@ -71,6 +72,13 @@ HTTP/2 test lifecycle correction, a lazily allocated read buffer, and stage-1 co
   `quiesced` condition variable only while one exists, under the mutex that guards the count. Every
   accepted connection releases an ownership claim, so an unconditional `notify_all` was one `futex` call
   per connection.
+- `protocols/http/compression/gzip.rs` frames gzip around a raw `flate2::Compress` deflate state that returns
+  to a per-thread pool (at most four, one per level) when the response ends, instead of creating a
+  `GzEncoder` that allocates and clears about 380 KiB for every response. The stream carries the same header
+  and trailer as `GzEncoder`; the deflate state is reset between uses.
+- `protocols/http/v1/common.rs` remembers parsed header names per thread (at most 512 names of up to 64
+  bytes, cleared when full), so a name outside the `http` standard table is allocated once per thread instead
+  of once per request.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.
@@ -80,6 +88,6 @@ upstream packaging commentary; that non-build manifest is intentionally omitted 
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
 review the connector hook, admission guard and handshake-timeout hook, subject conversion, HTTP/1 HEAD informational-response,
-owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, lazy read buffer, HTTP/2 test
-lifecycle, and connection-pool changes, then rerun the vendored connector pool, BodyReader, H1
-client, and H2 server suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.
+owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, lazy read buffer, pooled
+gzip state, header-name cache, HTTP/2 test lifecycle, and connection-pool changes, then rerun the vendored
+connector pool, BodyReader, H1 client, and H2 server suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.

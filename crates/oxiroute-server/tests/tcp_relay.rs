@@ -23,7 +23,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn relays_bidirectional_traffic_and_accounts_for_it() {

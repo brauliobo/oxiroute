@@ -58,7 +58,6 @@ use crate::{
         UpstreamPlan, enforce_http_version, is_pool_unavailable, validate_tls_connection,
     },
 };
-use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 use crate::http::evacuation::{Cancellation, EVACUATED, LeftRunning, is_evacuated};
 use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};
@@ -199,9 +198,9 @@ struct ResponseBuffer {
 }
 
 impl HttpRequestContext {
-    fn enter_phase(&self, phase: Phase) {
+    fn enter_phase(&self, phase: Phase, now: Instant) {
         if let Some(inflight) = &self.inflight {
-            inflight.set_phase(phase);
+            inflight.set_phase(phase, now);
         }
     }
 
@@ -293,11 +292,11 @@ impl HttpRequestContext {
     }
 
     /// Settles the last attempt and adds what the finished request sent and received to its server.
-    fn account_final_attempt(&mut self, session: &Session) {
+    fn account_final_attempt(&mut self, session: &Session, now: Instant) {
         if self.trace.responded {
             if let (Some(stats), Some(connected)) = (&self.trace.stats, self.trace.connected_at) {
                 let bytes = |count: usize| u64::try_from(count).unwrap_or(u64::MAX);
-                stats.record_request_duration(connected.elapsed());
+                stats.record_request_duration(now.saturating_duration_since(connected));
                 stats.record_bytes(
                     bytes(session.body_bytes_read()),
                     bytes(session.body_bytes_sent()),
@@ -314,10 +313,12 @@ impl HttpRequestContext {
     }
 
     /// The attempt produced the response the client gets.
-    fn note_response(&mut self, status: u16) {
+    fn note_response(&mut self, status: u16, now: Instant) {
         let trace = &mut self.trace;
         trace.responded = true;
-        trace.header = trace.connected_at.map(|connected| connected.elapsed());
+        trace.header = trace
+            .connected_at
+            .map(|connected| now.saturating_duration_since(connected));
         if let Some(stats) = &trace.stats {
             stats.record_attempt(AttemptOutcome::Ok);
             stats.record_response(Some(status));
@@ -430,7 +431,12 @@ impl HttpRequestContext {
     }
 
     fn remaining(&self, upstream: bool) -> pingora::Result<Duration> {
-        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        self.remaining_at(Instant::now(), upstream)
+    }
+
+    /// For callers that already read the clock for this step.
+    fn remaining_at(&self, now: Instant, upstream: bool) -> pingora::Result<Duration> {
+        let remaining = self.deadline.saturating_duration_since(now);
         if remaining.is_zero() {
             return Err(if upstream {
                 Error::new_up(ErrorType::ReadTimedout)

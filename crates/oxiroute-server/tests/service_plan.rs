@@ -222,6 +222,7 @@ fn host-b_host-a_and_host-c_pool_shapes_compile_with_named_policy() {
         queue: None,
     };
     let config = ConfigDraft {
+        listener_workers: None,
         retirement: None,
         max_connections: Some(4_096),
         upstream_pools: vec![
@@ -1609,6 +1610,7 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
 #[allow(clippy::too_many_lines)]
 fn canonical_config() -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         listeners: vec![
             Listener {
