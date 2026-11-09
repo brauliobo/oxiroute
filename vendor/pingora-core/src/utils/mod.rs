@@ -15,6 +15,8 @@
 //! This module contains various types that make it easier to work with bytes and X509
 //! certificates.
 
+pub mod chunk_pool;
+
 #[cfg(feature = "any_tls")]
 pub mod tls;
 
