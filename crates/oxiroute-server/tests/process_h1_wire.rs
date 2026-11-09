@@ -18,7 +18,8 @@ use std::{
 
 use oxiroute_config::{
     ConfigDraft, DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpPathSelector, HttpProxyPolicy,
-    HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy, Listener, Protocol,
+    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRoute,
+    HttpRouteAction, HttpService, HttpUpstreamHost, HttpVersionPolicy, Listener, Protocol,
     UpstreamAlgorithm, UpstreamPool, UpstreamServer,
 };
 use tokio::{
@@ -115,7 +116,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn config(listen: SocketAddr, origin: SocketAddr) -> ConfigDraft {
+fn config(listen: SocketAddr, origin: SocketAddr, policy: HttpProxyPolicy) -> ConfigDraft {
     let mut config = empty_config();
     config.listeners = vec![Listener {
         name: "wire".into(),
@@ -161,7 +162,7 @@ fn config(listen: SocketAddr, origin: SocketAddr) -> ConfigDraft {
             policy: oxiroute_config::HttpRoutePolicy::default(),
             action: HttpRouteAction::Proxy {
                 upstream_pool: "origin".into(),
-                policy: HttpProxyPolicy::default().into(),
+                policy: policy.into(),
             },
         }],
         automatic_response_headers: true,
@@ -181,9 +182,13 @@ struct Wire {
 
 impl Wire {
     async fn start(reply: &'static [u8]) -> Self {
+        Self::start_with(reply, HttpProxyPolicy::default()).await
+    }
+
+    async fn start_with(reply: &'static [u8], policy: HttpProxyPolicy) -> Self {
         let origin = Origin::start(reply).await;
         let proxy = reserve_tcp_address();
-        let config = config(proxy, origin.address)
+        let config = config(proxy, origin.address, policy)
             .validate()
             .expect("valid wire config");
         let mut server = ServerProcess::start(&config, None);
@@ -651,4 +656,174 @@ async fn a_no_content_response_is_forwarded_without_body_or_framing() {
         !response.to_ascii_lowercase().contains("transfer-encoding"),
         "{response}"
     );
+}
+
+fn forwarding_policy() -> HttpProxyPolicy {
+    HttpProxyPolicy {
+        upstream_host: HttpUpstreamHost::Literal {
+            value: "origin.example:8080".into(),
+        },
+        request_headers: vec![
+            HttpRequestHeaderMutation::Set {
+                name: "x-forwarded-for".into(),
+                value: HttpRequestHeaderValue::AppendedXForwardedFor {
+                    max_bytes: 128,
+                    except_source_cidrs: Vec::new(),
+                },
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-forwarded-proto".into(),
+                value: HttpRequestHeaderValue::DownstreamScheme,
+            },
+            HttpRequestHeaderMutation::Set {
+                name: "x-real-ip".into(),
+                value: HttpRequestHeaderValue::ClientIp,
+            },
+            HttpRequestHeaderMutation::Remove {
+                name: "x-internal".into(),
+            },
+        ],
+        response_headers: vec![
+            HttpResponseHeaderMutation::Set {
+                name: "x-served-by".into(),
+                value: "edge".into(),
+                always: true,
+            },
+            HttpResponseHeaderMutation::Remove {
+                name: "x-origin".into(),
+            },
+        ],
+        ..HttpProxyPolicy::default()
+    }
+}
+
+fn header_lines(head: &str, name: &str) -> Vec<String> {
+    head.split("\r\n")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .filter_map(|line| line.split_once(": "))
+        .filter(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn forwarded_headers_and_the_host_rewrite_reach_the_origin_in_place() {
+    let wire = Wire::start_with(OK, forwarding_policy()).await;
+    let response = wire
+        .exchange(
+            b"GET /f HTTP/1.1\r\nHost: example.test\r\nX-Forwarded-For: 198.51.100.4\r\nX-Keep: 1\r\nX-Forwarded-For: 203.0.113.8\r\nX-Internal: secret\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+    assert_eq!(status(&response), "HTTP/1.1 200 OK", "{response}");
+    let request = &wire.origin.requests()[0];
+    assert_eq!(header_lines(request, "host"), ["origin.example:8080"]);
+    assert_eq!(
+        header_lines(request, "x-forwarded-for"),
+        ["198.51.100.4, 203.0.113.8, 127.0.0.1"],
+        "{request}"
+    );
+    assert_eq!(header_lines(request, "x-forwarded-proto"), ["http"]);
+    assert_eq!(header_lines(request, "x-real-ip"), ["127.0.0.1"]);
+    assert!(header_lines(request, "x-internal").is_empty(), "{request}");
+    assert_eq!(header_lines(request, "x-keep"), ["1"]);
+    let names = header_names(request);
+    let position = |name: &str| names.iter().position(|n| n.eq_ignore_ascii_case(name));
+    assert!(position("host") < position("x-forwarded-for"), "{request}");
+    assert!(
+        position("x-forwarded-for") < position("x-keep"),
+        "{request}"
+    );
+    wire.finish();
+}
+
+#[tokio::test]
+async fn response_policy_sets_and_removes_headers_and_the_request_id_is_one_header() {
+    let wire = Wire::start_with(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Origin: yes\r\nX-Request-Id: from-origin\r\n\r\nok",
+        forwarding_policy(),
+    )
+    .await;
+    let response = wire
+        .exchange(b"GET /f HTTP/1.1\r\nHost: example.test\r\nX-Request-Id: client-1\r\nConnection: close\r\n\r\n")
+        .await;
+    assert_eq!(
+        header_lines(&response, "x-served-by"),
+        ["edge"],
+        "{response}"
+    );
+    assert!(header_lines(&response, "x-origin").is_empty(), "{response}");
+    assert_eq!(
+        header_lines(&response, "x-request-id"),
+        ["client-1"],
+        "{response}"
+    );
+    assert_eq!(
+        header_lines(&response, "x-upstream-request-id"),
+        ["from-origin"],
+        "{response}"
+    );
+    let request = &wire.origin.requests()[0];
+    assert_eq!(
+        header_lines(request, "x-request-id"),
+        ["client-1"],
+        "{request}"
+    );
+    wire.finish();
+}
+
+#[tokio::test]
+async fn a_request_without_an_id_gets_one_for_the_origin_and_the_same_one_back() {
+    let wire = Wire::start(OK).await;
+    let response = wire
+        .exchange(b"GET /f HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+        .await;
+    let sent = header_lines(&wire.origin.requests()[0], "x-request-id");
+    let received = header_lines(&response, "x-request-id");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].starts_with("rq-"), "{sent:?}");
+    assert_eq!(sent, received, "{response}");
+    wire.finish();
+}
+
+#[tokio::test]
+async fn keep_alive_requests_on_one_connection_each_carry_their_own_framing() {
+    let wire = Wire::start(OK).await;
+    let mut stream = TcpStream::connect(wire.proxy).await.expect("connect");
+    for body in ["", "abc", ""] {
+        let length = if body.is_empty() {
+            String::new()
+        } else {
+            format!("Content-Length: {}\r\n", body.len())
+        };
+        let method = if body.is_empty() { "GET" } else { "POST" };
+        let request = format!("{method} /k HTTP/1.1\r\nHost: example.test\r\n{length}\r\n{body}");
+        stream.write_all(request.as_bytes()).await.expect("write");
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        timeout(STEP, async {
+            while !bytes.ends_with(b"ok") {
+                let count = stream.read(&mut buffer).await.expect("read");
+                assert!(
+                    count > 0,
+                    "closed early: {}",
+                    String::from_utf8_lossy(&bytes)
+                );
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+        })
+        .await
+        .expect("response");
+    }
+    let requests = wire.origin.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[1].starts_with("POST /k") && requests[1].ends_with("\r\n\r\nabc"),
+        "{requests:?}"
+    );
+    assert!(
+        !requests[2].to_ascii_lowercase().contains("content-length"),
+        "{requests:?}"
+    );
+    wire.finish();
 }
