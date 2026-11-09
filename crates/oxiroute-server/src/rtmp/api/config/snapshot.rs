@@ -7,7 +7,7 @@ use crate::config::coordinator::{
     AuthoredRevision, CanonicalConfigCoordinator, EffectiveRevision, ResolvedConfigDocument,
 };
 
-use super::super::dto::ConfigSnapshotResponse;
+use super::super::{dto::ConfigSnapshotResponse, response::matches_validator};
 
 /// The `GET /config` body for one persisted document and active revision.
 ///
@@ -89,27 +89,4 @@ impl SnapshotCache {
 /// The body is a function of the persisted bytes and the active revision, nothing else.
 fn etag(disk: &AuthoredRevision, active: &EffectiveRevision) -> String {
     format!("\"{disk}-{active}\"")
-}
-
-/// Weak comparison of an `If-None-Match` list (RFC 9110, section 13.1.2).
-fn matches_validator(header: &str, etag: &str) -> bool {
-    header.split(',').map(str::trim).any(|candidate| {
-        candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate) == etag
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn if_none_match_uses_weak_comparison_over_a_list() {
-        let etag = "\"a-b\"";
-        assert!(matches_validator("\"a-b\"", etag));
-        assert!(matches_validator("W/\"a-b\"", etag));
-        assert!(matches_validator("\"x\", \"a-b\"", etag));
-        assert!(matches_validator("*", etag));
-        assert!(!matches_validator("\"a-c\"", etag));
-        assert!(!matches_validator("", etag));
-    }
 }
