@@ -210,7 +210,13 @@ pub(super) async fn config_api_applies_an_added_listener_in_both_runtime_modes_w
             .await;
         assert_eq!(preview.status, 200);
         assert_eq!(preview.json()["restartRequired"], restart_required);
-        let expected_added = serde_json::json!(["candidate (tcp 127.0.0.1:1935)"]);
+        let candidate_bind = candidate
+            .listeners
+            .last()
+            .expect("candidate listener")
+            .bind
+            .clone();
+        let expected_added = serde_json::json!([format!("candidate (tcp {candidate_bind})")]);
         let preview_changes = preview.json()["diagnostics"]
             .as_array()
             .unwrap()
