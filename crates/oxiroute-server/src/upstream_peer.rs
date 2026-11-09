@@ -13,6 +13,8 @@ use oxiroute_config::{HttpVersion, PoolResilience, UpstreamConnectionReuse};
 use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
 use tokio::time::Instant;
 
+use crate::clock::promptly;
+use crate::label::Label;
 use crate::routing::{EndpointObservation, QueueTag};
 use crate::{EndpointLease, H3UpstreamPlan, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
 
@@ -54,6 +56,8 @@ pub(crate) struct UpstreamPlan {
     connection_reuse: UpstreamConnectionReuse,
     h3: Option<Arc<H3UpstreamPlan>>,
     http_version: HttpVersion,
+    /// The pool's name, shared with the records that say where a request is.
+    label: Label,
     selector: Arc<RoundRobinPool>,
     server_timeout: Option<Duration>,
     tls: Option<Arc<UpstreamTlsPlan>>,
@@ -70,6 +74,7 @@ impl UpstreamPlan {
             connection_reuse: UpstreamConnectionReuse::Safe,
             h3: None,
             http_version: HttpVersion::Http11,
+            label: Label::new(selector.name()),
             selector,
             server_timeout: None,
             tls,
@@ -110,6 +115,7 @@ impl UpstreamPlan {
             connection_reuse,
             h3,
             http_version,
+            label: Label::new(selector.name()),
             selector,
             server_timeout,
             tls,
@@ -125,6 +131,10 @@ impl UpstreamPlan {
 
     pub(crate) const fn unavailable_response(&self) -> &UnavailableResponse {
         &self.unavailable
+    }
+
+    pub(crate) fn label(&self) -> &Label {
+        &self.label
     }
 
     pub(crate) fn selector(&self) -> &Arc<RoundRobinPool> {
@@ -364,12 +374,17 @@ impl SelectedEndpoint {
             return Ok(peer);
         }
         if self.addresses.is_none() {
-            let addresses = tokio::time::timeout(remaining, self.lease.resolve_addresses())
+            let (addresses, waited) = promptly(remaining, self.lease.resolve_addresses())
                 .await
-                .map_err(|_| endpoint_timeout(&self.endpoint, connection_timeout))?
-                .map_err(|source| dns_failure(&self.endpoint, source))?;
-            self.addresses = Some(addresses.into_iter());
-            remaining = self.remaining_timeout(Instant::now(), connection_timeout)?;
+                .map_err(|_| endpoint_timeout(&self.endpoint, connection_timeout))?;
+            self.addresses = Some(
+                addresses
+                    .map_err(|source| dns_failure(&self.endpoint, source))?
+                    .into_iter(),
+            );
+            if waited {
+                remaining = self.remaining_timeout(Instant::now(), connection_timeout)?;
+            }
         }
         let address = self
             .addresses

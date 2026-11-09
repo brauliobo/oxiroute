@@ -263,10 +263,13 @@ pub(super) fn is_buf_keepalive(header_value: Option<&HeaderValue>) -> Option<boo
     })
 }
 
+/// The offsets of one message's headers; up to this many need no allocation.
+pub(super) type HeaderRefs = smallvec::SmallVec<[KVRef; 16]>;
+
 #[inline]
 pub(super) fn populate_headers(
     base: usize,
-    header_ref: &mut Vec<KVRef>,
+    header_ref: &mut HeaderRefs,
     headers: &[httparse::Header],
 ) -> usize {
     let mut used_header_index = 0;
@@ -334,14 +337,86 @@ fn header_name(name: &[u8]) -> Result<HeaderName> {
     })
 }
 
-/// Append a header validated by the HTTP/1 parser without retaining its wire casing.
+/// What a request head says about its framing and connection handling, noted while its headers are appended so
+/// that the checks that follow read a flag instead of hashing a header name each.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RequestFacts {
+    pub transfer_encoding: bool,
+    /// The number of `Content-Length` headers, 2 standing for any more than one.
+    pub content_lengths: u8,
+    pub connection: bool,
+    pub upgrade: bool,
+}
+
+impl RequestFacts {
+    /// Nothing is known: every header may be present, so a reader looks it up.
+    pub const UNKNOWN: Self = Self {
+        transfer_encoding: true,
+        content_lengths: 1,
+        connection: true,
+        upgrade: true,
+    };
+
+    /// The facts of headers that were not noted as they were appended.
+    pub fn of(headers: &HMap) -> Self {
+        Self {
+            transfer_encoding: headers.contains_key(header::TRANSFER_ENCODING),
+            content_lengths: headers
+                .get_all(header::CONTENT_LENGTH)
+                .iter()
+                .take(2)
+                .count() as u8,
+            connection: headers.contains_key(header::CONNECTION),
+            upgrade: headers.contains_key(header::UPGRADE),
+        }
+    }
+
+    fn note(&mut self, name: &HeaderName) {
+        if *name == header::CONTENT_LENGTH {
+            self.content_lengths = (self.content_lengths + 1).min(2);
+        } else if *name == header::TRANSFER_ENCODING {
+            self.transfer_encoding = true;
+        } else if *name == header::CONNECTION {
+            self.connection = true;
+        } else if *name == header::UPGRADE {
+            self.upgrade = true;
+        }
+    }
+}
+
+/// Whether `bytes` are valid `HeaderValue` contents: the check `HeaderValue::from_bytes` makes, without copying them.
+/// Eight bytes at a time are tested for a control byte or DEL; a tab (valid) or a real offender sends the value to the
+/// byte-wise check.
 #[inline]
-pub(super) fn append_parsed_header(
+pub(super) fn is_header_value(bytes: &[u8]) -> bool {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    let valid = |&byte: &u8| (byte >= 32 && byte != 127) || byte == b'\t';
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        let word = u64::from_le_bytes(<[u8; 8]>::try_from(chunk).expect("a chunk of eight"));
+        let below_space = word.wrapping_sub(ONES * 0x20) & !word & HIGH;
+        let deleted = word ^ (ONES * 0x7f);
+        let has_del = deleted.wrapping_sub(ONES) & !deleted & HIGH;
+        if below_space | has_del != 0 {
+            return bytes.iter().all(valid);
+        }
+    }
+    chunks.remainder().iter().all(valid)
+}
+
+/// Appends a header validated by the HTTP/1 parser without retaining its wire casing, and notes in `facts`
+/// what the header is.
+#[inline]
+pub(super) fn append_parsed_request_header(
     headers: &mut HMap,
     name: &[u8],
     value: HeaderValue,
+    facts: &mut RequestFacts,
 ) -> Result<()> {
-    headers.append(header_name(name)?, value);
+    let name = header_name(name)?;
+    facts.note(&name);
+    headers.append(name, value);
     Ok(())
 }
 
@@ -351,6 +426,7 @@ pub(super) fn append_parsed_header(
 // field-values or a single Content-Length header field having an
 // invalid value, then the message framing is invalid and the
 // recipient MUST treat it as an unrecoverable error.
+#[cfg(test)]
 pub(super) fn check_dup_content_length(headers: &HMap) -> Result<()> {
     if headers.get(header::TRANSFER_ENCODING).is_some() {
         // If TE header, ignore CL
@@ -363,6 +439,18 @@ pub(super) fn check_dup_content_length(headers: &HMap) -> Result<()> {
     }
     if cls.next().is_some() {
         // duplicated CL is bad
+        return crate::Error::e_explain(
+            crate::ErrorType::InvalidHTTPHeader,
+            "duplicated Content-Length header",
+        );
+    }
+    Ok(())
+}
+
+/// Refuses duplicate `Content-Length` headers, from the facts noted while the message was parsed.
+pub(super) fn check_dup_content_length_facts(facts: RequestFacts) -> Result<()> {
+    // If a Transfer-Encoding is present, Content-Length is ignored.
+    if !facts.transfer_encoding && facts.content_lengths > 1 {
         return crate::Error::e_explain(
             crate::ErrorType::InvalidHTTPHeader,
             "duplicated Content-Length header",
@@ -394,6 +482,32 @@ mod test {
         }
         assert_eq!(header_name(b"Host").unwrap(), header::HOST);
         assert!(header_name(&[b'a'; NAME_CACHE_MAX_BYTES + 1]).is_ok());
+    }
+
+    #[test]
+    fn header_value_validity_matches_the_http_crate() {
+        for byte in 0..=u8::MAX {
+            assert_eq!(
+                is_header_value(&[b'a', byte]),
+                HeaderValue::from_bytes(&[b'a', byte]).is_ok(),
+                "byte {byte}"
+            );
+        }
+        assert!(is_header_value(b""));
+        // Every byte value at every position of values longer than a word, so the word-wise path is checked.
+        for length in [7, 8, 9, 15, 16, 17, 40] {
+            for position in 0..length {
+                for byte in 0..=u8::MAX {
+                    let mut value = vec![b'a'; length];
+                    value[position] = byte;
+                    assert_eq!(
+                        is_header_value(&value),
+                        HeaderValue::from_bytes(&value).is_ok(),
+                        "byte {byte} at {position} of {length}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

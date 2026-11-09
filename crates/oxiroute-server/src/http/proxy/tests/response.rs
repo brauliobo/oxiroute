@@ -324,3 +324,29 @@ async fn grpc_trailer_hooks_leave_trailers_and_body_untouched() {
     assert_eq!(trailers, expected);
     assert_eq!(body, None);
 }
+
+#[test]
+fn failure_reasons_are_clean_text_the_access_log_writes_unchecked() {
+    let reasons = [
+        ErrorReason::Connect,
+        ErrorReason::UpstreamHeader,
+        ErrorReason::UpstreamIdle,
+        ErrorReason::UpstreamWrite,
+        ErrorReason::TotalDeadline,
+        ErrorReason::Evacuated,
+    ]
+    .map(ErrorReason::as_str)
+    .into_iter()
+    .chain([
+        "retry_budget_spent",
+        "pool_unavailable",
+        "client_closed",
+        "queue_timeout",
+        "connect_failed",
+        "upstream_reset",
+        "protocol_error",
+    ]);
+    for reason in reasons {
+        assert_eq!(crate::observability::logging::redact_text(reason), reason);
+    }
+}

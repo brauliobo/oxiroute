@@ -14,17 +14,42 @@ use super::logging::{CorrelationId, redact_text_cow, valid_correlation_id};
 mod json;
 
 /// Free text, bounded and replaced by a marker when it looks like a credential.
-pub(crate) struct Safe<'a>(Cow<'a, str>);
+pub(crate) struct Safe<'a> {
+    text: Cow<'a, str>,
+    /// Redaction cannot change this text, so it is not searched again.
+    verified: bool,
+}
 
 impl<'a, T: Into<Cow<'a, str>>> From<T> for Safe<'a> {
     fn from(text: T) -> Self {
-        Self(text.into())
+        Self {
+            text: text.into(),
+            verified: false,
+        }
+    }
+}
+
+impl<'a> Safe<'a> {
+    /// `text` that was redacted when it was built, or that is fixed and clean.
+    pub(crate) const fn verified(text: &'a str) -> Self {
+        Self {
+            text: Cow::Borrowed(text),
+            verified: true,
+        }
+    }
+
+    fn written(&self) -> Cow<'_, str> {
+        if self.verified {
+            Cow::Borrowed(&self.text)
+        } else {
+            redact_text_cow(&self.text)
+        }
     }
 }
 
 impl Serialize for Safe<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&redact_text_cow(&self.0))
+        serializer.serialize_str(&self.written())
     }
 }
 

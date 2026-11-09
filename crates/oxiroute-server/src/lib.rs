@@ -1,5 +1,6 @@
 mod capsule;
 pub mod cli;
+mod clock;
 pub mod config;
 mod encoding;
 mod forward_proxy;
@@ -9,6 +10,7 @@ mod html;
 mod http;
 mod http3;
 mod l4;
+mod label;
 mod lifecycle_control;
 mod listener;
 mod observability;

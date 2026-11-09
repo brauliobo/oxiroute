@@ -622,7 +622,9 @@ impl PoolHealthState {
         route: &str,
         elapsed: Duration,
     ) {
-        self.record_latency_at(server, route, elapsed, now_unix_ms());
+        if self.passive_policy.outlier.is_some() {
+            self.record_latency_at(server, route, elapsed, now_unix_ms());
+        }
     }
 
     pub(super) fn record_latency_at(
@@ -702,7 +704,9 @@ impl PoolHealthState {
 
     pub(super) fn record_passive_success(&self, server: &PoolEndpoint) {
         server.record_passive_success();
-        self.record_outcome(server, true, now_unix_ms());
+        if self.passive_policy.circuit_breaker.is_some() {
+            self.record_outcome(server, true, now_unix_ms());
+        }
     }
 
     /// Feeds the server's circuit breaker; opening respects `min_members` like an ejection.
