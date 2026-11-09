@@ -250,9 +250,9 @@ impl HttpSession {
 
             // Use loop as GOTO to retry escaped request buffer, not a real loop
             loop {
-                let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-                let mut req = httparse::Request::new(&mut headers);
-                let parsed = parse_req_buffer(&mut req, &buf);
+                let mut slots = header_slots();
+                let mut req = httparse::Request::new(&mut []);
+                let parsed = parse_req_buffer(&mut req, &buf, &mut slots);
                 match parsed {
                     HeaderParseState::Complete(s) => {
                         self.raw_header = Some(BufRef(0, s));
@@ -1471,23 +1471,32 @@ fn escape_illegal_request_line(buf: &BytesMut) -> Option<BytesMut> {
 }
 
 #[inline]
-fn parse_req_buffer<'buf>(
-    req: &mut httparse::Request<'_, 'buf>,
+fn parse_req_buffer<'buf, 'h>(
+    req: &mut httparse::Request<'h, 'buf>,
     buf: &'buf [u8],
+    slots: &'h mut HeaderSlots<'buf>,
 ) -> HeaderParseState {
     use httparse::Result;
 
     #[cfg(feature = "patched_http1")]
-    fn parse<'buf>(req: &mut httparse::Request<'_, 'buf>, buf: &'buf [u8]) -> Result<usize> {
+    fn parse<'buf, 'h>(
+        req: &mut httparse::Request<'h, 'buf>,
+        buf: &'buf [u8],
+        _slots: &'h mut HeaderSlots<'buf>,
+    ) -> Result<usize> {
         req.parse_unchecked(buf)
     }
 
     #[cfg(not(feature = "patched_http1"))]
-    fn parse<'buf>(req: &mut httparse::Request<'_, 'buf>, buf: &'buf [u8]) -> Result<usize> {
-        req.parse(buf)
+    fn parse<'buf, 'h>(
+        req: &mut httparse::Request<'h, 'buf>,
+        buf: &'buf [u8],
+        slots: &'h mut HeaderSlots<'buf>,
+    ) -> Result<usize> {
+        req.parse_with_uninit_headers(buf, slots)
     }
 
-    let res = match parse(req, buf) {
+    let res = match parse(req, buf, slots) {
         Ok(s) => s,
         Err(e) => {
             return HeaderParseState::Invalid(e);
