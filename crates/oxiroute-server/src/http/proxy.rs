@@ -34,6 +34,7 @@ use pingora::{
     upstreams::peer::HttpPeer,
 };
 
+use crate::clock::promptly;
 use crate::routing::{EndpointObservation, QueueTag};
 use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
@@ -143,6 +144,8 @@ pub struct HttpRequestContext {
     response_status_override: Option<u16>,
     response_header_overrides: Vec<(HeaderName, HeaderValue)>,
     started_at: Instant,
+    /// The latest clock reading of this request; see `refresh_clock`.
+    now: Instant,
     total_deadline: Instant,
     client_deadline: Option<Instant>,
     deadline: Instant,
@@ -435,11 +438,22 @@ impl HttpRequestContext {
             .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
+    /// Reads the clock again. A step that follows a wait (the network, a queue, a retry delay) calls this first;
+    /// every step that runs straight after another reuses its reading.
+    fn refresh_clock(&mut self) -> Instant {
+        self.now = Instant::now();
+        self.now
+    }
+
     fn remaining(&self, upstream: bool) -> pingora::Result<Duration> {
         self.remaining_at(Instant::now(), upstream)
     }
 
-    /// For callers that already read the clock for this step.
+    /// Time left as of the latest reading, for a step that ran no later than the wait it follows.
+    fn remaining_cached(&self, upstream: bool) -> pingora::Result<Duration> {
+        self.remaining_at(self.now, upstream)
+    }
+
     fn remaining_at(&self, now: Instant, upstream: bool) -> pingora::Result<Duration> {
         let remaining = self.deadline.saturating_duration_since(now);
         if remaining.is_zero() {
@@ -453,7 +467,7 @@ impl HttpRequestContext {
     }
 
     fn allow_downstream_drain(&self, session: &mut Session) {
-        if let Ok(remaining) = self.remaining(false) {
+        if let Ok(remaining) = self.remaining_cached(false) {
             session.set_total_drain_timeout(Some(remaining));
             session.set_close_on_response_before_downstream_finish(false);
             session.set_keepalive(Some(0));

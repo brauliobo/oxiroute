@@ -13,6 +13,7 @@ use oxiroute_config::{HttpVersion, PoolResilience, UpstreamConnectionReuse};
 use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
 use tokio::time::Instant;
 
+use crate::clock::promptly;
 use crate::routing::{EndpointObservation, QueueTag};
 use crate::{EndpointLease, H3UpstreamPlan, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
 
@@ -364,12 +365,17 @@ impl SelectedEndpoint {
             return Ok(peer);
         }
         if self.addresses.is_none() {
-            let addresses = tokio::time::timeout(remaining, self.lease.resolve_addresses())
+            let (addresses, waited) = promptly(remaining, self.lease.resolve_addresses())
                 .await
-                .map_err(|_| endpoint_timeout(&self.endpoint, connection_timeout))?
-                .map_err(|source| dns_failure(&self.endpoint, source))?;
-            self.addresses = Some(addresses.into_iter());
-            remaining = self.remaining_timeout(Instant::now(), connection_timeout)?;
+                .map_err(|_| endpoint_timeout(&self.endpoint, connection_timeout))?;
+            self.addresses = Some(
+                addresses
+                    .map_err(|source| dns_failure(&self.endpoint, source))?
+                    .into_iter(),
+            );
+            if waited {
+                remaining = self.remaining_timeout(Instant::now(), connection_timeout)?;
+            }
         }
         let address = self
             .addresses

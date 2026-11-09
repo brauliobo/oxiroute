@@ -36,7 +36,7 @@ pub(super) async fn execute_route_action(
                 ctx.evacuation_pin = LeftRunning::unmovable(upgrade, replay_safe);
                 ctx.adopt_route_total(proxy.policy.timeouts.total_ms.map(Duration::from_millis));
                 if let Some(budget) = &proxy.policy.retry_budget {
-                    budget.record_request(Instant::now());
+                    budget.record_request(ctx.now);
                 }
                 let pool = match &proxy.select {
                     Some(select) => {

@@ -40,6 +40,7 @@ impl ProxyHttp for HttpReverseProxy {
             response_status_override: None,
             response_header_overrides: Vec::new(),
             started_at,
+            now: started_at,
             total_deadline: started_at + self.service.upstream_io_timeout(),
             client_deadline: None,
             deadline: started_at + self.service.upstream_io_timeout(),
@@ -174,6 +175,9 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.allow_downstream_drain(session);
             return Ok(true);
         }
+        if route.access.is_some() {
+            ctx.refresh_clock();
+        }
 
         match pingora_request_header_decisions(session, &route, ctx.authority.as_ref()) {
             Ok(decisions) => ctx.request_header_decisions = decisions,
@@ -207,6 +211,7 @@ impl ProxyHttp for HttpReverseProxy {
                 ctx.allow_downstream_drain(session);
                 return Ok(true);
             }
+            ctx.refresh_clock();
         }
         let response_sent = execute_route_action(&self.service, session, ctx, route).await?;
         if response_sent {
@@ -220,7 +225,10 @@ impl ProxyHttp for HttpReverseProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
-        let mut now = Instant::now();
+        if ctx.has_attempted() {
+            ctx.refresh_clock();
+        }
+        let mut now = ctx.now;
         let remaining = ctx.remaining_at(now, true)?;
         let Some(pool) = &ctx.pool else {
             return Err(Error::new_in(ErrorType::InternalError));
@@ -234,24 +242,35 @@ impl ProxyHttp for HttpReverseProxy {
                 ctx.enter_phase(Phase::RetryWait, now);
                 tokio::time::sleep(delay).await;
                 ctx.retry_delay_pending = false;
-                now = Instant::now();
+                ctx.now = Instant::now();
+                now = ctx.now;
             }
             ctx.enter_phase(Phase::Queued, now);
             let selection_started = now;
-            let selected = if let Some(server) = ctx.retry_server.take() {
-                pool.select_server_endpoint(&server, ctx.queue_tag).await?
+            let (selected, waited) = if let Some(server) = ctx.retry_server.take() {
+                (
+                    pool.select_server_endpoint(&server, ctx.queue_tag).await?,
+                    true,
+                )
             } else if let Some(server) = affinity_server(session, ctx) {
-                pool.select_server_endpoint(&server, ctx.queue_tag).await?
+                (
+                    pool.select_server_endpoint(&server, ctx.queue_tag).await?,
+                    true,
+                )
             } else {
                 let wait = ctx.remaining_at(now, true)?;
-                tokio::time::timeout(
+                let (selected, waited) = promptly(
                     wait,
                     pool.select_endpoint(&ctx.attempted_upstreams, ctx.queue_tag),
                 )
                 .await
-                .map_err(|_| Error::new_up(ErrorType::ReadTimedout))??
+                .map_err(|_| Error::new_up(ErrorType::ReadTimedout))?;
+                (selected?, waited)
             };
-            now = Instant::now();
+            if waited {
+                ctx.now = Instant::now();
+                now = ctx.now;
+            }
             ctx.trace.queue_wait += now.saturating_duration_since(selection_started);
             ctx.trace.attempt_started = Some(now);
             ctx.trace.servers.push(selected.server_name().to_owned());
@@ -554,7 +573,7 @@ impl ProxyHttp for HttpReverseProxy {
         upstream_request: &mut pingora::http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
-        ctx.remaining(true)?;
+        ctx.remaining_cached(true)?;
         let result = enforce_http_version(
             ctx.pool.as_deref().and_then(UpstreamPlan::tls),
             upstream_request.version,
@@ -604,7 +623,7 @@ impl ProxyHttp for HttpReverseProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<PreparedUpstreamRequest> {
-        ctx.remaining(true)?;
+        ctx.remaining_cached(true)?;
         let result = enforce_http_version(
             ctx.pool.as_deref().and_then(UpstreamPlan::tls),
             session.req_header().version,
@@ -636,7 +655,7 @@ impl ProxyHttp for HttpReverseProxy {
         response: &mut pingora::http::ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
-        let now = Instant::now();
+        let now = ctx.refresh_clock();
         let remaining = ctx.remaining_at(now, true)?;
         let write_timeout = session
             .get_write_timeout()
@@ -780,14 +799,22 @@ impl ProxyHttp for HttpReverseProxy {
     async fn connected_to_upstream(
         &self,
         _session: &mut Session,
-        _reused: bool,
+        reused: bool,
         _peer: &HttpPeer,
         #[cfg(unix)] _fd: std::os::unix::io::RawFd,
         #[cfg(windows)] _socket: std::os::windows::io::RawSocket,
         digest: Option<&Digest>,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
-        let now = Instant::now();
+        let queued = ctx
+            .selected
+            .as_ref()
+            .is_some_and(|selected| selected.queue_position() > 0);
+        let now = if reused && !queued {
+            ctx.now
+        } else {
+            ctx.refresh_clock()
+        };
         ctx.remaining_at(now, true)?;
         ctx.enter_phase(Phase::AwaitingHeaders, now);
         ctx.trace.connected_at = Some(now);
@@ -916,7 +943,7 @@ impl ProxyHttp for HttpReverseProxy {
                 error.esource()
             );
         }
-        let now = Instant::now();
+        let now = ctx.refresh_clock();
         let elapsed = now.saturating_duration_since(ctx.started_at);
         if ctx.operation_result.is_none() {
             let result = classify_http_result(
