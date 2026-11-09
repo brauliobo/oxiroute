@@ -1,17 +1,13 @@
+#[derive(Clone, Copy)]
 pub struct ReservedListener {
     pub address: SocketAddr,
-    listener: std::net::TcpListener,
 }
 
 impl ReservedListener {
     pub fn new() -> Self {
-        let listener =
-            std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve proxy listener");
-        listener
-            .set_nonblocking(true)
-            .expect("make proxy listener nonblocking");
-        let address = listener.local_addr().expect("reserved proxy address");
-        Self { address, listener }
+        Self {
+            address: ports::unused_address(),
+        }
     }
 }
 
@@ -162,8 +158,7 @@ pub struct ProxyHarness {
 
 impl ProxyHarness {
     pub fn start(config: &ValidatedConfig, reserved: ReservedListener) -> Self {
-        let ReservedListener { address, listener } = reserved;
-        drop(listener);
+        let ReservedListener { address } = reserved;
         let generation = config::runtime_generation(config).expect("wire runtime generation");
         let tls = generation.tls();
         let certbot_reconcilers = tls

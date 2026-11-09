@@ -68,6 +68,7 @@ use tokio_rustls::{
 mod config;
 mod fixtures;
 pub mod h3;
+pub mod ports;
 
 pub use config::{empty_config, socket_bind, socket_endpoint};
 use fixtures::PrivateKeyFixture;
