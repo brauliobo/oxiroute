@@ -1665,7 +1665,6 @@ mod upstream_cancellation_tests {
         cancel: Mutex<Option<oneshot::Receiver<()>>>,
     }
 
-    #[async_trait]
     impl ProxyHttp for Cancellable {
         type CTX = ();
 

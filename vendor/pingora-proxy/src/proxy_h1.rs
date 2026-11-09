@@ -1072,7 +1072,6 @@ mod pump_saturation_tests {
 
     struct PumpProxy;
 
-    #[async_trait]
     impl ProxyHttp for PumpProxy {
         type CTX = ();
 
@@ -1316,7 +1315,6 @@ mod request_preparation_tests {
 
     struct DefaultProxy;
 
-    #[async_trait]
     impl ProxyHttp for DefaultProxy {
         type CTX = ();
 
