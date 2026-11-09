@@ -17,7 +17,8 @@
 use bstr::ByteSlice;
 use bytes::Bytes;
 use bytes::{BufMut, BytesMut};
-use http::header::CONTENT_LENGTH;
+#[cfg_attr(not(test), allow(unused_imports))]
+use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use http::HeaderValue;
 use http::{header, header::AsHeaderName, Method, Version};
 use log::{debug, trace, warn};
@@ -265,7 +266,7 @@ impl HttpSession {
                         // `req` borrows the BytesMut, so retain offsets while freezing it; names are
                         // then validated directly into the case-insensitive HeaderMap.
                         let base = buf.as_ptr() as usize;
-                        let mut header_refs = Vec::<KVRef>::with_capacity(req.headers.len());
+                        let mut header_refs = HeaderRefs::new();
                         // Note: req.headers has the correct number of headers
                         // while header_refs doesn't as it is still empty
                         let _num_headers = populate_headers(base, &mut header_refs, req.headers);

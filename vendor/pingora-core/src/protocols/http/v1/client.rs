@@ -362,7 +362,7 @@ impl HttpSession {
                     self.raw_header = Some(BufRef(0, s));
                     self.preread_body = Some(BufRef(s, already_read));
                     let base = buf.as_ptr() as usize;
-                    let mut header_refs = Vec::<KVRef>::with_capacity(resp.headers.len());
+                    let mut header_refs = HeaderRefs::new();
 
                     // Note: resp.headers has the correct number of headers
                     // while header_refs doesn't as it is still empty
@@ -389,30 +389,32 @@ impl HttpSession {
                     for header in header_refs {
                         let header_name = header.get_name(&buf);
                         let value_bytes = header.get_value_bytes(&buf);
-                        let header_value =
-                            if value_bytes.windows(CRLF.len()).any(|window| window == CRLF) {
-                                // HeaderValue rejects obsolete multiline values, so normalize each
-                                // continuation before constructing the owned value.
-                                let mut new_header = Vec::from_iter(value_bytes);
-                                let mut offset = 0;
-                                while let Some(relative) = new_header[offset..]
-                                    .windows(CRLF.len())
-                                    .position(|window| window == CRLF)
-                                {
-                                    let start = offset + relative;
-                                    new_header[start..start + CRLF.len()].copy_from_slice(b"  ");
-                                    offset = start + CRLF.len();
-                                }
-                                HeaderValue::from_bytes(&new_header)
-                            } else {
-                                // Validate before using the zero-copy constructor. httparse accepts
-                                // some bytes that are not valid HeaderValue contents.
-                                HeaderValue::from_bytes(&value_bytes).map(|_| unsafe {
-                                    HeaderValue::from_maybe_shared_unchecked(value_bytes)
-                                })
-                            };
-                        let header_value =
-                            header_value.map_err(|_| Error::new(InvalidHTTPHeader))?;
+                        let header_value = if value_bytes
+                            .windows(CRLF.len())
+                            .any(|window| window == CRLF)
+                        {
+                            // HeaderValue rejects obsolete multiline values, so normalize each
+                            // continuation before constructing the owned value.
+                            let mut new_header = Vec::from_iter(value_bytes);
+                            let mut offset = 0;
+                            while let Some(relative) = new_header[offset..]
+                                .windows(CRLF.len())
+                                .position(|window| window == CRLF)
+                            {
+                                let start = offset + relative;
+                                new_header[start..start + CRLF.len()].copy_from_slice(b"  ");
+                                offset = start + CRLF.len();
+                            }
+                            HeaderValue::from_bytes(&new_header)
+                                .map_err(|_| Error::new(InvalidHTTPHeader))
+                        } else if is_header_value(&value_bytes) {
+                            // Validated above, since httparse accepts some bytes that are not valid
+                            // HeaderValue contents; the value is a slice of the read buffer.
+                            Ok(unsafe { HeaderValue::from_maybe_shared_unchecked(value_bytes) })
+                        } else {
+                            Err(Error::new(InvalidHTTPHeader))
+                        };
+                        let header_value = header_value?;
                         append_parsed_header(
                             &mut response_header.headers,
                             header_name,
