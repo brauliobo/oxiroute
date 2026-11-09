@@ -20,6 +20,20 @@ test.describe('stats page administration', () => {
     await expect(page.getByRole('button', { name: 'Drain', exact: true })).toHaveCount(0)
   })
 
+  test('fits the screen with its controls, whatever the width', async ({ page }) => {
+    await serveStats(page, { document: { admin: true } })
+    await page.goto(PAGE)
+    const admin = page.locator('section.ox-admin')
+    await expect(admin).toBeVisible()
+    const frame = (await admin.boundingBox())!
+    for (const control of await admin.locator('.ox-admin-controls select, .ox-admin-controls button').all()) {
+      const box = (await control.boundingBox())!
+      expect(box.height, 'a control keeps its own height').toBeLessThan(64)
+      expect(box.x + box.width, 'a control stays inside the panel').toBeLessThanOrEqual(frame.x + frame.width)
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0)
+  })
+
   test('posts the urlencoded form with the active revision after a confirmation', async ({ page }) => {
     const served = await serveStats(page, { document: { admin: true } })
     await page.goto(PAGE)
