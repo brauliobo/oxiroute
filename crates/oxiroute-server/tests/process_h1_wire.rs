@@ -508,9 +508,7 @@ async fn many_headers_pass_through() {
     let wire = Wire::start(OK).await;
     let mut request =
         String::from("GET /many HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n");
-    for index in 0..120 {
-        request.push_str(&format!("X-H{index}: v{index}\r\n"));
-    }
+    request.extend((0..120).map(|index| format!("X-H{index}: v{index}\r\n")));
     request.push_str("\r\n");
     let response = wire.exchange(request.as_bytes()).await;
     assert_eq!(status(&response), "HTTP/1.1 200 OK");
@@ -525,9 +523,7 @@ async fn many_headers_pass_through() {
 #[tokio::test]
 async fn more_headers_than_the_parser_holds_are_refused() {
     let mut request = String::from("GET /many HTTP/1.1\r\nHost: example.test\r\n");
-    for index in 0..300 {
-        request.push_str(&format!("X-H{index}: v\r\n"));
-    }
+    request.extend((0..300).map(|index| format!("X-H{index}: v\r\n")));
     request.push_str("\r\n");
     assert_refused(request.as_bytes(), "HTTP/1.1 400 Bad Request").await;
 }
