@@ -65,6 +65,8 @@ HTTP/2 test lifecycle correction, a lazily allocated read buffer, and stage-1 co
   connection, in a buffer that is released as soon as the socket would block, so an idle keep-alive
   connection holds no read buffer (it held 64 KiB). Reads of 64 KiB or more still bypass the scratch;
   the write buffer is the same `BufWriter`. The module's tests need only `tokio`.
+- `protocols/l4/stream.rs` `Drop` no longer probes the socket with `getsockopt(TCP_NODELAY)` before the
+  final flush: a broken socket fails the flush, which is logged at debug level.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.
