@@ -64,8 +64,12 @@ pub(super) async fn execute_route_action(
                 return Ok(false);
             }
             HttpActionPlan::Fixed(response) => {
-                let mut headers = response.headers.to_vec();
-                headers.append(&mut status_headers);
+                let headers = if status_headers.is_empty() {
+                    std::borrow::Cow::Borrowed(&response.headers[..])
+                } else {
+                    status_headers.splice(0..0, response.headers.iter().cloned());
+                    std::borrow::Cow::Owned(status_headers)
+                };
                 write_local_response(
                     session,
                     response.status,
@@ -288,7 +292,8 @@ pub(super) async fn write_local_response(
     head: bool,
 ) -> pingora::Result<()> {
     let body_forbidden = matches!(status, 204 | 205 | 304);
-    let mut response = pingora::http::ResponseHeader::build(status, Some(headers.len() + 1))?;
+    let mut response =
+        pingora::http::ResponseHeader::build_no_case(status, Some(headers.len() + 1))?;
     for (name, value) in headers {
         response.append_header(name.clone(), value.clone())?;
     }
