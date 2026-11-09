@@ -89,4 +89,4 @@ describe('truncate', () => {
   it('rejects a limit below one', () => expect(() => truncate('x', 0)).toThrow(RangeError))
 })
 
-it('has a single marker for unknown values', () => expect(UNKNOWN).toBe('–'))
+it('has a single marker for unknown values', () => expect(UNKNOWN).toBe('—'))

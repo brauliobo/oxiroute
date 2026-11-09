@@ -2,7 +2,7 @@
 // time zone, which keeps tests and screenshots stable. Counts and sizes are shortened to two or three significant
 // digits (exact values belong in a tooltip: formatExact). Durations truncate rather than round.
 
-export const UNKNOWN = '–'
+export const UNKNOWN = '—'
 
 const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB']
 const COUNT_UNITS = ['', 'k', 'M', 'G', 'T', 'P', 'E']
