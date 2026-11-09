@@ -89,7 +89,7 @@ fn the_embedded_table_is_the_asset_directory() {
 fn every_asset_name_ends_in_a_content_hash() {
     for asset in assets::all() {
         let (stem, extension) = asset.name.rsplit_once('.').expect("extension");
-        let (_, hash) = stem.rsplit_once('-').expect("hash separator");
+        let (_, hash) = stem.split_once('-').expect("hash separator");
         assert!(
             hash.len() >= 8
                 && hash
