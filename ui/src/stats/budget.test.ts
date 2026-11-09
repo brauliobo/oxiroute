@@ -39,7 +39,7 @@ describe('verify-stats-budget', () => {
   })
 
   it('rejects a script over the gzip budget (incompressible bytes)', () => {
-    const result = run(build({ ...good, 'assets/stats-abc.js': randomBytes(61 * 1024) }))
+    const result = run(build({ ...good, 'assets/stats-abc.js': randomBytes(91 * 1024) }))
     expect(result.code).toBe(1)
     expect(result.output).toContain('js is')
   })

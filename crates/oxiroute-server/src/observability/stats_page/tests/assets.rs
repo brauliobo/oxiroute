@@ -245,6 +245,23 @@ async fn the_shell_is_static_html_that_loads_only_embedded_script_files() {
     }
 }
 
+/// A browser with script runs the client, which refreshes itself and draws its own table: the shell's meta refresh and
+/// the server-rendered table are for browsers without script and must not show or act otherwise.
+#[tokio::test]
+async fn the_refresh_and_the_table_are_only_for_browsers_without_script() {
+    let fixture = fixture();
+    let page = page(&fixture, Disabled);
+    let shell = String::from_utf8(page.handle("GET", "/haproxy", false).await.body).expect("HTML");
+    for fallback in ["http-equiv=\"refresh\"", "<table", "<td>origin-a</td>"] {
+        let at = shell.find(fallback).unwrap_or_else(|| panic!("{fallback}: {shell}"));
+        let before = &shell[..at];
+        let open = before.rfind("<noscript>");
+        assert!(open.is_some(), "{fallback} is outside <noscript>");
+        assert!(before.rfind("</noscript>") < open, "{fallback} is outside <noscript>");
+    }
+    assert!(shell.contains("<div id=\"app\"></div>"), "the client's root starts empty");
+}
+
 #[tokio::test]
 async fn the_shell_points_at_the_assets_below_the_prefix() {
     let fixture = fixture();

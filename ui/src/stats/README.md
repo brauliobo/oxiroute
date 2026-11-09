@@ -17,7 +17,7 @@ Names are content hashes (deterministic for pinned pnpm/node/vite and `--frozen-
 `<prefix>/assets/<file from manifest>` as `<script type="module" crossorigin>` and `<link rel="stylesheet" crossorigin>`;
 nothing in the bundle assumes the page is at `/`. The page asks `<page path without trailing slash>/snapshot.json`.
 `pnpm verify:stats-bundle` (part of `build:stats`) checks: pure Vapor (no VDOM), only the files above, manifest matches,
-gzip budget JS <= 60 KiB and CSS <= 12 KiB (`scripts/verify-stats-budget.mjs`). Browser smoke:
+gzip budget JS <= 90 KiB and CSS <= 12 KiB (`scripts/verify-stats-budget.mjs`). Browser smoke:
 `pnpm test:browser --project=stats-chromium` (strict CSP via `vite preview --config vite.stats.config.ts`).
 
 ## Modules (all pure and tested, except the store)
@@ -50,5 +50,16 @@ templates unwrapped (`const { model, status } = useStatsStore()`).
 - View (URL-backed, replaces the history entry): `view`, `setView(patch)`, `toggleExpanded(key)`, `toggleCollapsed(key)`,
   `setPaused`, `togglePause`, `setIntervalMs`, `refresh()` (also while paused).
 
-Not done here, for Phase 4: applying `view.theme` to the document, rendering, admin POST (`AdminForm`, needs
-`model.admin` and `generation.activeRevision`), `/` shortcut, stylesheet beyond the shell tokens.
+## Page chrome (`StatsShell.vue`, `components/`)
+
+`StatsShell` provides the store and composes skip link, header (title, `StatsStatus`, CSV and JSON links), `StatsToolbar`,
+`StatusBanner`, `AdminActions` (only when `model.admin` and `generation.activeRevision`), `<main id="ox-main">` with
+`StatsDashboard` (the data views), `Footer` and `ShortcutsDialog`. It applies `view.theme` to `<html data-theme>`
+(`theme.ts`; `auto` removes it) and installs the single-key shortcuts of `shortcuts.ts` (`/ ? p r t f`, never while typing,
+behind a dialog or with Ctrl/Alt/Meta). Leaf controls are pure props/emits (`update:modelValue` style); `StatsToolbar`
+wires them to the store. `banner.ts` turns `status` + `failure` into the banner text (no ticking values: it is an alert
+region). `admin.ts` posts the urlencoded form to the page path. `stats.css` holds the `--ox-*` tokens (`light-dark()`,
+system scheme unless `data-theme` forces one), focus ring, forced-colors, reduced-motion, narrow-screen and print rules.
+
+The shell (`stats.html`, and the placeholder `crates/oxiroute-server/assets/stats/index.html`) keeps the refresh meta and
+the server-rendered table (`__stats_table__`) inside `<noscript>`, so a browser with script shows neither.
