@@ -30,7 +30,10 @@ use regex::bytes::Regex;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::body::{BodyReader, BodyWriter};
+/// The most a connection keeps of the buffer its rendered responses are assembled in.
+const RENDERED_RESPONSE_BUF_KEEP: usize = 64 * 1024;
+
+use super::body::{BodyMode, BodyReader, BodyWriter};
 use super::common::*;
 use crate::protocols::http::{body_buffer::FixedBuffer, date, HttpTask};
 use crate::protocols::{Digest, SocketAddr, Stream};
@@ -89,6 +92,9 @@ pub struct HttpSession {
     /// Number of times the upstream connection associated with this session can be reused
     /// after this session ends
     keepalive_reuses_remaining: Option<u32>,
+
+    /// Reused between responses written by `write_rendered_response()`
+    rendered_response_buf: BytesMut,
 }
 
 impl HttpSession {
@@ -132,6 +138,7 @@ impl HttpSession {
             // default on to avoid rejecting requests after body as pipelined
             close_on_response_before_downstream_finish: true,
             keepalive_reuses_remaining: None,
+            rendered_response_buf: BytesMut::new(),
         }
     }
 
@@ -634,6 +641,80 @@ impl HttpSession {
             }
             Err(e) => Error::e_because(WriteError, "writing response header", e),
         }
+    }
+
+    /// Writes a complete response of a known length in one buffer and one flush: `rendered_head` is
+    /// the status line and the static header lines, already serialized, and the Content-Length among
+    /// them is the length of `body` (or of the body a `HEAD` request leaves out). The request id, the
+    /// `Date` and the `Connection` lines follow, as `write_response_header()` adds them.
+    ///
+    /// Only for final statuses with a body framed by Content-Length (not 1xx, 204, 205 or 304) and
+    /// without a `Transfer-Encoding`, `Date` or `Connection` among the rendered headers.
+    pub async fn write_rendered_response(
+        &mut self,
+        status: http::StatusCode,
+        rendered_head: &[u8],
+        request_id: Option<&HeaderValue>,
+        body: &[u8],
+    ) -> Result<()> {
+        if self.response_written.is_some() {
+            warn!("Respond header is already sent, cannot send again");
+            return Ok(());
+        }
+        if self.close_on_response_before_downstream_finish
+            && (self.request_header.is_none() || !self.is_body_done())
+        {
+            self.set_keepalive(None);
+        }
+
+        let mut buf = std::mem::take(&mut self.rendered_response_buf);
+        buf.clear();
+        buf.reserve(rendered_head.len() + body.len() + 128);
+        buf.put_slice(rendered_head);
+        if let Some(id) = request_id {
+            buf.put_slice(b"x-request-id: ");
+            buf.put_slice(id.as_bytes());
+            buf.put_slice(CRLF);
+        }
+        if self.update_resp_headers {
+            buf.put_slice(b"Date: ");
+            date::put_cached_date(&mut buf);
+            buf.put_slice(CRLF);
+            buf.put_slice(if self.will_keepalive() {
+                b"Connection: keep-alive\r\n"
+            } else {
+                b"Connection: close\r\n"
+            });
+        }
+        buf.put_slice(CRLF);
+        buf.put_slice(body);
+
+        let write_timeout = self.write_timeout(buf.len());
+        let write = async {
+            self.underlying_stream.write_all(&buf).await?;
+            self.underlying_stream.flush().await
+        };
+        let written = match write_timeout {
+            Some(t) => match timeout(t, write).await {
+                Ok(result) => result,
+                Err(_) => {
+                    return Error::e_explain(
+                        WriteTimedout,
+                        format!("writing response, timeout: {t:?}"),
+                    )
+                }
+            },
+            None => write.await,
+        };
+        written.or_err(WriteError, "writing response")?;
+
+        self.body_writer.body_mode = BodyMode::Complete(body.len());
+        self.body_bytes_sent += buf.len();
+        self.response_written = Some(Box::new(ResponseHeader::build_no_case(status, Some(0))?));
+        if buf.capacity() <= RENDERED_RESPONSE_BUF_KEEP {
+            self.rendered_response_buf = buf;
+        }
+        Ok(())
     }
 
     /// Return the response header if it is already sent.
@@ -1601,6 +1682,28 @@ mod tests_stream {
                 assert!(write_tasks(&mut session, api, tasks).await.unwrap());
             }
         }
+    }
+
+    #[tokio::test]
+    async fn rendered_response_is_one_write_with_the_request_id() {
+        let request = b"GET / HTTP/1.1\r\n\r\n";
+        let head = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n";
+        let id = HeaderValue::from_static("rq-1");
+        let expected: &[u8] =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nx-request-id: rq-1\r\n\r\nabc";
+        let mock_io = Builder::new().read(request).write(expected).build();
+        let mut session = HttpSession::new(Box::new(mock_io));
+        session.read_request().await.unwrap();
+        session.update_resp_headers = false;
+        session
+            .write_rendered_response(StatusCode::OK, head, Some(&id), b"abc")
+            .await
+            .unwrap();
+        assert_eq!(session.response_written().unwrap().status, StatusCode::OK);
+        assert_eq!(session.body_bytes_sent(), expected.len());
+        assert!(session.body_writer.finished());
+        assert!(session.will_keepalive());
+        session.finish_body().await.unwrap();
     }
 
     #[tokio::test]
