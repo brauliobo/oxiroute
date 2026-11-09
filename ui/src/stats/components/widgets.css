@@ -1,0 +1,203 @@
+.ox-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0 0.45rem 0 0.3rem;
+  border: 1px solid currentcolor;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentcolor 10%, transparent);
+  color: var(--oxd-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.ox-tone-ok { color: var(--oxd-ok); }
+.ox-tone-warn { color: var(--oxd-warn); }
+.ox-tone-bad { color: var(--oxd-bad); }
+.ox-tone-info { color: var(--oxd-info); }
+
+.ox-icon {
+  width: 0.95em;
+  height: 0.95em;
+  flex: none;
+  fill: currentcolor;
+}
+
+.ox-icon path {
+  fill-rule: evenodd;
+}
+
+.ox-sub {
+  display: block;
+  color: var(--oxd-muted);
+  font-size: 0.75rem;
+}
+
+.ox-changed-tag {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--oxd-info);
+  border-radius: 3px;
+  color: var(--oxd-info);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.ox-spark {
+  display: block;
+  width: 60px;
+  height: 16px;
+  fill: none;
+  stroke: var(--oxd-info);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ox-lat {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.ox-lat-name {
+  display: inline-block;
+  min-width: 2rem;
+  color: var(--oxd-muted);
+}
+
+.ox-resp {
+  min-width: 7rem;
+}
+
+.ox-resp-bar {
+  display: flex;
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--oxd-surface);
+}
+
+.ox-resp-seg {
+  width: calc(var(--ox-w, 0) * 1%);
+  min-width: 2px;
+}
+
+.ox-resp-nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.5rem;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.72rem;
+}
+
+.ox-resp-name {
+  color: var(--oxd-muted);
+}
+
+/* Classes differ in texture as well as colour. */
+.ox-resp-seg.ox-r1xx { background: var(--oxd-info); }
+.ox-resp-seg.ox-r2xx { background: var(--oxd-ok); }
+.ox-resp-seg.ox-r3xx { background: var(--oxd-muted); }
+.ox-resp-seg.ox-r4xx {
+  background: repeating-linear-gradient(135deg, var(--oxd-warn) 0 3px, transparent 3px 5px), var(--oxd-warn);
+  background-blend-mode: multiply;
+}
+.ox-resp-seg.ox-r5xx {
+  background: repeating-linear-gradient(90deg, var(--oxd-bad) 0 2px, var(--oxd-surface) 2px 4px);
+}
+
+.ox-dl {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.ox-dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.1rem 0;
+  border-bottom: 1px dotted var(--oxd-border);
+}
+
+.ox-dl dt {
+  color: var(--oxd-muted);
+}
+
+.ox-dl dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.ox-hist {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+}
+
+.ox-hist figcaption {
+  color: var(--oxd-muted);
+}
+
+.ox-hist-rows {
+  margin: 0.2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ox-hist-rows li {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr 3rem;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ox-hist-bar {
+  height: 0.45rem;
+  background: linear-gradient(var(--oxd-info), var(--oxd-info)) no-repeat var(--oxd-surface);
+  background-size: calc(var(--ox-w, 0) * 1%) 100%;
+}
+
+.ox-hist-count {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ox-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 0.6rem;
+  margin: 0;
+}
+
+.ox-tile {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--oxd-border);
+  border-radius: 6px;
+  background: var(--oxd-surface);
+}
+
+.ox-tile dt {
+  color: var(--oxd-muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.ox-tile dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ox-tile dd:nth-of-type(1) {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
