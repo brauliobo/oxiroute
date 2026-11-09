@@ -2,6 +2,7 @@
 //! no-script table. The reference is "Stats page API" in `docs/OPERATIONS.md`.
 
 mod admin_form;
+mod assets;
 mod builder;
 mod cache;
 #[cfg(test)]
