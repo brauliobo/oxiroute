@@ -82,6 +82,7 @@ mod proxy_cache;
 mod proxy_common;
 mod proxy_custom;
 mod proxy_h1;
+mod proxy_h1_inline;
 mod proxy_h2;
 mod proxy_purge;
 mod proxy_trait;
