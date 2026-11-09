@@ -44,7 +44,7 @@ const NOTED_LIMIT: usize = 1024;
 
 #[derive(Debug, Default)]
 struct Noted {
-    /// The membership positions of the servers that changed, repeated as often as they changed.
+    /// The membership positions of the servers that changed, once for every change.
     slots: Vec<u32>,
     overflowed: bool,
 }
@@ -95,13 +95,18 @@ impl LoadLog {
         }
     }
 
-    /// Moves the noted positions into `out`, which is emptied first; true when changes were dropped
-    /// and everything has to be read again.
+    /// Moves the noted positions into `out`, which is emptied first and left sorted without
+    /// repeats; true when changes were dropped and everything has to be read again.
     pub(super) fn take(&self, out: &mut Vec<u32>) -> bool {
         out.clear();
-        let mut noted = self.noted.lock().unwrap_or_else(PoisonError::into_inner);
-        std::mem::swap(out, &mut noted.slots);
-        std::mem::take(&mut noted.overflowed)
+        let overflowed = {
+            let mut noted = self.noted.lock().unwrap_or_else(PoisonError::into_inner);
+            std::mem::swap(out, &mut noted.slots);
+            std::mem::take(&mut noted.overflowed)
+        };
+        out.sort_unstable();
+        out.dedup();
+        overflowed
     }
 }
 
