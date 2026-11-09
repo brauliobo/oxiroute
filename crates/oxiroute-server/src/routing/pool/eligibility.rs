@@ -83,4 +83,13 @@ impl<'a> Eligibility<'a> {
         masked.extend_from_slice(self.tried);
         masked
     }
+
+    /// The load of an eligible server, else `None`; reads the server's counters once.
+    #[inline(always)]
+    pub(super) fn load(&self, members: &Membership, index: usize) -> Option<u64> {
+        let server = &members.endpoints[index];
+        self.names(server, index)
+            .then(|| self.capacity.load_of(server))
+            .flatten()
+    }
 }

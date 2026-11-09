@@ -6,7 +6,10 @@
 //! Loads change when leases start and end, so whoever changes a server's load notes the server in
 //! the pool's [`LoadLog`], and a selection brings the trees up to date from the log before it reads.
 
-use std::sync::{Arc, Mutex, PoisonError, atomic::Ordering};
+use std::sync::{
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 
 use super::{Membership, PoolEndpoint, SelectableView, pool::Capacity};
 
@@ -39,22 +42,30 @@ impl Capacity {
 /// The servers whose load changed since the pool's index last looked.
 #[derive(Debug)]
 pub(super) struct LoadLog {
-    tracked: bool,
+    /// Whether an index reads the log; changes are not recorded while only a scan reads the servers.
+    tracked: AtomicBool,
     noted: Mutex<Vec<Arc<PoolEndpoint>>>,
 }
 
 impl LoadLog {
-    /// A log that records only when the pool's algorithm reads loads from an index.
-    pub(super) fn new(tracked: bool) -> Self {
+    pub(super) fn new() -> Self {
         Self {
-            tracked,
+            tracked: AtomicBool::new(false),
             noted: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Starts or stops recording. Whoever starts it reads the servers afterwards, so a change
+    /// before it is read and a change after it is noted.
+    pub(super) fn track(&self, tracked: bool) {
+        if self.tracked.load(Ordering::Relaxed) != tracked {
+            self.tracked.store(tracked, Ordering::SeqCst);
         }
     }
 
     /// Records that the load or the capacity of `server` changed.
     pub(super) fn note(&self, server: &Arc<PoolEndpoint>) {
-        if self.tracked && !server.load_noted.swap(true, Ordering::AcqRel) {
+        if self.tracked.load(Ordering::Relaxed) && !server.load_noted.swap(true, Ordering::AcqRel) {
             self.noted
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -186,6 +197,7 @@ impl LoadIndex {
         view: &SelectableView,
         capacity: Capacity,
     ) -> &mut LoadTree {
+        log.track(true);
         log.take(&mut self.noted);
         if self.view == view.id() {
             self.apply_noted(members, view);

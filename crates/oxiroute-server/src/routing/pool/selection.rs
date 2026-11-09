@@ -117,7 +117,7 @@ impl EndpointPool {
                     None
                 };
             if choice.is_some() {
-                self.commit(selection, members, &eligible, index);
+                self.commit(selection, members, view, &eligible, index);
                 return choice;
             }
             tried.push(index);
