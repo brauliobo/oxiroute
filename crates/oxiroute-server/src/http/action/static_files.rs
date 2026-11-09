@@ -377,36 +377,35 @@ impl StaticFilesPlan {
         headers: &HeaderMap,
         file: &StaticFile,
     ) -> StaticRequestDecision {
-        if let Some(value) = headers.get(IF_MATCH) {
+        let conditions = Conditions::scan(headers);
+        if let Some(value) = conditions.if_match {
             let matches = value.as_bytes() == b"*"
                 || self.etag && etag_list_matches(value, &file.etag, false);
             if !matches {
                 return StaticRequestDecision::PreconditionFailed;
             }
-        } else if headers
-            .get(IF_UNMODIFIED_SINCE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| httpdate::parse_http_date(value).ok())
+        } else if conditions
+            .if_unmodified_since
+            .and_then(http_date)
             .is_some_and(|date| modified_after(file.modified, date))
         {
             return StaticRequestDecision::PreconditionFailed;
         }
 
-        if let Some(value) = headers.get(IF_NONE_MATCH) {
+        if let Some(value) = conditions.if_none_match {
             if value.as_bytes() == b"*" || self.etag && etag_list_matches(value, &file.etag, true) {
                 return StaticRequestDecision::NotModified;
             }
-        } else if headers
-            .get(IF_MODIFIED_SINCE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| httpdate::parse_http_date(value).ok())
+        } else if conditions
+            .if_modified_since
+            .and_then(http_date)
             .is_some_and(|date| !modified_after(file.modified, date))
         {
             return StaticRequestDecision::NotModified;
         }
 
-        let apply_range = if_range_matches(headers, file, self.etag);
-        match apply_range.then(|| requested_range(headers, file.size)) {
+        let apply_range = if_range_matches(conditions.if_range, file, self.etag);
+        match apply_range.then(|| requested_range(&conditions, file.size)) {
             None | Some(Ok(None)) => StaticRequestDecision::Serve { range: None },
             Some(Ok(Some(range))) => StaticRequestDecision::Serve { range: Some(range) },
             Some(Err(())) => StaticRequestDecision::RangeNotSatisfiable,
@@ -501,12 +500,54 @@ impl StaticLookup {
     }
 }
 
-fn requested_range(headers: &HeaderMap, size: u64) -> Result<Option<(u64, u64)>, ()> {
-    let mut values = headers.get_all(RANGE).iter();
-    let Some(value) = values.next() else {
+/// The request headers that decide a static response, found in one pass over the request headers instead of one
+/// map lookup each. For a repeated header the first value counts, as with `HeaderMap::get`.
+#[derive(Default)]
+struct Conditions<'a> {
+    if_match: Option<&'a HeaderValue>,
+    if_unmodified_since: Option<&'a HeaderValue>,
+    if_none_match: Option<&'a HeaderValue>,
+    if_modified_since: Option<&'a HeaderValue>,
+    if_range: Option<&'a HeaderValue>,
+    range: Option<&'a HeaderValue>,
+    repeated_range: bool,
+}
+
+impl<'a> Conditions<'a> {
+    fn scan(headers: &'a HeaderMap) -> Self {
+        let mut found = Self::default();
+        for (name, value) in headers {
+            let slot = match *name {
+                IF_MATCH => &mut found.if_match,
+                IF_UNMODIFIED_SINCE => &mut found.if_unmodified_since,
+                IF_NONE_MATCH => &mut found.if_none_match,
+                IF_MODIFIED_SINCE => &mut found.if_modified_since,
+                IF_RANGE => &mut found.if_range,
+                RANGE => &mut found.range,
+                _ => continue,
+            };
+            if slot.is_some() {
+                found.repeated_range |= *name == RANGE;
+            } else {
+                *slot = Some(value);
+            }
+        }
+        found
+    }
+}
+
+fn http_date(value: &HeaderValue) -> Option<SystemTime> {
+    value
+        .to_str()
+        .ok()
+        .and_then(|value| httpdate::parse_http_date(value).ok())
+}
+
+fn requested_range(conditions: &Conditions, size: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(value) = conditions.range else {
         return Ok(None);
     };
-    if values.next().is_some() {
+    if conditions.repeated_range {
         return Err(());
     }
     let value = value.to_str().map_err(|_| ())?;
@@ -544,18 +585,14 @@ fn requested_range(headers: &HeaderMap, size: u64) -> Result<Option<(u64, u64)>,
     Ok(Some(range))
 }
 
-fn if_range_matches(headers: &HeaderMap, file: &StaticFile, etag_enabled: bool) -> bool {
-    let Some(value) = headers.get(IF_RANGE) else {
+fn if_range_matches(value: Option<&HeaderValue>, file: &StaticFile, etag_enabled: bool) -> bool {
+    let Some(value) = value else {
         return true;
     };
     if value.as_bytes().starts_with(b"\"") {
         return etag_enabled && value == file.etag;
     }
-    value
-        .to_str()
-        .ok()
-        .and_then(|value| httpdate::parse_http_date(value).ok())
-        .is_some_and(|date| !modified_after(file.modified, date))
+    http_date(value).is_some_and(|date| !modified_after(file.modified, date))
 }
 
 fn etag_list_matches(value: &HeaderValue, etag: &HeaderValue, weak: bool) -> bool {

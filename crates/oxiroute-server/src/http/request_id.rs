@@ -94,12 +94,31 @@ pub(crate) fn stamp_response(
     {
         response.insert_header(UPSTREAM_REQUEST_ID_HEADER, upstream)?;
     }
-    response.insert_header(REQUEST_ID_HEADER_NAME, id.clone())
+    // A unique value never matches an HPACK table entry; "never indexed" keeps it out of the table, so the
+    // HTTP/2 encoder neither inserts it nor evicts the entries the other headers reuse.
+    let mut id = id.clone();
+    id.set_sensitive(true);
+    response.insert_header(REQUEST_ID_HEADER_NAME, id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_response_id_is_never_indexed_by_hpack_and_replaces_the_upstream_one() {
+        let mut request = pingora::http::RequestHeader::build("GET", b"/", None).unwrap();
+        let id = stamp_request(&mut request).unwrap();
+        let mut response = pingora::http::ResponseHeader::build(200, None).unwrap();
+        response
+            .insert_header("x-request-id", "upstream-1")
+            .unwrap();
+        stamp_response(&mut response, &id).unwrap();
+        let stamped = &response.headers[&REQUEST_ID_HEADER];
+        assert!(stamped.is_sensitive());
+        assert_eq!(stamped, &request.headers[&REQUEST_ID_HEADER]);
+        assert_eq!(response.headers[&UPSTREAM_REQUEST_ID_HEADER], "upstream-1");
+    }
 
     #[test]
     fn well_formed_incoming_ids_are_kept() {

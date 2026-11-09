@@ -25,6 +25,7 @@ use http::{header, HeaderMap, Response};
 use log::{debug, warn};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_timeout::timeout;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::ready;
 use std::time::Duration;
@@ -45,6 +46,9 @@ pub use h2::server::Builder as H2Options;
 // 64 KiB decoded header-list limit.
 const DEFAULT_MAX_HEADER_LIST_SIZE: u32 = 64 * 1024;
 const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 100;
+
+const KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
+const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
 
 /// Build [`H2Options`] with bounded defaults for received requests.
 ///
@@ -104,6 +108,8 @@ impl Future for Idle<'_> {
 pub struct HttpSession {
     request_header: RequestHeader,
     request_body_reader: RecvStream,
+    // The end of the request stream, once seen: asking `RecvStream` takes the connection's stream lock.
+    request_ended: AtomicBool,
     send_response: SendResponse<Bytes>,
     send_response_body: Option<SendStream<Bytes>>,
     // Remember what has been written
@@ -159,6 +165,7 @@ impl HttpSession {
             HttpSession {
                 request_header: request_header.into(),
                 request_body_reader,
+                request_ended: AtomicBool::new(false),
                 send_response,
                 send_response_body: None,
                 response_written: None,
@@ -348,10 +355,13 @@ impl HttpSession {
         header.remove_header(&header::TRANSFER_ENCODING);
         header.remove_header(&header::CONNECTION);
         header.remove_header(&header::UPGRADE);
-        header.remove_header(&HeaderName::from_static("keep-alive"));
-        header.remove_header(&HeaderName::from_static("proxy-connection"));
+        header.remove_header(&KEEP_ALIVE);
+        header.remove_header(&PROXY_CONNECTION);
 
-        let resp = Response::from_parts(header.as_owned_parts(), ());
+        // The frame takes the headers: `response_written` keeps the status, not a second copy of the map.
+        let mut resp = Response::new(());
+        *resp.status_mut() = header.status;
+        *resp.headers_mut() = std::mem::take(&mut header.headers);
 
         let body_writer = self.send_response.send_response(resp, end).or_err(
             ErrorType::WriteError,
@@ -555,13 +565,22 @@ impl HttpSession {
     pub fn is_body_done(&self) -> bool {
         // Check no body in request
         // Also check we hit end of stream
-        self.is_body_empty() || self.request_body_reader.is_end_stream()
+        self.is_body_empty() || self.request_ended()
+    }
+
+    fn request_ended(&self) -> bool {
+        if self.request_ended.load(Ordering::Relaxed) {
+            return true;
+        }
+        let ended = self.request_body_reader.is_end_stream();
+        self.request_ended.store(ended, Ordering::Relaxed);
+        ended
     }
 
     /// Whether there is any body to read. true means there no body in request.
     pub fn is_body_empty(&self) -> bool {
         self.body_read == 0
-            && (self.request_body_reader.is_end_stream()
+            && (self.request_ended()
                 || self
                     .request_header
                     .headers

@@ -23,10 +23,14 @@ use std::fmt::Debug;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::protocols::l4::stream::AsyncWriteVec;
+use crate::utils::chunk_pool::{self, CHUNK_BYTES};
 use crate::utils::BufRef;
 
 // TODO: make this dynamically adjusted
-const BODY_BUFFER_SIZE: usize = 1024 * 64;
+const BODY_BUFFER_SIZE: usize = CHUNK_BYTES;
+// A socket read of at least this many bytes is handed on as the buffer it was read into; a smaller one is copied
+// out so the buffer stays with the reader.
+const HANDOVER_MIN_BYTES: usize = 8 * 1024;
 // limit how much incomplete chunk-size and chunk-ext to buffer
 const PARTIAL_CHUNK_HEAD_LIMIT: usize = 1024 * 8;
 // Trailers: https://datatracker.ietf.org/doc/html/rfc9112#section-7.1.2
@@ -152,6 +156,12 @@ pub struct BodyReader {
     body_buf_overread: Option<BytesMut>,
 }
 
+impl Drop for BodyReader {
+    fn drop(&mut self) {
+        self.release_body_buf();
+    }
+}
+
 impl BodyReader {
     pub fn new(upstream: bool) -> Self {
         BodyReader {
@@ -179,6 +189,14 @@ impl BodyReader {
             return;
         }
 
+        if self.body_buf_size == CHUNK_BYTES && buf_to_rewind.len() <= CHUNK_BYTES {
+            let mut body_buf = chunk_pool::take();
+            body_buf[..buf_to_rewind.len()].copy_from_slice(buf_to_rewind);
+            self.rewind_buf_len = buf_to_rewind.len();
+            self.body_buf = Some(body_buf);
+            return;
+        }
+
         let mut body_buf = BytesMut::with_capacity(self.body_buf_size);
         self.rewind_buf_len = buf_to_rewind.len();
         if !buf_to_rewind.is_empty() {
@@ -194,9 +212,16 @@ impl BodyReader {
         self.body_buf = Some(body_buf);
     }
 
+    /// Gives the body buffer back to the pool, so the next body of this thread starts without an allocation.
+    fn release_body_buf(&mut self) {
+        if let Some(body_buf) = self.body_buf.take() {
+            chunk_pool::recycle(body_buf);
+        }
+    }
+
     pub fn init_chunked(&mut self, buf_to_rewind: &[u8]) {
         self.owned_preread = None;
-        self.body_buf = None;
+        self.release_body_buf();
         self.body_state = PS::Chunked(0, 0, 0, 0);
         self.ensure_body_buf(buf_to_rewind);
     }
@@ -214,7 +239,7 @@ impl BodyReader {
                 }
             }
             _ => {
-                self.body_buf = None;
+                self.release_body_buf();
                 self.ensure_body_buf(buf_to_rewind);
                 self.body_state = PS::Partial(0, cl);
             }
@@ -222,7 +247,7 @@ impl BodyReader {
     }
 
     pub fn init_content_length_owned(&mut self, cl: usize, preread: Bytes) {
-        self.body_buf = None;
+        self.release_body_buf();
         self.rewind_buf_len = 0;
         if cl == 0 {
             self.init_content_length(cl, &preread);
@@ -235,13 +260,13 @@ impl BodyReader {
 
     pub fn init_close_delimited(&mut self, buf_to_rewind: &[u8]) {
         self.owned_preread = None;
-        self.body_buf = None;
+        self.release_body_buf();
         self.ensure_body_buf(buf_to_rewind);
         self.body_state = PS::UntilClose(0);
     }
 
     pub fn init_close_delimited_owned(&mut self, preread: Bytes) {
-        self.body_buf = None;
+        self.release_body_buf();
         self.rewind_buf_len = 0;
         self.owned_preread = (!preread.is_empty()).then_some(preread);
         self.body_state = PS::UntilClose(0);
@@ -262,7 +287,7 @@ impl BodyReader {
             // reset body counter
             let extra = self.body_buf_overread.take();
             let buf = extra.as_deref().unwrap_or_default();
-            self.body_buf = None;
+            self.release_body_buf();
             self.ensure_body_buf(buf);
         } // if rewind_buf_len is not 0, body read has not yet been polled
         self.body_state = PS::UntilClose(0);
@@ -291,6 +316,9 @@ impl BodyReader {
     }
 
     fn finish_body_buf(&mut self, end_of_body: usize, total_read: usize) {
+        if total_read == end_of_body {
+            return;
+        }
         let body_buf_mut = self.body_buf.as_mut().expect("must have read body buf");
         // remove unused buffer
         body_buf_mut.truncate(total_read);
@@ -348,8 +376,25 @@ impl BodyReader {
             };
         }
 
+        // Only content-length and close-delimited bodies leave nothing in the buffer after a read.
+        let handover = matches!(self.body_state, PS::Partial(..) | PS::UntilClose(_));
         let body_ref = self.read_body(stream).await?;
-        Ok(body_ref.map(|body_ref| Bytes::copy_from_slice(self.get_body(&body_ref))))
+        Ok(body_ref.map(|body_ref| self.take_bytes(&body_ref, handover)))
+    }
+
+    fn take_bytes(&mut self, body_ref: &BufRef, handover: bool) -> Bytes {
+        if handover
+            && body_ref.1 - body_ref.0 >= HANDOVER_MIN_BYTES
+            && self.body_buf_overread.is_none()
+        {
+            let body_buf = self.body_buf.take().expect("must have read body buf");
+            return chunk_pool::freeze(body_buf, body_ref.0, body_ref.1);
+        }
+        let bytes = Bytes::copy_from_slice(self.get_body(body_ref));
+        if self.body_done() && self.body_buf_overread.is_none() {
+            self.release_body_buf();
+        }
+        bytes
     }
 
     pub async fn do_read_body<S>(&mut self, stream: &mut S) -> Result<Option<BufRef>>
@@ -1190,6 +1235,62 @@ mod tests {
 
     fn init_log() {
         let _ = env_logger::builder().is_test(true).try_init();
+    }
+
+    #[tokio::test]
+    async fn large_content_length_reads_are_handed_over_and_recycled() {
+        init_log();
+        let input = (0..100_000u32).map(|i| i as u8).collect::<Vec<_>>();
+        let mut mock_io = Builder::new()
+            .read(&input[..65536])
+            .read(&input[65536..])
+            .build();
+        let mut body_reader = BodyReader::new(true);
+        body_reader.init_content_length(input.len(), b"");
+        let first = body_reader
+            .read_body_bytes(&mut mock_io)
+            .await
+            .unwrap()
+            .unwrap();
+        let first_buffer = first.as_ptr();
+        assert_eq!(&first[..], &input[..65536]);
+        assert!(body_reader.body_buf.is_none());
+        drop(first);
+        let second = body_reader
+            .read_body_bytes(&mut mock_io)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&second[..], &input[65536..]);
+        assert_eq!(second.as_ptr(), first_buffer);
+        assert!(body_reader.body_done());
+        assert!(body_reader
+            .read_body_bytes(&mut mock_io)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn small_reads_are_copied_and_the_buffer_goes_back_when_the_body_ends() {
+        init_log();
+        let mut mock_io = Builder::new().read(b"abc").read(b"def").build();
+        let mut body_reader = BodyReader::new(true);
+        body_reader.init_content_length(6, b"");
+        let first = body_reader
+            .read_body_bytes(&mut mock_io)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&first[..], b"abc");
+        assert!(body_reader.body_buf.is_some());
+        let second = body_reader
+            .read_body_bytes(&mut mock_io)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&second[..], b"def");
+        assert!(body_reader.body_buf.is_none());
     }
 
     #[tokio::test]
