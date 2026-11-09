@@ -56,7 +56,7 @@ routing rows and the comparison with nginx and HAProxy are in
 
 ## Request path
 
-Details: [fast path](developer/PERF_6_3_FAST_PATH.md), [HTTP/1 path](PERF_6_3_H1_PATH.md),
+Details: [fast path](developer/PERF_6_3_FAST_PATH.md), [HTTP/1 path](developer/PERF_6_3_H1_PATH.md),
 [request context](developer/PERF_6_3_REQUEST_CONTEXT.md), [bodied relay](developer/PERF_6_3_BODIED_RELAY.md).
 
 - Proxied HTTP/1.1 requests cost about 19% fewer instructions (1 KiB response: 58.5k to 47.4k per request) from the
@@ -85,7 +85,7 @@ Details: [connection lifecycle](developer/PERF_6_3_CONNECTION_LIFECYCLE.md).
 
 ## Bodies, static files, TLS and HTTP/2
 
-Details: [bodies and static files](developer/PERF_6_3_BODIES_AND_STATIC.md), [TLS and HTTP/2](PERF_6_3_TLS_H2.md).
+Details: [bodies and static files](developer/PERF_6_3_BODIES_AND_STATIC.md), [TLS and HTTP/2](developer/PERF_6_3_TLS_H2.md).
 
 - Proxied response bodies reach the client in chunks of up to 128 KiB instead of 64 KiB (first-byte latency is
   unchanged: a read returns what is available). Each worker thread keeps up to 1 MiB of idle body buffers.
