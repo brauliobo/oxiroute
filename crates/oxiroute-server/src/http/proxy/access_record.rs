@@ -16,6 +16,7 @@ pub(super) fn build<'a>(
     ctx: &'a HttpRequestContext,
     session: &'a Session,
     response_status: Option<u16>,
+    elapsed: std::time::Duration,
     service: &'a str,
 ) -> HttpAccess<'a> {
     let request = session.req_header();
@@ -30,7 +31,7 @@ pub(super) fn build<'a>(
         bytes_sent: Count(session.body_bytes_sent() as u64),
         connect_ms: trace.connect.map(|duration| Count(duration.as_millis())),
         correlation_id: Correlation(request_id),
-        duration_ms: Count(ctx.started_at.elapsed().as_millis()),
+        duration_ms: Count(elapsed.as_millis()),
         evacuations: ctx
             .evacuation()
             .map_or(0, |evacuation| evacuation.redispatches()),

@@ -508,12 +508,13 @@ impl InflightRegistry {
 }
 
 impl InflightGuard {
-    pub(crate) fn set_phase(&self, phase: Phase) {
+    /// `now` is the caller's reading of the clock for this step, so a phase change reads no clock of its own.
+    pub(crate) fn set_phase(&self, phase: Phase, now: Instant) {
         let entry = &self.entry;
-        let now = entry.age_ms();
+        let age = duration_ms(now.saturating_duration_since(entry.started));
         entry.phase.store(phase as u8, Ordering::Relaxed);
-        entry.phase_since_ms.store(now, Ordering::Relaxed);
-        entry.progress_ms.store(now, Ordering::Relaxed);
+        entry.phase_since_ms.store(age, Ordering::Relaxed);
+        entry.progress_ms.store(age, Ordering::Relaxed);
     }
 
     pub(crate) fn progress(&self) {
@@ -622,7 +623,7 @@ mod tests {
         let registry = registry_for_test();
         let guard = registry.register(arrival("p", Duration::from_secs(30)));
         for phase in [Phase::Queued, Phase::Connecting, Phase::AwaitingHeaders] {
-            guard.set_phase(phase);
+            guard.set_phase(phase, Instant::now());
             assert_eq!(registry.find("p").expect("entry").phase, phase);
         }
         guard.set_server("gpu-1");
@@ -639,7 +640,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(20));
         let second = registry.register(arrival("new", Duration::from_secs(30)));
         second.set_pool("farm");
-        second.set_phase(Phase::Queued);
+        second.set_phase(Phase::Queued, Instant::now());
         let other = registry.register(arrival("other", Duration::from_secs(30)));
         other.set_pool("web");
         let filter = InflightFilter {
@@ -683,7 +684,7 @@ mod tests {
         let registry = registry_for_test();
         let guard = registry.register(arrival("slow", Duration::from_secs(30)));
         guard.set_pool("farm");
-        guard.set_phase(Phase::AwaitingHeaders);
+        guard.set_phase(Phase::AwaitingHeaders, Instant::now());
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(registry.report_stuck(Duration::from_millis(10)).len(), 1);
         assert!(registry.report_stuck(Duration::from_millis(10)).is_empty());
@@ -699,7 +700,7 @@ mod tests {
     fn a_streaming_request_that_keeps_moving_is_not_stuck() {
         let registry = registry_for_test();
         let guard = registry.register(arrival("stream", Duration::from_secs(30)));
-        guard.set_phase(Phase::Streaming);
+        guard.set_phase(Phase::Streaming, Instant::now());
         std::thread::sleep(Duration::from_millis(30));
         guard.progress();
         assert!(registry.report_stuck(Duration::from_millis(20)).is_empty());
@@ -839,7 +840,7 @@ mod tests {
         stuck.access_log = Some(Arc::new(log));
         let guard = registry.register(stuck);
         guard.set_pool("farm");
-        guard.set_phase(Phase::AwaitingHeaders);
+        guard.set_phase(Phase::AwaitingHeaders, Instant::now());
         std::thread::sleep(Duration::from_millis(30));
         registry.report_stuck(Duration::from_millis(10));
         registry.report_stuck(Duration::from_millis(10));
