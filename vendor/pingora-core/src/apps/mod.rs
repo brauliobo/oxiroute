@@ -23,7 +23,7 @@ use log::{debug, error};
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
-use std::{any::Any, future::poll_fn};
+use std::any::Any;
 
 use crate::protocols::http::v2::server;
 use crate::protocols::http::ServerSession;
@@ -408,6 +408,9 @@ impl Drop for AcceptOwnership {
 }
 
 #[cfg(test)]
+mod h2_shutdown_tests;
+
+#[cfg(test)]
 mod accept_gate_tests {
     use std::{
         sync::{mpsc, Arc, Barrier},
@@ -770,15 +773,19 @@ where
             };
 
             let mut shutdown = shutdown.clone();
+            let mut shutting_down = false;
             loop {
                 // this loop ends when the client decides to close the h2 conn
                 // TODO: add a timeout?
                 let h2_stream = tokio::select! {
-                    _ = shutdown.changed() => {
+                    _ = shutdown.changed(), if !shutting_down => {
+                        // GOAWAY: the client opens no more streams. Streams it opened before it saw the GOAWAY
+                        // are still waiting to be accepted, and `accept` also ends the connection once the
+                        // last stream is done, so the loop goes on accepting instead of only waiting for the
+                        // close: a stream that is never accepted is never answered either.
                         h2_conn.graceful_shutdown();
-                        let _ = poll_fn(|cx| h2_conn.poll_closed(cx))
-                            .await.map_err(|e| error!("H2 error waiting for shutdown {e}"));
-                        return None;
+                        shutting_down = true;
+                        continue;
                     }
                     h2_stream = server::HttpSession::from_h2_conn(&mut h2_conn, digest.clone()) => h2_stream
                 };

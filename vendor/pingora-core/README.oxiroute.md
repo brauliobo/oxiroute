@@ -24,6 +24,11 @@ connection-pool experiments:
   defaulting to 60 seconds, and
   `services/listening.rs` acquires it after TCP accept and retains it through the handshake and
   application connection lifetime while applying the owning app's timeout.
+- `apps/mod.rs` keeps accepting HTTP/2 streams after the service's shutdown signal sends GOAWAY (the connection
+  loop calls `graceful_shutdown` once and goes on, ending when `accept` reports the connection closed) instead of only
+  waiting for the close: a stream the client opened before it saw the GOAWAY was never accepted, so it was never
+  answered and kept the connection, and the generation that owned it, open until the client gave up.
+  `apps/h2_shutdown_tests.rs` covers it.
 - `utils/tls/boringssl_openssl.rs` uses OpenSSL's non-truncating subject string
   conversion instead of the deprecated conversion that stops at interior NULs.
 - `protocols/http/v1/client.rs` classifies informational responses before applying HEAD no-body
@@ -173,7 +178,7 @@ The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
-review the header slots, request and response facts, the noted request write, inline request loop, the zero-copy request body and retry buffer, `try_read_response_task`, the connector hook, admission guard and handshake-timeout hook, rendered response write, inline Date and Connection lines, header map headroom, single-clock timeouts, subject conversion, HTTP/1 HEAD informational-response,
+review the HTTP/2 shutdown accept loop, the header slots, request and response facts, the noted request write, inline request loop, the zero-copy request body and retry buffer, `try_read_response_task`, the connector hook, admission guard and handshake-timeout hook, rendered response write, inline Date and Connection lines, header map headroom, single-clock timeouts, subject conversion, HTTP/1 HEAD informational-response,
 owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, lazy read buffer, pooled
 gzip state, header-name cache, HTTP/2 test lifecycle, connection-pool changes, the idle pool and the listener `TCP_NODELAY`, then rerun the vendored
 gzip state, header-name cache, body buffer pool and hand-over, direct large body writes, coalescing write buffer,
