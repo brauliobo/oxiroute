@@ -452,24 +452,16 @@ async fn waiting_requests_use_whichever_server_frees_first_on_every_algorithm() 
         ] {
             let outcome = run(algorithm.clone(), reuse, &[1, 1], &jobs).await;
             let label = format!("{name}/{mode}");
-            // `Connection: close` no longer closes the upstream connection, so only `never` keeps
-            // connections from being reused. Reusable connections keep each waiter on the server
-            // whose idle connection frees first, which does not spread a burst evenly (a limitation
-            // of v6.1.0 too, see docs/developer/POOL_QUEUE_REGISTRY_PERFORMANCE.md).
-            if mode == "never" {
-                assert_late_binding(&label, &outcome, ideal);
-                assert!(
-                    outcome
-                        .pool
-                        .health_snapshot()
-                        .endpoints
-                        .iter()
-                        .all(|endpoint| endpoint.active_connections == 0),
-                    "{name}/{mode}: leaked permits"
-                );
-            } else {
-                assert_drained(&label, &outcome);
-            }
+            assert_late_binding(&label, &outcome, ideal);
+            assert!(
+                outcome
+                    .pool
+                    .health_snapshot()
+                    .endpoints
+                    .iter()
+                    .all(|endpoint| endpoint.active_connections == 0),
+                "{name}/{mode}: leaked permits"
+            );
         }
     }
 }

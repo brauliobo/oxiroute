@@ -1,14 +1,21 @@
+use std::cmp::Reverse;
+
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
 /// Random probes before power-of-two-choices falls back to listing the acceptable servers.
 const P2C_PROBES: usize = 6;
 
+/// Up to this many selectable servers least connections and weighted round robin read every server
+/// in one pass, which costs less than keeping an index current.
+const SCANNED: usize = 8;
+
 impl EndpointPool {
     /// The algorithm's preferred server among the selectable ones that `accept` admits.
     ///
-    /// Round robin and first stop at the first acceptable server, power of two choices probes two
-    /// random servers, and the load-aware algorithms make one pass; none of them allocates.
+    /// Round robin and first stop at the first acceptable server and power of two choices probes two
+    /// random servers. Least connections and weighted round robin make one pass over a few servers
+    /// and consult an index of many; none of them allocates unless a retry excludes servers.
     pub(super) fn pick(
         &self,
         selection: &mut SelectionState,
@@ -23,19 +30,36 @@ impl EndpointPool {
                 view.rotation(selection.next).find(|&index| accept(index))
             }
             UpstreamAlgorithm::First => view.rotation(0).find(|&index| accept(index)),
-            UpstreamAlgorithm::LeastConnections => {
+            UpstreamAlgorithm::LeastConnections if view.entries.len() <= SCANNED => {
+                self.queue.load_log.track(false);
                 Self::least_loaded(view.rotation(selection.next), members, eligible)
             }
-            UpstreamAlgorithm::WeightedRoundRobin { .. } => view
-                .entries
-                .iter()
-                .filter(|entry| accept(entry.index as usize))
-                .min_by_key(|entry| {
-                    std::cmp::Reverse(
-                        selection.credit[entry.index as usize] + i64::from(entry.weight),
-                    )
-                })
-                .map(|entry| entry.index as usize),
+            UpstreamAlgorithm::LeastConnections => {
+                let start = selection.next;
+                let masked = eligible.masked(members);
+                selection
+                    .loads
+                    .tree(&self.queue.load_log, members, view, eligible.capacity)
+                    .least(start, &masked)
+            }
+            UpstreamAlgorithm::WeightedRoundRobin { .. } if view.entries.len() <= SCANNED => {
+                self.queue.load_log.track(false);
+                selection.weights.flush(&mut selection.credit);
+                view.entries
+                    .iter()
+                    .filter(|entry| accept(entry.index as usize))
+                    .min_by_key(|entry| {
+                        Reverse(selection.credit[entry.index as usize] + i64::from(entry.weight))
+                    })
+                    .map(|entry| entry.index as usize)
+            }
+            UpstreamAlgorithm::WeightedRoundRobin { .. } => {
+                let masked = eligible.masked(members);
+                selection
+                    .weights
+                    .sync(&self.queue.load_log, members, view, &mut selection.credit);
+                selection.weights.best(eligible.capacity, &masked)
+            }
             UpstreamAlgorithm::PowerOfTwoChoices => {
                 let (first, second) = Self::two_random(selection, view, &accept)?;
                 Some(match second {
@@ -117,15 +141,22 @@ impl EndpointPool {
             &self.algorithm,
             UpstreamAlgorithm::WeightedRoundRobin { .. }
         ) {
-            let mut total = 0;
-            for entry in &view.entries {
-                if eligible.admits(members, entry.index as usize) {
-                    let weight = i64::from(entry.weight);
-                    selection.credit[entry.index as usize] += weight;
-                    total += weight;
+            if view.entries.len() <= SCANNED {
+                let mut total = 0;
+                for entry in &view.entries {
+                    if eligible.admits(members, entry.index as usize) {
+                        let weight = i64::from(entry.weight);
+                        selection.credit[entry.index as usize] += weight;
+                        total += weight;
+                    }
                 }
+                selection.credit[chosen] -= total;
+            } else {
+                let excluded = eligible.excluded_positions(members);
+                selection
+                    .weights
+                    .select(eligible.capacity, chosen, &excluded);
             }
-            selection.credit[chosen] -= total;
         }
         if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
             selection.next = (chosen + 1) % members.endpoints.len();
