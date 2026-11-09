@@ -221,7 +221,11 @@ impl HttpRequestContext {
         };
         self.inflight = Some(
             inflight::registry().register(InflightArrival {
-                request_id: header(&REQUEST_ID_HEADER).unwrap_or_default(),
+                request_id: self
+                    .request_id
+                    .as_ref()
+                    .and_then(|id| id.to_str().ok())
+                    .unwrap_or_default(),
                 listener: self.listener.shared_name(),
                 method: request.method.clone(),
                 host: header(&HOST),
@@ -280,7 +284,7 @@ impl HttpRequestContext {
             self.attempted_upstreams.clear();
             self.pool = Some(rescue_pool);
         }
-        let route = Arc::clone(&proxy_route(self).route_id);
+        let route = proxy_route(self).route_id.shared();
         debug!(
             "rescuing route {route} status {status} after {} tries",
             self.attempt_count()

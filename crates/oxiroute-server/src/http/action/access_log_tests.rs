@@ -123,6 +123,7 @@ fn access_log_queue_saturation_never_blocks_the_caller() {
     let access_log = AccessLog {
         sink: Arc::new(Sink::new(1)),
         service: "test".into(),
+        logged_service: "test".into(),
         rtmp_metrics: None,
         worker: Mutex::new(None),
     };
@@ -139,6 +140,7 @@ fn rtmp_access_log_queue_saturation_counts_nonblocking_drops() {
     let access_log = AccessLog {
         sink: Arc::new(Sink::new(1)),
         service: "test".into(),
+        logged_service: "test".into(),
         rtmp_metrics: Some(Arc::clone(&metrics)),
         worker: Mutex::new(None),
     };

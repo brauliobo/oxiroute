@@ -63,7 +63,7 @@ impl ProxyHttp for HttpReverseProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
-        ctx.request_id = Some(stamp_request(session.req_header_mut())?);
+        ctx.request_id = Some(stamp_request(session.req_header_mut_keeping_facts())?);
         ctx.adopt_downstream_deadline(session);
         ctx.register_inflight(session, self.service.access_log());
         let arrived = ctx.started_at;
@@ -106,7 +106,7 @@ impl ProxyHttp for HttpReverseProxy {
             let request = session.req_header();
             (
                 request_authority(request),
-                content_length(&request.headers),
+                request_content_length(session),
                 session.is_upgrade_req(),
             )
         };
@@ -146,7 +146,7 @@ impl ProxyHttp for HttpReverseProxy {
         };
         ctx.authority = authority;
         if let Some(inflight) = &ctx.inflight {
-            inflight.place_route(Arc::clone(&route.route_id));
+            inflight.place_route(route.route_id.shared());
         }
         ctx.route = Some(Arc::clone(&route));
         session.set_total_drain_timeout(Some(
@@ -277,7 +277,7 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.trace.servers.push(Arc::clone(&server));
             ctx.trace.stats = Some(Arc::clone(selected.server_stats()));
             if let Some(inflight) = &ctx.inflight {
-                inflight.place_pool(Arc::clone(pool.label()));
+                inflight.place_pool(pool.label().shared());
                 inflight.place_server(server);
                 selected.observe_queue_position(inflight.queue_cell());
                 inflight.set_phase(Phase::Connecting, now);
@@ -698,8 +698,14 @@ impl ProxyHttp for HttpReverseProxy {
         }
         ctx.note_response(status, now);
         ctx.enter_phase(Phase::Streaming, now);
-        let had_uncacheable_framing = response.headers.contains_key(TRANSFER_ENCODING)
-            || response.headers.contains_key(TRAILER);
+        // The framing headers are read before the policy strips them, and only a buffered or cached response cares.
+        let had_uncacheable_framing = (proxy_route(ctx)
+            .policy
+            .response_body_buffer_limit()
+            .is_some()
+            || ctx.cache_transaction.is_some())
+            && (response.headers.contains_key(TRANSFER_ENCODING)
+                || response.headers.contains_key(TRAILER));
         let remove_hop_by_hop = response.status != http::StatusCode::SWITCHING_PROTOCOLS;
         if let Some(status) = ctx.response_status_override {
             response.set_status(status)?;
@@ -961,8 +967,13 @@ impl ProxyHttp for HttpReverseProxy {
         ctx.account_final_attempt(session, now);
         ctx.record_failed_evacuations(error);
         if let Some(access_log) = self.service.access_log() {
-            let record =
-                access_record::build(ctx, session, response_status, elapsed, access_log.service());
+            let record = access_record::build(
+                ctx,
+                session,
+                response_status,
+                elapsed,
+                access_log.logged_service(),
+            );
             if let Err(error) = access_log.write_with(|line| {
                 record.write_json(line);
                 Ok(())

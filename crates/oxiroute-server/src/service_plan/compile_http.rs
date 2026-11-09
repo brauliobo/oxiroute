@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::label::Label;
 
 pub(super) fn compile_http_services(
     services: &[HttpServiceBlueprint],
@@ -95,7 +96,7 @@ fn compile_http_route(
             })?)
         }
     };
-    let route_id = Arc::from(route.route.route_id());
+    let route_id = Label::new(route.route.route_id());
     let plan = Arc::new(HttpRoutePlan {
         access,
         action,

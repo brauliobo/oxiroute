@@ -10,6 +10,7 @@ mod html;
 mod http;
 mod http3;
 mod l4;
+mod label;
 mod lifecycle_control;
 mod listener;
 mod observability;

@@ -3,6 +3,7 @@ use super::*;
 
 mod sink;
 
+use crate::label::Label;
 pub(super) use sink::QUEUE_CAPACITY_LINES as ACCESS_LOG_QUEUE_CAPACITY;
 use sink::Rejected;
 pub(super) use sink::Sink;
@@ -14,6 +15,7 @@ std::thread_local! {
 pub(crate) struct AccessLog {
     pub(super) sink: Arc<Sink>,
     pub(super) service: String,
+    pub(super) logged_service: Label,
     pub(super) rtmp_metrics: Option<Arc<crate::observability::logging::RtmpAccessLogMetrics>>,
     pub(super) worker: Mutex<Option<JoinHandle<()>>>,
 }
@@ -112,6 +114,7 @@ impl AccessLog {
         Ok(Some(Self {
             sink,
             service: service.to_owned(),
+            logged_service: Label::new(service),
             rtmp_metrics,
             worker: Mutex::new(Some(worker)),
         }))
@@ -167,6 +170,11 @@ impl AccessLog {
 
     pub(crate) fn service(&self) -> &str {
         &self.service
+    }
+
+    /// The service name as every access line writes it, redacted once.
+    pub(crate) fn logged_service(&self) -> &str {
+        self.logged_service.logged()
     }
 }
 

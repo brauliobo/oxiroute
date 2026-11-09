@@ -145,6 +145,14 @@ pub(super) fn pingora_request_policy_error(error: RequestPolicyError) -> Error {
     }
 }
 
+/// The request's `Content-Length`, without a lookup for the usual request that has none.
+pub(super) fn request_content_length(session: &Session) -> Result<Option<u64>, ()> {
+    if session.request_facts().content_lengths == 0 {
+        return Ok(None);
+    }
+    content_length(&session.req_header().headers)
+}
+
 pub(super) fn content_length(headers: &http::HeaderMap) -> Result<Option<u64>, ()> {
     let mut values = headers.get_all(CONTENT_LENGTH).iter();
     let value = match values.next() {
@@ -264,7 +272,9 @@ pub(super) fn upstream_request_requires_mutation(
     if ctx.cache_transaction.is_some() || proxy_policy(ctx).upstream_path_rewrite.is_some() {
         return true;
     }
-    if request.version == http::Version::HTTP_10 || has_downstream_close(&request.headers) {
+    if request.version == http::Version::HTTP_10
+        || (session.request_facts().connection && has_downstream_close(&request.headers))
+    {
         return true;
     }
     let host_requires_mutation = match &ctx.selected_upstream_host {

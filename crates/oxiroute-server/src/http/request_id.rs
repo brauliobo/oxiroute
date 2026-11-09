@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use http::{HeaderName, HeaderValue};
+use http::{HeaderName, HeaderValue, header::Entry};
 
 use crate::observability::logging::valid_correlation_id;
 
@@ -79,7 +79,15 @@ pub(crate) fn idempotency_header_or_default(configured: Option<&HeaderName>) -> 
 pub(crate) fn stamp_request(
     request: &mut pingora::http::RequestHeader,
 ) -> pingora::Result<HeaderValue> {
-    let id = resolve_request_id(request.headers.get(&REQUEST_ID_HEADER));
+    let mut incoming = request.headers.get_all(&REQUEST_ID_HEADER).iter();
+    let first = incoming.next();
+    // A single well formed id is already what the origin should get.
+    if let Some(id) = first.filter(|id| id.to_str().is_ok_and(valid_correlation_id))
+        && incoming.next().is_none()
+    {
+        return Ok(id.clone());
+    }
+    let id = resolve_request_id(first);
     request.insert_header(REQUEST_ID_HEADER_NAME, id.clone())?;
     Ok(id)
 }
@@ -89,15 +97,22 @@ pub(crate) fn stamp_response(
     response: &mut pingora::http::ResponseHeader,
     id: &HeaderValue,
 ) -> pingora::Result<()> {
-    if let Some(upstream) = response.remove_header(&REQUEST_ID_HEADER)
-        && upstream != *id
-    {
-        response.insert_header(UPSTREAM_REQUEST_ID_HEADER, upstream)?;
-    }
     // A unique value never matches an HPACK table entry; "never indexed" keeps it out of the table, so the
     // HTTP/2 encoder neither inserts it nor evicts the entries the other headers reuse.
     let mut id = id.clone();
     id.set_sensitive(true);
+    // The usual response has no id and no case map: one lookup, and no name to parse.
+    if !response.has_case()
+        && let Entry::Vacant(slot) = response.headers.entry(REQUEST_ID_HEADER)
+    {
+        slot.insert(id);
+        return Ok(());
+    }
+    if let Some(upstream) = response.remove_header(&REQUEST_ID_HEADER)
+        && upstream != id
+    {
+        response.insert_header(UPSTREAM_REQUEST_ID_HEADER, upstream)?;
+    }
     response.insert_header(REQUEST_ID_HEADER_NAME, id)
 }
 
@@ -118,6 +133,52 @@ mod tests {
         assert!(stamped.is_sensitive());
         assert_eq!(stamped, &request.headers[&REQUEST_ID_HEADER]);
         assert_eq!(response.headers[&UPSTREAM_REQUEST_ID_HEADER], "upstream-1");
+    }
+
+    #[test]
+    fn a_response_without_an_id_gets_it_with_or_without_case_preservation() {
+        let id = HeaderValue::from_static("rq-1");
+        for mut response in [
+            pingora::http::ResponseHeader::build(200, None).unwrap(),
+            pingora::http::ResponseHeader::build_no_case(200, None).unwrap(),
+        ] {
+            response.insert_header("etag", "\"a\"").unwrap();
+            stamp_response(&mut response, &id).unwrap();
+            assert_eq!(response.headers.len(), 2);
+            assert!(response.headers[&REQUEST_ID_HEADER].is_sensitive());
+            assert_eq!(response.headers[&REQUEST_ID_HEADER], "rq-1");
+            let mut wire = Vec::new();
+            response.header_to_h1_wire(&mut wire);
+            assert!(
+                String::from_utf8(wire)
+                    .unwrap()
+                    .to_lowercase()
+                    .contains("x-request-id: rq-1")
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_keeps_one_valid_id_and_collapses_duplicates() {
+        let mut request = pingora::http::RequestHeader::build("GET", b"/", None).unwrap();
+        request.append_header("x-request-id", "client-7").unwrap();
+        assert_eq!(stamp_request(&mut request).unwrap(), "client-7");
+        assert_eq!(
+            request.headers.get_all(&REQUEST_ID_HEADER).iter().count(),
+            1
+        );
+        request.append_header("x-request-id", "client-8").unwrap();
+        assert_eq!(stamp_request(&mut request).unwrap(), "client-7");
+        let ids = request
+            .headers
+            .get_all(&REQUEST_ID_HEADER)
+            .iter()
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["client-7"]);
+        request.insert_header("x-request-id", "bad id").unwrap();
+        let generated = stamp_request(&mut request).unwrap();
+        assert!(generated.as_bytes().starts_with(b"rq-"));
+        assert_eq!(request.headers[&REQUEST_ID_HEADER], generated);
     }
 
     #[test]
