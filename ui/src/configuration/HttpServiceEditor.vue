@@ -38,7 +38,7 @@ fieldset.route-list(data-field="http_services[].routes")
   )
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { HttpServiceConfig } from '../config'
 import HttpRouteEditor from './HttpRouteEditor.vue'
 import NullableLimitField from './NullableLimitField.vue'

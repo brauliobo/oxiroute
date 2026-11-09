@@ -178,7 +178,7 @@ fieldset.object-block(data-field="upstream_pools[].resilience")
       input(type="text" maxlength="1024" :value="pool.resilience.unavailable_body ?? ''" @input="pool.resilience.unavailable_body = nullableInput($event)")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, ref } from 'vue'
 
 import {

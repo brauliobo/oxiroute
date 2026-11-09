@@ -53,7 +53,7 @@ fieldset.object-block
       input(type="number" min="1" max="4096" step="1" v-model.number="store.max_followers_per_fill")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { CacheStoreConfig } from '../config'
 import { defaultCacheStore } from './canonicalDefaults'
 

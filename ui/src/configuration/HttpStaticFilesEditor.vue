@@ -29,7 +29,7 @@
       span Emit ETag validators
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import StringListField from '../StringListField.vue'
 import type { HttpStaticFilesActionConfig } from '../config'
 

@@ -35,7 +35,7 @@
           span Add on every response status
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, useId } from 'vue'
 import type { HttpFixedResponseActionConfig } from '../config'
 

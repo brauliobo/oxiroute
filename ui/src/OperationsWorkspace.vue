@@ -181,7 +181,7 @@ section.operations-workspace(aria-labelledby="operations-heading" :aria-busy="lo
               button.small-button(type="button" :disabled="!canMutate || mutating !== null" @click="resetCapacity(entry)") Reset limit
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, onMounted, ref, watch } from 'vue'
 
 import {

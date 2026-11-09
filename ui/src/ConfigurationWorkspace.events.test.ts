@@ -1,4 +1,4 @@
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { flushPromises, mount, type VaporWrapper } from './test/mount'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
@@ -7,7 +7,7 @@ import { emptyConfigSnapshot, jsonResponse } from './test/contractFixtures'
 const token = 'configuration-memory-token'
 
 describe('configuration event-driven revision checks', () => {
-  let wrapper: VueWrapper | undefined
+  let wrapper: VaporWrapper | undefined
   let stream: ControllableStream | undefined
 
   afterEach(() => {
@@ -71,7 +71,7 @@ function installFetch(
   return fetch
 }
 
-async function unlock(wrapper: VueWrapper): Promise<void> {
+async function unlock(wrapper: VaporWrapper): Promise<void> {
   await wrapper.get('#config-access-token').setValue(token)
   await wrapper.get('form[data-unlock-form]').trigger('submit')
   await flushPromises()

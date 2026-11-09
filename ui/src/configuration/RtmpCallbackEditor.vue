@@ -45,7 +45,7 @@ fieldset.object-block(:data-field="fieldPath")
       span Notify relay redirects
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { RtmpCallbackConfig } from '../config'
 
 defineProps<{

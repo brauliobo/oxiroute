@@ -109,7 +109,7 @@ fieldset.object-block(data-field="certificates[].source")
         option(value="rsa_2048") RSA 2048
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { CertificateConfig, SelfSignedKeyType } from '../config'
 import StringListField from '../StringListField.vue'
 

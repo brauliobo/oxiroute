@@ -162,7 +162,7 @@ section.certificates-workspace(aria-labelledby="certificates-heading" :aria-busy
             code(v-if="job.revision") {{ shortRevision(job.revision) }}
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import {

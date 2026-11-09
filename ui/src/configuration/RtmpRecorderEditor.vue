@@ -125,7 +125,7 @@ article.route-card.recorder-card
         input(type="number" min="1" max="256" step="1" v-model.number="recorder.max_active_recorders")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { RtmpRecorderConfig } from '../config'
 import NullableLimitField from './NullableLimitField.vue'
 

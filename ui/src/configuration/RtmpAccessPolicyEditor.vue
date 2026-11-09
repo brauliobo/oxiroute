@@ -60,7 +60,7 @@ fieldset.object-block(:data-field="basePath")
           input(type="password" v-model="policy.token.secret" maxlength="128" autocomplete="new-password")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed } from 'vue'
 
 import type { RtmpAccessPolicyConfig } from '../config'

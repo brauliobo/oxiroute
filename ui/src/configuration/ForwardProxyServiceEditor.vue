@@ -293,7 +293,7 @@ fieldset.object-block(data-field="forward_proxy_services[].resolver")
       span Revalidate on connect
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import StringListField from '../StringListField.vue'
 import type {
   ForwardAccessConditionConfig,

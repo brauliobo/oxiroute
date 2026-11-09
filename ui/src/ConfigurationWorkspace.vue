@@ -409,7 +409,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
           button.primary-button(type="button" :disabled="saving || !canReviewSave || staleRevision !== null" @click="writeCandidate") {{ saving ? 'Saving...' : 'Save canonical configuration' }}
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 
 import { ApiError, connectEventStream, fetchConfig, type EventStreamClient } from './api'
@@ -442,6 +442,8 @@ interface CanonicalUnavailableState {
 const snapshot = ref<ConfigSnapshot | null>(null)
 const workspaceRoot = ref<HTMLElement | null>(null)
 const draft = ref<CanonicalConfig | null>(null)
+// Vapor components keep their setup state closed; tests read the draft through the mount helper's `vm`.
+defineExpose({ draft })
 const diskRevision = ref('')
 const activeRevision = ref<string | null>(null)
 const diskDiagnostics = ref<ConfigDiagnostic[]>([])

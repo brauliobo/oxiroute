@@ -124,7 +124,7 @@ section.topology-section(aria-labelledby="topology-heading" @keydown.esc="closeI
       p Select any symbol to inspect its exact redacted attributes and stable config path.
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, nextTick, ref } from 'vue'
 
 import { formatCount } from './formatters'

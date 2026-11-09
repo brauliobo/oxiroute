@@ -25,7 +25,7 @@ article.route-card
       input(type="text" v-model="endpoint.path" placeholder="/run/oxiroute/backend.sock")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { UpstreamEndpoint } from '../config'
 
 defineProps<{

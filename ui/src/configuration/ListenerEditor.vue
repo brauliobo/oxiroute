@@ -80,7 +80,7 @@ fieldset.object-block(data-field="listeners[].proxy_protocol")
       input(type="number" min="1" max="60000" step="1" v-model.number="listener.proxy_protocol.timeout_ms")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed } from 'vue'
 
 import type { ForwardProxyServiceConfig, ListenerConfig, TlsProfileConfig } from '../config'
