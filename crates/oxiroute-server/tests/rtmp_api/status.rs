@@ -482,9 +482,7 @@ pub(super) fn monitoring_exposes_fixed_rtmp_access_log_metrics_without_sink_iden
 
 #[test]
 pub(super) fn relay_state_and_counters_are_observable_without_stream_queries() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve absent relay port");
-    let destination = listener.local_addr().expect("relay destination");
-    drop(listener);
+    let destination = ports_support::unused_address();
     let mut config = candidate_config(&editable_config(), "live");
     config.rtmp_services[0].outbound_policy.deny_private = false;
     config.rtmp_services[0].applications[0]
@@ -512,19 +510,22 @@ pub(super) fn relay_state_and_counters_are_observable_without_stream_queries() {
     publisher.publish_audio(1, &[0xaf, 0x01, 0x44], 101);
     let deadline = Instant::now() + Duration::from_secs(30);
     let control = runtime.control();
-    while control.catalog_snapshot().streams[0].relays[0]
-        .status
-        .connection_attempts
-        < 2
-    {
+    let api = management_api(control, RuntimeMetrics::new());
+    // The relay only rests in backoff between attempts, so wait for that phase after the retry.
+    let catalog_json: Value = loop {
+        let catalog = api.handle("GET", "/api/v1/rtmp/streams", 200);
+        let json: Value = serde_json::from_slice(&catalog.body).expect("catalog JSON");
+        let relay = &json["streams"][0]["relays"][0];
+        let attempts = relay["connection_attempts"].as_str().map(str::parse::<u64>);
+        if relay["phase"] == "backoff"
+            && attempts.is_some_and(|attempts| attempts.is_ok_and(|n| n >= 2))
+        {
+            break json;
+        }
         assert!(Instant::now() < deadline, "relay retry timeout");
         thread::sleep(Duration::from_millis(5));
-    }
-    let api = management_api(control, RuntimeMetrics::new());
-
-    let catalog = api.handle("GET", "/api/v1/rtmp/streams", 200);
+    };
     let monitoring = api.handle("GET", "/api/v1/monitoring", 200);
-    let catalog_json: Value = serde_json::from_slice(&catalog.body).expect("catalog JSON");
     let monitoring_json: Value = serde_json::from_slice(&monitoring.body).expect("monitoring JSON");
     assert_eq!(catalog_json["streams"][0]["relays"][0]["phase"], "backoff");
     assert_eq!(
@@ -551,8 +552,7 @@ pub(super) fn relay_state_and_counters_are_observable_without_stream_queries() {
         "connect"
     );
     let wire = format!(
-        "{}{}",
-        String::from_utf8_lossy(&catalog.body),
+        "{catalog_json}{}",
         String::from_utf8_lossy(&monitoring.body)
     );
     assert!(!wire.contains("relay-wire-secret"));

@@ -4,6 +4,8 @@ mod config_support;
 mod fixture_support;
 #[path = "../support/http.rs"]
 mod http_support;
+#[path = "../support/ports.rs"]
+mod ports_support;
 #[path = "../support/rtmp.rs"]
 mod rtmp_support;
 
@@ -75,10 +77,7 @@ use helpers::*;
 const TEST_TOKEN: &str = "cdb85a91948758cfcb895216a3603c8fcd8aaf691f39f5fd82b5df15af14628e";
 
 fn reserve_tcp_address() -> SocketAddr {
-    std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("reserve TCP address")
-        .local_addr()
-        .expect("reserved TCP address")
+    ports_support::unused_address()
 }
 
 struct ManagementHarness {

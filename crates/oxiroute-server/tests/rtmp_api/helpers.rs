@@ -96,7 +96,7 @@ pub(super) fn candidate_config(active: &ConfigDraft, listener_name: &str) -> Con
     let mut candidate = active.clone();
     candidate.listeners.push(Listener {
         name: listener_name.into(),
-        bind: socket_bind(loopback_address(1935)),
+        bind: socket_bind(ports_support::unused_address()),
         protocol: Protocol::Rtmp,
         service: Some("live".into()),
         tls_profile: None,
