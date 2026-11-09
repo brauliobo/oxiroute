@@ -21,7 +21,7 @@ use log::warn;
 use pingora_error::{ErrorType::*, OrErr, Result};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 use std::time::SystemTime;
 use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf};
 
@@ -33,12 +33,26 @@ use pingora_openssl as ssl_lib;
 
 use ssl_lib::{hash::MessageDigest, ssl::SslRef};
 
+/// Plaintext a coalescing stream keeps for plain writes before the next flush. It matches the
+/// accepted socket's write buffer, so data that used to wait for a flush still waits for one and
+/// data that used to leave at once still does.
+const COALESCE_PLAIN_LIMIT: usize = 1460;
+/// Plaintext one vectored write may leave pending: a whole TLS record. Vectored writers (HTTP/2
+/// frames, chunked bodies) flush right after.
+const COALESCE_VECTORED_LIMIT: usize = 16 * 1024;
+/// A drained buffer larger than this is released instead of kept for the next response.
+const COALESCE_RETAINED_CAPACITY: usize = 2048;
+
 /// The TLS connection
 #[derive(Debug)]
 pub struct SslStream<T> {
     ssl: InnerSsl<T>,
     digest: Option<Arc<SslDigest>>,
     pub(super) timing: TimingDigest,
+    /// Plaintext not yet handed to OpenSSL, only used when `coalesce` is set.
+    pending: Vec<u8>,
+    sent: usize,
+    coalesce: bool,
 }
 
 impl<T> SslStream<T>
@@ -57,7 +71,17 @@ where
             ssl,
             digest: None,
             timing: Default::default(),
+            pending: Vec::new(),
+            sent: 0,
+            coalesce: false,
         })
+    }
+
+    /// Make the writes of this stream share TLS records: bytes written between two flushes leave as
+    /// one record instead of one record per write call. Writers must flush when a response is complete,
+    /// which accepted streams already need for their socket write buffer.
+    pub(super) fn coalesce_writes(&mut self) {
+        self.coalesce = true;
     }
 
     /// Connect to the remote TLS server as a client
@@ -84,6 +108,22 @@ where
         if !errs.errors().is_empty() {
             warn!("Clearing dirty TLS error stack: {}", errs);
         }
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
+    fn poll_write_pending(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        while self.sent < self.pending.len() {
+            let written =
+                ready!(Pin::new(&mut self.ssl).poll_write(cx, &self.pending[self.sent..]))?;
+            self.sent += written;
+        }
+        self.sent = 0;
+        self.pending.clear();
+        if self.pending.capacity() > COALESCE_RETAINED_CAPACITY {
+            self.pending = Vec::new();
+        }
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -139,16 +179,28 @@ where
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         Self::clear_error();
-        Pin::new(&mut self.ssl).poll_write(cx, buf)
+        if !self.coalesce {
+            return Pin::new(&mut self.ssl).poll_write(cx, buf);
+        }
+        if self.pending.len() + buf.len() > COALESCE_PLAIN_LIMIT {
+            ready!(self.poll_write_pending(cx))?;
+        }
+        if buf.len() > COALESCE_PLAIN_LIMIT {
+            return Pin::new(&mut self.ssl).poll_write(cx, buf);
+        }
+        self.pending.extend_from_slice(buf);
+        Poll::Ready(Ok(buf.len()))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
         Self::clear_error();
+        ready!(self.poll_write_pending(cx))?;
         Pin::new(&mut self.ssl).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
         Self::clear_error();
+        ready!(self.poll_write_pending(cx))?;
         Pin::new(&mut self.ssl).poll_shutdown(cx)
     }
 
@@ -158,7 +210,20 @@ where
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
         Self::clear_error();
-        Pin::new(&mut self.ssl).poll_write_vectored(cx, bufs)
+        if !self.coalesce {
+            return Pin::new(&mut self.ssl).poll_write_vectored(cx, bufs);
+        }
+        let total: usize = bufs.iter().map(|buf| buf.len()).sum();
+        if self.pending.len() + total > COALESCE_VECTORED_LIMIT {
+            ready!(self.poll_write_pending(cx))?;
+        }
+        if total > COALESCE_VECTORED_LIMIT {
+            return Pin::new(&mut self.ssl).poll_write_vectored(cx, bufs);
+        }
+        self.pending.reserve(total);
+        bufs.iter()
+            .for_each(|buf| self.pending.extend_from_slice(buf));
+        Poll::Ready(Ok(total))
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -215,3 +280,7 @@ impl SslDigest {
 
 // TODO: implement Peek if needed
 impl<T> Peek for SslStream<T> {}
+
+#[cfg(all(test, feature = "openssl_derived"))]
+#[path = "stream_tests.rs"]
+mod tests;

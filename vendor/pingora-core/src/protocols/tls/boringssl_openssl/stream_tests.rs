@@ -1,0 +1,162 @@
+//! Record coalescing of accepted TLS streams, over an in-memory transport that records its writes.
+
+use super::SslStream;
+use crate::tls::ssl::{Ssl, SslAcceptor, SslMethod, SslVerifyMode};
+use crate::tls::{pkey::PKey, x509::X509};
+use std::io::{self, IoSlice};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
+use tokio::io::{
+    duplex, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf,
+};
+
+const CERT: &[u8] = b"-----BEGIN CERTIFICATE-----\nMIIBhTCCASugAwIBAgIUEiPqnvnS9j895PY3Y+MnLPxfLfYwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMcGluZ29yYS50ZXN0MCAXDTI2MTEwOTEyNTcxMFoYDzIxMjYx\nMDE2MTI1NzEwWjAXMRUwEwYDVQQDDAxwaW5nb3JhLnRlc3QwWTATBgcqhkjOPQIB\nBggqhkjOPQMBBwNCAATODJDetmudWR+MH7+HoaFfwEGx6k0kIVuDKD6EHXamPfTt\ncBLl8a5BTI7PD6dqECfQYFYYydQtDRUPz4OBd8Ogo1MwUTAdBgNVHQ4EFgQUYMnW\n0GYyCbLdt0+py5rcGsyr7QwwHwYDVR0jBBgwFoAUYMnW0GYyCbLdt0+py5rcGsyr\n7QwwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEAs6JPrqUn8Jxg\nwrjwp6dWl5O3FfJWX0iirzjOf6E2j1wCIDhQyPE3QyyCrGBuFNK/m2QSS9RC+lD9\nOZqR/75TSNVO\n-----END CERTIFICATE-----\n";
+const KEY: &[u8] = b"-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgEPpWcGySoCGVB4wn\nYDv1VGP4Ow0t0cgMepuAVI70jTuhRANCAATODJDetmudWR+MH7+HoaFfwEGx6k0k\nIVuDKD6EHXamPfTtcBLl8a5BTI7PD6dqECfQYFYYydQtDRUPz4OBd8Og\n-----END PRIVATE KEY-----\n";
+
+/// A transport that remembers the size of every write handed to it.
+struct Recorder {
+    inner: DuplexStream,
+    writes: Arc<Mutex<Vec<usize>>>,
+}
+
+impl AsyncRead for Recorder {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Recorder {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let written = futures::ready!(Pin::new(&mut self.inner).poll_write(cx, buf))?;
+        self.writes.lock().unwrap().push(written);
+        Poll::Ready(Ok(written))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// Handshakes a server stream (coalescing or not) and a client, returns both and the server's write log.
+async fn connected(
+    coalesce: bool,
+) -> (
+    SslStream<Recorder>,
+    SslStream<DuplexStream>,
+    Arc<Mutex<Vec<usize>>>,
+) {
+    let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
+    acceptor
+        .set_certificate(&X509::from_pem(CERT).unwrap())
+        .unwrap();
+    acceptor
+        .set_private_key(&PKey::private_key_from_pem(KEY).unwrap())
+        .unwrap();
+    let acceptor = acceptor.build();
+    let (client_io, server_io) = duplex(1 << 20);
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let server_io = Recorder {
+        inner: server_io,
+        writes: Arc::clone(&writes),
+    };
+    let mut server = SslStream::new(
+        crate::tls::ext::ssl_from_acceptor(&acceptor).unwrap(),
+        server_io,
+    )
+    .unwrap();
+    if coalesce {
+        server.coalesce_writes();
+    }
+    let mut context = crate::tls::ssl::SslContext::builder(SslMethod::tls()).unwrap();
+    context.set_verify(SslVerifyMode::NONE);
+    let mut client = SslStream::new(Ssl::new(&context.build()).unwrap(), client_io).unwrap();
+    let (accepted, connected) = tokio::join!(server.accept(), client.connect());
+    accepted.unwrap();
+    connected.unwrap();
+    writes.lock().unwrap().clear();
+    (server, client, writes)
+}
+
+async fn read_exact(client: &mut SslStream<DuplexStream>, len: usize) -> Vec<u8> {
+    let mut received = vec![0; len];
+    client.read_exact(&mut received).await.unwrap();
+    received
+}
+
+/// One TLS record around `len` bytes of plaintext: 5 byte header, content type, 16 byte tag.
+const fn record(len: usize) -> usize {
+    5 + len + 1 + 16
+}
+
+#[tokio::test]
+async fn writes_between_flushes_share_one_record() {
+    let (mut server, mut client, writes) = connected(true).await;
+    server.write_all(&[b'h'; 230]).await.unwrap();
+    server.write_all(&[b'b'; 1024]).await.unwrap();
+    assert!(
+        writes.lock().unwrap().is_empty(),
+        "nothing leaves before the flush"
+    );
+    server.flush().await.unwrap();
+    assert_eq!(*writes.lock().unwrap(), [record(1254)]);
+    let received = read_exact(&mut client, 1254).await;
+    assert_eq!(&received[..230], &[b'h'; 230][..]);
+    assert_eq!(&received[230..], &[b'b'; 1024][..]);
+}
+
+#[tokio::test]
+async fn vectored_write_shares_one_record() {
+    let (mut server, mut client, writes) = connected(true).await;
+    let (head, body) = ([b'h'; 40], vec![b'b'; 3000]);
+    let written = server
+        .write_vectored(&[IoSlice::new(&head), IoSlice::new(&body)])
+        .await
+        .unwrap();
+    assert_eq!(written, 3040);
+    server.flush().await.unwrap();
+    assert_eq!(*writes.lock().unwrap(), [record(3040)]);
+    assert_eq!(read_exact(&mut client, 3040).await[40..], body[..]);
+}
+
+#[tokio::test]
+async fn large_write_goes_out_after_the_pending_bytes_in_order() {
+    let (mut server, mut client, writes) = connected(true).await;
+    server.write_all(&[b'a'; 100]).await.unwrap();
+    server.write_all(&[b'z'; 5000]).await.unwrap();
+    assert_eq!(*writes.lock().unwrap(), [record(100), record(5000)]);
+    server.flush().await.unwrap();
+    let received = read_exact(&mut client, 5100).await;
+    assert!(received[..100].iter().all(|byte| *byte == b'a'));
+    assert!(received[100..].iter().all(|byte| *byte == b'z'));
+}
+
+#[tokio::test]
+async fn pending_bytes_leave_before_a_shutdown() {
+    let (mut server, mut client, _writes) = connected(true).await;
+    server.write_all(b"last words").await.unwrap();
+    server.shutdown().await.unwrap();
+    let mut received = Vec::new();
+    client.read_to_end(&mut received).await.unwrap();
+    assert_eq!(received, b"last words");
+}
+
+#[tokio::test]
+async fn writes_are_not_held_back_unless_asked() {
+    let (mut server, _client, writes) = connected(false).await;
+    server.write_all(&[b'h'; 230]).await.unwrap();
+    server.write_all(&[b'b'; 1024]).await.unwrap();
+    assert_eq!(*writes.lock().unwrap(), [record(230), record(1024)]);
+}
