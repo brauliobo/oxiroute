@@ -18,6 +18,8 @@ pub mod http;
 mod idle;
 pub mod l4;
 mod offload;
+#[cfg(test)]
+pub(crate) mod test_servers;
 
 #[cfg(feature = "any_tls")]
 mod tls;

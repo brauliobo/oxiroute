@@ -80,6 +80,7 @@ impl Connector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectors::test_servers;
     use crate::protocols::l4::socket::SocketAddr;
     use crate::upstreams::peer::HttpPeer;
     use crate::upstreams::peer::Peer;
@@ -100,11 +101,12 @@ mod tests {
     #[tokio::test]
     async fn test_connect() {
         let connector = Connector::new(None);
-        let peer = HttpPeer::new(("1.1.1.1", 80), false, "".into());
-        // make a new connection to 1.1.1.1
+        let server = test_servers::redirect_server();
+        let peer = HttpPeer::new(server.addr, false, "".into());
+        // make a new connection to the server
         let (http, reused) = connector.get_http_session(&peer).await.unwrap();
         let server_addr = http.server_addr().unwrap();
-        assert_eq!(*server_addr, "1.1.1.1:80".parse::<SocketAddr>().unwrap());
+        assert_eq!(*server_addr, SocketAddr::Inet(server.addr));
         assert!(!reused);
 
         // this http is not even used, so not be able to reuse
@@ -158,7 +160,8 @@ mod tests {
         }
 
         let connector = Connector::new(None);
-        let peer = HttpPeer::new(("1.1.1.1", 80), false, "".into());
+        let server = test_servers::redirect_server();
+        let peer = HttpPeer::new(server.addr, false, "".into());
         let (mut http, reused) = connector.get_http_session(&peer).await.unwrap();
         assert!(!reused);
         get_http(&mut http, 301).await;
