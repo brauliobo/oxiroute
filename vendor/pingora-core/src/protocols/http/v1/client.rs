@@ -19,6 +19,7 @@
 const RESPONSE_HEADER_HEADROOM: usize = 3;
 
 use bytes::{BufMut, Bytes, BytesMut};
+use futures::FutureExt;
 use http::{header, header::AsHeaderName, HeaderValue, StatusCode, Version};
 use log::{debug, trace};
 use pingora_error::{Error, ErrorType::*, OrErr, Result, RetryType};
@@ -888,19 +889,42 @@ impl HttpSession {
         } else {
             /* need to read body */
             let body = self.read_body_bytes().await?;
-            let end_of_body = self.is_body_done();
-            debug!(
-                "Response body: {} bytes, end: {end_of_body}",
-                body.as_ref().map_or(0, |b| b.len())
-            );
-            trace!("Response body: {body:?}, upgraded: {}", self.upgraded);
-            if self.upgraded {
-                Ok(HttpTask::UpgradedBody(body, end_of_body))
-            } else {
-                Ok(HttpTask::Body(body, end_of_body))
-            }
+            Ok(self.body_task(body))
         }
         // TODO: support h1 trailer
+    }
+
+    /// The next response task if it needs no wait for the network: the end of a response, or a body chunk the
+    /// connection holds already or that a read returns at once. Where [`Self::read_response_task`] would wait this
+    /// returns `None`, without arming a read timeout; a response header is always left to `read_response_task`.
+    pub fn try_read_response_task(&mut self) -> Option<Result<HttpTask>> {
+        if self.should_read_resp_header() {
+            return None;
+        }
+        if self.is_body_done() {
+            return Some(Ok(HttpTask::Done));
+        }
+        let body = self.do_read_body_bytes().now_or_never()?;
+        Some(body.map(|body| {
+            if let Some(body) = &body {
+                self.body_recv = self.body_recv.saturating_add(body.len());
+            }
+            self.body_task(body)
+        }))
+    }
+
+    fn body_task(&mut self, body: Option<Bytes>) -> HttpTask {
+        let end_of_body = self.is_body_done();
+        debug!(
+            "Response body: {} bytes, end: {end_of_body}",
+            body.as_ref().map_or(0, |b| b.len())
+        );
+        trace!("Response body: {body:?}, upgraded: {}", self.upgraded);
+        if self.upgraded {
+            HttpTask::UpgradedBody(body, end_of_body)
+        } else {
+            HttpTask::Body(body, end_of_body)
+        }
     }
 
     /// Return the [Digest] of the connection
@@ -1430,6 +1454,42 @@ mod tests_stream {
         http_stream.read_timeout = Some(Duration::from_secs(1));
         let res = http_stream.read_response().await;
         assert_eq!(res.unwrap_err().etype(), &ErrorType::ReadTimedout);
+    }
+
+    #[tokio::test]
+    async fn try_read_response_task_returns_only_what_needs_no_wait() {
+        init_log();
+        let head = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabc";
+        let rest = b"def";
+        let mock_io = Builder::new()
+            .read(&head[..])
+            .wait(Duration::from_millis(50))
+            .read(&rest[..])
+            .build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        http_stream.read_timeout = Some(Duration::from_secs(5));
+        // A header is left to `read_response_task`.
+        assert!(http_stream.try_read_response_task().is_none());
+        let task = http_stream.read_response_task().await.unwrap();
+        assert!(matches!(task, HttpTask::Header(_, false)));
+        // The first body bytes came with the header; the rest is not there yet.
+        let Some(Ok(HttpTask::Body(Some(body), false))) = http_stream.try_read_response_task()
+        else {
+            panic!("the buffered body is ready");
+        };
+        assert_eq!(&body[..], b"abc");
+        assert!(http_stream.try_read_response_task().is_none());
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let Some(Ok(HttpTask::Body(Some(body), true))) = http_stream.try_read_response_task()
+        else {
+            panic!("the rest has arrived");
+        };
+        assert_eq!(&body[..], b"def");
+        assert_eq!(http_stream.body_bytes_received(), 6);
+        assert!(matches!(
+            http_stream.try_read_response_task(),
+            Some(Ok(HttpTask::Done))
+        ));
     }
 
     #[tokio::test]

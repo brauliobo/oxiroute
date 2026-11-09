@@ -466,34 +466,33 @@ impl HttpSession {
     }
 
     /// Read the request body. `Ok(None)` when there is no (more) body to read.
+    ///
+    /// A large content-length chunk is the buffer the socket was read into (see `BodyReader::read_body_bytes`), not a
+    /// copy, and the retry buffer keeps a reference to it.
     pub async fn read_body_bytes(&mut self) -> Result<Option<Bytes>> {
-        let read = self.read_body().await?;
-        Ok(read.map(|b| {
-            let bytes = Bytes::copy_from_slice(self.get_body(&b));
+        let read = match self.read_timeout {
+            Some(t) => match timeout(t, self.do_read_body_bytes()).await {
+                Ok(res) => res?,
+                Err(_) => {
+                    return Error::e_explain(ReadTimedout, format!("reading body, timeout: {t:?}"))
+                }
+            },
+            None => self.do_read_body_bytes().await?,
+        };
+        if let Some(bytes) = &read {
             self.body_bytes_read += bytes.len();
             if let Some(buffer) = self.retry_buffer.as_mut() {
-                buffer.write_to_buffer(&bytes);
+                buffer.write_to_buffer(bytes);
             }
-            bytes
-        }))
+        }
+        Ok(read)
     }
 
-    async fn do_read_body(&mut self) -> Result<Option<BufRef>> {
+    async fn do_read_body_bytes(&mut self) -> Result<Option<Bytes>> {
         self.init_body_reader();
         self.body_reader
-            .read_body(&mut self.underlying_stream)
+            .read_body_bytes(&mut self.underlying_stream)
             .await
-    }
-
-    /// Read the body into the internal buffer
-    async fn read_body(&mut self) -> Result<Option<BufRef>> {
-        match self.read_timeout {
-            Some(t) => match timeout(t, self.do_read_body()).await {
-                Ok(res) => res,
-                Err(_) => Error::e_explain(ReadTimedout, format!("reading body, timeout: {t:?}")),
-            },
-            None => self.do_read_body().await,
-        }
     }
 
     async fn do_drain_request_body(&mut self) -> Result<()> {
@@ -1047,11 +1046,6 @@ impl HttpSession {
                 b.get_buffer()
             }
         })
-    }
-
-    fn get_body(&self, buf_ref: &BufRef) -> &[u8] {
-        // TODO: these get_*() could panic. handle them better
-        self.body_reader.get_body(buf_ref)
     }
 
     /// This function will (async) block forever until the client closes the connection.
@@ -2980,10 +2974,27 @@ mod tests_stream {
         let mut http_stream = HttpSession::new(Box::new(mock_io));
         http_stream.read_request().await.unwrap();
         assert_eq!(http_stream.get_path(), &b"/a?q=b%20c"[..]);
-        let res = http_stream.read_body().await.unwrap().unwrap();
-        assert_eq!(res, BufRef::new(0, 3));
+        let res = http_stream.read_body_bytes().await.unwrap().unwrap();
         assert_eq!(http_stream.body_reader.body_state, ParseState::Complete(3));
-        assert_eq!(input3, http_stream.get_body(&res));
+        assert_eq!(&input3[..], &res[..]);
+    }
+
+    #[tokio::test]
+    async fn a_large_request_body_is_handed_over_and_kept_for_a_retry_without_a_copy() {
+        init_log();
+        let head = b"POST /a HTTP/1.1\r\nHost: pingora.org\r\nContent-Length: 70000\r\n\r\n";
+        let body = vec![b'x'; 70_000];
+        let mock_io = Builder::new().read(&head[..]).read(&body[..]).build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        http_stream.read_request().await.unwrap();
+        http_stream.enable_retry_buffering_with_capacity(1 << 20);
+        let read = http_stream.read_body_bytes().await.unwrap().unwrap();
+        assert_eq!(&read[..], &body[..]);
+        assert_eq!(http_stream.body_bytes_read(), 70_000);
+        assert!(http_stream.is_body_done());
+        let kept = http_stream.get_retry_buffer().unwrap();
+        assert_eq!(kept.as_ptr(), read.as_ptr());
+        assert!(!http_stream.retry_buffer_truncated());
     }
 
     #[test]
