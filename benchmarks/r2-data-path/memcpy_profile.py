@@ -54,9 +54,13 @@ def main():
             env.close()
     requests = int(r2.parse_kv(result.stdout)["ok"])
     rows = []
+    stacks = []
     for line in out.read_text().splitlines():
-        ret, size, count = line.split()
-        rows.append((int(ret, 16) - base, int(size), int(count)))
+        ret, size, count, *frames = line.split()
+        if int(size) == 0:
+            stacks.append((int(count), [int(frame, 16) - base for frame in frames]))
+        else:
+            rows.append((int(ret, 16) - base, int(size), int(count)))
     out.unlink()
     by_caller = collections.defaultdict(lambda: [0, 0])
     for ret, size, count in rows:
@@ -64,8 +68,23 @@ def main():
         by_caller[ret][1] += count * size
     calls = sum(count for _, _, count in rows) / requests
     copied = sum(size * count for _, size, count in rows) / requests
-    print(f"requests={requests} copies_of_48B_or_more/req={calls:.1f} bytes/req={copied:.0f}")
-    top = sorted(by_caller, key=lambda address: -by_caller[address][1])[: args.top]
+    print(f"requests={requests} copies_of_48B_or_more/req={calls:.1f} bytes/req={copied:.0f} "
+          f"clock_gettime/req={sum(count for count, _ in stacks) / requests:.1f}")
+    report(args, by_caller, rows, requests, "B/req", args.top)
+    print("-- clock_gettime call chains (innermost first, std frames skipped)")
+    for count, frames in sorted(stacks, key=lambda item: -item[0])[: args.top]:
+        names = subprocess.run(["addr2line", "-e", args.bin, "-f", "-C", "-i", "-p"] + [hex(frame - 1) for frame in frames],
+                               capture_output=True, text=True, env={"LC_ALL": "C"}).stdout.splitlines()
+        chain = [name.replace(" (inlined by) ", "").split(" at ")[0][:90] for name in names if "/rustc/" not in name
+                 or "inlined" not in name]
+        print(f"{count / requests:5.2f}/req  " + "  <-  ".join(chain[:4]))
+    return 0
+
+
+def report(args, by_caller, rows, requests, unit, limit):
+    top = sorted(by_caller, key=lambda address: -by_caller[address][1])[:limit]
+    if not top:
+        return
     lines = subprocess.run(["addr2line", "-e", args.bin, "-f", "-C", "-i", "-p"] + [hex(address - 1) for address in top],
                            capture_output=True, text=True, env={"LC_ALL": "C"}).stdout.splitlines()
     frames = []
@@ -76,10 +95,9 @@ def main():
             frames.append([line])
     for address, frame in zip(top, frames):
         count, size = by_caller[address]
-        print(f"{count / requests:6.2f} calls {size / requests:8.0f} B/req  {frame[0][:170]}")
-        for extra in frame[1:3]:
+        print(f"{count / requests:6.2f} calls {size / requests:8.0f} {unit}  {frame[0][:170]}")
+        for extra in frame[1:4]:
             print(f"{'':27}{extra[:150]}")
-    return 0
 
 
 if __name__ == "__main__":
