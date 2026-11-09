@@ -277,8 +277,9 @@ HAProxy-style export and `GET <prefix>` the table that needs no script. The cont
 | `warnings[]` | configuration warnings (`W_...` code and message) |
 
 Histograms are `{count, sumMs, buckets}` with cumulative `buckets[i]` for the i-th bound of
-`bucketBoundsMs.operation` or `.queueWait`; the overflow bucket is `count`. A snapshot with 1024
-servers is about 1 MB.
+`bucketBoundsMs.operation` or `.queueWait`; the overflow bucket is `count`. A snapshot with about 1000
+servers is 1.1 MB, sent uncompressed: with that many servers raise the viewers' refresh interval (the
+`Refresh every` control) or `refresh_ms`.
 
 The CSV header is `# pxname,svname,qcur,scur,slim,stot,bin,bout,ereq,econ,eresp,wretr,status,weight,
 chkfail,lastchg,downtime,type,check_status,hrsp_1xx..hrsp_5xx,hrsp_other,req_tot,qtime,rtime,ttime`
