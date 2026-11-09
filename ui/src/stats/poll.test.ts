@@ -120,12 +120,26 @@ describe('pause and stop', () => {
     h.poller.stop()
   })
 
-  it('can start paused', async () => {
+  it('can start paused: it loads once so the page has data, then waits', async () => {
     const h = harness([snapshot()], { paused: true })
     h.poller.start()
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(h.calls).toHaveLength(0)
-    expect(h.state().phase).toBe('paused')
+    expect(h.calls).toHaveLength(1)
+    expect(h.snapshots).toHaveLength(1)
+    expect(h.state()).toMatchObject({ phase: 'paused', stale: false })
+    h.poller.stop()
+  })
+
+  it('refresh loads once while paused and schedules nothing; a failed manual load is not retried', async () => {
+    const h = harness([snapshot(), new TypeError('Failed to fetch')])
+    h.poller.start()
+    await vi.advanceTimersByTimeAsync(0)
+    h.poller.pause()
+    h.poller.refresh()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(h.calls).toHaveLength(2)
+    expect(h.state().failure).toMatchObject({ kind: 'network', attempts: 1 })
+    expect('retryInMs' in h.state().failure!).toBe(false)
     h.poller.stop()
   })
 
