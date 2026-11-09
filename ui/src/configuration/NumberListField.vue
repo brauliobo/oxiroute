@@ -18,7 +18,7 @@ fieldset.list-field(:data-field="fieldPath")
   button.add-row(type="button" :disabled="modelValue.length >= maxItems" @click="add") + Add {{ itemLabel }}
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { useId } from 'vue'
 
 import { integerInRange } from '../valueGuards'

@@ -527,7 +527,7 @@ fn serve_generation(
             info!("configured HAProxy-compatible statistics on {bind}");
         }
         for (index, page) in stats.pages.iter().enumerate() {
-            let app = HaproxyStatsPage::new(page, pools.clone(), generation_manager.clone());
+            let app = HaproxyStatsPage::new(page, generation_manager.clone());
             let metrics = generation.stats_page_listener_metrics(index)?;
             let stats_app = MonitoredHttpApp::new(
                 HttpListenerApp::new(

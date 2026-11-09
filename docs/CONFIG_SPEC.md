@@ -306,12 +306,18 @@ Current constraints:
   "enable" | "disable" }` plus `If-Generation-Revision`, and succeeds only for a loopback peer with
   exactly one matching Bearer token loaded from a no-follow regular file whose mode is `0400` or
   `0600`. GET and HEAD can never mutate pool state. Metric labels omit listener binds, upstream
-  addresses, paths, stream keys, and token material. Each `pages` entry independently serves a
-  public HAProxy-compatible HTML table below its exact `uri_prefix`; apart from that prefix it does
-  not expose `/metrics`, `/ready`, the legacy authenticated `/stats`, `/api/v1/status`, or any other
-  observability route on that socket.
-  `refresh_ms` is `1` through `86400000`. `admin = "disabled"` makes the page read-only;
-  `admin = "localhost"` shows and accepts Ready/Drain/Maintenance forms only for same-origin
+  addresses, paths, stream keys, and token material. Each `pages` entry independently serves, below its
+  `uri_prefix`, exactly four things: the interactive stats page (a script page whose table that needs
+  no script is inside `noscript`), `snapshot.json`, `stats.csv`, and its embedded files under `assets/`
+  (see `docs/OPERATIONS.md`, "Stats page API" and "Stats page assets"). Every other sub-path answers
+  `404`, and so do `/metrics`, `/ready`, the legacy authenticated `/stats`, `/api/v1/status` and any other
+  observability route on that socket. The `uri_prefix` match is exact: `/stats` and `/stats/` are the
+  page, but a sibling such as `/statsfoo` is not. Everyone who can reach a page sees the same data,
+  including upstream addresses, listener binds, revisions, certificate names and warnings.
+  `refresh_ms` is `1` through `86400000` and is the page's polling hint, reported as `intervalHintMs`;
+  the client never polls faster than 1 s, so values below `1000` act as `1000`. The legacy token `/stats`
+  on `stats.binds` is unchanged. `admin = "disabled"` makes the page read-only;
+  `admin = "localhost"` shows and accepts Ready/Drain/Maintenance only for same-origin
   loopback requests with the active generation revision. Page administration does not use the
   statistics Bearer token and MUST NOT be treated as remote administration.
 - Names MUST be unique within their certificate, TLS-profile, listener, pool, HTTP-service,

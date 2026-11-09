@@ -146,7 +146,7 @@ fieldset.object-block(:data-field="fieldPath")
           small Authenticated configuration only; this path is suppressed from topology views.
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed } from 'vue'
 
 import type {

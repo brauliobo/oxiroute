@@ -179,7 +179,7 @@ section.provenance-workspace(aria-labelledby="provenance-heading" :aria-busy="lo
         p This view reports retained evidence only. Editing, rewrite behavior, and Lua output remain outside this workflow.
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, onMounted, ref, watch } from 'vue'
 
 import { ApiError, fetchImportReports } from './api'

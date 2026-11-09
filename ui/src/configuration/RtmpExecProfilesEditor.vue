@@ -5,13 +5,13 @@ fieldset.route-list(data-field="rtmp_services[].exec_profiles")
     button.add-row(
       type="button"
       :disabled="(service.exec_profiles?.length ?? 0) >= 64"
-      @click="$emit('add')"
+      @click="emit('add')"
     ) + Add exec profile
   p.empty-list(v-if="!service.exec_profiles || service.exec_profiles.length === 0") No exec profile is configured for this service.
   article.route-card(v-for="(profile, profileIndex) in service.exec_profiles || []" :key="profileIndex")
     header.route-card-heading
       strong Exec profile {{ profileIndex + 1 }}
-      button.danger-link(type="button" @click="$emit('remove', profileIndex)") Remove
+      button.danger-link(type="button" @click="emit('remove', profileIndex)") Remove
     .field-grid
       label.field(data-field="rtmp_services[].exec_profiles[].name")
         span Profile name
@@ -85,7 +85,7 @@ fieldset.route-list(data-field="rtmp_services[].exec_profiles")
         input(type="number" min="0" max="64" step="1" v-model.number="profile.max_respawns")
     fieldset.object-block(data-field="rtmp_services[].exec_profiles[].environment")
       legend Environment
-      button.secondary-button(type="button" :disabled="profile.environment.length >= 32" @click="$emit('add-environment', profile)") + Add variable
+      button.secondary-button(type="button" :disabled="profile.environment.length >= 32" @click="emit('add-environment', profile)") + Add variable
       p.empty-list(v-if="profile.environment.length === 0") No environment variables are configured.
       .field-grid(v-for="(environment, environmentIndex) in profile.environment" :key="environmentIndex")
         label.field(data-field="rtmp_services[].exec_profiles[].environment[].name")
@@ -97,12 +97,12 @@ fieldset.route-list(data-field="rtmp_services[].exec_profiles")
         button.danger-link(type="button" @click="profile.environment.splice(environmentIndex, 1)") Remove
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import StringListField from '../StringListField.vue'
 import type { RtmpExecProfileConfig, RtmpServiceConfig } from '../config'
 
 defineProps<{ service: RtmpServiceConfig }>()
-defineEmits<{
+const emit = defineEmits<{
   add: []
   remove: [index: number]
   'add-environment': [profile: RtmpExecProfileConfig]

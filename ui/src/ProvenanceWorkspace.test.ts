@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount } from './test/mount'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import ProvenanceWorkspace from './ProvenanceWorkspace.vue'

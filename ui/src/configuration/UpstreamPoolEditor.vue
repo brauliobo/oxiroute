@@ -3,7 +3,7 @@ header.form-heading
   div
     p.eyebrow Origin group
     h3 {{ pool.name || 'Unnamed pool' }}
-  button.danger-button(type="button" @click="$emit('remove')") Remove pool
+  button.danger-button(type="button" @click="emit('remove')") Remove pool
 .field-grid
   label.field(data-field="upstream_pools[].name")
     span Stable name
@@ -178,7 +178,7 @@ fieldset.object-block(data-field="upstream_pools[].resilience")
       input(type="text" maxlength="1024" :value="pool.resilience.unavailable_body ?? ''" @input="pool.resilience.unavailable_body = nullableInput($event)")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, ref } from 'vue'
 
 import {

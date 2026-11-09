@@ -14,7 +14,7 @@ article.route-card(v-for="(predicate, index) in modelValue" :key="index")
       input(type="text" v-model="predicate.name")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { CachePredicateConfig } from '../config'
 
 const props = defineProps<{

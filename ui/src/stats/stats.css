@@ -1,0 +1,297 @@
+/* Global tokens and the page chrome (header, toolbar, banner, dialogs, footer). The data views bring their own layout
+   and read the --ox-* tokens. `light-dark()` picks the value for the colour scheme: the system's by default, or the
+   one forced by <html data-theme> (the store's view.theme). */
+:root {
+  color-scheme: light dark;
+  --ox-bg: light-dark(#f4f5f7, #0d1117);
+  --ox-surface: light-dark(#ffffff, #161b22);
+  --ox-fg: light-dark(#1b1f24, #e6edf3);
+  --ox-muted: light-dark(#57606a, #9da7b3);
+  --ox-border: light-dark(#c3c9d1, #333b45);
+  --ox-control: light-dark(#6e7781, #8b949e);
+  --ox-ok: light-dark(#1a7f37, #3fb950);
+  --ox-warn: light-dark(#8a5a00, #d29922);
+  --ox-bad: light-dark(#cf222e, #ff7b72);
+  --ox-info: light-dark(#0969da, #58a6ff);
+  --ox-radius: 6px;
+  --ox-gap: 0.75rem;
+  --ox-font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --ox-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root[data-theme='light'] { color-scheme: light; }
+:root[data-theme='dark'] { color-scheme: dark; }
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ox-bg);
+  color: var(--ox-fg);
+  font: 14px/1.45 var(--ox-font);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+h1, h2 { margin: 0; line-height: 1.2; }
+h1 { font-size: 1.35rem; }
+h2 { font-size: 1.05rem; }
+a { color: var(--ox-info); }
+kbd {
+  padding: 0.1em 0.5em;
+  border: 1px solid var(--ox-control);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--ox-surface);
+  font: 0.9em var(--ox-mono);
+}
+
+:focus-visible {
+  outline: 3px solid var(--ox-info);
+  outline-offset: 2px;
+}
+
+.ox-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.ox-muted { color: var(--ox-muted); }
+.ox-bad-text { color: var(--ox-bad); }
+
+.ox-app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ox-gap);
+  max-width: 120rem;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: var(--ox-gap);
+}
+
+.ox-skip {
+  position: absolute;
+  left: 0.5rem;
+  top: -4rem;
+  z-index: 10;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--ox-radius);
+  background: var(--ox-surface);
+}
+.ox-skip:focus { top: 0.5rem; }
+
+#ox-main { flex: 1; min-width: 0; }
+#ox-main:focus { outline: none; }
+
+/* Header: title, live status, export links */
+.ox-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+}
+.ox-live { display: flex; align-items: baseline; gap: 0.5rem; margin: 0; }
+.ox-state { display: inline-flex; align-items: center; gap: 0.4em; font-weight: 600; }
+.ox-state::before {
+  content: '';
+  width: 0.65em;
+  height: 0.65em;
+  border-radius: 50%;
+  background: var(--ox-muted);
+}
+.ox-state[data-status='live']::before { background: var(--ox-ok); }
+.ox-state[data-status='paused']::before { background: var(--ox-info); border-radius: 1px; }
+.ox-state[data-status='stale']::before,
+.ox-state[data-status='retrying']::before { background: var(--ox-warn); border-radius: 0; transform: rotate(45deg); }
+.ox-state[data-status='error']::before,
+.ox-state[data-status='unsupported']::before { background: var(--ox-bad); border-radius: 0; }
+.ox-age { color: var(--ox-muted); font-variant-numeric: tabular-nums; }
+.ox-exports { display: flex; gap: 0.75rem; margin-left: auto; }
+.ox-exports::before { content: 'Export'; color: var(--ox-muted); }
+
+/* Controls */
+.ox-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ox-gap) 1.25rem;
+  padding: var(--ox-gap);
+  border: 1px solid var(--ox-border);
+  border-radius: var(--ox-radius);
+  background: var(--ox-surface);
+}
+.ox-field { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin: 0; }
+.ox-field label { color: var(--ox-muted); }
+.ox-search { flex: 1 1 18rem; }
+.ox-search .ox-input { flex: 1; min-width: 0; }
+
+.ox-input,
+.ox-btn,
+.ox-chip {
+  min-height: 2rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--ox-control);
+  border-radius: var(--ox-radius);
+  background: var(--ox-surface);
+  color: var(--ox-fg);
+  font: inherit;
+}
+.ox-btn, .ox-chip { cursor: pointer; }
+.ox-btn:hover, .ox-chip:hover { border-color: var(--ox-fg); }
+.ox-btn:disabled { cursor: not-allowed; opacity: 0.55; }
+.ox-btn[aria-pressed='true'],
+.ox-chip[aria-pressed='true'] {
+  border-color: var(--ox-info);
+  box-shadow: inset 0 0 0 1px var(--ox-info);
+  font-weight: 600;
+}
+.ox-primary { border-color: var(--ox-info); background: var(--ox-info); color: var(--ox-surface); font-weight: 600; }
+
+.ox-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.ox-chips-label { margin-right: 0.4rem; color: var(--ox-muted); }
+.ox-chip { padding-inline: 0.7rem; border-radius: 999px; font-size: 0.85em; letter-spacing: 0.02em; }
+.ox-chip[aria-pressed='true']::before { content: '\2713\00a0' / ''; } /* decorative: aria-pressed says it */
+
+/* Banner and live messages */
+.ox-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin: 0;
+  padding: 0.6rem var(--ox-gap);
+  border: 1px solid var(--ox-border);
+  border-left: 6px solid var(--ox-warn);
+  border-radius: var(--ox-radius);
+  background: var(--ox-surface);
+}
+.ox-banner[data-tone='bad'] { border-left-color: var(--ox-bad); }
+.ox-banner[data-tone='warn']::before { content: 'Warning:'; font-weight: 600; color: var(--ox-warn); }
+.ox-banner[data-tone='bad']::before { content: 'Problem:'; font-weight: 600; color: var(--ox-bad); }
+
+/* Administration */
+.ox-admin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ox-gap);
+  padding: var(--ox-gap);
+  border: 1px solid var(--ox-border);
+  border-radius: var(--ox-radius);
+  background: var(--ox-surface);
+}
+.ox-admin-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ox-gap) 1.25rem; }
+.ox-admin-controls p { margin: 0; }
+.ox-admin-result { margin: 0; }
+.ox-admin > div:empty { margin-top: calc(-1 * var(--ox-gap)); } /* live regions stay in the DOM but take no room */
+
+/* Dialogs (native <dialog>: the browser draws the backdrop and traps focus) */
+.ox-dialog {
+  width: min(34rem, calc(100vw - 2rem));
+  padding: 1.25rem;
+  border: 1px solid var(--ox-control);
+  border-radius: var(--ox-radius);
+  background: var(--ox-surface);
+  color: var(--ox-fg);
+}
+.ox-dialog::backdrop { background: rgb(0 0 0 / 55%); }
+.ox-dialog h2 { margin-bottom: 0.75rem; }
+.ox-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+.ox-shortcuts { display: grid; gap: 0.5rem; margin: 0; }
+.ox-shortcut { display: grid; grid-template-columns: 5rem 1fr; align-items: baseline; gap: 0.75rem; }
+.ox-shortcut dt, .ox-shortcut dd { margin: 0; }
+
+/* Footer */
+.ox-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding-top: var(--ox-gap);
+  border-top: 1px solid var(--ox-border);
+  color: var(--ox-muted);
+}
+.ox-footer p { margin: 0; }
+.ox-footer p:empty { display: none; }
+.ox-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ox-info);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.ox-placeholder { margin: 0; padding: 2rem 0; color: var(--ox-muted); text-align: center; }
+
+/* Narrow screens: a two-column grid of controls (chips scroll sideways), larger touch targets */
+@media (max-width: 720px) {
+  body { font-size: 15px; }
+  .ox-app { padding: 0.5rem; }
+  .ox-exports { margin-left: 0; }
+  .ox-toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; padding: 0.5rem; }
+  .ox-toolbar > * { min-width: 0; }
+  .ox-search, .ox-chips, .ox-toolbar > .ox-field:has(.ox-btn) { grid-column: 1 / -1; }
+  .ox-toolbar > .ox-field:has(> label:not(.ox-sr-only)) { flex-direction: column; align-items: stretch; gap: 0.15rem; }
+  .ox-toolbar > .ox-field:has(> label:not(.ox-sr-only)) .ox-input { flex: none; }
+  .ox-toolbar > .ox-field:has(#ox-sort) { grid-column: 1 / -1; flex-direction: row; align-items: center; }
+  .ox-toolbar > .ox-field:has(#ox-sort) .ox-input { flex: 1 1 9rem; }
+  .ox-chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 0.25rem; }
+  .ox-chips > * { flex: none; }
+  .ox-toolbar > .ox-chip-problems { grid-column: 1 / -1; }
+  .ox-admin-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  .ox-admin-controls > * { min-width: 0; }
+  .ox-admin-controls > p, .ox-admin-controls > .ox-field:has(.ox-btn) { grid-column: 1 / -1; }
+  .ox-admin-controls > .ox-field:has(> label) { flex-direction: column; align-items: stretch; gap: 0.15rem; }
+  .ox-field label { min-width: 0; }
+  .ox-field .ox-input { flex: 1 1 9rem; min-width: 0; }
+  .ox-search { flex-basis: auto; }
+  .ox-admin-controls .ox-field .ox-input { flex: none; width: 100%; }
+  .ox-input, .ox-btn, .ox-chip { min-height: 2.5rem; }
+  .ox-btn { flex: 1; }
+  .ox-banner .ox-btn, .ox-dialog .ox-btn { flex: none; }
+  .ox-shortcut { grid-template-columns: 3.5rem 1fr; }
+}
+
+/* More contrast on request */
+@media (prefers-contrast: more) {
+  :root { --ox-border: var(--ox-control); }
+  .ox-btn, .ox-chip, .ox-input { border-width: 2px; }
+}
+
+/* Forced colours (Windows high contrast): system colours; state is text and shape, never only colour */
+@media (forced-colors: active) {
+  :focus-visible { outline-color: Highlight; }
+  .ox-btn, .ox-chip, .ox-input, .ox-toolbar, .ox-banner, .ox-admin, .ox-dialog { border-color: CanvasText; }
+  .ox-btn[aria-pressed='true'], .ox-chip[aria-pressed='true'], .ox-primary {
+    background: Highlight;
+    color: HighlightText;
+    box-shadow: none;
+  }
+  .ox-state::before { background: CanvasText; }
+  .ox-link, a { color: LinkText; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Print: a plain light page of the data; controls do nothing on paper */
+@media print {
+  :root, :root[data-theme='light'], :root[data-theme='dark'] { color-scheme: light; }
+  body { background: #fff; color: #000; font-size: 11pt; }
+  .ox-app { max-width: none; min-height: 0; padding: 0; }
+  .ox-skip, .ox-toolbar, .ox-exports, .ox-admin, .ox-dialog, .ox-link, .ox-banner .ox-btn { display: none !important; }
+  .ox-banner { border-color: #000; }
+  a { color: inherit; text-decoration: none; }
+}

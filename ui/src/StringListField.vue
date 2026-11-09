@@ -24,7 +24,7 @@ fieldset.list-field(:data-field="fieldPath")
   ) + Add {{ itemLabel }}
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { useId } from 'vue'
 
 const props = withDefaults(

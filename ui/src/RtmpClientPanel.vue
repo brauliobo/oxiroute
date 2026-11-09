@@ -28,19 +28,19 @@ section.client-section(aria-labelledby="client-heading")
         button.client-action.client-action-warn(
           type="button"
           :disabled="busySessionId === client.id"
-          @click="$emit('drop', client, 'client')"
+          @click="emit('drop', client, 'client')"
         ) {{ busySessionId === client.id ? 'Dropping...' : 'Drop client' }}
         button.client-action(
           v-if="client.role === 'publisher' || client.role === 'subscriber'"
           type="button"
           :disabled="busySessionId === client.id"
-          @click="$emit('drop', client, client.role)"
+          @click="emit('drop', client, client.role)"
         ) Drop {{ client.role }}
 
   p.client-truncation(v-if="stats?.clientsTruncated") Showing the first 1,024 clients.
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { RtmpClientControlTarget, RtmpClientSnapshot, RtmpStats } from './api'
 import { formatClockTime as formatTime } from './formatters'
 
@@ -49,7 +49,7 @@ defineProps<{
   busySessionId: string | null
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   drop: [client: RtmpClientSnapshot, target: RtmpClientControlTarget]
 }>()
 

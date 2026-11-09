@@ -1,4 +1,5 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount } from './test/mount'
+import { nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
@@ -114,7 +115,7 @@ describe('application navigation', () => {
     const unload = new Event('beforeunload', { cancelable: true })
     expect(window.dispatchEvent(unload)).toBe(false)
     await wrapper.get('a[href="#/configuration"]').trigger('click')
-    await wrapper.vm.$nextTick()
+    await nextTick()
 
     expect((wrapper.get('[data-field="version"] input').element as HTMLInputElement).value).toBe('2')
     expect(wrapper.get('.diagnostic-list').text()).toContain('E_VERSION')

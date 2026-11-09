@@ -4,7 +4,7 @@ header.form-heading
     p.eyebrow Canonical forward proxy
     h3 {{ service.name || 'Unnamed forward proxy' }}
     p.route-summary Configuration and validation are available even when runtime preflight reports this service as unsupported.
-  button.danger-button(type="button" @click="$emit('remove')") Remove forward proxy
+  button.danger-button(type="button" @click="emit('remove')") Remove forward proxy
 
 .field-grid
   label.field(data-field="forward_proxy_services[].name")
@@ -293,7 +293,7 @@ fieldset.object-block(data-field="forward_proxy_services[].resolver")
       span Revalidate on connect
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import StringListField from '../StringListField.vue'
 import type {
   ForwardAccessConditionConfig,
