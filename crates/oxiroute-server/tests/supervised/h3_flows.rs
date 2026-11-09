@@ -242,6 +242,16 @@ pub(super) async fn supervised_worker_replaces_an_active_h3_request_with_goaway_
         "old H3 connection accepted work after GOAWAY"
     );
 
+    // Both workers read the one UDP socket until the retired worker exits, so a new connection
+    // is only deterministic once the old client has left and the retired worker is gone.
+    endpoint.close(quinn::VarInt::from_u32(0), b"old H3 complete");
+    driver.await.expect("old H3 driver task");
+    origin_task.await.expect("slow H3 origin task");
+    poll_master_until_async(&mut harness, |master| {
+        master.state() == MasterState::Running
+    })
+    .await;
+
     let candidate_endpoint = h3_client_endpoint().expect("candidate H3 client endpoint");
     let candidate_connection = connect_h3(&candidate_endpoint, listener_address).await;
     let (candidate_driver, mut candidate_sender) =
@@ -286,16 +296,8 @@ pub(super) async fn supervised_worker_replaces_an_active_h3_request_with_goaway_
             .is_none()
     );
 
-    endpoint.close(quinn::VarInt::from_u32(0), b"old H3 complete");
     candidate_endpoint.close(quinn::VarInt::from_u32(0), b"candidate H3 complete");
-    driver.await.expect("old H3 driver task");
     candidate_driver.await.expect("candidate H3 driver task");
-    origin_task.await.expect("slow H3 origin task");
-
-    poll_master_until_async(&mut harness, |master| {
-        master.state() == MasterState::Running
-    })
-    .await;
     let candidate_worker = harness
         .master
         .worker_id(WorkerRole::Active)
