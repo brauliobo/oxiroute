@@ -50,17 +50,16 @@ pub(super) async fn write_static_file(
     file: StaticFile,
     head: bool,
 ) -> pingora::Result<Option<Vec<(HeaderName, HeaderValue)>>> {
-    let validators = static_validator_headers(files, &file);
     match files.request_decision(&session.req_header().headers, &file) {
         StaticRequestDecision::NotModified => {
             let mut headers = files.headers(304);
-            headers.extend(validators);
+            headers.extend(static_validator_headers(files, &file));
             write_local_response(session, 304, &headers, Bytes::new(), true).await?;
             return Ok(None);
         }
         StaticRequestDecision::PreconditionFailed => {
             let mut headers = files.headers(412);
-            headers.extend(validators);
+            headers.extend(static_validator_headers(files, &file));
             write_local_response(session, 412, &headers, Bytes::new(), head).await?;
             return Ok(None);
         }
@@ -93,16 +92,21 @@ pub(super) async fn write_static_file_with_status(
 ) -> pingora::Result<()> {
     let (start, end) = range.unwrap_or_else(|| (0, file.size.saturating_sub(1)));
     let length = if file.size == 0 { 0 } else { end - start + 1 };
-    let mut headers = files.headers(status);
-    headers.extend_from_slice(extra_headers);
-    headers.extend(static_validator_headers(files, &file));
-    let mut response = pingora::http::ResponseHeader::build(status, Some(headers.len() + 4))?;
-    for (name, value) in headers {
+    let configured = files.headers(status);
+    let mut response = pingora::http::ResponseHeader::build(
+        status,
+        Some(configured.len() + extra_headers.len() + 7),
+    )?;
+    for (name, value) in configured.into_iter().chain(extra_headers.iter().cloned()) {
         response.append_header(name, value)?;
     }
-    response.insert_header(CONTENT_TYPE, files.content_type(&file.name))?;
+    if files.etag_enabled() {
+        response.append_header(ETAG, file.etag.clone())?;
+    }
+    response.append_header(LAST_MODIFIED, file.last_modified.clone())?;
+    response.insert_header(CONTENT_TYPE, file.content_type.clone())?;
     response.insert_header(ACCEPT_RANGES, "bytes")?;
-    response.insert_header(CONTENT_LENGTH, length.to_string())?;
+    response.insert_header(CONTENT_LENGTH, HeaderValue::from(length))?;
     if range.is_some() {
         response.insert_header(CONTENT_RANGE, format!("bytes {start}-{end}/{}", file.size))?;
     }
@@ -116,26 +120,13 @@ pub(super) async fn write_static_file_with_status(
         return Ok(());
     }
 
-    let mut file = tokio::fs::File::from_std(file.file);
-    file.seek(std::io::SeekFrom::Start(start))
-        .await
-        .map_err(|error| Error::because(ErrorType::ReadError, "static file seek failed", error))?;
-    let mut remaining = length;
-    let mut buffer = vec![0; 64 * 1024];
-    while remaining > 0 {
-        let chunk = usize::try_from(remaining.min(buffer.len() as u64)).expect("chunk bound");
-        let read = file.read(&mut buffer[..chunk]).await.map_err(|error| {
-            Error::because(ErrorType::ReadError, "static file read failed", error)
-        })?;
-        if read == 0 {
-            return Err(Error::new_in(ErrorType::ReadError));
-        }
-        remaining -= u64::try_from(read).expect("read length fits u64");
+    let mut reader = file.content.into_reader(start, length);
+    let read_error = |error| Error::because(ErrorType::ReadError, "static file read failed", error);
+    let mut chunk = reader.next_chunk().await.map_err(read_error)?;
+    while let Some(current) = chunk {
+        chunk = reader.next_chunk().await.map_err(read_error)?;
         session
-            .write_response_body(
-                Some(Bytes::copy_from_slice(&buffer[..read])),
-                remaining == 0,
-            )
+            .write_response_body(Some(current), chunk.is_none())
             .await?;
     }
     Ok(())
@@ -149,10 +140,6 @@ fn static_validator_headers(
     if files.etag_enabled() {
         headers.push((ETAG, file.etag.clone()));
     }
-    headers.push((
-        LAST_MODIFIED,
-        HeaderValue::from_str(&httpdate::fmt_http_date(file.modified))
-            .expect("HTTP date is a valid header value"),
-    ));
+    headers.push((LAST_MODIFIED, file.last_modified.clone()));
     headers
 }
