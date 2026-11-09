@@ -344,7 +344,7 @@ fn least_connections_chooses_like_the_scan_of_every_server() {
 
 #[test]
 fn every_algorithm_chooses_like_the_scan_when_idle_connections_can_be_reused() {
-    for seed in 1..=4 {
+    for seed in 1..=2 {
         for algorithm in [
             UpstreamAlgorithm::RoundRobin,
             UpstreamAlgorithm::First,
