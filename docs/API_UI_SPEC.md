@@ -484,9 +484,21 @@ requires extending the allowlists; audit records remain a separate durable contr
 
 ## Vue and Pug frontend
 
-- Vue 3 single-page application built with Vite.
+- Vue 3.6 single-page application built with Vite and rendered in Vapor mode: every SFC is
+  `<script setup lang="ts" vapor>` and `src/main.ts` boots with `createVaporApp`, so the bundle has
+  no virtual DOM renderer (`scripts/verify-ui-bundle.mjs` enforces it). `vue` and
+  `@vitejs/plugin-vue` are pinned to exact versions while Vue 3.6 is a release candidate; bump them
+  deliberately and run the unit, production-build browser, and Rust built-UI tests.
 - Pug 3.x used only through `<template lang="pug">` in precompiled Vue SFCs.
 - No runtime template compiler, server-supplied templates, or user-editable Pug.
+- The built UI runs under a strict `style-src 'self'` policy: templates have no `style=`/`:style`
+  bindings (runtime geometry uses the `v-css-vars` directive in `src/cssVars.ts`, which sets CSS
+  custom properties through the CSSOM), and the browser suite serves the build with that policy and
+  fails on any violation.
+- Vapor limits that `src/sfcPolicy.test.ts` enforces on every SFC: no `$emit`/`$props`/`$attrs`/
+  `$slots` in templates (they compile in development and tests but break the production bundle;
+  use the `defineEmits`/`defineProps` bindings), and no `v-html`, `v-memo`, Suspense, top-level
+  `await`, `getCurrentInstance`, or `globalProperties`.
 - No global state library until component scope proves it necessary.
 - Manually typed API client with component and exact canonical-field-registry tests.
 

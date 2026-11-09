@@ -1,7 +1,9 @@
 # Dashboard Guide
 
-The management UI is a build-time Vue 3 application with Pug templates. It is served from the
-configured `management.ui_dir`; it is not a separate remote SaaS console.
+The management UI is a build-time Vue 3 (Vapor mode) application with Pug templates. It is served
+from the configured `management.ui_dir`; it is not a separate remote SaaS console. It needs no inline
+styles or scripts, so it also runs behind a strict `default-src 'none'; script-src 'self';
+style-src 'self'; connect-src 'self'` Content-Security-Policy set by a fronting proxy.
 
 ![Remotion recording of the OxiRoute runtime observatory](../../website/assets/admin-overview.gif)
 
