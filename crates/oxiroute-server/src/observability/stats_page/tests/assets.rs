@@ -243,6 +243,24 @@ async fn the_shell_is_static_html_that_loads_only_embedded_script_files() {
             "inline script body"
         );
     }
+    // The favicon is an empty data URL; every other link is an embedded stylesheet.
+    for link in shell
+        .split("<link")
+        .skip(1)
+        .filter(|link| !link.contains("href=\"data:"))
+    {
+        let tag = &link[..link.find('>').unwrap()];
+        let source = tag.split("href=\"").nth(1).expect("link href");
+        let name = source
+            .split('"')
+            .next()
+            .and_then(|source| source.strip_prefix("/haproxy/assets/"))
+            .expect("served under the prefix");
+        assert!(
+            assets::all().iter().any(|asset| asset.name == name),
+            "{tag}"
+        );
+    }
 }
 
 /// A browser with script runs the client, which refreshes itself and draws its own table: the shell's meta refresh and
@@ -274,25 +292,27 @@ async fn the_refresh_and_the_table_are_only_for_browsers_without_script() {
 async fn the_shell_points_at_the_assets_below_the_prefix() {
     let fixture = fixture();
     let mut config = page_config(2_500, Disabled);
-    let name = first_asset().name;
     for (prefix, expected) in [("/haproxy", "/haproxy"), ("/stats/", "/stats"), ("/", "")] {
         config.uri_prefix = prefix.into();
         let page = HaproxyStatsPage::new(&config, fixture.generations.clone());
         let shell = String::from_utf8(page.handle("GET", prefix, false).await.body).unwrap();
         assert!(
-            shell.contains(&format!("src=\"{expected}/assets/{name}\"")),
-            "{prefix}: {shell}"
-        );
-        assert!(
             shell.contains(&format!("name=\"oxiroute-prefix\" content=\"{expected}\"")),
             "{prefix}"
         );
-        let asset = format!("{expected}/assets/{name}");
-        assert_eq!(
-            page.handle("GET", &asset, false).await.status,
-            200,
-            "{asset}"
-        );
+        for asset in assets::all() {
+            let attribute = if asset.name.ends_with(".js") {
+                "src"
+            } else {
+                "href"
+            };
+            let path = format!("{expected}/assets/{}", asset.name);
+            assert!(
+                shell.contains(&format!("{attribute}=\"{path}\"")),
+                "{prefix}: {shell}"
+            );
+            assert_eq!(page.handle("GET", &path, false).await.status, 200, "{path}");
+        }
     }
 }
 
