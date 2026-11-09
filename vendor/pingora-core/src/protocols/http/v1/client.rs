@@ -22,7 +22,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use http::{header, header::AsHeaderName, HeaderValue, StatusCode, Version};
 use log::{debug, trace};
 use pingora_error::{Error, ErrorType::*, OrErr, Result, RetryType};
-use pingora_http::{HMap, RequestHeader, ResponseHeader};
+use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_timeout::timeout;
 use std::io::ErrorKind;
 use std::str;
@@ -116,12 +116,15 @@ struct RequestMetadata {
     is_upgrade: bool,
 }
 
-impl From<&RequestHeader> for RequestMetadata {
-    fn from(req: &RequestHeader) -> Self {
+impl RequestMetadata {
+    fn of(req: &RequestHeader, facts: RequestFacts) -> Self {
         Self {
             is_head: req.method == http::method::Method::HEAD,
-            connection_keepalive: is_buf_keepalive(req.headers.get(header::CONNECTION)),
-            is_upgrade: is_upgrade_req(req),
+            connection_keepalive: facts
+                .connection
+                .then(|| is_buf_keepalive(req.headers.get(header::CONNECTION)))
+                .flatten(),
+            is_upgrade: facts.upgrade && is_upgrade_req(req),
         }
     }
 }
@@ -187,10 +190,21 @@ impl HttpSession {
     /// After the request header is sent, the caller can either start reading the response or
     /// sending request body if any.
     pub async fn write_request_header_ref(&mut self, req: &RequestHeader) -> Result<usize> {
+        self.write_request_header_noted(req, RequestFacts::of(&req.headers))
+            .await
+    }
+
+    /// Like [`Self::write_request_header_ref()`] for a caller that already knows what `req` says about its
+    /// framing and connection handling (see [`RequestFacts`]), so the headers are not looked up again.
+    pub async fn write_request_header_noted(
+        &mut self,
+        req: &RequestHeader,
+        facts: RequestFacts,
+    ) -> Result<usize> {
         // TODO: make sure this can only be called once
         // init body writer
-        self.init_req_body_writer(req);
-        let request_metadata = RequestMetadata::from(req);
+        self.init_req_body_writer(req, facts);
+        let request_metadata = RequestMetadata::of(req, facts);
 
         let to_wire = http_req_header_to_wire(req).unwrap();
         trace!("Writing request header: {to_wire:?}");
@@ -848,29 +862,20 @@ impl HttpSession {
                 .unwrap_or(false)
     }
 
-    fn init_req_body_writer(&mut self, header: &RequestHeader) {
-        self.init_body_writer_comm(&header.headers)
-    }
-
-    fn init_body_writer_comm(&mut self, headers: &HMap) {
-        if is_chunked_encoding_from_headers(headers) {
+    fn init_req_body_writer(&mut self, header: &RequestHeader, facts: RequestFacts) {
+        let headers = &header.headers;
+        if facts.transfer_encoding && is_chunked_encoding_from_headers(headers) {
             // transfer-encoding takes priority over content-length
             self.body_writer.init_chunked();
         } else {
-            let content_length =
-                header_value_content_length(headers.get(http::header::CONTENT_LENGTH));
-            match content_length {
-                Some(length) => {
-                    self.body_writer.init_content_length(length);
-                }
-                None => {
-                    // Per RFC 9112: "Request messages are never close-delimited because they are
-                    // always explicitly framed by length or transfer coding, with the absence of
-                    // both implying the request ends immediately after the header section."
-                    // Requests without Content-Length or Transfer-Encoding have 0 body
-                    self.body_writer.init_content_length(0);
-                }
-            }
+            let content_length = (facts.content_lengths > 0)
+                .then(|| header_value_content_length(headers.get(http::header::CONTENT_LENGTH)))
+                .flatten();
+            // Per RFC 9112: "Request messages are never close-delimited because they are always explicitly
+            // framed by length or transfer coding, with the absence of both implying the request ends
+            // immediately after the header section."
+            self.body_writer
+                .init_content_length(content_length.unwrap_or(0));
         }
     }
 

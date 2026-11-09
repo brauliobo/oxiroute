@@ -385,11 +385,24 @@ impl RequestFacts {
 }
 
 /// Whether `bytes` are valid `HeaderValue` contents: the check `HeaderValue::from_bytes` makes, without copying them.
+/// Eight bytes at a time are tested for a control byte or DEL; a tab (valid) or a real offender sends the value to the
+/// byte-wise check.
 #[inline]
 pub(super) fn is_header_value(bytes: &[u8]) -> bool {
-    bytes
-        .iter()
-        .all(|&byte| (byte >= 32 && byte != 127) || byte == b'\t')
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    let valid = |&byte: &u8| (byte >= 32 && byte != 127) || byte == b'\t';
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        let word = u64::from_le_bytes(<[u8; 8]>::try_from(chunk).expect("a chunk of eight"));
+        let below_space = word.wrapping_sub(ONES * 0x20) & !word & HIGH;
+        let deleted = word ^ (ONES * 0x7f);
+        let has_del = deleted.wrapping_sub(ONES) & !deleted & HIGH;
+        if below_space | has_del != 0 {
+            return bytes.iter().all(valid);
+        }
+    }
+    chunks.remainder().iter().all(valid)
 }
 
 /// Appends a header validated by the HTTP/1 parser without retaining its wire casing, and notes in `facts`
@@ -481,6 +494,20 @@ mod test {
             );
         }
         assert!(is_header_value(b""));
+        // Every byte value at every position of values longer than a word, so the word-wise path is checked.
+        for length in [7, 8, 9, 15, 16, 17, 40] {
+            for position in 0..length {
+                for byte in 0..=u8::MAX {
+                    let mut value = vec![b'a'; length];
+                    value[position] = byte;
+                    assert_eq!(
+                        is_header_value(&value),
+                        HeaderValue::from_bytes(&value).is_ok(),
+                        "byte {byte} at {position} of {length}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
