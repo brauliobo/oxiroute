@@ -2204,6 +2204,7 @@ dependencies = [
 name = "oxiroute"
 version = "6.2.0"
 dependencies = [
+ "aho-corasick",
  "arc-swap",
  "async-trait",
  "base64 0.23.1",
@@ -2246,6 +2247,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "thiserror 2.0.21",
+ "tikv-jemallocator",
  "time",
  "tokio",
  "tokio-openssl",
@@ -2262,6 +2264,7 @@ dependencies = [
  "http",
  "httpdate",
  "openssl",
+ "oxiroute-tls-client",
  "rustix",
  "serde",
  "serde_json",
@@ -2366,6 +2369,7 @@ dependencies = [
  "chrono-tz",
  "http",
  "openssl",
+ "oxiroute-tls-client",
  "rml_rtmp",
  "rustix",
  "sha2",
@@ -2413,6 +2417,13 @@ dependencies = [
  "rustix",
  "thiserror 2.0.21",
  "zeroize",
+]
+
+[[package]]
+name = "oxiroute-tls-client"
+version = "6.2.0"
+dependencies = [
+ "openssl",
 ]
 
 [[package]]
@@ -3677,6 +3688,26 @@ checksum = "83d957f535b242b91aa9f47bde08080f9a6fef276477e55b0079979d002759d5"
 dependencies = [
  "byteorder",
  "trackable",
+]
+
+[[package]]
+name = "tikv-jemalloc-sys"
+version = "0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd8aa5b2ab86a2cefa406d889139c162cbb230092f7d1d7cbc1716405d852a3b"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
+name = "tikv-jemallocator"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0359b4327f954e0567e69fb191cf1436617748813819c94b8cd4a431422d053a"
+dependencies = [
+ "libc",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]
