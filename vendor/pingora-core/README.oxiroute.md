@@ -80,7 +80,7 @@ connection-pool experiments:
 - `protocols/http/v1/common.rs` remembers parsed header names per thread (at most 512 names of up to 64
   bytes, cleared when full), so a name outside the `http` standard table is allocated once per thread instead
   of once per request.
-- `utils/chunk_pool.rs` keeps up to eight 64 KiB buffers per thread. `protocols/http/v1/body.rs` takes its body
+- `utils/chunk_pool.rs` keeps up to eight 128 KiB buffers per thread. `protocols/http/v1/body.rs` takes its body
   buffer from it and returns it when the next body starts or the reader drops. `read_body_bytes` hands a
   content-length or close-delimited read of 8 KiB or more out as the buffer it was read into (the buffer returns to
   the pool of the thread that drops the last clone) instead of copying it into a new `Bytes`; chunked and smaller

@@ -107,9 +107,11 @@ pub(super) async fn write_static_file_with_status(
     response.append_header(LAST_MODIFIED, file.last_modified.clone())?;
     response.insert_header(CONTENT_TYPE, file.content_type.clone())?;
     response.insert_header(ACCEPT_RANGES, HeaderValue::from_static("bytes"))?;
-    response.insert_header(CONTENT_LENGTH, HeaderValue::from(length))?;
     if range.is_some() {
+        response.insert_header(CONTENT_LENGTH, HeaderValue::from(length))?;
         response.insert_header(CONTENT_RANGE, format!("bytes {start}-{end}/{}", file.size))?;
+    } else {
+        response.insert_header(CONTENT_LENGTH, file.content_length.clone())?;
     }
     if !session.is_body_empty() {
         session.set_close_on_response_before_downstream_finish(true);
