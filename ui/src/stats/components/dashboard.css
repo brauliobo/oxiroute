@@ -1,0 +1,73 @@
+/* Data views of the stats page. Colours come from the page tokens (--ox-*) with fallbacks, so the views also work
+   without the page stylesheet; everything below reads the private --oxd-* copies defined here. */
+.ox-dashboard {
+  --oxd-bg: var(--ox-bg, Canvas);
+  --oxd-fg: var(--ox-fg, CanvasText);
+  --oxd-muted: var(--ox-muted, color-mix(in srgb, CanvasText 62%, Canvas));
+  --oxd-border: var(--ox-border, color-mix(in srgb, CanvasText 20%, Canvas));
+  --oxd-surface: var(--ox-surface, color-mix(in srgb, CanvasText 5%, Canvas));
+  --oxd-ok: var(--ox-ok, #0b7a3b);
+  --oxd-warn: var(--ox-warn, #9a5b00);
+  --oxd-bad: var(--ox-bad, #b3261e);
+  --oxd-info: var(--ox-info, #1a5fb4);
+  --oxd-focus: var(--ox-focus, Highlight);
+  display: grid;
+  gap: 1.5rem;
+  color: var(--oxd-fg);
+}
+
+@media (prefers-color-scheme: dark) {
+  .ox-dashboard {
+    --oxd-ok: var(--ox-ok, #43c07a);
+    --oxd-warn: var(--ox-warn, #e8a33d);
+    --oxd-bad: var(--ox-bad, #ff7b72);
+    --oxd-info: var(--ox-info, #6cb2ff);
+  }
+}
+
+.ox-dashboard h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+.ox-dashboard h3 {
+  margin: 0.9rem 0 0.35rem;
+  font-size: 0.9rem;
+}
+
+.ox-dashboard h4 {
+  margin: 0.6rem 0 0.25rem;
+  font-size: 0.8rem;
+  color: var(--oxd-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.ox-dashboard a {
+  color: var(--oxd-info);
+}
+
+.ox-dashboard :focus-visible {
+  outline: 2px solid var(--oxd-focus);
+  outline-offset: 2px;
+}
+
+.ox-muted {
+  color: var(--oxd-muted);
+}
+
+.ox-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.ox-panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: 1rem;
+  align-items: start;
+}
