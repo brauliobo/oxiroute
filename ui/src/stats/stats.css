@@ -1,0 +1,13 @@
+:root {
+  color-scheme: light dark;
+  --stats-gap: 0.75rem;
+}
+
+body {
+  margin: 0;
+  font: 14px/1.4 system-ui, sans-serif;
+}
+
+.stats-shell {
+  padding: var(--stats-gap);
+}

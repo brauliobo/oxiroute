@@ -6,6 +6,7 @@
 *.swp
 *.tmp
 /ui/dist/
+/ui/dist-stats/
 /ui/node_modules/
 /remotion/node_modules/
 /remotion/out/
