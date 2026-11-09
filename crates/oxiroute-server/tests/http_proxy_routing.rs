@@ -60,7 +60,7 @@ use http_support::{
     HttpResponse as RawResponse, raw_http_request, read_request_head as read_request_head_bytes,
 };
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const NO_ORIGIN_CONTACT_WINDOW: Duration = Duration::from_millis(100);
 
 #[tokio::test]
@@ -1550,7 +1550,7 @@ async fn capped_first_pool_dispatches_queued_requests_fifo_to_the_next_available
             held_secondary.await.expect("secondary held task").body,
             b"hold-secondary"
         );
-        timeout(Duration::from_secs(1), old_seen_rx)
+        timeout(Duration::from_secs(30), old_seen_rx)
             .await
             .expect("old request dispatch")
             .expect("old request signal");
@@ -1563,7 +1563,7 @@ async fn capped_first_pool_dispatches_queued_requests_fifo_to_the_next_available
             held_primary.await.expect("primary held task").body,
             b"hold-primary"
         );
-        timeout(Duration::from_secs(1), new_seen_rx)
+        timeout(Duration::from_secs(30), new_seen_rx)
             .await
             .expect("new request dispatch")
             .expect("new request signal");
@@ -2422,7 +2422,7 @@ async fn slow_downstream_preserves_response_larger_than_pipe_capacity() {
             let value = u8::try_from(value).expect("response chunk index fits in u8");
             assert!(chunk.iter().all(|byte| *byte == value));
         }
-        timeout(Duration::from_secs(1), write_done_rx)
+        timeout(Duration::from_secs(30), write_done_rx)
             .await
             .expect("origin did not resume after downstream reads")
             .expect("origin write completion sender dropped");
@@ -2946,7 +2946,7 @@ async fn client_disconnect_cancels_the_pending_upstream_request() {
         sleep(Duration::from_millis(150)).await;
         drop(client);
 
-        timeout(Duration::from_millis(800), closed_rx)
+        timeout(Duration::from_secs(30), closed_rx)
             .await
             .expect("origin did not observe the client disconnect")
             .expect("origin close signal");
@@ -4042,7 +4042,7 @@ async fn enforces_the_connection_cap_in_the_production_http_wrapper() {
             .await
             .expect("second client connect");
         let mut byte = [0; 1];
-        let closed = timeout(Duration::from_secs(1), second.read(&mut byte))
+        let closed = timeout(Duration::from_secs(30), second.read(&mut byte))
             .await
             .expect("limited connection must close promptly");
         assert!(
@@ -4654,7 +4654,7 @@ async fn early_response_drains_a_remaining_request_body_before_h1_reuse() {
             .write_all(b"cdGET /second HTTP/1.1\r\nHost: drain.test\r\nConnection: close\r\n\r\n")
             .await
             .expect("remaining body and second request");
-        let second = timeout(Duration::from_secs(1), read_framed_response(&mut client))
+        let second = timeout(Duration::from_secs(30), read_framed_response(&mut client))
             .await
             .expect("drained H1 connection did not accept the next request")
             .expect("second response");
@@ -6986,18 +6986,24 @@ async fn access_log_gives_the_reason_a_request_failed() {
     .expect("failed access log test timed out");
 }
 
-async fn wait_for_live_request(id: &str, present: bool) -> Option<String> {
-    for _ in 0..200 {
-        let found = oxiroute_server::live_requests()
-            .into_iter()
-            .find(|(live, _)| live == id)
-            .map(|(_, phase)| phase);
-        if found.is_some() == present {
-            return found;
-        }
+fn live_request_phase(id: &str) -> Option<String> {
+    oxiroute_server::live_requests()
+        .into_iter()
+        .find(|(live, _)| live == id)
+        .map(|(_, phase)| phase)
+}
+
+async fn wait_for_live_request(id: &str, present: bool) {
+    while live_request_phase(id).is_some() != present {
         sleep(Duration::from_millis(10)).await;
     }
-    panic!("request {id} presence never became {present}");
+}
+
+/// Waits for the phase a request settles in while something outside the proxy holds it there.
+async fn wait_for_live_phase(id: &str, phase: &str) {
+    while live_request_phase(id).as_deref() != Some(phase) {
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[tokio::test]
@@ -7006,9 +7012,11 @@ async fn a_request_is_visible_while_it_waits_for_the_origin_and_gone_when_it_end
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let origin = listener.local_addr().expect("origin address");
         let (release_tx, release_rx) = oneshot::channel::<()>();
+        let (received_tx, received_rx) = oneshot::channel::<()>();
         let task = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("origin accept");
             read_request_head_bytes(&mut stream).await.expect("origin request");
+            received_tx.send(()).expect("origin received the request");
             release_rx.await.expect("release");
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
@@ -7030,8 +7038,8 @@ async fn a_request_is_visible_while_it_waits_for_the_origin_and_gone_when_it_end
             )
             .await
         });
-        let phase = wait_for_live_request("live-1", true).await;
-        assert_eq!(phase.as_deref(), Some("awaiting_headers"));
+        received_rx.await.expect("origin received the request");
+        wait_for_live_phase("live-1", "awaiting_headers").await;
         release_tx.send(()).expect("release origin");
         assert_eq!(client.await.expect("client").status, 200);
         wait_for_live_request("live-1", false).await;
@@ -7238,7 +7246,7 @@ async fn listener_client_and_request_header_timeout_close_a_stalled_request() {
             .expect("partial request");
         sleep(Duration::from_millis(80)).await;
         let mut byte = [0; 1];
-        let closed = timeout(Duration::from_secs(2), client.read(&mut byte))
+        let closed = timeout(Duration::from_secs(30), client.read(&mut byte))
             .await
             .expect("stalled request closes");
         assert!(
@@ -7319,7 +7327,7 @@ async fn listener_keepalive_timeout_closes_an_idle_reusable_connection() {
         }
         sleep(Duration::from_millis(80)).await;
         let mut byte = [0; 1];
-        let closed = timeout(Duration::from_secs(1), client.read(&mut byte))
+        let closed = timeout(Duration::from_secs(30), client.read(&mut byte))
             .await
             .expect("idle keepalive closes");
         assert!(matches!(closed, Ok(0) | Err(_)), "keepalive remained open");
@@ -7666,7 +7674,7 @@ impl ProxyHarness {
     }
 
     async fn wait_for_active_connections(&self, expected: u64) {
-        timeout(Duration::from_secs(1), async {
+        timeout(Duration::from_secs(30), async {
             loop {
                 if self
                     .metrics

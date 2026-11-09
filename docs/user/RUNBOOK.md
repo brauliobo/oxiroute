@@ -234,6 +234,8 @@ cp -p "$work/oxiroute.kdl" "$cfg.new" && mv "$cfg.new" "$cfg"   # same directory
 oxiroute status                                          # activeRevision follows within seconds
 ```
 
+- `config check` prints one `warning: <code>: <message>` line per setting that is valid but cannot take
+  effect, such as status retries on a pool without `passive_health`; warnings do not change the exit code.
 - `config check` prepares a full generation, including binding listeners, so on the host that runs those
   listeners it fails for that reason: check on a staging host, or use `config validate`.
 - Write by rename in the same directory with the original owner and mode; the watcher observes the parent

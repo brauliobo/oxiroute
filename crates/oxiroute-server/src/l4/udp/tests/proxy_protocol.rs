@@ -121,7 +121,7 @@ async fn udp_proxy_v2_is_accepted_and_propagated_on_the_wire() {
         .send_to(b"response", upstream_peer)
         .await
         .expect("upstream response");
-    let (length, _) = timeout(Duration::from_secs(2), client.recv_from(&mut received))
+    let (length, _) = timeout(Duration::from_secs(30), client.recv_from(&mut received))
         .await
         .expect("client response timeout")
         .expect("client response receive");

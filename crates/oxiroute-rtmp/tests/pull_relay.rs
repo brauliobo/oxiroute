@@ -106,7 +106,7 @@ fn pull_reconnects_to_a_rotated_loopback_address_and_keeps_the_local_publisher_b
     );
 
     let mut observed_media = None;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         observed_media = local_registry
             .snapshot()

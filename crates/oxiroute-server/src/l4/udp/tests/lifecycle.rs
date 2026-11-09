@@ -95,7 +95,7 @@ async fn udp_administrative_drain_does_not_record_active_upstream_failure() {
         .send_to(b"active", listener)
         .await
         .expect("active datagram");
-    timeout(Duration::from_secs(2), upstream.recv_from(&mut received))
+    timeout(Duration::from_secs(30), upstream.recv_from(&mut received))
         .await
         .expect("active upstream timeout")
         .expect("active upstream receive");

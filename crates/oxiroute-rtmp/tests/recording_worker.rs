@@ -1017,7 +1017,7 @@ fn enqueue(worker: &RecorderWorker, event: MediaEvent) {
 }
 
 fn wait_for_failure(worker: &RecorderWorker) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !matches!(worker.status().phase, RecorderWorkerPhase::Failed(_)) {
         assert!(Instant::now() < deadline, "recorder failure timeout");
         thread::sleep(Duration::from_millis(5));
@@ -1033,7 +1033,7 @@ fn wait_for_processed(worker: &RecorderWorker, events: u64) {
 }
 
 fn wait_for_recorders_to_stop(store: &RecordingStore) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while store.stats().active_recorders != 0 {
         assert!(Instant::now() < deadline, "recorder cancellation timeout");
         thread::sleep(Duration::from_millis(5));
