@@ -68,8 +68,7 @@ pub(super) fn h3_static_validator_headers(
     }
     headers.push((
         HeaderName::from_static("last-modified"),
-        HeaderValue::from_str(&httpdate::fmt_http_date(file.modified))
-            .expect("HTTP date is a valid header value"),
+        file.last_modified.clone(),
     ));
     headers
 }

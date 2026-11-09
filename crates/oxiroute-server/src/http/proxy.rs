@@ -58,7 +58,6 @@ use crate::{
         UpstreamPlan, enforce_http_version, is_pool_unavailable, validate_tls_connection,
     },
 };
-use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 use crate::http::evacuation::{Cancellation, EVACUATED, LeftRunning, is_evacuated};
 use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};

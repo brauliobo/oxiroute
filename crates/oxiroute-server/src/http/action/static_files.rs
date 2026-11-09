@@ -15,6 +15,7 @@ pub(crate) struct StaticFilesPlan {
     pub(super) default_type: Option<HeaderValue>,
     pub(super) headers: Box<[(HeaderName, HeaderValue, bool)]>,
     pub(super) error_responses: HashMap<u16, StaticErrorResponsePlan>,
+    pub(super) cache: StaticCache,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +109,7 @@ impl StaticFilesPlan {
             default_type: blueprint.default_type.clone(),
             headers: blueprint.headers.clone(),
             error_responses: blueprint.error_responses.clone(),
+            cache: StaticCache::default(),
         })
     }
 }
@@ -262,72 +264,36 @@ impl StaticFilesBlueprint {
 
 impl StaticFilesPlan {
     pub(crate) async fn serve(&self, request_path: &str) -> Result<StaticTarget, StaticServeError> {
-        let components = self.request_components(request_path)?;
-        let root = Arc::clone(&self.root);
-        let directory_policy = self.directory_policy.clone();
-        let fallback = self.fallback.clone();
-        let try_files = self.try_files.clone();
-        let directory_redirects = self.directory_redirects;
-        let request_has_trailing_slash = request_path.ends_with('/');
-        let request_path = request_path.to_owned();
-        tokio::task::spawn_blocking(move || {
-            if try_files.is_empty() {
-                return match read_static_target(
-                    &root,
-                    &components,
-                    &directory_policy,
-                    false,
-                    directory_redirects && !request_has_trailing_slash,
-                    &request_path,
-                ) {
-                    Err(StaticServeError::NotFound) if fallback.is_some() => read_static_target(
-                        &root,
-                        fallback.as_deref().expect("checked fallback"),
-                        &StaticDirectoryPolicy::disabled(),
-                        false,
-                        false,
-                        &request_path,
-                    ),
-                    result => result,
-                };
-            }
-            for candidate in &try_files {
-                let result = match candidate {
-                    StaticTryFilePlan::RequestPath => read_static_target(
-                        &root,
-                        &components,
-                        &directory_policy,
-                        false,
-                        directory_redirects && !request_has_trailing_slash,
-                        &request_path,
-                    ),
-                    StaticTryFilePlan::RequestPathDirectory => read_static_target(
-                        &root,
-                        &components,
-                        &directory_policy,
-                        true,
-                        directory_redirects && !request_has_trailing_slash,
-                        &request_path,
-                    ),
-                    StaticTryFilePlan::Relative(path) => read_static_target(
-                        &root,
-                        path,
-                        &directory_policy,
-                        false,
-                        false,
-                        &request_path,
-                    ),
-                    StaticTryFilePlan::Status(status) => return Ok(StaticTarget::Status(*status)),
-                };
-                match result {
-                    Err(StaticServeError::NotFound) => {}
-                    result => return result,
-                }
-            }
-            Err(StaticServeError::NotFound)
-        })
-        .await
-        .map_err(|_| StaticServeError::Unavailable)?
+        let now = Instant::now();
+        if let Some(file) = self.cache.get(request_path, now) {
+            return Ok(StaticTarget::File(file));
+        }
+        let lookup = StaticLookup {
+            components: self.request_components(request_path)?,
+            root: Arc::clone(&self.root),
+            directory_policy: self.directory_policy.clone(),
+            fallback: self.fallback.clone(),
+            try_files: self.try_files.clone(),
+            directory_redirects: self.directory_redirects,
+            request_has_trailing_slash: request_path.ends_with('/'),
+            request_path: request_path.to_owned(),
+        };
+        let target =
+            tokio::task::spawn_blocking(move || lookup.find().and_then(StaticTarget::load))
+                .await
+                .map_err(|_| StaticServeError::Unavailable)??;
+        let StaticTarget::File(file) = target else {
+            return Ok(target);
+        };
+        let file = self.typed(file);
+        self.cache.insert(request_path, &file, now);
+        Ok(StaticTarget::File(file))
+    }
+
+    /// The configured MIME mapping decides the content type; the lookup only knows the built-in one.
+    fn typed(&self, mut file: StaticFile) -> StaticFile {
+        file.content_type = self.content_type(&file.name);
+        file
     }
 
     pub(crate) async fn error_document(&self, status: u16) -> Option<StaticErrorTarget> {
@@ -346,7 +312,7 @@ impl StaticFilesPlan {
         };
         let (components, headers) = components;
         let root = Arc::clone(&self.root);
-        tokio::task::spawn_blocking(move || {
+        let file = tokio::task::spawn_blocking(move || {
             read_static_target(
                 &root,
                 &components,
@@ -355,9 +321,10 @@ impl StaticFilesPlan {
                 false,
                 "",
             )
+            .and_then(StaticTarget::load)
             .ok()
             .and_then(|target| match target {
-                StaticTarget::File(file) => Some(StaticErrorTarget::File { file, headers }),
+                StaticTarget::File(file) => Some(file),
                 StaticTarget::Autoindex { .. }
                 | StaticTarget::DirectoryRedirect { .. }
                 | StaticTarget::InternalRedirect { .. }
@@ -366,7 +333,11 @@ impl StaticFilesPlan {
         })
         .await
         .ok()
-        .flatten()
+        .flatten()?;
+        Some(StaticErrorTarget::File {
+            file: self.typed(file),
+            headers,
+        })
     }
 
     pub(crate) fn headers(&self, status: u16) -> Vec<(HeaderName, HeaderValue)> {
@@ -450,6 +421,83 @@ impl StaticFilesPlan {
                 .ok_or(StaticServeError::Unsafe)?,
         };
         request_components(mapped)
+    }
+}
+
+/// What a blocking-pool thread needs to find the target of one request.
+struct StaticLookup {
+    components: Vec<OsString>,
+    root: Arc<OwnedFd>,
+    directory_policy: StaticDirectoryPolicy,
+    fallback: Option<Box<[OsString]>>,
+    try_files: Box<[StaticTryFilePlan]>,
+    directory_redirects: bool,
+    request_has_trailing_slash: bool,
+    request_path: String,
+}
+
+impl StaticLookup {
+    fn find(&self) -> Result<StaticTarget, StaticServeError> {
+        let Self {
+            components,
+            root,
+            directory_policy,
+            fallback,
+            try_files,
+            directory_redirects,
+            request_has_trailing_slash,
+            request_path,
+        } = self;
+        let redirect = *directory_redirects && !request_has_trailing_slash;
+        if try_files.is_empty() {
+            return match read_static_target(
+                root,
+                components,
+                directory_policy,
+                false,
+                redirect,
+                request_path,
+            ) {
+                Err(StaticServeError::NotFound) if fallback.is_some() => read_static_target(
+                    root,
+                    fallback.as_deref().expect("checked fallback"),
+                    &StaticDirectoryPolicy::disabled(),
+                    false,
+                    false,
+                    request_path,
+                ),
+                result => result,
+            };
+        }
+        for candidate in try_files {
+            let result = match candidate {
+                StaticTryFilePlan::RequestPath => read_static_target(
+                    root,
+                    components,
+                    directory_policy,
+                    false,
+                    redirect,
+                    request_path,
+                ),
+                StaticTryFilePlan::RequestPathDirectory => read_static_target(
+                    root,
+                    components,
+                    directory_policy,
+                    true,
+                    redirect,
+                    request_path,
+                ),
+                StaticTryFilePlan::Relative(path) => {
+                    read_static_target(root, path, directory_policy, false, false, request_path)
+                }
+                StaticTryFilePlan::Status(status) => return Ok(StaticTarget::Status(*status)),
+            };
+            match result {
+                Err(StaticServeError::NotFound) => {}
+                result => return result,
+            }
+        }
+        Err(StaticServeError::NotFound)
     }
 }
 
