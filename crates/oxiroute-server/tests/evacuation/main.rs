@@ -4,6 +4,8 @@
 mod config_support;
 #[path = "../support/http.rs"]
 mod http_support;
+#[path = "../support/ports.rs"]
+mod ports_support;
 
 use std::{
     net::SocketAddr,

@@ -2,6 +2,8 @@
 mod config_support;
 #[path = "support/http.rs"]
 mod http_support;
+#[path = "support/ports.rs"]
+mod ports_support;
 
 use std::{net::SocketAddr, path::Path, time::Duration};
 
@@ -86,7 +88,7 @@ async fn tcp_probe_establishes_healthy_and_unhealthy_states() {
             EndpointHealthState::Healthy
         );
 
-        let unavailable_address = unused_address().await;
+        let unavailable_address = ports_support::unused_address();
         let unhealthy_config = config(
             socket_endpoint(unavailable_address),
             tcp_policy(1_000, 200, 1, 1),
@@ -391,7 +393,7 @@ async fn endpoints_in_one_pool_schedule_from_their_own_completion() {
 
 #[tokio::test]
 async fn supervisor_honors_shutdown_already_requested_at_startup() {
-    let address = unused_address().await;
+    let address = ports_support::unused_address();
     let config = config(socket_endpoint(address), tcp_policy(60_000, 500, 1, 1))
         .validate()
         .expect("valid health config");
@@ -410,7 +412,7 @@ async fn supervisor_honors_shutdown_already_requested_at_startup() {
 
 #[tokio::test]
 async fn validation_rejects_programmatic_health_policies() {
-    let address = unused_address().await;
+    let address = ports_support::unused_address();
     let result = config(socket_endpoint(address), tcp_policy(999, 200, 1, 1)).validate();
 
     assert!(matches!(
@@ -616,14 +618,6 @@ fn http_policy(interval_ms: u64, timeout_ms: u64) -> HealthCheck {
         expected_status: None,
         http_version: None,
     }
-}
-
-async fn unused_address() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("unused bind")
-        .local_addr()
-        .expect("unused address")
 }
 
 async fn http_origin(

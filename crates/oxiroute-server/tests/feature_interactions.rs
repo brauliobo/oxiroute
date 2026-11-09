@@ -4,6 +4,8 @@
 mod config_support;
 #[path = "support/http.rs"]
 mod http_support;
+#[path = "support/ports.rs"]
+mod ports_support;
 
 use std::{
     net::SocketAddr,
@@ -53,6 +55,10 @@ struct Proxy {
 impl Proxy {
     #[allow(clippy::too_many_lines)]
     /// A proxy that accepts `connections` client connections; the service deadline is one second.
+    #[allow(
+        clippy::unused_async,
+        reason = "callers await every harness constructor"
+    )]
     async fn start(
         upstream_pools: Vec<UpstreamPool>,
         mut routes: Vec<HttpRoute>,
@@ -62,9 +68,7 @@ impl Proxy {
         for route in &mut routes {
             policy_mut(route).retry.max_retries = max_retries;
         }
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
-        let address = listener.local_addr().expect("proxy address");
-        drop(listener);
+        let address = ports_support::unused_address();
         let config = ConfigDraft {
             listener_workers: None,
             retirement: None,

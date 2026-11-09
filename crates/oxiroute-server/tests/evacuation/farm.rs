@@ -92,9 +92,7 @@ impl Farm {
         for (index, mode) in layout.modes.iter().enumerate() {
             origins.push(Origin::start(server_name(index), *mode).await);
         }
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
-        let address = listener.local_addr().expect("proxy address");
-        drop(listener);
+        let address = ports_support::unused_address();
         let directory = TempDir::new().expect("access log directory");
         let access_log = directory.path().join("access.jsonl");
         let config = config(

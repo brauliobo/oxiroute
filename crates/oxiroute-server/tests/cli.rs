@@ -1,3 +1,5 @@
+#[path = "support/ports.rs"]
+mod ports_support;
 use std::{
     fs,
     io::{Read as _, Write as _},
@@ -98,9 +100,7 @@ fn endpoint_failure_and_remote_status_use_stable_exit_categories() {
     let token_path = directory.path().join("management.token");
     fs::write(&token_path, TOKEN).expect("token");
     fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600)).expect("mode");
-    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve endpoint");
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    drop(listener);
+    let endpoint = format!("http://{}", ports_support::unused_address());
     let unavailable = cli()
         .args([
             "--endpoint",
@@ -927,8 +927,7 @@ impl Drop for NativeReloadServer {
 }
 
 fn reserve_tcp_address() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve address");
-    listener.local_addr().expect("reserved address")
+    ports_support::unused_address()
 }
 
 fn output_text(output: &Output) -> String {
