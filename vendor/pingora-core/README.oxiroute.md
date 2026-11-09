@@ -85,6 +85,11 @@ header-name cache, and stage-1 connection-pool experiments:
   response head plus body or an HTTP/2 HEADERS plus DATA leaves as one record instead of two. A write that does not fit
   flushes the held bytes first and goes out by itself. Client streams (upstream TLS) are unchanged. Writers already had
   to flush for the socket buffer; unflushed small writes were never sent before either.
+- `protocols/mod.rs` `Peek::poll_read_ready` (default: ready, meaning unknown) lets a transport say whether a read could make
+  progress without reading; `protocols/l4/stream.rs` answers from the socket's readiness (or its buffered bytes).
+  An accepted OpenSSL stream uses it after a read that ran dry: it returns pending from the transport's answer without
+  calling `SSL_read` again until the socket is readable, instead of running the record layer once per wake-up for the
+  same "want read". `SSL_write`, handshakes and clients are unchanged.
 - `protocols/http/v2/server.rs` `write_response_header` moves the header map into the HTTP/2 response instead of cloning it,
   so `response_written()` of an HTTP/2 session keeps the status line and no headers (nothing in OxiRoute reads them there).
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,

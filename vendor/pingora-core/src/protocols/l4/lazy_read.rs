@@ -51,6 +51,11 @@ impl<RW: AsyncWrite> LazyReadStream<RW> {
         }
     }
 
+    /// Whether bytes already read from the socket are waiting for the caller.
+    pub(crate) fn has_buffered(&self) -> bool {
+        self.pos < self.pending.len()
+    }
+
     pub(crate) fn get_ref(&self) -> &RW {
         self.inner.get_ref()
     }

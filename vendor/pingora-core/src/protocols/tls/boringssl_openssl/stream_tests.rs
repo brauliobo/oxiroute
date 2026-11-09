@@ -5,6 +5,7 @@ use crate::tls::ssl::{Ssl, SslAcceptor, SslMethod, SslVerifyMode};
 use crate::tls::{pkey::PKey, x509::X509};
 use std::io::{self, IoSlice};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::io::{
@@ -14,10 +15,13 @@ use tokio::io::{
 const CERT: &[u8] = b"-----BEGIN CERTIFICATE-----\nMIIBhTCCASugAwIBAgIUEiPqnvnS9j895PY3Y+MnLPxfLfYwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMcGluZ29yYS50ZXN0MCAXDTI2MTEwOTEyNTcxMFoYDzIxMjYx\nMDE2MTI1NzEwWjAXMRUwEwYDVQQDDAxwaW5nb3JhLnRlc3QwWTATBgcqhkjOPQIB\nBggqhkjOPQMBBwNCAATODJDetmudWR+MH7+HoaFfwEGx6k0kIVuDKD6EHXamPfTt\ncBLl8a5BTI7PD6dqECfQYFYYydQtDRUPz4OBd8Ogo1MwUTAdBgNVHQ4EFgQUYMnW\n0GYyCbLdt0+py5rcGsyr7QwwHwYDVR0jBBgwFoAUYMnW0GYyCbLdt0+py5rcGsyr\n7QwwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEAs6JPrqUn8Jxg\nwrjwp6dWl5O3FfJWX0iirzjOf6E2j1wCIDhQyPE3QyyCrGBuFNK/m2QSS9RC+lD9\nOZqR/75TSNVO\n-----END CERTIFICATE-----\n";
 const KEY: &[u8] = b"-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgEPpWcGySoCGVB4wn\nYDv1VGP4Ow0t0cgMepuAVI70jTuhRANCAATODJDetmudWR+MH7+HoaFfwEGx6k0k\nIVuDKD6EHXamPfTtcBLl8a5BTI7PD6dqECfQYFYYydQtDRUPz4OBd8Og\n-----END PRIVATE KEY-----\n";
 
-/// A transport that remembers the size of every write handed to it.
+/// A transport that remembers the size of every write handed to it and counts its reads.
 struct Recorder {
     inner: DuplexStream,
     writes: Arc<Mutex<Vec<usize>>>,
+    reads: Arc<AtomicUsize>,
+    /// What the read probe answers.
+    readable: Arc<AtomicBool>,
 }
 
 impl AsyncRead for Recorder {
@@ -26,6 +30,7 @@ impl AsyncRead for Recorder {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
@@ -50,14 +55,25 @@ impl AsyncWrite for Recorder {
     }
 }
 
-/// Handshakes a server stream (coalescing or not) and a client, returns both and the server's write log.
-async fn connected(
-    coalesce: bool,
-) -> (
-    SslStream<Recorder>,
-    SslStream<DuplexStream>,
-    Arc<Mutex<Vec<usize>>>,
-) {
+/// Both ends of a handshaken connection and what the server's transport saw.
+struct Harness {
+    server: SslStream<Recorder>,
+    client: SslStream<DuplexStream>,
+    writes: Arc<Mutex<Vec<usize>>>,
+    reads: Arc<AtomicUsize>,
+    readable: Arc<AtomicBool>,
+}
+
+fn probe(transport: &mut Recorder, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    if transport.readable.load(Ordering::Relaxed) {
+        Poll::Ready(Ok(()))
+    } else {
+        Poll::Pending
+    }
+}
+
+/// Handshakes a server stream (coalescing or not) and a client.
+async fn connected(coalesce: bool) -> Harness {
     let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
     acceptor
         .set_certificate(&X509::from_pem(CERT).unwrap())
@@ -68,9 +84,13 @@ async fn connected(
     let acceptor = acceptor.build();
     let (client_io, server_io) = duplex(1 << 20);
     let writes = Arc::new(Mutex::new(Vec::new()));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let readable = Arc::new(AtomicBool::new(true));
     let server_io = Recorder {
         inner: server_io,
         writes: Arc::clone(&writes),
+        reads: Arc::clone(&reads),
+        readable: Arc::clone(&readable),
     };
     let mut server = SslStream::new(
         crate::tls::ext::ssl_from_acceptor(&acceptor).unwrap(),
@@ -79,6 +99,7 @@ async fn connected(
     .unwrap();
     if coalesce {
         server.coalesce_writes();
+        server.probe_reads(probe);
     }
     let mut context = crate::tls::ssl::SslContext::builder(SslMethod::tls()).unwrap();
     context.set_verify(SslVerifyMode::NONE);
@@ -87,7 +108,13 @@ async fn connected(
     accepted.unwrap();
     connected.unwrap();
     writes.lock().unwrap().clear();
-    (server, client, writes)
+    Harness {
+        server,
+        client,
+        writes,
+        reads,
+        readable,
+    }
 }
 
 async fn read_exact(client: &mut SslStream<DuplexStream>, len: usize) -> Vec<u8> {
@@ -103,7 +130,12 @@ const fn record(len: usize) -> usize {
 
 #[tokio::test]
 async fn writes_between_flushes_share_one_record() {
-    let (mut server, mut client, writes) = connected(true).await;
+    let Harness {
+        mut server,
+        mut client,
+        writes,
+        ..
+    } = connected(true).await;
     server.write_all(&[b'h'; 230]).await.unwrap();
     server.write_all(&[b'b'; 1024]).await.unwrap();
     assert!(
@@ -119,7 +151,12 @@ async fn writes_between_flushes_share_one_record() {
 
 #[tokio::test]
 async fn vectored_write_shares_one_record() {
-    let (mut server, mut client, writes) = connected(true).await;
+    let Harness {
+        mut server,
+        mut client,
+        writes,
+        ..
+    } = connected(true).await;
     let (head, body) = ([b'h'; 40], vec![b'b'; 3000]);
     let written = server
         .write_vectored(&[IoSlice::new(&head), IoSlice::new(&body)])
@@ -133,7 +170,12 @@ async fn vectored_write_shares_one_record() {
 
 #[tokio::test]
 async fn large_write_goes_out_after_the_pending_bytes_in_order() {
-    let (mut server, mut client, writes) = connected(true).await;
+    let Harness {
+        mut server,
+        mut client,
+        writes,
+        ..
+    } = connected(true).await;
     server.write_all(&[b'a'; 100]).await.unwrap();
     server.write_all(&[b'z'; 5000]).await.unwrap();
     assert_eq!(*writes.lock().unwrap(), [record(100), record(5000)]);
@@ -145,7 +187,11 @@ async fn large_write_goes_out_after_the_pending_bytes_in_order() {
 
 #[tokio::test]
 async fn pending_bytes_leave_before_a_shutdown() {
-    let (mut server, mut client, _writes) = connected(true).await;
+    let Harness {
+        mut server,
+        mut client,
+        ..
+    } = connected(true).await;
     server.write_all(b"last words").await.unwrap();
     server.shutdown().await.unwrap();
     let mut received = Vec::new();
@@ -155,8 +201,56 @@ async fn pending_bytes_leave_before_a_shutdown() {
 
 #[tokio::test]
 async fn writes_are_not_held_back_unless_asked() {
-    let (mut server, _client, writes) = connected(false).await;
+    let Harness {
+        mut server,
+        client: _client,
+        writes,
+        ..
+    } = connected(false).await;
     server.write_all(&[b'h'; 230]).await.unwrap();
     server.write_all(&[b'b'; 1024]).await.unwrap();
     assert_eq!(*writes.lock().unwrap(), [record(230), record(1024)]);
+}
+
+#[tokio::test]
+async fn a_read_that_ran_dry_waits_for_the_transport_instead_of_running_the_record_layer() {
+    let Harness {
+        mut server,
+        mut client,
+        reads,
+        readable,
+        ..
+    } = connected(true).await;
+    let mut buf = [0; 64];
+    let mut poll_server = |server: &mut SslStream<Recorder>| {
+        let mut read_buf = ReadBuf::new(&mut buf);
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        Pin::new(server)
+            .poll_read(&mut cx, &mut read_buf)
+            .is_pending()
+    };
+
+    readable.store(false, Ordering::Relaxed);
+    assert!(poll_server(&mut server));
+    let after_first = reads.load(Ordering::Relaxed);
+    assert!(
+        after_first > 0,
+        "the first read finds out the transport is dry"
+    );
+    for _ in 0..3 {
+        assert!(poll_server(&mut server));
+    }
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        after_first,
+        "dry reads are skipped"
+    );
+
+    client.write_all(b"ping").await.unwrap();
+    client.flush().await.unwrap();
+    readable.store(true, Ordering::Relaxed);
+    let mut received = [0; 4];
+    server.read_exact(&mut received).await.unwrap();
+    assert_eq!(&received, b"ping");
 }

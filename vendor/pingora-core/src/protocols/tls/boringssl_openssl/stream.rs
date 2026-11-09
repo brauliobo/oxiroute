@@ -53,7 +53,13 @@ pub struct SslStream<T> {
     pending: Vec<u8>,
     sent: usize,
     coalesce: bool,
+    /// Asks the transport whether a read could make progress, without reading.
+    read_probe: Option<ReadProbe<T>>,
+    /// The last `SSL_read` ran out of ciphertext and the transport had nothing more either.
+    read_blocked: bool,
 }
+
+type ReadProbe<T> = fn(&mut T, &mut Context<'_>) -> Poll<io::Result<()>>;
 
 impl<T> SslStream<T>
 where
@@ -74,6 +80,8 @@ where
             pending: Vec::new(),
             sent: 0,
             coalesce: false,
+            read_probe: None,
+            read_blocked: false,
         })
     }
 
@@ -82,6 +90,12 @@ where
     /// which accepted streams already need for their socket write buffer.
     pub(super) fn coalesce_writes(&mut self) {
         self.coalesce = true;
+    }
+
+    /// Skip `SSL_read` while the transport still has nothing to read after a read that ran dry: the
+    /// call could only run the record layer again to report the same "want read".
+    pub(super) fn probe_reads(&mut self, probe: ReadProbe<T>) {
+        self.read_probe = Some(probe);
     }
 
     /// Connect to the remote TLS server as a client
@@ -168,8 +182,20 @@ where
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        let this = &mut *self;
+        if this.read_blocked {
+            let probe = this.read_probe.expect("a blocked read has a probe");
+            if probe(this.ssl.get_mut(), cx).is_pending() {
+                return Poll::Pending;
+            }
+            this.read_blocked = false;
+        }
         Self::clear_error();
-        Pin::new(&mut self.ssl).poll_read(cx, buf)
+        let result = Pin::new(&mut this.ssl).poll_read(cx, buf);
+        if let (Poll::Pending, Some(probe)) = (&result, this.read_probe) {
+            this.read_blocked = probe(this.ssl.get_mut(), cx).is_pending();
+        }
+        result
     }
 }
 
