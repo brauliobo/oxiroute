@@ -390,7 +390,11 @@ impl BodyReader {
             let body_buf = self.body_buf.take().expect("must have read body buf");
             return chunk_pool::freeze(body_buf, body_ref.0, body_ref.1);
         }
-        Bytes::copy_from_slice(self.get_body(body_ref))
+        let bytes = Bytes::copy_from_slice(self.get_body(body_ref));
+        if self.body_done() && self.body_buf_overread.is_none() {
+            self.release_body_buf();
+        }
+        bytes
     }
 
     pub async fn do_read_body<S>(&mut self, stream: &mut S) -> Result<Option<BufRef>>
@@ -1268,18 +1272,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn small_reads_are_copied_and_keep_the_buffer() {
+    async fn small_reads_are_copied_and_the_buffer_goes_back_when_the_body_ends() {
         init_log();
-        let mut mock_io = Builder::new().read(b"abc").build();
+        let mut mock_io = Builder::new().read(b"abc").read(b"def").build();
         let mut body_reader = BodyReader::new(true);
-        body_reader.init_content_length(3, b"");
-        let body = body_reader
+        body_reader.init_content_length(6, b"");
+        let first = body_reader
             .read_body_bytes(&mut mock_io)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(&body[..], b"abc");
+        assert_eq!(&first[..], b"abc");
         assert!(body_reader.body_buf.is_some());
+        let second = body_reader
+            .read_body_bytes(&mut mock_io)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&second[..], b"def");
+        assert!(body_reader.body_buf.is_none());
     }
 
     #[tokio::test]
