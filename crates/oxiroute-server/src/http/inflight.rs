@@ -7,6 +7,7 @@
 use std::{
     collections::BTreeMap,
     collections::HashMap,
+    hash::{BuildHasherDefault, Hasher},
     net::IpAddr,
     sync::{
         Arc, Mutex, OnceLock,
@@ -119,14 +120,18 @@ pub(crate) struct InflightArrival {
     pub(crate) access_log: Option<Arc<AccessLog>>,
 }
 
+/// `text` cut at `MAX_PATH_BYTES` on a character boundary, copied once.
+pub(crate) fn bounded_text(text: &str) -> String {
+    let end = (0..=MAX_PATH_BYTES.min(text.len()))
+        .rev()
+        .find(|index| text.is_char_boundary(*index))
+        .unwrap_or(0);
+    text[..end].to_owned()
+}
+
 /// Path without the query, cut at `MAX_PATH_BYTES` on a character boundary.
 pub(crate) fn bounded_path(path: &str) -> String {
-    let path = path.split_once('?').map_or(path, |(path, _)| path);
-    let end = (0..=MAX_PATH_BYTES.min(path.len()))
-        .rev()
-        .find(|index| path.is_char_boundary(*index))
-        .unwrap_or(0);
-    path[..end].to_owned()
+    bounded_text(path.split_once('?').map_or(path, |(path, _)| path))
 }
 
 fn elapsed_ms(since: Instant) -> u64 {
@@ -324,10 +329,32 @@ pub(crate) struct InflightTotals {
     pub(crate) stuck: BTreeMap<(String, &'static str), u64>,
 }
 
+/// Spreads the sequential request numbers; they are not attacker chosen, so a keyed hash would only cost.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.write_u64(u64::from(*byte));
+        }
+    }
+
+    fn write_u64(&mut self, number: u64) {
+        self.0 = (self.0 ^ number).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+type Entries = HashMap<u64, Arc<InflightEntry>, BuildHasherDefault<KeyHasher>>;
+
 /// The requests one worker thread registered, and how many it has numbered.
 #[derive(Default)]
 struct Shard {
-    entries: Mutex<HashMap<u64, Arc<InflightEntry>>>,
+    entries: Mutex<Entries>,
     registered: AtomicU64,
 }
 
@@ -381,7 +408,7 @@ impl InflightRegistry {
         }
     }
 
-    fn lock(&self, index: usize) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<InflightEntry>>> {
+    fn lock(&self, index: usize) -> std::sync::MutexGuard<'_, Entries> {
         self.shards
             .get(index)
             .entries
@@ -542,7 +569,10 @@ impl InflightGuard {
     }
 
     pub(crate) fn set_pool(&self, pool: &str) {
-        self.entry.place().pool = Some(pool.to_owned());
+        let mut place = self.entry.place();
+        if place.pool.as_deref() != Some(pool) {
+            place.pool = Some(pool.to_owned());
+        }
     }
 
     pub(crate) fn set_server(&self, server: &str) {
