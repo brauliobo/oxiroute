@@ -1,2 +1,4 @@
 crates/oxiroute-import/tests/fixtures/live/** -whitespace
 vendor/rml_rtmp/** -whitespace
+crates/oxiroute-server/assets/stats/** linguist-generated -text
+crates/oxiroute-server/src/observability/stats_page/assets/table.rs linguist-generated
