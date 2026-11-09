@@ -308,6 +308,7 @@ impl PoolEndpoint {
                 || self.passive_ejection_until_unix_ms.load(Ordering::Acquire) > now_unix_ms)
     }
 
+    #[inline]
     pub(super) fn has_capacity(&self) -> bool {
         self.max_connections()
             .is_none_or(|limit| self.active_work.load(Ordering::Acquire) < limit)
@@ -315,6 +316,7 @@ impl PoolEndpoint {
 
     /// The load when the server can take work now, from one read of its counters; with
     /// `reuse_idle` an idle pooled connection also qualifies, since it needs no new permit.
+    #[inline]
     pub(super) fn load_if_open(&self, reuse_idle: bool) -> Option<u64> {
         let limit = self.configured_limit();
         let active = self.active_work.load(Ordering::Acquire);
@@ -331,6 +333,7 @@ impl PoolEndpoint {
         self.configured_weight.store(weight, Ordering::Release);
     }
 
+    #[inline]
     pub(super) fn weight(&self) -> u16 {
         match self.weight_override.load(Ordering::Acquire) {
             0 => self.configured_weight(),
@@ -346,11 +349,13 @@ impl PoolEndpoint {
         )
     }
 
+    #[inline]
     fn load_of(&self, active: u64, limit: Option<u64>) -> u64 {
         let divisor = limit.unwrap_or_else(|| u64::from(self.weight())).max(1);
         active.saturating_mul(LOAD_SCALE) / divisor
     }
 
+    #[inline]
     pub(super) fn has_idle_connection(&self) -> bool {
         self.idle_permits.load(Ordering::Acquire) > 0
     }
@@ -372,6 +377,7 @@ impl PoolEndpoint {
     }
 
     /// The operator's limit: the runtime override, else the configured one.
+    #[inline]
     fn configured_limit(&self) -> Option<u64> {
         match self.max_connections_override.load(Ordering::Acquire) {
             0 => self.configured_max_connections(),
@@ -384,6 +390,7 @@ impl PoolEndpoint {
         self.admitting_limit(self.configured_limit())
     }
 
+    #[inline]
     fn admitting_limit(&self, limit: Option<u64>) -> Option<u64> {
         match self.breaker_policy {
             Some(policy) if self.breaker.is_half_open() => {

@@ -1,3 +1,4 @@
+#![allow(clippy::inline_always)] // the per-server checks run once per server on every pass
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -42,11 +43,13 @@ impl<'a> Eligibility<'a> {
         Self { tried, ..self }
     }
 
+    #[inline(always)]
     fn names(&self, server: &PoolEndpoint, index: usize) -> bool {
         (self.excluded.is_empty() || !self.excluded.contains(&server.name))
             && !self.tried.contains(&index)
     }
 
+    #[inline(always)]
     fn has_capacity(&self, server: &PoolEndpoint) -> bool {
         match self.capacity {
             Capacity::Permit => server.has_capacity(),
@@ -55,18 +58,21 @@ impl<'a> Eligibility<'a> {
         }
     }
 
+    #[inline(always)]
     pub(super) fn admits(&self, members: &Membership, index: usize) -> bool {
         let server = &members.endpoints[index];
         self.names(server, index) && self.has_capacity(server)
     }
 
     /// Whether the server would be eligible if it had the capacity.
+    #[inline(always)]
     pub(super) fn saturates(&self, members: &Membership, index: usize) -> bool {
         let server = &members.endpoints[index];
         self.names(server, index) && !self.has_capacity(server)
     }
 
     /// The load of an eligible server, else `None`; reads the server's counters once.
+    #[inline(always)]
     pub(super) fn load(&self, members: &Membership, index: usize) -> Option<u64> {
         let server = &members.endpoints[index];
         if !self.names(server, index) {
