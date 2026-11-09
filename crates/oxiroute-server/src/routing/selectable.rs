@@ -10,6 +10,7 @@ use super::{rendezvous, *};
 /// while a writer is mid-update is tagged with the older epoch, so the writer's bump retires it.
 #[derive(Debug)]
 pub(super) struct SelectableView {
+    id: u64,
     epoch: u64,
     valid_until_unix_ms: u64,
     /// The selectable servers by position in the membership, ascending.
@@ -29,6 +30,7 @@ impl SelectableView {
     /// A view no epoch matches, so the first reader of a membership builds the real one.
     pub(super) fn unbuilt() -> Self {
         Self {
+            id: Self::next_id(),
             epoch: u64::MAX,
             valid_until_unix_ms: 0,
             entries: Box::default(),
@@ -51,10 +53,28 @@ impl SelectableView {
             })
             .collect();
         Self {
+            id: Self::next_id(),
             epoch,
             valid_until_unix_ms,
             entries,
         }
+    }
+
+    fn next_id() -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Names this view among all the views ever built, so state kept per view can tell it changed.
+    pub(super) fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Whether the member at `index` is selectable in this view.
+    pub(super) fn contains(&self, index: usize) -> bool {
+        self.entries
+            .binary_search_by_key(&index, |entry| entry.index as usize)
+            .is_ok()
     }
 
     pub(super) fn is_current(&self, epoch: u64, now_unix_ms: u64) -> bool {

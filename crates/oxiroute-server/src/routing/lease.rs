@@ -19,8 +19,11 @@ pub struct EndpointPool {
 #[derive(Debug)]
 pub(super) struct SelectionState {
     pub(super) next: usize,
-    /// Smooth weighted round robin: each server's accumulated credit.
+    /// Smooth weighted round robin: each server's accumulated credit, unless `weights` holds it.
     pub(super) credit: Vec<i64>,
+    pub(super) weights: WeightIndex,
+    /// Least connections: the loads of the selectable servers.
+    pub(super) loads: LoadIndex,
     random: u64,
 }
 
@@ -29,12 +32,15 @@ impl SelectionState {
         Self {
             next: 0,
             credit: vec![0; servers],
+            weights: WeightIndex::default(),
+            loads: LoadIndex::default(),
             random: ejection_entropy(0) | 1,
         }
     }
 
     /// A server joined at `at`; the cursor and the credits stay with the servers they belonged to.
     pub(super) fn insert_at(&mut self, at: usize) {
+        self.weights.flush(&mut self.credit);
         let before = self.credit.len();
         self.credit.insert(at, 0);
         if self.next < before && at <= self.next {
@@ -45,6 +51,7 @@ impl SelectionState {
 
     /// The server at `at` left, `remaining` servers are left.
     pub(super) fn remove_at(&mut self, at: usize, remaining: usize) {
+        self.weights.flush(&mut self.credit);
         let before = self.credit.len();
         self.credit.remove(at);
         if self.next < before && at < self.next {
@@ -55,6 +62,7 @@ impl SelectionState {
 
     /// The server at `from` moved to `to`, counted once it has left its place.
     pub(super) fn move_to(&mut self, from: usize, to: usize) {
+        self.weights.flush(&mut self.credit);
         let credit = self.credit.remove(from);
         self.credit.insert(to, credit);
         if self.next == from {
@@ -117,6 +125,8 @@ pub(super) struct EndpointLeaseInner {
     wait: LeaseWait,
     /// Set while this lease's pooled connection waits idle for a request to reuse it.
     idle: AtomicBool,
+    /// Set while this lease holds a claim on an idle pooled connection of its server.
+    reserved: AtomicBool,
 }
 
 /// A lease that has to wait for capacity counts as queued from its first wait until it is acquired or dropped.
@@ -144,6 +154,7 @@ impl EndpointLease {
                 server,
                 wait: LeaseWait::default(),
                 idle: AtomicBool::new(false),
+                reserved: AtomicBool::new(false),
             }),
         }
     }
@@ -165,8 +176,15 @@ impl EndpointLease {
                 server,
                 wait: LeaseWait::default(),
                 idle: AtomicBool::new(false),
+                reserved: AtomicBool::new(false),
             }),
         }
+    }
+
+    /// Marks the lease as holding the claim [`PoolEndpoint::reserve_idle`] just took.
+    pub(super) fn reserved(self) -> Self {
+        self.inner.reserved.store(true, Ordering::Release);
+        self
     }
 
     #[must_use]
@@ -202,6 +220,7 @@ impl EndpointLease {
     /// The request has its connection: a reused one never acquires this lease, so the wait ends here.
     pub(crate) fn end_queue_wait(&self) {
         self.inner.leave_queue(false);
+        self.inner.release_reservation();
     }
 
     /// Time this lease spent waiting for capacity so far.
@@ -292,13 +311,19 @@ impl EndpointLeaseInner {
             .record_queue_wait(waited);
     }
 
+    /// Gives back the claim on an idle connection, if the lease holds one; true when it did.
+    fn release_reservation(&self) -> bool {
+        let held =
+            self.reserved.load(Ordering::Acquire) && self.reserved.swap(false, Ordering::AcqRel);
+        if held {
+            self.server.release_idle(&self.queue);
+        }
+        held
+    }
+
     fn set_idle(&self, idle: bool) {
         if self.idle.swap(idle, Ordering::AcqRel) != idle {
-            if idle {
-                self.server.idle_permits.fetch_add(1, Ordering::AcqRel);
-            } else {
-                self.server.idle_permits.fetch_sub(1, Ordering::AcqRel);
-            }
+            self.server.set_connection_idle(&self.queue, idle);
         }
     }
 }
@@ -307,6 +332,9 @@ impl Drop for EndpointLeaseInner {
     fn drop(&mut self) {
         self.set_idle(false);
         self.leave_queue(true);
+        if self.release_reservation() {
+            self.queue.notify_capacity_waiters();
+        }
         if !self.acquired.load(Ordering::Acquire) {
             return;
         }
@@ -322,13 +350,16 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
         }
         if self
             .server
-            .try_acquire_capacity(self.admission, now_unix_ms())
+            .try_acquire_capacity(&self.queue, self.admission, now_unix_ms())
             .is_none()
         {
             return Ok(false);
         }
         self.acquired.store(true, Ordering::Release);
         self.leave_queue(false);
+        if self.release_reservation() {
+            self.queue.notify_capacity_waiters();
+        }
         Ok(true)
     }
 
