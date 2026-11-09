@@ -15,7 +15,7 @@
     field-path="http_services[].routes[].action.index_files"
     hint="Safe relative filenames only; at most eight."
     :max-items="8"
-    @update:model-value="$emit('changed')"
+    @update:model-value="emit('changed')"
   )
   .field-grid
     label.enable-row(data-field="http_services[].routes[].action.internal_index_redirects")
@@ -34,7 +34,7 @@ import StringListField from '../StringListField.vue'
 import type { HttpStaticFilesActionConfig } from '../config'
 
 const props = defineProps<{ action: HttpStaticFilesActionConfig }>()
-defineEmits<{ changed: [] }>()
+const emit = defineEmits<{ changed: [] }>()
 
 function setFallback(event: Event): void {
   props.action.spa_fallback = (event.target as HTMLInputElement).value || null

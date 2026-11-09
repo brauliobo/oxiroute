@@ -3,7 +3,7 @@ header.form-heading
   div
     p.eyebrow HTTP dispatch
     h3 {{ service.name || 'Unnamed HTTP service' }}
-  button.danger-button(type="button" @click="$emit('remove')") Remove service
+  button.danger-button(type="button" @click="emit('remove')") Remove service
 .field-grid
   label.field(data-field="http_services[].name")
     span Stable name
@@ -33,7 +33,7 @@ fieldset.route-list(data-field="http_services[].routes")
     :index="routeIndex"
     :pool-names="poolNames"
     :cache-store-names="cacheStoreNames"
-    @changed="$emit('changed')"
+    @changed="emit('changed')"
     @remove="removeRoute(routeIndex)"
   )
 </template>

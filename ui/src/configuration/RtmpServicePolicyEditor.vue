@@ -8,7 +8,7 @@
     input(type="number" min="1" max="1048576" step="1" v-model.number="service.outbound_chunk_size")
   label.field(data-field="rtmp_services[].access_log.type")
     span Session access log
-    select(:value="service.access_log?.type ?? 'default'" @change="$emit('set-access-log', $event)")
+    select(:value="service.access_log?.type ?? 'default'" @change="emit('set-access-log', $event)")
       option(value="default") Runtime default
       option(value="disabled") Disabled
 fieldset.object-block(data-field="rtmp_services[].auto_push")
@@ -76,5 +76,5 @@ import type { RtmpServiceConfig } from '../config'
 import RtmpCallbackEditor from './RtmpCallbackEditor.vue'
 
 defineProps<{ service: RtmpServiceConfig }>()
-defineEmits<{ 'set-access-log': [event: Event] }>()
+const emit = defineEmits<{ 'set-access-log': [event: Event] }>()
 </script>

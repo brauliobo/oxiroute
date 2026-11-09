@@ -3,7 +3,7 @@ header.form-heading
   div
     p.eyebrow Bounded cache storage
     h3 {{ store.name || 'Unnamed cache store' }}
-  button.danger-button(type="button" @click="$emit('remove')") Remove cache store
+  button.danger-button(type="button" @click="emit('remove')") Remove cache store
 .field-grid
   label.field(data-field="cache_stores[].name")
     span Stable name

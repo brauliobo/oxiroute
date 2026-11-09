@@ -3,7 +3,7 @@ header.form-heading
   div
     p.eyebrow Opaque relay
     h3 {{ service.name || 'Unnamed L4 service' }}
-  button.danger-button(type="button" @click="$emit('remove')") Remove service
+  button.danger-button(type="button" @click="emit('remove')") Remove service
 .field-grid
   label.field(data-field="l4_services[].name")
     span Stable name
@@ -67,7 +67,7 @@ const props = defineProps<{
   poolNames: string[]
 }>()
 
-defineEmits<{ remove: [] }>()
+const emit = defineEmits<{ remove: [] }>()
 
 function setLifetimeTimeout(event: Event): void {
   const value = (event.target as HTMLInputElement).value
