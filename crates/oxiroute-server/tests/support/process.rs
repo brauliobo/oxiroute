@@ -92,6 +92,7 @@ impl ServerProcess {
         }
     }
 
+    #[allow(dead_code)]
     pub fn pid(&self) -> u32 {
         self.child.id()
     }
