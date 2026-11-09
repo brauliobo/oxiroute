@@ -23,8 +23,11 @@ use crate::{
     TcpRelayResult, encode_header,
 };
 
-/// Memory used for each direction of a relayed connection.
+/// Memory used for each direction of a relayed connection until it moves bulk data.
 pub const RELAY_BUFFER_SIZE: usize = 16 * 1024;
+/// The most memory a direction grows to once a read fills its buffer: a transfer costs about the same instructions
+/// whatever its size, so a connection that moves a lot of data takes fewer, larger ones.
+const RELAY_BULK_BUFFER_SIZE: usize = 64 * 1024;
 
 /// Timeout policy for one TCP relay connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -433,8 +436,8 @@ where
 {
     let (mut downstream_reader, mut downstream_writer) = split(downstream);
     let (mut upstream_reader, mut upstream_writer) = split(upstream);
-    let mut client_buffer = Box::new([0; RELAY_BUFFER_SIZE]);
-    let mut upstream_buffer = Box::new([0; RELAY_BUFFER_SIZE]);
+    let mut client_buffer = vec![0; RELAY_BUFFER_SIZE];
+    let mut upstream_buffer = vec![0; RELAY_BUFFER_SIZE];
     let started_at = Instant::now();
     let accounting = RelayAccounting::new(connection, started_at);
 
@@ -582,7 +585,7 @@ async fn copy_direction<R, W>(
     direction: RelayDirection,
     reader: &mut R,
     writer: &mut W,
-    buffer: &mut [u8; RELAY_BUFFER_SIZE],
+    buffer: &mut Vec<u8>,
     accounting: &RelayAccounting<'_>,
 ) -> Result<(), DirectionFailure>
 where
@@ -591,7 +594,7 @@ where
 {
     loop {
         let read = reader
-            .read(buffer.as_mut())
+            .read(buffer)
             .await
             .map_err(|source| DirectionFailure::io(direction, RelayOperation::Read, source))?;
         if read == 0 {
@@ -600,6 +603,7 @@ where
             });
         }
         accounting.read(direction, read)?;
+        let full = read == buffer.len();
         let mut written = 0;
         while written < read {
             let bytes = writer
@@ -623,6 +627,9 @@ where
                 .map_err(|source| DirectionFailure::io(direction, RelayOperation::Write, source))?;
             written += bytes;
             accounting.written(direction, bytes)?;
+        }
+        if full && buffer.len() < RELAY_BULK_BUFFER_SIZE {
+            buffer.resize(RELAY_BULK_BUFFER_SIZE, 0);
         }
     }
 }
