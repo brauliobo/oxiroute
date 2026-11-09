@@ -222,6 +222,59 @@ async fn stops_an_idle_connection_at_the_idle_deadline() {
 }
 
 #[tokio::test]
+async fn traffic_keeps_the_idle_deadline_away_until_it_stops() {
+    timeout(TEST_TIMEOUT, async {
+        let (client, downstream) = duplex(64);
+        let (relay_upstream, mut upstream_peer) = duplex(64);
+        let (_runtime_metrics, connection) = connection_metrics();
+        let idle_timeout = Duration::from_millis(300);
+        let (shutdown_tx, shutdown) = watch::channel(false);
+        let relay = tokio::spawn(async move {
+            relay_streams(
+                downstream,
+                relay_upstream,
+                &connection,
+                shutdown,
+                policy(Some(idle_timeout), None),
+            )
+            .await
+        });
+
+        // Five times the idle period in steps well inside it: a transfer in each step moves the deadline.
+        let mut client = client;
+        let started = tokio::time::Instant::now();
+        let mut sent = 0;
+        let mut last_ping = started;
+        while started.elapsed() < idle_timeout * 5 {
+            client.write_all(b"ping").await.expect("client write");
+            last_ping = tokio::time::Instant::now();
+            let mut echoed = [0; 4];
+            upstream_peer
+                .read_exact(&mut echoed)
+                .await
+                .expect("upstream read");
+            sent += echoed.len() as u64;
+            sleep(Duration::from_millis(60)).await;
+            assert!(!relay.is_finished(), "relay stopped while traffic flowed");
+        }
+        let failure = timeout(Duration::from_secs(5), relay)
+            .await
+            .expect("idle deadline after the traffic stopped")
+            .expect("relay task")
+            .expect_err("a silent relay must time out");
+        assert!(matches!(
+            failure.kind,
+            RelayFailureKind::IdleTimeout(duration) if duration == idle_timeout
+        ));
+        assert_eq!(failure.stats.bytes_received, sent);
+        assert!(last_ping.elapsed() >= idle_timeout);
+        drop(shutdown_tx);
+    })
+    .await
+    .expect("idle-traffic test timed out");
+}
+
+#[tokio::test]
 async fn lifetime_timeout_stops_an_active_connection() {
     timeout(TEST_TIMEOUT, async {
         let upstream_listener = TcpListener::bind("127.0.0.1:0")
