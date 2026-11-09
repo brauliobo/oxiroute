@@ -437,7 +437,7 @@ fn micros(started: Instant) -> u32 {
 }
 
 /// A request that failed on a connection the client had used before, before any byte of an answer arrived, or that a
-/// server refused with a graceful GOAWAY: the server closed the connection while the request was on its way (idle
+/// server refused with a graceful GOAWAY (or left unanswered by the close that follows it): the server closed the connection while the request was on its way (idle
 /// close at a reload, keep-alive limit), the request was not processed, and a client sends it again on a new
 /// connection. Counted as `reconnects`, never as a failure.
 fn stale_connection(error: &io::Error, text: &str, scratch: &[u8]) -> bool {
@@ -448,7 +448,9 @@ fn stale_connection(error: &io::Error, text: &str, scratch: &[u8]) -> bool {
             | io::ErrorKind::ConnectionAborted
             | io::ErrorKind::UnexpectedEof
     );
-    (closed && scratch.is_empty()) || (text.contains("GoAway(") && text.contains("NO_ERROR"))
+    // HTTP/2: refused by a graceful GOAWAY, or still unanswered when the connection closed after it.
+    let goaway = (text.contains("GoAway(") && text.contains("NO_ERROR")) || text.contains("Canceled, \"connection closed\"");
+    (closed && scratch.is_empty()) || goaway
 }
 
 async fn worker(
