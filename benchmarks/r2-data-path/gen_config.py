@@ -6,7 +6,7 @@ Usage: gen_config.py OUT --proxy-port P --upstream-port U [--servers N] [--echo-
 
 Every feature is an independent A/B switch on top of the minimal reverse-proxy configuration:
   access_log timeouts retry queue capacity passive breaker outlier gzip cache reqbuf respbuf
-  forward dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host lc wrr
+  forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host lc wrr
 """
 
 import argparse
@@ -55,6 +55,19 @@ def build(args):
     }
     if on("nginx_host"):
         proxy_policy["upstream_host"] = {"type": "endpoint"}
+    if on("forwarded"):
+        # What an nginx `proxy_set_header` block does: forwarded headers, a host rewrite and a response header.
+        proxy_policy["upstream_host"] = {"type": "endpoint"}
+        proxy_policy["request_headers"] = [
+            {"operation": "set", "name": "x-forwarded-for", "value": {"type": "appended_x_forwarded_for", "max_bytes": 256}},
+            {"operation": "set", "name": "x-forwarded-proto", "value": {"type": "downstream_scheme"}},
+            {"operation": "set", "name": "x-forwarded-host", "value": {"type": "incoming_authority"}},
+            {"operation": "set", "name": "x-real-ip", "value": {"type": "client_ip"}},
+        ]
+        proxy_policy["response_headers"] = [
+            {"operation": "set", "name": "x-served-by", "value": "bench", "always": True},
+            {"operation": "remove", "name": "x-powered-by"},
+        ]
     if on("timeouts"):
         proxy_policy["timeouts"] = {"connect_ms": 2000, "header_ms": 10000, "idle_ms": 10000, "total_ms": 30000}
     if on("retry_buffered"):

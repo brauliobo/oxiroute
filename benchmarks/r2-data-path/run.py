@@ -88,6 +88,7 @@ def build_lanes():
     add(lane("f_fixed", ["--path", "/fixed"] + base, features=["fixed"]))
     for feature in FEATURES_6_0 + ["nginx_host"]:
         add(lane(f"f_{feature}", work, features=[feature]))
+    add(lane("f_forwarded", work, features=["forwarded"]))
     add(lane("f_all_6_0", work, features=FEATURES_6_0))
     add(lane("gzip_html64k", ["--path", "/html64k", "--extra-header", "accept-encoding: gzip"] + base,
              features=["gzip"], requests=3000, warmup=100))
