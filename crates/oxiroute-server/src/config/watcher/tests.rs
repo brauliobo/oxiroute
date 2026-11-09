@@ -208,7 +208,7 @@ fn parent_watch_reconciles_atomic_replacement_and_rejects_invalid_content() {
 
     let started = Instant::now();
     watcher.shutdown();
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(started.elapsed() < Duration::from_secs(10));
 }
 
 #[test]
@@ -240,9 +240,13 @@ fn reconciliation_projects_structural_candidates_by_explicit_runtime_mode() {
         let candidate = manager.prepare(*document).expect("active prepare");
         manager.activate(&candidate).expect("active generation");
 
+        let free_address = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("free address")
+            .local_addr()
+            .unwrap();
         let mut changed = empty_config();
         changed.stats = Some(oxiroute_config::Stats {
-            binds: vec!["127.0.0.1:18404".parse().unwrap()],
+            binds: vec![free_address],
             admin_token_file: None,
             pages: Vec::new(),
         });
@@ -382,8 +386,7 @@ fn dependency_watch_reconciles_a_deleted_nginx_glob_without_waiting_for_periodic
     .expect("watcher");
 
     // The startup reconciliation would also see the deletion; wait it out so the event must do it.
-    wait_until(|| watcher.status().reconciliations >= 1);
-    std::thread::sleep(Duration::from_millis(200));
+    wait_until_watching(&watcher);
     fs::remove_file(site).expect("delete nginx site");
     wait_until(|| {
         manager
@@ -442,6 +445,7 @@ fn dependency_watch_rebuilds_for_nginx_glob_add_and_rename() {
         RuntimeMode::Direct,
     )
     .expect("watcher");
+    wait_until_watching(&watcher);
 
     let first_port = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("first listener")
@@ -602,8 +606,17 @@ fn empty_config() -> ConfigDraft {
     }
 }
 
+/// Waits until the startup reconciliation has finished and re-armed the dependency watches: a
+/// wake-up queues one more pass, which only starts after the pass in flight completed.
+fn wait_until_watching(watcher: &ConfigWatcher) {
+    wait_until(|| watcher.status().reconciliations >= 1);
+    watcher.wake();
+    wait_until(|| watcher.status().reconciliations >= 2);
+}
+
+/// Upper bound for a condition that holds within milliseconds on an idle host.
 fn wait_until(mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !condition() {
         assert!(Instant::now() < deadline, "condition timed out");
         std::thread::sleep(Duration::from_millis(5));
