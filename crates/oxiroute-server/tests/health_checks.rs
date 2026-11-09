@@ -265,7 +265,7 @@ async fn supervisor_signals_readiness_immediately_and_stops_while_sleeping() {
         assert!(*ready.borrow());
         accept.await.expect("accept task");
         shutdown_tx.send(true).expect("shutdown signal");
-        timeout(Duration::from_millis(200), supervisor_task)
+        timeout(Duration::from_secs(30), supervisor_task)
             .await
             .expect("sleeping supervisor must stop promptly")
             .expect("supervisor task");

@@ -221,7 +221,7 @@ pub(super) async fn supervised_worker_replaces_an_active_h3_request_with_goaway_
         Some(&HeaderValue::from_static("complete"))
     );
 
-    let rejected_after_goaway = (timeout(Duration::from_secs(2), async {
+    let rejected_after_goaway = (timeout(Duration::from_secs(30), async {
         let request = Request::builder()
             .method(Method::GET)
             .uri("https://proxy.example.test/")

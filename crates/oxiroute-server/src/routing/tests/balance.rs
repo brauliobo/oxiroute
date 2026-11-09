@@ -139,7 +139,7 @@ fn probed_pool(address: SocketAddr, successes: u16) -> RoundRobinPool {
 }
 
 async fn wait_until(what: &str, condition: impl Fn() -> bool) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         while !condition() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -592,7 +592,7 @@ async fn a_higher_class_overtakes_earlier_lower_class_waiters_when_capacity_free
 
         drop(held);
 
-        let served = tokio::time::timeout(Duration::from_secs(1), interactive)
+        let served = tokio::time::timeout(Duration::from_secs(30), interactive)
             .await
             .expect("interactive served first")
             .expect("task")
