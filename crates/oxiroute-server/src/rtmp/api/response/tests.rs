@@ -1,4 +1,4 @@
-use super::{ApiResponse, to_http_response};
+use super::{ApiResponse, matches_validator, to_http_response};
 
 #[test]
 fn error_responses_preserve_status_body_and_headers() {
@@ -96,4 +96,25 @@ fn correlation_id_is_written_as_a_response_header() {
     );
 
     assert_eq!(response.headers()["x-correlation-id"], "request-42");
+}
+
+#[test]
+fn if_none_match_uses_weak_comparison_over_a_list() {
+    let etag = "\"a-b\"";
+    assert!(matches_validator("\"a-b\"", etag));
+    assert!(matches_validator("W/\"a-b\"", etag));
+    assert!(matches_validator("\"x\", \"a-b\"", etag));
+    assert!(matches_validator("*", etag));
+    assert!(!matches_validator("\"a-c\"", etag));
+    assert!(!matches_validator("", etag));
+}
+
+#[test]
+fn a_cache_policy_is_sent_with_the_response() {
+    let response = to_http_response(
+        ApiResponse::bytes(200, b"x".to_vec(), "text/plain").with_cache_control("max-age=60"),
+    );
+    assert_eq!(response.headers()["cache-control"], "max-age=60");
+    let plain = to_http_response(ApiResponse::bytes(200, b"x".to_vec(), "text/plain"));
+    assert!(plain.headers().get("cache-control").is_none());
 }

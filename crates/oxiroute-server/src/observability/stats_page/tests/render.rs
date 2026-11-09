@@ -115,7 +115,7 @@ fn the_no_script_table_escapes_hostile_names() {
     let pool = &mut snapshot.pools[0];
     pool.name = "<script>alert(1)</script>".into();
     pool.servers[0].name = "\"><img src=x onerror=alert(1)>'".into();
-    let html = text(html::render(&snapshot, 1_000, Some(("/haproxy", "rev\"1"))));
+    let html = text(html::render(&snapshot, 1_000, "/haproxy", Some("rev\"1")));
     assert!(
         !html.contains("<script>") && !html.contains("<img"),
         "{html}"
@@ -134,5 +134,17 @@ fn json_keeps_hostile_names_inside_strings() {
     assert_eq!(
         back["pools"][0]["name"],
         "</script><script>alert(1)</script>\u{2028}"
+    );
+}
+
+#[test]
+fn names_that_look_like_shell_tokens_stay_names() {
+    let mut snapshot = snapshot();
+    snapshot.pools[0].servers[0].name = "__stats_refresh_ms__".into();
+    snapshot.pools[0].name = "/__stats_prefix__".into();
+    let html = text(html::render(&snapshot, 1_000, "/haproxy", None));
+    assert!(
+        html.contains("<td>/__stats_prefix__</td><td>__stats_refresh_ms__</td>"),
+        "{html}"
     );
 }
