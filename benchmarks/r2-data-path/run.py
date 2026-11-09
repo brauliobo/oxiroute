@@ -107,6 +107,8 @@ def build_lanes():
     add(lane("ws_echo_16k", ["--proto", "ws", "--conns", "16", "--msg-bytes", "16384"], requests=10000))
     add(lane("ws_echo_1k", ["--proto", "ws", "--conns", "16", "--msg-bytes", "1024"]))
     add(lane("l4_echo_1k", ["--proto", "tcp", "--conns", "16", "--msg-bytes", "1024"], features=["l4"]))
+    add(lane("l4_echo_256k", ["--proto", "tcp", "--conns", "16", "--msg-bytes", "262144"], features=["l4"],
+             requests=3000, warmup=100))
     # TLS termination (OpenSSL via Pingora).
     tls = ["--proto", "h1tls", "--path", "/b1k", "--expect-len", "1024"]
     add(lane("tls_h1_keepalive", tls + base, features=["tls"]))
