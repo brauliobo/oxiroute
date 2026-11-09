@@ -62,6 +62,8 @@ pub struct AcceptGateState {
 
 struct AcceptGateInnerState {
     claims: usize,
+    /// Threads blocked in `AcceptGateClose::wait`; a wakeup costs a syscall, so nobody notifies without one.
+    waiters: usize,
     next_participant_id: u64,
     participants: HashMap<u64, u64>,
     published: AcceptGateState,
@@ -88,6 +90,7 @@ impl AcceptGate {
                 quiesced: Condvar::new(),
                 state: Mutex::new(AcceptGateInnerState {
                     claims: 0,
+                    waiters: 0,
                     next_participant_id: 0,
                     participants: HashMap::new(),
                     published,
@@ -206,6 +209,12 @@ impl AcceptGate {
         }
     }
 
+    fn notify_quiesced(&self, state: &AcceptGateInnerState) {
+        if state.waiters > 0 {
+            self.inner.quiesced.notify_all();
+        }
+    }
+
     #[must_use]
     pub fn close_and_wait(&self, timeout: Duration) -> bool {
         self.close().wait(timeout)
@@ -254,18 +263,16 @@ impl AcceptGateClose {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        loop {
-            if state.claims == 0
+        state.waiters += 1;
+        let quiesced = loop {
+            let quiesced = state.claims == 0
                 && state
                     .participants
                     .values()
-                    .all(|acknowledged| *acknowledged >= self.epoch)
-            {
-                return true;
-            }
+                    .all(|acknowledged| *acknowledged >= self.epoch);
             let now = Instant::now();
-            if now >= deadline {
-                return false;
+            if quiesced || now >= deadline {
+                break quiesced;
             }
             let (next, timeout) = self
                 .gate
@@ -275,13 +282,15 @@ impl AcceptGateClose {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state = next;
             if timeout.timed_out() {
-                return state.claims == 0
+                break state.claims == 0
                     && state
                         .participants
                         .values()
                         .all(|acknowledged| *acknowledged >= self.epoch);
             }
-        }
+        };
+        state.waiters -= 1;
+        quiesced
     }
 
     #[must_use]
@@ -361,7 +370,7 @@ impl AcceptGateParticipant {
             return;
         };
         *acknowledged = (*acknowledged).max(epoch);
-        self.gate.inner.quiesced.notify_all();
+        self.gate.notify_quiesced(&state);
     }
 }
 
@@ -374,7 +383,7 @@ impl Drop for AcceptGateParticipant {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.participants.remove(&self.id);
-        self.gate.inner.quiesced.notify_all();
+        self.gate.notify_quiesced(&state);
     }
 }
 
@@ -394,7 +403,7 @@ impl Drop for AcceptOwnership {
             .claims
             .checked_sub(1)
             .expect("accept ownership claim underflow");
-        self.gate.inner.quiesced.notify_all();
+        self.gate.notify_quiesced(&state);
     }
 }
 

@@ -4,7 +4,8 @@ use super::*;
 pub struct RuntimeGeneration {
     pub(super) accept_gate: AcceptGate,
     pub(super) config: Arc<ValidatedConfig>,
-    pub(super) drain: (Mutex<()>, Condvar),
+    /// The mutex counts the threads blocked in `drain`, so releasing a reference only notifies when one waits.
+    pub(super) drain: (Mutex<usize>, Condvar),
     pub(super) metrics: RuntimeMetrics,
     inventory: ListenerInventory,
     resources: GenerationResources,
@@ -29,7 +30,7 @@ impl RuntimeGeneration {
         Self {
             accept_gate: AcceptGate::closed(),
             config: prepared.config,
-            drain: (Mutex::new(()), Condvar::new()),
+            drain: (Mutex::new(0), Condvar::new()),
             metrics: prepared.metrics,
             inventory: prepared.inventory,
             resources: prepared.resources,
@@ -297,7 +298,7 @@ impl RuntimeGeneration {
         counter.fetch_add(1, Ordering::AcqRel);
         if !self.accept_gate.accepting() {
             counter.fetch_sub(1, Ordering::AcqRel);
-            self.drain.1.notify_all();
+            self.wake_drain();
             return None;
         }
         Some(GenerationReference {
@@ -423,28 +424,40 @@ impl RuntimeGeneration {
         }
         let timeout = timeout.saturating_sub(started.elapsed());
         let deadline = Instant::now() + timeout;
-        let mut lock = self
+        let mut waiters = self
             .drain
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        loop {
-            if self.drained() {
-                return true;
-            }
+        *waiters += 1;
+        let drained = loop {
+            let drained = self.drained();
             let now = Instant::now();
-            if now >= deadline {
-                return false;
+            if drained || now >= deadline {
+                break drained;
             }
             let (next, wait) = self
                 .drain
                 .1
-                .wait_timeout(lock, deadline.saturating_duration_since(now))
+                .wait_timeout(waiters, deadline.saturating_duration_since(now))
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            lock = next;
+            waiters = next;
             if wait.timed_out() {
-                return self.drained();
+                break self.drained();
             }
+        };
+        *waiters -= 1;
+        drained
+    }
+
+    pub(super) fn wake_drain(&self) {
+        let waiters = self
+            .drain
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *waiters > 0 {
+            self.drain.1.notify_all();
         }
     }
 }

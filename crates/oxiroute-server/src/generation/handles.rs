@@ -56,7 +56,7 @@ impl GenerationCandidate {
 impl Drop for GenerationReference {
     fn drop(&mut self) {
         self.generation.references[self.kind.index()].fetch_sub(1, Ordering::AcqRel);
-        self.generation.drain.1.notify_all();
+        self.generation.wake_drain();
     }
 }
 
