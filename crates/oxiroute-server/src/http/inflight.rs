@@ -78,20 +78,65 @@ impl Phase {
     }
 }
 
+/// Where the request is; the names are the ones the plans already hold, so recording them copies nothing.
 #[derive(Default)]
 struct Place {
-    route: Option<String>,
-    pool: Option<String>,
-    server: Option<String>,
+    route: Option<Arc<str>>,
+    pool: Option<Arc<str>>,
+    server: Option<Arc<str>>,
+}
+
+/// The request id, host and path of an arrival in one allocation. Each is bounded by `MAX_PATH_BYTES`.
+struct Texts {
+    all: Box<str>,
+    id_end: u16,
+    host_end: Option<u16>,
+}
+
+impl Texts {
+    fn new(request_id: &str, host: Option<&str>, path: &str) -> Self {
+        let (id, host, path) = (
+            bounded_text(request_id),
+            host.map(bounded_text),
+            bounded_path(path),
+        );
+        let mut all = String::with_capacity(id.len() + host.map_or(0, str::len) + path.len());
+        all.push_str(id);
+        let id_end = all.len();
+        if let Some(host) = host {
+            all.push_str(host);
+        }
+        let host_end = host.map(|_| all.len());
+        all.push_str(path);
+        let bound =
+            |end: usize| u16::try_from(end).expect("each text is bounded by MAX_PATH_BYTES");
+        Self {
+            all: all.into_boxed_str(),
+            id_end: bound(id_end),
+            host_end: host_end.map(bound),
+        }
+    }
+
+    fn request_id(&self) -> &str {
+        &self.all[..usize::from(self.id_end)]
+    }
+
+    fn host(&self) -> Option<&str> {
+        self.host_end
+            .map(|end| &self.all[usize::from(self.id_end)..usize::from(end)])
+    }
+
+    fn path(&self) -> &str {
+        let start = self.host_end.unwrap_or(self.id_end);
+        &self.all[usize::from(start)..]
+    }
 }
 
 pub(crate) struct InflightEntry {
     key: u64,
-    request_id: String,
-    listener: String,
+    texts: Texts,
+    listener: Arc<str>,
     method: Method,
-    host: Option<String>,
-    path: String,
     client_ip: Option<IpAddr>,
     started: Instant,
     phase: AtomicU8,
@@ -107,12 +152,13 @@ pub(crate) struct InflightEntry {
 }
 
 /// What the request looks like on arrival; everything else is learned while it is routed.
-pub(crate) struct InflightArrival {
-    pub(crate) request_id: String,
-    pub(crate) listener: String,
+pub(crate) struct InflightArrival<'a> {
+    pub(crate) request_id: &'a str,
+    pub(crate) listener: Arc<str>,
     pub(crate) method: Method,
-    pub(crate) host: Option<String>,
-    pub(crate) path: String,
+    pub(crate) host: Option<&'a str>,
+    /// With or without a query; the registry keeps the path.
+    pub(crate) path: &'a str,
     pub(crate) client_ip: Option<IpAddr>,
     /// When the request arrived, so the registry reads the clock no more than the proxy already did.
     pub(crate) started: Instant,
@@ -120,17 +166,17 @@ pub(crate) struct InflightArrival {
     pub(crate) access_log: Option<Arc<AccessLog>>,
 }
 
-/// `text` cut at `MAX_PATH_BYTES` on a character boundary, copied once.
-pub(crate) fn bounded_text(text: &str) -> String {
+/// `text` cut at `MAX_PATH_BYTES` on a character boundary.
+pub(crate) fn bounded_text(text: &str) -> &str {
     let end = (0..=MAX_PATH_BYTES.min(text.len()))
         .rev()
         .find(|index| text.is_char_boundary(*index))
         .unwrap_or(0);
-    text[..end].to_owned()
+    &text[..end]
 }
 
 /// Path without the query, cut at `MAX_PATH_BYTES` on a character boundary.
-pub(crate) fn bounded_path(path: &str) -> String {
+pub(crate) fn bounded_path(path: &str) -> &str {
     bounded_text(path.split_once('?').map_or(path, |(path, _)| path))
 }
 
@@ -214,14 +260,14 @@ impl InflightEntry {
         let phase = self.phase();
         let age_ms = self.age_ms();
         InflightView {
-            request_id: self.request_id.clone(),
-            listener: self.listener.clone(),
-            route: place.route.clone(),
-            pool: place.pool.clone(),
-            server: place.server.clone(),
+            request_id: self.texts.request_id().to_owned(),
+            listener: self.listener.to_string(),
+            route: place.route.as_deref().map(str::to_owned),
+            pool: place.pool.as_deref().map(str::to_owned),
+            server: place.server.as_deref().map(str::to_owned),
             method: self.method.to_string(),
-            host: self.host.clone(),
-            path: self.path.clone(),
+            host: self.texts.host().map(str::to_owned),
+            path: self.texts.path().to_owned(),
             client_ip: self.client_ip.map(|ip| ip.to_string()),
             phase,
             started_at_unix_ms: unix_ms().saturating_sub(age_ms),
@@ -416,7 +462,7 @@ impl InflightRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub(crate) fn register(&'static self, arrival: InflightArrival) -> InflightGuard {
+    pub(crate) fn register(&'static self, arrival: InflightArrival<'_>) -> InflightGuard {
         let index = sharded::local_index();
         let number = self
             .shards
@@ -427,11 +473,9 @@ impl InflightRegistry {
         let key = number * SHARDS as u64 + index as u64;
         let entry = Arc::new(InflightEntry {
             key,
-            request_id: arrival.request_id,
+            texts: Texts::new(arrival.request_id, arrival.host, arrival.path),
             listener: arrival.listener,
             method: arrival.method,
-            host: arrival.host,
-            path: arrival.path,
             client_ip: arrival.client_ip,
             started: arrival.started,
             phase: AtomicU8::new(Phase::Routed as u8),
@@ -495,7 +539,7 @@ impl InflightRegistry {
     pub(crate) fn find(&self, request_id: &str) -> Option<InflightView> {
         self.entries()
             .iter()
-            .find(|entry| entry.request_id == request_id)
+            .find(|entry| entry.texts.request_id() == request_id)
             .map(|entry| entry.view())
     }
 
@@ -510,7 +554,7 @@ impl InflightRegistry {
         };
         for entry in self.entries() {
             totals.overdue += u64::from(entry.overdue());
-            let pool = entry.place().pool.clone().unwrap_or_default();
+            let pool = entry.place().pool.as_deref().unwrap_or_default().to_owned();
             let slot = totals.pools.entry(pool).or_default();
             slot.requests += 1;
             slot.oldest_age_ms = slot.oldest_age_ms.max(entry.age_ms());
@@ -564,20 +608,32 @@ impl InflightGuard {
         self.entry.progress_ms.store(age, Ordering::Relaxed);
     }
 
+    #[cfg(test)]
     pub(crate) fn set_route(&self, route: &str) {
-        self.entry.place().route = Some(route.to_owned());
+        self.place_route(route.into());
     }
 
+    #[cfg(test)]
     pub(crate) fn set_pool(&self, pool: &str) {
-        let mut place = self.entry.place();
-        if place.pool.as_deref() != Some(pool) {
-            place.pool = Some(pool.to_owned());
-        }
+        self.place_pool(pool.into());
     }
 
+    #[cfg(test)]
     pub(crate) fn set_server(&self, server: &str) {
+        self.place_server(server.into());
+    }
+
+    pub(crate) fn place_route(&self, route: Arc<str>) {
+        self.entry.place().route = Some(route);
+    }
+
+    pub(crate) fn place_pool(&self, pool: Arc<str>) {
+        self.entry.place().pool = Some(pool);
+    }
+
+    pub(crate) fn place_server(&self, server: Arc<str>) {
         self.entry.attempts.fetch_add(1, Ordering::Relaxed);
-        self.entry.place().server = Some(server.to_owned());
+        self.entry.place().server = Some(server);
     }
 
     pub(crate) fn set_deadline(&self, deadline: Duration) {
@@ -612,13 +668,13 @@ mod tests {
     use super::*;
     use crate::http::evacuation::{Cancellation, LeftRunning};
 
-    fn arrival(request_id: &str, deadline: Duration) -> InflightArrival {
+    fn arrival(request_id: &str, deadline: Duration) -> InflightArrival<'_> {
         InflightArrival {
-            request_id: request_id.into(),
+            request_id,
             listener: "edge".into(),
             method: Method::POST,
-            host: Some("app.test".into()),
-            path: "/v1/render".into(),
+            host: Some("app.test"),
+            path: "/v1/render",
             client_ip: Some("192.0.2.9".parse().expect("test address")),
             started: Instant::now(),
             deadline,
@@ -628,6 +684,25 @@ mod tests {
 
     fn registry_for_test() -> &'static InflightRegistry {
         Box::leak(Box::new(InflightRegistry::new()))
+    }
+
+    #[test]
+    fn request_texts_are_split_back_and_bounded_each() {
+        let texts = Texts::new("abc", None, "/x?y=1");
+        assert_eq!(
+            (texts.request_id(), texts.host(), texts.path()),
+            ("abc", None, "/x")
+        );
+        let long = "\u{e9}".repeat(200);
+        let texts = Texts::new(&long, Some(&long), &format!("/{long}"));
+        for text in [
+            texts.request_id(),
+            texts.host().expect("host"),
+            texts.path(),
+        ] {
+            assert!(text.len() <= MAX_PATH_BYTES && long.contains(text.trim_start_matches('/')));
+        }
+        assert_eq!(texts.request_id(), texts.host().expect("host"));
     }
 
     #[test]
@@ -868,7 +943,7 @@ mod tests {
         let long = format!("/{}", "é".repeat(100));
         let bounded = bounded_path(&long);
         assert!(bounded.len() <= MAX_PATH_BYTES);
-        assert!(long.starts_with(&bounded));
+        assert!(long.starts_with(bounded));
     }
 
     #[test]

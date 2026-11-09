@@ -8,7 +8,7 @@ pub(crate) struct HttpRoutePlan {
     pub(crate) access: Option<RouteAccess>,
     pub(crate) action: HttpActionPlan,
     pub(crate) policy: RoutePolicyPlan,
-    pub(crate) route_id: String,
+    pub(crate) route_id: Arc<str>,
 }
 
 #[derive(Clone, Debug)]

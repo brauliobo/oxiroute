@@ -26,11 +26,11 @@ fn farm(name: &str, capacity: Option<u64>, queue: Option<Duration>) -> RoundRobi
 
 fn attempt(pool: &str, server: &str, unmovable: Option<LeftRunning>) -> InflightGuard {
     let guard = registry().register(InflightArrival {
-        request_id: format!("{pool}-{server}-{unmovable:?}"),
+        request_id: &format!("{pool}-{server}-{unmovable:?}"),
         listener: "edge".into(),
         method: http::Method::GET,
         host: None,
-        path: "/".into(),
+        path: "/",
         client_ip: None,
         started: std::time::Instant::now(),
         deadline: Duration::from_secs(30),

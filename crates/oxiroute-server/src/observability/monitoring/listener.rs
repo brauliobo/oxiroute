@@ -17,6 +17,12 @@ impl ListenerMetrics {
         &self.state.name
     }
 
+    /// The name shared by every request of the listener, for records that outlive a borrow.
+    #[must_use]
+    pub fn shared_name(&self) -> Arc<str> {
+        Arc::clone(&self.state.name)
+    }
+
     #[must_use]
     pub fn protocol(&self) -> &str {
         &self.state.protocol
@@ -104,7 +110,7 @@ impl ListenerMetrics {
             }
             let error = MetricsError::AdministrativeDrain {
                 resource: "listener",
-                name: self.state.name.clone(),
+                name: self.state.name.to_string(),
             };
             self.record_admission_failure(&error, started_at);
             return Err(error);
@@ -155,7 +161,7 @@ impl ListenerMetrics {
             let error =
                 if let Some(limit) = self.state.shared.limit().filter(|limit| current >= *limit) {
                     MetricsError::ConnectionLimitReached {
-                        listener: self.state.name.clone(),
+                        listener: self.state.name.to_string(),
                         limit,
                     }
                 } else {
@@ -182,7 +188,7 @@ impl ListenerMetrics {
             decrement_counter(&self.state.shared.active_connections);
             let error = MetricsError::AdministrativeDrain {
                 resource: "listener",
-                name: self.state.name.clone(),
+                name: self.state.name.to_string(),
             };
             if let Err(accounting_error) = checked_atomic_add(
                 &self.state.shared.rejected_connections,
@@ -605,7 +611,7 @@ impl Drop for ProcessConnectionGuard {
 }
 
 pub(super) struct ListenerMetricsState {
-    pub(super) name: String,
+    pub(super) name: Arc<str>,
     protocol: String,
     bind: String,
     pub(super) max_connections: Option<u64>,
@@ -637,7 +643,7 @@ impl ListenerMetricsState {
         shared: Arc<SharedListenerMetricsState>,
     ) -> Self {
         Self {
-            name,
+            name: name.into(),
             protocol,
             bind,
             max_connections,
@@ -652,7 +658,7 @@ impl ListenerMetricsState {
             administrative_state: AdministrativeState::from_u8(
                 self.shared.administrative_state.load(Ordering::Acquire),
             ),
-            name: self.name.clone(),
+            name: self.name.to_string(),
             protocol: self.protocol.clone(),
             bind: self.bind.clone(),
             max_connections: self.shared.limit(),

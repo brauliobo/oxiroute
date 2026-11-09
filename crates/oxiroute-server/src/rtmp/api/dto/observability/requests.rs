@@ -82,11 +82,11 @@ mod tests {
 
     fn live(id: &str, pool: &str) -> crate::http::inflight::InflightGuard {
         let guard = registry().register(InflightArrival {
-            request_id: id.into(),
+            request_id: id,
             listener: "edge".into(),
             method: http::Method::POST,
-            host: Some("app.test".into()),
-            path: "/v1/render".into(),
+            host: Some("app.test"),
+            path: "/v1/render",
             client_ip: None,
             started: std::time::Instant::now(),
             deadline: Duration::from_secs(30),
