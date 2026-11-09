@@ -40,7 +40,6 @@ RELEASE_ALLOWED_SECRET_PATHS=(
   vendor/pingora-core/examples/keys/clients/key-1.pem
   vendor/pingora-core/examples/keys/clients/key-2.pem
   vendor/pingora-core/examples/keys/server/key.pem
-  vendor/pingora-core/src/protocols/tls/boringssl_openssl/stream_tests.rs
 )
 
 RELEASE_DENIED_PATH_PATTERNS=(
