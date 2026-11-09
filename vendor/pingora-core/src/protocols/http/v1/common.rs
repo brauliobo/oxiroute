@@ -349,6 +349,14 @@ pub struct RequestFacts {
 }
 
 impl RequestFacts {
+    /// Nothing is known: every header may be present, so a reader looks it up.
+    pub const UNKNOWN: Self = Self {
+        transfer_encoding: true,
+        content_lengths: 1,
+        connection: true,
+        upgrade: true,
+    };
+
     /// The facts of headers that were not noted as they were appended.
     pub fn of(headers: &HMap) -> Self {
         Self {
@@ -384,7 +392,8 @@ pub(super) fn is_header_value(bytes: &[u8]) -> bool {
         .all(|&byte| (byte >= 32 && byte != 127) || byte == b'\t')
 }
 
-/// Like [`append_parsed_header`], and notes what the header is in `facts`.
+/// Appends a header validated by the HTTP/1 parser without retaining its wire casing, and notes in `facts`
+/// what the header is.
 #[inline]
 pub(super) fn append_parsed_request_header(
     headers: &mut HMap,
@@ -398,23 +407,13 @@ pub(super) fn append_parsed_request_header(
     Ok(())
 }
 
-/// Append a header validated by the HTTP/1 parser without retaining its wire casing.
-#[inline]
-pub(super) fn append_parsed_header(
-    headers: &mut HMap,
-    name: &[u8],
-    value: HeaderValue,
-) -> Result<()> {
-    headers.append(header_name(name)?, value);
-    Ok(())
-}
-
 // RFC 7230:
 // If a message is received without Transfer-Encoding and with
 // either multiple Content-Length header fields having differing
 // field-values or a single Content-Length header field having an
 // invalid value, then the message framing is invalid and the
 // recipient MUST treat it as an unrecoverable error.
+#[cfg(test)]
 pub(super) fn check_dup_content_length(headers: &HMap) -> Result<()> {
     if headers.get(header::TRANSFER_ENCODING).is_some() {
         // If TE header, ignore CL
@@ -435,7 +434,7 @@ pub(super) fn check_dup_content_length(headers: &HMap) -> Result<()> {
     Ok(())
 }
 
-/// [`check_dup_content_length`] for a request whose headers were noted as they were parsed.
+/// Refuses duplicate `Content-Length` headers, from the facts noted while the message was parsed.
 pub(super) fn check_dup_content_length_facts(facts: RequestFacts) -> Result<()> {
     // If a Transfer-Encoding is present, Content-Length is ignored.
     if !facts.transfer_encoding && facts.content_lengths > 1 {

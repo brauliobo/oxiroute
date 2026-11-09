@@ -33,7 +33,7 @@ use super::body::{BodyReader, BodyWriter};
 use super::common::*;
 use crate::protocols::http::HttpTask;
 use crate::protocols::{Digest, SocketAddr, Stream, UniqueID, UniqueIDType};
-use crate::utils::{BufRef, KVRef};
+use crate::utils::BufRef;
 
 /// The HTTP 1.x client session
 pub struct HttpSession {

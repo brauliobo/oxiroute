@@ -42,7 +42,7 @@ use super::body::{BodyMode, BodyReader, BodyWriter};
 use super::common::*;
 use crate::protocols::http::{body_buffer::FixedBuffer, date, HttpTask};
 use crate::protocols::{Digest, SocketAddr, Stream};
-use crate::utils::{BufRef, KVRef};
+use crate::utils::BufRef;
 
 // A response body chunk of at least this size is written on its own instead of being copied into the batch buffer.
 const DIRECT_BODY_BYTES: usize = 4096;
