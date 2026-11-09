@@ -201,3 +201,9 @@
   font-size: 1.1rem;
   font-weight: 600;
 }
+
+.ox-tile .ox-clip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

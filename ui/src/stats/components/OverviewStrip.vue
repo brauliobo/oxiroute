@@ -22,7 +22,7 @@ section.ox-overview(v-if="overview" aria-label="Overview")
       dt Generation
       dd {{ overview.generation.number }}
       dd.ox-sub {{ overview.generation.accepting ? 'accepting' : 'not accepting' }}{{ overview.generation.degraded ? ', degraded' : '' }}
-      dd.ox-sub(v-if="overview.generation.activeRevision") revision {{ overview.generation.activeRevision }}
+      dd.ox-sub.ox-clip(v-if="overview.generation.activeRevision" :title="overview.generation.activeRevision") revision {{ overview.generation.activeRevision }}
     .ox-tile
       dt Connections
       dd {{ cell.sessions(overview.connections.active, overview.connections.max) }}
@@ -48,7 +48,7 @@ section.ox-overview(v-if="overview" aria-label="Overview")
       template(v-if="overview.certificate")
         dd
           StatusBadge(:status="overview.certificate.severity" :label="cell.certificateLabel(overview.certificate.severity)")
-        dd.ox-sub {{ overview.certificate.name }} {{ cell.remaining(overview.certificate.remainingMs) }}
+        dd.ox-sub.ox-clip(:title="overview.certificate.name") {{ overview.certificate.name }} {{ cell.remaining(overview.certificate.remainingMs) }}
       dd(v-else) {{ cell.text() }}
     .ox-tile
       dt Warnings

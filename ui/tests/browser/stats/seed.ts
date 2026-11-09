@@ -50,6 +50,7 @@ export function dashboardDocument(seconds = 0, edit: (wire: StatsDocument) => vo
     { revision: 'rev-3', state: 'draining', ageSeconds: 90, deadlineRemainingSeconds: 30, inFlight: 5, inFlightByKind: { http: 5 } },
   ]
   wire.warnings.push({ code: 'W_SPARE', message: 'Pool files has a single server.' })
+  wire.generation.activeRevision = '3f0c9e1ab27d46c58e90b3d1f7a2c64e8b5d0a9172ce4f3b6a81d05c9e7f2b4d' // a full digest
   edit(wire)
   return wire
 }
