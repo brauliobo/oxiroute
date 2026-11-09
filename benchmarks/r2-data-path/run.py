@@ -130,6 +130,10 @@ def build_lanes():
         for name, features in (("scale_w", []), ("scale_all_w", FEATURES_6_0)):
             add(lane(f"{name}{workers}", ["--path", "/b1k", "--expect-len", "1024", "--conns", str(32 * workers)],
                      features=features, requests=20000 * workers, warmup=2000, workers=workers))
+    # Many connections on a multi-thread listener: how evenly the workers share the connections.
+    for workers, conns in ((2, 256), (2, 2048)):
+        add(lane(f"scale_w{workers}_c{conns}", ["--path", "/b1k", "--expect-len", "1024", "--conns", str(conns)],
+                 requests=60000, warmup=conns * 2, workers=workers))
     for algorithm in ("lc", "wrr"):
         for servers in (8, 64, 200):
             add(lane(f"pool_{algorithm}_s{servers}", work, features=[algorithm], servers=servers))
@@ -334,6 +338,20 @@ def context_switches(path):
         sum(int(value) for value in re.findall(r"^nonvoluntary_ctxt_switches:\s+(\d+)", text, re.M))
 
 
+def thread_busy(before, after, elapsed):
+    """CPU share of the busiest threads over the measured window, as percent of one CPU, highest first."""
+    ticks = os.sysconf("SC_CLK_TCK")
+
+    def usage(path):
+        # /proc/PID/task/TID/stat: the command is parenthesised and may hold spaces; utime and stime are fields 14 and 15
+        rows = (line.rsplit(")", 1) for line in Path(path).read_text().splitlines())
+        return {line[0].split()[0]: sum(int(value) for value in line[1].split()[11:13]) for line in rows}
+
+    start, end = usage(before), usage(after)
+    shares = sorted(((end[tid] - start.get(tid, 0)) * 100 / ticks / elapsed for tid in end), reverse=True)
+    return [round(share) for share in shares[:4]]
+
+
 def parse_perf(path):
     counters = {}
     for line in Path(path).read_text().splitlines():
@@ -359,7 +377,8 @@ def measured_rep(env, rep, idle):
         ["env", "LC_ALL=C", "perf", "stat", "-D", "-1", "-x,", "-e", "instructions:u,cycles:u", "-p", str(env.proxy.pid),
          "--control", f"fifo:{ctl},{ack}", "-o", str(csv)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     pid = env.proxy.pid
-    switches = lambda tag: f"cat /proc/{pid}/task/*/status > {env.work}/sw{rep}.{tag}"
+    switches = lambda tag: (f"cat /proc/{pid}/task/*/status > {env.work}/sw{rep}.{tag}; "
+                            f"cat /proc/{pid}/task/*/stat > {env.work}/st{rep}.{tag}")
     hooks = [("hook-start", f"{switches('a')}; echo enable > {ctl}; read _ < {ack}"),
              ("hook-stop", f"echo disable > {ctl}; read _ < {ack}; {switches('b')}")]
     lane = env.lane
@@ -374,7 +393,9 @@ def measured_rep(env, rep, idle):
     switched = context_switches(env.work / f"sw{rep}.b")
     elapsed = float(load["elapsed_ms"]) / 1000
     requests = int(load["ok"])
+    busy = thread_busy(env.work / f"st{rep}.a", env.work / f"st{rep}.b", elapsed)
     return {
+        "busy": busy,
         "instr": (counters["instructions"] - idle["instructions"] * elapsed) / requests,
         "cycles": (counters["cycles"] - idle["cycles"] * elapsed) / requests,
         "ctxsw": (switched[0] - switched_before[0]) / requests,
@@ -407,7 +428,7 @@ def measure_perf(env, reps):
         "p50_us": round(median(column("p50"))), "p99_us": round(median(column("p99"))),
         "p999_us": round(median(column("p999"))), "connect_p50_us": round(median(column("connect_p50"))),
         "connects": round(median(column("connects"))), "errors": sum(column("errors")), "rss_kb": status["rss_kb"], "hwm_kb": status["hwm_kb"],
-        "threads": status["threads"], "fds": status["fds"],
+        "threads": status["threads"], "fds": status["fds"], "busy_threads_pct": "/".join(map(str, samples[-1]["busy"])),
     }
 
 
