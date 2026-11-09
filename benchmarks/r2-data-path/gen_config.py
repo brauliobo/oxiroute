@@ -6,7 +6,7 @@ Usage: gen_config.py OUT --proxy-port P --upstream-port U [--servers N] [--echo-
 
 Every feature is an independent A/B switch on top of the minimal reverse-proxy configuration:
   access_log timeouts retry queue capacity passive breaker outlier gzip cache reqbuf respbuf
-  forward dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host
+  forward dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host lc wrr
 """
 
 import argparse
@@ -31,6 +31,14 @@ def lua(value, indent=0):
         f"{pad}{key} = {lua(item, indent + 1)},\n" for key, item in value.items() if item is not None
     )
     return "{\n" + items + end + "}"
+
+
+def algorithm(args, on):
+    if on("lc"):
+        return "least_connections"
+    if on("wrr"):
+        return {"type": "weighted_round_robin", "weights": [1 + index % 5 for index in range(args.servers)]}
+    return "round_robin"
 
 
 def build(args):
@@ -123,7 +131,7 @@ def build(args):
     pool = {
         "name": "origin",
         "servers": servers,
-        "algorithm": "round_robin",
+        "algorithm": algorithm(args, on),
         "http_versions": {"min": "2", "max": "2"} if on("upstream_h2") else {"min": "1.1", "max": "1.1"},
     }
     if on("queue"):
@@ -184,6 +192,8 @@ def build(args):
     for index in range(1, args.listeners):
         config["listeners"].append(
             dict(listener, name=f"bench{index}", bind={"type": "socket", "address": f"127.0.0.1:{args.proxy_port + 10 + index}"}))
+    if args.workers:
+        config["listener_workers"] = args.workers
     if on("l4"):
         config["upstream_pools"].append({
             "name": "echo",
@@ -219,6 +229,7 @@ def main():
     parser.add_argument("--echo-port", type=int, default=0)
     parser.add_argument("--servers", type=int, default=1)
     parser.add_argument("--listeners", type=int, default=1)
+    parser.add_argument("--workers", type=int, default=0, help="listener_workers (0 leaves the setting out)")
     parser.add_argument("--run-dir", default="/tmp")
     parser.add_argument("--feature", action="append", default=[])
     args = parser.parse_args()

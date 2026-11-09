@@ -46,6 +46,7 @@ class Lane:
     requests: int = 20000
     warmup: int = 1000
     listeners: int = 1
+    workers: int = 0  # `listener_workers` of the generated configuration; 0 leaves the setting out
     servers: int = 1
     target_offset: int = 0  # proxy port offset the load goes to (forward listener: 3, TCP listener: 1)
     note: str = ""
@@ -124,6 +125,14 @@ def build_lanes():
                  requests=20000 * listeners, warmup=2000, listeners=listeners))
         add(lane(f"scale_all_l{listeners}", ["--path", "/b1k", "--expect-len", "1024", "--conns", str(32 * listeners)],
                  features=FEATURES_6_0, requests=20000 * listeners, warmup=2000, listeners=listeners))
+    # Scaling over worker threads of one listener (`listener_workers`); needs workers + 1 proxy CPUs.
+    for workers in (1, 2, 4, 8):
+        for name, features in (("scale_w", []), ("scale_all_w", FEATURES_6_0)):
+            add(lane(f"{name}{workers}", ["--path", "/b1k", "--expect-len", "1024", "--conns", str(32 * workers)],
+                     features=features, requests=20000 * workers, warmup=2000, workers=workers))
+    for algorithm in ("lc", "wrr"):
+        for servers in (8, 64, 256):
+            add(lane(f"pool_{algorithm}_s{servers}", work, features=[algorithm], servers=servers))
     for feature in FEATURES_6_0:
         add(lane(f"scale4_{feature}", ["--path", "/b1k", "--expect-len", "1024", "--conns", "128"], features=[feature],
                  requests=80000, warmup=4000, listeners=4))
@@ -274,7 +283,7 @@ class Env:
         generated = subprocess.run(
             [sys.executable, str(HERE / "gen_config.py"), str(config), "--proxy-port", str(PROXY_PORT),
              "--upstream-port", str(UPSTREAM_PORT), "--echo-port", str(ECHO_PORT), "--servers", str(lane.servers),
-             "--listeners", str(lane.listeners), "--run-dir", str(self.work)]
+             "--listeners", str(lane.listeners), "--workers", str(lane.workers), "--run-dir", str(self.work)]
             + [item for feature in lane.features for item in ("--feature", feature)],
             check=True, capture_output=True, text=True, timeout=LANE_TIMEOUT)
         self.generated = generated.stdout
@@ -505,7 +514,7 @@ def measure_profile(args, lane):
     try:
         env.start()
         recorder = subprocess.Popen(
-            ["perf", "record", "-D", "-1", "-e", "instructions:u", "-c", str(args.profile_period), *call_graph, "-p", str(env.proxy.pid), "--control", f"fifo:{ctl},{ack}", "-o", str(data)],
+            ["perf", "record", "-D", "-1", "-e", args.profile_event, "-c", str(args.profile_period), *call_graph, "-p", str(env.proxy.pid), "--control", f"fifo:{ctl},{ack}", "-o", str(data)],
             stdout=subprocess.DEVNULL, stderr=open(env.work / "record.log", "w"))
         hooks = [("hook-start", f"echo enable > {ctl}; read _ < {ack}"), ("hook-stop", f"echo disable > {ctl}; read _ < {ack}")]
         result = subprocess.run(env.load_command(args.profile_requests, args.profile_warmup, hooks), capture_output=True, text=True, timeout=LANE_TIMEOUT)
@@ -575,6 +584,8 @@ def main():
     parser.add_argument("--mem-conns", type=int, default=2000)
     parser.add_argument("--profile", action="store_true", help="also perf-record per-function instruction samples")
     parser.add_argument("--profile-period", type=int, default=20011)
+    parser.add_argument("--profile-event", default="instructions:u",
+                        help="sampled event; cycles:u attributes cache-line stalls that instruction sampling hides")
     parser.add_argument("--flat", action="store_true", help="--profile without call graphs")
     parser.add_argument("--profile-bin", default=os.environ.get("R2_PROFILE_BIN"),
                         help="frame-pointer build used with --call-graph fp (default: --bin, flat profile)")
