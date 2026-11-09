@@ -18,6 +18,7 @@ mod rtmp;
 mod runtime_policy;
 mod secure_bearer;
 mod service_plan;
+mod sharded;
 mod shutdown;
 pub mod tls;
 mod topology;

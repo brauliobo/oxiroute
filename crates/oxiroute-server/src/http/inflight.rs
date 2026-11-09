@@ -25,9 +25,9 @@ use crate::{
         evacuation::{Evacuation, EvacuationReport, Fate},
     },
     observability::access_record::{Correlation, Count, Safe, SafeId, StuckAccess},
+    sharded::{self, SHARDS, Sharded},
 };
 
-const SHARDS: usize = 16;
 pub(crate) const MAX_PATH_BYTES: usize = 128;
 pub(crate) const OVERDUE_GRACE: Duration = Duration::from_secs(5);
 pub(crate) const DEFAULT_STUCK_AFTER: Duration = Duration::from_mins(1);
@@ -324,9 +324,17 @@ pub(crate) struct InflightTotals {
     pub(crate) stuck: BTreeMap<(String, &'static str), u64>,
 }
 
+/// The requests one worker thread registered, and how many it has numbered.
+#[derive(Default)]
+struct Shard {
+    entries: Mutex<HashMap<u64, Arc<InflightEntry>>>,
+    registered: AtomicU64,
+}
+
 pub(crate) struct InflightRegistry {
-    shards: [Mutex<HashMap<u64, Arc<InflightEntry>>>; SHARDS],
-    next_key: AtomicU64,
+    /// A request registers in the shard of the thread that received it, so workers do not contend; the
+    /// shard number is the low bits of its key and the guard removes it from the same shard.
+    shards: Sharded<Shard>,
     stuck: Mutex<BTreeMap<(String, &'static str), u64>>,
 }
 
@@ -368,21 +376,28 @@ pub(crate) fn registry() -> &'static InflightRegistry {
 impl InflightRegistry {
     fn new() -> Self {
         Self {
-            shards: std::array::from_fn(|_| Mutex::new(HashMap::new())),
-            next_key: AtomicU64::new(1),
+            shards: Sharded::new(Shard::default),
             stuck: Mutex::new(BTreeMap::new()),
         }
     }
 
-    fn shard(&self, key: u64) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<InflightEntry>>> {
-        let index = usize::try_from(key % SHARDS as u64).expect("shard index");
-        self.shards[index]
+    fn lock(&self, index: usize) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<InflightEntry>>> {
+        self.shards
+            .get(index)
+            .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn register(&'static self, arrival: InflightArrival) -> InflightGuard {
-        let key = self.next_key.fetch_add(1, Ordering::Relaxed);
+        let index = sharded::local_index();
+        let number = self
+            .shards
+            .get(index)
+            .registered
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        let key = number * SHARDS as u64 + index as u64;
         let entry = Arc::new(InflightEntry {
             key,
             request_id: arrival.request_id,
@@ -403,7 +418,7 @@ impl InflightRegistry {
             evacuation: Arc::new(Evacuation::new()),
             access_log: arrival.access_log,
         });
-        self.shard(key).insert(key, Arc::clone(&entry));
+        self.lock(index).insert(key, Arc::clone(&entry));
         InflightGuard {
             entry,
             registry: self,
@@ -411,8 +426,8 @@ impl InflightRegistry {
     }
 
     fn entries(&self) -> Vec<Arc<InflightEntry>> {
-        (0..SHARDS as u64)
-            .flat_map(|key| self.shard(key).values().cloned().collect::<Vec<_>>())
+        (0..SHARDS)
+            .flat_map(|index| self.lock(index).values().cloned().collect::<Vec<_>>())
             .collect()
     }
 
@@ -557,7 +572,8 @@ impl InflightGuard {
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        self.registry.shard(self.entry.key).remove(&self.entry.key);
+        let index = usize::try_from(self.entry.key % SHARDS as u64).expect("shard index");
+        self.registry.lock(index).remove(&self.entry.key);
     }
 }
 
