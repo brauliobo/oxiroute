@@ -562,8 +562,27 @@ def measure_profile(args, lane):
     return {"profile_requests": int(load.get("ok", 0))}
 
 
+def train_lane(args, lane):
+    """Replay a lane once with no measurement (profile-guided optimisation training): needs no `perf` and no hooks."""
+    with bench_lock():
+        pick_ports(lane)
+        env = Env(args, lane)
+        try:
+            env.start()
+            result = subprocess.run(env.load_command(lane.requests, lane.warmup), capture_output=True, text=True,
+                                    timeout=LANE_TIMEOUT)
+            load = parse_kv(result.stdout)
+            if result.returncode != 0 or int(load.get("errors", -1)) != 0 or int(load.get("ok", 0)) != lane.requests:
+                raise RuntimeError(f"training lane {lane.name} failed: {result.stdout} {result.stderr}")
+            return {"ok": int(load["ok"]), "rps": float(load["rps"])}
+        finally:
+            env.close()
+
+
 def run_lane(args, lane):
     row = {"lane": lane.name, "features": ",".join(lane.features) or "-", "listeners": lane.listeners}
+    if args.train:
+        return {**row, **train_lane(args, lane)}
     if args.perf:
         with bench_lock():
             pick_ports(lane)
@@ -606,6 +625,9 @@ def main():
     parser.add_argument("--out", type=Path, default=Path(os.environ.get("R2_OUT", "/tmp/r2-out")))
     parser.add_argument("--tmp", default=os.environ.get("R2_TMP", "/dev/shm"))
     parser.add_argument("--no-perf", dest="perf", action="store_false", help="skip the instruction/latency lane run")
+    parser.add_argument("--train", action="store_true",
+                        help="replay each lane once without any measurement or perf (pair with --proxy-env "
+                             "LLVM_PROFILE_FILE=... on an instrumented binary); fails on any load error")
     parser.add_argument("--sys", action="store_true", help="also count syscalls per request (strace slope)")
     parser.add_argument("--alloc", action="store_true", help="also count allocator calls per request (LD_PRELOAD shim)")
     parser.add_argument("--mem", action="store_true", help="also measure heap/RSS per idle keep-alive connection")
