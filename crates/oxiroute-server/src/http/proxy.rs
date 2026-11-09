@@ -212,7 +212,7 @@ impl HttpRequestContext {
                 .headers
                 .get(name)
                 .and_then(|value| value.to_str().ok())
-                .map(|value| value.chars().take(inflight::MAX_PATH_BYTES).collect())
+                .map(inflight::bounded_text)
         };
         self.inflight = Some(
             inflight::registry().register(InflightArrival {
