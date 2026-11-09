@@ -6,9 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use async_trait::async_trait;
 use http::{HeaderName, HeaderValue};
-use pingora::modules::http::{HttpModule, HttpModuleBuilder, Module};
 
 use crate::observability::logging::valid_correlation_id;
 
@@ -76,62 +74,27 @@ pub(crate) fn idempotency_header_or_default(configured: Option<&HeaderName>) -> 
     configured.cloned().unwrap_or(DEFAULT_IDEMPOTENCY_HEADER)
 }
 
-pub(crate) struct RequestIdBuilder;
-
-impl HttpModuleBuilder for RequestIdBuilder {
-    fn init(&self) -> Module {
-        Box::new(RequestIdModule { id: None })
-    }
-
-    fn order(&self) -> i16 {
-        // Pingora negates the order to sort, so `i16::MIN` itself would overflow.
-        i16::MIN + 1
-    }
+/// Tags the request before routing, so every attempt and every response, including proxied ones, shares one
+/// id; returns the id for the response side.
+pub(crate) fn stamp_request(
+    request: &mut pingora::http::RequestHeader,
+) -> pingora::Result<HeaderValue> {
+    let id = resolve_request_id(request.headers.get(&REQUEST_ID_HEADER));
+    request.insert_header(REQUEST_ID_HEADER_NAME, id.clone())?;
+    Ok(id)
 }
 
-/// Tags the request before routing so every attempt and every response, including proxied ones, shares one id.
-struct RequestIdModule {
-    id: Option<HeaderValue>,
-}
-
-#[async_trait]
-impl HttpModule for RequestIdModule {
-    async fn request_header_filter(
-        &mut self,
-        request: &mut pingora::http::RequestHeader,
-    ) -> pingora::Result<()> {
-        let value = resolve_request_id(request.headers.get(&REQUEST_ID_HEADER));
-        request.insert_header(REQUEST_ID_HEADER_NAME, value.clone())?;
-        self.id = Some(value);
-        Ok(())
+/// Gives the response the request's id; one the upstream sent moves to `x-upstream-request-id` when it differs.
+pub(crate) fn stamp_response(
+    response: &mut pingora::http::ResponseHeader,
+    id: &HeaderValue,
+) -> pingora::Result<()> {
+    if let Some(upstream) = response.remove_header(&REQUEST_ID_HEADER)
+        && upstream != *id
+    {
+        response.insert_header(UPSTREAM_REQUEST_ID_HEADER, upstream)?;
     }
-
-    async fn response_header_filter(
-        &mut self,
-        response: &mut pingora::http::ResponseHeader,
-        _end_of_stream: bool,
-    ) -> pingora::Result<()> {
-        let Some(id) = &self.id else {
-            return Ok(());
-        };
-        if let Some(upstream) = response.headers.remove(&REQUEST_ID_HEADER)
-            && upstream != *id
-        {
-            response
-                .headers
-                .insert(UPSTREAM_REQUEST_ID_HEADER, upstream);
-        }
-        response.insert_header(REQUEST_ID_HEADER_NAME, id.clone())?;
-        Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
+    response.insert_header(REQUEST_ID_HEADER_NAME, id.clone())
 }
 
 #[cfg(test)]

@@ -342,9 +342,7 @@ pub(super) async fn write_local_response(
         session.set_close_on_response_before_downstream_finish(true);
     }
     let end = head || body_forbidden || body.is_empty();
-    session
-        .write_response_header(Box::new(response), end)
-        .await?;
+    write_response_header_with_id(session, Box::new(response), end).await?;
     if !head && !body_forbidden && !body.is_empty() {
         session.write_response_body(Some(body), true).await
     } else {

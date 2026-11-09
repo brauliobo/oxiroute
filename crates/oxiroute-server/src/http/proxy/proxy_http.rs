@@ -6,7 +6,6 @@ impl ProxyHttp for HttpReverseProxy {
     type CTX = HttpRequestContext;
 
     fn init_downstream_modules(&self, modules: &mut HttpModules) {
-        modules.add_module(Box::new(RequestIdBuilder));
         if let Some(gzip) = self.service.gzip() {
             modules.add_module(Box::new(ConfiguredCompressionBuilder {
                 gzip: Arc::clone(gzip),
@@ -54,6 +53,7 @@ impl ProxyHttp for HttpReverseProxy {
             cache_response_handled: false,
             trace: AttemptTrace::default(),
             inflight: None,
+            request_id: None,
         }
     }
 
@@ -63,6 +63,7 @@ impl ProxyHttp for HttpReverseProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
+        ctx.request_id = Some(stamp_request(session.req_header_mut())?);
         ctx.adopt_downstream_deadline(session);
         ctx.register_inflight(session, self.service.access_log());
         let arrived = ctx.started_at;
@@ -766,6 +767,10 @@ impl ProxyHttp for HttpReverseProxy {
                         && !response.headers.contains_key(TRAILER),
                 });
             }
+        }
+        // After the capture: a cached response replays the origin's headers, not this request's id.
+        if let Some(id) = &ctx.request_id {
+            stamp_response(response, id)?;
         }
         Ok(())
     }
