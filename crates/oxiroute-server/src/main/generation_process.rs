@@ -429,6 +429,7 @@ pub(super) fn shutdown_generation_processes(
 ) -> bool {
     let recorder_shutdowns = manager.begin_shutdown(deadline);
     for process in &processes {
+        process.generation.mark_retired();
         process.generation.stop_accepting();
     }
     while std::time::Instant::now() < deadline
