@@ -253,13 +253,21 @@ async fn the_refresh_and_the_table_are_only_for_browsers_without_script() {
     let page = page(&fixture, Disabled);
     let shell = String::from_utf8(page.handle("GET", "/haproxy", false).await.body).expect("HTML");
     for fallback in ["http-equiv=\"refresh\"", "<table", "<td>origin-a</td>"] {
-        let at = shell.find(fallback).unwrap_or_else(|| panic!("{fallback}: {shell}"));
+        let at = shell
+            .find(fallback)
+            .unwrap_or_else(|| panic!("{fallback}: {shell}"));
         let before = &shell[..at];
         let open = before.rfind("<noscript>");
         assert!(open.is_some(), "{fallback} is outside <noscript>");
-        assert!(before.rfind("</noscript>") < open, "{fallback} is outside <noscript>");
+        assert!(
+            before.rfind("</noscript>") < open,
+            "{fallback} is outside <noscript>"
+        );
     }
-    assert!(shell.contains("<div id=\"app\"></div>"), "the client's root starts empty");
+    assert!(
+        shell.contains("<div id=\"app\"></div>"),
+        "the client's root starts empty"
+    );
 }
 
 #[tokio::test]
