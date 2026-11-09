@@ -39,8 +39,8 @@ use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http::action::{
-        AccessLog, AffinityRequest, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan,
-        ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget, StaticFile,
+        AccessLog, AffinityRequest, FixedResponsePlan, HttpActionPlan, HttpGzipPlan, HttpRoutePlan,
+        ProxyActionPlan, ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget, StaticFile,
         StaticRequestDecision, StaticServeError, StaticTarget,
     },
     http::cache::{

@@ -1,5 +1,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::http::request_id::REQUEST_ID_HEADER;
+use http::header::{CONNECTION, CONTENT_LENGTH, DATE, TRANSFER_ENCODING};
 
 #[derive(Debug)]
 pub(crate) struct HttpRoutePlan {
@@ -144,27 +146,63 @@ pub(crate) struct FixedResponsePlan {
     pub(crate) status: u16,
     pub(crate) body: Bytes,
     pub(crate) headers: Box<[(HeaderName, HeaderValue)]>,
+    /// Status line and header lines as an HTTP/1 response writes them, for the statuses and headers a
+    /// response can be written from in one piece; `None` sends it through the generic response path.
+    pub(crate) rendered_head: Option<Bytes>,
 }
 
 impl FixedResponsePlan {
     pub(crate) fn compile(status: u16, body: &str, headers: &[HttpLiteralHeader]) -> Self {
+        let headers: Box<[(HeaderName, HeaderValue)]> = headers
+            .iter()
+            .filter(|header| header.always || nginx_add_header_status(status))
+            .map(|header| {
+                (
+                    HeaderName::from_bytes(header.name.as_bytes())
+                        .expect("validated fixed-response header name"),
+                    HeaderValue::from_str(&header.value)
+                        .expect("validated fixed-response header value"),
+                )
+            })
+            .collect();
         Self {
+            rendered_head: render_head(status, &headers, body.len()),
             status,
             body: Bytes::copy_from_slice(body.as_bytes()),
-            headers: headers
-                .iter()
-                .filter(|header| header.always || nginx_add_header_status(status))
-                .map(|header| {
-                    (
-                        HeaderName::from_bytes(header.name.as_bytes())
-                            .expect("validated fixed-response header name"),
-                        HeaderValue::from_str(&header.value)
-                            .expect("validated fixed-response header value"),
-                    )
-                })
-                .collect(),
+            headers,
         }
     }
+}
+
+/// The head of a response with a Content-Length body, as `write_rendered_response` expects it. The
+/// headers a response writer owns (`Date`, `Connection`, the request id) and the ones that change the
+/// body framing keep the generic path.
+fn render_head(
+    status: u16,
+    headers: &[(HeaderName, HeaderValue)],
+    body_length: usize,
+) -> Option<Bytes> {
+    let framed_by_length = status >= 200 && !matches!(status, 204 | 205 | 304);
+    let owned = [DATE, CONNECTION, TRANSFER_ENCODING, REQUEST_ID_HEADER];
+    if !framed_by_length || headers.iter().any(|(name, _)| owned.contains(name)) {
+        return None;
+    }
+    let mut response =
+        pingora::http::ResponseHeader::build_no_case(status, Some(headers.len() + 1)).ok()?;
+    for (name, value) in headers {
+        response.append_header(name.clone(), value.clone()).ok()?;
+    }
+    response
+        .insert_header(CONTENT_LENGTH, body_length.to_string())
+        .ok()?;
+    let mut head = bytes::BytesMut::new();
+    let reason = response.get_reason_phrase().unwrap_or_default();
+    bytes::BufMut::put_slice(
+        &mut head,
+        format!("HTTP/1.1 {status} {reason}\r\n").as_bytes(),
+    );
+    response.header_to_h1_wire(&mut head);
+    Some(head.freeze())
 }
 
 #[derive(Clone, Debug)]

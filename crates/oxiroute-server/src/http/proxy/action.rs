@@ -64,6 +64,12 @@ pub(super) async fn execute_route_action(
                 return Ok(false);
             }
             HttpActionPlan::Fixed(response) => {
+                if status_headers.is_empty()
+                    && write_rendered_response(service, session, response, method == Method::HEAD)
+                        .await?
+                {
+                    return Ok(true);
+                }
                 let headers = if status_headers.is_empty() {
                     std::borrow::Cow::Borrowed(&response.headers[..])
                 } else {
@@ -282,6 +288,34 @@ pub(super) async fn execute_route_action(
             }
         }
     }
+}
+
+/// Writes a fixed response of an HTTP/1 request without a body in one buffer, when nothing between the
+/// route and the socket changes it: the compression module may rewrite the body, so a service with gzip
+/// keeps the generic path, as does everything the rendered head cannot represent.
+async fn write_rendered_response(
+    service: &HttpServicePlan,
+    session: &mut Session,
+    response: &FixedResponsePlan,
+    head: bool,
+) -> pingora::Result<bool> {
+    let Some(rendered_head) = &response.rendered_head else {
+        return Ok(false);
+    };
+    if service.gzip().is_some() || !session.is_body_empty() {
+        return Ok(false);
+    }
+    let request_id = session
+        .req_header()
+        .headers
+        .get(&REQUEST_ID_HEADER)
+        .cloned();
+    let body = if head { &[][..] } else { &response.body[..] };
+    let status = StatusCode::from_u16(response.status).expect("validated fixed-response status");
+    session
+        .downstream_session
+        .write_rendered_response(status, rendered_head, request_id.as_ref(), body)
+        .await
 }
 
 pub(super) async fn write_local_response(
