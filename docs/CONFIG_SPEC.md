@@ -307,9 +307,10 @@ Current constraints:
   exactly one matching Bearer token loaded from a no-follow regular file whose mode is `0400` or
   `0600`. GET and HEAD can never mutate pool state. Metric labels omit listener binds, upstream
   addresses, paths, stream keys, and token material. Each `pages` entry independently serves a
-  public HAProxy-compatible HTML table below its exact `uri_prefix`; apart from that prefix it does
-  not expose `/metrics`, `/ready`, the legacy authenticated `/stats`, `/api/v1/status`, or any other
-  observability route on that socket.
+  public HAProxy-compatible HTML table at its `uri_prefix`, plus `snapshot.json` and `stats.csv`
+  below it (see `docs/OPERATIONS.md`, "Stats page API"); it does not expose `/metrics`, `/ready`,
+  the legacy authenticated `/stats`, `/api/v1/status`, or any other observability route on that
+  socket. Everyone who can reach a page sees the same data, including upstream addresses.
   `refresh_ms` is `1` through `86400000`. `admin = "disabled"` makes the page read-only;
   `admin = "localhost"` shows and accepts Ready/Drain/Maintenance forms only for same-origin
   loopback requests with the active generation revision. Page administration does not use the

@@ -1,0 +1,1875 @@
+{
+  "components": {
+    "schemas": {
+      "AdminForm": {
+        "description": "The administration form the page posts as `application/x-www-form-urlencoded`: the same fields,\nchecks and effect for the no-script table and for a script client.",
+        "properties": {
+          "generation_revision": {
+            "description": "`generation.activeRevision` of the snapshot the form was built from; a changed revision is a 409.",
+            "type": "string"
+          },
+          "pool": {
+            "type": "string"
+          },
+          "server": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/AdministrativeState"
+          }
+        },
+        "required": [
+          "generation_revision",
+          "pool",
+          "server",
+          "state"
+        ],
+        "type": "object"
+      },
+      "AdministrativeState": {
+        "enum": [
+          "ready",
+          "drain",
+          "maintenance"
+        ],
+        "type": "string"
+      },
+      "AttemptStats": {
+        "properties": {
+          "clientClosed": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "connectFailed": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "evacuated": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "ok": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "protocolError": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "rescued": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "statusRetry": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Attempts retried because of the response status."
+          },
+          "timeout": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "ok",
+          "connectFailed",
+          "timeout",
+          "protocolError",
+          "statusRetry",
+          "rescued",
+          "clientClosed",
+          "evacuated"
+        ],
+        "type": "object"
+      },
+      "BucketBounds": {
+        "description": "Upper bounds, in milliseconds, of the cumulative buckets of every [`Histogram`]. The overflow\nbucket is `count`.",
+        "properties": {
+          "operation": {
+            "description": "Request, header and relay latencies.",
+            "items": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "queueWait": {
+            "description": "Time spent waiting in a pool queue.",
+            "items": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "operation",
+          "queueWait"
+        ],
+        "type": "object"
+      },
+      "CacheStats": {
+        "properties": {
+          "admissions": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "evictions": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "hits": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "misses": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "hits",
+          "misses",
+          "admissions",
+          "evictions"
+        ],
+        "type": "object"
+      },
+      "CanaryResult": {
+        "enum": [
+          "ok",
+          "slow",
+          "failed",
+          "busy",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "CanaryStats": {
+        "properties": {
+          "consecutiveFailures": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "durationMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "intervalMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lastAttemptUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lastSuccessUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/HealthFailure"
+          },
+          "result": {
+            "$ref": "#/components/schemas/CanaryResult"
+          },
+          "server": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "durationMs",
+          "consecutiveFailures",
+          "intervalMs"
+        ],
+        "type": "object"
+      },
+      "CertbotWatcherHealth": {
+        "enum": [
+          "healthy",
+          "degraded",
+          "stopped"
+        ],
+        "type": "string"
+      },
+      "CertificateSource": {
+        "enum": [
+          "certbot",
+          "acme_managed",
+          "direct_file"
+        ],
+        "type": "string"
+      },
+      "CertificateStats": {
+        "properties": {
+          "expiresAt": {
+            "description": "The leaf expiry as the TLS library prints it, in GMT.",
+            "type": "string"
+          },
+          "lastErrorCode": {
+            "type": "string"
+          },
+          "lastOutcome": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "nextActionUnixSeconds": {
+            "description": "When the ACME reconciler next acts on the certificate.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "notAfterUnixSeconds": {
+            "description": "The same instant as Unix seconds; absent when the printed form could not be read.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/CertificateSource"
+          }
+        },
+        "required": [
+          "name",
+          "source",
+          "expiresAt"
+        ],
+        "type": "object"
+      },
+      "CertificateWatcherStats": {
+        "properties": {
+          "backendErrors": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "health": {
+            "$ref": "#/components/schemas/CertbotWatcherHealth"
+          },
+          "reconciliationFailures": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "source": {
+            "$ref": "#/components/schemas/CertificateSource"
+          }
+        },
+        "required": [
+          "source",
+          "health",
+          "backendErrors",
+          "reconciliationFailures"
+        ],
+        "type": "object"
+      },
+      "CheckStats": {
+        "description": "Active health checks. The proxy does not record how long a check took.",
+        "properties": {
+          "consecutiveFailures": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "consecutiveSuccesses": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "failed": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "lastCheckedAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lastFailure": {
+            "$ref": "#/components/schemas/HealthFailure"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "successful": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "enabled",
+          "running",
+          "successful",
+          "failed",
+          "consecutiveSuccesses",
+          "consecutiveFailures"
+        ],
+        "type": "object"
+      },
+      "ClassCount": {
+        "properties": {
+          "class": {
+            "type": "string"
+          },
+          "count": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "class",
+          "count"
+        ],
+        "type": "object"
+      },
+      "ComponentState": {
+        "enum": [
+          "healthy",
+          "degraded",
+          "unsupported"
+        ],
+        "type": "string"
+      },
+      "DecimalCounter": {
+        "pattern": "^[0-9]+$",
+        "type": "string"
+      },
+      "DiagnosticStats": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "stage",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ErrorBody": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "EvacuationStats": {
+        "description": "What an evacuation did to the requests of a server.",
+        "properties": {
+          "failed": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "forced": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "leftRunning": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "redispatched": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "redispatched",
+          "leftRunning",
+          "forced",
+          "failed"
+        ],
+        "type": "object"
+      },
+      "GenerationStats": {
+        "properties": {
+          "accepting": {
+            "type": "boolean"
+          },
+          "activations": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "activeRevision": {
+            "type": "string"
+          },
+          "ageMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "candidateRevision": {
+            "type": "string"
+          },
+          "configRejections": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "degraded": {
+            "type": "boolean"
+          },
+          "diskRevision": {
+            "type": "string"
+          },
+          "failures": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "lastFailure": {
+            "type": "string"
+          },
+          "lastRejection": {
+            "$ref": "#/components/schemas/RejectionStats"
+          },
+          "maxRetiredGenerations": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "number": {
+            "description": "Number of the live generation.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prepares": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "previousRevision": {
+            "type": "string"
+          },
+          "quarantinedRevision": {
+            "type": "string"
+          },
+          "retired": {
+            "description": "Replaced generations that still drain their connections, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/RetiredGeneration"
+            },
+            "type": "array"
+          },
+          "rollbacks": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "number",
+          "ageMs",
+          "accepting",
+          "degraded",
+          "prepares",
+          "activations",
+          "configRejections",
+          "failures",
+          "rollbacks",
+          "maxRetiredGenerations",
+          "retired"
+        ],
+        "type": "object"
+      },
+      "HealthFailure": {
+        "description": "Why a check, a passive observation or the canary failed.",
+        "enum": [
+          "timeout",
+          "connect_failed",
+          "unexpected_status",
+          "protocol_error",
+          "slow"
+        ],
+        "type": "string"
+      },
+      "HealthOverride": {
+        "description": "Operator override of the observed health: `auto` follows the checks.",
+        "enum": [
+          "auto",
+          "up",
+          "down"
+        ],
+        "type": "string"
+      },
+      "HealthState": {
+        "description": "What the active checks observed: `unchecked` when the server has no checks, `unknown` before\nthe first result.",
+        "enum": [
+          "unchecked",
+          "unknown",
+          "healthy",
+          "unhealthy"
+        ],
+        "type": "string"
+      },
+      "Histogram": {
+        "description": "A latency distribution. `buckets[i]` is the cumulative number of observations at or below the\ni-th bound of the matching [`BucketBounds`] list; percentiles read from it are bucket upper bounds.",
+        "properties": {
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/DecimalCounter"
+            },
+            "type": "array"
+          },
+          "count": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "sumMs": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "count",
+          "sumMs",
+          "buckets"
+        ],
+        "type": "object"
+      },
+      "HostStats": {
+        "properties": {
+          "availableMemoryBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "loadAverage15m": {
+            "format": "double",
+            "type": "number"
+          },
+          "loadAverage1m": {
+            "format": "double",
+            "type": "number"
+          },
+          "loadAverage5m": {
+            "format": "double",
+            "type": "number"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ComponentState"
+          },
+          "totalMemoryBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
+      "HttpOutcome": {
+        "enum": [
+          "success",
+          "client_error",
+          "server_error",
+          "upstream_error",
+          "timeout",
+          "cancelled",
+          "internal_error"
+        ],
+        "type": "string"
+      },
+      "HttpOutcomeCount": {
+        "properties": {
+          "count": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "result": {
+            "$ref": "#/components/schemas/HttpOutcome"
+          }
+        },
+        "required": [
+          "result",
+          "count"
+        ],
+        "type": "object"
+      },
+      "HttpStats": {
+        "description": "Finished HTTP operations by outcome; absent until the listener has finished one. The proxy keeps no\nper-listener status-class counters.",
+        "properties": {
+          "latency": {
+            "$ref": "#/components/schemas/Histogram"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/HttpOutcomeCount"
+            },
+            "type": "array"
+          },
+          "total": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Sum of `outcomes`."
+          }
+        },
+        "required": [
+          "outcomes",
+          "total",
+          "latency"
+        ],
+        "type": "object"
+      },
+      "InflightStats": {
+        "properties": {
+          "oldestAgeMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "requests": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "requests",
+          "oldestAgeMs"
+        ],
+        "type": "object"
+      },
+      "LatencyStats": {
+        "properties": {
+          "header": {
+            "$ref": "#/components/schemas/Histogram",
+            "description": "Until the response headers arrived."
+          },
+          "request": {
+            "$ref": "#/components/schemas/Histogram",
+            "description": "Until the response finished."
+          }
+        },
+        "required": [
+          "request",
+          "header"
+        ],
+        "type": "object"
+      },
+      "ListenerState": {
+        "enum": [
+          "configured",
+          "listening",
+          "stopped",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "ListenerStats": {
+        "properties": {
+          "acceptedConnections": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "activeConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "administrativeState": {
+            "$ref": "#/components/schemas/AdministrativeState"
+          },
+          "bind": {
+            "description": "The configured bind with its transport: `socket:<address>`, `udp:<address>` or `unix:<path>`.",
+            "type": "string"
+          },
+          "bytesReceived": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Bytes read from clients."
+          },
+          "bytesSent": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Bytes written to clients."
+          },
+          "cache": {
+            "$ref": "#/components/schemas/CacheStats"
+          },
+          "http": {
+            "$ref": "#/components/schemas/HttpStats"
+          },
+          "maxConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "protocol": {
+            "description": "`http`, `http3`, `tcp`, `udp`, `rtmp`, `forward_http1`, `forward_http2` or `forward_http3`.",
+            "type": "string"
+          },
+          "proxyProtocol": {
+            "$ref": "#/components/schemas/ProxyProtocolStats"
+          },
+          "rejectedConnections": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "service": {
+            "description": "The HTTP, forward-proxy or TCP service the listener serves.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ListenerState"
+          },
+          "tcpRelays": {
+            "$ref": "#/components/schemas/TcpRelayStats"
+          },
+          "tlsProfile": {
+            "type": "string"
+          },
+          "upstreamPool": {
+            "description": "The pool a TCP listener relays to.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "protocol",
+          "bind",
+          "state",
+          "administrativeState",
+          "activeConnections",
+          "acceptedConnections",
+          "rejectedConnections",
+          "bytesReceived",
+          "bytesSent"
+        ],
+        "type": "object"
+      },
+      "PassiveStats": {
+        "description": "Ejections driven by what real requests experienced.",
+        "properties": {
+          "consecutiveFailures": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ejected": {
+            "type": "boolean"
+          },
+          "ejectedAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ejectionCount": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "ejectionReason": {
+            "$ref": "#/components/schemas/HealthFailure"
+          },
+          "ejectionUntilUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "failureCount": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "lastRecoveryAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "recoveryCount": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "ejected",
+          "failureCount",
+          "consecutiveFailures",
+          "ejectionCount",
+          "recoveryCount"
+        ],
+        "type": "object"
+      },
+      "PoolSelectionCount": {
+        "properties": {
+          "count": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "pool": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pool",
+          "count"
+        ],
+        "type": "object"
+      },
+      "PoolStats": {
+        "properties": {
+          "algorithm": {
+            "type": "string"
+          },
+          "availableServers": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "canary": {
+            "$ref": "#/components/schemas/CanaryStats"
+          },
+          "failOpenSelections": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Selections that used an unavailable server because failing open was allowed."
+          },
+          "inflight": {
+            "$ref": "#/components/schemas/InflightStats"
+          },
+          "latency": {
+            "$ref": "#/components/schemas/LatencyStats",
+            "description": "Sum over the servers."
+          },
+          "name": {
+            "type": "string"
+          },
+          "queue": {
+            "$ref": "#/components/schemas/QueueStats"
+          },
+          "servers": {
+            "items": {
+              "$ref": "#/components/schemas/ServerStats"
+            },
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PoolStatus"
+          },
+          "totalServers": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "traffic": {
+            "$ref": "#/components/schemas/TrafficStats",
+            "description": "Sum over the servers."
+          },
+          "unavailableSelections": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Selections that found no available server."
+          }
+        },
+        "required": [
+          "name",
+          "algorithm",
+          "status",
+          "availableServers",
+          "totalServers",
+          "unavailableSelections",
+          "failOpenSelections",
+          "queue",
+          "inflight",
+          "traffic",
+          "latency",
+          "servers"
+        ],
+        "type": "object"
+      },
+      "PoolStatus": {
+        "description": "Worst-of-children state of a pool.",
+        "oneOf": [
+          {
+            "const": "up",
+            "description": "Every server is available.",
+            "type": "string"
+          },
+          {
+            "const": "degraded",
+            "description": "Some servers are available.",
+            "type": "string"
+          },
+          {
+            "const": "down",
+            "description": "No server is available.",
+            "type": "string"
+          },
+          {
+            "const": "empty",
+            "description": "The pool has no servers.",
+            "type": "string"
+          }
+        ]
+      },
+      "ProcessInflight": {
+        "description": "Requests currently waiting for or served by an upstream server.",
+        "properties": {
+          "oldestUpstreamAgeMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "overdue": {
+            "description": "Requests past their deadline.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stuck": {
+            "description": "Requests the watchdog has reported as stuck.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upstreamRequests": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "upstreamRequests",
+          "oldestUpstreamAgeMs",
+          "overdue",
+          "stuck"
+        ],
+        "type": "object"
+      },
+      "ProcessStats": {
+        "properties": {
+          "acceptedConnections": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Connections accepted by the public listeners."
+          },
+          "activeConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "administrativeState": {
+            "$ref": "#/components/schemas/AdministrativeState"
+          },
+          "bytesReceived": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Bytes read from clients by the public listeners."
+          },
+          "bytesSent": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Bytes written to clients by the public listeners."
+          },
+          "cpuPercent": {
+            "format": "double",
+            "type": "number"
+          },
+          "host": {
+            "$ref": "#/components/schemas/HostStats"
+          },
+          "inflight": {
+            "$ref": "#/components/schemas/ProcessInflight"
+          },
+          "maxConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "openFileDescriptors": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rejectedConnections": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "residentMemoryBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retryAttempts": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ComponentState"
+          },
+          "stateReason": {
+            "type": "string"
+          },
+          "threadCount": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "uptimeMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          },
+          "virtualMemoryBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "uptimeMs",
+          "state",
+          "administrativeState",
+          "activeConnections",
+          "acceptedConnections",
+          "rejectedConnections",
+          "bytesReceived",
+          "bytesSent",
+          "retryAttempts",
+          "inflight",
+          "host"
+        ],
+        "type": "object"
+      },
+      "ProxyProtocolOutcome": {
+        "enum": [
+          "accepted",
+          "sent",
+          "timeout",
+          "cancelled",
+          "malformed",
+          "unsupported",
+          "mismatch",
+          "io_error"
+        ],
+        "type": "string"
+      },
+      "ProxyProtocolOutcomeCount": {
+        "properties": {
+          "count": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ProxyProtocolOutcome"
+          }
+        },
+        "required": [
+          "result",
+          "count"
+        ],
+        "type": "object"
+      },
+      "ProxyProtocolStats": {
+        "properties": {
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/ProxyProtocolOutcomeCount"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "outcomes"
+        ],
+        "type": "object"
+      },
+      "QueueStats": {
+        "description": "Requests waiting for server capacity. The proxy bounds the wait by time (`timeoutMs`), not by depth,\nso there is no queue capacity.",
+        "properties": {
+          "byClass": {
+            "description": "Waiting requests per queue class; absent for pools without classes.",
+            "items": {
+              "$ref": "#/components/schemas/ClassCount"
+            },
+            "type": "array"
+          },
+          "cancellations": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "current": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "oldestWaitMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "timeoutMs": {
+            "description": "The configured limit of the wait; absent when the pool has none.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "timeouts": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "total": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Requests that ever waited."
+          },
+          "wait": {
+            "$ref": "#/components/schemas/Histogram",
+            "description": "Time requests spent waiting."
+          }
+        },
+        "required": [
+          "current",
+          "oldestWaitMs",
+          "total",
+          "timeouts",
+          "cancellations",
+          "wait"
+        ],
+        "type": "object"
+      },
+      "RejectionStats": {
+        "properties": {
+          "atUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticStats"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "atUnixMs",
+          "diagnostics"
+        ],
+        "type": "object"
+      },
+      "RescueCount": {
+        "properties": {
+          "count": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "status": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "count"
+        ],
+        "type": "object"
+      },
+      "ResponseStats": {
+        "description": "Responses by status class; `none` counts attempts that ended without a response.",
+        "properties": {
+          "1xx": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "2xx": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "3xx": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "4xx": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "5xx": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "none": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "1xx",
+          "2xx",
+          "3xx",
+          "4xx",
+          "5xx",
+          "none"
+        ],
+        "type": "object"
+      },
+      "RetiredGeneration": {
+        "properties": {
+          "ageSeconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "deadlineRemainingSeconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "inFlight": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "inFlightByKind": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "In-flight work by protocol; the key set is open.",
+            "type": "object"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RetiredState"
+          }
+        },
+        "required": [
+          "revision",
+          "state",
+          "ageSeconds",
+          "deadlineRemainingSeconds",
+          "inFlight",
+          "inFlightByKind"
+        ],
+        "type": "object"
+      },
+      "RetiredState": {
+        "enum": [
+          "draining",
+          "closing"
+        ],
+        "type": "string"
+      },
+      "RouteAction": {
+        "enum": [
+          "proxy",
+          "fixed_response",
+          "redirect",
+          "static_files"
+        ],
+        "type": "string"
+      },
+      "RouteStats": {
+        "description": "A configured HTTP route. The proxy keeps no per-route request counters, so a route carries\nconfiguration plus the two counters it does keep (`rescues`, `poolSelections`).",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RouteAction"
+          },
+          "host": {
+            "$ref": "#/components/schemas/Selector"
+          },
+          "id": {
+            "description": "`<service>#<index>`: stable while the configuration keeps the route in place.",
+            "type": "string"
+          },
+          "index": {
+            "description": "Position of the route in its service.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "listeners": {
+            "description": "The listeners that serve the service.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "maxRetries": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "methods": {
+            "description": "Empty means every method.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "path": {
+            "$ref": "#/components/schemas/Selector"
+          },
+          "pool": {
+            "description": "The pool a `proxy` route sends to.",
+            "type": "string"
+          },
+          "poolSelections": {
+            "description": "Requests a header selector sent to a pool; same availability as `rescues`.",
+            "items": {
+              "$ref": "#/components/schemas/PoolSelectionCount"
+            },
+            "type": "array"
+          },
+          "rescues": {
+            "description": "Requests replayed after the backend answered a rescue status, by that status. Absent until one was\nrecorded, and absent when several services have a route at this index, because the proxy keys the\ncounter by index alone.",
+            "items": {
+              "$ref": "#/components/schemas/RescueCount"
+            },
+            "type": "array"
+          },
+          "service": {
+            "type": "string"
+          },
+          "status": {
+            "description": "The status of a `fixed_response` or `redirect` route.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "service",
+          "index",
+          "listeners",
+          "path",
+          "methods",
+          "action"
+        ],
+        "type": "object"
+      },
+      "Selector": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/SelectorKind"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "type": "object"
+      },
+      "SelectorKind": {
+        "enum": [
+          "normalized_host",
+          "exact_authority",
+          "ascii_case_insensitive_exact_authority",
+          "nginx_leading_wildcard",
+          "nginx_leading_dot",
+          "segment_prefix",
+          "raw_prefix",
+          "exact",
+          "ascii_case_insensitive_exact"
+        ],
+        "type": "string"
+      },
+      "ServerOrigin": {
+        "enum": [
+          "static",
+          "dynamic"
+        ],
+        "type": "string"
+      },
+      "ServerStats": {
+        "properties": {
+          "address": {
+            "description": "The configured upstream endpoint: socket address, `host:port` or Unix socket path.",
+            "type": "string"
+          },
+          "administrativeState": {
+            "$ref": "#/components/schemas/AdministrativeState"
+          },
+          "available": {
+            "description": "Whether the balancer may pick the server now.",
+            "type": "boolean"
+          },
+          "check": {
+            "$ref": "#/components/schemas/CheckStats"
+          },
+          "configuredMaxConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "configuredWeight": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "downtimeMs": {
+            "description": "How long the server has been unhealthy; absent while it is not.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "health": {
+            "$ref": "#/components/schemas/HealthState"
+          },
+          "healthOverride": {
+            "$ref": "#/components/schemas/HealthOverride"
+          },
+          "lastTransitionAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "latency": {
+            "$ref": "#/components/schemas/LatencyStats"
+          },
+          "maxConnections": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/ServerOrigin"
+          },
+          "passive": {
+            "$ref": "#/components/schemas/PassiveStats"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ServerStatus"
+          },
+          "traffic": {
+            "$ref": "#/components/schemas/TrafficStats"
+          },
+          "weight": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "address",
+          "origin",
+          "status",
+          "available",
+          "administrativeState",
+          "healthOverride",
+          "health",
+          "weight",
+          "configuredWeight",
+          "check",
+          "passive",
+          "traffic",
+          "latency"
+        ],
+        "type": "object"
+      },
+      "ServerStatus": {
+        "description": "The state a person reads first: the server's own judgement of whether it takes traffic.",
+        "enum": [
+          "up",
+          "down",
+          "drain",
+          "maint",
+          "ejected",
+          "unchecked",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "SessionStats": {
+        "properties": {
+          "current": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Every attempt made on the server, whatever its outcome."
+          }
+        },
+        "required": [
+          "current",
+          "total"
+        ],
+        "type": "object"
+      },
+      "StatsDocument": {
+        "description": "What a client may do: serialised next to the cached snapshot because it depends on who asks.",
+        "properties": {
+          "admin": {
+            "description": "True when this client may post administrative state changes: a loopback peer of a page with\n`admin = \"localhost\"`. The form then needs `generation.activeRevision`.",
+            "type": "boolean"
+          },
+          "bucketBoundsMs": {
+            "$ref": "#/components/schemas/BucketBounds"
+          },
+          "certificateWatchers": {
+            "items": {
+              "$ref": "#/components/schemas/CertificateWatcherStats"
+            },
+            "type": "array"
+          },
+          "certificates": {
+            "items": {
+              "$ref": "#/components/schemas/CertificateStats"
+            },
+            "type": "array"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/GenerationStats"
+          },
+          "intervalHintMs": {
+            "description": "How often a client should poll; never below one second, the server's own refresh floor.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "listeners": {
+            "items": {
+              "$ref": "#/components/schemas/ListenerStats"
+            },
+            "type": "array"
+          },
+          "pools": {
+            "items": {
+              "$ref": "#/components/schemas/PoolStats"
+            },
+            "type": "array"
+          },
+          "process": {
+            "$ref": "#/components/schemas/ProcessStats"
+          },
+          "routes": {
+            "items": {
+              "$ref": "#/components/schemas/RouteStats"
+            },
+            "type": "array"
+          },
+          "sampledAtUnixMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schemaVersion": {
+            "description": "Bumped on any incompatible change of this document.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/WarningStats"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "admin",
+          "schemaVersion",
+          "sampledAtUnixMs",
+          "intervalHintMs",
+          "process",
+          "generation",
+          "bucketBoundsMs",
+          "listeners",
+          "routes",
+          "pools",
+          "certificates",
+          "certificateWatchers",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "TcpRelayOutcome": {
+        "enum": [
+          "success",
+          "connect_error",
+          "connect_timeout",
+          "idle_timeout",
+          "lifetime_timeout",
+          "cancelled",
+          "io_error",
+          "accounting_error",
+          "proxy_protocol_error"
+        ],
+        "type": "string"
+      },
+      "TcpRelayOutcomeCount": {
+        "properties": {
+          "count": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          },
+          "result": {
+            "$ref": "#/components/schemas/TcpRelayOutcome"
+          }
+        },
+        "required": [
+          "result",
+          "count"
+        ],
+        "type": "object"
+      },
+      "TcpRelayStats": {
+        "properties": {
+          "latency": {
+            "$ref": "#/components/schemas/Histogram"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/TcpRelayOutcomeCount"
+            },
+            "type": "array"
+          },
+          "total": {
+            "$ref": "#/components/schemas/DecimalCounter"
+          }
+        },
+        "required": [
+          "outcomes",
+          "total",
+          "latency"
+        ],
+        "type": "object"
+      },
+      "TrafficStats": {
+        "description": "What the proxy counted for a server, or for a whole pool as the sum over its servers.",
+        "properties": {
+          "attempts": {
+            "$ref": "#/components/schemas/AttemptStats"
+          },
+          "bytesReceived": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Bytes received from the server."
+          },
+          "bytesSent": {
+            "$ref": "#/components/schemas/DecimalCounter",
+            "description": "Bytes sent to the server."
+          },
+          "evacuated": {
+            "$ref": "#/components/schemas/EvacuationStats"
+          },
+          "responses": {
+            "$ref": "#/components/schemas/ResponseStats"
+          },
+          "sessions": {
+            "$ref": "#/components/schemas/SessionStats"
+          }
+        },
+        "required": [
+          "sessions",
+          "bytesSent",
+          "bytesReceived",
+          "responses",
+          "attempts",
+          "evacuated"
+        ],
+        "type": "object"
+      },
+      "WarningStats": {
+        "description": "A valid setting that cannot behave the way it reads.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Read-only statistics served by a stats page listener. Every client that can reach the listener gets the same snapshot; only `admin` depends on the peer. Keys the proxy does not know are omitted, never zero. Counters are decimal strings, gauges and timestamps are numbers. All responses are `Cache-Control: no-store`; `HEAD` answers like `GET` without a body.",
+    "title": "OxiRoute Stats Page API",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "getStatsPage",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The HTML page."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No generation is active or the runtime could not be sampled."
+          }
+        },
+        "summary": "The page: a table that needs no script."
+      },
+      "post": {
+        "description": "Only for loopback peers of a page configured with `admin = \"localhost\"` and only when the request is same-origin (loopback `Host`, matching `Origin` or `Referer`, no forwarding headers); `admin` in the snapshot says whether to offer it.",
+        "operationId": "changeServerState",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The state changed; the next snapshot shows it."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The form is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The peer or the request origin may not administer."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The pool or the server does not exist."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The generation revision changed since the snapshot."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The form exceeds 8 KiB."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The content type is not `application/x-www-form-urlencoded`."
+          }
+        },
+        "summary": "Changes the administrative state of one server."
+      }
+    },
+    "/snapshot.json": {
+      "get": {
+        "description": "Rebuilt at most once per second and shared by every client. Poll no faster than `intervalHintMs`.",
+        "operationId": "getStatsSnapshot",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsDocument"
+                }
+              }
+            },
+            "description": "The snapshot."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No generation is active or the runtime could not be sampled."
+          }
+        },
+        "summary": "The complete snapshot."
+      }
+    },
+    "/stats.csv": {
+      "get": {
+        "description": "One header line starting with `# `, then one row per listener, pool and server, under the HAProxy column names for the values the proxy has. Unknown cells are empty. Text cells are quoted when needed and prefixed with `'` when they start with a formula character.",
+        "operationId": "getStatsCsv",
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The CSV."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No generation is active or the runtime could not be sampled."
+          }
+        },
+        "summary": "HAProxy-style CSV of listeners (`FRONTEND`), pools (`BACKEND`) and servers."
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "http://{host}{prefix}",
+      "variables": {
+        "host": {
+          "default": "127.0.0.1:8404"
+        },
+        "prefix": {
+          "default": "/stats",
+          "description": "The `uri_prefix` of the stats page; `/` when it is the root."
+        }
+      }
+    }
+  ]
+}
