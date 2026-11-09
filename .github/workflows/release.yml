@@ -9,6 +9,11 @@ on:
         description: Existing tag or ref to archive and verify
         required: true
         type: string
+      pgo:
+        description: Build the release binaries with profile-guided optimization (false publishes a plain build)
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -122,3 +127,58 @@ jobs:
             release/oxiroute-*.tar.gz
             release/SHA256SUMS
             release/SOURCE-PROVENANCE.json
+
+  binaries:
+    name: Build ${{ matrix.target }} release binaries
+    needs: archive
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+    env:
+      CARGO_INCREMENTAL: 0
+      PGO_TARGET: ${{ matrix.target }}
+      PGO: ${{ (github.event_name == 'workflow_dispatch' && !inputs.pgo) && '0' || '1' }}
+    steps:
+      - name: Check out release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Rust 1.97.1 with the matching llvm-profdata
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.target }}
+          components: llvm-tools
+
+      - name: Build release binaries (profile-guided unless disabled)
+        env:
+          RELEASE_REF: ${{ inputs.tag || github.ref_name }}
+          PGO_WORK: ${{ runner.temp }}/pgo
+        run: ./scripts/build-release-binaries.sh "${RELEASE_REF#v}" release-binaries
+
+      - name: Upload release binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxiroute-binaries-${{ matrix.target }}-${{ inputs.tag || github.ref_name }}
+          path: release-binaries
+
+      - name: Attest release binary provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release-binaries/oxiroute-*.tar.gz
+
+      - name: Publish tagged release binaries
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          append_body: true
+          body_path: release-binaries/pgo-note-${{ matrix.target }}.md
+          files: |
+            release-binaries/oxiroute-*.tar.gz
+            release-binaries/oxiroute-*.tar.gz.sha256
+            release-binaries/oxiroute-*.build.json
