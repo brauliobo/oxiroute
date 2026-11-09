@@ -219,24 +219,22 @@ where
     {
         // phase 1 read request header
 
+        // A connection waiting between requests ends with the signal its owner shares (one waiter); the first request
+        // of a connection ends when the service stops. Registering for both made every request pay for two.
         let res = tokio::select! {
             biased; // biased select is cheaper, and we don't want to drop already buffered requests
             res = downstream_session.read_request() => { res }
-            _ = self.shutdown.notified() => {
-                // service shutting down, dropping the connection to stop more req from coming in
-                return None;
-            }
-            // The owner of this connection asked it to end, for example because the generation
-            // serving it was replaced. The watch is level triggered, so no signal can be missed
-            // between requests.
             _ = async {
                 match shutdown {
                     Some(shutdown) => {
                         let _ = shutdown.clone().wait_for(|stopping| *stopping).await;
                     }
-                    None => std::future::pending::<()>().await,
+                    None => self.shutdown.notified().await,
                 }
             } => {
+                // service shutting down, or the owner of this connection asked it to end, for example
+                // because the generation serving it was replaced. The watch is level triggered, so no signal can
+                // be missed between requests. Dropping the connection stops more requests from coming in.
                 return None;
             }
         };

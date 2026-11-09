@@ -44,6 +44,9 @@ task handoffs and response batches, the cancellable upstream attempt, and compat
   A hook default with no body of its own is an `async move` block that returns at once.
 - `lib.rs` `HttpProxy` implements `HttpServerApp::process_new_http_inline` (see `pingora-core`); `process_new_http`
   delegates to it.
+- `lib.rs` `handle_new_request` waits for one shutdown signal while it reads a request head: the watch its owner
+  shares for a connection that is between requests, the service `Notify` for the first request. It used to register
+  both for every request.
 - `proxy_h1_inline.rs` relays an HTTP/1 request that has no body, upgrade or cache involvement
   (`HttpProxy::relays_bodyless`) in one loop: the end of the empty body goes through the same two body filters, the
   upstream session is read for the response tasks, up to four tasks that are ready are filtered by `h1_response_filter`
