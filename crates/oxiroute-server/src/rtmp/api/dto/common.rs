@@ -45,6 +45,12 @@ impl<'de> Deserialize<'de> for DecimalCounter {
     }
 }
 
+impl DecimalCounter {
+    pub(crate) const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 impl From<u64> for DecimalCounter {
     fn from(value: u64) -> Self {
         Self(value)
