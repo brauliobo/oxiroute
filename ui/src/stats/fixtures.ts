@@ -144,7 +144,7 @@ export function wireListener(name: string, overrides: Partial<ListenerStats> = {
 export function wireDocument(overrides: Partial<StatsDocument> = {}): StatsDocument {
   const web = wirePool('web', [
     wireServer('origin-a', '198.51.100.11:8080'),
-    wireServer('origin-b', '198.51.100.12:8080', { status: 'drain', administrativeState: 'drain' }),
+    wireServer('origin-b', '198.51.100.12:8080', { status: 'drain', administrativeState: 'drain', available: false }),
   ])
   const api = wirePool('api', [wireServer('origin-c', '198.51.100.21:9000', { origin: 'dynamic' })])
   return {
@@ -205,8 +205,8 @@ export function wireDocument(overrides: Partial<StatsDocument> = {}): StatsDocum
     certificates: [{
       name: 'edge',
       source: 'direct_file',
-      expiresAt: 'Dec 31 23:59:59 2026 GMT',
-      notAfterUnixSeconds: 1_798_761_599,
+      expiresAt: 'Apr 15 08:00:00 2027 GMT',
+      notAfterUnixSeconds: BASE_SAMPLED_AT_MS / 1000 + 90 * 86_400,
     }],
     certificateWatchers: [],
     warnings: [{ code: 'W_PASSIVE_HEALTH_MISSING', message: 'Pool api has no passive health settings.' }],
