@@ -17,6 +17,7 @@ pub(crate) struct StaticFile {
     pub(crate) content: StaticContent,
     pub(crate) content_type: HeaderValue,
     pub(crate) etag: HeaderValue,
+    pub(crate) content_length: HeaderValue,
     pub(crate) last_modified: HeaderValue,
     pub(crate) modified: std::time::SystemTime,
     pub(crate) name: Arc<OsStr>,
@@ -203,6 +204,7 @@ fn read_regular_file(descriptor: OwnedFd, name: &OsStr) -> Result<StaticFile, St
         content: StaticContent::Open(File::from(descriptor)),
         content_type: HeaderValue::from_static(builtin_content_type(name)),
         etag: nginx_static_etag(before.st_mtime, size),
+        content_length: HeaderValue::from(size),
         last_modified: HeaderValue::from_str(&httpdate::fmt_http_date(modified))
             .expect("HTTP date is a valid header value"),
         modified,
