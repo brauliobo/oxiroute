@@ -236,6 +236,14 @@
     border: 0;
   }
 
+  .ox-table .ox-total {
+    background: var(--oxd-surface);
+  }
+
+  .ox-table .ox-total > * {
+    background: none;
+  }
+
   .ox-table td[data-label]::before {
     content: attr(data-label);
     display: block;
