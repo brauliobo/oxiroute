@@ -59,6 +59,8 @@ pub struct HttpSession {
     response_header: Option<Box<ResponseHeader>>,
     // What keepalive and framing need once `response_header` went to the caller of `read_resp_header_parts`.
     response_facts: Option<ResponseFacts>,
+    // What the response header said about its framing when it was parsed.
+    response_noted: RequestFacts,
     request_written: Option<RequestMetadata>,
     // Preserve extension and resource lifetime for the legacy owned write API.
     _request_written_owned: Option<Box<RequestHeader>>,
@@ -87,9 +89,12 @@ struct ResponseFacts {
     transfer_encoding: bool,
 }
 
-impl From<&ResponseHeader> for ResponseFacts {
-    fn from(response: &ResponseHeader) -> Self {
-        let connection = response.headers.get(header::CONNECTION).cloned();
+impl ResponseFacts {
+    fn of(response: &ResponseHeader, noted: RequestFacts) -> Self {
+        let connection = noted
+            .connection
+            .then(|| response.headers.get(header::CONNECTION).cloned())
+            .flatten();
         // Only a `Connection: keep-alive` response is asked for its `Keep-Alive` parameters.
         let keep_alive = connection
             .as_ref()
@@ -99,7 +104,7 @@ impl From<&ResponseHeader> for ResponseFacts {
             version: response.version,
             connection,
             keep_alive,
-            transfer_encoding: response.headers.contains_key(header::TRANSFER_ENCODING),
+            transfer_encoding: noted.transfer_encoding,
         }
     }
 }
@@ -142,6 +147,7 @@ impl HttpSession {
             keepalive_timeout: KeepaliveStatus::Off,
             response_header: None,
             response_facts: None,
+            response_noted: RequestFacts::default(),
             request_written: None,
             _request_written_owned: None,
             read_timeout: None,
@@ -269,11 +275,13 @@ impl HttpSession {
             .expect("response header must be read");
 
         // ad-hoc checks
-        super::common::check_dup_content_length(&resp_header.headers)?;
+        let _ = resp_header;
+        super::common::check_dup_content_length_facts(self.response_noted)?;
 
         // Validate content-length value if present
         // Note: Content-Length is already removed if Transfer-Encoding is present
-        if !self.allow_h1_response_invalid_content_length {
+        if !self.allow_h1_response_invalid_content_length && self.response_noted.content_lengths > 0
+        {
             self.get_content_length()?;
         }
 
@@ -386,6 +394,7 @@ impl HttpSession {
 
                     let buf = buf.freeze();
 
+                    let mut facts = RequestFacts::default();
                     for header in header_refs {
                         let header_name = header.get_name(&buf);
                         let value_bytes = header.get_value_bytes(&buf);
@@ -415,29 +424,29 @@ impl HttpSession {
                             Err(Error::new(InvalidHTTPHeader))
                         };
                         let header_value = header_value?;
-                        append_parsed_header(
+                        append_parsed_request_header(
                             &mut response_header.headers,
                             header_name,
                             header_value,
+                            &mut facts,
                         )
                         .or_err(InvalidHTTPHeader, "while parsing request header")?;
                     }
 
-                    let contains_transfer_encoding = response_header
-                        .headers
-                        .contains_key(header::TRANSFER_ENCODING);
-                    let contains_content_length =
-                        response_header.headers.contains_key(header::CONTENT_LENGTH);
+                    let contains_transfer_encoding = facts.transfer_encoding;
+                    let contains_content_length = facts.content_lengths > 0;
 
                     // Transfer encoding overrides content length, so when
                     // both are present, we MUST remove content length. This is
                     // https://datatracker.ietf.org/doc/html/rfc9112#section-6.3-2.3
                     if contains_content_length && contains_transfer_encoding {
                         response_header.remove_header(&header::CONTENT_LENGTH);
+                        facts.content_lengths = 0;
                     }
 
                     self.buf = buf;
                     self.response_header = Some(response_header);
+                    self.response_noted = facts;
                     self.validate_response()?;
                     // convert to upgrade body type
                     // https://datatracker.ietf.org/doc/html/rfc9110#status.101
@@ -474,7 +483,7 @@ impl HttpSession {
             .response_header
             .take()
             .expect("response header was just read");
-        self.response_facts = Some(ResponseFacts::from(&*header));
+        self.response_facts = Some(ResponseFacts::of(&header, self.response_noted));
         Ok(header)
     }
 
@@ -777,7 +786,10 @@ impl HttpSession {
             } else if self.is_chunked_encoding() {
                 // if chunked encoding, content-length should be ignored
                 self.body_reader.init_chunked(&preread_body);
-            } else if let Some(cl) = self.get_content_length().unwrap_or(None) {
+            } else if let Some(cl) = (self.response_noted.content_lengths > 0)
+                .then(|| self.get_content_length().unwrap_or(None))
+                .flatten()
+            {
                 self.body_reader.init_content_length_owned(cl, preread_body);
             } else {
                 self.body_reader.init_close_delimited_owned(preread_body);
@@ -829,9 +841,11 @@ impl HttpSession {
     }
 
     fn is_chunked_encoding(&self) -> bool {
-        self.resp_header()
-            .map(|h| is_chunked_encoding_from_headers(&h.headers))
-            .unwrap_or(false)
+        self.response_noted.transfer_encoding
+            && self
+                .resp_header()
+                .map(|h| is_chunked_encoding_from_headers(&h.headers))
+                .unwrap_or(false)
     }
 
     fn init_req_body_writer(&mut self, header: &RequestHeader) {
@@ -1645,6 +1659,40 @@ mod tests_stream {
         let mut http_stream = HttpSession::new(Box::new(mock_io));
         let res = http_stream.read_response().await;
         assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn response_facts_follow_the_headers_that_were_parsed() {
+        for (head, expected) in [
+            (
+                &b"HTTP/1.1 200 OK\r\nServer: test\r\n\r\n"[..],
+                RequestFacts::default(),
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\n",
+                RequestFacts {
+                    content_lengths: 1,
+                    connection: true,
+                    ..RequestFacts::default()
+                },
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\n",
+                RequestFacts {
+                    transfer_encoding: true,
+                    ..RequestFacts::default()
+                },
+            ),
+        ] {
+            let mock_io = Builder::new().read(head).build();
+            let mut http_stream = HttpSession::new(Box::new(mock_io));
+            http_stream.read_response().await.unwrap();
+            assert_eq!(http_stream.response_noted, expected);
+            assert_eq!(
+                RequestFacts::of(&http_stream.resp_header().unwrap().headers),
+                expected
+            );
+        }
     }
 
     #[tokio::test]
