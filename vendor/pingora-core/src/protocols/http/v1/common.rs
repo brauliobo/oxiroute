@@ -263,10 +263,13 @@ pub(super) fn is_buf_keepalive(header_value: Option<&HeaderValue>) -> Option<boo
     })
 }
 
+/// The offsets of one message's headers; up to this many need no allocation.
+pub(super) type HeaderRefs = smallvec::SmallVec<[KVRef; 16]>;
+
 #[inline]
 pub(super) fn populate_headers(
     base: usize,
-    header_ref: &mut Vec<KVRef>,
+    header_ref: &mut HeaderRefs,
     headers: &[httparse::Header],
 ) -> usize {
     let mut used_header_index = 0;
@@ -373,6 +376,14 @@ impl RequestFacts {
     }
 }
 
+/// Whether `bytes` are valid `HeaderValue` contents: the check `HeaderValue::from_bytes` makes, without copying them.
+#[inline]
+pub(super) fn is_header_value(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .all(|&byte| (byte >= 32 && byte != 127) || byte == b'\t')
+}
+
 /// Like [`append_parsed_header`], and notes what the header is in `facts`.
 #[inline]
 pub(super) fn append_parsed_request_header(
@@ -459,6 +470,18 @@ mod test {
         }
         assert_eq!(header_name(b"Host").unwrap(), header::HOST);
         assert!(header_name(&[b'a'; NAME_CACHE_MAX_BYTES + 1]).is_ok());
+    }
+
+    #[test]
+    fn header_value_validity_matches_the_http_crate() {
+        for byte in 0..=u8::MAX {
+            assert_eq!(
+                is_header_value(&[b'a', byte]),
+                HeaderValue::from_bytes(&[b'a', byte]).is_ok(),
+                "byte {byte}"
+            );
+        }
+        assert!(is_header_value(b""));
     }
 
     #[test]
