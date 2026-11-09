@@ -20,7 +20,7 @@ use tokio::{
     time::timeout,
 };
 
-use h1_wire::{find, header_names, status, Wire, STEP};
+use h1_wire::{STEP, Wire, find, header_names, status};
 
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Origin: yes\r\n\r\nok";
 

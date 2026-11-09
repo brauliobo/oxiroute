@@ -22,7 +22,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use h1_wire::{find, read_request, status, Captured, Origin, Wire, STEP};
+use h1_wire::{Captured, Origin, STEP, Wire, find, read_request, status};
 
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 
