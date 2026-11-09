@@ -1709,44 +1709,53 @@ async fn authenticated_local_shutdown_uses_the_graceful_process_channel() {
     let ready = http_request(management_address, "GET", "/ready", &[], &[]).await;
     assert_eq!(ready.status, 503);
     assert_eq!(ready.json()["ready"], false);
+    // Shutdown ends idle HTTP/1 connections, so the mutations are in flight (head sent, body
+    // withheld) when it is requested and finish afterwards.
+    let json_headers = [
+        ("Authorization", authorization.as_str()),
+        ("Content-Type", "application/json"),
+    ];
+    let put_headers = [
+        json_headers[0],
+        json_headers[1],
+        ("If-Config-Revision", disk_revision.as_str()),
+    ];
+    let mut validation = TcpStream::connect(management_address)
+        .await
+        .expect("validation connection");
+    begin_persistent_request(
+        &mut validation,
+        "POST",
+        "/api/v1/config/validate",
+        &json_headers,
+        config_body.len(),
+    )
+    .await;
+    let mut write = TcpStream::connect(management_address)
+        .await
+        .expect("write connection");
+    begin_persistent_request(
+        &mut write,
+        "PUT",
+        "/api/v1/config",
+        &put_headers,
+        config_body.len(),
+    )
+    .await;
     let shutdown = persistent_request(
         &mut management,
         "POST",
         "/api/v1/process/shutdown",
-        &[
-            ("Authorization", &authorization),
-            ("Content-Type", "application/json"),
-        ],
+        &json_headers,
         &mutation_body,
     )
     .await;
     assert_eq!(shutdown.status, 202);
     assert_eq!(shutdown.json()["outcome"], "shutdown_requested");
 
-    let validated = persistent_request(
-        &mut management,
-        "POST",
-        "/api/v1/config/validate",
-        &[
-            ("Authorization", &authorization),
-            ("Content-Type", "application/json"),
-        ],
-        &config_body,
-    )
-    .await;
+    let validated = finish_persistent_request(&mut validation, &config_body).await;
     assert_eq!(validated.status, 200, "{}", validated.text());
-    let rejected = persistent_request(
-        &mut management,
-        "PUT",
-        "/api/v1/config",
-        &[
-            ("Authorization", &authorization),
-            ("Content-Type", "application/json"),
-            ("If-Config-Revision", &disk_revision),
-        ],
-        &config_body,
-    )
-    .await;
+    let rejected = finish_persistent_request(&mut write, &config_body).await;
     assert_eq!(rejected.status, 409, "{}", rejected.text());
     assert_eq!(rejected.json()["error"]["code"], "mutation_in_progress");
     assert_eq!(
@@ -1754,7 +1763,7 @@ async fn authenticated_local_shutdown_uses_the_graceful_process_channel() {
         disk_before_shutdown
     );
 
-    drop(management);
+    drop((management, validation, write));
     tokio::task::spawn_blocking(move || server.wait_for_exit())
         .await
         .expect("wait task");
@@ -2197,6 +2206,18 @@ async fn persistent_request(
     headers: &[(&str, &str)],
     body: &[u8],
 ) -> http_support::HttpResponse {
+    begin_persistent_request(stream, method, path, headers, body.len()).await;
+    finish_persistent_request(stream, body).await
+}
+
+/// Sends the request head only, so that the request is in flight when the body follows.
+async fn begin_persistent_request(
+    stream: &mut TcpStream,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body_length: usize,
+) {
     use std::fmt::Write as _;
 
     let mut request =
@@ -2204,14 +2225,20 @@ async fn persistent_request(
     for (name, value) in headers {
         writeln!(request, "{name}: {value}\r").expect("persistent request header");
     }
-    if !body.is_empty() || matches!(method, "POST" | "PUT") {
-        writeln!(request, "Content-Length: {}\r", body.len()).expect("persistent content length");
+    if body_length > 0 || matches!(method, "POST" | "PUT") {
+        writeln!(request, "Content-Length: {body_length}\r").expect("persistent content length");
     }
     request.push_str("\r\n");
     stream
         .write_all(request.as_bytes())
         .await
         .expect("persistent request head");
+}
+
+async fn finish_persistent_request(
+    stream: &mut TcpStream,
+    body: &[u8],
+) -> http_support::HttpResponse {
     stream
         .write_all(body)
         .await
