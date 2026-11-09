@@ -32,6 +32,8 @@ export interface Row<Wire> {
   problem: boolean
 }
 export interface Metered {
+  /** Connections or sessions open now (a gauge). */
+  active: number
   counters: Readonly<Partial<Record<Metric, bigint>>>
   histograms: Readonly<Partial<Record<HistogramName, HistogramCounts>>>
 }
@@ -87,13 +89,18 @@ export function buildModel(snapshot: StatsSnapshot): StatsModel {
   return { ...model, summary: summarize(model) }
 }
 
+const meteredRows = (model: StatsModel): Array<Metered & { key: string }> => [
+  model.process, ...model.listeners, ...model.pools, ...model.pools.flatMap((pool) => pool.servers),
+]
+
+/** The open connections of every row by `<row key>#active`, a series next to the rates. */
+export const modelGauges = (model: StatsModel): Map<string, number> =>
+  new Map(meteredRows(model).map((row) => [`${row.key}#active`, row.active]))
+
 /** Every counter of the model by `<row key>#<metric>`, the input of the rate tracker. */
 export function modelCounters(model: StatsModel): Map<string, bigint> {
   const counters = new Map<string, bigint>()
-  const rows: Array<Metered & { key: string }> = [
-    model.process, ...model.listeners, ...model.pools, ...model.pools.flatMap((pool) => pool.servers),
-  ]
-  for (const row of rows) {
+  for (const row of meteredRows(model)) {
     for (const [metric, value] of Object.entries(row.counters)) counters.set(`${row.key}#${metric}`, value)
   }
   return counters
@@ -107,6 +114,7 @@ const defined = <T extends object>(source: { [K in keyof T]: T[K] | undefined })
 function processRow(wire: Wire<ProcessStats>): ProcessRow {
   return {
     key: 'process', name: 'process', wire, problem: wire.state === 'degraded' || wire.host.state === 'degraded',
+    active: wire.activeConnections,
     counters: { accepted: wire.acceptedConnections, bytesReceived: wire.bytesReceived, bytesSent: wire.bytesSent },
     histograms: {},
   }
@@ -121,6 +129,7 @@ function listenerRow(wire: Wire<ListenerStats>): ListenerRow {
   const failing = outcomes?.filter((outcome) => FAILING_OUTCOMES.has(outcome.result)).reduce((sum, { count }) => sum + count, 0n)
   return {
     key: rowKey('listener', wire.name), name: wire.name, wire, problem: wire.state !== 'listening',
+    active: wire.activeConnections,
     counters: defined({
       accepted: wire.acceptedConnections, bytesReceived: wire.bytesReceived, bytesSent: wire.bytesSent,
       requests: wire.http?.total ?? wire.tcpRelays?.total, errors: failing,
@@ -142,6 +151,7 @@ function serverRow(pool: string, wire: Wire<ServerStats>): ServerRow {
   return {
     key: rowKey('server', pool, wire.name), name: wire.name, pool, wire, statusLabel: STATUS_LABELS[wire.status],
     problem: wire.status !== 'up' && wire.status !== 'unchecked',
+    active: wire.traffic.sessions.current,
     counters: trafficCounters(wire.traffic),
     histograms: { request: wire.latency.request, header: wire.latency.header },
   }
@@ -152,6 +162,7 @@ function poolRow({ servers: serverWire, ...wire }: Wire<PoolStats>): PoolRow {
   return {
     key: rowKey('pool', wire.name), name: wire.name, wire, servers, statusLabel: wire.status.toUpperCase(),
     problem: wire.status !== 'up' || servers.some((server) => server.problem),
+    active: wire.traffic.sessions.current,
     counters: trafficCounters(wire.traffic),
     histograms: { request: wire.latency.request, header: wire.latency.header, wait: wire.queue.wait },
   }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { decodeSnapshot } from './decode'
 import { counter, wireDocument, wirePool, wireServer } from './fixtures'
 import type { StatsDocument } from './generated/statsPage'
-import { CERT_SOON_MS, STATUS_LABELS, buildModel, modelCounters, rowKey } from './model'
+import { CERT_SOON_MS, STATUS_LABELS, buildModel, modelCounters, modelGauges, rowKey } from './model'
 
 const model = (overrides: Partial<StatsDocument> = {}) => buildModel(decodeSnapshot(wireDocument(overrides)))
 
@@ -157,5 +157,15 @@ describe('modelCounters', () => {
   it('sums the pool from the totals the server computed', () => {
     const counters = modelCounters(model())
     expect(counters.get('pool:web#requests')).toBe(2000n)
+  })
+})
+
+describe('modelGauges', () => {
+  it('lists the open connections of the process, listeners, pools and servers', () => {
+    const gauges = modelGauges(model())
+    expect(gauges.get('process#active')).toBe(7)
+    expect(gauges.get('listener:public-http#active')).toBe(7)
+    expect(gauges.get('server:web/origin-a#active')).toBe(3)
+    expect(gauges.get('pool:web#active')).toBe(6)
   })
 })
