@@ -397,19 +397,29 @@ impl PoolEndpoint {
         admission: Admission,
         now_unix_ms: u64,
     ) -> Option<EndpointLease> {
-        if !admission.admits(self, now_unix_ms) {
-            return None;
+        self.try_acquire_permit(queue, admission, now_unix_ms)
+            .then(|| {
+                EndpointLease::acquired(Arc::clone(self), Arc::clone(queue), Arc::clone(health))
+            })
+    }
+
+    /// Takes one capacity permit when `admission` allows this server; the caller owns it.
+    pub(super) fn try_acquire_permit(
+        &self,
+        queue: &PoolQueue,
+        admission: Admission,
+        now_unix_ms: u64,
+    ) -> bool {
+        if !admission.admits(self, now_unix_ms)
+            || self.try_acquire_capacity(admission, now_unix_ms).is_none()
+        {
+            return false;
         }
-        self.try_acquire_capacity(admission, now_unix_ms)?;
-        if !admission.admits(self, now_unix_ms) {
-            self.release_capacity(queue);
-            return None;
+        if admission.admits(self, now_unix_ms) {
+            return true;
         }
-        Some(EndpointLease::acquired(
-            Arc::clone(self),
-            Arc::clone(queue),
-            Arc::clone(health),
-        ))
+        self.release_capacity(queue);
+        false
     }
 
     pub(super) fn try_acquire_capacity(
