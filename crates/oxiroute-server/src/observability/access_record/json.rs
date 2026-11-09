@@ -28,12 +28,12 @@ fn push_u64(out: &mut Vec<u8>, mut value: u64) {
         digits[start..start + 2].copy_from_slice(&PAIRS[pair..pair + 2]);
     }
     if value >= 10 {
-        let pair = value as usize * 2;
+        let pair = (value % 100) as usize * 2;
         start -= 2;
         digits[start..start + 2].copy_from_slice(&PAIRS[pair..pair + 2]);
     } else {
         start -= 1;
-        digits[start] = b'0' + value as u8;
+        digits[start] = b'0' + (value % 10) as u8;
     }
     out.extend_from_slice(&digits[start..]);
 }
