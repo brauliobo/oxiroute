@@ -1,0 +1,263 @@
+.ox-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ox-table thead th {
+  position: sticky;
+  top: var(--ox-sticky-top, 0);
+  z-index: 2;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 2px solid var(--oxd-border);
+  background: var(--oxd-bg);
+  color: var(--oxd-muted);
+  font-size: 0.7rem;
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.ox-table thead th[aria-sort='ascending'],
+.ox-table thead th[aria-sort='descending'] {
+  color: var(--oxd-fg);
+}
+
+.ox-sort,
+.ox-toggle,
+.ox-more {
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ox-sort {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.ox-sort:hover {
+  text-decoration: underline;
+}
+
+.ox-table td,
+.ox-table tbody th {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--oxd-border);
+  font-weight: 400;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ox-table .ox-name {
+  min-width: 8rem;
+  font-weight: 600;
+}
+
+.ox-table td > * + .ox-spark {
+  margin-top: 0.15rem;
+}
+
+.ox-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-weight: 600;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.ox-chevron {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: none;
+  border-right: 2px solid currentcolor;
+  border-bottom: 2px solid currentcolor;
+  transform: translateY(-0.1rem) rotate(-45deg);
+  transition: transform 0.12s;
+}
+
+.ox-toggle[aria-expanded='true'] > .ox-chevron {
+  transform: translateY(-0.2rem) rotate(45deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ox-chevron {
+    transition: none;
+  }
+}
+
+.ox-more {
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--oxd-border);
+  border-radius: 4px;
+  background: var(--oxd-bg);
+  font-size: 0.75rem;
+}
+
+.ox-row:hover > tr:first-child > *,
+.ox-open > tr:first-child > * {
+  background: var(--oxd-surface);
+}
+
+.ox-changed > tr:first-child > *:first-child,
+.ox-changed > .ox-group > th {
+  box-shadow: inset 4px 0 0 var(--oxd-info);
+}
+
+.ox-changed > tr:first-child > * {
+  background: color-mix(in srgb, var(--oxd-info) 12%, transparent);
+}
+
+.ox-group th {
+  padding: 0.6rem 0.5rem 0.4rem;
+  border-top: 2px solid var(--oxd-border);
+  background: var(--oxd-surface);
+}
+
+.ox-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 1rem;
+}
+
+.ox-group-head .ox-sub,
+.ox-group-head .ox-changed-tag {
+  display: inline;
+  margin: 0;
+}
+
+.ox-group-head .ox-label {
+  font-size: 1rem;
+}
+
+.ox-total > * {
+  background: var(--oxd-surface);
+  font-weight: 600;
+}
+
+.ox-total .ox-sub {
+  font-weight: 400;
+}
+
+.ox-details > td {
+  padding: 0.75rem 1rem;
+  background: var(--oxd-surface);
+}
+
+.ox-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: 0.25rem 1.5rem;
+}
+
+.ox-detail-grid section {
+  min-width: 0;
+}
+
+.ox-trend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0.2rem 0;
+  font-size: 0.8rem;
+}
+
+.ox-note {
+  grid-column: 1 / -1;
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+}
+
+.ox-routes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+}
+
+/* Narrow screens: every row becomes a card whose cells carry their column name. */
+@media (max-width: 64rem) {
+  .ox-table,
+  .ox-table tbody,
+  .ox-table tr,
+  .ox-table td,
+  .ox-table th {
+    display: block;
+  }
+
+  .ox-table thead {
+    display: none;
+  }
+
+  .ox-table tbody {
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--oxd-border);
+    border-radius: 6px;
+  }
+
+  .ox-table tbody.ox-pool {
+    margin-bottom: 0;
+    border-bottom: 0;
+    border-radius: 6px 6px 0 0;
+  }
+
+  .ox-table tbody.ox-pool + tbody.ox-row {
+    border-radius: 0;
+    border-top: 0;
+  }
+
+  .ox-table tr:not(.ox-details):not(.ox-group) {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr));
+    gap: 0.25rem 0.75rem;
+    padding: 0.5rem;
+  }
+
+  .ox-table tr:not(.ox-details):not(.ox-group) > .ox-name {
+    grid-column: 1 / -1;
+  }
+
+  .ox-table tr:not(.ox-details):not(.ox-group) > td,
+  .ox-table tr:not(.ox-details):not(.ox-group) > th {
+    padding: 0;
+    border: 0;
+  }
+
+  .ox-table .ox-total {
+    background: var(--oxd-surface);
+  }
+
+  .ox-table .ox-total > * {
+    background: none;
+  }
+
+  .ox-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--oxd-muted);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .ox-table .ox-name {
+    min-width: 0;
+  }
+}
+
+.ox-plain {
+  font-size: 0.8rem;
+}
