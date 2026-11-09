@@ -334,6 +334,59 @@ fn header_name(name: &[u8]) -> Result<HeaderName> {
     })
 }
 
+/// What a request head says about its framing and connection handling, noted while its headers are appended so
+/// that the checks that follow read a flag instead of hashing a header name each.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RequestFacts {
+    pub transfer_encoding: bool,
+    /// The number of `Content-Length` headers, 2 standing for any more than one.
+    pub content_lengths: u8,
+    pub connection: bool,
+    pub upgrade: bool,
+}
+
+impl RequestFacts {
+    /// The facts of headers that were not noted as they were appended.
+    pub fn of(headers: &HMap) -> Self {
+        Self {
+            transfer_encoding: headers.contains_key(header::TRANSFER_ENCODING),
+            content_lengths: headers
+                .get_all(header::CONTENT_LENGTH)
+                .iter()
+                .take(2)
+                .count() as u8,
+            connection: headers.contains_key(header::CONNECTION),
+            upgrade: headers.contains_key(header::UPGRADE),
+        }
+    }
+
+    fn note(&mut self, name: &HeaderName) {
+        if *name == header::CONTENT_LENGTH {
+            self.content_lengths = (self.content_lengths + 1).min(2);
+        } else if *name == header::TRANSFER_ENCODING {
+            self.transfer_encoding = true;
+        } else if *name == header::CONNECTION {
+            self.connection = true;
+        } else if *name == header::UPGRADE {
+            self.upgrade = true;
+        }
+    }
+}
+
+/// Like [`append_parsed_header`], and notes what the header is in `facts`.
+#[inline]
+pub(super) fn append_parsed_request_header(
+    headers: &mut HMap,
+    name: &[u8],
+    value: HeaderValue,
+    facts: &mut RequestFacts,
+) -> Result<()> {
+    let name = header_name(name)?;
+    facts.note(&name);
+    headers.append(name, value);
+    Ok(())
+}
+
 /// Append a header validated by the HTTP/1 parser without retaining its wire casing.
 #[inline]
 pub(super) fn append_parsed_header(
@@ -363,6 +416,18 @@ pub(super) fn check_dup_content_length(headers: &HMap) -> Result<()> {
     }
     if cls.next().is_some() {
         // duplicated CL is bad
+        return crate::Error::e_explain(
+            crate::ErrorType::InvalidHTTPHeader,
+            "duplicated Content-Length header",
+        );
+    }
+    Ok(())
+}
+
+/// [`check_dup_content_length`] for a request whose headers were noted as they were parsed.
+pub(super) fn check_dup_content_length_facts(facts: RequestFacts) -> Result<()> {
+    // If a Transfer-Encoding is present, Content-Length is ignored.
+    if !facts.transfer_encoding && facts.content_lengths > 1 {
         return crate::Error::e_explain(
             crate::ErrorType::InvalidHTTPHeader,
             "duplicated Content-Length header",

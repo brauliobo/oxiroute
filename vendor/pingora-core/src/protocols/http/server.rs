@@ -122,6 +122,23 @@ impl Session {
         }
     }
 
+    /// Like [`Self::req_header_mut()`] for a caller that changes none of `Content-Length`, `Transfer-Encoding`,
+    /// `Connection` and `Upgrade`: an HTTP/1 session then keeps what it noted about them while parsing.
+    pub fn req_header_mut_keeping_facts(&mut self) -> &mut RequestHeader {
+        match self {
+            Self::H1(s) => s.req_header_mut_keeping_facts(),
+            other => other.req_header_mut(),
+        }
+    }
+
+    /// What the request says about its framing: noted while an HTTP/1 request was parsed, looked up otherwise.
+    pub fn request_facts(&self) -> super::v1::common::RequestFacts {
+        match self {
+            Self::H1(s) => s.request_facts(),
+            other => super::v1::common::RequestFacts::of(&other.req_header().headers),
+        }
+    }
+
     /// Return the header by name. None if the header doesn't exist.
     ///
     /// In case there are multiple headers under the same name, the first one will be returned. To

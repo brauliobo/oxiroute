@@ -17,7 +17,7 @@
 use bstr::ByteSlice;
 use bytes::Bytes;
 use bytes::{BufMut, BytesMut};
-use http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
+use http::header::CONTENT_LENGTH;
 use http::HeaderValue;
 use http::{header, header::AsHeaderName, Method, Version};
 use log::{debug, trace, warn};
@@ -82,6 +82,8 @@ pub struct HttpSession {
     response_written: Option<Box<ResponseHeader>>,
     /// The parsed request header
     request_header: Option<Box<RequestHeader>>,
+    /// What `request_header` said about its framing when it was parsed; `None` once a caller took it mutably.
+    request_facts: Option<RequestFacts>,
     /// An internal buffer that holds a copy of the request body up to a certain size
     retry_buffer: Option<FixedBuffer>,
     /// Whether this session is an upgraded session. This flag is calculated when sending the
@@ -132,6 +134,7 @@ impl HttpSession {
             update_resp_headers: true,
             response_written: None,
             request_header: None,
+            request_facts: None,
             read_timeout: Some(Duration::from_secs(60)),
             write_timeout: None,
             total_drain_timeout: None,
@@ -281,6 +284,7 @@ impl HttpSession {
                         });
 
                         let buf = buf.freeze();
+                        let mut facts = RequestFacts::default();
 
                         for header in header_refs {
                             let header_name = header.get_name(&buf);
@@ -290,18 +294,17 @@ impl HttpSession {
                                 http::HeaderValue::from_maybe_shared_unchecked(value_bytes)
                             };
 
-                            append_parsed_header(
+                            append_parsed_request_header(
                                 &mut request_header.headers,
                                 header_name,
                                 header_value,
+                                &mut facts,
                             )
                             .or_err(InvalidHTTPHeader, "while parsing request header")?;
                         }
 
-                        let contains_transfer_encoding =
-                            request_header.headers.contains_key(TRANSFER_ENCODING);
-                        let contains_content_length =
-                            request_header.headers.contains_key(CONTENT_LENGTH);
+                        let contains_transfer_encoding = facts.transfer_encoding;
+                        let contains_content_length = facts.content_lengths > 0;
 
                         // Transfer encoding overrides content length, so when
                         // both are present, we can remove content length. This
@@ -313,10 +316,12 @@ impl HttpSession {
                             contains_content_length && contains_transfer_encoding;
                         if has_both_te_and_cl {
                             request_header.remove_header(&CONTENT_LENGTH);
+                            facts.content_lengths = 0;
                         }
 
                         self.buf = buf;
                         self.request_header = Some(request_header);
+                        self.request_facts = Some(facts);
 
                         self.body_reader.reinit();
                         self.response_written = None;
@@ -372,9 +377,10 @@ impl HttpSession {
         let req_header = self.req_header();
 
         // ad-hoc checks
-        super::common::check_dup_content_length(&req_header.headers)?;
+        let facts = self.request_facts();
+        super::common::check_dup_content_length_facts(facts)?;
 
-        if req_header.headers.contains_key(TRANSFER_ENCODING) {
+        if facts.transfer_encoding {
             // Per [RFC 9112 Section 6.1-16](https://datatracker.ietf.org/doc/html/rfc9112#section-6.1-16),
             // HTTP/1.0 requests with Transfer-Encoding MUST be treated as having faulty framing.
             // We reject with 400 Bad Request and close the connection.
@@ -391,7 +397,9 @@ impl HttpSession {
             }
         }
         // validate content-length value if present to avoid ambiguous framing
-        self.get_content_length()?;
+        if facts.content_lengths > 0 {
+            self.get_content_length()?;
+        }
 
         Ok(())
     }
@@ -409,9 +417,22 @@ impl HttpSession {
     /// # Panics
     /// this function and most other functions will panic if called before [`Self::read_request()`]
     pub fn req_header_mut(&mut self) -> &mut RequestHeader {
+        self.request_facts = None;
+        self.req_header_mut_keeping_facts()
+    }
+
+    /// Like [`Self::req_header_mut()`] for a caller that changes none of `Content-Length`, `Transfer-Encoding`,
+    /// `Connection` and `Upgrade`, so what the request said about them when it was parsed still holds.
+    pub fn req_header_mut_keeping_facts(&mut self) -> &mut RequestHeader {
         self.request_header
             .as_mut()
             .expect("Request header is not read yet")
+    }
+
+    /// What the request head says about its framing, as parsed unless a header was changed since.
+    pub fn request_facts(&self) -> RequestFacts {
+        self.request_facts
+            .unwrap_or_else(|| RequestFacts::of(&self.req_header().headers))
     }
 
     /// Get the header value for the given header name
@@ -455,7 +476,7 @@ impl HttpSession {
     /// Is the request a upgrade request
     pub fn is_upgrade_req(&self) -> bool {
         match self.request_header.as_deref() {
-            Some(req) => is_upgrade_req(req),
+            Some(req) => req.version == Version::HTTP_11 && self.request_facts().upgrade,
             None => false,
         }
     }
@@ -816,6 +837,10 @@ impl HttpSession {
     }
 
     fn is_connection_keepalive(&self) -> Option<bool> {
+        // Not read yet, or no `Connection` header at all.
+        if self.request_header.is_none() || !self.request_facts().connection {
+            return None;
+        }
         is_buf_keepalive(self.get_header(header::CONNECTION))
     }
 
@@ -976,7 +1001,8 @@ impl HttpSession {
     }
 
     fn is_chunked_encoding(&self) -> bool {
-        is_chunked_encoding_from_headers(&self.req_header().headers)
+        self.request_facts().transfer_encoding
+            && is_chunked_encoding_from_headers(&self.req_header().headers)
     }
 
     fn get_content_length(&self) -> Result<Option<usize>> {
@@ -1006,7 +1032,11 @@ impl HttpSession {
             } else {
                 // At this point, validate_request() should have already been called,
                 // so get_content_length() should not return an error for invalid values
-                let cl = self.get_content_length().unwrap_or(None);
+                let cl = if self.request_facts().content_lengths > 0 {
+                    self.get_content_length().unwrap_or(None)
+                } else {
+                    None
+                };
                 match cl {
                     Some(i) => {
                         self.body_reader.init_content_length(i, preread_body);
@@ -1914,6 +1944,79 @@ mod tests_stream {
         let res = http_stream.read_request().await;
         assert_eq!(input.len(), res.unwrap().unwrap());
         assert_eq!(0, http_stream.req_header().headers.len());
+    }
+
+    async fn parsed(input: &'static [u8]) -> HttpSession {
+        let mock_io = Builder::new().read(input).build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        http_stream.read_request().await.unwrap();
+        http_stream
+    }
+
+    #[tokio::test]
+    async fn keepalive_can_be_set_before_the_request_is_read() {
+        let mock_io = Builder::new().build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        http_stream.set_server_keepalive(Some(5));
+        assert!(http_stream.will_keepalive());
+    }
+
+    #[tokio::test]
+    async fn request_facts_match_what_a_lookup_finds() {
+        for input in [
+            &b"GET / HTTP/1.1\r\nHost: a\r\n\r\n"[..],
+            b"GET / HTTP/1.1\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n",
+            b"GET / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: upgrade\r\n\r\n",
+            b"POST / HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n0\r\n\r\n",
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n0\r\n\r\n",
+        ] {
+            let session = parsed(input).await;
+            assert_eq!(
+                session.request_facts(),
+                RequestFacts::of(&session.req_header().headers)
+            );
+        }
+        let session = parsed(b"GET / HTTP/1.1\r\nUpgrade: websocket\r\n\r\n").await;
+        assert!(session.is_upgrade_req());
+        let session = parsed(b"GET / HTTP/1.0\r\nUpgrade: websocket\r\n\r\n").await;
+        assert!(!session.is_upgrade_req());
+    }
+
+    #[tokio::test]
+    async fn a_request_with_both_framings_keeps_only_the_transfer_encoding() {
+        let session = parsed(
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n0\r\n\r\n",
+        )
+        .await;
+        let facts = session.request_facts();
+        assert!(facts.transfer_encoding);
+        assert_eq!(facts.content_lengths, 0);
+    }
+
+    #[tokio::test]
+    async fn duplicate_content_lengths_are_refused_from_the_facts() {
+        let mock_io = Builder::new()
+            .read(b"POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\na")
+            .build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        assert!(http_stream.read_request().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn changing_the_request_through_a_mutable_borrow_refreshes_the_facts() {
+        let mut session = parsed(b"GET / HTTP/1.1\r\nHost: a\r\n\r\n").await;
+        assert!(!session.is_upgrade_req());
+        session
+            .req_header_mut()
+            .insert_header("upgrade", "websocket")
+            .unwrap();
+        assert!(session.is_upgrade_req());
+        assert_eq!(session.request_facts().upgrade, true);
+        session
+            .req_header_mut_keeping_facts()
+            .insert_header("x-other", "1")
+            .unwrap();
+        assert!(session.is_upgrade_req());
     }
 
     #[cfg(feature = "patched_http1")]
