@@ -46,6 +46,9 @@ pub use h2::server::Builder as H2Options;
 const DEFAULT_MAX_HEADER_LIST_SIZE: u32 = 64 * 1024;
 const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 100;
 
+const KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
+const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
+
 /// Build [`H2Options`] with bounded defaults for received requests.
 ///
 /// Use this as the starting point when customizing options to retain the default
@@ -348,10 +351,13 @@ impl HttpSession {
         header.remove_header(&header::TRANSFER_ENCODING);
         header.remove_header(&header::CONNECTION);
         header.remove_header(&header::UPGRADE);
-        header.remove_header(&HeaderName::from_static("keep-alive"));
-        header.remove_header(&HeaderName::from_static("proxy-connection"));
+        header.remove_header(&KEEP_ALIVE);
+        header.remove_header(&PROXY_CONNECTION);
 
-        let resp = Response::from_parts(header.as_owned_parts(), ());
+        // The frame takes the headers: `response_written` keeps the status, not a second copy of the map.
+        let mut resp = Response::new(());
+        *resp.status_mut() = header.status;
+        *resp.headers_mut() = std::mem::take(&mut header.headers);
 
         let body_writer = self.send_response.send_response(resp, end).or_err(
             ErrorType::WriteError,

@@ -79,6 +79,14 @@ header-name cache, and stage-1 connection-pool experiments:
 - `protocols/http/v1/common.rs` remembers parsed header names per thread (at most 512 names of up to 64
   bytes, cleared when full), so a name outside the `http` standard table is allocated once per thread instead
   of once per request.
+- `protocols/tls/boringssl_openssl/{stream,server}.rs` lets an accepted OpenSSL stream (`prepare_tls_stream`) share TLS
+  records: plain writes are held (up to 1460 bytes, the size of the accepted socket's own write buffer) and vectored
+  writes (HTTP/2 frames, chunked bodies; up to one 16 KiB record) are held until the next `flush` or `shutdown`, so a
+  response head plus body or an HTTP/2 HEADERS plus DATA leaves as one record instead of two. A write that does not fit
+  flushes the held bytes first and goes out by itself. Client streams (upstream TLS) are unchanged. Writers already had
+  to flush for the socket buffer; unflushed small writes were never sent before either.
+- `protocols/http/v2/server.rs` `write_response_header` moves the header map into the HTTP/2 response instead of cloning it,
+  so `response_written()` of an HTTP/2 session keeps the status line and no headers (nothing in OxiRoute reads them there).
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.
