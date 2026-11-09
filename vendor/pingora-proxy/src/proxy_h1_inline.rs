@@ -13,7 +13,6 @@
 //! clients. A request that involves the cache or a custom (HTTP/3) client keeps the two futures.
 
 use bytes::Bytes;
-use futures::FutureExt;
 
 use super::*;
 use crate::proxy_cache::{range_filter::RangeBodyFilter, ServeFromCache};
@@ -257,9 +256,9 @@ where
                 true
             }
         };
-        // Whatever the upstream session already holds goes out in the same write.
+        // Whatever the upstream session already holds, or reads at once, goes out in the same write.
         while !ended && !tasks.spilled() && tasks.len() < TASK_BUFFER_SIZE {
-            match client_session.read_response_task().now_or_never() {
+            match client_session.try_read_response_task() {
                 Some(Ok(task)) => {
                     ended = task.is_end();
                     tasks.push(task);
