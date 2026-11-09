@@ -321,6 +321,7 @@ class Env:
         # The direct runtime keeps the proxy in one process; the supervised worker adds no data-path code.
         self.proxy = spawn([self.binary, "serve", str(config)], PROXY_CPUS, self.work / "proxy.log", wrap,
                            {"OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME": "1", "RUST_LOG": "warn",
+                            "R2_PROXY_PORT": str(PROXY_PORT), "R2_UPSTREAM_PORT": str(UPSTREAM_PORT),
                             **dict(item.split("=", 1) for item in self.args.proxy_env), **(proxy_env or {})})
         for port in self.http_ports():
             wait_port(port, self.proxy)
@@ -386,8 +387,8 @@ def parse_perf(path):
     counters = {}
     for line in Path(path).read_text().splitlines():
         fields = line.split(",")
-        if len(fields) > 2 and fields[0].replace(".", "", 1).isdigit():
-            counters[fields[2].split(":")[0]] = float(fields[0])
+        if len(fields) > 2 and (fields[0].replace(".", "", 1).isdigit() or fields[0] == "<not counted>"):
+            counters[fields[2].split(":")[0]] = float(fields[0]) if fields[0][0] != "<" else 0.0  # a thread that never ran
     return counters
 
 
