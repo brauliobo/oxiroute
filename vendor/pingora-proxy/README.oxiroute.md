@@ -62,6 +62,10 @@ task handoffs and response batches, the cancellable upstream attempt, and compat
 - `proxy_h2.rs` carries the response tasks of an HTTP/2 origin from the response reader to the downstream loop through
   the `spsc` queue (four slots, as the HTTP/1 pump) instead of a `tokio::sync::mpsc` channel; its batches are drained
   with `try_recv`. The two-future structure of the HTTP/2 upstream path is unchanged.
+- `lib.rs` `handle_new_request` takes the downstream request header with `req_header_mut_keeping_facts()` when no
+  downstream module is installed (nothing then changes its framing), so the facts noted at parse still hold; and
+  `proxy_h1.rs` hands them to `write_request_header_noted` (a request the preparation hook replaced has its own
+  facts computed).
 - `spsc.rs` implements the safe fixed-capacity handoff with inline queue storage, single sender and
   receiver ownership, cancellation-safe reservation, close/drop wakeups, and panic-safe queued-value
   destruction.
