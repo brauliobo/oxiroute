@@ -81,6 +81,8 @@ impl Connector {
 mod tests {
     use super::*;
     use crate::connectors::test_servers;
+    #[cfg(feature = "openssl")]
+    use crate::listeners::ALPN;
     use crate::protocols::l4::socket::SocketAddr;
     use crate::upstreams::peer::HttpPeer;
     use crate::upstreams::peer::Peer;
@@ -179,14 +181,17 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_connect_tls() {
         let connector = Connector::new(None);
-        let peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
-        // make a new connection to https://1.1.1.1
+        let server = test_servers::tls_server(ALPN::H1).await;
+        let mut peer = HttpPeer::new(server.addr, true, "localhost".into());
+        peer.options.verify_cert = false;
+        peer.options.verify_hostname = false;
+        // make a new connection to the TLS server
         let (http, reused) = connector.get_http_session(&peer).await.unwrap();
         let server_addr = http.server_addr().unwrap();
-        assert_eq!(*server_addr, "1.1.1.1:443".parse::<SocketAddr>().unwrap());
+        assert_eq!(*server_addr, SocketAddr::Inet(server.addr));
         assert!(!reused);
 
         // this http is not even used, so not be able to reuse

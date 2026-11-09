@@ -537,13 +537,16 @@ pub async fn handshake(
 mod tests {
     use super::*;
     use crate::connectors::test_servers;
+    #[cfg(feature = "openssl")]
+    use crate::listeners::ALPN;
     use crate::upstreams::peer::HttpPeer;
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_connect_h2() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(2, 2);
         let h2 = connector
             .new_http_session::<HttpPeer, ()>(&peer)
@@ -557,10 +560,11 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_connect_h1() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         // a hack to force h1, new_http_session() in the future might validate this setting
         peer.options.set_http_version(1, 1);
         let h2 = connector
@@ -592,10 +596,11 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_h2_single_stream() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(2, 2);
         peer.options.max_h2_streams = 1;
         let h2 = connector
@@ -632,10 +637,11 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_h2_multiple_stream() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(2, 2);
         peer.options.max_h2_streams = 3;
         let h2 = connector
@@ -676,7 +682,7 @@ mod tests {
         assert_eq!(id, h2_5.conn.id());
     }
 
-    #[cfg(all(feature = "any_tls", unix))]
+    #[cfg(all(feature = "openssl", unix))]
     #[tokio::test]
     async fn test_h2_reuse_rejects_fd_mismatch() {
         use crate::protocols::l4::socket::SocketAddr;
@@ -719,7 +725,8 @@ mod tests {
         }
 
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(2, 2);
         peer.options.max_h2_streams = 1;
 

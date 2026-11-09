@@ -690,13 +690,18 @@ mod test {
             let _stream2 = listener_clone.accept().await.unwrap();
         });
 
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
         let _conn1 = tokio::net::TcpStream::connect(addr).await.unwrap();
         let _conn2 = tokio::net::TcpStream::connect(addr).await.unwrap();
         let _conn3 = tokio::net::TcpStream::connect(addr).await.unwrap();
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // the filter runs on the accepting task, so wait until it has seen all three connections
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while accept_count.load(Ordering::SeqCst) < 3 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
 
         assert_eq!(accept_count.load(Ordering::SeqCst), 3);
         assert_eq!(reject_count.load(Ordering::SeqCst), 1);
@@ -742,8 +747,6 @@ mod test {
             // This will never return since all connections are rejected
             let _ = listener_clone.accept().await;
         });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
 
         let mut handles = vec![];
         for _ in 0..3 {

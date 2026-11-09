@@ -101,6 +101,9 @@ pub mod services;
 pub mod upstreams;
 pub mod utils;
 
+#[cfg(all(test, feature = "openssl"))]
+mod test_tls;
+
 pub use pingora_error::{ErrorType::*, *};
 
 // If both openssl and boringssl are enabled, prefer boringssl.

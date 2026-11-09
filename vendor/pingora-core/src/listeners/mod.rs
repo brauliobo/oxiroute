@@ -347,7 +347,6 @@ mod test {
     #[cfg(feature = "any_tls")]
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpStream;
-    use tokio::time::{sleep, Duration};
 
     #[tokio::test]
     async fn test_listen_tcp() {
@@ -372,22 +371,19 @@ mod test {
             });
         }
 
-        // make sure the above starts before the lines below
-        sleep(Duration::from_millis(10)).await;
-
         for addr in addrs {
             TcpStream::connect(addr).await.unwrap();
         }
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_listen_tls() {
+        use crate::test_tls::TestCert;
         use tokio::io::AsyncReadExt;
 
-        let cert_path = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
-        let key_path = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
-        let mut listeners = Listeners::tls("127.0.0.1:0", &cert_path, &key_path).unwrap();
+        let cert = TestCert::new();
+        let mut listeners = Listeners::tls("127.0.0.1:0", &cert.cert_path, &cert.key_path).unwrap();
         let listener = listeners
             .build(
                 #[cfg(unix)]
@@ -409,10 +405,9 @@ mod test {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\na")
                 .await
                 .unwrap();
+            // pingora streams coalesce writes until flushed
+            stream.flush().await.unwrap();
         });
-        // make sure the above starts before the lines below
-        sleep(Duration::from_millis(10)).await;
-
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()
@@ -451,15 +446,11 @@ mod test {
 
         // Add endpoints after setting filter
         listeners.add_tcp("127.0.0.1:0");
-        #[cfg(feature = "any_tls")]
+        #[cfg(feature = "openssl")]
         {
-            // Only test TLS if the feature is enabled
-            if let Ok(tls_settings) = TlsSettings::intermediate(
-                &format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR")),
-                &format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR")),
-            ) {
-                listeners.add_tls_with_settings("127.0.0.1:0", None, tls_settings);
-            }
+            let cert = crate::test_tls::TestCert::new();
+            let tls_settings = TlsSettings::intermediate(&cert.cert_path, &cert.key_path).unwrap();
+            listeners.add_tls_with_settings("127.0.0.1:0", None, tls_settings);
         }
 
         // Verify all stacks have the filter (only when feature is enabled)
