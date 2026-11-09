@@ -17,6 +17,7 @@ chrono.workspace = true
 chrono-tz.workspace = true
 http.workspace = true
 openssl.workspace = true
+oxiroute-tls-client = { path = "../oxiroute-tls-client" }
 rml_rtmp.workspace = true
 rustix = { workspace = true, features = ["thread"] }
 sha2.workspace = true

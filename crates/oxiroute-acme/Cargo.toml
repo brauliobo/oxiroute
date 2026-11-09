@@ -13,6 +13,7 @@ http.workspace = true
 httpdate.workspace = true
 hickory-resolver.workspace = true
 openssl.workspace = true
+oxiroute-tls-client = { path = "../oxiroute-tls-client" }
 rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true

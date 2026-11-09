@@ -1,0 +1,17 @@
+[package]
+name = "oxiroute-tls-client"
+description = "Process-wide OpenSSL client context for outbound connections that trust the system store"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+openssl.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

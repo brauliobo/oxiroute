@@ -44,8 +44,12 @@ stage from the acquire stage, or shipping the validated config from the master, 
 part of the second term only, so neither was done; the first term is owned by the audit store, the
 second by the configuration parser.
 
-## Remaining per-connection builders
+## Short-lived outbound connections
 
-RTMPS client connects, VOD origin fetches, RTMP callbacks and ACME requests still build an
-`SslConnector` per connection and parse the bundle each time. They are outside the pingora
-connectors and not on the health or reload path.
+RTMPS client connects, VOD origin fetches over HTTPS, RTMP callbacks and ACME requests used to build an
+`SslConnector` per connection and parse the bundle each time. They now share the connector of the
+`oxiroute-tls-client` crate (`system_trust_connector()`), built on first use. The context is immutable;
+certificate and hostname verification are still configured per connection by `connect`, so the trust
+policy is unchanged. `oxiroute-rtmp` `client::tests::rtmps_connects_share_one_system_ca_parse` and
+`oxiroute-tls-client/tests/single_parse.rs` count bytes read from a synthetic `SSL_CERT_FILE` bundle and
+assert a single parse. The forward proxy builds its connector once per plan and is unchanged.
