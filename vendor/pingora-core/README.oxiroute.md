@@ -91,6 +91,9 @@ connection-pool experiments:
 - `protocols/l4/lazy_read.rs` replaces `tokio::io::BufWriter` with `CoalescingWriter`: same buffering and
   pass-through rules, but a write of at least the buffer size that finds bytes buffered goes out in one `writev`
   with them, so a response head and a large body are one system call and one TCP send instead of two.
+- `protocols/l4/stream.rs` no longer times how long reads and writes stay pending (two clock reads for every pending
+  poll): `get_read_pending_time`, `get_write_pending_time` and so `Session::upstream_write_pending_time` return zero.
+  OxiRoute does not use them.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.
