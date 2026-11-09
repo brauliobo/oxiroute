@@ -4,7 +4,7 @@
 //! `text/html`, `/stream` chunked 64 KiB without delay, `/slow` chunked 64 KiB with a 2 ms gap between
 //! chunks, `/sink` (any method; drains the request body, answers `ok`), `/ws` (101 then byte echo).
 
-use std::{convert::Infallible, io, net::SocketAddr, sync::OnceLock, time::Duration};
+use std::{convert::Infallible, io, net::SocketAddr, sync::Arc, sync::OnceLock, time::Duration};
 
 use bytes::Bytes;
 use futures_util::stream;
@@ -19,7 +19,10 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto,
 };
+use rustls::ServerConfig;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio_rustls::TlsAcceptor;
 
 use crate::{Flags, flag};
 
@@ -134,17 +137,52 @@ fn bind_deep(address: SocketAddr) -> TcpListener {
     socket.listen(65535).expect("listen")
 }
 
-async fn serve_http(listener: TcpListener) {
+/// TLS for the HTTP listeners (`--tls-cert` and `--tls-key`, PEM files): the upstream then offers `h2` and
+/// `http/1.1`, which is what an `http_versions` pool of `2` needs.
+fn tls_acceptor(flags: &Flags) -> Option<TlsAcceptor> {
+    let cert: String = flags.get("tls-cert")?.clone();
+    let key: String = flag(flags, "tls-key", String::new());
+    let certs = CertificateDer::pem_file_iter(&cert)
+        .expect("--tls-cert")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("certificate pem");
+    let key = PrivateKeyDer::from_pem_file(&key).expect("--tls-key");
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .expect("certificate and key");
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Some(TlsAcceptor::from(Arc::new(config)))
+}
+
+async fn serve_connection<S>(stream: S)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let builder = auto::Builder::new(TokioExecutor::new());
+    let _ = builder
+        .serve_connection_with_upgrades(TokioIo::new(stream), service_fn(handle))
+        .await;
+}
+
+async fn serve_http(listener: TcpListener, tls: Option<TlsAcceptor>) {
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             continue;
         };
         let _ = stream.set_nodelay(true);
+        let tls = tls.clone();
         tokio::spawn(async move {
-            let builder = auto::Builder::new(TokioExecutor::new());
-            let _ = builder
-                .serve_connection_with_upgrades(TokioIo::new(stream), service_fn(handle))
-                .await;
+            match tls {
+                Some(acceptor) => match acceptor.accept(stream).await {
+                    Ok(stream) => serve_connection(stream).await,
+                    Err(_) => {}
+                },
+                None => serve_connection(stream).await,
+            }
         });
     }
 }
@@ -175,10 +213,11 @@ pub fn run(flags: &Flags) {
         .enable_all()
         .build()
         .expect("runtime");
+    let tls = tls_acceptor(flags);
     runtime.block_on(async move {
         for address in listen {
             let http = bind_deep(address);
-            tokio::spawn(serve_http(http));
+            tokio::spawn(serve_http(http, tls.clone()));
         }
         if let Some(echo) = echo {
             let listener = bind_deep(echo);

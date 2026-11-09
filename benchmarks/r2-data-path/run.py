@@ -78,6 +78,12 @@ def build_lanes():
         requests = 20000 if size < 65536 else 5000 if size == 65536 else 600
         add(lane(f"h1_post{size // 1024}k", ["--method", "POST", "--path", "/sink", "--body-bytes", str(size)] + base,
                  requests=requests, warmup=min(requests // 10, 200)))
+    add(lane("h1_post1k", ["--method", "POST", "--path", "/sink", "--body-bytes", "1024"] + base,
+             requests=20000, warmup=1000))
+    for size, requests in ((1024, 20000), (65536, 5000)):
+        add(lane(f"h1_post{size // 1024}k_chunked", ["--method", "POST", "--path", "/sink", "--body-bytes", str(size),
+                                                    "--chunk-bytes", "16384" if size > 16384 else str(size)] + base,
+                 requests=requests, warmup=min(requests // 10, 1000)))
     add(lane("h1_post64k_reqbuf", ["--method", "POST", "--path", "/sink", "--body-bytes", "65536"] + base,
              features=["reqbuf"], requests=5000, warmup=200))
     add(lane("h1_post64k_retrybuf", ["--method", "POST", "--path", "/sink", "--body-bytes", "65536"] + base,
@@ -97,6 +103,8 @@ def build_lanes():
     for name, size in (("static_f1k", 1024), ("static_f64k", 65536), ("static_f1m", 1048576)):
         add(lane(name, ["--path", f"/static/{name[7:]}.bin", "--expect-len", str(size)] + base, features=["static"],
                  requests=20000 if size < 65536 else 5000 if size == 65536 else 1000))
+    add(lane("ws_echo_64", ["--proto", "ws", "--conns", "16", "--msg-bytes", "64"]))
+    add(lane("ws_echo_16k", ["--proto", "ws", "--conns", "16", "--msg-bytes", "16384"], requests=10000))
     add(lane("ws_echo_1k", ["--proto", "ws", "--conns", "16", "--msg-bytes", "1024"]))
     add(lane("l4_echo_1k", ["--proto", "tcp", "--conns", "16", "--msg-bytes", "1024"], features=["l4"]))
     # TLS termination (OpenSSL via Pingora).
@@ -118,6 +126,13 @@ def build_lanes():
                               "--expect-len", "1024"], features=["tls"], requests=20000))
     add(lane("h2_b64k_c4s16", ["--proto", "h2tls", "--path", "/b64k", "--conns", "4", "--streams", "16",
                                "--expect-len", "65536"], features=["tls"], requests=5000, warmup=200))
+    add(lane("h2_post1k_c4s16", ["--proto", "h2tls", "--method", "POST", "--path", "/sink", "--body-bytes", "1024",
+                                 "--conns", "4", "--streams", "16"], features=["tls"], requests=20000))
+    add(lane("h1_b1k_h2up", ["--path", "/b1k", "--expect-len", "1024"] + base, features=["upstream_h2"]))
+    add(lane("h1_b64k_h2up", ["--path", "/b64k", "--expect-len", "65536"] + base, features=["upstream_h2"],
+             requests=5000, warmup=200))
+    add(lane("h1_post1k_h2up", ["--method", "POST", "--path", "/sink", "--body-bytes", "1024"] + base,
+             features=["upstream_h2"]))
     add(lane("h2_b0_c1s1", ["--proto", "h2tls", "--path", "/b0", "--conns", "1", "--streams", "1",
                             "--expect-len", "0"], features=["tls"], requests=10000))
     # Scaling over listeners (each listener is one Pingora service with one worker thread).
@@ -296,8 +311,9 @@ class Env:
             listen = ",".join(f"127.0.0.{index + 1}:{UPSTREAM_PORT}" for index in range(lane.servers))
         else:
             listen = ",".join(f"127.0.0.1:{UPSTREAM_PORT + index}" for index in range(lane.servers))
+        tls = self.upstream_tls() if "upstream_h2" in lane.features else []
         self.upstream = spawn([self.args.tool, "upstream", "--listen", listen,
-                               "--echo-listen", f"127.0.0.1:{ECHO_PORT}"], UPSTREAM_CPUS, self.work / "upstream.log")
+                               "--echo-listen", f"127.0.0.1:{ECHO_PORT}", *tls], UPSTREAM_CPUS, self.work / "upstream.log")
         wait_port(UPSTREAM_PORT, self.upstream)
         # The direct runtime keeps the proxy in one process; the supervised worker adds no data-path code.
         self.proxy = spawn([self.binary, "serve", str(config)], PROXY_CPUS, self.work / "proxy.log", wrap,
@@ -305,6 +321,14 @@ class Env:
                             **dict(item.split("=", 1) for item in self.args.proxy_env), **(proxy_env or {})})
         for port in self.http_ports():
             wait_port(port, self.proxy)
+
+    def upstream_tls(self):
+        """A self-signed upstream certificate that the generated pool trusts as its CA (`origin.pem`)."""
+        cert, key = self.work / "origin.pem", self.work / "origin.key"
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+                        "-days", "2", "-subj", "/CN=origin.example.com", "-addext", "subjectAltName=DNS:origin.example.com",
+                        "-keyout", str(key), "-out", str(cert)], check=True, capture_output=True)
+        return ["--tls-cert", str(cert), "--tls-key", str(key)]
 
     def stop(self):
         for process in (self.proxy, self.upstream):
