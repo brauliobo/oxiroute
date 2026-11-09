@@ -1239,6 +1239,60 @@ async fn reusable_upstream_connection_holds_its_lease_until_the_socket_closes() 
 }
 
 #[tokio::test]
+async fn a_client_connection_close_does_not_close_the_upstream_connection() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("persistent origin bind");
+        let address = listener.local_addr().expect("persistent origin address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let origin_accepted = Arc::clone(&accepted);
+        let origin = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("persistent origin accept");
+                origin_accepted.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    while let Ok(head) = read_request_head_bytes(&mut stream).await {
+                        let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+                        assert!(!head.contains("connection:"), "forwarded: {head}");
+                        stream
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                            .await
+                            .expect("persistent origin response");
+                    }
+                });
+            }
+        });
+        let proxy = ProxyHarness::start(
+            vec![capped_pool("persistent", address, 4)],
+            vec![route(None, "/", &[], "persistent")],
+            1024,
+            3,
+        )
+        .await;
+        for _ in 0..3 {
+            let mut client = TcpStream::connect(proxy.address)
+                .await
+                .expect("persistent downstream connect");
+            client
+                .write_all(b"GET / HTTP/1.1\r\nHost: close.test\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("persistent downstream request");
+            let response = read_framed_response(&mut client)
+                .await
+                .expect("persistent downstream response");
+            assert_eq!(response.body, b"ok");
+            sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+        origin.abort();
+        proxy.finish().await;
+    })
+    .await
+    .expect("upstream persistence test timed out");
+}
+
+#[tokio::test]
 async fn reusable_idle_connection_remains_counted_by_least_connections() {
     timeout(TEST_TIMEOUT, async {
         let listener = TcpListener::bind("127.0.0.1:0")

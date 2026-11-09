@@ -217,6 +217,44 @@ pub(super) fn apply_request_header_mutations(
     Ok(())
 }
 
+fn connection_tokens(headers: &http::HeaderMap) -> impl Iterator<Item = &str> {
+    headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+}
+
+/// A client's `close` option describes its own connection. Forwarded, it makes the origin close, and
+/// the pool discard, a connection that could serve the next request.
+pub(super) fn has_downstream_close(headers: &http::HeaderMap) -> bool {
+    headers.get_all(CONNECTION).iter().any(|value| {
+        value
+            .as_bytes()
+            .split(|byte| *byte == b',')
+            .any(|token| token.trim_ascii().eq_ignore_ascii_case(b"close"))
+    })
+}
+
+pub(super) fn remove_downstream_close(
+    request: &mut pingora::http::RequestHeader,
+) -> pingora::Result<()> {
+    if !has_downstream_close(&request.headers) {
+        return Ok(());
+    }
+    let kept = connection_tokens(&request.headers)
+        .filter(|token| !token.eq_ignore_ascii_case("close"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    request.remove_header(&CONNECTION);
+    if !kept.is_empty() {
+        request.insert_header(CONNECTION, kept)?;
+    }
+    Ok(())
+}
+
 pub(super) fn upstream_request_requires_mutation(
     session: &Session,
     ctx: &HttpRequestContext,
@@ -225,7 +263,7 @@ pub(super) fn upstream_request_requires_mutation(
     if ctx.cache_transaction.is_some() || proxy_policy(ctx).upstream_path_rewrite.is_some() {
         return true;
     }
-    if request.version == http::Version::HTTP_10 {
+    if request.version == http::Version::HTTP_10 || has_downstream_close(&request.headers) {
         return true;
     }
     let host_requires_mutation = match &ctx.selected_upstream_host {

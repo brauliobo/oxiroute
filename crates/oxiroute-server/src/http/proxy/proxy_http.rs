@@ -577,6 +577,7 @@ impl ProxyHttp for HttpReverseProxy {
         } else {
             upstream_request.remove_header(&HOST);
         }
+        remove_downstream_close(upstream_request)?;
         if ctx.pool.as_ref().is_some_and(|pool| {
             pool.connection_reuse() == oxiroute_config::UpstreamConnectionReuse::Never
         }) {

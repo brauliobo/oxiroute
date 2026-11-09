@@ -414,11 +414,20 @@ fn algorithms() -> Vec<(&'static str, UpstreamAlgorithm)> {
     ]
 }
 
-fn assert_late_binding(label: &str, outcome: &Outcome, ideal: Duration) {
+fn assert_drained(label: &str, outcome: &Outcome) {
     assert!(
         !outcome.overlapped,
         "{label}: a stub served two requests at once"
     );
+    assert_eq!(
+        outcome.pool.health_snapshot().queued,
+        0,
+        "{label}: queue must drain"
+    );
+}
+
+fn assert_late_binding(label: &str, outcome: &Outcome, ideal: Duration) {
+    assert_drained(label, outcome);
     assert!(
         outcome.makespan <= ideal.mul_f64(1.25) + Duration::from_millis(200),
         "{label}: makespan {:?} exceeds 1.25x the ideal {ideal:?}; served {:?}",
@@ -429,11 +438,6 @@ fn assert_late_binding(label: &str, outcome: &Outcome, ideal: Duration) {
         outcome.idle_while_waiting <= 20,
         "{label}: a stub sat idle in {} samples while requests waited",
         outcome.idle_while_waiting
-    );
-    assert_eq!(
-        outcome.pool.health_snapshot().queued,
-        0,
-        "{label}: queue must drain"
     );
 }
 
@@ -446,8 +450,12 @@ async fn waiting_requests_use_whichever_server_frees_first_on_every_algorithm() 
             ("never", UpstreamConnectionReuse::Never),
         ] {
             let outcome = run(algorithm.clone(), reuse, &[1, 1], &jobs).await;
-            assert_late_binding(&format!("{name}/{mode}"), &outcome, ideal);
+            let label = format!("{name}/{mode}");
+            // `Connection: close` no longer closes the upstream connection, so only `never` keeps
+            // connections from being reused. Reusable connections keep each waiter on the server
+            // whose idle connection frees first, which does not spread a burst evenly.
             if mode == "never" {
+                assert_late_binding(&label, &outcome, ideal);
                 assert!(
                     outcome
                         .pool
@@ -457,6 +465,8 @@ async fn waiting_requests_use_whichever_server_frees_first_on_every_algorithm() 
                         .all(|endpoint| endpoint.active_connections == 0),
                     "{name}/{mode}: leaked permits"
                 );
+            } else {
+                assert_drained(&label, &outcome);
             }
         }
     }
