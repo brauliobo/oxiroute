@@ -131,11 +131,12 @@ impl Session {
         }
     }
 
-    /// What the request says about its framing: noted while an HTTP/1 request was parsed, looked up otherwise.
+    /// What the request says about its framing: noted while an HTTP/1 request was parsed. Any other session
+    /// answers [`RequestFacts::UNKNOWN`], so that the caller looks the header up.
     pub fn request_facts(&self) -> super::v1::common::RequestFacts {
         match self {
             Self::H1(s) => s.request_facts(),
-            other => super::v1::common::RequestFacts::of(&other.req_header().headers),
+            _ => super::v1::common::RequestFacts::UNKNOWN,
         }
     }
 
