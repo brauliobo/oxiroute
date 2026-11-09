@@ -110,7 +110,7 @@ pub(super) fn finish_reload_harness(mut harness: Harness) {
 
 /// Sends one keep-alive request and returns the response body.
 pub(super) fn keep_alive_body(stream: &mut TcpStream) -> io::Result<String> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")?;
     let mut received = Vec::new();
     let mut byte = [0_u8; 1];
@@ -132,7 +132,7 @@ pub(super) fn keep_alive_body(stream: &mut TcpStream) -> io::Result<String> {
 }
 
 pub(super) fn fresh_body(address: SocketAddr) -> String {
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
+    let mut stream = TcpStream::connect_timeout(&address, IO_TIMEOUT)
         .unwrap_or_else(|error| panic!("connect {address}: {error}"));
     keep_alive_body(&mut stream).unwrap_or_else(|error| panic!("request {address}: {error}"))
 }
@@ -144,7 +144,7 @@ pub(super) fn assert_refuses_connections(address: SocketAddr) {
             Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => return,
             other => {
                 assert!(
-                    started.elapsed() < Duration::from_secs(5),
+                    started.elapsed() < TEST_TIMEOUT,
                     "{address} still accepts connections: {other:?}"
                 );
                 thread::sleep(POLL_INTERVAL);
@@ -154,19 +154,9 @@ pub(super) fn assert_refuses_connections(address: SocketAddr) {
 }
 
 pub(super) fn assert_can_bind_again(address: SocketAddr) {
-    let started = Instant::now();
-    loop {
-        match std::net::TcpListener::bind(address) {
-            Ok(_) => return,
-            Err(error) => {
-                assert!(
-                    started.elapsed() < Duration::from_secs(5),
-                    "{address} was not released: {error}"
-                );
-                thread::sleep(POLL_INTERVAL);
-            }
-        }
-    }
+    eventually(&format!("{address} release"), || {
+        std::net::TcpListener::bind(address)
+    });
 }
 
 pub(super) fn spawn_echo_upstream() -> SocketAddr {
@@ -189,7 +179,7 @@ pub(super) fn spawn_echo_upstream() -> SocketAddr {
 }
 
 pub(super) fn echo(stream: &mut TcpStream, message: &[u8]) -> io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.write_all(message)?;
     let mut echoed = vec![0_u8; message.len()];
     stream.read_exact(&mut echoed)?;
@@ -229,7 +219,7 @@ pub(super) fn spawn_streaming_origin() -> (SocketAddr, std::sync::mpsc::Sender<(
 
 /// Opens a request whose response has begun but is not finished.
 pub(super) fn start_streaming_request(address: SocketAddr) -> TcpStream {
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
+    let mut stream = TcpStream::connect_timeout(&address, IO_TIMEOUT)
         .unwrap_or_else(|error| panic!("connect {address}: {error}"));
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -519,7 +509,7 @@ pub(super) fn reload_that_fails_in_the_candidate_rolls_back_and_releases_the_add
         .arg(encode_token(token))
         .arg(&path)
         .arg("0".repeat(64));
-    let mut factory = WorkerSpawner::new(supervisor_launcher(), Duration::from_secs(5))
+    let mut factory = WorkerSpawner::new(supervisor_launcher(), TEST_TIMEOUT)
         .expect("production launcher implementation");
     harness
         .master

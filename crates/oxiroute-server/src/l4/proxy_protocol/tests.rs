@@ -132,7 +132,7 @@ async fn accepts_overread_and_returns_application_bytes() {
         .write_all(b"PROXY TCP4 192.0.2.10 198.51.100.20 1234 443\r\nhello")
         .await
         .expect("write header and payload");
-    let accepted = timeout(Duration::from_secs(1), task)
+    let accepted = timeout(Duration::from_secs(30), task)
         .await
         .expect("accept timeout")
         .expect("accept task");

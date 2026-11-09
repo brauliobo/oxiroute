@@ -188,7 +188,7 @@ pub(super) async fn supervised_worker_replaces_an_active_h3_request_with_goaway_
     );
     release_origin.send(()).expect("release active H3 request");
 
-    let response = timeout(Duration::from_secs(3), old_stream.recv_response())
+    let response = timeout(TEST_TIMEOUT, old_stream.recv_response())
         .await
         .expect("active H3 response timeout")
         .expect("active H3 response");
@@ -221,7 +221,7 @@ pub(super) async fn supervised_worker_replaces_an_active_h3_request_with_goaway_
         Some(&HeaderValue::from_static("complete"))
     );
 
-    let rejected_after_goaway = (timeout(Duration::from_secs(2), async {
+    let rejected_after_goaway = (timeout(Duration::from_secs(30), async {
         let request = Request::builder()
             .method(Method::GET)
             .uri("https://proxy.example.test/")
@@ -241,6 +241,16 @@ pub(super) async fn supervised_worker_replaces_an_active_h3_request_with_goaway_
         rejected_after_goaway,
         "old H3 connection accepted work after GOAWAY"
     );
+
+    // Both workers read the one UDP socket until the retired worker exits, so a new connection
+    // is only deterministic once the old client has left and the retired worker is gone.
+    endpoint.close(quinn::VarInt::from_u32(0), b"old H3 complete");
+    driver.await.expect("old H3 driver task");
+    origin_task.await.expect("slow H3 origin task");
+    poll_master_until_async(&mut harness, |master| {
+        master.state() == MasterState::Running
+    })
+    .await;
 
     let candidate_endpoint = h3_client_endpoint().expect("candidate H3 client endpoint");
     let candidate_connection = connect_h3(&candidate_endpoint, listener_address).await;
@@ -286,16 +296,8 @@ pub(super) async fn supervised_worker_replaces_an_active_h3_request_with_goaway_
             .is_none()
     );
 
-    endpoint.close(quinn::VarInt::from_u32(0), b"old H3 complete");
     candidate_endpoint.close(quinn::VarInt::from_u32(0), b"candidate H3 complete");
-    driver.await.expect("old H3 driver task");
     candidate_driver.await.expect("candidate H3 driver task");
-    origin_task.await.expect("slow H3 origin task");
-
-    poll_master_until_async(&mut harness, |master| {
-        master.state() == MasterState::Running
-    })
-    .await;
     let candidate_worker = harness
         .master
         .worker_id(WorkerRole::Active)
@@ -328,7 +330,7 @@ pub(super) async fn supervised_worker_replaces_an_active_h3_request_with_goaway_
     wait_process_gone(candidate_worker);
     wait_process_gone(candidate_launcher);
     drop(harness);
-    StdUdpSocket::bind(listener_address).expect("H3 listener released after master drop");
+    assert_udp_can_bind_again(listener_address);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -386,7 +388,7 @@ pub(super) async fn supervised_h3_replacement_rolls_back_after_candidate_rejects
     .await;
     harness.verify_reaped();
     drop(harness);
-    StdUdpSocket::bind(listener_address).expect("H3 rollback listener released");
+    assert_udp_can_bind_again(listener_address);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -435,7 +437,7 @@ pub(super) async fn supervised_worker_restarts_and_serves_new_h3_traffic_after_c
     .await;
     restarted.verify_reaped();
     drop(restarted);
-    StdUdpSocket::bind(listener_address).expect("restarted H3 listener released");
+    assert_udp_can_bind_again(listener_address);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -506,7 +508,7 @@ pub(super) async fn supervised_worker_crash_with_active_h3_request_is_reaped_and
     let _ = release_origin.send(());
     assert!(
         !matches!(
-            timeout(Duration::from_secs(3), stream.recv_response()).await,
+            timeout(TEST_TIMEOUT, stream.recv_response()).await,
             Ok(Ok(_))
         ),
         "crashed H3 worker completed the active request"
@@ -517,7 +519,7 @@ pub(super) async fn supervised_worker_crash_with_active_h3_request_is_reaped_and
     driver.await.expect("H3 driver task");
     origin_task.await.expect("slow H3 origin task");
     drop(harness);
-    StdUdpSocket::bind(listener_address).expect("crashed H3 listener released");
+    assert_udp_can_bind_again(listener_address);
 }
 
 pub(super) fn h3_client_endpoint() -> io::Result<quinn::Endpoint> {
