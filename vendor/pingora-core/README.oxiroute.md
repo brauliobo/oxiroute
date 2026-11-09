@@ -137,6 +137,15 @@ connection-pool experiments:
   cloning its header map. The session keeps the status, version and the `Connection`, `Keep-Alive` and
   `Transfer-Encoding` facts that keepalive needs (`ResponseFacts`), so `resp_header()` and `get_header()` return `None`
   once the header was taken; `get_status()` and `respect_keepalive()` are unchanged.
+- `protocols/http/v1/server.rs` `read_body_bytes` returns the body reader's `Bytes` (a large content-length chunk is the
+  read buffer itself, see `chunk_pool`) instead of copying the slice, and `protocols/http/body_buffer.rs`
+  (`FixedBuffer`, the retry buffer) keeps chunks of 64 KiB or more as shared `Bytes` and copies shorter ones into a
+  joined tail, so a replayable upload is not copied and a slow one never pins its 128 KiB read buffers.
+- `protocols/http/v1/body.rs` writes the chunked-encoding size line from a stack buffer (`chunk_size_line`) instead of a
+  `format!` string.
+- `protocols/http/v1/client.rs` `try_read_response_task` returns the next response task only when it needs no wait for
+  the network (the end of a response, or a body chunk already buffered or returned at once by a read), so the inline
+  relay in `pingora-proxy` batches ready chunks without arming a read timer for each chunk that is not there yet.
 - `apps/mod.rs` `HttpServerApp::process_new_http_inline`: the HTTP/1 request loop awaits an application's request
   future where it stands instead of boxing it (`async_trait` copied 8 KiB and more of state machine to the heap for every
   request). The default calls `process_new_http`.
@@ -155,7 +164,7 @@ The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
-review the header slots, response facts, inline request loop, the connector hook, admission guard and handshake-timeout hook, rendered response write, inline Date and Connection lines, header map headroom, single-clock timeouts, subject conversion, HTTP/1 HEAD informational-response,
+review the header slots, response facts, inline request loop, the zero-copy request body and retry buffer, `try_read_response_task`, the connector hook, admission guard and handshake-timeout hook, rendered response write, inline Date and Connection lines, header map headroom, single-clock timeouts, subject conversion, HTTP/1 HEAD informational-response,
 owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, lazy read buffer, pooled
 gzip state, header-name cache, HTTP/2 test lifecycle, connection-pool changes, the idle pool and the listener `TCP_NODELAY`, then rerun the vendored
 gzip state, header-name cache, body buffer pool and hand-over, direct large body writes, coalescing write buffer,
