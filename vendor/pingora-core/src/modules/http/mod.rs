@@ -176,6 +176,11 @@ impl HttpModuleCtx {
         }
     }
 
+    /// Whether there is no module, so no module filter changes anything.
+    pub fn is_empty(&self) -> bool {
+        self.module_ctx.is_empty()
+    }
+
     /// Get a ref to [HttpModule] if any.
     pub fn get<T: 'static>(&self) -> Option<&T> {
         let idx = self.module_index.get(&TypeId::of::<T>())?;

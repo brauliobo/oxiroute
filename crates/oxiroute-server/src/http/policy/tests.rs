@@ -440,3 +440,49 @@ fn enforces_exact_redirect_length_and_header_validity_bounds() {
         .is_none()
     );
 }
+
+#[test]
+fn address_text_matches_the_standard_formatting() {
+    for text in [
+        "0.0.0.0",
+        "127.0.0.1",
+        "192.0.2.255",
+        "198.51.100.203",
+        "100.9.99.199",
+        "::",
+        "::1",
+        "2001:db8::1",
+        "2001:db8:85a3:8d3:1319:8a2e:370:7348",
+        "::ffff:192.0.2.1",
+    ] {
+        let address: IpAddr = text.parse().expect("address");
+        assert_eq!(
+            IpText::new(address).as_bytes(),
+            address.to_string().as_bytes()
+        );
+    }
+}
+
+#[test]
+fn forwarded_for_is_the_client_alone_or_appended_to_what_arrived() {
+    let plan = request_mutation(HttpRequestHeaderValue::AppendedXForwardedFor {
+        max_bytes: 64,
+        except_source_cidrs: Vec::new(),
+    });
+    let client = Some("192.0.2.7".parse().expect("client"));
+    let value = |headers: &HeaderMap| {
+        let decision = decide_request_header(
+            &plan.request_headers[0],
+            request_context(None, client, headers),
+        );
+        let Ok(RequestHeaderDecision::Set { value, .. }) = decision else {
+            panic!("a set decision: {decision:?}");
+        };
+        value.complete(None).expect("complete").expect("a value")
+    };
+    assert_eq!(value(&HeaderMap::new()), "192.0.2.7");
+    let mut headers = HeaderMap::new();
+    headers.append("x-forwarded-for", HeaderValue::from_static("198.51.100.1"));
+    headers.append("x-forwarded-for", HeaderValue::from_static("203.0.113.9"));
+    assert_eq!(value(&headers), "198.51.100.1, 203.0.113.9, 192.0.2.7");
+}

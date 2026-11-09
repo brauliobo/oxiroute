@@ -34,7 +34,11 @@ const SENSITIVE_MARKERS: &[&str] = &[
 
 /// Control characters removed and the length bounded; borrowed when the text is already clean.
 fn bounded_text(value: &str) -> Cow<'_, str> {
-    if value.len() <= MAX_SAFE_TEXT_BYTES && !value.chars().any(char::is_control) {
+    // Printable ASCII, nearly every value, is clean without decoding it.
+    let printable = |value: &str| value.bytes().all(|byte| (0x20..0x7f).contains(&byte));
+    if value.len() <= MAX_SAFE_TEXT_BYTES
+        && (printable(value) || !value.chars().any(char::is_control))
+    {
         return Cow::Borrowed(value);
     }
     Cow::Owned(
@@ -323,6 +327,15 @@ mod tests {
         MIN_MARKER_BYTES, REDACTED, RtmpAccessLogMetrics, SENSITIVE_MARKERS, redact_access_record,
         redact_identifier, redact_rtmp_access_record, redact_text, valid_correlation_id,
     };
+
+    #[test]
+    fn text_is_cleaned_the_same_with_and_without_the_printable_fast_path() {
+        assert_eq!(redact_text("plain /path?x=1"), "plain /path?x=1");
+        assert_eq!(redact_text("a\u{1}b\u{7f}c\u{85}d\ne"), "abcde");
+        assert_eq!(redact_text("caf\u{e9} \u{2603}"), "caf\u{e9} \u{2603}");
+        assert_eq!(redact_text(&"x".repeat(200)).len(), 128);
+        assert_eq!(redact_text(&"\u{e9}".repeat(200)).chars().count(), 128);
+    }
 
     #[test]
     fn the_shortest_marker_sets_the_search_threshold() {

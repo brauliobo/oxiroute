@@ -107,6 +107,7 @@ async fn request_preparation_fixture(
     ));
     let proxy = HttpReverseProxy::new(service, metrics);
     let mut context = proxy.new_ctx();
+    context.request_facts = session.request_facts();
     context.authority = Some("example.test".parse().expect("request authority"));
     context.pool = Some(plan);
     context.route = Some(route);

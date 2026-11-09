@@ -810,7 +810,12 @@ where
             session.subrequest_spawner = Some(SubrequestSpawner::new(self.clone()));
         }
 
-        let req = session.downstream_session.req_header_mut();
+        // Without a module nothing changes the request, so what it said about its framing still holds.
+        let req = if session.downstream_modules_ctx.is_empty() {
+            session.downstream_session.req_header_mut_keeping_facts()
+        } else {
+            session.downstream_session.req_header_mut()
+        };
 
         // Built-in downstream request filters go first
         if let Err(e) = session

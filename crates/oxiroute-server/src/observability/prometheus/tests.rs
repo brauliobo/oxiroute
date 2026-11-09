@@ -480,12 +480,12 @@ fn server_histograms_drop_out_above_the_server_limit_but_counters_stay() {
 fn exposition_counts_live_requests_per_pool_and_flags_overdue_ones() {
     use crate::http::inflight::{InflightArrival, Phase, registry};
 
-    let arrival = |id: &str, deadline: std::time::Duration| InflightArrival {
-        request_id: id.into(),
+    let arrival = |id: &'static str, deadline: std::time::Duration| InflightArrival {
+        request_id: id,
         listener: "edge".into(),
         method: http::Method::GET,
         host: None,
-        path: "/".into(),
+        path: "/",
         client_ip: None,
         started: std::time::Instant::now(),
         deadline,

@@ -21,6 +21,7 @@ use crate::proxy_common::*;
 use crate::spsc;
 use pingora_cache::CachePhase;
 use pingora_core::protocols::http::custom::CUSTOM_MESSAGE_QUEUE_SIZE;
+use pingora_core::protocols::http::v1::common::RequestFacts;
 
 fn collect_available_tasks(
     first: HttpTask,
@@ -116,15 +117,19 @@ where
             Err(e) => return (false, true, Some(e)),
         };
 
-        let req = match &prepared {
-            PreparedUpstreamRequest::Borrowed => session.downstream_session.req_header(),
-            PreparedUpstreamRequest::Owned(req) => req,
+        // The downstream request went upstream as it is, so what it said about its framing still holds.
+        let (req, facts) = match &prepared {
+            PreparedUpstreamRequest::Borrowed => (
+                session.downstream_session.req_header(),
+                session.downstream_session.request_facts(),
+            ),
+            PreparedUpstreamRequest::Owned(req) => (&**req, RequestFacts::of(&req.headers)),
         };
         session.upstream_compression.request_filter(req);
 
         debug!("Sending header to upstream {:?}", req);
 
-        match client_session.write_request_header_ref(req).await {
+        match client_session.write_request_header_noted(req, facts).await {
             Ok(_) => { /* Continue */ }
             Err(e) => {
                 return (false, false, Some(e.into_up()));

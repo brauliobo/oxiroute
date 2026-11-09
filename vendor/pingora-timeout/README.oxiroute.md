@@ -17,3 +17,4 @@ OxiRoute's delta is limited to the clock thread in `src/timer.rs`:
   due time and a timer must not fire early.
 - A pending timeout reads the clock once: `register_timer_at` and `should_i_start_clock_at` take the instant
   the caller already has, instead of reading it again for the timer bucket and for the start check.
+- A pending timeout boxes its timer future once: `timeout()` already returns a boxed future, which was boxed again.

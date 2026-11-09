@@ -132,9 +132,8 @@ where
             return Poll::Ready(Ok(v));
         }
 
-        let delay = me
-            .delay
-            .get_or_insert_with(|| Box::pin(me.callback.timeout()));
+        // `timeout()` already returns the boxed future.
+        let delay = me.delay.get_or_insert_with(|| me.callback.timeout());
 
         match delay.as_mut().poll(cx) {
             Poll::Pending => Poll::Pending,

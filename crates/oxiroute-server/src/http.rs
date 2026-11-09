@@ -1,6 +1,7 @@
 pub(crate) mod action;
 pub(crate) mod cache;
 pub(crate) mod evacuation;
+pub(crate) mod header_ops;
 pub(crate) mod inflight;
 pub(crate) mod policy;
 pub(crate) mod proxy;

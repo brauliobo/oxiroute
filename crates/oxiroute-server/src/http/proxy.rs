@@ -34,6 +34,8 @@ use pingora::{
     upstreams::peer::HttpPeer,
 };
 
+use crate::clock::promptly;
+use crate::http::header_ops::HeaderOps as _;
 use crate::routing::{EndpointObservation, QueueTag};
 use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
@@ -58,9 +60,10 @@ use crate::{
         UpstreamPlan, enforce_http_version, is_pool_unavailable, validate_tls_connection,
     },
 };
+use pingora::protocols::http::v1::common::RequestFacts;
 
 use crate::http::evacuation::{Cancellation, EVACUATED, LeftRunning, is_evacuated};
-use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};
+use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase};
 use crate::http::request_id::{REQUEST_ID_HEADER, stamp_request, stamp_response};
 use crate::observability::upstream_stats::{AttemptOutcome, EvacuationResult, ServerStats};
 
@@ -143,6 +146,10 @@ pub struct HttpRequestContext {
     response_status_override: Option<u16>,
     response_header_overrides: Vec<(HeaderName, HeaderValue)>,
     started_at: Instant,
+    /// What the request said about its framing when it arrived.
+    request_facts: RequestFacts,
+    /// The latest clock reading of this request; see `refresh_clock`.
+    now: Instant,
     total_deadline: Instant,
     client_deadline: Option<Instant>,
     deadline: Instant,
@@ -161,7 +168,7 @@ pub struct HttpRequestContext {
 /// What the access log and per-server counters need to know about the attempts of one request.
 #[derive(Default)]
 struct AttemptTrace {
-    servers: Vec<String>,
+    servers: Vec<Arc<str>>,
     failure_reason: Option<&'static str>,
     budget_spent: std::sync::atomic::AtomicBool,
     queue_wait: Duration,
@@ -215,15 +222,18 @@ impl HttpRequestContext {
                 .headers
                 .get(name)
                 .and_then(|value| value.to_str().ok())
-                .map(inflight::bounded_text)
         };
         self.inflight = Some(
             inflight::registry().register(InflightArrival {
-                request_id: header(&REQUEST_ID_HEADER).unwrap_or_default(),
-                listener: self.listener.name().to_owned(),
+                request_id: self
+                    .request_id
+                    .as_ref()
+                    .and_then(|id| id.to_str().ok())
+                    .unwrap_or_default(),
+                listener: self.listener.shared_name(),
                 method: request.method.clone(),
                 host: header(&HOST),
-                path: bounded_path(request.uri.path()),
+                path: request.uri.path(),
                 client_ip: session
                     .client_addr()
                     .and_then(|address| address.as_inet())
@@ -278,7 +288,7 @@ impl HttpRequestContext {
             self.attempted_upstreams.clear();
             self.pool = Some(rescue_pool);
         }
-        let route = proxy_route(self).route_id.clone();
+        let route = proxy_route(self).route_id.shared();
         debug!(
             "rescuing route {route} status {status} after {} tries",
             self.attempt_count()
@@ -435,11 +445,22 @@ impl HttpRequestContext {
             .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
+    /// Reads the clock again. A step that follows a wait (the network, a queue, a retry delay) calls this first;
+    /// every step that runs straight after another reuses its reading.
+    fn refresh_clock(&mut self) -> Instant {
+        self.now = Instant::now();
+        self.now
+    }
+
     fn remaining(&self, upstream: bool) -> pingora::Result<Duration> {
         self.remaining_at(Instant::now(), upstream)
     }
 
-    /// For callers that already read the clock for this step.
+    /// Time left as of the latest reading, for a step that ran no later than the wait it follows.
+    fn remaining_cached(&self, upstream: bool) -> pingora::Result<Duration> {
+        self.remaining_at(self.now, upstream)
+    }
+
     fn remaining_at(&self, now: Instant, upstream: bool) -> pingora::Result<Duration> {
         let remaining = self.deadline.saturating_duration_since(now);
         if remaining.is_zero() {
@@ -453,7 +474,7 @@ impl HttpRequestContext {
     }
 
     fn allow_downstream_drain(&self, session: &mut Session) {
-        if let Ok(remaining) = self.remaining(false) {
+        if let Ok(remaining) = self.remaining_cached(false) {
             session.set_total_drain_timeout(Some(remaining));
             session.set_close_on_response_before_downstream_finish(false);
             session.set_keepalive(Some(0));

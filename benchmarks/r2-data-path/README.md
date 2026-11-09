@@ -78,7 +78,7 @@ alloc_bytes_per_req clock_gettime_per_req`, `heap_live_bytes_per_conn rss_bytes_
 * Bodies: `h1_b0 h1_b1k h1_b64k h1_b1m h1_stream h1_slow`; connection counts `h1_b1k_c{1,16,256,512,1024,2048,4096}`;
   `h1_newconn_b1k`; headers `h1_hdr{2048,8192}`; request bodies `h1_post{4,64,1024}k`, `h1_post1k`, `h1_post{1,64}k_chunked` (`--chunk-bytes`: chunked request
   framing), `h1_post64k_reqbuf`, `h1_post64k_retrybuf`.
-* Feature A/B on one workload (16 keep-alive connections, 1 KiB): `f_base f_fixed f_access_log f_timeouts f_retry
+* Feature A/B on one workload (16 keep-alive connections, 1 KiB): `f_base f_fixed f_forwarded f_access_log f_timeouts f_retry
   f_queue f_capacity f_passive f_breaker f_outlier f_nginx_host f_all_6_0`, plus `dns_on_connect`, `dns_startup`,
   `pool_s2`.
 * Other actions: `gzip_html64k nogzip_html64k cache_hit_b1k cache_hit_b64k static_f{1k,64k,1m} ws_echo_{64,1k,16k} l4_echo_{1k,256k}`

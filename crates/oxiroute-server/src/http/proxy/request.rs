@@ -145,6 +145,17 @@ pub(super) fn pingora_request_policy_error(error: RequestPolicyError) -> Error {
     }
 }
 
+/// The request's `Content-Length`, without a lookup for the usual request that has none.
+pub(super) fn request_content_length(
+    session: &Session,
+    facts: RequestFacts,
+) -> Result<Option<u64>, ()> {
+    if facts.content_lengths == 0 {
+        return Ok(None);
+    }
+    content_length(&session.req_header().headers)
+}
+
 pub(super) fn content_length(headers: &http::HeaderMap) -> Result<Option<u64>, ()> {
     let mut values = headers.get_all(CONTENT_LENGTH).iter();
     let value = match values.next() {
@@ -195,6 +206,23 @@ pub(crate) fn selected_upstream_host(
     }
 }
 
+/// [`selected_upstream_host`] for a request that is at hand: an origin-form request whose host is passed on
+/// as it came has its `Host` value, already built, instead of a copy made from the parsed authority.
+pub(super) fn selected_upstream_host_for(
+    request: &pingora::http::RequestHeader,
+    endpoint: &RuntimeEndpoint,
+    policy: &HttpUpstreamHost,
+    incoming: Option<&Authority>,
+) -> pingora::Result<Option<HeaderValue>> {
+    if matches!(policy, HttpUpstreamHost::PreserveIncoming)
+        && incoming.is_some()
+        && request.uri.authority().is_none()
+    {
+        return Ok(request.headers.get(HOST).cloned());
+    }
+    selected_upstream_host(endpoint, policy, incoming)
+}
+
 pub(super) fn apply_request_header_mutations(
     request: &mut pingora::http::RequestHeader,
     ctx: &HttpRequestContext,
@@ -211,7 +239,7 @@ pub(super) fn apply_request_header_mutations(
                 else {
                     continue;
                 };
-                request.insert_header(name.clone(), value)?;
+                request.set_header(name.clone(), value)?;
             }
         }
     }
@@ -264,7 +292,9 @@ pub(super) fn upstream_request_requires_mutation(
     if ctx.cache_transaction.is_some() || proxy_policy(ctx).upstream_path_rewrite.is_some() {
         return true;
     }
-    if request.version == http::Version::HTTP_10 || has_downstream_close(&request.headers) {
+    if request.version == http::Version::HTTP_10
+        || (ctx.request_facts.connection && has_downstream_close(&request.headers))
+    {
         return true;
     }
     let host_requires_mutation = match &ctx.selected_upstream_host {
