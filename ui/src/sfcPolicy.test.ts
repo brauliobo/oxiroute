@@ -9,6 +9,8 @@ const files = Object.entries(sources).map(([path, source]) => ({ path, descripto
 const templateRules: Array<[string, RegExp]> = [
   ['instance globals such as $emit, $props, $attrs and $slots (bind defineEmits/defineProps/useAttrs/useSlots)',
     /(?<![\w$.])\$(data|props|el|options|parent|root|slots|refs|attrs|watch|emit|forceUpdate|nextTick)\b/],
+  ['inline styles (:style, style=) are blocked by a strict style-src; use classes or v-css-vars',
+    /(?<![\w-])(?::|v-bind:)?style\s*=|:style\b/],
   ['v-html', /\bv-html\b/],
   ['v-memo (unsupported by Vapor)', /\bv-memo\b/],
   ['Suspense (unsupported by pure Vapor apps)', /\bSuspense\b/],

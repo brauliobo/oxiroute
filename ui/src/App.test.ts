@@ -12,6 +12,8 @@ import {
   jsonResponse,
 } from './test/contractFixtures'
 
+const fill = (element: Element) => (element as HTMLElement).style.getPropertyValue('--fill')
+
 const exactHealthCounter = '18446744073709551615'
 const catalog = contractCatalog()
 const rtmpStats = contractRtmpStats()
@@ -88,6 +90,8 @@ describe('monitoring dashboard', () => {
     expect(wrapper.get('.traffic-panel').text()).toContain('42')
     expect(wrapper.get('.traffic-panel').text()).toContain(new Intl.NumberFormat().format(12_345))
     expect(wrapper.get('.host-panel').text()).toContain('0.42')
+    expect(wrapper.findAll('.load-track span').map((bar) => fill(bar.element))).toEqual(['42', '31', '25'])
+    expect(fill(wrapper.get('.memory-track span').element)).toBe('75')
     expect(wrapper.get('.process-panel').text()).toContain('12.5%')
     expect(wrapper.get('.readout-bar').text()).toContain('75%')
     expect(wrapper.get('.readout-bar').text()).toContain('1d 1h')
