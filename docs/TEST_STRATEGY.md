@@ -322,6 +322,7 @@ cargo +1.97.1 test --workspace --locked
 bash fuzz/smoke.sh
 pnpm --dir ui test
 pnpm --dir ui build
+pnpm --dir ui verify:bundle
 pnpm --dir ui test:browser -- --workers=2
 ```
 
