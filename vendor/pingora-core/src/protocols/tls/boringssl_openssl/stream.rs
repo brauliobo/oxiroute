@@ -19,6 +19,7 @@ use crate::tls::{self, ssl, tokio_ssl::SslStream as InnerSsl};
 use crate::utils::tls::{get_organization, get_serial};
 use log::warn;
 use pingora_error::{ErrorType::*, OrErr, Result};
+use std::cell::Cell;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
@@ -37,11 +38,17 @@ use ssl_lib::{hash::MessageDigest, ssl::SslRef};
 /// accepted socket's write buffer, so data that used to wait for a flush still waits for one and
 /// data that used to leave at once still does.
 const COALESCE_PLAIN_LIMIT: usize = 1460;
-/// Plaintext one vectored write may leave pending: a whole TLS record. Vectored writers (HTTP/2
-/// frames, chunked bodies) flush right after.
+/// Plaintext vectored writes may leave pending: a whole TLS record. Vectored writers (HTTP/2
+/// frames, chunked bodies) flush right after, and their bytes are packed into full records.
 const COALESCE_VECTORED_LIMIT: usize = 16 * 1024;
-/// A drained buffer larger than this is released instead of kept for the next response.
+/// A drained buffer larger than this goes back to the thread's spare instead of staying with the connection.
 const COALESCE_RETAINED_CAPACITY: usize = 2048;
+
+thread_local! {
+    /// The record-sized buffer of the connections of this thread that are writing a body: a connection
+    /// that went idle keeps none.
+    static SPARE: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
+}
 
 /// The TLS connection
 #[derive(Debug)]
@@ -126,6 +133,30 @@ where
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
+    /// Moves as much of `bufs` as fits the record being filled into `pending`; the next call, or the
+    /// flush the writer issues at the end of its batch, sends it.
+    fn poll_write_vectored_pending(
+        &mut self,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        if self.pending.len() >= COALESCE_VECTORED_LIMIT {
+            ready!(self.poll_write_pending(cx))?;
+        }
+        if self.pending.capacity() == 0 {
+            self.pending = SPARE.take();
+        }
+        let room = COALESCE_VECTORED_LIMIT - self.pending.len();
+        self.pending.reserve(room);
+        let mut taken = 0;
+        for buf in bufs {
+            let part = &buf[..buf.len().min(room - taken)];
+            self.pending.extend_from_slice(part);
+            taken += part.len();
+        }
+        Poll::Ready(Ok(taken))
+    }
+
     fn poll_write_pending(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         if self.pending.is_empty() {
             return Poll::Ready(Ok(()));
@@ -139,7 +170,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
         self.sent = 0;
         self.pending.clear();
         if self.pending.capacity() > COALESCE_RETAINED_CAPACITY {
-            self.pending = Vec::new();
+            SPARE.set(std::mem::take(&mut self.pending));
         }
         Poll::Ready(Ok(()))
     }
@@ -238,16 +269,7 @@ where
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
         if self.coalesce {
-            let total: usize = bufs.iter().map(|buf| buf.len()).sum();
-            if self.pending.len() + total > COALESCE_VECTORED_LIMIT {
-                ready!(self.poll_write_pending(cx))?;
-            }
-            if total <= COALESCE_VECTORED_LIMIT {
-                self.pending.reserve(total);
-                bufs.iter()
-                    .for_each(|buf| self.pending.extend_from_slice(buf));
-                return Poll::Ready(Ok(total));
-            }
+            return self.poll_write_vectored_pending(cx, bufs);
         }
         Self::clear_error();
         Pin::new(&mut self.ssl).poll_write_vectored(cx, bufs)

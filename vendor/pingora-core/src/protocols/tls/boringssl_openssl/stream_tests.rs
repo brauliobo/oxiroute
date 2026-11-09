@@ -254,3 +254,31 @@ async fn a_read_that_ran_dry_waits_for_the_transport_instead_of_running_the_reco
     server.read_exact(&mut received).await.unwrap();
     assert_eq!(&received, b"ping");
 }
+
+#[tokio::test]
+async fn vectored_bytes_are_packed_into_full_records() {
+    use bytes::Buf;
+    let Harness {
+        mut server,
+        mut client,
+        writes,
+        ..
+    } = connected(true).await;
+    let (frame_header, payload) = ([b'h'; 9], vec![b'p'; 16384]);
+    // Two HTTP/2 DATA frames: 9 header bytes and 16384 payload bytes each.
+    let mut frames = Buf::chain(
+        Buf::chain(
+            Buf::chain(&frame_header[..], &payload[..]),
+            &frame_header[..],
+        ),
+        &payload[..],
+    );
+    server.write_all_buf(&mut frames).await.unwrap();
+    server.flush().await.unwrap();
+    assert_eq!(
+        *writes.lock().unwrap(),
+        [record(16384), record(16384), record(18)],
+        "full records, not a short record per frame header"
+    );
+    assert_eq!(read_exact(&mut client, 32786).await.len(), 32786);
+}
