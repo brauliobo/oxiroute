@@ -47,13 +47,18 @@ task handoffs and response batches, the cancellable upstream attempt, and compat
 - `lib.rs` `handle_new_request` waits for one shutdown signal while it reads a request head: the watch its owner
   shares for a connection that is between requests, the service `Notify` for the first request. It used to register
   both for every request.
-- `proxy_h1_inline.rs` relays an HTTP/1 request that has no body, upgrade or cache involvement
-  (`HttpProxy::relays_bodyless`) in one loop: the end of the empty body goes through the same two body filters, the
-  upstream session is read for the response tasks, up to four tasks that are ready are filtered by `h1_response_filter`
-  and written as one batch, and a client that closes before the response ends the request (the idle read of
-  `proxy_handle_downstream`). `proxy_1to1` uses it before creating the channels; everything else keeps the two-future
-  pump. The result, the filters and their order, the error mapping (a failed upstream read or request end becomes a
-  `HttpTask::Failed`) and the downstream reuse decision are the pump's.
+- `proxy_h1_inline.rs` relays an HTTP/1 request in one loop (`HttpProxy::relays_inline`: an HTTP/1 or HTTP/2 client
+  and no cache involvement): the loop waits for the next response task of the upstream session or the next request
+  body chunk of the client. A chunk goes through the two request body filters and is written to the upstream where it
+  was read; up to four response tasks that are ready are filtered by `h1_response_filter` and written to the client as
+  one batch; a request without a body sends its end first, a retried request sends the buffered body first, and a
+  client that closes before the response ends the request (the idle read of `proxy_handle_downstream`). Upgrades
+  switch the loop to the raw byte mode where either side ending ends the exchange. `proxy_1to1` uses it before
+  creating the channels; only requests with a cache and HTTP/3 clients keep the two-future pump. The result, the
+  filters and their order, the error mapping (a failed upstream read or request end becomes a `HttpTask::Failed`, a
+  failed request write explains a later failed response read) and the downstream reuse decision are the pump's. The
+  one difference is that a blocked write on one side no longer lets the other side's task run ahead by up to a
+  channel of tasks: neither half could make progress while the other was blocked in a write before either.
 - `spsc.rs` implements the safe fixed-capacity handoff with inline queue storage, single sender and
   receiver ownership, cancellation-safe reservation, close/drop wakeups, and panic-safe queued-value
   destruction.
