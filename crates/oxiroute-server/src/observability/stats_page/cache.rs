@@ -51,8 +51,8 @@ impl Entry {
         }
     }
 
-    /// `form_action` is the page prefix an admin table posts to; `refresh_ms` the no-script refresh.
-    pub(super) fn body(&self, rendering: Rendering, refresh_ms: u64, form_action: &str) -> &[u8] {
+    /// `prefix` is the page prefix, where an admin table posts; `refresh_ms` the no-script refresh.
+    pub(super) fn body(&self, rendering: Rendering, refresh_ms: u64, prefix: &str) -> &[u8] {
         self.renderings[rendering.slot()].get_or_init(|| match rendering {
             Rendering::Json { admin } => serde_json::to_vec(&StatsDocument {
                 admin,
@@ -62,10 +62,12 @@ impl Entry {
             Rendering::Csv => csv::render(&self.snapshot),
             Rendering::Html { admin } => {
                 let revision = self.snapshot.generation.active_revision.as_deref();
-                let form = revision
-                    .filter(|_| admin)
-                    .map(|revision| (form_action, revision));
-                html::render(&self.snapshot, refresh_ms, form)
+                html::render(
+                    &self.snapshot,
+                    refresh_ms,
+                    prefix,
+                    revision.filter(|_| admin),
+                )
             }
         })
     }

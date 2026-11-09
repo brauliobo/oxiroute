@@ -1,23 +1,36 @@
-//! The table that needs no script: the page itself until the page serves a script client, and the
-//! fallback after.
+//! The shell of the page and the table that needs no script inside it.
 
-use super::model::{ServerStats, StatsSnapshot, wire_name};
+use super::{
+    assets,
+    model::{ServerStats, StatsSnapshot, wire_name},
+};
 use crate::html::escape_html;
 
-/// `admin` is the page prefix a form posts to and the active revision it carries; forms appear only when set.
+/// The shell with its server-side values filled in. The table that needs no script is its content until
+/// the client replaces it. `revision` is the active revision a form posts to `prefix`; forms appear only
+/// when set.
 pub(super) fn render(
     snapshot: &StatsSnapshot,
     refresh_ms: u64,
-    admin: Option<(&str, &str)>,
+    prefix: &str,
+    revision: Option<&str>,
 ) -> Vec<u8> {
+    let mut assets_prefix = String::new();
+    escape_html(&mut assets_prefix, prefix.trim_end_matches('/'));
+    // The table goes last: names in it must never be read as tokens.
+    assets::shell()
+        .replace("/__stats_prefix__", &assets_prefix)
+        .replace("__stats_refresh_ms__", &refresh_ms.to_string())
+        .replace("__stats_refresh_s__", &format_refresh_seconds(refresh_ms))
+        .replace("__stats_table__", &table(snapshot, prefix, revision))
+        .into_bytes()
+}
+
+fn table(snapshot: &StatsSnapshot, prefix: &str, revision: Option<&str>) -> String {
+    let admin = revision.map(|revision| (prefix, revision));
     let mut body = String::from(
-        "<!doctype html><html><head><meta charset=utf-8><title>OxiRoute statistics</title>",
+        "<table><thead><tr><th>Pool</th><th>Server</th><th>Administrative state</th><th>Health</th><th>Active</th>",
     );
-    body.push_str("<meta name=oxiroute-refresh-ms content=\"");
-    body.push_str(&refresh_ms.to_string());
-    body.push_str("\"><meta http-equiv=refresh content=\"");
-    body.push_str(&format_refresh_seconds(refresh_ms));
-    body.push_str("\"></head><body><h1>OxiRoute statistics</h1><table><thead><tr><th>Pool</th><th>Server</th><th>Administrative state</th><th>Health</th><th>Active</th>");
     if admin.is_some() {
         body.push_str("<th>Administration</th>");
     }
@@ -27,8 +40,8 @@ pub(super) fn render(
             row(&mut body, &pool.name, server, admin);
         }
     }
-    body.push_str("</tbody></table></body></html>");
-    body.into_bytes()
+    body.push_str("</tbody></table>");
+    body
 }
 
 fn row(body: &mut String, pool: &str, server: &ServerStats, admin: Option<(&str, &str)>) {

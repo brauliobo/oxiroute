@@ -141,8 +141,8 @@ async fn the_no_script_table_lists_every_server_and_refreshes() {
     let fixture = fixture();
     let page = HaproxyStatsPage::new(&page_config(2_500, Disabled), fixture.generations.clone());
     let html = String::from_utf8(page.handle("GET", "/haproxy", false).await.body).unwrap();
-    assert!(html.contains("name=oxiroute-refresh-ms content=\"2500\""));
-    assert!(html.contains("http-equiv=refresh content=\"2.500\""));
+    assert!(html.contains("name=\"oxiroute-refresh-ms\" content=\"2500\""));
+    assert!(html.contains("http-equiv=\"refresh\" content=\"2.500\""));
     for server in ["origin-a", "origin-b", "origin-c"] {
         assert!(html.contains(&format!("<td>{server}</td><td>")), "{server}");
     }
