@@ -56,7 +56,7 @@ pub(crate) struct DynamicServer {
 #[derive(Debug)]
 pub(super) struct Membership {
     pub(super) endpoints: Box<[Arc<PoolEndpoint>]>,
-    positions: std::collections::HashMap<Box<str>, usize>,
+    names: NameIndex,
     /// The members that may be chosen; refreshed by [`PoolHealthState::selectable_view`].
     pub(super) selectable: ArcSwap<SelectableView>,
 }
@@ -64,18 +64,14 @@ pub(super) struct Membership {
 impl Membership {
     pub(super) fn new(endpoints: Vec<Arc<PoolEndpoint>>) -> Self {
         Self {
-            positions: endpoints
-                .iter()
-                .enumerate()
-                .map(|(index, server)| (server.name.as_str().into(), index))
-                .collect(),
+            names: NameIndex::new(&endpoints),
             endpoints: endpoints.into_boxed_slice(),
             selectable: ArcSwap::from_pointee(SelectableView::unbuilt()),
         }
     }
 
     pub(super) fn position(&self, name: &str) -> Option<usize> {
-        self.positions.get(name).copied()
+        self.names.find(&self.endpoints, name)
     }
 
     /// Where a dynamic server belongs: after every static one, by priority and then name.
