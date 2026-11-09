@@ -53,3 +53,5 @@ certificate and hostname verification are still configured per connection by `co
 policy is unchanged. `oxiroute-rtmp` `client::tests::rtmps_connects_share_one_system_ca_parse` and
 `oxiroute-tls-client/tests/single_parse.rs` count bytes read from a synthetic `SSL_CERT_FILE` bundle and
 assert a single parse. The forward proxy builds its connector once per plan and is unchanged.
+
+The connection-layer numbers are in `CONNECTION_LAYER_PERFORMANCE.md`.

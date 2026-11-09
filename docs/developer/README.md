@@ -27,6 +27,7 @@ runtime path and failure cases are tested.
 | `oxiroute-import` | Native parsers, semantic reports, provenance, diagnostics, canonical lowering |
 | `oxiroute-forward-proxy` | Explicit forward-proxy target/auth/policy/tunnel primitives without socket I/O |
 | `oxiroute-rtmp` | RTMP transport adapter, sessions, catalog, fanout, recording, FLV, relay, directive registry |
+| `oxiroute-tls-client` | The process-wide OpenSSL client context for outbound connections that trust the system CA store (RTMPS, VOD, RTMP callbacks, ACME) |
 | `oxiroute-cache` | Bounded RFC-aware memory and descriptor-safe persistent cache core used by reverse HTTP and eligible forward HTTP/1 requests |
 | `oxiroute-supervision*` | Platform-neutral protocol/state machines and Linux master/worker transport |
 | `ui` | Vue API contract, runtime observatory, topology, recording panel, configuration editors |
@@ -51,3 +52,4 @@ runtime path and failure cases are tested.
 - [Compatibility matrix](../COMPATIBILITY.md)
 - [Test strategy](../TEST_STRATEGY.md)
 - [Shared TLS client context and reload cost](TLS_CLIENT_CONTEXT.md)
+- [Connection layer: TLS, per-connection memory, new-connection cost](CONNECTION_LAYER_PERFORMANCE.md)

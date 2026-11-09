@@ -67,6 +67,10 @@ HTTP/2 test lifecycle correction, a lazily allocated read buffer, and stage-1 co
   the write buffer is the same `BufWriter`. The module's tests need only `tokio`.
 - `protocols/l4/stream.rs` `Drop` no longer probes the socket with `getsockopt(TCP_NODELAY)` before the
   final flush: a broken socket fails the flush, which is logged at debug level.
+- `apps/mod.rs` `AcceptGate` counts the threads blocked in `AcceptGateClose::wait` and notifies the
+  `quiesced` condition variable only while one exists, under the mutex that guards the count. Every
+  accepted connection releases an ownership claim, so an unconditional `notify_all` was one `futex` call
+  per connection.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.

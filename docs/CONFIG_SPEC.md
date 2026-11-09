@@ -821,6 +821,10 @@ The current certificate and profile rules are:
   the server session cache and tickets, retain OpenSSL's default session timeout, and prefer server
   cipher order. `cipher_list`, `dh_parameters_path`, `session_cache`, and
   `session_timeout_seconds` override those defaults only when present.
+  A full TLS 1.3 handshake costs about 1.8 million user instructions (about 23 keep-alive requests).
+  A shared `session_cache` cuts a TLS 1.2 resumption by about 79% and a TLS 1.3 resumption by about
+  15%, because TLS 1.3 still runs a fresh key exchange; enable it for clients that reconnect often
+  over TLS 1.2. See `docs/developer/CONNECTION_LAYER_PERFORMANCE.md`.
 - Downstream client authentication defaults to `disabled`. `optional` requests a client certificate
   but permits an absent certificate; `required` rejects the handshake when no certificate is sent.
   Enabled modes require one bounded absolute `ca_certificate_path`. The CA bundle is read twice for
