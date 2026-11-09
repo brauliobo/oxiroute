@@ -33,6 +33,8 @@ mod background;
 pub mod discovery;
 pub mod health_check;
 pub mod selection;
+#[cfg(test)]
+mod test_servers;
 
 use discovery::ServiceDiscovery;
 use health_check::Health;
@@ -468,7 +470,16 @@ mod test {
     use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
     use super::*;
+    use crate::test_servers::{self, Loopback};
     use async_trait::async_trait;
+
+    fn live_and_refused() -> (Loopback, Loopback, Loopback) {
+        (
+            test_servers::redirect_server(),
+            test_servers::redirect_server(),
+            test_servers::refused(),
+        )
+    }
 
     #[tokio::test]
     async fn test_static_backends() {
@@ -484,12 +495,13 @@ mod test {
 
     #[tokio::test]
     async fn test_backends() {
+        let (server1, server2, refused) = live_and_refused();
         let discovery = discovery::Static::default();
-        let good1 = Backend::new("1.1.1.1:80").unwrap();
+        let good1 = Backend::new(&server1.addr.to_string()).unwrap();
         discovery.add(good1.clone());
-        let good2 = Backend::new("1.0.0.1:80").unwrap();
+        let good2 = Backend::new(&server2.addr.to_string()).unwrap();
         discovery.add(good2.clone());
-        let bad = Backend::new("127.0.0.1:79").unwrap();
+        let bad = Backend::new(&refused.addr.to_string()).unwrap();
         discovery.add(bad.clone());
 
         let mut backends = Backends::new(Box::new(discovery));
@@ -594,12 +606,13 @@ mod test {
 
     #[tokio::test]
     async fn test_parallel_health_check() {
+        let (server1, server2, refused) = live_and_refused();
         let discovery = discovery::Static::default();
-        let good1 = Backend::new("1.1.1.1:80").unwrap();
+        let good1 = Backend::new(&server1.addr.to_string()).unwrap();
         discovery.add(good1.clone());
-        let good2 = Backend::new("1.0.0.1:80").unwrap();
+        let good2 = Backend::new(&server2.addr.to_string()).unwrap();
         discovery.add(good2.clone());
-        let bad = Backend::new("127.0.0.1:79").unwrap();
+        let bad = Backend::new(&refused.addr.to_string()).unwrap();
         discovery.add(bad.clone());
 
         let mut backends = Backends::new(Box::new(discovery));

@@ -211,7 +211,7 @@ impl IdlePool {
         self.start_watcher();
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "any_tls"))]
     pub(crate) fn idle_count(&self) -> usize {
         self.idle.load(Ordering::Relaxed)
     }
@@ -266,7 +266,7 @@ impl IdlePool {
 
     fn expire_by(&self, expires: Instant) {
         let mut deadline = self.wakeups.deadline.lock();
-        if deadline.map_or(true, |current| expires < current) {
+        if deadline.is_none_or(|current| expires < current) {
             *deadline = Some(expires);
             drop(deadline);
             self.wakeups.notify.notify_one();

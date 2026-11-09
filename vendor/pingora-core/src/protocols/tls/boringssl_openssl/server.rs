@@ -170,13 +170,17 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_async_cert() {
+        let test_cert = crate::test_tls::TestCert::new();
         let acceptor = ssl::SslAcceptor::mozilla_intermediate_v5(ssl::SslMethod::tls())
             .unwrap()
             .build();
 
-        struct Callback;
+        struct Callback {
+            cert: String,
+            key: String,
+        }
         #[async_trait]
         impl TlsAccept for Callback {
             async fn certificate_callback(&self, ssl: &mut TlsRef) -> () {
@@ -184,20 +188,20 @@ mod tests {
                     ssl.servername(ssl::NameType::HOST_NAME).unwrap(),
                     "pingora.org"
                 );
-                let cert = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
-                let key = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
-
-                let cert_bytes = std::fs::read(cert).unwrap();
+                let cert_bytes = std::fs::read(&self.cert).unwrap();
                 let cert = crate::tls::x509::X509::from_pem(&cert_bytes).unwrap();
 
-                let key_bytes = std::fs::read(key).unwrap();
+                let key_bytes = std::fs::read(&self.key).unwrap();
                 let key = crate::tls::pkey::PKey::private_key_from_pem(&key_bytes).unwrap();
                 ext::ssl_use_certificate(ssl, &cert).unwrap();
                 ext::ssl_use_private_key(ssl, &key).unwrap();
             }
         }
 
-        let cb: TlsAcceptCallbacks = Box::new(Callback);
+        let cb: TlsAcceptCallbacks = Box::new(Callback {
+            cert: test_cert.cert_path.clone(),
+            key: test_cert.key_path.clone(),
+        });
 
         let (client, server) = tokio::io::duplex(1024);
 
@@ -209,12 +213,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "openssl_derived")]
+    #[cfg(feature = "openssl")]
     async fn test_handshake_complete_callback() {
         use crate::tls::ssl::SslFiletype;
 
-        let cert = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
-        let key = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
+        let test_cert = crate::test_tls::TestCert::new();
+        let (cert, key) = (&test_cert.cert_path, &test_cert.key_path);
 
         let acceptor = {
             let mut builder =

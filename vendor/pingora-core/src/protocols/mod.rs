@@ -329,12 +329,12 @@ thread_local! {
     static PEER_IDENTITY_SYSCALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, unix, feature = "any_tls"))]
 pub(crate) fn reset_peer_identity_syscalls() {
     PEER_IDENTITY_SYSCALLS.set(0);
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, unix, feature = "any_tls"))]
 pub(crate) fn peer_identity_syscalls() -> usize {
     PEER_IDENTITY_SYSCALLS.get()
 }

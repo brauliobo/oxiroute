@@ -431,7 +431,7 @@ mod test {
     };
 
     use super::*;
-    use crate::{discovery, Backends, SocketAddr};
+    use crate::{discovery, test_servers, Backends, SocketAddr};
     use async_trait::async_trait;
     use http::Extensions;
 
@@ -439,16 +439,18 @@ mod test {
     async fn test_tcp_check() {
         let tcp_check = TcpHealthCheck::default();
 
+        let server = test_servers::redirect_server();
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:80".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
 
         assert!(tcp_check.check(&backend).await.is_ok());
 
+        let refused = test_servers::refused();
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:79".parse().unwrap()),
+            addr: SocketAddr::Inet(refused.addr),
             weight: 1,
             ext: Extensions::new(),
         };
@@ -456,12 +458,15 @@ mod test {
         assert!(tcp_check.check(&backend).await.is_err());
     }
 
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     #[tokio::test]
     async fn test_tls_check() {
-        let tls_check = TcpHealthCheck::new_tls("one.one.one.one");
+        let server = test_servers::tls_server();
+        let mut tls_check = TcpHealthCheck::new_tls("localhost");
+        tls_check.peer_template.options.verify_cert = false;
+        tls_check.peer_template.options.verify_hostname = false;
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:443".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
@@ -469,13 +474,16 @@ mod test {
         assert!(tls_check.check(&backend).await.is_ok());
     }
 
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     #[tokio::test]
     async fn test_https_check() {
-        let https_check = HttpHealthCheck::new("one.one.one.one", true);
+        let server = test_servers::tls_server();
+        let mut https_check = HttpHealthCheck::new("localhost", true);
+        https_check.peer_template.options.verify_cert = false;
+        https_check.peer_template.options.verify_hostname = false;
 
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:443".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
@@ -497,8 +505,9 @@ mod test {
             }
         }));
 
+        let server = test_servers::redirect_server();
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:80".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
@@ -522,7 +531,8 @@ mod test {
             }
         }
 
-        let good_backend = Backend::new("127.0.0.1:79").unwrap();
+        let refused = test_servers::refused();
+        let good_backend = Backend::new(&refused.addr.to_string()).unwrap();
         let new_good_backends = || -> (BTreeSet<Backend>, HashMap<u64, bool>) {
             let mut healthy = HashMap::new();
             healthy.insert(good_backend.hash_key(), true);
