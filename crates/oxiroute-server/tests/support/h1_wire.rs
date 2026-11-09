@@ -21,7 +21,7 @@ use tokio::{
 
 use super::{
     config_support::{empty_config, socket_bind, socket_endpoint},
-    process_support::{reserve_tcp_address, ServerProcess},
+    process_support::{ServerProcess, reserve_tcp_address},
 };
 
 pub const STEP: Duration = Duration::from_secs(5);
