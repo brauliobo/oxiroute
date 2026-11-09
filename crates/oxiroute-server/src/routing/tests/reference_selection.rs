@@ -207,6 +207,13 @@ fn pool_connection(
     }
 }
 
+/// More load changes than the index's log keeps between two selections: `churn` leaves and
+/// returns, and then `server` keeps one lease.
+fn burst(pool: &EndpointPool, churn: &str, server: &str, held: &mut Vec<EndpointLease>) {
+    (0..1100).for_each(|_| drop(pool.select_named_server(churn).lease));
+    held.extend(pool.select_named_server(server).lease);
+}
+
 /// Changes something selection depends on, through the pool's own entry points.
 fn disturb(pool: &EndpointPool, random: &mut Random, held: &mut Vec<EndpointLease>) {
     let server = name(random.below(SERVERS));
@@ -248,7 +255,7 @@ fn disturb(pool: &EndpointPool, random: &mut Random, held: &mut Vec<EndpointLeas
         }
         9 => pool.record_passive_failure(random.below(SERVERS), HealthFailure::Timeout),
         // More load changes than the index's log keeps between two selections.
-        _ => (0..1100).for_each(|_| drop(pool.select_named_server(&server).lease)),
+        _ => burst(pool, &name(random.below(SERVERS)), &server, held),
     }
 }
 
@@ -394,6 +401,15 @@ fn power_of_two_choices_only_chooses_admissible_servers_and_avoids_the_busiest()
         [0, 4, 5, 6, 7, 8].iter().all(|&index| picks[index] > 0),
         "{picks:?}"
     );
+}
+
+#[test]
+fn a_burst_of_load_changes_between_two_selections_is_not_lost() {
+    let pool = pool_of(UpstreamAlgorithm::LeastConnections, ejecting());
+    let mut held = vec![pool.select().expect("first")];
+    burst(&pool, "s7", "s1", &mut held);
+
+    assert_eq!(pool.select().expect("second").server_name(), "s2");
 }
 
 #[test]
