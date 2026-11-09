@@ -77,6 +77,9 @@ impl WeightIndex {
 
     /// Writes the credits back and forgets the view; the credits are the state again.
     pub(super) fn flush(&mut self, credit: &mut [i64]) {
+        if self.view == 0 {
+            return;
+        }
         for (at, member) in self.members.iter().enumerate() {
             if let Some(member) = member {
                 credit[at] = self.credit_of(member);
