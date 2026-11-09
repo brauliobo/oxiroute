@@ -59,7 +59,7 @@ test.describe('stats page administration', () => {
   test('picks another pool and server', async ({ page }) => {
     const served = await serveStats(page, { document: { admin: true } })
     await page.goto(PAGE)
-    await page.getByLabel('Pool').selectOption('api')
+    await page.getByLabel('Pool', { exact: true }).selectOption('api')
     await page.getByRole('button', { name: 'Maintenance' }).click()
     await page.getByRole('dialog', { name: 'Confirm administration' }).getByRole('button', { name: 'Confirm' }).click()
     await expect.poll(() => served.posts).toMatchObject([{ pool: 'api', server: 'origin-c', state: 'maintenance' }])

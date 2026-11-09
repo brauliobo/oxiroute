@@ -106,7 +106,8 @@ test.describe('stats dashboard on a wide screen', () => {
     await expect(page.locator('.ox-routes a', { hasText: 'web' })).toBeVisible()
   })
 
-  test('sorts by a header, puts the sort in the address and restores it', async ({ page }) => {
+  test('sorts by a header, puts the sort in the address and restores it', async ({ page, isMobile }) => {
+    test.skip(isMobile, 'a phone has no header row: the toolbar sort orders the cards')
     await serve(page, [dashboardDocument(0)])
     await page.goto('/stats.html')
     const names = () => page.locator('tbody.ox-row[data-row^="server:web"] .ox-label').allInnerTexts()
@@ -178,6 +179,15 @@ test.describe('stats dashboard on a phone', () => {
     await expect(row.locator('[data-label="Status"]')).toContainText('UP')
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0)
     await shoot(page, 'mobile')
+  })
+
+  test('sorts the cards with the toolbar and keeps the sort in the address', async ({ page }) => {
+    await serve(page, [dashboardDocument(0)])
+    await page.goto('/stats.html')
+    const names = () => page.locator('tbody.ox-row[data-row^="server:web"] .ox-label').allInnerTexts()
+    await page.getByLabel('Sort by', { exact: true }).selectOption('status')
+    await expect(page).toHaveURL(/sort=status/)
+    expect((await names())[0]).toBe('origin-b')
   })
 
   test('opens a card, and the details stay inside the screen', async ({ page }) => {
