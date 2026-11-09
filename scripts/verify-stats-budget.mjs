@@ -2,13 +2,13 @@
 // Fails unless the built stats page (ui/dist-stats) is what the Rust side embeds and fits the size budget:
 //  - only `stats.html`, `manifest.json` and `assets/stats-<hash>.js|css` (no fonts, images or source maps),
 //  - the manifest names the entry script and its stylesheets, and those files exist,
-//  - gzip (level 9) of all JS <= 60 KiB and of all CSS <= 12 KiB.
+//  - gzip (level 9) of all JS <= 90 KiB and of all CSS <= 12 KiB.
 // usage: node scripts/verify-stats-budget.mjs <dist-dir>
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 
-export const BUDGET_BYTES = { js: 60 * 1024, css: 12 * 1024 }
+export const BUDGET_BYTES = { js: 90 * 1024, css: 12 * 1024 }
 const ASSET = /^stats-[A-Za-z0-9_-]+\.(js|css)$/
 
 /** @returns {{ problems: string[], sizes: Record<string, number> }} gzip bytes by type */

@@ -45,6 +45,14 @@ export default defineConfig({
         viewport: { width: 1440, height: 1000 },
       },
     },
+    {
+      name: 'stats-mobile-chromium',
+      testMatch: '**/stats/**/*.spec.ts',
+      use: {
+        ...devices['Pixel 5'],
+        baseURL: 'http://127.0.0.1:4174',
+      },
+    },
   ],
   webServer: [
     {

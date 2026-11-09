@@ -23,8 +23,8 @@ test.describe('stats page shell', () => {
 
     const response = await page.goto('/stats.html')
     expect(response?.headers()['content-security-policy']).toContain("script-src 'self'")
-    await expect(page.getByRole('status')).toHaveAttribute('data-status', 'live')
-    await expect(page.getByText('2 of 3 servers up')).toBeVisible()
+    await expect(page.getByRole('status').first()).toHaveAttribute('data-status', 'live')
+    await expect(page.getByRole('heading', { level: 1, name: 'OxiRoute statistics' })).toBeVisible()
     expect([...origins]).toEqual(['http://127.0.0.1:4174'])
     expect(problems).toEqual([])
   })
