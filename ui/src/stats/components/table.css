@@ -261,3 +261,9 @@
 .ox-plain {
   font-size: 0.8rem;
 }
+
+@media (min-width: 64.01rem) {
+  .ox-table td.ox-nowrap .ox-sub {
+    white-space: nowrap;
+  }
+}
