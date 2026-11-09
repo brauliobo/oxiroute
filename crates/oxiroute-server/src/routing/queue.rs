@@ -9,6 +9,8 @@ pub(super) struct PoolQueue {
     pub(super) generation: AtomicU64,
     pub(super) ledger: WaitLedger,
     pub(super) notify: Notify,
+    /// Tasks that may be asleep on `notify`; a release wakes the pool only when there is one.
+    watchers: AtomicUsize,
     #[cfg(test)]
     pub(super) notifications: AtomicU64,
     #[cfg(test)]
@@ -23,6 +25,16 @@ pub(super) struct PoolQueue {
     selectors: AtomicUsize,
     waiters: Mutex<WaitQueue>,
     pub(super) schedule: Option<Arc<QueueSchedule>>,
+}
+
+pub(super) struct CapacityWatch<'a> {
+    queue: &'a PoolQueue,
+}
+
+impl Drop for CapacityWatch<'_> {
+    fn drop(&mut self) {
+        self.queue.watchers.fetch_sub(1, Ordering::Release);
+    }
 }
 
 #[derive(Debug)]
@@ -41,6 +53,7 @@ impl PoolQueue {
             generation: AtomicU64::new(0),
             ledger: WaitLedger::default(),
             notify: Notify::new(),
+            watchers: AtomicUsize::new(0),
             #[cfg(test)]
             notifications: AtomicU64::new(0),
             #[cfg(test)]
@@ -62,15 +75,21 @@ impl PoolQueue {
         if self.capacity_waiters_possible {
             self.generation.fetch_add(1, Ordering::AcqRel);
         }
-        self.notify.notify_waiters();
-        if self.capacity_waiters_possible {
-            // Pairs with the fence in `enqueue`: a selector that queued after this check reads the
-            // state the caller changed before it, so it never sleeps through the event.
-            fence(Ordering::SeqCst);
-            if self.selectors.load(Ordering::Relaxed) != 0 {
-                self.notify_front();
-            }
+        // Pairs with `watch` and with the fence in `enqueue`: a task that registered after this
+        // fence reads the state the caller changed before it, so it never sleeps through the event.
+        fence(Ordering::SeqCst);
+        if self.watchers.load(Ordering::Relaxed) != 0 {
+            self.notify.notify_waiters();
         }
+        if self.capacity_waiters_possible && self.selectors.load(Ordering::Relaxed) != 0 {
+            self.notify_front();
+        }
+    }
+
+    /// Registers a task about to wait on `notify`; register before reading the state it waits for.
+    pub(super) fn watch(&self) -> CapacityWatch<'_> {
+        self.watchers.fetch_add(1, Ordering::SeqCst);
+        CapacityWatch { queue: self }
     }
 
     fn notify_front(&self) {

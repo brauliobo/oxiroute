@@ -363,6 +363,7 @@ impl EndpointPool {
         if now >= deadline || !recoverable {
             return false;
         }
+        let _watch = self.queue.watch();
         let _ = timeout_at(
             (now + RECOVERY_POLL).min(deadline),
             self.queue.notify.notified(),
