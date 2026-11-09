@@ -9,10 +9,7 @@ pub(super) async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
     fs::create_dir(&root).expect("static root");
     fs::write(root.join("ok.txt"), b"0123456789").expect("static file");
 
-    let listener_address = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("reserve UDP address")
-        .local_addr()
-        .expect("reserved UDP address");
+    let listener_address = process_support::ports::unused_address();
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
     let mut config = support::empty_config();
     config.certificates.push(Certificate {

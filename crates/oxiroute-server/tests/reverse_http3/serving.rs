@@ -60,10 +60,7 @@ pub(super) async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool()
         let _ = h3.accept().await;
     });
 
-    let listener_address = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("reserve UDP address")
-        .local_addr()
-        .expect("reserved UDP address");
+    let listener_address = process_support::ports::unused_address();
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
     let mut config = support::empty_config();
     config.certificates.push(Certificate {
@@ -255,10 +252,7 @@ pub(super) async fn reverse_h3_cache_serves_a_second_get_without_origin_contact(
         );
     });
 
-    let listener_address = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("reserve cache UDP address")
-        .local_addr()
-        .expect("reserved cache UDP address");
+    let listener_address = process_support::ports::unused_address();
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
     let mut config = support::empty_config();
     config

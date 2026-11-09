@@ -376,10 +376,7 @@ fn client_ca_bundle(valid: &TestOnlyEcdsaChain, disallowed_san: &TestOnlyEcdsaCh
 }
 
 fn reserve_udp_address() -> SocketAddr {
-    std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("reserve UDP address")
-        .local_addr()
-        .expect("reserved UDP address")
+    process_support::ports::unused_address()
 }
 
 fn client_endpoint(
