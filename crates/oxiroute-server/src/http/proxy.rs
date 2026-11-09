@@ -61,7 +61,7 @@ use crate::{
 
 use crate::http::evacuation::{Cancellation, EVACUATED, LeftRunning, is_evacuated};
 use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase, bounded_path};
-use crate::http::request_id::{REQUEST_ID_HEADER, RequestIdBuilder};
+use crate::http::request_id::{REQUEST_ID_HEADER, stamp_request, stamp_response};
 use crate::observability::upstream_stats::{AttemptOutcome, EvacuationResult, ServerStats};
 
 pub struct HttpReverseProxy {
@@ -152,6 +152,7 @@ pub struct HttpRequestContext {
     cache_response_handled: bool,
     trace: AttemptTrace,
     inflight: Option<InflightGuard>,
+    request_id: Option<HeaderValue>,
 }
 
 /// What the access log and per-server counters need to know about the attempts of one request.
