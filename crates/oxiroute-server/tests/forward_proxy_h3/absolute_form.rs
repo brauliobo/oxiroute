@@ -51,10 +51,7 @@ async fn daemon_forwards_h3_http_absolute_form_to_a_tcp_origin_and_releases_udp_
             .expect("CONNECT origin response");
     });
 
-    let proxy_address = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("reserve UDP address")
-        .local_addr()
-        .expect("reserved UDP address");
+    let proxy_address = process_support::ports::unused_address();
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
     let mut config = support::empty_config();
     config.certificates.push(Certificate {
@@ -269,10 +266,7 @@ async fn h3_cache_serves_a_second_absolute_form_get_without_origin_contact() {
         );
     });
 
-    let proxy_address = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("reserve cache UDP address")
-        .local_addr()
-        .expect("reserved cache UDP address");
+    let proxy_address = process_support::ports::unused_address();
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
     let mut config = support::empty_config();
     config

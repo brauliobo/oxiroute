@@ -7,10 +7,7 @@ async fn daemon_rejects_h3_extended_connect_without_tcp_or_h1_fallback() {
         .await
         .expect("origin bind");
     let origin_address = origin.local_addr().expect("origin address");
-    let proxy_address = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("reserve UDP address")
-        .local_addr()
-        .expect("reserved UDP address");
+    let proxy_address = process_support::ports::unused_address();
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
     let mut config = support::empty_config();
     config.certificates.push(Certificate {

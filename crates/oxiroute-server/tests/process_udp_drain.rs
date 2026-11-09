@@ -342,8 +342,5 @@ async fn read_content_length_response(stream: &mut TcpStream) -> HttpResponse {
 }
 
 fn reserve_udp_address() -> SocketAddr {
-    StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("reserve UDP address")
-        .local_addr()
-        .expect("reserved UDP address")
+    process_support::ports::unused_address()
 }
