@@ -458,12 +458,15 @@ mod test {
         assert!(tcp_check.check(&backend).await.is_err());
     }
 
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     #[tokio::test]
     async fn test_tls_check() {
-        let tls_check = TcpHealthCheck::new_tls("one.one.one.one");
+        let server = test_servers::tls_server();
+        let mut tls_check = TcpHealthCheck::new_tls("localhost");
+        tls_check.peer_template.options.verify_cert = false;
+        tls_check.peer_template.options.verify_hostname = false;
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:443".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
@@ -471,13 +474,16 @@ mod test {
         assert!(tls_check.check(&backend).await.is_ok());
     }
 
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     #[tokio::test]
     async fn test_https_check() {
-        let https_check = HttpHealthCheck::new("one.one.one.one", true);
+        let server = test_servers::tls_server();
+        let mut https_check = HttpHealthCheck::new("localhost", true);
+        https_check.peer_template.options.verify_cert = false;
+        https_check.peer_template.options.verify_hostname = false;
 
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:443".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
