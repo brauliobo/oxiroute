@@ -40,6 +40,7 @@ impl ProxyHttp for HttpReverseProxy {
             response_status_override: None,
             response_header_overrides: Vec::new(),
             started_at,
+            request_facts: RequestFacts::default(),
             now: started_at,
             total_deadline: started_at + self.service.upstream_io_timeout(),
             client_deadline: None,
@@ -64,6 +65,7 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
         ctx.request_id = Some(stamp_request(session.req_header_mut_keeping_facts())?);
+        ctx.request_facts = session.request_facts();
         ctx.adopt_downstream_deadline(session);
         ctx.register_inflight(session, self.service.access_log());
         let arrived = ctx.started_at;
@@ -106,7 +108,7 @@ impl ProxyHttp for HttpReverseProxy {
             let request = session.req_header();
             (
                 request_authority(request),
-                request_content_length(session),
+                request_content_length(session, ctx.request_facts),
                 session.is_upgrade_req(),
             )
         };
