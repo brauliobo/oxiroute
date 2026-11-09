@@ -131,7 +131,7 @@ def build_lanes():
             add(lane(f"{name}{workers}", ["--path", "/b1k", "--expect-len", "1024", "--conns", str(32 * workers)],
                      features=features, requests=20000 * workers, warmup=2000, workers=workers))
     for algorithm in ("lc", "wrr"):
-        for servers in (8, 64, 256):
+        for servers in (8, 64, 200):
             add(lane(f"pool_{algorithm}_s{servers}", work, features=[algorithm], servers=servers))
     for feature in FEATURES_6_0:
         add(lane(f"scale4_{feature}", ["--path", "/b1k", "--expect-len", "1024", "--conns", "128"], features=[feature],
