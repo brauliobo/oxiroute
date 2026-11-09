@@ -31,6 +31,7 @@ Lua-only contract.
 return {
   version = 1,
   max_connections = 4096,
+  listener_workers = 4,
   management = {
     bind = "127.0.0.1:9080",
     ui_dir = "./ui/dist",
@@ -273,6 +274,16 @@ Current constraints:
 - `version` MUST be `1`.
 - Root `max_connections` is an optional aggregate process admission limit. Omission or explicit
   `null` means unbounded; a configured value MUST be a positive exact JSON integer.
+- Root `listener_workers` is an optional positive integer (1 to 256, default 1) that sets how many
+  worker threads serve each `http`, `forward_http1`, `forward_http2` and `tcp` listener. The
+  workers of a listener share its socket, its connection pools, its pool queues and its limits, and
+  a connection is served by whichever worker is free, so keep-alive reuse, `max_connections`,
+  queueing, drain, retirement and evacuation behave as with one worker. One worker serves a
+  listener on one core (about 60 000 small requests per second); raise the value for a listener that
+  saturates its core, to at most the cores you can give it, because every extra worker adds
+  cross-thread wake-ups per request. The management, statistics, RTMP, `udp`, `http3` and
+  `forward_http3` listeners keep their dedicated single threads. Changing the value is an ordinary
+  reload: the replaced generation drains on its own threads.
 - `retirement` is optional and bounds how a replaced generation drains: `drain_deadline_ms`
   (1000 to 86400000) is how long its in-flight work may continue after its accept gate closes,
   and `max_retired_generations` (1 to 16, default 4) is how many replaced generations may drain at

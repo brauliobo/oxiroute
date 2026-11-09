@@ -92,6 +92,10 @@ impl ServerProcess {
         }
     }
 
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     pub async fn wait_for_tcp(&mut self, address: SocketAddr) {
         let deadline = Instant::now() + PROCESS_TIMEOUT;
         loop {

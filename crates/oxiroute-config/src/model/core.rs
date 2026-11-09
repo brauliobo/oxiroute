@@ -9,7 +9,7 @@ pub struct ConfigDraft {
     #[serde(default)]
     pub max_connections: Option<u64>,
     /// Worker threads that serve each HTTP, forward HTTP/1, forward HTTP/2 and TCP listener.
-    /// Omitted means one per available CPU, at most [`Self::AUTO_LISTENER_WORKERS_CAP`].
+    /// The workers share the listener's socket, pools and limits. Omitted means one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listener_workers: Option<u64>,
     /// Bounds on how long and how many replaced generations keep serving their in-flight work.
@@ -43,7 +43,6 @@ pub struct ConfigDraft {
 
 impl ConfigDraft {
     pub const MAX_LISTENER_WORKERS: u64 = 256;
-    pub const AUTO_LISTENER_WORKERS_CAP: u64 = 4;
 }
 
 /// Lifetime of a replaced generation. Its accept gate closes at once; work already admitted
