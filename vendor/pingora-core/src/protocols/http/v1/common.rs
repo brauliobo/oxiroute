@@ -285,7 +285,8 @@ thread_local! {
     static NAMES: std::cell::RefCell<NameCache> = std::cell::RefCell::new(NameCache::default());
 }
 
-type NameCache = std::collections::HashMap<Box<[u8]>, HeaderName, std::hash::BuildHasherDefault<FnvHasher>>;
+type NameCache =
+    std::collections::HashMap<Box<[u8]>, HeaderName, std::hash::BuildHasherDefault<FnvHasher>>;
 
 /// FNV-1a: header names are short and the cache is bounded, so the default keyed hash buys nothing.
 struct FnvHasher(u64);
