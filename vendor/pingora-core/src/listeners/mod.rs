@@ -164,6 +164,11 @@ impl TransportStack {
         self.l4.as_str()
     }
 
+    #[cfg(test)]
+    pub(crate) fn tcp_addr(&self) -> std::net::SocketAddr {
+        self.l4.tcp_addr()
+    }
+
     pub async fn accept(&self) -> Result<UninitializedStream> {
         let stream = self.l4.accept().await?;
         Ok(UninitializedStream {
@@ -342,14 +347,11 @@ mod test {
     #[cfg(feature = "any_tls")]
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpStream;
-    use tokio::time::{sleep, Duration};
 
     #[tokio::test]
     async fn test_listen_tcp() {
-        let addr1 = "127.0.0.1:7101";
-        let addr2 = "127.0.0.1:7102";
-        let mut listeners = Listeners::tcp(addr1);
-        listeners.add_tcp(addr2);
+        let mut listeners = Listeners::tcp("127.0.0.1:0");
+        listeners.add_tcp("127.0.0.1:0");
 
         let listeners = listeners
             .build(
@@ -360,6 +362,7 @@ mod test {
             .unwrap();
 
         assert_eq!(listeners.len(), 2);
+        let addrs: Vec<_> = listeners.iter().map(TransportStack::tcp_addr).collect();
         for listener in listeners {
             tokio::spawn(async move {
                 // just try to accept once
@@ -368,22 +371,19 @@ mod test {
             });
         }
 
-        // make sure the above starts before the lines below
-        sleep(Duration::from_millis(10)).await;
-
-        TcpStream::connect(addr1).await.unwrap();
-        TcpStream::connect(addr2).await.unwrap();
+        for addr in addrs {
+            TcpStream::connect(addr).await.unwrap();
+        }
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_listen_tls() {
+        use crate::test_tls::TestCert;
         use tokio::io::AsyncReadExt;
 
-        let addr = "127.0.0.1:7103";
-        let cert_path = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
-        let key_path = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
-        let mut listeners = Listeners::tls(addr, &cert_path, &key_path).unwrap();
+        let cert = TestCert::new();
+        let mut listeners = Listeners::tls("127.0.0.1:0", &cert.cert_path, &cert.key_path).unwrap();
         let listener = listeners
             .build(
                 #[cfg(unix)]
@@ -393,6 +393,7 @@ mod test {
             .unwrap()
             .pop()
             .unwrap();
+        let addr = listener.tcp_addr();
 
         tokio::spawn(async move {
             // just try to accept once
@@ -404,10 +405,9 @@ mod test {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\na")
                 .await
                 .unwrap();
+            // pingora streams coalesce writes until flushed
+            stream.flush().await.unwrap();
         });
-        // make sure the above starts before the lines below
-        sleep(Duration::from_millis(10)).await;
-
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()
@@ -436,7 +436,7 @@ mod test {
         let mut listeners = Listeners::new();
 
         // Add an endpoint before setting filter
-        listeners.add_tcp("127.0.0.1:7104");
+        listeners.add_tcp("127.0.0.1:0");
 
         // Set the connection filter
         let filter = Arc::new(TestFilter {
@@ -445,16 +445,12 @@ mod test {
         listeners.set_connection_filter(filter.clone());
 
         // Add endpoints after setting filter
-        listeners.add_tcp("127.0.0.1:7105");
-        #[cfg(feature = "any_tls")]
+        listeners.add_tcp("127.0.0.1:0");
+        #[cfg(feature = "openssl")]
         {
-            // Only test TLS if the feature is enabled
-            if let Ok(tls_settings) = TlsSettings::intermediate(
-                &format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR")),
-                &format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR")),
-            ) {
-                listeners.add_tls_with_settings("127.0.0.1:7106", None, tls_settings);
-            }
+            let cert = crate::test_tls::TestCert::new();
+            let tls_settings = TlsSettings::intermediate(&cert.cert_path, &cert.key_path).unwrap();
+            listeners.add_tls_with_settings("127.0.0.1:0", None, tls_settings);
         }
 
         // Verify all stacks have the filter (only when feature is enabled)
