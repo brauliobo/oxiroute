@@ -7,13 +7,13 @@ pub(super) const SHELL: &str = include_str!("../../../../assets/stats/index.html
 
 pub(super) static ASSETS: &[Asset] = &[
     Asset {
-        name: "stats-8D92XvwZ.js",
-        etag: "\"e27e2f193fca3b4805707cfa7ac56b77\"",
-        body: include_bytes!("../../../../assets/stats/assets/stats-8D92XvwZ.js"),
+        name: "stats-BKiHEEFl.css",
+        etag: "\"1c5d57efee1479298a9ff334f57d4061\"",
+        body: include_bytes!("../../../../assets/stats/assets/stats-BKiHEEFl.css"),
     },
     Asset {
-        name: "stats-CAoeB42d.css",
-        etag: "\"341dd5df1e6f8912824ba1b51baaf507\"",
-        body: include_bytes!("../../../../assets/stats/assets/stats-CAoeB42d.css"),
+        name: "stats-D7Q6GmGS.js",
+        etag: "\"e27e2f193fca3b4805707cfa7ac56b77\"",
+        body: include_bytes!("../../../../assets/stats/assets/stats-D7Q6GmGS.js"),
     },
 ];
