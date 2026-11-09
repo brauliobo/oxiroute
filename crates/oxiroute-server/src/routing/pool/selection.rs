@@ -99,14 +99,13 @@ impl EndpointPool {
         selection: &mut SelectionState,
         members: &Membership,
         view: &SelectableView,
-        eligible: &impl Fn(usize) -> bool,
-        reuse_idle: bool,
+        eligible: Eligibility,
         now_unix_ms: u64,
     ) -> Option<Choice> {
+        let reuse_idle = matches!(eligible.capacity, Capacity::PermitOrIdle);
         let mut tried = Vec::new();
         loop {
-            let untried = |index: usize| eligible(index) && !tried.contains(&index);
-            let index = self.pick(selection, members, view, &untried)?;
+            let index = self.pick(selection, members, view, &eligible.without(&tried))?;
             let server = &members.endpoints[index];
             let choice =
                 if server.try_acquire_permit(&self.queue, Admission::Selectable, now_unix_ms) {
@@ -117,7 +116,7 @@ impl EndpointPool {
                     None
                 };
             if choice.is_some() {
-                self.commit(selection, members, view, eligible, index);
+                self.commit(selection, members, view, &eligible, index);
                 return choice;
             }
             tried.push(index);
@@ -166,28 +165,14 @@ impl EndpointPool {
         if !pool_available && self.resilience.fail_open {
             return Chosen::FailOpen;
         }
-        let candidate = |index: usize| !excluded.contains(&members.endpoints[index].name);
-        let usable = |index: usize| {
-            let server = &members.endpoints[index];
-            server.has_capacity() || (reuse_idle && server.has_idle_connection())
-        };
-        let eligible = |index: usize| (excluded.is_empty() || candidate(index)) && usable(index);
+        let eligible = Eligibility::new(excluded, Capacity::reusing_idle(reuse_idle));
         let choice = pool_available
-            .then(|| {
-                self.choose_best(
-                    &mut selection,
-                    &members,
-                    &view,
-                    &eligible,
-                    reuse_idle,
-                    now_unix_ms,
-                )
-            })
+            .then(|| self.choose_best(&mut selection, &members, &view, eligible, now_unix_ms))
             .flatten();
         let saturated = choice.is_none()
             && view
                 .rotation(0)
-                .any(|index| (excluded.is_empty() || candidate(index)) && !usable(index));
+                .any(|index| eligible.saturates(&members, index));
         Chosen::Selectable {
             choice,
             pool_available,
@@ -243,14 +228,11 @@ impl EndpointPool {
             if view.is_empty() {
                 None
             } else {
-                let candidate = |index: usize| {
-                    excluded.is_empty() || !excluded.contains(&members.endpoints[index].name)
-                };
-                let with_capacity =
-                    |index: usize| candidate(index) && members.endpoints[index].has_capacity();
+                let with_capacity = Eligibility::new(excluded, Capacity::Permit);
+                let any = Eligibility::new(excluded, Capacity::Any);
                 Some(
                     self.take(&mut selection, &members, &view, &with_capacity)
-                        .or_else(|| self.take(&mut selection, &members, &view, &candidate))
+                        .or_else(|| self.take(&mut selection, &members, &view, &any))
                         .map(|index| Arc::clone(&members.endpoints[index])),
                 )
             }

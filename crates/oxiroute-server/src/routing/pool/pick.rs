@@ -14,32 +14,58 @@ impl EndpointPool {
         selection: &mut SelectionState,
         members: &Membership,
         view: &SelectableView,
-        accept: &impl Fn(usize) -> bool,
+        eligible: &Eligibility,
     ) -> Option<usize> {
         let server = |index: usize| &members.endpoints[index];
+        let accept = |index: usize| eligible.admits(members, index);
         match &self.algorithm {
             UpstreamAlgorithm::RoundRobin => {
                 view.rotation(selection.next).find(|&index| accept(index))
             }
             UpstreamAlgorithm::First => view.rotation(0).find(|&index| accept(index)),
-            UpstreamAlgorithm::LeastConnections => view
-                .rotation(selection.next)
-                .filter(|&index| accept(index))
-                .min_by_key(|&index| server(index).load()),
+            UpstreamAlgorithm::LeastConnections => {
+                Self::least_loaded(view.rotation(selection.next), members, eligible)
+            }
             UpstreamAlgorithm::WeightedRoundRobin { .. } => view
-                .rotation(0)
-                .filter(|&index| accept(index))
-                .min_by_key(|&index| {
-                    std::cmp::Reverse(selection.credit[index] + i64::from(server(index).weight()))
-                }),
+                .entries
+                .iter()
+                .filter(|entry| accept(entry.index as usize))
+                .min_by_key(|entry| {
+                    std::cmp::Reverse(
+                        selection.credit[entry.index as usize] + i64::from(entry.weight),
+                    )
+                })
+                .map(|entry| entry.index as usize),
             UpstreamAlgorithm::PowerOfTwoChoices => {
-                let (first, second) = Self::two_random(selection, view, accept)?;
+                let (first, second) = Self::two_random(selection, view, &accept)?;
                 Some(match second {
                     Some(second) if server(second).load() < server(first).load() => second,
                     _ => first,
                 })
             }
         }
+    }
+
+    /// The eligible server with the least load, the first in `rotation` among equals. A server
+    /// without work cannot be beaten, so the scan stops at the first one.
+    fn least_loaded(
+        rotation: impl Iterator<Item = usize>,
+        members: &Membership,
+        eligible: &Eligibility,
+    ) -> Option<usize> {
+        let mut best: Option<(u64, usize)> = None;
+        for index in rotation {
+            let Some(load) = eligible.load(members, index) else {
+                continue;
+            };
+            if best.is_none_or(|(least, _)| load < least) {
+                best = Some((load, index));
+                if load == 0 {
+                    break;
+                }
+            }
+        }
+        best.map(|(_, index)| index)
     }
 
     /// Two distinct acceptable servers chosen uniformly, or the only one there is.
@@ -84,7 +110,7 @@ impl EndpointPool {
         selection: &mut SelectionState,
         members: &Membership,
         view: &SelectableView,
-        accept: &impl Fn(usize) -> bool,
+        eligible: &Eligibility,
         chosen: usize,
     ) {
         if matches!(
@@ -92,10 +118,12 @@ impl EndpointPool {
             UpstreamAlgorithm::WeightedRoundRobin { .. }
         ) {
             let mut total = 0;
-            for index in view.rotation(0).filter(|&index| accept(index)) {
-                let weight = i64::from(members.endpoints[index].weight());
-                selection.credit[index] += weight;
-                total += weight;
+            for entry in &view.entries {
+                if eligible.admits(members, entry.index as usize) {
+                    let weight = i64::from(entry.weight);
+                    selection.credit[entry.index as usize] += weight;
+                    total += weight;
+                }
             }
             selection.credit[chosen] -= total;
         }
@@ -110,10 +138,10 @@ impl EndpointPool {
         selection: &mut SelectionState,
         members: &Membership,
         view: &SelectableView,
-        accept: &impl Fn(usize) -> bool,
+        eligible: &Eligibility,
     ) -> Option<usize> {
-        let chosen = self.pick(selection, members, view, accept)?;
-        self.commit(selection, members, view, accept, chosen);
+        let chosen = self.pick(selection, members, view, eligible)?;
+        self.commit(selection, members, view, eligible, chosen);
         Some(chosen)
     }
 }
