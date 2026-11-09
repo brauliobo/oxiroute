@@ -532,10 +532,9 @@ impl InflightGuard {
         entry.progress_ms.store(age, Ordering::Relaxed);
     }
 
-    pub(crate) fn progress(&self) {
-        self.entry
-            .progress_ms
-            .store(self.entry.age_ms(), Ordering::Relaxed);
+    pub(crate) fn progress(&self, now: Instant) {
+        let age = duration_ms(now.saturating_duration_since(self.entry.started));
+        self.entry.progress_ms.store(age, Ordering::Relaxed);
     }
 
     pub(crate) fn set_route(&self, route: &str) {
@@ -718,7 +717,7 @@ mod tests {
         let guard = registry.register(arrival("stream", Duration::from_secs(30)));
         guard.set_phase(Phase::Streaming, Instant::now());
         std::thread::sleep(Duration::from_millis(30));
-        guard.progress();
+        guard.progress(Instant::now());
         assert!(registry.report_stuck(Duration::from_millis(20)).is_empty());
     }
 
