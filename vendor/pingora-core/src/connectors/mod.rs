@@ -790,7 +790,6 @@ mod tests {
     }
 
     // 192.0.2.1 is effectively a black hole
-    const BLACK_HOLE: &str = "192.0.2.1:79";
 
     #[cfg(unix)]
     #[tokio::test]
@@ -1102,8 +1101,9 @@ mod tests {
     #[tokio::test]
     async fn test_connect() {
         let connector = TransportConnector::new(None);
-        let peer = BasicPeer::new("1.1.1.1:80");
-        // make a new connection to 1.1.1.1
+        let server = test_servers::redirect_server();
+        let peer = BasicPeer::new(&server.addr.to_string());
+        // make a new connection to the server
         let stream = connector.new_stream(&peer).await.unwrap();
         connector.release_stream(stream, peer.reuse_hash(), None);
 
@@ -1112,12 +1112,16 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "openssl")]
     async fn test_connect_tls() {
         let connector = TransportConnector::new(None);
-        let mut peer = BasicPeer::new("1.1.1.1:443");
+        let server = test_servers::tls_server(ALPN::H1).await;
+        let mut peer = BasicPeer::new(&server.addr.to_string());
         // BasicPeer will use tls when SNI is set
-        peer.sni = "one.one.one.one".to_string();
-        // make a new connection to https://1.1.1.1
+        peer.sni = "localhost".to_string();
+        peer.options.verify_cert = false;
+        peer.options.verify_hostname = false;
+        // make a new connection to the TLS server
         let stream = connector.new_stream(&peer).await.unwrap();
         connector.release_stream(stream, peer.reuse_hash(), None);
 
@@ -1168,7 +1172,8 @@ mod tests {
 
     async fn do_test_conn_timeout(conf: Option<ConnectorOptions>) {
         let connector = TransportConnector::new(conf);
-        let mut peer = BasicPeer::new(BLACK_HOLE);
+        let blackhole = test_servers::blackhole();
+        let mut peer = BasicPeer::new(&blackhole.addr.to_string());
         peer.options.connection_timeout = Some(std::time::Duration::from_millis(1));
         let stream = connector.new_stream(&peer).await;
         match stream {
@@ -1191,16 +1196,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_connector_bind_to() {
-        // connect to remote while bind to localhost will fail
-        let peer = BasicPeer::new("240.0.0.1:80");
+        // the connector binds to the configured source address, so a taken one fails the connect
+        let taken = test_servers::refused();
+        let server = test_servers::redirect_server();
+        let peer = BasicPeer::new(&server.addr.to_string());
         let mut conf = ConnectorOptions::new(1);
-        conf.bind_to_v4.push("127.0.0.1:0".parse().unwrap());
+        conf.bind_to_v4.push(taken.addr);
         let connector = TransportConnector::new(Some(conf));
 
-        let stream = connector.new_stream(&peer).await;
-        let error = stream.unwrap_err();
-        // XXX: some systems will allow the socket to bind and connect without error, only to timeout
-        assert!(error.etype() == &ConnectError || error.etype() == &ConnectTimedout)
+        let error = connector.new_stream(&peer).await.unwrap_err();
+        assert_eq!(error.etype(), &InternalError)
     }
 
     /// Helper function for testing error handling in the `do_connect` function.
@@ -1223,7 +1228,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_do_connect_with_total_timeout() {
-        let mut peer = BasicPeer::new(BLACK_HOLE);
+        let blackhole = test_servers::blackhole();
+        let mut peer = BasicPeer::new(&blackhole.addr.to_string());
         peer.options.total_connection_timeout = Some(std::time::Duration::from_millis(1));
         let (etype, context) = get_do_connect_failure_with_peer(&peer).await;
         assert_eq!(etype, ConnectTimedout);
@@ -1232,7 +1238,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_tls_connect_timeout_supersedes_total() {
-        let mut peer = BasicPeer::new(BLACK_HOLE);
+        let blackhole = test_servers::blackhole();
+        let mut peer = BasicPeer::new(&blackhole.addr.to_string());
         peer.options.total_connection_timeout = Some(std::time::Duration::from_millis(10));
         peer.options.connection_timeout = Some(std::time::Duration::from_millis(1));
         let (etype, context) = get_do_connect_failure_with_peer(&peer).await;
@@ -1242,7 +1249,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_do_connect_without_total_timeout() {
-        let peer = BasicPeer::new(BLACK_HOLE);
+        let refused = test_servers::refused();
+        let peer = BasicPeer::new(&refused.addr.to_string());
         let (etype, context) = get_do_connect_failure_with_peer(&peer).await;
         assert!(etype != ConnectTimedout || !context.contains("total-connection timeout"));
     }
