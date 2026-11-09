@@ -66,6 +66,7 @@ impl Proxy {
         let address = listener.local_addr().expect("proxy address");
         drop(listener);
         let config = ConfigDraft {
+            listener_workers: None,
             retirement: None,
             listeners: vec![Listener {
                 name: "http-loopback".into(),

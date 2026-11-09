@@ -150,6 +150,7 @@ fn udp_config(
     upstream_address: SocketAddr,
 ) -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         management: Some(Management {
             bind: management_address,

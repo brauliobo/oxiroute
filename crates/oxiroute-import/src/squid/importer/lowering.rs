@@ -135,6 +135,7 @@ pub(super) fn lower(
         audit_mode,
     };
     let draft = ConfigDraft {
+        listener_workers: None,
         retirement: None,
         listeners,
         forward_proxy_services: vec![service],

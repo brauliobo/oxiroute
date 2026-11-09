@@ -243,6 +243,7 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
     let stats_address = reserve_tcp_address();
     let stats_page = reserve_tcp_address();
     let config = ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -344,6 +345,7 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
 pub(super) fn supervised_control_listener_callback_failure_prevents_readiness() {
     let directory = tempfile::tempdir().expect("control listener failure fixture directory");
     let config = ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: None,

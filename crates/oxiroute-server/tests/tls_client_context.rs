@@ -63,6 +63,7 @@ fn child_counts_ca_bundle_parses() {
         .expect("bundle size")
         .len();
     let draft = ConfigDraft {
+        listener_workers: None,
         retirement: None,
         upstream_pools: (0..POOLS).map(http_health_pool).collect(),
         ..empty_config()

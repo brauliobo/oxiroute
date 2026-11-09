@@ -511,6 +511,7 @@ fn the_retiring_generation_sets_its_own_drain_window() {
     use std::ffi::OsStr;
 
     let plain = validated(&ConfigDraft {
+        listener_workers: None,
         retirement: None,
         ..config()
     });
