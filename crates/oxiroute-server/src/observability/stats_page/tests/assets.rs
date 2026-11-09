@@ -301,11 +301,8 @@ async fn the_shell_points_at_the_assets_below_the_prefix() {
             "{prefix}"
         );
         for asset in assets::all() {
-            let attribute = if asset.name.ends_with(".js") {
-                "src"
-            } else {
-                "href"
-            };
+            let script = assets::content_type(asset.name).starts_with("text/javascript");
+            let attribute = if script { "src" } else { "href" };
             let path = format!("{expected}/assets/{}", asset.name);
             assert!(
                 shell.contains(&format!("{attribute}=\"{path}\"")),
