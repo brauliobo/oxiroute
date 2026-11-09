@@ -38,6 +38,7 @@ mod canary;
 mod endpoint;
 mod health;
 mod lease;
+mod names;
 mod outlier;
 mod policy;
 mod pool;
@@ -57,6 +58,7 @@ pub use canary::{CanaryResult, CanaryRun, CanarySelection, CanarySnapshot, Canar
 pub use endpoint::*;
 pub use health::*;
 pub use lease::*;
+use names::NameIndex;
 use outlier::OutlierDetector;
 pub use outlier::OutlierPolicy;
 pub use policy::*;
