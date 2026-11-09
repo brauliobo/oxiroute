@@ -131,6 +131,15 @@ connection-pool experiments:
 - `protocols/http/v1/server.rs` and `v1/client.rs` size the parsed request header map for four more headers and the
   response header map for three more (`REQUEST_HEADER_HEADROOM`, `RESPONSE_HEADER_HEADROOM`): a map built exactly full
   reallocates and rehashes when the first header is added after parsing.
+- `protocols/http/v1/{server,client}.rs` parse a head into uninitialised header slots (`header_slots`, `httparse`'s
+  `parse_with_uninit_headers`) instead of `[EMPTY_HEADER; 256]`, which stored 8 KiB on every parse attempt.
+- `protocols/http/v1/client.rs` `read_resp_header_parts` hands the parsed `ResponseHeader` to the caller instead of
+  cloning its header map. The session keeps the status, version and the `Connection`, `Keep-Alive` and
+  `Transfer-Encoding` facts that keepalive needs (`ResponseFacts`), so `resp_header()` and `get_header()` return `None`
+  once the header was taken; `get_status()` and `respect_keepalive()` are unchanged.
+- `apps/mod.rs` `HttpServerApp::process_new_http_inline`: the HTTP/1 request loop awaits an application's request
+  future where it stands instead of boxing it (`async_trait` copied 8 KiB and more of state machine to the heap for every
+  request). The default calls `process_new_http`.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.
@@ -139,7 +148,7 @@ The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
-review the connector hook, admission guard and handshake-timeout hook, rendered response write, inline Date and Connection lines, header map headroom, single-clock timeouts, subject conversion, HTTP/1 HEAD informational-response,
+review the header slots, response facts, inline request loop, the connector hook, admission guard and handshake-timeout hook, rendered response write, inline Date and Connection lines, header map headroom, single-clock timeouts, subject conversion, HTTP/1 HEAD informational-response,
 owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, lazy read buffer, pooled
 gzip state, header-name cache, HTTP/2 test lifecycle, connection-pool changes, the idle pool and the listener `TCP_NODELAY`, then rerun the vendored
 gzip state, header-name cache, body buffer pool and hand-over, direct large body writes, coalescing write buffer,

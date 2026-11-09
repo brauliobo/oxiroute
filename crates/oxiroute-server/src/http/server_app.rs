@@ -301,22 +301,32 @@ where
 {
     async fn process_new_http(
         self: &Arc<Self>,
-        mut session: ServerSession,
+        session: ServerSession,
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream> {
-        let write_timeout = match (self.request_timeout, self.write_timeout) {
-            (Some(request), Some(write)) => Some(request.min(write)),
-            (request, None) => request,
-            (None, write) => write,
-        };
-        session.set_read_timeout(self.request_timeout);
-        session.set_write_timeout(write_timeout);
-        session.set_request_header_timeout(self.request_timeout);
-        session.set_idle_keepalive_timeout(self.keepalive_timeout);
-        if self.keepalive_timeout.is_some() {
-            session.set_keepalive(Some(0));
+        self.process_new_http_inline(session, shutdown).await
+    }
+
+    fn process_new_http_inline(
+        self: &Arc<Self>,
+        mut session: ServerSession,
+        shutdown: &ShutdownWatch,
+    ) -> impl std::future::Future<Output = Option<ReusedHttpStream>> + Send {
+        async move {
+            let write_timeout = match (self.request_timeout, self.write_timeout) {
+                (Some(request), Some(write)) => Some(request.min(write)),
+                (request, None) => request,
+                (None, write) => write,
+            };
+            session.set_read_timeout(self.request_timeout);
+            session.set_write_timeout(write_timeout);
+            session.set_request_header_timeout(self.request_timeout);
+            session.set_idle_keepalive_timeout(self.keepalive_timeout);
+            if self.keepalive_timeout.is_some() {
+                session.set_keepalive(Some(0));
+            }
+            self.inner.process_new_http_inline(session, shutdown).await
         }
-        self.inner.process_new_http(session, shutdown).await
     }
 
     fn h2_options(&self) -> Option<H2Options> {
