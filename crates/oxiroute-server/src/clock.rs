@@ -4,7 +4,12 @@
 //! that reading for every step it runs without waiting. `promptly` keeps a future that is ready at once from
 //! creating a timer, which would read the clock for a deadline nobody needs.
 
-use std::{future::Future, pin::pin, time::Duration};
+use std::{
+    cell::Cell,
+    future::Future,
+    pin::pin,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use futures_util::FutureExt as _;
 use tokio::time::error::Elapsed;
@@ -24,9 +29,56 @@ pub(crate) async fn promptly<F: Future>(
         .map(|output| (output, true))
 }
 
+/// How long a thread trusts the wall clock reading it derived its offsets from.
+const REANCHOR: Duration = Duration::from_secs(1);
+
+thread_local! {
+    static ANCHOR: Cell<Option<(Instant, u64)>> = const { Cell::new(None) };
+}
+
+fn system_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+/// Unix time in milliseconds at the monotonic reading `now`, from a reading of the wall clock this thread took
+/// at most a second before: a record that already holds a reading for its own timing needs no second clock read.
+pub(crate) fn wall_ms(now: Instant) -> u64 {
+    ANCHOR.with(|anchor| {
+        if let Some((at, unix_ms)) = anchor.get()
+            && let Some(elapsed) = now.checked_duration_since(at)
+            && elapsed < REANCHOR
+        {
+            return unix_ms + u64::try_from(elapsed.as_millis()).unwrap_or(0);
+        }
+        let unix_ms = system_unix_ms();
+        anchor.set(Some((now, unix_ms)));
+        unix_ms
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wall_time_from_a_reading_follows_the_system_clock() {
+        let first = wall_ms(Instant::now());
+        std::thread::sleep(Duration::from_millis(30));
+        let second = wall_ms(Instant::now());
+        assert!((30..250).contains(&(second - first)), "{first} {second}");
+        assert!(second.abs_diff(system_unix_ms()) <= 5);
+        let earlier = Instant::now();
+        std::thread::sleep(Duration::from_millis(5));
+        let _ = wall_ms(Instant::now());
+        assert!(
+            wall_ms(earlier).abs_diff(system_unix_ms()) <= 10,
+            "an older reading"
+        );
+    }
 
     #[test]
     fn a_ready_future_needs_no_timer() {

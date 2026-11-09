@@ -54,7 +54,8 @@ fn generated_request_id() -> HeaderValue {
     let mut id = *b"rq-00000000-000000000000";
     write_hex(&mut id[3..11], u64::from(boot_tag()));
     write_hex(&mut id[12..], sequence);
-    HeaderValue::from_bytes(&id).expect("ASCII id")
+    // One owner shared by every clone of the value: a copied value would allocate again at its first clone.
+    HeaderValue::from_maybe_shared(bytes::Bytes::from_owner(id)).expect("ASCII id")
 }
 
 /// Keeps a well formed incoming id; anything else is replaced, never rejected.
@@ -88,7 +89,11 @@ pub(crate) fn stamp_request(
         return Ok(id.clone());
     }
     let id = resolve_request_id(first);
-    request.insert_header(REQUEST_ID_HEADER_NAME, id.clone())?;
+    if request.has_case() {
+        request.insert_header(REQUEST_ID_HEADER_NAME, id.clone())?;
+    } else {
+        request.headers.insert(REQUEST_ID_HEADER, id.clone());
+    }
     Ok(id)
 }
 
@@ -179,6 +184,21 @@ mod tests {
         let generated = stamp_request(&mut request).unwrap();
         assert!(generated.as_bytes().starts_with(b"rq-"));
         assert_eq!(request.headers[&REQUEST_ID_HEADER], generated);
+    }
+
+    #[test]
+    fn a_request_without_case_preservation_gets_a_generated_id() {
+        let mut request = pingora::http::RequestHeader::build_no_case("GET", b"/", None).unwrap();
+        let id = stamp_request(&mut request).unwrap();
+        assert!(id.as_bytes().starts_with(b"rq-") && id.as_bytes().len() == 24);
+        assert_eq!(request.headers[&REQUEST_ID_HEADER], id);
+        assert_eq!(
+            stamp_request(&mut request).unwrap(),
+            id,
+            "kept on the next pass"
+        );
+        let clone = id.clone();
+        assert_eq!(clone, id);
     }
 
     #[test]
