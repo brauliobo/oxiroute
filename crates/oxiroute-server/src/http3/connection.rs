@@ -113,7 +113,7 @@ pub(super) async fn run_reverse_connection(
         deadline,
     )
     .await;
-    connection.close(H3_CLOSE_CODE, b"generation draining");
+    close_h3_connection(&connection, goaway_sent, deadline).await;
     drop(traffic_lease);
 }
 
@@ -207,9 +207,22 @@ pub(super) async fn run_connection(
         requests.abort_all();
     }
     join_h3_requests("HTTP/3", &mut requests, &request_cancel_tx, deadline).await;
-    connection.close(H3_CLOSE_CODE, b"generation draining");
+    close_h3_connection(&connection, goaway_sent, deadline).await;
     drop(traffic_lease);
     drop(service_connection);
+}
+
+/// Closing a QUIC connection discards stream data the peer has not acknowledged, so after a GOAWAY
+/// the peer gets a bounded chance to receive the last responses and close the connection itself.
+async fn close_h3_connection(connection: &quinn::Connection, goaway_sent: bool, deadline: Instant) {
+    if goaway_sent {
+        let _ = timeout_at(
+            deadline.min(Instant::now() + H3_CLOSE_GRACE),
+            connection.closed(),
+        )
+        .await;
+    }
+    connection.close(H3_CLOSE_CODE, b"generation draining");
 }
 
 async fn drain_h3_connection<C>(

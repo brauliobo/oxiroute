@@ -108,23 +108,34 @@ fn raw_grandchild_send() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Keeps a worker alive until the parent releases it: a worker that exits right after its ready
+/// frame can be reaped before the parent has finished authenticating it.
+fn wait_for_release(endpoint: &mut WorkerEndpoint) {
+    let _ = endpoint.receive();
+}
+
+fn report_verdict(valid: bool) -> io::Result<()> {
+    match env::var_os("VERDICT_FILE") {
+        Some(path) => fs::write(path, if valid { "valid" } else { "invalid" }),
+        None => Ok(()),
+    }
+}
+
 fn environment_mode() -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let _endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
+    let mut endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
     let valid = env::var_os("PATH").is_none()
         && env::var("CONFIGURED_MODE").as_deref() == Ok("fixture")
         && env::var("LD_PRELOAD").as_deref() == Ok("/definitely/not/a/preload-library.so")
         && env::var_os("OXIROUTE_AUDIT_DIR").is_some()
         && env::var("OXIROUTE_AUDIT_MAX_FILE_BYTES").as_deref() == Ok("1048576")
         && env::var_os("HOME").is_some();
-    Ok(if valid {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(91)
-    })
+    report_verdict(valid)?;
+    wait_for_release(&mut endpoint);
+    Ok(ExitCode::SUCCESS)
 }
 
 fn sentinel_mode() -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let _endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
+    let mut endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
     let sentinel = env::var_os("SENTINEL_TARGET").ok_or("missing sentinel target")?;
     let leaked = fs::read_dir("/proc/self/fd")?.any(|entry| {
         entry
@@ -132,15 +143,13 @@ fn sentinel_mode() -> Result<ExitCode, Box<dyn std::error::Error>> {
             .and_then(|entry| fs::read_link(entry.path()).ok())
             .is_some_and(|target| target == sentinel)
     });
-    Ok(if leaked {
-        ExitCode::from(92)
-    } else {
-        ExitCode::SUCCESS
-    })
+    report_verdict(!leaked)?;
+    wait_for_release(&mut endpoint);
+    Ok(ExitCode::SUCCESS)
 }
 
 fn descendant_mode(linger: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let _endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
+    let mut endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
     let child = Command::new(env::current_exe()?)
         .arg("descendant-sleep")
         .spawn()?;
@@ -151,11 +160,12 @@ fn descendant_mode(linger: bool) -> Result<ExitCode, Box<dyn std::error::Error>>
     if linger {
         thread::sleep(Duration::from_secs(30));
     }
+    wait_for_release(&mut endpoint);
     Ok(ExitCode::SUCCESS)
 }
 
 fn escaped_descendant_mode() -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let _endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
+    let mut endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
     let child = Command::new(env::current_exe()?)
         .arg("escaped-descendant-sleep")
         .spawn()?;
@@ -166,6 +176,7 @@ fn escaped_descendant_mode() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if env::var_os("LINGER_AFTER_DESCENDANT").is_some() {
         thread::sleep(Duration::from_secs(30));
     }
+    wait_for_release(&mut endpoint);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -208,8 +219,8 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mode = env::args().nth(1).unwrap_or_default();
     match mode.as_str() {
         "success" => {
-            let _endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
-            thread::sleep(Duration::from_millis(200));
+            let mut endpoint = WorkerEndpoint::adopt_at_process_entry(identity())?;
+            wait_for_release(&mut endpoint);
             Ok(ExitCode::SUCCESS)
         }
         "message" => {
@@ -292,6 +303,7 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         "credential-sender" => {
             forged_ready("valid")?;
+            thread::sleep(Duration::from_secs(30));
             Ok(ExitCode::SUCCESS)
         }
         _ => Ok(ExitCode::from(64)),

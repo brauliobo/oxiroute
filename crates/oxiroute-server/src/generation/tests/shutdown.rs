@@ -23,7 +23,7 @@ async fn shutdown_releases_manager_state_while_owned_generations_drain() {
             .expect("shutdown receiver");
     });
 
-    let gate_state = tokio::time::timeout(Duration::from_secs(1), acceptor.changed())
+    let gate_state = tokio::time::timeout(Duration::from_secs(30), acceptor.changed())
         .await
         .expect("shutdown gate timeout")
         .expect("shutdown gate close");
