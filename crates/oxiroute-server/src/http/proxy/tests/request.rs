@@ -550,3 +550,35 @@ async fn connection_close_policy_promotes_once() {
     assert_eq!(prepared.headers.get(CONNECTION).unwrap(), "close");
     assert_eq!(clones.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn a_client_close_is_not_forwarded_but_other_connection_options_are() {
+    let mut request = pingora::http::RequestHeader::build("GET", b"/", None).expect("request");
+    request
+        .append_header("Connection", "Upgrade, Close")
+        .expect("connection");
+    request
+        .append_header("connection", "keep-alive")
+        .expect("connection");
+    assert!(has_downstream_close(&request.headers));
+    remove_downstream_close(&mut request).expect("close removed");
+    assert!(!has_downstream_close(&request.headers));
+    assert_eq!(
+        request.headers.get(CONNECTION).expect("kept"),
+        "Upgrade, keep-alive"
+    );
+}
+
+#[test]
+fn a_request_without_a_client_close_keeps_its_connection_header_untouched() {
+    let mut request = pingora::http::RequestHeader::build("GET", b"/", None).expect("request");
+    request
+        .append_header("Connection", "keep-alive")
+        .expect("connection");
+    assert!(!has_downstream_close(&request.headers));
+    remove_downstream_close(&mut request).expect("untouched");
+    assert_eq!(request.headers.get(CONNECTION).expect("kept"), "keep-alive");
+    let mut bare = pingora::http::RequestHeader::build("GET", b"/", None).expect("request");
+    remove_downstream_close(&mut bare).expect("untouched");
+    assert!(bare.headers.get(CONNECTION).is_none());
+}
