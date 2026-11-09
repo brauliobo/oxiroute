@@ -2753,6 +2753,7 @@ dependencies = [
  "http",
  "httpdate",
  "openssl",
+ "oxiroute-tls-client",
  "rustix",
  "serde",
  "serde_json",
@@ -2852,6 +2853,7 @@ dependencies = [
  "chrono-tz",
  "http",
  "openssl",
+ "oxiroute-tls-client",
  "rml_rtmp",
  "rustix",
  "sha2",
@@ -2905,6 +2907,14 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "zeroize",
+]
+
+[[package]]
+name = "oxiroute-tls-client"
+version = "6.1.0"
+dependencies = [
+ "openssl",
+ "tempfile",
 ]
 
 [[package]]

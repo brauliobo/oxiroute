@@ -5,7 +5,8 @@ use std::{
     time::Duration,
 };
 
-use openssl::ssl::{SslConnector, SslMethod, SslStream};
+use openssl::ssl::SslStream;
+use oxiroute_tls_client::system_trust_connector;
 
 const DEFAULT_FLASH_VERSION: &str = "WIN 23,0,0,207";
 const MAX_DESTINATION_ADDRESSES: usize = 32;
@@ -340,10 +341,10 @@ pub(crate) fn connect_stream(
     match transport {
         RtmpTransport::Rtmp => Ok(RtmpStream::Plain(stream)),
         RtmpTransport::Rtmps => {
-            let connector = SslConnector::builder(SslMethod::tls_client())
+            let stream = system_trust_connector()
                 .map_err(io::Error::other)?
-                .build();
-            let stream = connector.connect(host, stream).map_err(io::Error::other)?;
+                .connect(host, stream)
+                .map_err(io::Error::other)?;
             Ok(RtmpStream::Tls(stream))
         }
     }
@@ -352,6 +353,69 @@ pub(crate) fn connect_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bytes_read() -> u64 {
+        std::fs::read_to_string("/proc/self/io")
+            .expect("process io accounting")
+            .lines()
+            .find_map(|line| line.strip_prefix("rchar: "))
+            .expect("rchar line")
+            .parse()
+            .expect("rchar value")
+    }
+
+    /// Runs in a child process that sees `SSL_CERT_FILE` from its start and no other test's reads.
+    #[test]
+    #[ignore = "run by rtmps_connects_share_one_system_ca_parse"]
+    fn child_counts_ca_bundle_parses() {
+        let bundle_bytes = std::fs::metadata(std::env::var_os("SSL_CERT_FILE").unwrap())
+            .expect("bundle size")
+            .len();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let before = bytes_read();
+        for _ in 0..5 {
+            let timeout = Duration::from_millis(200);
+            let result = connect_stream(
+                "origin.example",
+                address,
+                RtmpTransport::Rtmps,
+                timeout,
+                timeout,
+            );
+            assert!(result.is_err(), "nothing answers the handshake");
+        }
+        let parses = (bytes_read() - before) / bundle_bytes;
+        assert!(
+            parses <= 1,
+            "the CA bundle was parsed {parses} times for 5 connects"
+        );
+    }
+
+    #[test]
+    fn rtmps_connects_share_one_system_ca_parse() {
+        let bundle = tempfile::NamedTempFile::new().expect("bundle file");
+        let ca = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../oxiroute-server/tests/fixtures/ca-a.pem"
+        ))
+        .expect("CA fixture");
+        std::fs::write(bundle.path(), ca.repeat(1500)).expect("write bundle");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--ignored",
+                "--exact",
+                "client::tests::child_counts_ca_bundle_parses",
+            ])
+            .env("SSL_CERT_FILE", bundle.path())
+            .output()
+            .expect("child test");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
 
     #[test]
     fn rejects_private_answers_even_when_a_public_address_is_first() {

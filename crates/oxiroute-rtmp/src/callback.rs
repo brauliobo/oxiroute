@@ -6,7 +6,8 @@ use std::{
     time::Duration,
 };
 
-use openssl::ssl::{SslConnector, SslMethod, SslStream};
+use openssl::ssl::SslStream;
+use oxiroute_tls_client::system_trust_connector;
 
 use crate::RtmpOutboundPolicy;
 
@@ -484,11 +485,9 @@ fn request(
         .set_write_timeout(Some(timeout))
         .map_err(|_| RtmpCallbackError::Connect)?;
     let mut stream = if endpoint.secure {
-        let connector = SslConnector::builder(SslMethod::tls_client())
-            .map_err(|_| RtmpCallbackError::Tls)?
-            .build();
         CallbackStream::Tls(
-            connector
+            system_trust_connector()
+                .map_err(|_| RtmpCallbackError::Tls)?
                 .connect(&endpoint.host, stream)
                 .map_err(|_| RtmpCallbackError::Tls)?,
         )

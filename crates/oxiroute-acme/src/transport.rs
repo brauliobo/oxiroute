@@ -6,7 +6,8 @@ use std::{
 
 use hickory_resolver::Resolver;
 use http::Uri;
-use openssl::ssl::{SslConnector, SslMethod, SslStream};
+use openssl::ssl::{SslConnector, SslStream};
+use oxiroute_tls_client::system_trust_connector;
 
 use crate::protocol::{
     AcmeError, AcmeOperation, AcmeTransport, HttpRequest, HttpResponse, MAX_ACME_BODY_BYTES,
@@ -102,10 +103,9 @@ impl SystemAcmeTransport {
         stream
             .set_write_timeout(Some(CANCELLATION_POLL_INTERVAL))
             .map_err(|_| AcmeError::Transport(TransportError))?;
-        let connector = SslConnector::builder(SslMethod::tls())
-            .map_err(|_| AcmeError::Transport(TransportError))?
-            .build();
-        let mut stream = tls_connect(&connector, host, stream, self.config.io_timeout, operation)?;
+        let connector =
+            system_trust_connector().map_err(|_| AcmeError::Transport(TransportError))?;
+        let mut stream = tls_connect(connector, host, stream, self.config.io_timeout, operation)?;
         write_request(
             &mut stream,
             &request,

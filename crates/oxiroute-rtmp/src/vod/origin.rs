@@ -132,15 +132,11 @@ fn connect_http(origin: &HttpOrigin) -> Result<HttpStream, VodError> {
         .map_err(|_| VodError::Fetch)?;
     match origin.scheme {
         HttpScheme::Http => Ok(HttpStream::Plain(stream)),
-        HttpScheme::Https => {
-            let connector = SslConnector::builder(SslMethod::tls_client())
-                .map_err(|_| VodError::Fetch)?
-                .build();
-            connector
-                .connect(&origin.host, stream)
-                .map(HttpStream::Tls)
-                .map_err(|_| VodError::Fetch)
-        }
+        HttpScheme::Https => system_trust_connector()
+            .map_err(|_| VodError::Fetch)?
+            .connect(&origin.host, stream)
+            .map(HttpStream::Tls)
+            .map_err(|_| VodError::Fetch),
     }
 }
 

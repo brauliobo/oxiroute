@@ -12,7 +12,8 @@ use std::{
 };
 
 use http::Uri;
-use openssl::ssl::{SslConnector, SslMethod, SslStream};
+use openssl::ssl::SslStream;
+use oxiroute_tls_client::system_trust_connector;
 use rustix::{
     fd::OwnedFd,
     fs::{self as rustix_fs, FileType, Mode, OFlags},
