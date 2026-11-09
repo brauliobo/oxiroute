@@ -12,7 +12,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -78,6 +78,8 @@ struct Spec {
     streams: usize,
     requests: usize,
     warmup: usize,
+    duration: Option<Duration>,
+    warmup_duration: Option<Duration>,
     new_conn: bool,
     msg_bytes: usize,
     expect_status: u16,
@@ -214,6 +216,10 @@ fn tls_connector(alpn: &[u8], version: &str, resume: bool) -> TlsConnector {
     TlsConnector::from(Arc::new(config))
 }
 
+fn seconds(value: &str, name: &str) -> Duration {
+    Duration::from_secs_f64(value.parse().unwrap_or_else(|_| panic!("invalid value for --{name}")))
+}
+
 fn spec_from(flags: &Flags) -> Spec {
     let proto: Proto = flag(flags, "proto", Proto::H1);
     let host: String = flag(flags, "host", "bench.example.com".to_owned());
@@ -251,6 +257,8 @@ fn spec_from(flags: &Flags) -> Spec {
         streams: flag(flags, "streams", 1),
         requests: flag(flags, "requests", 1000),
         warmup: flag(flags, "warmup", 200),
+        duration: flags.get("duration").map(|value| seconds(value, "duration")),
+        warmup_duration: flags.get("warmup-duration").map(|value| seconds(value, "warmup-duration")),
         new_conn,
         msg_bytes: flag(flags, "msg-bytes", 1024),
         expect_status: flag(flags, "expect-status", 200),
@@ -395,11 +403,12 @@ async fn worker(
     mut client: Option<Client>,
     next: Arc<AtomicUsize>,
     total: usize,
+    deadline: Option<Instant>,
     record: bool,
 ) -> (Option<Client>, Stats) {
     let mut stats = Stats::default();
     let mut scratch = Vec::with_capacity(64 * 1024);
-    while next.fetch_add(1, Ordering::Relaxed) < total {
+    while next.fetch_add(1, Ordering::Relaxed) < total && deadline.is_none_or(|limit| Instant::now() < limit) {
         let started = Instant::now();
         if client.is_none() {
             let connecting = Instant::now();
@@ -444,12 +453,21 @@ async fn worker(
     (client, stats)
 }
 
-async fn phase(spec: &Arc<Spec>, clients: &mut Vec<Option<Client>>, total: usize, record: bool) -> Stats {
+/// A phase ends after `total` requests, or at `duration` when one is given (the count is then ignored).
+async fn phase(
+    spec: &Arc<Spec>,
+    clients: &mut Vec<Option<Client>>,
+    total: usize,
+    duration: Option<Duration>,
+    record: bool,
+) -> Stats {
     let next = Arc::new(AtomicUsize::new(0));
+    let total = if duration.is_some() { usize::MAX } else { total };
+    let deadline = duration.map(|length| Instant::now() + length);
     let handles: Vec<_> = clients
         .drain(..)
         .enumerate()
-        .map(|(slot, client)| tokio::spawn(worker(Arc::clone(spec), slot, client, Arc::clone(&next), total, record)))
+        .map(|(slot, client)| tokio::spawn(worker(Arc::clone(spec), slot, client, Arc::clone(&next), total, deadline, record)))
         .collect();
     let mut merged = Stats::default();
     for handle in handles {
@@ -508,16 +526,16 @@ async fn drive(spec: Arc<Spec>, flags: &Flags) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let warm = phase(&spec, &mut clients, spec.warmup, false).await;
+    let warm = phase(&spec, &mut clients, spec.warmup, spec.warmup_duration, false).await;
     hook(flags.get("hook-start")).await;
     let started = Instant::now();
-    let mut stats = phase(&spec, &mut clients, spec.requests, true).await;
+    let mut stats = phase(&spec, &mut clients, spec.requests, spec.duration, true).await;
     let elapsed = started.elapsed();
     hook(flags.get("hook-stop")).await;
     stats.latencies_us.sort_unstable();
     stats.connect_us.sort_unstable();
     let seconds = elapsed.as_secs_f64();
-    println!("requests={}", spec.requests);
+    println!("requests={}", stats.ok + stats.errors);
     println!("ok={}", stats.ok);
     println!("errors={}", stats.errors + warm.errors);
     println!("elapsed_ms={:.1}", seconds * 1000.0);
