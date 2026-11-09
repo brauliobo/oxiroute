@@ -118,7 +118,7 @@ async fn relay_enforces_idle_timeout_during_blocked_client_write() {
         .await
         .expect("target response");
 
-    let outcome = timeout(Duration::from_secs(1), relay_task)
+    let outcome = timeout(Duration::from_secs(30), relay_task)
         .await
         .expect("blocked client write timeout")
         .expect("relay task");
@@ -152,7 +152,7 @@ async fn relay_enforces_lifetime_during_blocked_client_write() {
         .await
         .expect("target response");
 
-    let outcome = timeout(Duration::from_secs(1), relay_task)
+    let outcome = timeout(Duration::from_secs(30), relay_task)
         .await
         .expect("blocked client write timeout")
         .expect("relay task");

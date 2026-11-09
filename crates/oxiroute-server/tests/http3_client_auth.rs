@@ -43,7 +43,7 @@ use support::{TestOnlyEcdsaChain, generate_test_only_client_chain, private_key_f
 const H3_ALPN: &[u8] = b"h3";
 const SERVER_NAME: &str = "proxy.example.test";
 /// Each mode starts server processes and runs several handshakes, which a loaded host stretches.
-const WIRE_TIMEOUT: Duration = Duration::from_secs(120);
+const WIRE_TIMEOUT: Duration = Duration::from_mins(2);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// A client that dials a server process still starting retransmits its Initial after about three
 /// times this, instead of after the default second.

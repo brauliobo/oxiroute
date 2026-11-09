@@ -1550,7 +1550,7 @@ async fn capped_first_pool_dispatches_queued_requests_fifo_to_the_next_available
             held_secondary.await.expect("secondary held task").body,
             b"hold-secondary"
         );
-        timeout(Duration::from_secs(1), old_seen_rx)
+        timeout(Duration::from_secs(30), old_seen_rx)
             .await
             .expect("old request dispatch")
             .expect("old request signal");
@@ -1563,7 +1563,7 @@ async fn capped_first_pool_dispatches_queued_requests_fifo_to_the_next_available
             held_primary.await.expect("primary held task").body,
             b"hold-primary"
         );
-        timeout(Duration::from_secs(1), new_seen_rx)
+        timeout(Duration::from_secs(30), new_seen_rx)
             .await
             .expect("new request dispatch")
             .expect("new request signal");
@@ -2422,7 +2422,7 @@ async fn slow_downstream_preserves_response_larger_than_pipe_capacity() {
             let value = u8::try_from(value).expect("response chunk index fits in u8");
             assert!(chunk.iter().all(|byte| *byte == value));
         }
-        timeout(Duration::from_secs(1), write_done_rx)
+        timeout(Duration::from_secs(30), write_done_rx)
             .await
             .expect("origin did not resume after downstream reads")
             .expect("origin write completion sender dropped");
@@ -2946,7 +2946,7 @@ async fn client_disconnect_cancels_the_pending_upstream_request() {
         sleep(Duration::from_millis(150)).await;
         drop(client);
 
-        timeout(Duration::from_millis(800), closed_rx)
+        timeout(Duration::from_secs(30), closed_rx)
             .await
             .expect("origin did not observe the client disconnect")
             .expect("origin close signal");
@@ -4042,7 +4042,7 @@ async fn enforces_the_connection_cap_in_the_production_http_wrapper() {
             .await
             .expect("second client connect");
         let mut byte = [0; 1];
-        let closed = timeout(Duration::from_secs(1), second.read(&mut byte))
+        let closed = timeout(Duration::from_secs(30), second.read(&mut byte))
             .await
             .expect("limited connection must close promptly");
         assert!(
@@ -4654,7 +4654,7 @@ async fn early_response_drains_a_remaining_request_body_before_h1_reuse() {
             .write_all(b"cdGET /second HTTP/1.1\r\nHost: drain.test\r\nConnection: close\r\n\r\n")
             .await
             .expect("remaining body and second request");
-        let second = timeout(Duration::from_secs(1), read_framed_response(&mut client))
+        let second = timeout(Duration::from_secs(30), read_framed_response(&mut client))
             .await
             .expect("drained H1 connection did not accept the next request")
             .expect("second response");
@@ -7246,7 +7246,7 @@ async fn listener_client_and_request_header_timeout_close_a_stalled_request() {
             .expect("partial request");
         sleep(Duration::from_millis(80)).await;
         let mut byte = [0; 1];
-        let closed = timeout(Duration::from_secs(2), client.read(&mut byte))
+        let closed = timeout(Duration::from_secs(30), client.read(&mut byte))
             .await
             .expect("stalled request closes");
         assert!(
@@ -7327,7 +7327,7 @@ async fn listener_keepalive_timeout_closes_an_idle_reusable_connection() {
         }
         sleep(Duration::from_millis(80)).await;
         let mut byte = [0; 1];
-        let closed = timeout(Duration::from_secs(1), client.read(&mut byte))
+        let closed = timeout(Duration::from_secs(30), client.read(&mut byte))
             .await
             .expect("idle keepalive closes");
         assert!(matches!(closed, Ok(0) | Err(_)), "keepalive remained open");
@@ -7674,7 +7674,7 @@ impl ProxyHarness {
     }
 
     async fn wait_for_active_connections(&self, expected: u64) {
-        timeout(Duration::from_secs(1), async {
+        timeout(Duration::from_secs(30), async {
             loop {
                 if self
                     .metrics

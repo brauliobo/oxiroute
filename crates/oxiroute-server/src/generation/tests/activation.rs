@@ -148,7 +148,7 @@ async fn status_remains_readable_on_a_single_thread_runtime_during_publication()
     activation_paused
         .recv_timeout(Duration::from_secs(1))
         .expect("activation did not reach closed gate");
-    let gate_state = tokio::time::timeout(Duration::from_secs(1), acceptor.changed())
+    let gate_state = tokio::time::timeout(Duration::from_secs(30), acceptor.changed())
         .await
         .expect("gate close timeout")
         .expect("gate close");

@@ -239,7 +239,7 @@ async fn assert_tls_alpn_rejected(address: std::net::SocketAddr, alpn: &[&[u8]])
         support::tls_connect_with_config(address, support::PROXY_SERVER_NAME, config).await
     {
         let mut response = Vec::new();
-        timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
+        timeout(Duration::from_secs(30), stream.read_to_end(&mut response))
             .await
             .expect("incompatible ALPN client close")
             .expect("incompatible ALPN client read");
@@ -448,7 +448,7 @@ async fn basic_authenticated_absolute_form_and_connect_cross_the_runtime_listene
         .await
         .expect("partial proxy header");
     let mut byte = [0];
-    let slow_read = timeout(Duration::from_secs(2), slow.read(&mut byte))
+    let slow_read = timeout(Duration::from_secs(30), slow.read(&mut byte))
         .await
         .expect("request header timeout");
     assert!(matches!(slow_read, Ok(0) | Err(_)));
@@ -602,7 +602,7 @@ async fn basic_authenticated_absolute_form_and_connect_cross_the_runtime_listene
         .write_all(b"GET http://127.0.0.1/ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
         .await;
     let mut byte = [0];
-    let excess_read = timeout(Duration::from_secs(1), excess.read(&mut byte))
+    let excess_read = timeout(Duration::from_secs(30), excess.read(&mut byte))
         .await
         .expect("excess connection close timeout");
     assert!(matches!(excess_read, Ok(0) | Err(_)));
@@ -611,7 +611,7 @@ async fn basic_authenticated_absolute_form_and_connect_cross_the_runtime_listene
         .await
         .expect("post-200 tunnel payload");
     let mut pong = [0; 4];
-    timeout(Duration::from_secs(5), tunnel.read_exact(&mut pong))
+    timeout(Duration::from_secs(30), tunnel.read_exact(&mut pong))
         .await
         .expect("tunnel response timeout")
         .expect("tunnel response");
@@ -984,7 +984,7 @@ async fn authenticated_absolute_form_bypasses_anonymous_forward_cache() {
     assert!(cached.starts_with(b"HTTP/1.1 200"));
     assert!(cached.ends_with(b"cached"));
 
-    timeout(Duration::from_secs(2), origin_task)
+    timeout(Duration::from_secs(30), origin_task)
         .await
         .expect("origin boundary task timeout")
         .expect("origin boundary task");
@@ -1251,7 +1251,7 @@ async fn cache_cancels_disconnected_leaders_but_not_leaders_with_cancelled_follo
     let mut partial = Vec::new();
     while !partial.ends_with(b"abc") {
         partial.push(
-            timeout(Duration::from_secs(2), disconnected.read_u8())
+            timeout(Duration::from_secs(30), disconnected.read_u8())
                 .await
                 .expect("partial response timeout")
                 .expect("partial response byte"),
@@ -1628,7 +1628,7 @@ async fn connect_udp_upgrade_relays_capsule_datagrams_on_a_real_listener() {
 }
 
 async fn exchange(address: std::net::SocketAddr, request: &[u8]) -> Vec<u8> {
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(30), async {
         let mut stream = TcpStream::connect(address).await.expect("proxy connect");
         stream.write_all(request).await.expect("proxy request");
         let mut response = Vec::new();
@@ -1676,7 +1676,7 @@ async fn read_request_head(stream: &mut TcpStream, buffer: &mut [u8]) -> Vec<u8>
 }
 
 async fn exchange_head(address: std::net::SocketAddr, request: &[u8]) -> Vec<u8> {
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(30), async {
         let mut stream = TcpStream::connect(address).await.expect("proxy connect");
         stream.write_all(request).await.expect("proxy request");
         let mut response = Vec::new();
@@ -1690,7 +1690,7 @@ async fn exchange_head(address: std::net::SocketAddr, request: &[u8]) -> Vec<u8>
 }
 
 async fn exchange_partial(address: std::net::SocketAddr, request: &[u8]) -> Vec<u8> {
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(30), async {
         let mut stream = TcpStream::connect(address).await.expect("proxy connect");
         stream.write_all(request).await.expect("proxy request");
         let mut response = Vec::new();

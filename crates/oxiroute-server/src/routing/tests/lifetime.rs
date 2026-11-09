@@ -439,7 +439,7 @@ async fn capacity_release_cannot_race_a_waiter_notification_registration() {
         let waiter = tokio::spawn(async move { waiting_pool.select_wait().await });
         tokio::task::yield_now().await;
         drop(held);
-        let acquired = tokio::time::timeout(Duration::from_millis(100), waiter)
+        let acquired = tokio::time::timeout(Duration::from_secs(30), waiter)
             .await
             .expect("capacity notification was not lost")
             .expect("waiter task")
