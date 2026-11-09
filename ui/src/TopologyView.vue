@@ -15,7 +15,7 @@ section.topology-section(aria-labelledby="topology-heading" @keydown.esc="closeI
 
   .topology-workspace
     .schematic-viewport(aria-label="Active network topology")
-      .topology-stage(:style="stageStyle")
+      .topology-stage(v-css-vars="stageVars")
         svg.connector-layer(
           aria-hidden="true"
           :viewBox="`0 0 ${CANVAS_WIDTH} ${canvasHeight}`"
@@ -38,7 +38,7 @@ section.topology-section(aria-labelledby="topology-heading" @keydown.esc="closeI
           type="button"
           :data-node-id="node.id"
           :class="[`node-${node.kind}`, `state-${overlayFor(node.id)?.state ?? 'configured'}`, { selected: node.id === selectedNodeId }]"
-          :style="nodeStyle(node.id)"
+          v-css-vars="nodeVars(node.id)"
           :aria-label="`Inspect ${kindLabels[node.kind]} ${node.name}`"
           :aria-pressed="node.id === selectedNodeId"
           @click="selectNode(node.id)"
@@ -128,6 +128,7 @@ section.topology-section(aria-labelledby="topology-heading" @keydown.esc="closeI
 import { computed, nextTick, ref } from 'vue'
 
 import { formatCount } from './formatters'
+import { vCssVars } from './cssVars'
 import { listenerStateLabels, topologyRuntimeStatusLabels } from './runtimeStates'
 import type {
   TopologyEdgeKind,
@@ -228,9 +229,9 @@ const canvasHeight = computed(() => {
   for (const node of orderedNodes.value) counts[kindStage[node.kind]]! += 1
   return Math.max(250, TOP_PADDING * 2 + Math.max(...counts) * ROW_GAP)
 })
-const stageStyle = computed(() => ({
-  width: `${CANVAS_WIDTH}px`,
-  height: `${canvasHeight.value}px`,
+const stageVars = computed(() => ({
+  '--stage-width': `${CANVAS_WIDTH}px`,
+  '--stage-height': `${canvasHeight.value}px`,
 }))
 const connectorPaths = computed(() =>
   props.topology.edges.flatMap((edge) => {
@@ -331,9 +332,9 @@ function formatByteLimit(value: unknown): string {
   return value === null ? 'Unbounded' : typeof value === 'number' ? `${formatCount(value)} bytes` : 'Unknown'
 }
 
-function nodeStyle(nodeId: string): Record<string, string> {
+function nodeVars(nodeId: string): Record<string, string> {
   const position = positions.value.get(nodeId)
-  return position ? { left: `${position.x}px`, top: `${position.y}px` } : {}
+  return position ? { '--node-x': `${position.x}px`, '--node-y': `${position.y}px` } : {}
 }
 
 function nodeName(nodeId: string): string {
@@ -486,6 +487,8 @@ h2 {
 
 .topology-stage {
   position: relative;
+  width: var(--stage-width);
+  height: var(--stage-height);
   min-height: 250px;
 }
 
@@ -515,6 +518,8 @@ h2 {
 
 .topology-node {
   position: absolute;
+  top: var(--node-y);
+  left: var(--node-x);
   display: grid;
   width: 168px;
   min-height: 88px;
