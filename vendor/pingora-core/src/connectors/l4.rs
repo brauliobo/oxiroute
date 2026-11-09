@@ -280,7 +280,7 @@ async fn proxy_connect<P: Peer>(peer: &P) -> Result<Stream> {
     let socket = connect_uds(&proxy.next_hop)
         .await
         .or_err_with(ConnectError, || {
-            format!("CONNECT proxy connect() error to {:?}", &proxy.next_hop)
+            format!("CONNECT proxy connect() error to {:?}", proxy.next_hop)
         })?;
     let physical_peer_addr = socket
         .peer_addr()
