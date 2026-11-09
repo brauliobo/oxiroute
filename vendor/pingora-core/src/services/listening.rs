@@ -34,7 +34,7 @@ use crate::services::{Service as ServiceTrait, ServiceReadyNotifier};
 use async_trait::async_trait;
 use log::{debug, error, info};
 use pingora_error::Result;
-use pingora_runtime::current_handle;
+use pingora_runtime::{current_handle, spawn_connection};
 use pingora_timeout::timeout;
 use std::fs::Permissions;
 use std::sync::Arc;
@@ -254,7 +254,7 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                                 io.hold_admission(admission);
                                 let app = app_logic.clone();
                                 let shutdown = shutdown.clone();
-                                current_handle().spawn(async move {
+                                spawn_connection(async move {
                                     let peer_addr = io.peer_addr();
                                     match timeout(app.handshake_timeout(), io.handshake()).await {
                                         Ok(handshake) => match handshake {
@@ -305,7 +305,7 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                     io.hold_admission(admission);
                     let app = app_logic.clone();
                     let shutdown = shutdown.clone();
-                    current_handle().spawn(async move {
+                    spawn_connection(async move {
                         let peer_addr = io.peer_addr();
                         match timeout(app.handshake_timeout(), io.handshake()).await {
                             Ok(handshake) => {
