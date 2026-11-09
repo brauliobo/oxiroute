@@ -64,11 +64,11 @@ impl<'a> Eligibility<'a> {
         self.names(server, index) && self.has_capacity(server)
     }
 
-    /// Whether the server would be eligible if it had the capacity.
+    /// Whether the server would be eligible if it had the capacity. After a failed choice every such
+    /// server was passed over for its capacity; reading the capacity again would race with releases.
     #[inline(always)]
     pub(super) fn saturates(&self, members: &Membership, index: usize) -> bool {
-        let server = &members.endpoints[index];
-        self.names(server, index) && !self.has_capacity(server)
+        self.names(&members.endpoints[index], index)
     }
 
     /// The load of an eligible server, else `None`; reads the server's counters once.
