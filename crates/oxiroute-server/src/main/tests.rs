@@ -93,6 +93,7 @@ pub(super) fn recorder_runtime_config(
     recording_root: &Path,
 ) -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: None,

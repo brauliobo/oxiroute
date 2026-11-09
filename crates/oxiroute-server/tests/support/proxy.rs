@@ -66,6 +66,7 @@ pub fn proxy_config(
     let directory = TempDir::new().expect("proxy config private-key directory");
     let private_key_path = copy_private_key_fixture(directory.path(), "proxy-a-key.pem");
     let config = ConfigDraft {
+        listener_workers: None,
         retirement: None,
         certificates: vec![Certificate {
             name: "downstream".into(),

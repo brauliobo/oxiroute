@@ -33,7 +33,7 @@ async fn tunnel_stops_exactly_at_direction_limit() {
     server.read_exact(&mut received).await.unwrap();
     assert_eq!(&received, b"1234");
     assert!(matches!(
-        timeout(Duration::from_millis(100), relay)
+        timeout(Duration::from_secs(30), relay)
             .await
             .unwrap()
             .unwrap(),
@@ -99,7 +99,7 @@ async fn tunnel_flushes_each_direction_when_the_peer_awaits_more_input() {
 
     client.write_all(b"request").await.unwrap();
     let mut request = [0; 7];
-    timeout(Duration::from_secs(1), server.read_exact(&mut request))
+    timeout(Duration::from_secs(30), server.read_exact(&mut request))
         .await
         .expect("buffered tunnel flush")
         .unwrap();

@@ -83,6 +83,12 @@ use {forward_apps::*, generation_process::*, listener_services::*, rtmp_ingest::
 #[path = "main/tests.rs"]
 mod tests;
 
+/// Per-thread allocation caches: with several workers per listener, glibc's shared arenas made every
+/// cross-thread free wait on a lock.
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 const GENERATION_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[allow(clippy::too_many_arguments)]
@@ -404,6 +410,7 @@ fn serve_generation(
         generation: Arc::clone(generation),
     });
 
+    let workers = listener_workers(config);
     let plan = generation.plan();
     let services = generation.services().to_vec();
     let health_supervisor = generation.health_supervisor();
@@ -571,6 +578,7 @@ fn serve_generation(
                         Arc::clone(generation),
                     ),
                 );
+                service.threads = Some(workers);
                 add_http_listener(
                     &mut service,
                     &listener_name,
@@ -597,6 +605,7 @@ fn serve_generation(
                     Arc::clone(generation),
                 );
                 let mut service = Service::new(service_name, app);
+                service.threads = Some(workers);
                 add_http_listener(
                     &mut service,
                     &listener_name,
@@ -625,6 +634,7 @@ fn serve_generation(
                     Arc::clone(generation),
                 );
                 let mut service = Service::new(service_name, app);
+                service.threads = Some(workers);
                 add_http_listener(
                     &mut service,
                     &listener_name,
@@ -667,6 +677,7 @@ fn serve_generation(
                         Arc::clone(generation),
                     ),
                 );
+                service.threads = Some(workers);
                 add_plain_listener(&mut service, &listener_name, &listener_bind)?;
                 server.add_service(
                     RuntimeListenerService::new(service, reservation, Some(metrics))

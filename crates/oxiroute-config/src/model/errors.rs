@@ -438,6 +438,8 @@ pub enum ConfigError {
         "statistics must configure between one and eight total unique IPv4/IPv6 listener binds"
     )]
     InvalidStatsBinds,
+    #[error("listener_workers {0} is invalid: it must be between 1 and 256")]
+    InvalidListenerWorkers(u64),
     #[error("retirement setting `{pointer}` is invalid: {detail}")]
     InvalidRetirement {
         pointer: String,

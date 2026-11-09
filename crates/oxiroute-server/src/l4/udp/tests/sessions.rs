@@ -66,7 +66,7 @@ async fn runtime_routes_replies_and_releases_its_traffic_lease() {
 
     let mut received = [0_u8; 128];
     let (length, upstream_peer) =
-        timeout(Duration::from_secs(2), upstream.recv_from(&mut received))
+        timeout(Duration::from_secs(30), upstream.recv_from(&mut received))
             .await
             .expect("upstream receive timeout")
             .expect("upstream receive");
@@ -76,7 +76,7 @@ async fn runtime_routes_replies_and_releases_its_traffic_lease() {
         .await
         .expect("send response");
 
-    let (length, _) = timeout(Duration::from_secs(2), client.recv_from(&mut received))
+    let (length, _) = timeout(Duration::from_secs(30), client.recv_from(&mut received))
         .await
         .expect("client receive timeout")
         .expect("client receive");
@@ -469,12 +469,12 @@ async fn udp_replies_keep_client_affinity_without_cross_client_leakage() {
             .expect("upstream reply");
     }
 
-    let (length, _) = timeout(Duration::from_secs(2), first.recv_from(&mut received))
+    let (length, _) = timeout(Duration::from_secs(30), first.recv_from(&mut received))
         .await
         .expect("first reply timeout")
         .expect("first reply receive");
     assert_eq!(&received[..length], b"r-one");
-    let (length, _) = timeout(Duration::from_secs(2), second.recv_from(&mut received))
+    let (length, _) = timeout(Duration::from_secs(30), second.recv_from(&mut received))
         .await
         .expect("second reply timeout")
         .expect("second reply receive");

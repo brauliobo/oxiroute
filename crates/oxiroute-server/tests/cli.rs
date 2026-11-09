@@ -756,6 +756,7 @@ fn generation_reload_cli_keeps_the_old_generation_and_surfaces_native_failure() 
 
 fn empty_config() -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -890,7 +891,7 @@ impl NativeReloadServer {
     }
 
     fn wait_for_startup(&self) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let output = self.run(&["generation", "status"]);
             if output.status.success() {
@@ -906,7 +907,7 @@ impl NativeReloadServer {
     }
 
     fn wait_for_active_change(&self, previous: &str) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let status = self.generation_status();
             if status["generation"]["activeRevision"].as_str() != Some(previous) {

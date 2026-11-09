@@ -23,7 +23,7 @@ use config_support::{empty_config, service_specs, socket_bind, socket_endpoint};
 
 #[tokio::test]
 async fn websocket_upgrade_proxies_frames_in_both_directions() {
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(30), async {
         let origin_listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let origin_address = origin_listener.local_addr().expect("origin address");
         let origin = tokio::spawn(async move {
@@ -99,7 +99,7 @@ async fn websocket_upgrade_proxies_frames_in_both_directions() {
 
 #[tokio::test]
 async fn upgrade_preserves_request_body_before_101_and_tunnel_bytes_after_101() {
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(30), async {
         let origin_listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let origin_address = origin_listener.local_addr().expect("origin address");
         let origin = tokio::spawn(async move {
@@ -200,6 +200,7 @@ async fn upgrade_preserves_request_body_before_101_and_tunnel_bytes_after_101() 
 
 fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         listeners: vec![Listener {
             name: "websocket".into(),

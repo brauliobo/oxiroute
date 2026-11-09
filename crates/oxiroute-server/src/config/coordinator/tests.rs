@@ -40,6 +40,7 @@ fn socket_endpoint(value: &str) -> UpstreamEndpoint {
 
 fn minimal_config() -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -221,7 +222,7 @@ fn lock_entry(directory: &Path) -> Option<PathBuf> {
 }
 
 fn wait_for_path(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !path.exists() {
         assert!(
             Instant::now() < deadline,

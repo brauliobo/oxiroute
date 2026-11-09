@@ -1017,6 +1017,7 @@ export interface RetirementConfig {
 export interface CanonicalConfig {
   version: number
   max_connections: number | null
+  listener_workers?: number
   retirement?: RetirementConfig
   management: ManagementConfig | null
   registry?: RegistryConfig | null

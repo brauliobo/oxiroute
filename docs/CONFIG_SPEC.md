@@ -31,6 +31,7 @@ Lua-only contract.
 return {
   version = 1,
   max_connections = 4096,
+  listener_workers = 4,
   management = {
     bind = "127.0.0.1:9080",
     ui_dir = "./ui/dist",
@@ -273,6 +274,16 @@ Current constraints:
 - `version` MUST be `1`.
 - Root `max_connections` is an optional aggregate process admission limit. Omission or explicit
   `null` means unbounded; a configured value MUST be a positive exact JSON integer.
+- Root `listener_workers` is an optional positive integer (1 to 256, default 1) that sets how many
+  worker threads serve each `http`, `forward_http1`, `forward_http2` and `tcp` listener. The
+  workers of a listener share its socket, its connection pools, its pool queues and its limits, and
+  a connection is served by whichever worker is free, so keep-alive reuse, `max_connections`,
+  queueing, drain, retirement and evacuation behave as with one worker. One worker serves a
+  listener on one core (about 60 000 small requests per second); raise the value for a listener that
+  saturates its core, to at most the cores you can give it, because every extra worker adds
+  cross-thread wake-ups per request. The management, statistics, RTMP, `udp`, `http3` and
+  `forward_http3` listeners keep their dedicated single threads. Changing the value is an ordinary
+  reload: the replaced generation drains on its own threads.
 - `retirement` is optional and bounds how a replaced generation drains: `drain_deadline_ms`
   (1000 to 86400000) is how long its in-flight work may continue after its accept gate closes,
   and `max_retired_generations` (1 to 16, default 4) is how many replaced generations may drain at
@@ -561,7 +572,14 @@ Current constraints:
   `max_request_body_bytes`). It is for routes where the operator guarantees every accepted request
   is idempotent, including intentionally idempotent `POST` APIs; it MUST NOT be used for
   requests that can create a duplicate side effect. The values are a pair: mixed `get_head`/`buffered`
-  or `all`/`empty` policies fail validation. Every retry also requires the configured
+  or `all`/`empty` policies fail validation. A route with a `methods` list that names neither `GET`
+  nor `HEAD` can never replay a request under the default `get_head` policy; when it also retries
+  after the request was sent (`response_statuses`, or the `empty_response`, `response_timeout` or
+  `junk_response` triggers) or has a `rescue`, `config check` and the import report
+  `W_RETRY_NEVER_REPLAYS`. A pool that serves a route with `response_statuses` and has no
+  `passive_health` reports `W_PASSIVE_HEALTH_MISSING`, because a server that only returns those
+  statuses is never ejected. Both are warnings: the configuration stays valid and the effective
+  policy does not change. Every retry also requires the configured
   `target` to be selectable. `target = "next_server"` requires a distinct named server;
   `target = "same_server"` reselects the same named server. A replay never returns to a server that
   already answered the request when `target = "next_server"`; it is not attempted at all when every
@@ -703,7 +721,10 @@ HAProxy directives:
   ranges, and 416 responses. Disabling ETag suppresses generated tag matching and output, while
   `If-None-Match: *` still tests whether the selected representation exists and takes precedence
   over `If-Modified-Since`.
-  Roots are descriptor-pinned; files are opened no-follow and stream in 64 KiB chunks up to 8 GiB.
+  Roots are descriptor-pinned; files are opened no-follow and stream in 64 KiB chunks up to 8 GiB. Files of
+  up to 128 KiB are read whole and answered from a per-route memory cache (at most 512 files and 16 MiB) for
+  one second, so an edit, replacement or removal is visible within one second; larger files are read on every
+  request.
 - Gzip exposes level 1 through 9, bounded exact content types, `min_length_bytes`, a minimum request
   version of HTTP/1.0 or HTTP/1.1, optional suppression when `Via` is present, and optional
   `Vary: Accept-Encoding`. For compatibility with persisted minimal policies, omitted new fields

@@ -1,6 +1,26 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+/// A fail-open candidate's place in the ranking: its rank, then its position in the pool.
+type FailOpenKey = ((bool, u64, u64), usize);
+
+/// The server a selection settled on, and whether the request already holds a capacity permit.
+enum Choice {
+    Acquired(Arc<PoolEndpoint>),
+    /// A pooled idle connection serves the request; the lease acquires a permit only if it connects.
+    Pending(Arc<PoolEndpoint>),
+}
+
+/// What the selection lock protected: the choice, or the verdict that the pool fails open.
+enum Chosen {
+    FailOpen,
+    Selectable {
+        choice: Option<Choice>,
+        pool_available: bool,
+        saturated: bool,
+    },
+}
+
 impl EndpointPool {
     /// The current membership. Selection holds the selection lock, which membership changes also
     /// take, so the snapshot it reads stays the pool's membership for the whole selection.
@@ -8,37 +28,60 @@ impl EndpointPool {
         self.health.members.load_full()
     }
 
-    /// Servers a pool with nothing selectable may still serve, least bad first.
-    fn fail_open_ranking(&self, excluded: &[String]) -> Vec<Arc<PoolEndpoint>> {
-        let mut ranked = self.read_health(|members| {
+    /// The next server, least bad first, that a pool with nothing selectable may still serve and
+    /// that has capacity, after `after`. Reads the ranking in place; a request holds no list of it.
+    fn next_fail_open(
+        &self,
+        excluded: &[String],
+        after: Option<FailOpenKey>,
+    ) -> Option<(FailOpenKey, Arc<PoolEndpoint>)> {
+        self.read_health(|members| {
             members
                 .endpoints
                 .iter()
-                .filter(|server| server.fail_open_eligible() && !excluded.contains(&server.name))
-                .map(|server| (server.fail_open_rank(), Arc::clone(server)))
-                .collect::<Vec<_>>()
-        });
-        ranked.sort_by_key(|(rank, _)| *rank);
-        ranked.into_iter().map(|(_, server)| server).collect()
+                .enumerate()
+                .filter(|(_, server)| {
+                    server.fail_open_eligible()
+                        && server.has_capacity()
+                        && !excluded.contains(&server.name)
+                })
+                .map(|(index, server)| ((server.fail_open_rank(), index), server))
+                .filter(|(key, _)| after.is_none_or(|after| *key > after))
+                .min_by_key(|(key, _)| *key)
+                .map(|(key, server)| (key, Arc::clone(server)))
+        })
+    }
+
+    /// Whether any server could serve a failing-open pool once it has capacity.
+    fn fail_open_candidates_exist(&self, excluded: &[String]) -> bool {
+        self.read_health(|members| {
+            members
+                .endpoints
+                .iter()
+                .any(|server| server.fail_open_eligible() && !excluded.contains(&server.name))
+        })
     }
 
     fn select_fail_open(&self, excluded: &[String]) -> SelectionAttempt {
-        let ranking = self.fail_open_ranking(excluded);
-        let lease = ranking.iter().find_map(|server| {
-            server.try_acquire(
-                &self.queue,
-                &self.health,
-                Admission::FailOpen,
-                now_unix_ms(),
-            )
-        });
-        if lease.is_some() {
-            self.fail_open_selections.fetch_add(1, Ordering::Relaxed);
+        let now_unix_ms = now_unix_ms();
+        let mut after = None;
+        while let Some((key, server)) = self.next_fail_open(excluded, after) {
+            if let Some(lease) =
+                server.try_acquire(&self.queue, &self.health, Admission::FailOpen, now_unix_ms)
+            {
+                self.fail_open_selections.fetch_add(1, Ordering::Relaxed);
+                return SelectionAttempt {
+                    lease: Some(lease),
+                    pool_available: true,
+                    saturated: false,
+                };
+            }
+            after = Some(key);
         }
         SelectionAttempt {
-            lease,
-            pool_available: !ranking.is_empty(),
-            saturated: ranking.iter().all(|server| !server.has_capacity()),
+            lease: None,
+            pool_available: self.fail_open_candidates_exist(excluded),
+            saturated: after.is_none(),
         }
     }
 
@@ -49,38 +92,43 @@ impl EndpointPool {
         self.select_attempt(excluded, false)
     }
 
-    /// The lease of the algorithm's best eligible server, falling back to the next best when a
-    /// permit is lost to a concurrent selection.
-    fn acquire_best(
+    /// The algorithm's best eligible server, falling back to the next best when a permit is lost to a
+    /// concurrent selection. The lease is built by the caller once the selection lock is released.
+    fn choose_best(
         &self,
         selection: &mut SelectionState,
         members: &Membership,
         view: &SelectableView,
-        eligible: &impl Fn(usize) -> bool,
-        reuse_idle: bool,
+        eligible: Eligibility,
         now_unix_ms: u64,
-    ) -> Option<EndpointLease> {
+    ) -> Option<Choice> {
+        let reuse_idle = matches!(eligible.capacity, Capacity::PermitOrIdle);
         let mut tried = Vec::new();
         loop {
-            let untried = |index: usize| eligible(index) && !tried.contains(&index);
-            let index = self.pick(selection, members, view, &untried)?;
+            let index = self.pick(selection, members, view, &eligible.without(&tried))?;
             let server = &members.endpoints[index];
-            let lease = server
-                .try_acquire(
-                    &self.queue,
-                    &self.health,
-                    Admission::Selectable,
-                    now_unix_ms,
-                )
-                .or_else(|| {
-                    (reuse_idle && server.has_idle_connection())
-                        .then(|| self.pending_lease_for(server, Admission::Selectable))
-                });
-            if lease.is_some() {
-                self.commit(selection, members, view, eligible, index);
-                return lease;
+            let choice =
+                if server.try_acquire_permit(&self.queue, Admission::Selectable, now_unix_ms) {
+                    Some(Choice::Acquired(Arc::clone(server)))
+                } else if reuse_idle && server.has_idle_connection() {
+                    Some(Choice::Pending(Arc::clone(server)))
+                } else {
+                    None
+                };
+            if choice.is_some() {
+                self.commit(selection, members, view, &eligible, index);
+                return choice;
             }
             tried.push(index);
+        }
+    }
+
+    fn lease_of(&self, choice: Choice) -> EndpointLease {
+        match choice {
+            Choice::Acquired(server) => {
+                EndpointLease::acquired(server, Arc::clone(&self.queue), Arc::clone(&self.health))
+            }
+            Choice::Pending(server) => self.pending_lease_for(&server, Admission::Selectable),
         }
     }
 
@@ -88,52 +136,45 @@ impl EndpointPool {
     /// is idle also qualifies and gets a pending lease, since the connection serves the request
     /// without a new permit.
     fn select_attempt(&self, excluded: &[String], reuse_idle: bool) -> SelectionAttempt {
-        let mut selection = self.lock_selection();
-        let members = self.members();
         let now_unix_ms = now_unix_ms();
+        match self.choose(excluded, reuse_idle, now_unix_ms) {
+            Chosen::FailOpen if reuse_idle => SelectionAttempt {
+                lease: self.fail_open_connection_target(excluded),
+                pool_available: false,
+                saturated: false,
+            },
+            Chosen::FailOpen => self.select_fail_open(excluded),
+            Chosen::Selectable {
+                choice,
+                pool_available,
+                saturated,
+            } => SelectionAttempt {
+                lease: choice.map(|choice| self.lease_of(choice)),
+                pool_available,
+                saturated,
+            },
+        }
+    }
+
+    /// The selection proper, under the selection lock; leases are built after it is released.
+    fn choose(&self, excluded: &[String], reuse_idle: bool, now_unix_ms: u64) -> Chosen {
+        let mut selection = self.lock_selection();
+        let members = self.health.members.load();
         let view = self.health.selectable_view(&members, now_unix_ms);
         let pool_available = !view.is_empty();
         if !pool_available && self.resilience.fail_open {
-            return if reuse_idle {
-                SelectionAttempt {
-                    lease: self.fail_open_connection_target(excluded),
-                    pool_available: false,
-                    saturated: false,
-                }
-            } else {
-                self.select_fail_open(excluded)
-            };
+            return Chosen::FailOpen;
         }
-        let candidate = |index: usize| !excluded.contains(&members.endpoints[index].name);
-        let usable = |index: usize| {
-            let server = &members.endpoints[index];
-            server.has_capacity() || (reuse_idle && server.has_idle_connection())
-        };
-        let eligible = |index: usize| (excluded.is_empty() || candidate(index)) && usable(index);
-        let lease = if pool_available {
-            self.acquire_best(
-                &mut selection,
-                &members,
-                &view,
-                &eligible,
-                reuse_idle,
-                now_unix_ms,
-            )
-        } else {
-            None
-        };
-        if lease.is_some() {
-            return SelectionAttempt {
-                lease,
-                pool_available,
-                saturated: false,
-            };
-        }
-        let saturated = view
-            .rotation(0)
-            .any(|index| (excluded.is_empty() || candidate(index)) && !usable(index));
-        SelectionAttempt {
-            lease: None,
+        let eligible = Eligibility::new(excluded, Capacity::reusing_idle(reuse_idle));
+        let choice = pool_available
+            .then(|| self.choose_best(&mut selection, &members, &view, eligible, now_unix_ms))
+            .flatten();
+        let saturated = choice.is_none()
+            && view
+                .rotation(0)
+                .any(|index| eligible.saturates(&members, index));
+        Chosen::Selectable {
+            choice,
             pool_available,
             saturated,
         }
@@ -179,39 +220,55 @@ impl EndpointPool {
 
     /// A connection target, and whether any server was selectable.
     fn connection_target(&self, excluded: &[String]) -> (Option<EndpointLease>, bool) {
-        let mut selection = self.lock_selection();
-        let members = self.members();
         let now_unix_ms = now_unix_ms();
-        let view = self.health.selectable_view(&members, now_unix_ms);
-        if view.is_empty() {
-            let lease = self
-                .resilience
-                .fail_open
-                .then(|| self.fail_open_connection_target(excluded))
-                .flatten();
-            return (lease, false);
-        }
-        let candidate = |index: usize| {
-            excluded.is_empty() || !excluded.contains(&members.endpoints[index].name)
+        let chosen = {
+            let mut selection = self.lock_selection();
+            let members = self.health.members.load();
+            let view = self.health.selectable_view(&members, now_unix_ms);
+            if view.is_empty() {
+                None
+            } else {
+                let with_capacity = Eligibility::new(excluded, Capacity::Permit);
+                let any = Eligibility::new(excluded, Capacity::Any);
+                Some(
+                    self.take(&mut selection, &members, &view, &with_capacity)
+                        .or_else(|| self.take(&mut selection, &members, &view, &any))
+                        .map(|index| Arc::clone(&members.endpoints[index])),
+                )
+            }
         };
-        let with_capacity =
-            |index: usize| candidate(index) && members.endpoints[index].has_capacity();
-        let chosen = self
-            .take(&mut selection, &members, &view, &with_capacity)
-            .or_else(|| self.take(&mut selection, &members, &view, &candidate));
-        let lease = chosen
-            .map(|index| self.pending_lease_for(&members.endpoints[index], Admission::Selectable));
-        (lease, true)
+        match chosen {
+            None => {
+                let lease = self
+                    .resilience
+                    .fail_open
+                    .then(|| self.fail_open_connection_target(excluded))
+                    .flatten();
+                (lease, false)
+            }
+            Some(server) => (
+                server.map(|server| self.pending_lease_for(&server, Admission::Selectable)),
+                true,
+            ),
+        }
     }
 
     fn fail_open_connection_target(&self, excluded: &[String]) -> Option<EndpointLease> {
-        let ranking = self.fail_open_ranking(excluded);
-        let server = ranking
-            .iter()
-            .find(|server| server.has_capacity())
-            .or_else(|| ranking.first())?;
+        let server = match self.next_fail_open(excluded, None) {
+            Some((_, server)) => server,
+            None => self.read_health(|members| {
+                members
+                    .endpoints
+                    .iter()
+                    .filter(|server| {
+                        server.fail_open_eligible() && !excluded.contains(&server.name)
+                    })
+                    .min_by_key(|server| server.fail_open_rank())
+                    .map(Arc::clone)
+            })?,
+        };
         self.fail_open_selections.fetch_add(1, Ordering::Relaxed);
-        Some(self.pending_lease_for(server, Admission::FailOpen))
+        Some(self.pending_lease_for(&server, Admission::FailOpen))
     }
 
     fn pending_lease_for(&self, server: &Arc<PoolEndpoint>, admission: Admission) -> EndpointLease {
@@ -231,13 +288,16 @@ impl EndpointPool {
 
     #[must_use]
     pub fn select_excluding(&self, excluded: &[RuntimeEndpoint]) -> Option<EndpointLease> {
-        let names = self
-            .members()
-            .endpoints
-            .iter()
-            .filter(|server| excluded.contains(&server.endpoint))
-            .map(|server| server.name.clone())
-            .collect::<Vec<_>>();
+        let names = if excluded.is_empty() {
+            Vec::new()
+        } else {
+            self.members()
+                .endpoints
+                .iter()
+                .filter(|server| excluded.contains(&server.endpoint))
+                .map(|server| server.name.clone())
+                .collect()
+        };
         let attempt = self.select_server_excluding(&names);
         if attempt.lease.is_none() && !attempt.pool_available {
             self.note_unavailable_selection();
@@ -363,6 +423,7 @@ impl EndpointPool {
         if now >= deadline || !recoverable {
             return false;
         }
+        let _watch = self.queue.watch();
         let _ = timeout_at(
             (now + RECOVERY_POLL).min(deadline),
             self.queue.notify.notified(),

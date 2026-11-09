@@ -54,6 +54,8 @@ mod affinity;
 mod plan;
 mod pool_select;
 mod proxy_policy;
+mod static_cache;
+mod static_content;
 mod static_files;
 mod static_serve;
 
@@ -63,6 +65,8 @@ pub(crate) use affinity::*;
 pub(crate) use plan::*;
 pub(crate) use pool_select::*;
 pub(crate) use proxy_policy::*;
+pub(crate) use static_cache::*;
+pub(crate) use static_content::*;
 pub(crate) use static_files::*;
 pub(crate) use static_serve::*;
 

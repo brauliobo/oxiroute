@@ -85,6 +85,10 @@ alloc_bytes_per_req clock_gettime_per_req`, `heap_live_bytes_per_conn rss_bytes_
 * Scaling over listeners: `scale_l{1,2,4,8}` and `scale_all_l{1,2,4,8}` (all 6.0 features on), and `scale4_<feature>`
   (one feature at 4 listeners) to bisect which feature breaks scaling. Pool size: `pool_s{2,64}`, `pool_s64_passive`,
   `pool_s1_passive`.
+* Scaling over the worker threads of one listener (`listener_workers`): `scale_w{1,2,4,8}` and `scale_all_w{1,2,4,8}`;
+  they need `N + 1` proxy CPUs (`R2_PROXY_CPUS=4-11`). Run them with `--sys` to read the futex calls per request
+  (lock waits) next to `vctxsw_per_req` (voluntary context switches: a thread that slept on a lock or a wake-up).
+* Load-aware pools: `pool_{lc,wrr}_s{8,64,200}` (`least_connections` and `weighted_round_robin` over N servers).
 * `--lock-batch N` holds the shared benchmark lock across N consecutive lanes (re-entrant) so long runs are not starved.
 
 ## Limits

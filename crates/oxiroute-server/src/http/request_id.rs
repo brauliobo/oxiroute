@@ -14,6 +14,9 @@ use pingora::modules::http::{HttpModule, HttpModuleBuilder, Module};
 use crate::observability::logging::valid_correlation_id;
 
 pub(crate) const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+/// Passed to `insert_header` as a static string: a `HeaderName` there is copied once more for a name outside the
+/// standard table.
+const REQUEST_ID_HEADER_NAME: &str = "x-request-id";
 pub(crate) const UPSTREAM_REQUEST_ID_HEADER: HeaderName =
     HeaderName::from_static("x-upstream-request-id");
 const DEFAULT_IDEMPOTENCY_HEADER: HeaderName = HeaderName::from_static("idempotency-key");
@@ -90,7 +93,7 @@ impl HttpModule for RequestIdModule {
         request: &mut pingora::http::RequestHeader,
     ) -> pingora::Result<()> {
         let value = resolve_request_id(request.headers.get(&REQUEST_ID_HEADER));
-        request.insert_header(REQUEST_ID_HEADER, value.clone())?;
+        request.insert_header(REQUEST_ID_HEADER_NAME, value.clone())?;
         self.id = Some(value);
         Ok(())
     }
@@ -106,9 +109,11 @@ impl HttpModule for RequestIdModule {
         if let Some(upstream) = response.headers.remove(&REQUEST_ID_HEADER)
             && upstream != *id
         {
-            response.insert_header(UPSTREAM_REQUEST_ID_HEADER, upstream)?;
+            response
+                .headers
+                .insert(UPSTREAM_REQUEST_ID_HEADER, upstream);
         }
-        response.insert_header(REQUEST_ID_HEADER, id.clone())?;
+        response.insert_header(REQUEST_ID_HEADER_NAME, id.clone())?;
         Ok(())
     }
 

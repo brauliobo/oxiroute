@@ -3,6 +3,7 @@ use super::*;
 
 pub(super) fn config_with_identity(files: &IdentityFiles) -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         version: 1,
         max_connections: None,

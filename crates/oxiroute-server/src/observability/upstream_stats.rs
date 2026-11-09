@@ -15,6 +15,7 @@ use std::{
 
 use crate::{
     EvacuationReport, LatencyBucketSnapshot, LatencySnapshot, OPERATION_LATENCY_BUCKETS_MS,
+    sharded::Sharded,
 };
 
 /// Request latency bounds plus the waits a saturated pool can produce.
@@ -92,10 +93,16 @@ impl EvacuationResult {
 }
 
 /// Latency histogram. Observations land in one bucket; the cumulative form Prometheus expects is built
-/// when a snapshot is read, so recording costs two atomic additions whatever the latency.
+/// when a snapshot is read, so recording costs two atomic additions whatever the latency. Each worker
+/// thread records into its own slot, so concurrent requests do not share cache lines.
 #[derive(Debug)]
 pub(crate) struct Histogram {
     bounds: &'static [u64],
+    slots: Sharded<HistogramSlot>,
+}
+
+#[derive(Debug)]
+struct HistogramSlot {
     buckets: Box<[AtomicU64]>,
     sum_ms: AtomicU64,
 }
@@ -104,26 +111,30 @@ impl Histogram {
     pub(crate) fn new(bounds: &'static [u64]) -> Self {
         Self {
             bounds,
-            buckets: (0..=bounds.len()).map(|_| AtomicU64::new(0)).collect(),
-            sum_ms: AtomicU64::new(0),
+            slots: Sharded::new(|| HistogramSlot {
+                buckets: (0..=bounds.len()).map(|_| AtomicU64::new(0)).collect(),
+                sum_ms: AtomicU64::new(0),
+            }),
         }
     }
 
     pub(crate) fn observe(&self, duration: Duration) {
         let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
         let bucket = self.bounds.partition_point(|bound| *bound < millis);
-        self.buckets[bucket].fetch_add(1, Ordering::Relaxed);
-        self.sum_ms.fetch_add(millis, Ordering::Relaxed);
+        let slot = self.slots.local();
+        slot.buckets[bucket].fetch_add(1, Ordering::Relaxed);
+        slot.sum_ms.fetch_add(millis, Ordering::Relaxed);
     }
 
     pub(crate) fn snapshot(&self) -> LatencySnapshot {
         let mut count = 0;
-        let buckets = self
-            .buckets
-            .iter()
-            .enumerate()
-            .map(|(index, bucket)| {
-                count += bucket.load(Ordering::Relaxed);
+        let buckets = (0..=self.bounds.len())
+            .map(|index| {
+                count += self
+                    .slots
+                    .iter()
+                    .map(|slot| slot.buckets[index].load(Ordering::Relaxed))
+                    .sum::<u64>();
                 LatencyBucketSnapshot {
                     upper_bound_ms: self.bounds.get(index).copied(),
                     count,
@@ -133,7 +144,11 @@ impl Histogram {
         LatencySnapshot {
             buckets,
             count,
-            sum_ms: self.sum_ms.load(Ordering::Relaxed),
+            sum_ms: self
+                .slots
+                .iter()
+                .map(|slot| slot.sum_ms.load(Ordering::Relaxed))
+                .sum(),
         }
     }
 }
@@ -151,11 +166,17 @@ pub(crate) fn response_class_index(status: Option<u16>) -> usize {
 
 #[derive(Debug)]
 pub(crate) struct ServerStats {
+    counters: Sharded<ServerCounters>,
+    request_duration: Histogram,
+    header_duration: Histogram,
+}
+
+/// The counters a request increments, one set per worker thread.
+#[derive(Debug, Default)]
+struct ServerCounters {
     responses: [AtomicU64; RESPONSE_CLASSES.len()],
     attempts: [AtomicU64; AttemptOutcome::ALL.len()],
     evacuated: [AtomicU64; EvacuationResult::ALL.len()],
-    request_duration: Histogram,
-    header_duration: Histogram,
     bytes_sent: AtomicU64,
     bytes_received: AtomicU64,
 }
@@ -173,18 +194,15 @@ pub(crate) struct ServerStatsSnapshot {
 impl ServerStats {
     fn new() -> Self {
         Self {
-            responses: std::array::from_fn(|_| AtomicU64::new(0)),
-            attempts: std::array::from_fn(|_| AtomicU64::new(0)),
-            evacuated: std::array::from_fn(|_| AtomicU64::new(0)),
+            counters: Sharded::new(ServerCounters::default),
             request_duration: Histogram::new(OPERATION_LATENCY_BUCKETS_MS),
             header_duration: Histogram::new(OPERATION_LATENCY_BUCKETS_MS),
-            bytes_sent: AtomicU64::new(0),
-            bytes_received: AtomicU64::new(0),
         }
     }
 
     pub(crate) fn record_response(&self, status: Option<u16>) {
-        self.responses[response_class_index(status)].fetch_add(1, Ordering::Relaxed);
+        self.counters.local().responses[response_class_index(status)]
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn record_attempt(&self, outcome: AttemptOutcome) {
@@ -192,7 +210,7 @@ impl ServerStats {
             .iter()
             .position(|candidate| *candidate == outcome)
             .expect("listed outcome");
-        self.attempts[index].fetch_add(1, Ordering::Relaxed);
+        self.counters.local().attempts[index].fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn record_evacuation(&self, result: EvacuationResult, requests: u64) {
@@ -200,7 +218,7 @@ impl ServerStats {
             .iter()
             .position(|candidate| *candidate == result)
             .expect("listed result");
-        self.evacuated[index].fetch_add(requests, Ordering::Relaxed);
+        self.counters.local().evacuated[index].fetch_add(requests, Ordering::Relaxed);
     }
 
     pub(crate) fn record_evacuation_report(&self, report: &EvacuationReport) {
@@ -218,19 +236,38 @@ impl ServerStats {
     }
 
     pub(crate) fn record_bytes(&self, sent: u64, received: u64) {
-        self.bytes_sent.fetch_add(sent, Ordering::Relaxed);
-        self.bytes_received.fetch_add(received, Ordering::Relaxed);
+        let counters = self.counters.local();
+        counters.bytes_sent.fetch_add(sent, Ordering::Relaxed);
+        counters
+            .bytes_received
+            .fetch_add(received, Ordering::Relaxed);
+    }
+
+    fn total<const N: usize>(&self, read: fn(&ServerCounters) -> &[AtomicU64; N]) -> [u64; N] {
+        std::array::from_fn(|index| {
+            self.counters
+                .iter()
+                .map(|counters| read(counters)[index].load(Ordering::Relaxed))
+                .sum()
+        })
+    }
+
+    fn total_of(&self, read: fn(&ServerCounters) -> &AtomicU64) -> u64 {
+        self.counters
+            .iter()
+            .map(|counters| read(counters).load(Ordering::Relaxed))
+            .sum()
     }
 
     pub(crate) fn snapshot(&self) -> ServerStatsSnapshot {
         ServerStatsSnapshot {
-            responses: std::array::from_fn(|index| self.responses[index].load(Ordering::Relaxed)),
-            attempts: std::array::from_fn(|index| self.attempts[index].load(Ordering::Relaxed)),
-            evacuated: std::array::from_fn(|index| self.evacuated[index].load(Ordering::Relaxed)),
+            responses: self.total(|counters| &counters.responses),
+            attempts: self.total(|counters| &counters.attempts),
+            evacuated: self.total(|counters| &counters.evacuated),
             request_duration: self.request_duration.snapshot(),
             header_duration: self.header_duration.snapshot(),
-            bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
-            bytes_received: self.bytes_received.load(Ordering::Relaxed),
+            bytes_sent: self.total_of(|counters| &counters.bytes_sent),
+            bytes_received: self.total_of(|counters| &counters.bytes_received),
         }
     }
 }
@@ -319,6 +356,37 @@ mod tests {
             (0, 1, 1, 2, 2)
         );
         assert_eq!(snapshot.buckets.last().expect("+Inf").count, 3);
+    }
+
+    #[test]
+    fn counters_recorded_by_several_threads_add_up() {
+        let stats = ServerStats::new();
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                scope.spawn(|| {
+                    for _ in 0..100 {
+                        stats.record_response(Some(200));
+                        stats.record_attempt(AttemptOutcome::Ok);
+                        stats.record_bytes(2, 3);
+                        stats.record_request_duration(Duration::from_millis(3));
+                    }
+                });
+            }
+        });
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.responses[1], 1_600);
+        assert_eq!(snapshot.attempts[0], 1_600);
+        assert_eq!(
+            (snapshot.bytes_sent, snapshot.bytes_received),
+            (3_200, 4_800)
+        );
+        assert_eq!(
+            (
+                snapshot.request_duration.count,
+                snapshot.request_duration.sum_ms
+            ),
+            (1_600, 4_800)
+        );
     }
 
     #[test]

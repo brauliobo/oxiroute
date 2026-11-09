@@ -343,6 +343,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
         self.join_queue();
         #[cfg(test)]
         let _waiting = LifetimeWaitGuard::new(&self.queue.lifetime_waiters);
+        let _watch = self.queue.watch();
         loop {
             if self.queue.generation.load(Ordering::Acquire) != generation {
                 return Ok(());

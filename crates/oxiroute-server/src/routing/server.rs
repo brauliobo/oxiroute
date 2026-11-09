@@ -308,9 +308,21 @@ impl PoolEndpoint {
                 || self.passive_ejection_until_unix_ms.load(Ordering::Acquire) > now_unix_ms)
     }
 
+    #[inline]
     pub(super) fn has_capacity(&self) -> bool {
         self.max_connections()
             .is_none_or(|limit| self.active_work.load(Ordering::Acquire) < limit)
+    }
+
+    /// The load when the server can take work now, from one read of its counters; with
+    /// `reuse_idle` an idle pooled connection also qualifies, since it needs no new permit.
+    #[inline]
+    pub(super) fn load_if_open(&self, reuse_idle: bool) -> Option<u64> {
+        let limit = self.configured_limit();
+        let active = self.active_work.load(Ordering::Acquire);
+        let open = self.admitting_limit(limit).is_none_or(|max| active < max)
+            || (reuse_idle && self.has_idle_connection());
+        open.then(|| self.load_of(active, limit))
     }
 
     pub(super) fn configured_weight(&self) -> u16 {
@@ -321,6 +333,7 @@ impl PoolEndpoint {
         self.configured_weight.store(weight, Ordering::Release);
     }
 
+    #[inline]
     pub(super) fn weight(&self) -> u16 {
         match self.weight_override.load(Ordering::Acquire) {
             0 => self.configured_weight(),
@@ -330,16 +343,19 @@ impl PoolEndpoint {
 
     /// Work in flight per unit of capacity, so servers of different size compare fairly.
     pub(super) fn load(&self) -> u64 {
-        let divisor = self
-            .configured_limit()
-            .unwrap_or_else(|| u64::from(self.weight()))
-            .max(1);
-        self.active_work
-            .load(Ordering::Acquire)
-            .saturating_mul(LOAD_SCALE)
-            / divisor
+        self.load_of(
+            self.active_work.load(Ordering::Acquire),
+            self.configured_limit(),
+        )
     }
 
+    #[inline]
+    fn load_of(&self, active: u64, limit: Option<u64>) -> u64 {
+        let divisor = limit.unwrap_or_else(|| u64::from(self.weight())).max(1);
+        active.saturating_mul(LOAD_SCALE) / divisor
+    }
+
+    #[inline]
     pub(super) fn has_idle_connection(&self) -> bool {
         self.idle_permits.load(Ordering::Acquire) > 0
     }
@@ -361,6 +377,7 @@ impl PoolEndpoint {
     }
 
     /// The operator's limit: the runtime override, else the configured one.
+    #[inline]
     fn configured_limit(&self) -> Option<u64> {
         match self.max_connections_override.load(Ordering::Acquire) {
             0 => self.configured_max_connections(),
@@ -370,7 +387,11 @@ impl PoolEndpoint {
 
     /// The limit that admits work now: a half-open breaker allows only its trial requests.
     fn max_connections(&self) -> Option<u64> {
-        let limit = self.configured_limit();
+        self.admitting_limit(self.configured_limit())
+    }
+
+    #[inline]
+    fn admitting_limit(&self, limit: Option<u64>) -> Option<u64> {
         match self.breaker_policy {
             Some(policy) if self.breaker.is_half_open() => {
                 Some(limit.map_or(policy.half_open_max(), |limit| {
@@ -397,19 +418,29 @@ impl PoolEndpoint {
         admission: Admission,
         now_unix_ms: u64,
     ) -> Option<EndpointLease> {
-        if !admission.admits(self, now_unix_ms) {
-            return None;
+        self.try_acquire_permit(queue, admission, now_unix_ms)
+            .then(|| {
+                EndpointLease::acquired(Arc::clone(self), Arc::clone(queue), Arc::clone(health))
+            })
+    }
+
+    /// Takes one capacity permit when `admission` allows this server; the caller owns it.
+    pub(super) fn try_acquire_permit(
+        &self,
+        queue: &PoolQueue,
+        admission: Admission,
+        now_unix_ms: u64,
+    ) -> bool {
+        if !admission.admits(self, now_unix_ms)
+            || self.try_acquire_capacity(admission, now_unix_ms).is_none()
+        {
+            return false;
         }
-        self.try_acquire_capacity(admission, now_unix_ms)?;
-        if !admission.admits(self, now_unix_ms) {
-            self.release_capacity(queue);
-            return None;
+        if admission.admits(self, now_unix_ms) {
+            return true;
         }
-        Some(EndpointLease::acquired(
-            Arc::clone(self),
-            Arc::clone(queue),
-            Arc::clone(health),
-        ))
+        self.release_capacity(queue);
+        false
     }
 
     pub(super) fn try_acquire_capacity(

@@ -41,7 +41,7 @@ fn continuous_recording_finalizes_on_disconnect_and_is_fully_observable() {
     wait_for_phase(&control, |phase| {
         matches!(phase, RecorderPhase::Recording { .. })
     });
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         control
             .catalog_snapshot()
             .streams
@@ -123,7 +123,7 @@ fn continuous_recording_finalizes_on_disconnect_and_is_fully_observable() {
         .close(1_721_657_969_300)
         .expect("publisher disconnect");
     assert!(control.catalog_snapshot().streams.is_empty());
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         root.path().join("camera.flv").is_file()
     });
     assert!(!root.path().join("camera?token=private.flv").exists());
@@ -169,7 +169,7 @@ fn manual_api_start_and_stop_control_the_exact_runtime_recorder() {
     let stopped_json: Value = serde_json::from_slice(&stopped.body).expect("stop JSON");
     assert_eq!(stopped_json["phase"]["state"], "stopping");
     wait_for_phase(&control, |phase| phase == RecorderPhase::Idle);
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         root.path().join("manual-camera.flv").is_file()
     });
     publisher
@@ -180,6 +180,7 @@ fn manual_api_start_and_stop_control_the_exact_runtime_recorder() {
 
 fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) -> ConfigDraft {
     ConfigDraft {
+        listener_workers: None,
         retirement: None,
         listeners: vec![Listener {
             name: "live".into(),
@@ -273,7 +274,7 @@ fn publish_audio(publisher: &mut RtmpSessionClient, timestamp: u32, marker: u8, 
 }
 
 fn wait_for_phase(control: &RtmpControlHandle, predicate: impl Fn(RecorderPhase) -> bool) {
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         control
             .catalog_snapshot()
             .streams

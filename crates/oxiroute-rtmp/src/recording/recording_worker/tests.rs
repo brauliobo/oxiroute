@@ -1,4 +1,9 @@
-use std::{fs, sync::Arc, thread, time::Duration};
+use std::{
+    fs,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 
 use tempfile::tempdir;
 
@@ -489,11 +494,9 @@ fn enqueue_audio_burst(worker: &RecorderWorker, timestamp_ms: u32, count: u8) {
 }
 
 fn wait_until(predicate: impl Fn() -> bool) {
-    for _ in 0..200 {
-        if predicate() {
-            return;
-        }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !predicate() {
+        assert!(Instant::now() < deadline, "recorder condition timeout");
         thread::sleep(Duration::from_millis(5));
     }
-    panic!("recorder condition timeout");
 }

@@ -4,6 +4,13 @@ use super::*;
 const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
     "OXIROUTE_INTERNAL_TEST_LISTENER_DUPLICATION_FAILURE";
 
+/// Worker threads for each HTTP, forward HTTP/1, forward HTTP/2 and TCP listener.
+pub(super) fn listener_workers(config: &oxiroute_config::ConfigDraft) -> usize {
+    config.listener_workers.map_or(1, |workers| {
+        usize::try_from(workers).expect("validated worker count fits usize")
+    })
+}
+
 pub(super) fn add_plain_listener<A>(
     service: &mut Service<A>,
     listener_name: &str,

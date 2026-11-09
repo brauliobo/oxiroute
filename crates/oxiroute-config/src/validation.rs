@@ -112,6 +112,11 @@ pub(crate) fn validate_config_in_place(config: &mut ConfigDraft) -> Result<(), C
         config.max_connections,
     )?;
 
+    if let Some(workers) = config.listener_workers
+        && !(1..=ConfigDraft::MAX_LISTENER_WORKERS).contains(&workers)
+    {
+        return Err(ConfigError::InvalidListenerWorkers(workers));
+    }
     retirement::validate_retirement(config)?;
     validate_management(config.management.as_ref())?;
     validate_stats(config.stats.as_ref())?;

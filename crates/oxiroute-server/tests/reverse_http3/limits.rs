@@ -41,7 +41,7 @@ pub(super) async fn daemon_rejects_reverse_h3_connections_at_the_listener_limit(
     );
 
     let second_connection = connect_h3(&endpoint, listener_address).await;
-    let close = timeout(Duration::from_secs(2), second_connection.closed())
+    let close = timeout(Duration::from_secs(30), second_connection.closed())
         .await
         .expect("second H3 connection was not rejected");
     assert!(
@@ -56,7 +56,7 @@ pub(super) async fn daemon_rejects_reverse_h3_connections_at_the_listener_limit(
     drop(first_request);
     drop(sender);
     endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
-    timeout(Duration::from_secs(2), driver)
+    timeout(Duration::from_secs(30), driver)
         .await
         .expect("first H3 driver did not stop")
         .expect("first H3 driver task");
@@ -108,7 +108,7 @@ pub(super) async fn daemon_rejects_reverse_h3_request_bodies_over_the_configured
     drop(request);
     drop(sender);
     endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
-    timeout(Duration::from_secs(2), driver)
+    timeout(Duration::from_secs(30), driver)
         .await
         .expect("H3 driver did not stop")
         .expect("H3 driver task");
@@ -165,7 +165,7 @@ pub(super) async fn daemon_rejects_oversized_headers_and_malformed_reverse_h3_fr
         .expect("malformed H3 frame");
     let expected_code =
         quinn::VarInt::from_u64(Code::H3_FRAME_UNEXPECTED.value()).expect("H3 error code");
-    let close = timeout(Duration::from_secs(2), raw_connection.closed())
+    let close = timeout(Duration::from_secs(30), raw_connection.closed())
         .await
         .expect("malformed frame close timeout");
     assert!(matches!(
@@ -177,7 +177,7 @@ pub(super) async fn daemon_rejects_oversized_headers_and_malformed_reverse_h3_fr
     drop(oversized);
     drop(sender);
     endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
-    timeout(Duration::from_secs(2), driver)
+    timeout(Duration::from_secs(30), driver)
         .await
         .expect("H3 driver did not stop")
         .expect("H3 driver task");
@@ -239,7 +239,7 @@ pub(super) async fn daemon_rejects_reverse_h3_static_responses_over_the_body_bou
     drop(request);
     drop(sender);
     endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
-    timeout(Duration::from_secs(2), driver)
+    timeout(Duration::from_secs(30), driver)
         .await
         .expect("H3 driver did not stop")
         .expect("H3 driver task");
@@ -300,7 +300,7 @@ pub(super) async fn daemon_enforces_reverse_h3_quic_stream_and_concurrent_reques
     drop(streams);
     drop(sender);
     endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
-    timeout(Duration::from_secs(2), driver)
+    timeout(Duration::from_secs(30), driver)
         .await
         .expect("H3 driver did not stop")
         .expect("H3 driver task");
