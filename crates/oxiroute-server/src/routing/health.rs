@@ -722,6 +722,7 @@ impl PoolHealthState {
                 );
             }
             Some(BreakerTransition::Closed) => {
+                self.queue.load_log.note(server);
                 self.queue.notify_capacity_waiters();
                 log::info!(
                     "upstream pool `{}` server `{}` circuit breaker closed",
