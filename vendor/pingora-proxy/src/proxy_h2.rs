@@ -181,7 +181,8 @@ where
         // directly to bidirection_down_to_up
         let write_timeout = peer.options.write_timeout;
 
-        let (tx, rx) = mpsc::channel::<HttpTask>(TASK_BUFFER_SIZE);
+        let mut upstream_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let (tx, rx) = upstream_pipe.split();
 
         session.as_mut().enable_retry_buffering();
 
@@ -266,7 +267,7 @@ where
         &self,
         session: &mut Session,
         client_body: &mut h2::SendStream<bytes::Bytes>,
-        mut rx: mpsc::Receiver<HttpTask>,
+        mut rx: spsc::Receiver<'_, HttpTask, TASK_BUFFER_SIZE>,
         ctx: &mut SV::CTX,
         write_timeout: Option<Duration>,
         downstream_custom_message_writer: &mut Option<Box<dyn CustomMessageWrite>>,
@@ -397,13 +398,8 @@ where
                         // pull as many tasks as we can
                         let mut tasks = Vec::with_capacity(TASK_BUFFER_SIZE);
                         tasks.push(t);
-                        // tokio::task::unconstrained because now_or_never may yield None when the future is ready
-                        while let Some(maybe_task) = tokio::task::unconstrained(rx.recv()).now_or_never() {
-                            if let Some(t) = maybe_task {
-                                tasks.push(t);
-                            } else {
-                                break
-                            }
+                        while let Ok(t) = rx.try_recv() {
+                            tasks.push(t);
                         }
 
                         /* run filters before sending to downstream */
@@ -758,7 +754,7 @@ where
 /* Read response header, body and trailer from h2 upstream and send them to tx */
 pub(crate) async fn pipe_up_to_down_response(
     client: &mut Http2Session,
-    tx: mpsc::Sender<HttpTask>,
+    tx: spsc::Sender<'_, HttpTask, TASK_BUFFER_SIZE>,
 ) -> Result<()> {
     client
         .read_response_header()

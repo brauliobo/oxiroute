@@ -131,8 +131,8 @@ where
             }
         }
 
-        if Self::relays_bodyless(session) {
-            return self.proxy_1to1_bodyless(session, client_session, ctx).await;
+        if Self::relays_inline(session) {
+            return self.proxy_1to1_inline(session, client_session, ctx).await;
         }
 
         let mut downstream_custom_message_writer = session

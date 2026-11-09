@@ -1,4 +1,9 @@
-use std::{error::Error, fmt, future::pending, io, time::Duration};
+use std::{
+    error::Error,
+    fmt, io,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use log::warn;
 use oxiroute_config::ProxyProtocolPolicy;
@@ -18,8 +23,11 @@ use crate::{
     TcpRelayResult, encode_header,
 };
 
-/// Memory used for each direction of a relayed connection.
+/// Memory used for each direction of a relayed connection until it moves bulk data.
 pub const RELAY_BUFFER_SIZE: usize = 16 * 1024;
+/// The most memory a direction grows to once a read fills its buffer: a transfer costs about the same instructions
+/// whatever its size, so a connection that moves a lot of data takes fewer, larger ones.
+const RELAY_BULK_BUFFER_SIZE: usize = 64 * 1024;
 
 /// Timeout policy for one TCP relay connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -407,6 +415,9 @@ async fn send_proxy_header(
 /// in that direction, providing bounded memory use and transport backpressure. EOF in one direction
 /// shuts down only the opposite write half; the reverse direction remains active.
 ///
+/// Both directions, the shutdown wait and the lifetime and idle timers are created once and polled for as long as
+/// the relay runs: a payload transfer does not set up a wait or a timer.
+///
 /// # Errors
 ///
 /// Returns a failure when transport I/O, accounting, a configured idle/lifetime timeout, or
@@ -425,91 +436,129 @@ where
 {
     let (mut downstream_reader, mut downstream_writer) = split(downstream);
     let (mut upstream_reader, mut upstream_writer) = split(upstream);
-    let mut client_to_upstream = DirectionState::new();
-    let mut upstream_to_client = DirectionState::new();
+    let mut client_buffer = vec![0; RELAY_BUFFER_SIZE];
+    let mut upstream_buffer = vec![0; RELAY_BUFFER_SIZE];
     let started_at = Instant::now();
-    let mut idle_deadline = policy.idle.map(|duration| started_at + duration);
-    let lifetime_deadline = policy.lifetime.map(|duration| started_at + duration);
-    let mut stats = RelayStats::default();
+    let accounting = RelayAccounting::new(connection, started_at);
+
+    let directions = async {
+        tokio::try_join!(
+            copy_direction(
+                RelayDirection::ClientToUpstream,
+                &mut downstream_reader,
+                &mut upstream_writer,
+                &mut client_buffer,
+                &accounting,
+            ),
+            copy_direction(
+                RelayDirection::UpstreamToClient,
+                &mut upstream_reader,
+                &mut downstream_writer,
+                &mut upstream_buffer,
+                &accounting,
+            ),
+        )
+    };
+    let cancelled = wait_for_shutdown(&mut shutdown);
+    let lifetime = sleep_until(started_at + policy.lifetime.unwrap_or_default());
+    let idle = sleep_until(started_at + policy.idle.unwrap_or_default());
+    tokio::pin!(directions, cancelled, lifetime, idle);
 
     loop {
-        if client_to_upstream.is_finished() && upstream_to_client.is_finished() {
-            return Ok(stats);
-        }
-
-        let poll_client_to_upstream = !client_to_upstream.is_finished();
-        let poll_upstream_to_client = !upstream_to_client.is_finished();
-        let next_progress = async {
-            tokio::select! {
-                result = client_to_upstream.step(
-                    &mut downstream_reader,
-                    &mut upstream_writer,
-                ), if poll_client_to_upstream => (RelayDirection::ClientToUpstream, result),
-                result = upstream_to_client.step(
-                    &mut upstream_reader,
-                    &mut downstream_writer,
-                ), if poll_upstream_to_client => (RelayDirection::UpstreamToClient, result),
-            }
-        };
-
-        let (direction, progress) = tokio::select! {
+        tokio::select! {
             biased;
-            () = wait_for_shutdown(&mut shutdown) => {
-                return Err(failure(RelayFailureKind::Cancelled, stats));
+            () = &mut cancelled => return Err(failure(RelayFailureKind::Cancelled, accounting.stats())),
+            () = &mut lifetime, if policy.lifetime.is_some() => {
+                let duration = policy.lifetime.unwrap_or_default();
+                return Err(failure(RelayFailureKind::LifetimeTimeout(duration), accounting.stats()));
             }
-            duration = wait_for_deadline(lifetime_deadline, policy.lifetime) => {
-                return Err(failure(RelayFailureKind::LifetimeTimeout(duration), stats));
+            result = &mut directions => {
+                return match result {
+                    Ok(_) => Ok(accounting.stats()),
+                    Err(error) => Err(failure(error.into_kind(), accounting.stats())),
+                };
             }
-            progress = next_progress => progress,
-            duration = wait_for_deadline(idle_deadline, policy.idle) => {
-                return Err(failure(RelayFailureKind::IdleTimeout(duration), stats));
+            () = &mut idle, if policy.idle.is_some() => {
+                // The timer is armed from the last payload transfer seen when it was armed: it is only moved when
+                // it fires and there was more traffic since, so a transfer never touches it.
+                let duration = policy.idle.unwrap_or_default();
+                let deadline = accounting.last_io() + duration;
+                if deadline <= Instant::now() {
+                    return Err(failure(RelayFailureKind::IdleTimeout(duration), accounting.stats()));
+                }
+                idle.as_mut().reset(deadline);
             }
-        };
-
-        let progress = progress.map_err(|error| {
-            failure(
-                RelayFailureKind::Io {
-                    direction,
-                    operation: error.operation,
-                    source: error.source,
-                },
-                stats,
-            )
-        })?;
-        if progress.is_payload_io() {
-            account_progress(connection, &mut stats, direction, progress)
-                .map_err(|source| failure(RelayFailureKind::Accounting(source), stats))?;
-            idle_deadline = policy.idle.map(|duration| Instant::now() + duration);
         }
     }
 }
 
-fn account_progress(
-    connection: &ConnectionGuard,
-    stats: &mut RelayStats,
-    direction: RelayDirection,
-    progress: DirectionProgress,
-) -> Result<(), MetricsError> {
-    match (direction, progress) {
-        (RelayDirection::ClientToUpstream, DirectionProgress::Read(bytes)) => {
-            let bytes = bytes_to_u64(bytes);
-            connection.record_bytes_received(bytes)?;
-            stats.bytes_received = stats
-                .bytes_received
-                .checked_add(bytes)
-                .expect("connection metrics overflow before relay-local statistics");
+/// The traffic counters of one relay, shared by its two directions. Each counter has one writer (a direction), and
+/// everything runs in one task: the atomics are there for the `Send` bound only, and relaxed accesses are plain ones.
+struct RelayAccounting<'a> {
+    connection: &'a ConnectionGuard,
+    started_at: Instant,
+    received: AtomicU64,
+    sent: AtomicU64,
+    /// Nanoseconds from `started_at` to the last payload read or write.
+    last_io: AtomicU64,
+}
+
+impl<'a> RelayAccounting<'a> {
+    fn new(connection: &'a ConnectionGuard, started_at: Instant) -> Self {
+        Self {
+            connection,
+            started_at,
+            received: AtomicU64::new(0),
+            sent: AtomicU64::new(0),
+            last_io: AtomicU64::new(0),
         }
-        (RelayDirection::UpstreamToClient, DirectionProgress::Written(bytes)) => {
-            let bytes = bytes_to_u64(bytes);
-            connection.record_bytes_sent(bytes)?;
-            stats.bytes_sent = stats
-                .bytes_sent
-                .checked_add(bytes)
-                .expect("connection metrics overflow before relay-local statistics");
-        }
-        _ => {}
     }
-    Ok(())
+
+    fn stats(&self) -> RelayStats {
+        RelayStats {
+            bytes_received: self.received.load(Ordering::Relaxed),
+            bytes_sent: self.sent.load(Ordering::Relaxed),
+        }
+    }
+
+    fn last_io(&self) -> Instant {
+        self.started_at + Duration::from_nanos(self.last_io.load(Ordering::Relaxed))
+    }
+
+    fn touch(&self) {
+        let elapsed = u64::try_from(self.started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.last_io.store(elapsed, Ordering::Relaxed);
+    }
+
+    /// Bytes read from a side; the client's are the relay's received bytes.
+    fn read(&self, direction: RelayDirection, bytes: usize) -> Result<(), DirectionFailure> {
+        if direction == RelayDirection::ClientToUpstream {
+            let bytes = bytes_to_u64(bytes);
+            self.connection.record_bytes_received(bytes)?;
+            add_traffic(&self.received, bytes);
+        }
+        self.touch();
+        Ok(())
+    }
+
+    /// Bytes written to a side; the client's are the relay's sent bytes.
+    fn written(&self, direction: RelayDirection, bytes: usize) -> Result<(), DirectionFailure> {
+        if direction == RelayDirection::UpstreamToClient {
+            let bytes = bytes_to_u64(bytes);
+            self.connection.record_bytes_sent(bytes)?;
+            add_traffic(&self.sent, bytes);
+        }
+        self.touch();
+        Ok(())
+    }
+}
+
+fn add_traffic(total: &AtomicU64, bytes: u64) {
+    let sum = total
+        .load(Ordering::Relaxed)
+        .checked_add(bytes)
+        .expect("connection metrics overflow before relay-local statistics");
+    total.store(sum, Ordering::Relaxed);
 }
 
 const fn bytes_to_u64(bytes: usize) -> u64 {
@@ -518,6 +567,111 @@ const fn bytes_to_u64(bytes: usize) -> u64 {
 
 fn failure(kind: RelayFailureKind, stats: RelayStats) -> RelayFailure {
     RelayFailure { kind, stats }
+}
+
+async fn wait_for_shutdown(shutdown: &mut ShutdownWatch) {
+    loop {
+        if *shutdown.borrow_and_update() {
+            return;
+        }
+        if shutdown.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Copies one direction until the reader reaches EOF, then shuts the writer down.
+async fn copy_direction<R, W>(
+    direction: RelayDirection,
+    reader: &mut R,
+    writer: &mut W,
+    buffer: &mut Vec<u8>,
+    accounting: &RelayAccounting<'_>,
+) -> Result<(), DirectionFailure>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    loop {
+        let read = reader
+            .read(buffer)
+            .await
+            .map_err(|source| DirectionFailure::io(direction, RelayOperation::Read, source))?;
+        if read == 0 {
+            return writer.shutdown().await.map_err(|source| {
+                DirectionFailure::io(direction, RelayOperation::Shutdown, source)
+            });
+        }
+        accounting.read(direction, read)?;
+        let full = read == buffer.len();
+        let mut written = 0;
+        while written < read {
+            let bytes = writer
+                .write(&buffer[written..read])
+                .await
+                .map_err(|source| DirectionFailure::io(direction, RelayOperation::Write, source))?;
+            if bytes == 0 {
+                let source = io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "relay writer accepted no buffered bytes",
+                );
+                return Err(DirectionFailure::io(
+                    direction,
+                    RelayOperation::Write,
+                    source,
+                ));
+            }
+            writer
+                .flush()
+                .await
+                .map_err(|source| DirectionFailure::io(direction, RelayOperation::Write, source))?;
+            written += bytes;
+            accounting.written(direction, bytes)?;
+        }
+        if full && buffer.len() < RELAY_BULK_BUFFER_SIZE {
+            buffer.resize(RELAY_BULK_BUFFER_SIZE, 0);
+        }
+    }
+}
+
+enum DirectionFailure {
+    Io {
+        direction: RelayDirection,
+        operation: RelayOperation,
+        source: io::Error,
+    },
+    Accounting(MetricsError),
+}
+
+impl DirectionFailure {
+    fn io(direction: RelayDirection, operation: RelayOperation, source: io::Error) -> Self {
+        Self::Io {
+            direction,
+            operation,
+            source,
+        }
+    }
+
+    fn into_kind(self) -> RelayFailureKind {
+        match self {
+            Self::Io {
+                direction,
+                operation,
+                source,
+            } => RelayFailureKind::Io {
+                direction,
+                operation,
+                source,
+            },
+            Self::Accounting(source) => RelayFailureKind::Accounting(source),
+        }
+    }
+}
+
+impl From<MetricsError> for DirectionFailure {
+    fn from(source: MetricsError) -> Self {
+        Self::Accounting(source)
+    }
 }
 
 #[cfg(test)]
@@ -618,123 +772,4 @@ mod tests {
             TcpRelayResult::Cancelled
         );
     }
-}
-
-async fn wait_for_shutdown(shutdown: &mut ShutdownWatch) {
-    loop {
-        if *shutdown.borrow_and_update() {
-            return;
-        }
-        if shutdown.changed().await.is_err() {
-            return;
-        }
-    }
-}
-
-async fn wait_for_deadline(
-    deadline: Option<Instant>,
-    configured_duration: Option<Duration>,
-) -> Duration {
-    match (deadline, configured_duration) {
-        (Some(deadline), Some(duration)) => {
-            sleep_until(deadline).await;
-            duration
-        }
-        _ => pending().await,
-    }
-}
-
-struct DirectionState {
-    buffer: Box<[u8; RELAY_BUFFER_SIZE]>,
-    read: usize,
-    written: usize,
-    finished: bool,
-}
-
-impl DirectionState {
-    fn new() -> Self {
-        Self {
-            buffer: Box::new([0; RELAY_BUFFER_SIZE]),
-            read: 0,
-            written: 0,
-            finished: false,
-        }
-    }
-
-    const fn is_finished(&self) -> bool {
-        self.finished
-    }
-
-    async fn step<R, W>(
-        &mut self,
-        reader: &mut R,
-        writer: &mut W,
-    ) -> Result<DirectionProgress, DirectionIoError>
-    where
-        R: AsyncRead + Unpin,
-        W: AsyncWrite + Unpin,
-    {
-        if self.written < self.read {
-            let bytes = writer
-                .write(&self.buffer[self.written..self.read])
-                .await
-                .map_err(|source| DirectionIoError {
-                    operation: RelayOperation::Write,
-                    source,
-                })?;
-            if bytes == 0 {
-                return Err(DirectionIoError {
-                    operation: RelayOperation::Write,
-                    source: io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "relay writer accepted no buffered bytes",
-                    ),
-                });
-            }
-            writer.flush().await.map_err(|source| DirectionIoError {
-                operation: RelayOperation::Write,
-                source,
-            })?;
-            self.written += bytes;
-            return Ok(DirectionProgress::Written(bytes));
-        }
-
-        let bytes = reader
-            .read(self.buffer.as_mut())
-            .await
-            .map_err(|source| DirectionIoError {
-                operation: RelayOperation::Read,
-                source,
-            })?;
-        if bytes > 0 {
-            self.read = bytes;
-            self.written = 0;
-            return Ok(DirectionProgress::Read(bytes));
-        }
-
-        writer.shutdown().await.map_err(|source| DirectionIoError {
-            operation: RelayOperation::Shutdown,
-            source,
-        })?;
-        self.finished = true;
-        Ok(DirectionProgress::Finished)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum DirectionProgress {
-    Read(usize),
-    Written(usize),
-    Finished,
-}
-
-impl DirectionProgress {
-    const fn is_payload_io(self) -> bool {
-        matches!(self, Self::Read(_) | Self::Written(_))
-    }
-}
-
-struct DirectionIoError {
-    operation: RelayOperation,
-    source: io::Error,
 }
