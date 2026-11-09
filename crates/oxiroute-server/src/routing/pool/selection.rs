@@ -306,13 +306,16 @@ impl EndpointPool {
 
     #[must_use]
     pub fn select_excluding(&self, excluded: &[RuntimeEndpoint]) -> Option<EndpointLease> {
-        let names = self
-            .members()
-            .endpoints
-            .iter()
-            .filter(|server| excluded.contains(&server.endpoint))
-            .map(|server| server.name.clone())
-            .collect::<Vec<_>>();
+        let names = if excluded.is_empty() {
+            Vec::new()
+        } else {
+            self.members()
+                .endpoints
+                .iter()
+                .filter(|server| excluded.contains(&server.endpoint))
+                .map(|server| server.name.clone())
+                .collect()
+        };
         let attempt = self.select_server_excluding(&names);
         if attempt.lease.is_none() && !attempt.pool_available {
             self.note_unavailable_selection();
