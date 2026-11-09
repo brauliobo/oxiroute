@@ -67,7 +67,12 @@
 
 .ox-panels {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
   gap: 1rem;
   align-items: start;
+}
+
+.ox-panels > #certificates,
+.ox-panels > #warnings {
+  grid-column: 1 / -1;
 }
