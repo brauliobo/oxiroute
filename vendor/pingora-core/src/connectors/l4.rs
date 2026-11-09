@@ -280,7 +280,7 @@ async fn proxy_connect<P: Peer>(peer: &P) -> Result<Stream> {
     let socket = connect_uds(&proxy.next_hop)
         .await
         .or_err_with(ConnectError, || {
-            format!("CONNECT proxy connect() error to {:?}", &proxy.next_hop)
+            format!("CONNECT proxy connect() error to {:?}", proxy.next_hop)
         })?;
     let physical_peer_addr = socket
         .peer_addr()
@@ -324,6 +324,7 @@ async fn proxy_connect<P: Peer>(peer: &P) -> Result<Stream> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectors::test_servers;
     use crate::upstreams::peer::{BasicPeer, HttpPeer, Proxy};
     use pingora_error::ErrorType;
     use std::collections::BTreeMap;
@@ -363,7 +364,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_conn_error_refused() {
-        let peer = BasicPeer::new("127.0.0.1:79"); // hopefully port 79 is not used
+        let refused = test_servers::refused();
+        let peer = BasicPeer::new(&refused.addr.to_string());
         let new_session = connect(&peer, None).await;
         assert_eq!(new_session.unwrap_err().etype(), &ConnectRefused)
     }
@@ -378,11 +380,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_conn_error_addr_not_avail() {
-        let peer = HttpPeer::new("127.0.0.1:121".to_string(), false, "".to_string());
-        let addr = "192.0.2.2:0".parse().ok();
+    async fn test_conn_error_bind_failed() {
+        // the source address is taken, so bind() fails whatever the host's non-local bind policy is
+        let taken = test_servers::refused();
+        let peer = HttpPeer::new(taken.addr, false, "".to_string());
         let bind_to = BindTo {
-            addr,
+            addr: Some(taken.addr),
             ..Default::default()
         };
         let new_session = connect(&peer, Some(bind_to)).await;
@@ -405,15 +408,17 @@ mod tests {
             error.etype() == &ConnectError
                 || error.etype() == &ConnectTimedout
                 // The error seen on mac: https://github.com/cloudflare/pingora/pull/679
-                || (error.etype() == &InternalError),
+                || (error.etype() == &InternalError)
+                // The error seen on a host without a route to the destination
+                || (error.etype() == &ConnectNoRoute),
             "{error:?}"
         )
     }
 
     #[tokio::test]
     async fn test_conn_timeout() {
-        // 192.0.2.1 is effectively a blackhole
-        let mut peer = BasicPeer::new("192.0.2.1:79");
+        let blackhole = test_servers::blackhole();
+        let mut peer = BasicPeer::new(&blackhole.addr.to_string());
         peer.options.connection_timeout = Some(std::time::Duration::from_millis(1)); //1ms
         let new_session = connect(&peer, None).await;
         assert_eq!(new_session.unwrap_err().etype(), &ConnectTimedout)
@@ -425,7 +430,8 @@ mod tests {
 
         let flag = Arc::new(AtomicBool::new(INIT_FLAG));
 
-        let mut peer = BasicPeer::new("1.1.1.1:80");
+        let server = test_servers::redirect_server();
+        let mut peer = BasicPeer::new(&server.addr.to_string());
 
         let move_flag = Arc::clone(&flag);
 
@@ -442,23 +448,25 @@ mod tests {
     #[tokio::test]
     async fn test_custom_connect() {
         #[derive(Debug)]
-        struct MyL4;
+        struct MyL4(std::net::SocketAddr);
         #[async_trait]
         impl Connect for MyL4 {
             async fn connect(&self, _addr: &SocketAddr) -> Result<Stream> {
-                tokio::net::TcpStream::connect("1.1.1.1:80")
+                tokio::net::TcpStream::connect(self.0)
                     .await
                     .map(|s| s.into())
                     .or_fail()
             }
         }
-        // :79 shouldn't be able to be connected to
-        let mut peer = BasicPeer::new("1.1.1.1:79");
-        peer.options.custom_l4 = Some(std::sync::Arc::new(MyL4 {}));
+        // the configured address shouldn't be able to be connected to
+        let refused = test_servers::refused();
+        let server = test_servers::redirect_server();
+        let mut peer = BasicPeer::new(&refused.addr.to_string());
+        peer.options.custom_l4 = Some(std::sync::Arc::new(MyL4(server.addr)));
 
         let new_session = connect(&peer, None).await;
 
-        // but MyL4 connects to :80 instead
+        // but MyL4 connects to the server instead
         assert!(new_session.is_ok());
         assert!(
             new_session

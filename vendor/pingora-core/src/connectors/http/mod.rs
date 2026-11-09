@@ -178,24 +178,23 @@ where
 }
 
 #[cfg(test)]
-#[cfg(feature = "any_tls")]
+#[cfg(feature = "openssl")]
 mod tests {
     use super::*;
+    use crate::connectors::test_servers::{self, TlsListener};
     use crate::connectors::TransportConnector;
-    use crate::listeners::tls::TlsSettings;
-    use crate::listeners::{Listeners, TransportStack, ALPN};
+    use crate::listeners::ALPN;
     use crate::protocols::http::v1::client::HttpSession as Http1Session;
     use crate::protocols::tls::CustomALPN;
     use crate::upstreams::peer::HttpPeer;
     use crate::upstreams::peer::PeerOptions;
     use async_trait::async_trait;
     use pingora_http::RequestHeader;
+    use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::Mutex;
     use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
-    use tokio::time::sleep;
 
     async fn get_http(http: &mut Http1Session, expected_status: u16) {
         let mut req = Box::new(RequestHeader::build("GET", b"/", None).unwrap());
@@ -211,7 +210,8 @@ mod tests {
     #[tokio::test]
     async fn test_connect_h2() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(2, 2);
         let (h2, reused) = connector.get_http_session(&peer).await.unwrap();
         assert!(!reused);
@@ -236,7 +236,8 @@ mod tests {
     #[tokio::test]
     async fn test_connect_h1() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(1, 1);
         let (mut h1, reused) = connector.get_http_session(&peer).await.unwrap();
         assert!(!reused);
@@ -265,7 +266,8 @@ mod tests {
         // h1 session instead.
 
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         // As it is hard to find a server that support only h1, we use the following hack to trick
         // the connector to think the server supports only h1. We force ALPN to use h1 and then
         // return the connection to the Connector. And then we use a Peer that allows h2
@@ -281,7 +283,7 @@ mod tests {
         }
         connector.release_http_session(h1, &peer, None).await;
 
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(2, 1);
 
         let (mut h1, reused) = connector.get_http_session(&peer).await.unwrap();
@@ -297,7 +299,8 @@ mod tests {
     #[tokio::test]
     async fn test_connect_prefer_h1() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(2, 1);
         connector.prefer_h1(&peer);
 
@@ -368,15 +371,6 @@ mod tests {
         }
     }
 
-    // Finds an available TCP port on localhost for test server setup.
-    async fn get_available_port() -> u16 {
-        TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
-    }
     // Creates a test connector for integration/unit tests.
     // For rustls, only ConnectorOptions are used here; the actual dangerous verifier is patched in the TLS connector.
     fn create_test_connector() -> Connector<MockConnector> {
@@ -398,8 +392,8 @@ mod tests {
     }
 
     // Creates a test peer that uses a custom ALPN protocol and disables cert/hostname verification for tests.
-    fn create_peer_with_custom_proto(port: u16, proto: &[u8]) -> HttpPeer {
-        let mut peer = HttpPeer::new(("127.0.0.1", port), true, "localhost".into());
+    fn create_peer_with_custom_proto(addr: SocketAddr, proto: &[u8]) -> HttpPeer {
+        let mut peer = HttpPeer::new(addr, true, "localhost".into());
         let mut options = PeerOptions::new();
         options.alpn = ALPN::Custom(CustomALPN::new(proto.to_vec()));
         // Disable cert verification for this test (self-signed or invalid certs are OK)
@@ -408,31 +402,12 @@ mod tests {
         peer.options = options;
         peer
     }
-    async fn build_custom_tls_listener(port: u16, custom_alpn: CustomALPN) -> TransportStack {
-        let cert_path = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
-        let key_path = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
-        let addr = format!("127.0.0.1:{}", port);
-        let mut listeners = Listeners::new();
-        let mut tls_settings = TlsSettings::intermediate(&cert_path, &key_path).unwrap();
-
-        tls_settings.set_alpn(ALPN::Custom(custom_alpn));
-        listeners.add_tls_with_settings(&addr, None, tls_settings);
-        listeners
-            .build(
-                #[cfg(unix)]
-                None,
-            )
-            .await
-            .unwrap()
-            .pop()
-            .unwrap()
-    }
 
     // Spawn a simple TLS Server
-    fn spawn_test_tls_server(listener: TransportStack) -> JoinHandle<()> {
+    fn spawn_test_tls_server(listener: TlsListener) -> JoinHandle<()> {
         tokio::spawn(async move {
             loop {
-                let stream = match listener.accept().await {
+                let stream = match listener.stack.accept().await {
                     Ok(stream) => stream,
                     Err(_) => break, // Exit if listener is closed
                 };
@@ -446,17 +421,16 @@ mod tests {
     // Both server and client are using the same custom protocol
     #[tokio::test]
     async fn test_custom_client_custom_upstream() {
-        let port = get_available_port().await;
         let custom_protocol = b"custom".to_vec();
 
         let listener =
-            build_custom_tls_listener(port, CustomALPN::new(custom_protocol.clone())).await;
+            test_servers::tls_listener(ALPN::Custom(CustomALPN::new(custom_protocol.clone())))
+                .await;
+        let addr = listener.addr;
         let server_handle = spawn_test_tls_server(listener);
-        // Wait for server to start up
-        sleep(Duration::from_millis(100)).await;
 
         let connector = create_test_connector();
-        let peer = create_peer_with_custom_proto(port, &custom_protocol);
+        let peer = create_peer_with_custom_proto(addr, &custom_protocol);
 
         // Check that the agreed ALPN is custom and matches the expected value
         if let Ok((stream, reused)) = connector.custom.transport.get_stream(&peer).await {
@@ -495,7 +469,6 @@ mod tests {
 
         // Kill the server task
         server_handle.abort();
-        sleep(Duration::from_millis(100)).await;
     }
 
     // Both client and server are using custom protocols, but different ones - we should create H1 sessions as fallback.
@@ -504,17 +477,16 @@ mod tests {
     #[cfg(not(feature = "rustls"))]
     #[tokio::test]
     async fn test_incompatible_custom_client_custom_upstream() {
-        let port = get_available_port().await;
         let custom_protocol = b"custom".to_vec();
 
         let listener =
-            build_custom_tls_listener(port, CustomALPN::new(b"different_custom".to_vec())).await;
+            test_servers::tls_listener(ALPN::Custom(CustomALPN::new(b"different_custom".to_vec())))
+                .await;
+        let addr = listener.addr;
         let server_handle = spawn_test_tls_server(listener);
-        // Wait for server to start up
-        sleep(Duration::from_millis(100)).await;
 
         let connector = create_test_connector();
-        let peer = create_peer_with_custom_proto(port, &custom_protocol);
+        let peer = create_peer_with_custom_proto(addr, &custom_protocol);
 
         // Verify that there is no agreed ALPN
         if let Ok((stream, reused)) = connector.custom.transport.get_stream(&peer).await {
@@ -535,7 +507,6 @@ mod tests {
 
         // Kill the server task
         server_handle.abort();
-        sleep(Duration::from_millis(100)).await;
     }
 
     // Client thinks server is custom but server is not Custom. Should fallback to H1
@@ -544,7 +515,8 @@ mod tests {
         let custom_proto = b"custom".to_vec();
         let connector = create_test_connector();
         // Upstream supports H1 and H2
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         // Client sets upstream ALPN as custom protocol
         peer.options.alpn = ALPN::Custom(CustomALPN::new(custom_proto));
 

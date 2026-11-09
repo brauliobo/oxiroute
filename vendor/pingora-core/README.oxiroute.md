@@ -144,6 +144,13 @@ connection-pool experiments:
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.
 
+- Tests: the unit tests no longer depend on the Internet, fixed ports, a stored key pair or host sysctls. `connectors/test_servers.rs`
+  provides loopback servers that own a kernel-assigned port (HTTP redirect, TLS with HTTP/1.1 or HTTP/2, a refused address, a
+  blackhole whose accept queue is full), `test_tls.rs` generates a throwaway self-signed certificate per test, and the listener tests
+  bind port 0. The TLS tests (and the `openssl` dev-dependency that generates the certificate) cover the OpenSSL backend only.
+  Streams coalesce writes, so a test server must flush. `scripts/test-vendored.sh` runs every vendored suite against these sources
+  in a network namespace with only loopback.
+
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
