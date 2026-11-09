@@ -22,9 +22,9 @@
 use std::cell::Cell;
 use std::io::IoSlice;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 
-use tokio::io::{self, AsyncRead, AsyncWrite, BufWriter, ReadBuf};
+use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf};
 
 thread_local! {
     /// Empty until the first buffered read of the thread. Taken for the length of one `poll_read`.
@@ -33,7 +33,7 @@ thread_local! {
 
 #[derive(Debug)]
 pub(crate) struct LazyReadStream<RW> {
-    inner: BufWriter<RW>,
+    inner: CoalescingWriter<RW>,
     /// Bytes read from the socket and not consumed yet, valid from `pos`.
     pending: Vec<u8>,
     pos: usize,
@@ -41,10 +41,133 @@ pub(crate) struct LazyReadStream<RW> {
     read_size: usize,
 }
 
+/// A small write buffer for headers and short bodies. Like `tokio::io::BufWriter` it passes a write of at least the
+/// buffer size straight through, but it sends the bytes buffered before it in the same `writev`, so a response head
+/// and a large body leave in one segment run instead of two system calls.
+#[derive(Debug)]
+struct CoalescingWriter<W> {
+    inner: W,
+    buf: Vec<u8>,
+    capacity: usize,
+}
+
+impl<W> CoalescingWriter<W> {
+    fn with_capacity(capacity: usize, inner: W) -> Self {
+        Self {
+            inner,
+            buf: Vec::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn get_ref(&self) -> &W {
+        &self.inner
+    }
+
+    fn get_mut(&mut self) -> &mut W {
+        &mut self.inner
+    }
+
+    fn into_inner(self) -> W {
+        self.inner
+    }
+}
+
+impl<W: AsyncWrite + Unpin> CoalescingWriter<W> {
+    fn flush_buf(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        while !self.buf.is_empty() {
+            let written = ready!(Pin::new(&mut self.inner).poll_write(cx, &self.buf))?;
+            if written == 0 {
+                return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
+            }
+            self.buf.drain(..written);
+        }
+        Poll::Ready(Ok(()))
+    }
+
+    /// Writes `data` after the buffered bytes in one vectored call; returns how many bytes of `data` were accepted.
+    fn write_behind_buf(&mut self, cx: &mut Context<'_>, data: &[u8]) -> Poll<io::Result<usize>> {
+        loop {
+            let bufs = [IoSlice::new(&self.buf), IoSlice::new(data)];
+            let written = ready!(Pin::new(&mut self.inner).poll_write_vectored(cx, &bufs))?;
+            if written == 0 {
+                return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
+            }
+            if written < self.buf.len() {
+                self.buf.drain(..written);
+                continue;
+            }
+            let accepted = written - self.buf.len();
+            self.buf.clear();
+            // Only the head went out: report progress through a plain write of the data.
+            return if accepted == 0 {
+                Pin::new(&mut self.inner).poll_write(cx, data)
+            } else {
+                Poll::Ready(Ok(accepted))
+            };
+        }
+    }
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for CoalescingWriter<W> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = &mut *self;
+        if this.buf.len() + data.len() <= this.capacity {
+            this.buf.extend_from_slice(data);
+            return Poll::Ready(Ok(data.len()));
+        }
+        if data.len() < this.capacity {
+            ready!(this.flush_buf(cx))?;
+            this.buf.extend_from_slice(data);
+            return Poll::Ready(Ok(data.len()));
+        }
+        if this.buf.is_empty() || !this.inner.is_write_vectored() {
+            ready!(this.flush_buf(cx))?;
+            return Pin::new(&mut this.inner).poll_write(cx, data);
+        }
+        this.write_behind_buf(cx, data)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        ready!(self.flush_buf(cx))?;
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        ready!(self.flush_buf(cx))?;
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        let this = &mut *self;
+        let total: usize = bufs.iter().map(|buf| buf.len()).sum();
+        if this.buf.len() + total > this.capacity {
+            ready!(this.flush_buf(cx))?;
+        }
+        if total >= this.capacity {
+            return Pin::new(&mut this.inner).poll_write_vectored(cx, bufs);
+        }
+        bufs.iter().for_each(|buf| this.buf.extend_from_slice(buf));
+        Poll::Ready(Ok(total))
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        true
+    }
+}
+
 impl<RW: AsyncWrite> LazyReadStream<RW> {
     pub(crate) fn new(read_size: usize, write_capacity: usize, inner: RW) -> Self {
         Self {
-            inner: BufWriter::with_capacity(write_capacity, inner),
+            inner: CoalescingWriter::with_capacity(write_capacity, inner),
             pending: Vec::new(),
             pos: 0,
             read_size,
@@ -223,5 +346,93 @@ mod tests {
         stream.flush().await.unwrap();
         far.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"ping");
+    }
+
+    /// Records every call so a test can tell one `writev` from two `write`s.
+    #[derive(Default)]
+    struct Recorder {
+        calls: Vec<Vec<usize>>,
+        bytes: Vec<u8>,
+        /// Accept at most this many bytes per call.
+        limit: Option<usize>,
+    }
+
+    impl AsyncWrite for Recorder {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let count = buf.len().min(self.limit.unwrap_or(usize::MAX));
+            self.calls.push(vec![count]);
+            self.bytes.extend_from_slice(&buf[..count]);
+            Poll::Ready(Ok(count))
+        }
+
+        fn poll_write_vectored(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            bufs: &[IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            let mut room = self.limit.unwrap_or(usize::MAX);
+            let mut sizes = Vec::new();
+            for buf in bufs {
+                let count = buf.len().min(room);
+                room -= count;
+                sizes.push(count);
+                self.bytes.extend_from_slice(&buf[..count]);
+            }
+            let total = sizes.iter().sum();
+            self.calls.push(sizes);
+            Poll::Ready(Ok(total))
+        }
+
+        fn is_write_vectored(&self) -> bool {
+            true
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_head_and_a_large_body_leave_in_one_vectored_write() {
+        let mut stream = LazyReadStream::new(READ_SIZE, 16, Recorder::default());
+        stream.write_all(b"head").await.unwrap();
+        stream.write_all(&[1; 100]).await.unwrap();
+        stream.flush().await.unwrap();
+        let recorder = stream.get_ref();
+        assert_eq!(recorder.calls, vec![vec![4, 100]]);
+        assert_eq!(recorder.bytes.len(), 104);
+    }
+
+    #[tokio::test]
+    async fn a_partial_vectored_write_keeps_the_rest_of_the_head_and_the_body() {
+        let recorder = Recorder {
+            limit: Some(3),
+            ..Recorder::default()
+        };
+        let mut stream = LazyReadStream::new(READ_SIZE, 16, recorder);
+        stream.write_all(b"headhead").await.unwrap();
+        stream.write_all(&[2; 20]).await.unwrap();
+        stream.flush().await.unwrap();
+        let mut expected = b"headhead".to_vec();
+        expected.extend_from_slice(&[2; 20]);
+        assert_eq!(stream.get_ref().bytes, expected);
+    }
+
+    #[tokio::test]
+    async fn small_writes_are_coalesced_and_a_large_one_alone_is_direct() {
+        let mut stream = LazyReadStream::new(READ_SIZE, 16, Recorder::default());
+        stream.write_all(&[3; 100]).await.unwrap();
+        stream.write_all(b"ab").await.unwrap();
+        stream.write_all(b"cd").await.unwrap();
+        stream.flush().await.unwrap();
+        assert_eq!(stream.get_ref().calls, vec![vec![100], vec![4]]);
     }
 }
