@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use async_trait::async_trait;
-
 use pingora_core::server::Server;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::Result;
@@ -30,7 +28,6 @@ use pingora_proxy::{ProxyHttp, Session};
 
 pub struct GrpcWebBridgeProxy;
 
-#[async_trait]
 impl ProxyHttp for GrpcWebBridgeProxy {
     type CTX = ();
     fn new_ctx(&self) -> Self::CTX {}
