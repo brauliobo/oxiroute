@@ -703,7 +703,10 @@ HAProxy directives:
   ranges, and 416 responses. Disabling ETag suppresses generated tag matching and output, while
   `If-None-Match: *` still tests whether the selected representation exists and takes precedence
   over `If-Modified-Since`.
-  Roots are descriptor-pinned; files are opened no-follow and stream in 64 KiB chunks up to 8 GiB.
+  Roots are descriptor-pinned; files are opened no-follow and stream in 64 KiB chunks up to 8 GiB. Files of
+  up to 128 KiB are read whole and answered from a per-route memory cache (at most 512 files and 16 MiB) for
+  one second, so an edit, replacement or removal is visible within one second; larger files are read on every
+  request.
 - Gzip exposes level 1 through 9, bounded exact content types, `min_length_bytes`, a minimum request
   version of HTTP/1.0 or HTTP/1.1, optional suppression when `Via` is present, and optional
   `Vary: Accept-Encoding`. For compatibility with persisted minimal policies, omitted new fields
