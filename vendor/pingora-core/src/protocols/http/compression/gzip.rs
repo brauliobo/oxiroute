@@ -97,11 +97,15 @@ impl Compressor {
     pub fn new(level: u32) -> Compressor {
         let idle = IDLE_STATES.with(|idle| {
             let mut idle = idle.borrow_mut();
-            let position = idle.iter().position(|(idle_level, _)| *idle_level == level)?;
+            let position = idle
+                .iter()
+                .position(|(idle_level, _)| *idle_level == level)?;
             Some(idle.swap_remove(position).1)
         });
         Compressor {
-            compress: Some(idle.unwrap_or_else(|| Compress::new(flate2::Compression::new(level), false))),
+            compress: Some(
+                idle.unwrap_or_else(|| Compress::new(flate2::Compression::new(level), false)),
+            ),
             crc: Crc::new(),
             level,
             header_pending: true,
@@ -173,7 +177,10 @@ impl Encode for Compressor {
             out.extend_from_slice(&self.header());
         }
         self.crc.update(input);
-        let compress = self.compress.as_mut().expect("deflate state is present until drop");
+        let compress = self
+            .compress
+            .as_mut()
+            .expect("deflate state is present until drop");
         Self::deflate(compress, input, &mut out, FlushCompress::None);
         if end {
             Self::deflate(compress, &[], &mut out, FlushCompress::Finish);
@@ -229,16 +236,23 @@ mod tests_stream {
         use std::io::Read;
         let input: Vec<u8> = (0..100_000_u32).map(|value| (value % 251) as u8).collect();
         for level in [1, 6, 9] {
-            let mut expected = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level));
+            let mut expected =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level));
             expected.write_all(&input).unwrap();
             let expected = expected.finish().unwrap();
             let mut compressor = Compressor::new(level);
             let mut actual = compressor.encode(&input[..40_000], false).unwrap().to_vec();
             actual.extend_from_slice(&compressor.encode(&input[40_000..], true).unwrap());
             assert_eq!(actual[..10], expected[..10], "header at level {level}");
-            assert_eq!(actual[actual.len() - 8..], expected[expected.len() - 8..], "trailer at level {level}");
+            assert_eq!(
+                actual[actual.len() - 8..],
+                expected[expected.len() - 8..],
+                "trailer at level {level}"
+            );
             let mut decoded = Vec::new();
-            flate2::read::GzDecoder::new(&actual[..]).read_to_end(&mut decoded).unwrap();
+            flate2::read::GzDecoder::new(&actual[..])
+                .read_to_end(&mut decoded)
+                .unwrap();
             assert_eq!(decoded, input, "round trip at level {level}");
         }
     }
@@ -253,7 +267,11 @@ mod tests_stream {
             out
         };
         let first = compress(1);
-        assert_eq!(compress(1), first, "a reused state repeats the stream of a new one");
+        assert_eq!(
+            compress(1),
+            first,
+            "a reused state repeats the stream of a new one"
+        );
         assert_ne!(compress(9), first);
         assert_eq!(compress(1), first);
         let mut decoder = Decompressor::new();
