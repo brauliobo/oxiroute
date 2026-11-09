@@ -19,9 +19,10 @@ use crate::tls::{self, ssl, tokio_ssl::SslStream as InnerSsl};
 use crate::utils::tls::{get_organization, get_serial};
 use log::warn;
 use pingora_error::{ErrorType::*, OrErr, Result};
+use std::cell::Cell;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 use std::time::SystemTime;
 use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf};
 
@@ -33,13 +34,39 @@ use pingora_openssl as ssl_lib;
 
 use ssl_lib::{hash::MessageDigest, ssl::SslRef};
 
+/// Plaintext a coalescing stream keeps for plain writes before the next flush. It matches the
+/// accepted socket's write buffer, so data that used to wait for a flush still waits for one and
+/// data that used to leave at once still does.
+const COALESCE_PLAIN_LIMIT: usize = 1460;
+/// Plaintext vectored writes may leave pending: a whole TLS record. Vectored writers (HTTP/2
+/// frames, chunked bodies) flush right after, and their bytes are packed into full records.
+const COALESCE_VECTORED_LIMIT: usize = 16 * 1024;
+/// A drained buffer larger than this goes back to the thread's spare instead of staying with the connection.
+const COALESCE_RETAINED_CAPACITY: usize = 2048;
+
+thread_local! {
+    /// The record-sized buffer of the connections of this thread that are writing a body: a connection
+    /// that went idle keeps none.
+    static SPARE: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
+}
+
 /// The TLS connection
 #[derive(Debug)]
 pub struct SslStream<T> {
     ssl: InnerSsl<T>,
     digest: Option<Arc<SslDigest>>,
     pub(super) timing: TimingDigest,
+    /// Plaintext not yet handed to OpenSSL, only used when `coalesce` is set.
+    pending: Vec<u8>,
+    sent: usize,
+    coalesce: bool,
+    /// Asks the transport whether a read could make progress, without reading.
+    read_probe: Option<ReadProbe<T>>,
+    /// The last `SSL_read` ran out of ciphertext and the transport had nothing more either.
+    read_blocked: bool,
 }
+
+type ReadProbe<T> = fn(&mut T, &mut Context<'_>) -> Poll<io::Result<()>>;
 
 impl<T> SslStream<T>
 where
@@ -57,7 +84,25 @@ where
             ssl,
             digest: None,
             timing: Default::default(),
+            pending: Vec::new(),
+            sent: 0,
+            coalesce: false,
+            read_probe: None,
+            read_blocked: false,
         })
+    }
+
+    /// Make the writes of this stream share TLS records: bytes written between two flushes leave as
+    /// one record instead of one record per write call. Writers must flush when a response is complete,
+    /// which accepted streams already need for their socket write buffer.
+    pub(super) fn coalesce_writes(&mut self) {
+        self.coalesce = true;
+    }
+
+    /// Skip `SSL_read` while the transport still has nothing to read after a read that ran dry: the
+    /// call could only run the record layer again to report the same "want read".
+    pub(super) fn probe_reads(&mut self, probe: ReadProbe<T>) {
+        self.read_probe = Some(probe);
     }
 
     /// Connect to the remote TLS server as a client
@@ -84,6 +129,50 @@ where
         if !errs.errors().is_empty() {
             warn!("Clearing dirty TLS error stack: {}", errs);
         }
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
+    /// Moves as much of `bufs` as fits the record being filled into `pending`; the next call, or the
+    /// flush the writer issues at the end of its batch, sends it.
+    fn poll_write_vectored_pending(
+        &mut self,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        if self.pending.len() >= COALESCE_VECTORED_LIMIT {
+            ready!(self.poll_write_pending(cx))?;
+        }
+        if self.pending.capacity() == 0 {
+            self.pending = SPARE.take();
+        }
+        let room = COALESCE_VECTORED_LIMIT - self.pending.len();
+        self.pending.reserve(room);
+        let mut taken = 0;
+        for buf in bufs {
+            let part = &buf[..buf.len().min(room - taken)];
+            self.pending.extend_from_slice(part);
+            taken += part.len();
+        }
+        Poll::Ready(Ok(taken))
+    }
+
+    fn poll_write_pending(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if self.pending.is_empty() {
+            return Poll::Ready(Ok(()));
+        }
+        Self::clear_error();
+        while self.sent < self.pending.len() {
+            let written =
+                ready!(Pin::new(&mut self.ssl).poll_write(cx, &self.pending[self.sent..]))?;
+            self.sent += written;
+        }
+        self.sent = 0;
+        self.pending.clear();
+        if self.pending.capacity() > COALESCE_RETAINED_CAPACITY {
+            SPARE.set(std::mem::take(&mut self.pending));
+        }
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -124,8 +213,20 @@ where
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        let this = &mut *self;
+        if this.read_blocked {
+            let probe = this.read_probe.expect("a blocked read has a probe");
+            if probe(this.ssl.get_mut(), cx).is_pending() {
+                return Poll::Pending;
+            }
+            this.read_blocked = false;
+        }
         Self::clear_error();
-        Pin::new(&mut self.ssl).poll_read(cx, buf)
+        let result = Pin::new(&mut this.ssl).poll_read(cx, buf);
+        if let (Poll::Pending, Some(probe)) = (&result, this.read_probe) {
+            this.read_blocked = probe(this.ssl.get_mut(), cx).is_pending();
+        }
+        result
     }
 }
 
@@ -138,17 +239,27 @@ where
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        if self.coalesce {
+            if self.pending.len() + buf.len() > COALESCE_PLAIN_LIMIT {
+                ready!(self.poll_write_pending(cx))?;
+            }
+            if buf.len() <= COALESCE_PLAIN_LIMIT {
+                self.pending.extend_from_slice(buf);
+                return Poll::Ready(Ok(buf.len()));
+            }
+        }
         Self::clear_error();
         Pin::new(&mut self.ssl).poll_write(cx, buf)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
-        Self::clear_error();
+        ready!(self.poll_write_pending(cx))?;
         Pin::new(&mut self.ssl).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
         Self::clear_error();
+        ready!(self.poll_write_pending(cx))?;
         Pin::new(&mut self.ssl).poll_shutdown(cx)
     }
 
@@ -157,6 +268,9 @@ where
         cx: &mut Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
+        if self.coalesce {
+            return self.poll_write_vectored_pending(cx, bufs);
+        }
         Self::clear_error();
         Pin::new(&mut self.ssl).poll_write_vectored(cx, bufs)
     }
@@ -215,3 +329,7 @@ impl SslDigest {
 
 // TODO: implement Peek if needed
 impl<T> Peek for SslStream<T> {}
+
+#[cfg(all(test, feature = "openssl_derived"))]
+#[path = "stream_tests.rs"]
+mod tests;

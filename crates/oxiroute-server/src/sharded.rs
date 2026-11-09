@@ -5,7 +5,7 @@
 //! thread writes the slot it was given on first use, readers add the slots up. Slots sit on their
 //! own cache lines, and threads beyond [`SHARDS`] share slots round robin.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 pub(crate) const SHARDS: usize = 8;
 
@@ -52,10 +52,30 @@ impl<T> Sharded<T> {
     }
 }
 
+/// `N` counters that every worker thread bumps, one copy per slot; a read adds the slots up.
+///
+/// The total saturates instead of wrapping; a slot would need 2^64 events to overflow.
+#[derive(Debug)]
+pub(crate) struct ShardedCounters<const N: usize>(Sharded<[AtomicU64; N]>);
+
+impl<const N: usize> ShardedCounters<N> {
+    pub(crate) fn new() -> Self {
+        Self(Sharded::new(|| std::array::from_fn(|_| AtomicU64::new(0))))
+    }
+
+    pub(crate) fn add(&self, index: usize, value: u64) {
+        self.0.local()[index].fetch_add(value, Ordering::Relaxed);
+    }
+
+    pub(crate) fn get(&self, index: usize) -> u64 {
+        self.0.iter().fold(0, |total, slot| {
+            total.saturating_add(slot[index].load(Ordering::Relaxed))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicU64;
-
     use super::*;
 
     #[test]
@@ -75,6 +95,22 @@ mod tests {
             .map(|slot| slot.load(Ordering::Relaxed))
             .sum();
         assert_eq!(total, 1000 * SHARDS as u64 * 2);
+    }
+
+    #[test]
+    fn counters_add_up_across_threads() {
+        let counters = ShardedCounters::<3>::new();
+        std::thread::scope(|scope| {
+            for _ in 0..(SHARDS * 2) {
+                scope.spawn(|| {
+                    for _ in 0..1000 {
+                        counters.add(1, 2);
+                    }
+                });
+            }
+        });
+        assert_eq!(counters.get(0), 0);
+        assert_eq!(counters.get(1), 2000 * SHARDS as u64 * 2);
     }
 
     #[test]

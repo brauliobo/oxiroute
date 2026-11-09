@@ -333,6 +333,15 @@ impl TlsProfilePlan {
         } else {
             settings.set_options(SslOptions::NO_TICKET);
         }
+        // Without a cache or stateless tickets a TLS 1.3 ticket cannot be resumed, so none is sent.
+        if !self.session_tickets && self.session_cache.is_none() {
+            settings
+                .set_num_tickets(0)
+                .map_err(|source| TlsBuildError::TlsProfileSettings {
+                    profile: self.name.clone(),
+                    source,
+                })?;
+        }
         // Read whatever the socket holds in one call instead of a record header, then its body.
         settings.set_read_ahead(true);
         if self.prefer_server_ciphers {

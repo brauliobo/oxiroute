@@ -32,7 +32,11 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 pub fn prepare_tls_stream<S: IO>(ssl_acceptor: &SslAcceptor, io: S) -> Result<SslStream<S>> {
     let ssl = ssl_from_acceptor(ssl_acceptor)
         .explain_err(TLSHandshakeFailure, |e| format!("ssl_acceptor error: {e}"))?;
-    SslStream::new(ssl, io).explain_err(TLSHandshakeFailure, |e| format!("ssl stream error: {e}"))
+    let mut stream = SslStream::new(ssl, io)
+        .explain_err(TLSHandshakeFailure, |e| format!("ssl stream error: {e}"))?;
+    stream.coalesce_writes();
+    stream.probe_reads(S::poll_read_ready);
+    Ok(stream)
 }
 
 /// Perform TLS handshake for the given connection with the given configuration

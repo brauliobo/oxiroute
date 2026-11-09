@@ -579,6 +579,18 @@ impl Peek for Stream {
         self.rewind(buf);
         Ok(true)
     }
+
+    fn poll_read_ready(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if !self.rewind_read_buf.is_empty() || self.stream().has_buffered() {
+            return Poll::Ready(Ok(()));
+        }
+        match &self.stream().get_ref().stream {
+            RawStream::Tcp(s) => s.poll_read_ready(cx),
+            #[cfg(unix)]
+            RawStream::Unix(s) => s.poll_read_ready(cx),
+            RawStream::Virtual(_) => Poll::Ready(Ok(())),
+        }
+    }
 }
 
 #[async_trait]
