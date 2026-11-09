@@ -7,8 +7,8 @@
 //! the pool's [`LoadLog`], and a selection brings the trees up to date from the log before it reads.
 
 use std::sync::{
-    Arc, Mutex, PoisonError,
-    atomic::{AtomicBool, Ordering},
+    Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering, fence},
 };
 
 use super::{Membership, PoolEndpoint, SelectableView, pool::Capacity};
@@ -39,19 +39,31 @@ impl Capacity {
     }
 }
 
-/// The servers whose load changed since the pool's index last looked.
+/// The most changes a log keeps; past it the index is rebuilt instead.
+const NOTED_LIMIT: usize = 1024;
+
+#[derive(Debug, Default)]
+struct Noted {
+    /// The membership positions of the servers that changed, repeated as often as they changed.
+    slots: Vec<u32>,
+    overflowed: bool,
+}
+
+/// The servers whose load changed since the pool's index last looked, by membership position. A
+/// position noted for a server that has left the membership names another server, which the index
+/// reads again at no harm; a new membership gets a new index anyway.
 #[derive(Debug)]
 pub(super) struct LoadLog {
     /// Whether an index reads the log; changes are not recorded while only a scan reads the servers.
     tracked: AtomicBool,
-    noted: Mutex<Vec<Arc<PoolEndpoint>>>,
+    noted: Mutex<Noted>,
 }
 
 impl LoadLog {
     pub(super) fn new() -> Self {
         Self {
             tracked: AtomicBool::new(false),
-            noted: Mutex::new(Vec::new()),
+            noted: Mutex::new(Noted::default()),
         }
     }
 
@@ -64,26 +76,32 @@ impl LoadLog {
     }
 
     /// Records that the load or the capacity of `server` changed.
-    pub(super) fn note(&self, server: &Arc<PoolEndpoint>) {
-        if self.tracked.load(Ordering::Relaxed) && !server.load_noted.swap(true, Ordering::AcqRel) {
-            self.noted
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(Arc::clone(server));
+    #[inline]
+    pub(super) fn note(&self, server: &PoolEndpoint) {
+        if self.tracked.load(Ordering::Relaxed) {
+            self.record(server);
         }
     }
 
-    /// Moves the noted servers into `out`, which is emptied first, and arms them to be noted again.
-    /// A change after this point is noted again, a change before it is read by the caller.
-    pub(super) fn take(&self, out: &mut Vec<Arc<PoolEndpoint>>) {
-        out.clear();
-        std::mem::swap(
-            out,
-            &mut *self.noted.lock().unwrap_or_else(PoisonError::into_inner),
-        );
-        for server in out.iter() {
-            server.load_noted.store(false, Ordering::Release);
+    fn record(&self, server: &PoolEndpoint) {
+        // Pairs with the fence of `Membership::new`.
+        fence(Ordering::SeqCst);
+        let slot = server.slot.load(Ordering::Relaxed);
+        let mut noted = self.noted.lock().unwrap_or_else(PoisonError::into_inner);
+        if noted.slots.len() < NOTED_LIMIT {
+            noted.slots.push(slot);
+        } else {
+            noted.overflowed = true;
         }
+    }
+
+    /// Moves the noted positions into `out`, which is emptied first; true when changes were dropped
+    /// and everything has to be read again.
+    pub(super) fn take(&self, out: &mut Vec<u32>) -> bool {
+        out.clear();
+        let mut noted = self.noted.lock().unwrap_or_else(PoisonError::into_inner);
+        std::mem::swap(out, &mut noted.slots);
+        std::mem::take(&mut noted.overflowed)
     }
 }
 
@@ -185,7 +203,7 @@ impl LoadTree {
 pub(super) struct LoadIndex {
     view: u64,
     trees: [Option<LoadTree>; Capacity::KINDS],
-    noted: Vec<Arc<PoolEndpoint>>,
+    noted: Vec<u32>,
 }
 
 impl LoadIndex {
@@ -198,8 +216,8 @@ impl LoadIndex {
         capacity: Capacity,
     ) -> &mut LoadTree {
         log.track(true);
-        log.take(&mut self.noted);
-        if self.view == view.id() {
+        let overflowed = log.take(&mut self.noted);
+        if self.view == view.id() && !overflowed {
             self.apply_noted(members, view);
         } else {
             self.view = view.id();
@@ -209,18 +227,14 @@ impl LoadIndex {
     }
 
     fn apply_noted(&mut self, members: &Membership, view: &SelectableView) {
-        for server in &self.noted {
-            let at = server.slot.load(Ordering::Acquire) as usize;
-            let member = members
-                .endpoints
-                .get(at)
-                .is_some_and(|member| Arc::ptr_eq(member, server));
-            if !member || !view.contains(at) {
+        for &slot in &self.noted {
+            let at = slot as usize;
+            let Some(server) = members.endpoints.get(at).filter(|_| view.contains(at)) else {
                 continue;
-            }
-            for (kind, tree) in self.trees.iter_mut().enumerate() {
+            };
+            for (tree, capacity) in self.trees.iter_mut().zip(Capacity::ALL) {
                 if let Some(tree) = tree {
-                    tree.set(at, LoadTree::key(server, Capacity::ALL[kind]));
+                    tree.set(at, LoadTree::key(server, capacity));
                 }
             }
         }

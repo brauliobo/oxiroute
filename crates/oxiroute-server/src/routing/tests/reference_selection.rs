@@ -210,7 +210,7 @@ fn pool_connection(
 /// Changes something selection depends on, through the pool's own entry points.
 fn disturb(pool: &EndpointPool, random: &mut Random, held: &mut Vec<EndpointLease>) {
     let server = name(random.below(SERVERS));
-    match random.below(10) {
+    match random.below(11) {
         0 => pool
             .set_server_administrative_state(&server, AdministrativeState::Drain)
             .expect("drain"),
@@ -246,7 +246,9 @@ fn disturb(pool: &EndpointPool, random: &mut Random, held: &mut Vec<EndpointLeas
                 held.swap_remove(random.below(held.len()));
             }
         }
-        _ => pool.record_passive_failure(random.below(SERVERS), HealthFailure::Timeout),
+        9 => pool.record_passive_failure(random.below(SERVERS), HealthFailure::Timeout),
+        // More load changes than the index's log keeps between two selections.
+        _ => (0..1100).for_each(|_| drop(pool.select_named_server(&server).lease)),
     }
 }
 
