@@ -607,7 +607,7 @@ impl ProxyHttp for HttpReverseProxy {
             transaction.apply_validators(&mut upstream_request.headers);
         }
         if let Some(host) = &ctx.selected_upstream_host {
-            upstream_request.insert_header(HOST, host.clone())?;
+            upstream_request.set_header(HOST, host.clone())?;
         } else {
             upstream_request.remove_header(&HOST);
         }
@@ -713,7 +713,7 @@ impl ProxyHttp for HttpReverseProxy {
             response.set_status(status)?;
         }
         for (name, value) in &ctx.response_header_overrides {
-            response.append_header(name.clone(), value.clone())?;
+            response.add_header(name.clone(), value.clone())?;
         }
         apply_response_policy(response, proxy_policy(ctx), remove_hop_by_hop)?;
         apply_affinity_cookie(session, ctx, response)?;

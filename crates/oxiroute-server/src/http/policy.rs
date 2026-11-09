@@ -123,7 +123,9 @@ pub(crate) fn decide_request_header(
         RequestHeaderValuePlan::ClientIp => RequestHeaderValueDecision::ClientIp(
             context
                 .client_ip
-                .map(|client_ip| header_value(&client_ip.to_string()))
+                .map(|client_ip| {
+                    bounded_header_value(IpText::new(client_ip).as_bytes(), usize::MAX)
+                })
                 .transpose()?,
         ),
         RequestHeaderValuePlan::AppendedXForwardedFor {
@@ -171,13 +173,61 @@ fn decide_x_forwarded_for(
             bounded_header_value(&value, max_bytes).map(XForwardedForDecision::Set)
         });
     };
-    let client_ip = client_ip.to_string();
-    let mut value = existing.unwrap_or_default();
-    if !value.is_empty() {
-        extend_bounded(&mut value, b", ", max_bytes)?;
-    }
+    let client_ip = IpText::new(client_ip);
+    let Some(mut value) = existing else {
+        return bounded_header_value(client_ip.as_bytes(), max_bytes)
+            .map(XForwardedForDecision::Set);
+    };
+    extend_bounded(&mut value, b", ", max_bytes)?;
     extend_bounded(&mut value, client_ip.as_bytes(), max_bytes)?;
     bounded_header_value(&value, max_bytes).map(XForwardedForDecision::Set)
+}
+
+/// The text of an address in a stack buffer: no allocation, and IPv4 without the formatter.
+struct IpText {
+    buf: [u8; 45],
+    len: usize,
+}
+
+impl IpText {
+    fn new(address: IpAddr) -> Self {
+        let mut text = Self {
+            buf: [0; 45],
+            len: 0,
+        };
+        match address {
+            IpAddr::V4(address) => {
+                for (index, octet) in address.octets().into_iter().enumerate() {
+                    if index > 0 {
+                        text.push(b'.');
+                    }
+                    if octet >= 100 {
+                        text.push(b'0' + octet / 100);
+                    }
+                    if octet >= 10 {
+                        text.push(b'0' + octet / 10 % 10);
+                    }
+                    text.push(b'0' + octet % 10);
+                }
+            }
+            IpAddr::V6(address) => {
+                let mut rest = &mut text.buf[..];
+                std::io::Write::write_fmt(&mut rest, format_args!("{address}"))
+                    .expect("an IPv6 address fits 45 bytes");
+                text.len = 45 - rest.len();
+            }
+        }
+        text
+    }
+
+    fn push(&mut self, byte: u8) {
+        self.buf[self.len] = byte;
+        self.len += 1;
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
 }
 
 pub(crate) fn join_header_values(

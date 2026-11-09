@@ -295,10 +295,10 @@ pub(crate) fn apply_response_policy(
                 response.remove_header(&name);
             }
             ResponseHeaderDecision::Set { name, value } => {
-                response.insert_header(name, value)?;
+                response.set_header(name, value)?;
             }
             ResponseHeaderDecision::Add { name, value } => {
-                response.append_header(name, value)?;
+                response.add_header(name, value)?;
             }
         }
     }
