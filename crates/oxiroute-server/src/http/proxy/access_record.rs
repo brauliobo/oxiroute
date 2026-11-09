@@ -1,7 +1,4 @@
-use std::{
-    borrow::Cow,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::borrow::Cow;
 
 use std::sync::Arc;
 
@@ -63,10 +60,7 @@ pub(super) fn build<'a>(
         servers: tried_servers(&trace.servers).map(Safe::from),
         service: Safe::verified(service),
         status: response_status,
-        timestamp_unix_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| u64::try_from(duration.as_millis()).ok()),
+        timestamp_unix_ms: Some(crate::clock::wall_ms(ctx.now)),
         was_stuck: ctx
             .inflight
             .as_ref()
