@@ -113,6 +113,10 @@ where
 
 impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
     fn poll_write_pending(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if self.pending.is_empty() {
+            return Poll::Ready(Ok(()));
+        }
+        Self::clear_error();
         while self.sent < self.pending.len() {
             let written =
                 ready!(Pin::new(&mut self.ssl).poll_write(cx, &self.pending[self.sent..]))?;
@@ -178,22 +182,20 @@ where
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        if self.coalesce {
+            if self.pending.len() + buf.len() > COALESCE_PLAIN_LIMIT {
+                ready!(self.poll_write_pending(cx))?;
+            }
+            if buf.len() <= COALESCE_PLAIN_LIMIT {
+                self.pending.extend_from_slice(buf);
+                return Poll::Ready(Ok(buf.len()));
+            }
+        }
         Self::clear_error();
-        if !self.coalesce {
-            return Pin::new(&mut self.ssl).poll_write(cx, buf);
-        }
-        if self.pending.len() + buf.len() > COALESCE_PLAIN_LIMIT {
-            ready!(self.poll_write_pending(cx))?;
-        }
-        if buf.len() > COALESCE_PLAIN_LIMIT {
-            return Pin::new(&mut self.ssl).poll_write(cx, buf);
-        }
-        self.pending.extend_from_slice(buf);
-        Poll::Ready(Ok(buf.len()))
+        Pin::new(&mut self.ssl).poll_write(cx, buf)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
-        Self::clear_error();
         ready!(self.poll_write_pending(cx))?;
         Pin::new(&mut self.ssl).poll_flush(cx)
     }
@@ -209,21 +211,20 @@ where
         cx: &mut Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
+        if self.coalesce {
+            let total: usize = bufs.iter().map(|buf| buf.len()).sum();
+            if self.pending.len() + total > COALESCE_VECTORED_LIMIT {
+                ready!(self.poll_write_pending(cx))?;
+            }
+            if total <= COALESCE_VECTORED_LIMIT {
+                self.pending.reserve(total);
+                bufs.iter()
+                    .for_each(|buf| self.pending.extend_from_slice(buf));
+                return Poll::Ready(Ok(total));
+            }
+        }
         Self::clear_error();
-        if !self.coalesce {
-            return Pin::new(&mut self.ssl).poll_write_vectored(cx, bufs);
-        }
-        let total: usize = bufs.iter().map(|buf| buf.len()).sum();
-        if self.pending.len() + total > COALESCE_VECTORED_LIMIT {
-            ready!(self.poll_write_pending(cx))?;
-        }
-        if total > COALESCE_VECTORED_LIMIT {
-            return Pin::new(&mut self.ssl).poll_write_vectored(cx, bufs);
-        }
-        self.pending.reserve(total);
-        bufs.iter()
-            .for_each(|buf| self.pending.extend_from_slice(buf));
-        Poll::Ready(Ok(total))
+        Pin::new(&mut self.ssl).poll_write_vectored(cx, bufs)
     }
 
     fn is_write_vectored(&self) -> bool {
