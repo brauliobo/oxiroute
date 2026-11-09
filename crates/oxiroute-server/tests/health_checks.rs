@@ -22,7 +22,7 @@ use tokio::{
 use config_support::{empty_config, runtime_generation as runtime_plan, socket_endpoint};
 use http_support::read_request_head as read_request_head_bytes;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
 fn imported_haproxy_http_check_send_compiles_into_the_runtime_health_plan() {

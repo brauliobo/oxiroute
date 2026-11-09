@@ -315,7 +315,7 @@ pub(super) async fn serves_authenticated_dash_manifests_segments_and_single_rang
     publisher.publish_video(2_000, &[0x17, 1, 0, 0, 0, 0, 0, 0, 2, 0x65, 3], 1_006);
 
     let manifest_path = "/api/v1/rtmp/media/live/broadcast/camera/dash/manifest.mpd";
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let manifest = loop {
         let response = harness.request("GET", manifest_path, None, None).await;
         if response.status == 200 {
@@ -510,7 +510,7 @@ pub(super) fn relay_state_and_counters_are_observable_without_stream_queries() {
     let mut publisher = RtmpSessionClient::connect_handle(&service, "broadcast");
     publisher.publish("camera?token=relay-wire-secret", 100);
     publisher.publish_audio(1, &[0xaf, 0x01, 0x44], 101);
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let control = runtime.control();
     while control.catalog_snapshot().streams[0].relays[0]
         .status

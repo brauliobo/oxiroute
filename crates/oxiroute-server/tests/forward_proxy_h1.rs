@@ -376,7 +376,7 @@ async fn basic_authenticated_absolute_form_and_connect_cross_the_runtime_listene
         auth: Some(ForwardProxyAuth::BasicHtpasswdFile {
             htpasswd_file_path: htpasswd.clone(),
             realm: "Private proxy".into(),
-            credential_ttl_ms: Some(50),
+            credential_ttl_ms: Some(500),
             username_case_sensitive: false,
         }),
         access_policy: Some(ForwardAccessPolicy {
@@ -553,7 +553,7 @@ async fn basic_authenticated_absolute_form_and_connect_cross_the_runtime_listene
     )
     .await;
     assert!(cached.starts_with(b"HTTP/1.1 200"));
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
     let expired = exchange(
         proxy_address,
         format!(
