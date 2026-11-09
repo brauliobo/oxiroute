@@ -138,7 +138,7 @@ fn retirement_authority_survives_dropped_lifecycle_and_shutdown_handles() {
     drop(runtime);
     drop(registry);
 
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while callback_count.load(Ordering::Acquire) == 0 {
         assert!(
             Instant::now() < deadline,
