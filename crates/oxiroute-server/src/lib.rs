@@ -86,7 +86,8 @@ pub use observability::operational_event::{
 };
 pub use observability::operational_event::{emit_certificate, emit_rtmp_access};
 pub use observability::prometheus::PrometheusError;
-pub use observability::stats::{HaproxyStatsApi, HaproxyStatsPage};
+pub use observability::stats::HaproxyStatsApi;
+pub use observability::stats_page::HaproxyStatsPage;
 pub use routing::{
     AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
     HealthFailure, HealthOverride, PassiveFailurePolicy, PoolAdminError, PoolError,
