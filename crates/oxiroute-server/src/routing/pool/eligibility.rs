@@ -4,7 +4,7 @@ use super::*;
 
 /// What a server needs besides being selectable to be picked.
 #[derive(Clone, Copy)]
-pub(super) enum Capacity {
+pub(in crate::routing) enum Capacity {
     /// Headroom for a new permit.
     Permit,
     /// Headroom for a new permit, or an idle pooled connection that needs none.
@@ -71,17 +71,16 @@ impl<'a> Eligibility<'a> {
         self.names(&members.endpoints[index], index)
     }
 
-    /// The load of an eligible server, else `None`; reads the server's counters once.
-    #[inline(always)]
-    pub(super) fn load(&self, members: &Membership, index: usize) -> Option<u64> {
-        let server = &members.endpoints[index];
-        if !self.names(server, index) {
-            return None;
-        }
-        match self.capacity {
-            Capacity::Permit => server.load_if_open(false),
-            Capacity::PermitOrIdle => server.load_if_open(true),
-            Capacity::Any => Some(server.load()),
-        }
+    /// The positions of the servers excluded by name.
+    pub(super) fn excluded_positions(&self, members: &Membership) -> Vec<usize> {
+        let positions = self.excluded.iter().map(|name| members.position(name));
+        positions.flatten().collect()
+    }
+
+    /// The membership positions this selection must not pick: the excluded and the tried servers.
+    pub(super) fn masked(&self, members: &Membership) -> Vec<usize> {
+        let mut masked = self.excluded_positions(members);
+        masked.extend_from_slice(self.tried);
+        masked
     }
 }

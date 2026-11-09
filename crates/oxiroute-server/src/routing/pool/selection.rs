@@ -7,7 +7,8 @@ type FailOpenKey = ((bool, u64, u64), usize);
 /// The server a selection settled on, and whether the request already holds a capacity permit.
 enum Choice {
     Acquired(Arc<PoolEndpoint>),
-    /// A pooled idle connection serves the request; the lease acquires a permit only if it connects.
+    /// A pooled idle connection, reserved for the request, serves it; the lease acquires a permit
+    /// only if it connects.
     Pending(Arc<PoolEndpoint>),
 }
 
@@ -110,13 +111,13 @@ impl EndpointPool {
             let choice =
                 if server.try_acquire_permit(&self.queue, Admission::Selectable, now_unix_ms) {
                     Some(Choice::Acquired(Arc::clone(server)))
-                } else if reuse_idle && server.has_idle_connection() {
+                } else if reuse_idle && server.reserve_idle(&self.queue) {
                     Some(Choice::Pending(Arc::clone(server)))
                 } else {
                     None
                 };
             if choice.is_some() {
-                self.commit(selection, members, view, &eligible, index);
+                self.commit(selection, members, &eligible, index);
                 return choice;
             }
             tried.push(index);
@@ -128,7 +129,9 @@ impl EndpointPool {
             Choice::Acquired(server) => {
                 EndpointLease::acquired(server, Arc::clone(&self.queue), Arc::clone(&self.health))
             }
-            Choice::Pending(server) => self.pending_lease_for(&server, Admission::Selectable),
+            Choice::Pending(server) => self
+                .pending_lease_for(&server, Admission::Selectable)
+                .reserved(),
         }
     }
 

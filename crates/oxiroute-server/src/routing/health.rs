@@ -700,13 +700,13 @@ impl PoolHealthState {
         self.announce_ejection(server, &ejection);
     }
 
-    pub(super) fn record_passive_success(&self, server: &PoolEndpoint) {
+    pub(super) fn record_passive_success(&self, server: &Arc<PoolEndpoint>) {
         server.record_passive_success();
         self.record_outcome(server, true, now_unix_ms());
     }
 
     /// Feeds the server's circuit breaker; opening respects `min_members` like an ejection.
-    fn record_outcome(&self, server: &PoolEndpoint, ok: bool, at_unix_ms: u64) {
+    fn record_outcome(&self, server: &Arc<PoolEndpoint>, ok: bool, at_unix_ms: u64) {
         let Some(policy) = self.passive_policy.circuit_breaker else {
             return;
         };
@@ -722,6 +722,7 @@ impl PoolHealthState {
                 );
             }
             Some(BreakerTransition::Closed) => {
+                self.queue.load_log.note(server);
                 self.queue.notify_capacity_waiters();
                 log::info!(
                     "upstream pool `{}` server `{}` circuit breaker closed",

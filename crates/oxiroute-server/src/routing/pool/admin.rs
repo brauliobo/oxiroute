@@ -138,9 +138,11 @@ impl EndpointPool {
         if limit == Some(0) {
             return Err(PoolAdminError::InvalidMaxConnections);
         }
-        self.server(name)?
+        let server = self.server(name)?;
+        server
             .max_connections_override
             .store(limit.unwrap_or(0), Ordering::Release);
+        self.queue.load_log.note(&server);
         self.queue.notify_capacity_waiters();
         Ok(())
     }
