@@ -1,3 +1,5 @@
+#[path = "support/ports.rs"]
+mod ports_support;
 use std::{
     io,
     net::SocketAddr,
@@ -508,11 +510,7 @@ async fn relays_over_a_unix_upstream_with_half_close_and_accounting() {
 
 #[tokio::test]
 async fn connect_failure_releases_the_selected_lease() {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("reserve unavailable address");
-    let unavailable = listener.local_addr().expect("unavailable address");
-    drop(listener);
+    let unavailable = ports_support::unused_address();
     let (_client, downstream) = downstream_pair().await;
     let (runtime_metrics, connection) = connection_metrics();
     let (pool, relay) = relay_core_with_algorithm(

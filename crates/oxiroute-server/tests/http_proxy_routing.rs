@@ -4,6 +4,8 @@ mod config_support;
 mod fixture_support;
 #[path = "support/http.rs"]
 mod http_support;
+#[path = "support/ports.rs"]
+mod ports_support;
 
 use std::{
     fs, io,
@@ -1958,11 +1960,7 @@ async fn an_id_the_origin_already_returns_is_kept_as_the_upstream_request_id() {
 #[tokio::test]
 async fn locally_generated_responses_carry_the_request_id() {
     timeout(TEST_TIMEOUT, async {
-        let refused = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("reserve port");
-        let dead = refused.local_addr().expect("dead address");
-        drop(refused);
+        let dead = ports_support::unused_address();
         let proxy = ProxyHarness::start(
             vec![pool("dead", &[dead])],
             vec![route(Some("rid.test"), "/", &[], "dead")],
@@ -7003,11 +7001,7 @@ async fn access_log_gives_the_reason_a_request_failed() {
     timeout(TEST_TIMEOUT, async {
         let directory = tempfile::tempdir().expect("access log directory");
         let path = directory.path().join("access.jsonl");
-        let refused = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("reserve port");
-        let dead = refused.local_addr().expect("dead address");
-        drop(refused);
+        let dead = ports_support::unused_address();
         let proxy = ProxyHarness::start_with_features(
             vec![pool("dead", &[dead])],
             vec![route(None, "/", &[], "dead")],
@@ -7107,11 +7101,7 @@ async fn a_request_is_visible_while_it_waits_for_the_origin_and_gone_when_it_end
 #[tokio::test]
 async fn a_request_that_fails_leaves_the_registry_too() {
     timeout(TEST_TIMEOUT, async {
-        let refused = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("reserve port");
-        let dead = refused.local_addr().expect("dead address");
-        drop(refused);
+        let dead = ports_support::unused_address();
         let proxy = ProxyHarness::start(
             vec![pool("dead", &[dead])],
             vec![route(None, "/", &[], "dead")],
@@ -7596,9 +7586,7 @@ impl ProxyHarness {
                 policy.retry.max_retries = max_retries;
             }
         }
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
-        let address = listener.local_addr().expect("proxy address");
-        drop(listener);
+        let address = ports_support::unused_address();
         let config = ConfigDraft {
             listener_workers: None,
             retirement: None,

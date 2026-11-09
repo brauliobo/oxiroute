@@ -1,6 +1,8 @@
+#[path = "support/ports.rs"]
+mod ports_support;
 use std::{
     io::Read as _,
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{SocketAddr, TcpStream},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -90,9 +92,7 @@ async fn assert_slot_released_before_client_sees_close(gate: Option<AcceptGate>)
 }
 
 fn free_address() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .expect("free address")
+    ports_support::unused_address()
 }
 
 #[tokio::test]

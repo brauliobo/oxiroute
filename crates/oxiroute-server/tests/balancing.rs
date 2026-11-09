@@ -4,6 +4,8 @@
 mod config_support;
 #[path = "support/http.rs"]
 mod http_support;
+#[path = "support/ports.rs"]
+mod ports_support;
 
 use std::{
     net::SocketAddr,
@@ -143,9 +145,7 @@ impl Balancer {
         for _ in capacities {
             stubs.push(Stub::start().await);
         }
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
-        let address = listener.local_addr().expect("proxy address");
-        drop(listener);
+        let address = ports_support::unused_address();
         let servers = stubs
             .iter()
             .zip(capacities)
