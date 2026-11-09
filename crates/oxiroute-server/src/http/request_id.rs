@@ -1,5 +1,4 @@
 use std::{
-    io::Write as _,
     sync::{
         OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -42,12 +41,21 @@ fn boot_tag() -> u32 {
     })
 }
 
+/// Lowercase hex of `value` into `out`, most significant digit first, zero padded to the width of `out`.
+fn write_hex(out: &mut [u8], mut value: u64) {
+    for digit in out.iter_mut().rev() {
+        *digit = b"0123456789abcdef"[(value & 0xf) as usize];
+        value >>= 4;
+    }
+}
+
 /// `rq-`, boot tag and sequence: fixed width, so it renders without allocating.
 fn generated_request_id() -> HeaderValue {
     static SEQUENCE: AtomicU64 = AtomicU64::new(1);
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed) & 0xffff_ffff_ffff;
-    let mut id = [0; 24];
-    write!(&mut id[..], "rq-{:08x}-{sequence:012x}", boot_tag()).expect("fixed width id");
+    let mut id = *b"rq-00000000-000000000000";
+    write_hex(&mut id[3..11], u64::from(boot_tag()));
+    write_hex(&mut id[12..], sequence);
     HeaderValue::from_bytes(&id).expect("ASCII id")
 }
 
@@ -165,6 +173,19 @@ mod tests {
         let parts: Vec<_> = first.split('-').collect();
         assert_eq!((parts[0], parts[1].len(), parts[2].len()), ("rq", 8, 12));
         assert!(valid_correlation_id(first));
+    }
+
+    #[test]
+    fn generated_ids_render_the_boot_tag_and_the_sequence_as_padded_hex() {
+        let id = generated_request_id();
+        let text = id.to_str().expect("ASCII id");
+        assert_eq!(&text[3..11], format!("{:08x}", boot_tag()));
+        assert!(u64::from_str_radix(&text[12..], 16).is_ok());
+        let mut digits = [0; 4];
+        write_hex(&mut digits, 0xbeef_1234);
+        assert_eq!(&digits, b"1234");
+        write_hex(&mut digits, 0x2f);
+        assert_eq!(&digits, b"002f");
     }
 
     #[test]
