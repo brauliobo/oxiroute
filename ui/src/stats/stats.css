@@ -245,12 +245,13 @@ kbd {
   .ox-chips > * { flex: none; }
   .ox-toolbar > .ox-chip-problems { grid-column: 1 / -1; }
   .ox-admin-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  .ox-admin-controls > * { min-width: 0; }
   .ox-admin-controls > p, .ox-admin-controls > .ox-field:has(.ox-btn) { grid-column: 1 / -1; }
   .ox-admin-controls > .ox-field:has(> label) { flex-direction: column; align-items: stretch; gap: 0.15rem; }
-  .ox-admin-controls .ox-input { flex: none; }
   .ox-field label { min-width: 0; }
   .ox-field .ox-input { flex: 1 1 9rem; min-width: 0; }
   .ox-search { flex-basis: auto; }
+  .ox-admin-controls .ox-field .ox-input { flex: none; }
   .ox-input, .ox-btn, .ox-chip { min-height: 2.5rem; }
   .ox-btn { flex: 1; }
   .ox-banner .ox-btn, .ox-dialog .ox-btn { flex: none; }
