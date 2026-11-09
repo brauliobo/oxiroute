@@ -9,7 +9,10 @@ pre-handshake application admission and per-application handshake timeout, a non
 HTTP/1 HEAD informational-response framing, owned HTTP/1 response preread payloads, borrowed HTTP/1
 upstream request writes, parser-owned HTTP/1 header names, an inline HTTP response task batch, an
 HTTP/2 test lifecycle correction, a lazily allocated read buffer, pooled gzip deflate state, a per-thread
-header-name cache, and stage-1 connection-pool experiments:
+header-name cache, an idle upstream connection pool without per-connection tasks, a listener-level
+`TCP_NODELAY`:
+header-name cache, pooled body buffers handed out without a copy, a coalescing write buffer, and stage-1
+connection-pool experiments:
 
 - `protocols/tls/mod.rs` declares the public `TlsConfigureHook` type.
 - `upstreams/peer.rs` stores the optional hook in `PeerOptions`, omits it from
@@ -94,6 +97,31 @@ header-name cache, and stage-1 connection-pool experiments:
   same "want read". `SSL_write`, handshakes and clients are unchanged.
 - `protocols/http/v2/server.rs` `write_response_header` moves the header map into the HTTP/2 response instead of cloning it,
   so `response_written()` of an HTTP/2 session keeps the status line and no headers (nothing in OxiRoute reads them there).
+- `connectors/idle.rs` replaces the HTTP/1 upstream keep-alive pool (`pingora_pool::ConnectionPool` behind
+  `Arc<Mutex<Stream>>`) in `TransportConnector`. A released connection used to get a task that read the idle
+  socket and a `oneshot`, `Notify`, LRU node and mutex handshake with the next checkout (two scheduler round trips
+  per request). Now a release polls the socket once with a waker that queues the connection on a shared event list
+  and wakes one pool-wide task, which drops connections that closed, sent data or passed `idle_timeout`; a checkout
+  pops an entry from a per-thread stripe, then runs the same identity and readiness checks. Capacity is per stripe
+  (as the per-thread LRU it replaces was) and evicts the connection released longest ago. `idle_timeout` of zero
+  keeps nothing. The HTTP/2 pool still uses `pingora_pool`. The `connectors::tests` cases that count socket reads
+  expect the extra read at release.
+- `listeners/l4.rs` sets `TCP_NODELAY` on the listening socket and no longer on every accepted stream: Linux copies
+  it to the accepted socket. Keepalive and DSCP settings are still applied per accepted stream.
+- `utils/chunk_pool.rs` keeps up to eight 128 KiB buffers per thread. `protocols/http/v1/body.rs` takes its body
+  buffer from it and returns it when the next body starts or the reader drops. `read_body_bytes` hands a
+  content-length or close-delimited read of 8 KiB or more out as the buffer it was read into (the buffer returns to
+  the pool of the thread that drops the last clone) instead of copying it into a new `Bytes`; chunked and smaller
+  reads are copied as before. `finish_body_buf` only splits the buffer when bytes were read past the body.
+  `oxiroute-server` also reads static file chunks into the same pool.
+- `protocols/http/v1/server.rs` writes a body task of 4 KiB or more from its own buffer after the bodies queued
+  before it, instead of copying it into the batch buffer (`queue_body_data`).
+- `protocols/l4/lazy_read.rs` replaces `tokio::io::BufWriter` with `CoalescingWriter`: same buffering and
+  pass-through rules, but a write of at least the buffer size that finds bytes buffered goes out in one `writev`
+  with them, so a response head and a large body are one system call and one TCP send instead of two.
+- `protocols/l4/stream.rs` no longer times how long reads and writes stay pending (two clock reads for every pending
+  poll): `get_read_pending_time`, `get_write_pending_time` and so `Session::upstream_write_pending_time` return zero.
+  OxiRoute does not use them.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.
@@ -104,5 +132,7 @@ upstream packaging commentary; that non-build manifest is intentionally omitted 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
 review the connector hook, admission guard and handshake-timeout hook, subject conversion, HTTP/1 HEAD informational-response,
 owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, lazy read buffer, pooled
-gzip state, header-name cache, HTTP/2 test lifecycle, and connection-pool changes, then rerun the vendored
+gzip state, header-name cache, HTTP/2 test lifecycle, connection-pool changes, the idle pool and the listener `TCP_NODELAY`, then rerun the vendored
+gzip state, header-name cache, body buffer pool and hand-over, direct large body writes, coalescing write buffer,
+HTTP/2 test lifecycle, and connection-pool changes, then rerun the vendored
 connector pool, BodyReader, H1 client, and H2 server suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.

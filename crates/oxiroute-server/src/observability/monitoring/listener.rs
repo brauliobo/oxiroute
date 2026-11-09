@@ -1,5 +1,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::sharded::ShardedCounters;
+
+const RECEIVED: usize = 0;
+const SENT: usize = 1;
 
 #[derive(Clone)]
 pub struct ListenerMetrics {
@@ -198,8 +202,7 @@ impl ListenerMetrics {
             state: Arc::clone(&self.state),
             releases_active_connection: true,
             records_access: true,
-            started_at: Instant::now(),
-            correlation_id: crate::observability::logging::next_correlation_id(),
+            started_at,
             outcome: AtomicU8::new(transport_outcome_index(TransportOutcome::Success)),
             terminal_recorded: AtomicBool::new(false),
             received: AtomicU64::new(0),
@@ -219,7 +222,6 @@ impl ListenerMetrics {
             releases_active_connection: false,
             records_access: false,
             started_at: Instant::now(),
-            correlation_id: String::new(),
             outcome: AtomicU8::new(transport_outcome_index(TransportOutcome::Success)),
             terminal_recorded: AtomicBool::new(false),
             received: AtomicU64::new(0),
@@ -233,11 +235,8 @@ impl ListenerMetrics {
     ///
     /// Returns an error if the byte counter would overflow.
     pub fn record_bytes_received(&self, bytes: u64) -> Result<(), MetricsError> {
-        checked_atomic_add(
-            &self.state.shared.bytes_received,
-            bytes,
-            "listener.bytesReceived",
-        )
+        self.state.shared.traffic.add(RECEIVED, bytes);
+        Ok(())
     }
 
     /// Adds bytes written across this listener to its traffic total.
@@ -246,7 +245,8 @@ impl ListenerMetrics {
     ///
     /// Returns an error if the byte counter would overflow.
     pub fn record_bytes_sent(&self, bytes: u64) -> Result<(), MetricsError> {
-        checked_atomic_add(&self.state.shared.bytes_sent, bytes, "listener.bytesSent")
+        self.state.shared.traffic.add(SENT, bytes);
+        Ok(())
     }
 
     /// Accounts for a retry that the HTTP proxy handed back to Pingora.
@@ -351,7 +351,6 @@ pub struct ConnectionGuard {
     releases_active_connection: bool,
     records_access: bool,
     started_at: Instant,
-    correlation_id: String,
     outcome: AtomicU8,
     terminal_recorded: AtomicBool,
     received: AtomicU64,
@@ -370,11 +369,7 @@ impl ConnectionGuard {
     ///
     /// Returns an error if the byte counter would overflow.
     pub fn record_bytes_received(&self, bytes: u64) -> Result<(), MetricsError> {
-        checked_atomic_add(
-            &self.state.shared.bytes_received,
-            bytes,
-            "listener.bytesReceived",
-        )?;
+        self.state.shared.traffic.add(RECEIVED, bytes);
         checked_atomic_add(&self.received, bytes, "access.bytesReceived")
     }
 
@@ -384,7 +379,7 @@ impl ConnectionGuard {
     ///
     /// Returns an error if the byte counter would overflow.
     pub fn record_bytes_sent(&self, bytes: u64) -> Result<(), MetricsError> {
-        checked_atomic_add(&self.state.shared.bytes_sent, bytes, "listener.bytesSent")?;
+        self.state.shared.traffic.add(SENT, bytes);
         checked_atomic_add(&self.sent, bytes, "access.bytesSent")
     }
 
@@ -458,7 +453,7 @@ impl Drop for ConnectionGuard {
                 &self.state.shared.access_records,
                 AccessRecord {
                     timestamp_unix_ms: unix_time_ms().unwrap_or(0),
-                    correlation_id: self.correlation_id.clone(),
+                    correlation_id: crate::observability::logging::next_correlation_id(),
                     listener: crate::observability::logging::redact_identifier(&self.state.name),
                     transport,
                     outcome,
@@ -625,8 +620,8 @@ pub(super) struct SharedListenerMetricsState {
     accepted_connections: AtomicU64,
     rejected_connections: AtomicU64,
     active_connections: AtomicU64,
-    bytes_received: AtomicU64,
-    bytes_sent: AtomicU64,
+    /// Bytes received and sent, indexed by [`RECEIVED`] and [`SENT`].
+    traffic: ShardedCounters<2>,
     operations: OperationMetricsState,
     transport_operations: Arc<TransportOperationsState>,
     access_records: Arc<Mutex<VecDeque<AccessRecord>>>,
@@ -665,8 +660,8 @@ impl ListenerMetricsState {
             accepted_connections: self.shared.accepted_connections.load(Ordering::Relaxed),
             rejected_connections: self.shared.rejected_connections.load(Ordering::Relaxed),
             active_connections: self.shared.active_connections.load(Ordering::Relaxed),
-            bytes_received: self.shared.bytes_received.load(Ordering::Relaxed),
-            bytes_sent: self.shared.bytes_sent.load(Ordering::Relaxed),
+            bytes_received: self.shared.traffic.get(RECEIVED),
+            bytes_sent: self.shared.traffic.get(SENT),
             http_operations: self.shared.operations.http_snapshot(),
             tcp_relays: self.shared.operations.tcp_snapshot(),
             proxy_protocol: self.shared.operations.proxy_protocol_snapshot(),
@@ -687,8 +682,7 @@ impl SharedListenerMetricsState {
             accepted_connections: AtomicU64::new(0),
             rejected_connections: AtomicU64::new(0),
             active_connections: AtomicU64::new(0),
-            bytes_received: AtomicU64::new(0),
-            bytes_sent: AtomicU64::new(0),
+            traffic: ShardedCounters::new(),
             operations: OperationMetricsState::new(),
             transport_operations,
             access_records,

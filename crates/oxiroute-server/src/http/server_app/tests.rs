@@ -253,6 +253,30 @@ async fn h2_process_new_closes_when_generation_reference_is_unavailable() {
     assert!(!called.load(Ordering::Acquire));
 }
 
+#[tokio::test]
+async fn http1_connections_share_one_signal_that_fires_when_the_generation_is_replaced() {
+    let generation = generation();
+    let called = Arc::new(AtomicBool::new(false));
+    let app = HttpListenerApp::new(ProcessProbe { called }, None)
+        .with_generation(Arc::clone(&generation));
+    let (_process, process_shutdown) = tokio::sync::watch::channel(false);
+
+    let mut first = app.http1_shutdown(&process_shutdown);
+    let mut second = app.http1_shutdown(&process_shutdown);
+    assert!(!*first.borrow() && !*second.borrow());
+
+    generation.mark_retired();
+    first.changed().await.expect("first connection is told");
+    second.changed().await.expect("second connection is told");
+    assert!(*first.borrow() && *second.borrow());
+
+    let late = app.http1_shutdown(&process_shutdown);
+    assert!(
+        *late.borrow(),
+        "a connection opened after the replacement is already told"
+    );
+}
+
 #[test]
 fn reverse_http_admission_rolls_back_when_inner_admission_rejects() {
     let generation = generation();
