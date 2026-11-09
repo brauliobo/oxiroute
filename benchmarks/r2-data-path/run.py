@@ -27,6 +27,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 LOCK_FILE = "/tmp/oxiroute-bench.lock"
+PERF_EXTRA = [event for event in os.environ.get("R2_PERF_EXTRA", "").split(",") if event]  # e.g. cache-misses:u
 LANE_TIMEOUT = 600  # seconds; a hung load run must never hold the shared bench lock
 SIZES = {"b0": 0, "b1k": 1024, "b64k": 65536, "b1m": 1048576}
 
@@ -376,7 +377,7 @@ def measured_rep(env, rep, idle):
     os.mkfifo(ctl)
     os.mkfifo(ack)
     perf = subprocess.Popen(
-        ["env", "LC_ALL=C", "perf", "stat", "-D", "-1", "-x,", "-e", "instructions:u,cycles:u", "-p", str(env.proxy.pid),
+        ["env", "LC_ALL=C", "perf", "stat", "-D", "-1", "-x,", "-e", ",".join(["instructions:u", "cycles:u", *PERF_EXTRA]), "-p", str(env.proxy.pid),
          "--control", f"fifo:{ctl},{ack}", "-o", str(csv)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     pid = env.proxy.pid
     switches = lambda tag: (f"cat /proc/{pid}/task/*/status > {env.work}/sw{rep}.{tag}; "
@@ -400,6 +401,7 @@ def measured_rep(env, rep, idle):
         "busy": busy, "kernel_pct": kernel_pct,
         "instr": (counters["instructions"] - idle["instructions"] * elapsed) / requests,
         "cycles": (counters["cycles"] - idle["cycles"] * elapsed) / requests,
+        "extra": {event.split(":")[0]: counters.get(event.split(":")[0], 0) / requests for event in PERF_EXTRA},
         "ctxsw": (switched[0] - switched_before[0]) / requests,
         "nvctxsw": (switched[1] - switched_before[1]) / requests,
         "rps": float(load["rps"]), "p50": int(load["p50_us"]), "p99": int(load["p99_us"]),
@@ -426,6 +428,7 @@ def measure_perf(env, reps):
         "instr_per_req": round(median(column("instr"))), "instr_spread_pct": round(spread(column("instr")), 2),
         "cycles_per_req": round(median(column("cycles"))), "cycles_spread_pct": round(spread(column("cycles")), 2),
         "vctxsw_per_req": round(median(column("ctxsw")), 3), "nvctxsw_per_req": round(median(column("nvctxsw")), 3),
+        **{f"ev_{name}_per_req": round(median([sample["extra"][name] for sample in samples]), 1) for name in samples[0]["extra"]},
         "rps": round(median(column("rps"))), "rps_spread_pct": round(spread(column("rps")), 1),
         "p50_us": round(median(column("p50"))), "p99_us": round(median(column("p99"))),
         "p999_us": round(median(column("p999"))), "connect_p50_us": round(median(column("connect_p50"))),
