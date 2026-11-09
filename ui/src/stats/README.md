@@ -7,15 +7,19 @@ Second Vite entry of `ui/` (`stats.html` -> `src/stats/main.ts`, pure Vapor) for
 ## Build output (`pnpm build:stats` -> `ui/dist-stats/`, git-ignored)
 
 ```
-stats.html               reference shell (not embedded: the Rust shell replaces it)
+stats.html               the shell, built from ui/stats.html; installed as the embedded index.html
 manifest.json            Vite manifest; entry key "stats.html": { file, css: [...] }
 assets/stats-<hash>.js   the whole app (single chunk, ES module, no dynamic imports)
 assets/stats-<hash>.css  the whole stylesheet
 ```
 
-Names are content hashes (deterministic for pinned pnpm/node/vite and `--frozen-lockfile`). The shell must load
-`<prefix>/assets/<file from manifest>` as `<script type="module" crossorigin>` and `<link rel="stylesheet" crossorigin>`;
-nothing in the bundle assumes the page is at `/`. The page asks `<page path without trailing slash>/snapshot.json`.
+Names are content hashes (deterministic for pinned pnpm/node/vite and `--frozen-lockfile`). `ui/stats.html` is the
+single source of the shell the page listener serves. The build base is the token `/__stats_prefix__/`, so the built
+`stats.html` loads `/__stats_prefix__/assets/<file from manifest>` as `<script type="module" crossorigin>` and
+`<link rel="stylesheet" crossorigin>`; the listener replaces the token with the configured `uri_prefix` per request.
+`scripts/generate-stats-assets.sh --from ui/dist-stats` installs the built `stats.html` as
+`crates/oxiroute-server/assets/stats/index.html` and `verify-stats-assets.sh` fails when it differs from a fresh build.
+Nothing in the bundle assumes the page is at `/`; `vite preview` answers the token as the site root. The page asks `<page path without trailing slash>/snapshot.json`.
 `pnpm verify:stats-bundle` (part of `build:stats`) checks: pure Vapor (no VDOM), only the files above, manifest matches,
 gzip budget JS <= 90 KiB and CSS <= 12 KiB (`scripts/verify-stats-budget.mjs`). Browser smoke:
 `pnpm test:browser --project=stats-chromium` (strict CSP via `vite preview --config vite.stats.config.ts`).
@@ -61,5 +65,5 @@ wires them to the store. `banner.ts` turns `status` + `failure` into the banner 
 region). `admin.ts` posts the urlencoded form to the page path. `stats.css` holds the `--ox-*` tokens (`light-dark()`,
 system scheme unless `data-theme` forces one), focus ring, forced-colors, reduced-motion, narrow-screen and print rules.
 
-The shell (`stats.html`, and the placeholder `crates/oxiroute-server/assets/stats/index.html`) keeps the refresh meta and
-the server-rendered table (`__stats_table__`) inside `<noscript>`, so a browser with script shows neither.
+The shell (`ui/stats.html`, built into the embedded `crates/oxiroute-server/assets/stats/index.html`) keeps the refresh
+meta and the server-rendered table (`__stats_table__`) inside `<noscript>`, so a browser with script shows neither.
