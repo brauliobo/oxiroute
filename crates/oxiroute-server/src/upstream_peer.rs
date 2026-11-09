@@ -260,13 +260,11 @@ pub(crate) struct SelectedEndpoint {
     endpoint: RuntimeEndpoint,
     observation: EndpointObservation,
     lease: EndpointLease,
-    server_name: String,
     unix_pending: bool,
 }
 
 impl SelectedEndpoint {
     fn new(lease: EndpointLease) -> Self {
-        let server_name = lease.server_name().to_owned();
         let observation = lease.observation();
         Self {
             addresses: None,
@@ -274,7 +272,6 @@ impl SelectedEndpoint {
             endpoint: lease.endpoint().clone(),
             observation,
             lease,
-            server_name,
             unix_pending: true,
         }
     }
@@ -284,7 +281,7 @@ impl SelectedEndpoint {
     }
 
     pub(crate) fn server_name(&self) -> &str {
-        &self.server_name
+        self.lease.server_name()
     }
 
     pub(crate) fn observation(&self) -> EndpointObservation {
@@ -318,7 +315,6 @@ impl SelectedEndpoint {
 
     #[cfg(test)]
     pub(crate) fn with_addresses(lease: EndpointLease, addresses: Vec<SocketAddr>) -> Self {
-        let server_name = lease.server_name().to_owned();
         let observation = lease.observation();
         Self {
             addresses: Some(addresses.into_iter()),
@@ -326,7 +322,6 @@ impl SelectedEndpoint {
             endpoint: lease.endpoint().clone(),
             observation,
             lease,
-            server_name,
             unix_pending: true,
         }
     }
