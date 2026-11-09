@@ -15,7 +15,9 @@ use support::{
 use tokio::time::timeout;
 
 fn pattern(length: usize) -> Vec<u8> {
-    (0..length).map(|index| (index % 251) as u8).collect()
+    (0..length)
+        .map(|index| u8::try_from(index % 251).expect("a remainder below 251"))
+        .collect()
 }
 
 #[tokio::test]
@@ -65,7 +67,8 @@ async fn static_files_larger_than_the_memory_limit_stream_intact_on_one_connecti
         fs::write(root.join("big.bin"), &body).expect("write large static file");
         fs::write(root.join("small.txt"), b"small").expect("write small static file");
 
-        let unused_origin = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve unused origin");
+        let unused_origin =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve unused origin");
         let reserved = ReservedListener::new();
         let mut config = proxy_config(
             reserved.address,
@@ -95,7 +98,10 @@ async fn static_files_larger_than_the_memory_limit_stream_intact_on_one_connecti
             .await
             .expect("TLS connection to OxiRoute");
 
-        for (index, path) in ["/big.bin", "/small.txt", "/big.bin"].into_iter().enumerate() {
+        for (index, path) in ["/big.bin", "/small.txt", "/big.bin"]
+            .into_iter()
+            .enumerate()
+        {
             let response = h1_request(&mut stream, path, index == 2)
                 .await
                 .expect("static response");

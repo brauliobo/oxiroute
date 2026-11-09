@@ -192,7 +192,8 @@ mod tests {
             open.blocking = true;
             let chunks = chunks(reader).await;
             assert!(chunks.iter().all(|chunk| chunk.len() <= CHUNK_BYTES));
-            let (from, to) = (start as usize, (start + length) as usize);
+            let from = usize::try_from(start).expect("start");
+            let to = usize::try_from(start + length).expect("end");
             assert_eq!(chunks.concat(), data[from..to], "{start}+{length}");
         }
     }
