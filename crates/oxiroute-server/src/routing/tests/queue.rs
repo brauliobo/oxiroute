@@ -525,3 +525,105 @@ async fn contending_requests_never_sleep_through_a_release() {
     assert_eq!((snapshot.queued, snapshot.queue_timeouts), (0, 0));
     assert!(pool.queue.is_unqueued());
 }
+
+fn reuse_pool(algorithm: UpstreamAlgorithm) -> Arc<EndpointPool> {
+    reuse_pool_of(algorithm, &["a", "b"])
+}
+
+fn reuse_pool_of(algorithm: UpstreamAlgorithm, names: &[&str]) -> Arc<EndpointPool> {
+    Arc::new(
+        EndpointPool::new_named_servers(
+            "reserve".into(),
+            names
+                .iter()
+                .zip(3000..)
+                .map(|(name, port)| runtime_server(name, port, Some(1))),
+            algorithm,
+            None,
+            Some(Duration::from_secs(5)),
+        )
+        .expect("pool"),
+    )
+}
+
+/// A pooled keep-alive connection of `name`: it holds the server's only permit and waits idle.
+fn idle_connection(pool: &EndpointPool, name: &str) -> Arc<EndpointLeaseInner> {
+    let connection = connection_lifetime(pool, name);
+    assert!(connection.try_acquire().expect("permit"));
+    connection.notify_reusable();
+    connection
+}
+
+async fn reusing(pool: &EndpointPool) -> EndpointLease {
+    pool.select_connection_target_waiting(&[], QueueTag::default())
+        .await
+        .expect("lease")
+}
+
+async fn nothing_is_free(pool: &EndpointPool) -> bool {
+    tokio::time::timeout(Duration::from_millis(40), reusing(pool))
+        .await
+        .is_err()
+}
+
+#[tokio::test]
+async fn a_selection_reserves_the_idle_connection_it_will_reuse() {
+    let pool = reuse_pool(UpstreamAlgorithm::First);
+    let _a = idle_connection(&pool, "a");
+    let _b = idle_connection(&pool, "b");
+
+    let first = reusing(&pool).await;
+    let second = reusing(&pool).await;
+
+    assert_eq!(first.server_name(), "a");
+    assert_eq!(
+        second.server_name(),
+        "b",
+        "a is reserved for the first request"
+    );
+}
+
+#[tokio::test]
+async fn a_request_that_finds_no_idle_connection_left_waits_for_a_release() {
+    let pool = reuse_pool(UpstreamAlgorithm::First);
+    let _a = idle_connection(&pool, "a");
+    let _b = idle_connection(&pool, "b");
+    let first = reusing(&pool).await;
+    let _second = reusing(&pool).await;
+    let third = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move { reusing(&pool).await.server_name().to_owned() }
+    });
+    super::queue::wait_for_queued(&pool, 1).await;
+
+    drop(first);
+
+    assert_eq!(third.await.expect("third"), "a");
+}
+
+#[tokio::test]
+async fn a_reserved_connection_that_is_taken_stays_reserved_until_the_request_is_connected() {
+    let pool = reuse_pool_of(UpstreamAlgorithm::First, &["a"]);
+    let a = idle_connection(&pool, "a");
+    let first = reusing(&pool).await;
+
+    a.notify_in_use();
+    assert!(nothing_is_free(&pool).await, "a serves the first request");
+    first.end_queue_wait();
+    a.notify_reusable();
+
+    assert_eq!(reusing(&pool).await.server_name(), "a");
+}
+
+#[tokio::test]
+async fn dropping_a_lease_that_never_connected_frees_its_reservation() {
+    let pool = reuse_pool_of(UpstreamAlgorithm::First, &["a"]);
+    let a = idle_connection(&pool, "a");
+    let first = reusing(&pool).await;
+    assert!(nothing_is_free(&pool).await);
+
+    drop(first);
+
+    assert_eq!(reusing(&pool).await.server_name(), "a");
+    drop(a);
+}
