@@ -146,8 +146,11 @@ pub(super) fn pingora_request_policy_error(error: RequestPolicyError) -> Error {
 }
 
 /// The request's `Content-Length`, without a lookup for the usual request that has none.
-pub(super) fn request_content_length(session: &Session) -> Result<Option<u64>, ()> {
-    if session.request_facts().content_lengths == 0 {
+pub(super) fn request_content_length(
+    session: &Session,
+    facts: RequestFacts,
+) -> Result<Option<u64>, ()> {
+    if facts.content_lengths == 0 {
         return Ok(None);
     }
     content_length(&session.req_header().headers)
@@ -273,7 +276,7 @@ pub(super) fn upstream_request_requires_mutation(
         return true;
     }
     if request.version == http::Version::HTTP_10
-        || (session.request_facts().connection && has_downstream_close(&request.headers))
+        || (ctx.request_facts.connection && has_downstream_close(&request.headers))
     {
         return true;
     }

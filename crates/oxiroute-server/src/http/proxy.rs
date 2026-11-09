@@ -59,6 +59,7 @@ use crate::{
         UpstreamPlan, enforce_http_version, is_pool_unavailable, validate_tls_connection,
     },
 };
+use pingora::protocols::http::v1::common::RequestFacts;
 
 use crate::http::evacuation::{Cancellation, EVACUATED, LeftRunning, is_evacuated};
 use crate::http::inflight::{self, InflightArrival, InflightGuard, Phase};
@@ -144,6 +145,8 @@ pub struct HttpRequestContext {
     response_status_override: Option<u16>,
     response_header_overrides: Vec<(HeaderName, HeaderValue)>,
     started_at: Instant,
+    /// What the request said about its framing when it arrived.
+    request_facts: RequestFacts,
     /// The latest clock reading of this request; see `refresh_clock`.
     now: Instant,
     total_deadline: Instant,
