@@ -32,12 +32,13 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime};
 #[cfg(target_os = "linux")]
 use tokio::io::Interest;
-use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt, BufStream, ReadBuf};
+use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
 use crate::protocols::l4::ext::{set_tcp_keepalive, TcpKeepalive};
+use crate::protocols::l4::lazy_read::LazyReadStream;
 use crate::protocols::l4::virt;
 use crate::protocols::raw_connect::ProxyDigest;
 use crate::protocols::{
@@ -357,6 +358,7 @@ impl AsRawSocket for RawStreamWrapper {
 
 // Large read buffering helps reducing syscalls with little trade-off
 // Ssl layer always does "small" reads in 16k (TLS record size) so L4 read buffer helps a lot.
+// The buffer is a thread-shared scratch (see `lazy_read`), so an idle connection holds none of it.
 const BUF_READ_SIZE: usize = 64 * 1024;
 // Small write buf to match MSS. Too large write buf delays real time communication.
 // This buffering effectively implements something similar to Nagle's algorithm.
@@ -376,7 +378,7 @@ pub struct Stream {
     // Declared first so it drops before the socket: a closed connection never still holds its slot.
     admission: Option<Box<dyn Any + Send + Sync>>,
     // Use `Option` to be able to swap to adjust the buffer size. Always safe to unwrap
-    stream: Option<BufStream<RawStreamWrapper>>,
+    stream: Option<LazyReadStream<RawStreamWrapper>>,
     // the data put back at the front of the read buffer, in order to replay the read
     rewind_read_buf: Vec<Vec<u8>>,
     buffer_write: bool,
@@ -399,11 +401,11 @@ impl Stream {
         self.admission = Some(admission);
     }
 
-    fn stream(&self) -> &BufStream<RawStreamWrapper> {
+    fn stream(&self) -> &LazyReadStream<RawStreamWrapper> {
         self.stream.as_ref().expect("stream should always be set")
     }
 
-    fn stream_mut(&mut self) -> &mut BufStream<RawStreamWrapper> {
+    fn stream_mut(&mut self) -> &mut LazyReadStream<RawStreamWrapper> {
         self.stream.as_mut().expect("stream should always be set")
     }
 
@@ -466,15 +468,15 @@ impl Stream {
         }
     }
 
-    /// Set the buffer of BufStream
+    /// Set the buffer of the stream
     /// It is only set later because of the malloc overhead in critical accept() path
     pub(crate) fn set_buffer(&mut self) {
         use std::mem;
-        // Since BufStream doesn't provide an API to adjust the buf directly,
-        // we take the raw stream out of it and put it in a new BufStream with the size we want
+        // The buffer sizes are fixed at construction, so take the raw stream out of the
+        // unbuffered stream and wrap it again with the sizes we want
         let stream = mem::take(&mut self.stream);
         let stream =
-            stream.map(|s| BufStream::with_capacity(BUF_READ_SIZE, BUF_WRITE_SIZE, s.into_inner()));
+            stream.map(|s| LazyReadStream::new(BUF_READ_SIZE, BUF_WRITE_SIZE, s.into_inner()));
         let _ = mem::replace(&mut self.stream, stream);
     }
 }
@@ -483,7 +485,7 @@ impl From<TcpStream> for Stream {
     fn from(s: TcpStream) -> Self {
         Stream {
             admission: None,
-            stream: Some(BufStream::with_capacity(
+            stream: Some(LazyReadStream::new(
                 UNBUFFERED_CAPACITY,
                 UNBUFFERED_CAPACITY,
                 RawStreamWrapper::new(RawStream::Tcp(s)),
@@ -505,7 +507,7 @@ impl From<virt::VirtualSocketStream> for Stream {
     fn from(s: virt::VirtualSocketStream) -> Self {
         Stream {
             admission: None,
-            stream: Some(BufStream::with_capacity(
+            stream: Some(LazyReadStream::new(
                 UNBUFFERED_CAPACITY,
                 UNBUFFERED_CAPACITY,
                 RawStreamWrapper::new(RawStream::Virtual(s)),
@@ -528,7 +530,7 @@ impl From<UnixStream> for Stream {
     fn from(s: UnixStream) -> Self {
         Stream {
             admission: None,
-            stream: Some(BufStream::with_capacity(
+            stream: Some(LazyReadStream::new(
                 UNBUFFERED_CAPACITY,
                 UNBUFFERED_CAPACITY,
                 RawStreamWrapper::new(RawStream::Unix(s)),

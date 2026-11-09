@@ -8,7 +8,7 @@ OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS co
 pre-handshake application admission and per-application handshake timeout, a non-truncating certificate subject conversion, correct
 HTTP/1 HEAD informational-response framing, owned HTTP/1 response preread payloads, borrowed HTTP/1
 upstream request writes, parser-owned HTTP/1 header names, an inline HTTP response task batch, an
-HTTP/2 test lifecycle correction, and stage-1 connection-pool experiments:
+HTTP/2 test lifecycle correction, a lazily allocated read buffer, and stage-1 connection-pool experiments:
 
 - `protocols/tls/mod.rs` declares the public `TlsConfigureHook` type.
 - `upstreams/peer.rs` stores the optional hook in `PeerOptions`, omits it from
@@ -60,6 +60,11 @@ HTTP/2 test lifecycle correction, and stage-1 connection-pool experiments:
 - `protocols/l4/stream.rs` constructs accepted TCP, Unix, and virtual streams with one-byte read and
   write buffers instead of zero-capacity ones, which tokio 1.54 rejects. Both sizes stay below every
   read and write, so the streams remain unbuffered until `set_buffer`.
+- `protocols/l4/lazy_read.rs` replaces `tokio::io::BufStream` as the accepted stream's buffer. Reads go
+  through one 64 KiB scratch buffer per thread and only the bytes the caller did not ask for stay with the
+  connection, in a buffer that is released as soon as the socket would block, so an idle keep-alive
+  connection holds no read buffer (it held 64 KiB). Reads of 64 KiB or more still bypass the scratch;
+  the write buffer is the same `BufWriter`. The module's tests need only `tokio`.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.
@@ -69,6 +74,6 @@ upstream packaging commentary; that non-build manifest is intentionally omitted 
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
 review the connector hook, admission guard and handshake-timeout hook, subject conversion, HTTP/1 HEAD informational-response,
-owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, HTTP/2 test
+owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, lazy read buffer, HTTP/2 test
 lifecycle, and connection-pool changes, then rerun the vendored connector pool, BodyReader, H1
 client, and H2 server suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.
