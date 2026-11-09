@@ -18,6 +18,8 @@ RELEASE_REQUIRED_PATHS=(
   fuzz/Cargo.lock
   benchmarks/loadgen/Cargo.lock
   ui/pnpm-lock.yaml
+  ui/stats.html
+  contracts/stats-page.openapi.json
   crates/oxiroute-server/assets/stats/index.html
   crates/oxiroute-server/src/observability/stats_page/assets/table.rs
   remotion/pnpm-lock.yaml
@@ -38,6 +40,7 @@ RELEASE_ALLOWED_SECRET_PATHS=(
   vendor/pingora-core/examples/keys/clients/key-1.pem
   vendor/pingora-core/examples/keys/clients/key-2.pem
   vendor/pingora-core/examples/keys/server/key.pem
+  vendor/pingora-core/src/protocols/tls/boringssl_openssl/stream_tests.rs
 )
 
 RELEASE_DENIED_PATH_PATTERNS=(
