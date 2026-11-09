@@ -1,13 +1,12 @@
 #![allow(clippy::missing_panics_doc, clippy::must_use_candidate)]
 
 use std::{
-    collections::BTreeSet,
     fs,
     io::Read,
-    net::{Ipv4Addr, SocketAddr},
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
-    sync::{Mutex, OnceLock},
+    sync::OnceLock,
     thread,
     time::{Duration, Instant},
 };
@@ -27,20 +26,12 @@ pub const PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_DELAY: Duration = Duration::from_millis(10);
 static UI_BUILD: OnceLock<()> = OnceLock::new();
 
-/// A free loopback address that no earlier call of this test process returned: the kernel may hand
-/// a released ephemeral port out again, which would give two listeners of one configuration the
-/// same address.
+#[path = "ports.rs"]
+pub mod ports;
+
+/// A loopback address reserved for this test process alone; see [`ports`].
 pub fn reserve_tcp_address() -> SocketAddr {
-    static RESERVED: Mutex<BTreeSet<SocketAddr>> = Mutex::new(BTreeSet::new());
-    loop {
-        let address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .expect("reserve TCP address")
-            .local_addr()
-            .expect("reserved TCP address");
-        if RESERVED.lock().unwrap().insert(address) {
-            return address;
-        }
-    }
+    ports::unused_address()
 }
 
 pub fn build_ui() -> PathBuf {
