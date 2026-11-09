@@ -104,6 +104,15 @@ pub trait Peek {
     async fn try_peek(&mut self, _buf: &mut [u8]) -> std::io::Result<bool> {
         Ok(false)
     }
+
+    /// Whether a read could make progress, without reading. `Ready` also means "unknown";
+    /// `Pending` means nothing can be read and the waker is registered for when something can.
+    fn poll_read_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
 }
 
 use std::any::Any;

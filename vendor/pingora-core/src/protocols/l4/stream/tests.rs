@@ -184,3 +184,24 @@ async fn test_stream_two_subsequent_peek_calls_before_read() {
     stream.read_to_end(&mut buffer).await.unwrap();
     assert_eq!(buffer, message[2..]);
 }
+
+#[tokio::test]
+async fn read_ready_follows_the_socket_without_reading_it() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut peer = TcpStream::connect(addr).await.unwrap();
+    let mut stream: Stream = listener.accept().await.unwrap().0.into();
+
+    // A read that finds nothing is what tells the runtime the socket is not readable.
+    let mut buf = [0; 5];
+    assert!(futures::poll!(std::pin::pin!(stream.read(&mut buf))).is_pending());
+    assert!(futures::poll!(std::future::poll_fn(|cx| stream.poll_read_ready(cx))).is_pending());
+
+    peer.write_all(b"ready").await.unwrap();
+    std::future::poll_fn(|cx| stream.poll_read_ready(cx))
+        .await
+        .unwrap();
+    // Asking does not consume anything.
+    stream.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"ready");
+}
