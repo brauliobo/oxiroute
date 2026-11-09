@@ -8,12 +8,12 @@
 
 .ox-table thead th {
   position: sticky;
-  top: var(--ox-sticky-top, 0);
+  top: 0;
   z-index: 2;
   padding: 0.35rem 0.5rem;
-  border-bottom: 2px solid var(--oxd-border);
-  background: var(--oxd-bg);
-  color: var(--oxd-muted);
+  border-bottom: 2px solid var(--ox-border);
+  background: var(--ox-bg);
+  color: var(--ox-muted);
   font-size: 0.7rem;
   text-align: left;
   text-transform: uppercase;
@@ -23,7 +23,7 @@
 
 .ox-table thead th[aria-sort='ascending'],
 .ox-table thead th[aria-sort='descending'] {
-  color: var(--oxd-fg);
+  color: var(--ox-fg);
 }
 
 .ox-sort,
@@ -51,7 +51,7 @@
 .ox-table td,
 .ox-table tbody th {
   padding: 0.35rem 0.5rem;
-  border-bottom: 1px solid var(--oxd-border);
+  border-bottom: 1px solid var(--ox-border);
   font-weight: 400;
   text-align: left;
   vertical-align: top;
@@ -100,30 +100,30 @@
 
 .ox-more {
   padding: 0.1rem 0.5rem;
-  border: 1px solid var(--oxd-border);
+  border: 1px solid var(--ox-border);
   border-radius: 4px;
-  background: var(--oxd-bg);
+  background: var(--ox-bg);
   font-size: 0.75rem;
 }
 
 .ox-row:hover > tr:first-child > *,
 .ox-open > tr:first-child > * {
-  background: var(--oxd-surface);
+  background: var(--ox-surface);
 }
 
 .ox-changed > tr:first-child > *:first-child,
 .ox-changed > .ox-group > th {
-  box-shadow: inset 4px 0 0 var(--oxd-info);
+  box-shadow: inset 4px 0 0 var(--ox-info);
 }
 
 .ox-changed > tr:first-child > * {
-  background: color-mix(in srgb, var(--oxd-info) 12%, transparent);
+  background: color-mix(in srgb, var(--ox-info) 12%, transparent);
 }
 
 .ox-group th {
   padding: 0.6rem 0.5rem 0.4rem;
-  border-top: 2px solid var(--oxd-border);
-  background: var(--oxd-surface);
+  border-top: 2px solid var(--ox-border);
+  background: var(--ox-surface);
 }
 
 .ox-group-head {
@@ -144,7 +144,7 @@
 }
 
 .ox-total > * {
-  background: var(--oxd-surface);
+  background: var(--ox-surface);
   font-weight: 600;
 }
 
@@ -154,7 +154,7 @@
 
 .ox-details > td {
   padding: 0.75rem 1rem;
-  background: var(--oxd-surface);
+  background: var(--ox-surface);
 }
 
 .ox-detail-grid {
@@ -204,7 +204,7 @@
 
   .ox-table tbody {
     margin-bottom: 0.75rem;
-    border: 1px solid var(--oxd-border);
+    border: 1px solid var(--ox-border);
     border-radius: 6px;
   }
 
@@ -237,7 +237,7 @@
   }
 
   .ox-table .ox-total {
-    background: var(--oxd-surface);
+    background: var(--ox-surface);
   }
 
   .ox-table .ox-total > * {
@@ -247,7 +247,7 @@
   .ox-table td[data-label]::before {
     content: attr(data-label);
     display: block;
-    color: var(--oxd-muted);
+    color: var(--ox-muted);
     font-size: 0.65rem;
     text-transform: uppercase;
     letter-spacing: 0.03em;

@@ -6,17 +6,17 @@
   border: 1px solid currentcolor;
   border-radius: 4px;
   background: color-mix(in srgb, currentcolor 10%, transparent);
-  color: var(--oxd-muted);
+  color: var(--ox-muted);
   font-size: 0.75rem;
   font-weight: 700;
   line-height: 1.5;
   white-space: nowrap;
 }
 
-.ox-tone-ok { color: var(--oxd-ok); }
-.ox-tone-warn { color: var(--oxd-warn); }
-.ox-tone-bad { color: var(--oxd-bad); }
-.ox-tone-info { color: var(--oxd-info); }
+.ox-tone-ok { color: var(--ox-ok); }
+.ox-tone-warn { color: var(--ox-warn); }
+.ox-tone-bad { color: var(--ox-bad); }
+.ox-tone-info { color: var(--ox-info); }
 
 .ox-icon {
   width: 0.95em;
@@ -31,7 +31,7 @@
 
 .ox-sub {
   display: block;
-  color: var(--oxd-muted);
+  color: var(--ox-muted);
   font-size: 0.75rem;
 }
 
@@ -39,9 +39,9 @@
   display: inline-block;
   margin-left: 0.4rem;
   padding: 0 0.3rem;
-  border: 1px solid var(--oxd-info);
+  border: 1px solid var(--ox-info);
   border-radius: 3px;
-  color: var(--oxd-info);
+  color: var(--ox-info);
   font-size: 0.7rem;
   font-weight: 700;
 }
@@ -51,7 +51,7 @@
   width: 60px;
   height: 16px;
   fill: none;
-  stroke: var(--oxd-info);
+  stroke: var(--ox-info);
   stroke-width: 1.25;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -68,7 +68,7 @@
 .ox-lat-name {
   display: inline-block;
   min-width: 2rem;
-  color: var(--oxd-muted);
+  color: var(--ox-muted);
 }
 
 .ox-resp {
@@ -80,7 +80,7 @@
   height: 0.5rem;
   overflow: hidden;
   border-radius: 2px;
-  background: var(--oxd-surface);
+  background: var(--ox-surface);
 }
 
 .ox-resp-seg {
@@ -99,19 +99,19 @@
 }
 
 .ox-resp-name {
-  color: var(--oxd-muted);
+  color: var(--ox-muted);
 }
 
 /* Classes differ in texture as well as colour. */
-.ox-resp-seg.ox-r1xx { background: var(--oxd-info); }
-.ox-resp-seg.ox-r2xx { background: var(--oxd-ok); }
-.ox-resp-seg.ox-r3xx { background: var(--oxd-muted); }
+.ox-resp-seg.ox-r1xx { background: var(--ox-info); }
+.ox-resp-seg.ox-r2xx { background: var(--ox-ok); }
+.ox-resp-seg.ox-r3xx { background: var(--ox-muted); }
 .ox-resp-seg.ox-r4xx {
-  background: repeating-linear-gradient(135deg, var(--oxd-warn) 0 3px, transparent 3px 5px), var(--oxd-warn);
+  background: repeating-linear-gradient(135deg, var(--ox-warn) 0 3px, transparent 3px 5px), var(--ox-warn);
   background-blend-mode: multiply;
 }
 .ox-resp-seg.ox-r5xx {
-  background: repeating-linear-gradient(90deg, var(--oxd-bad) 0 2px, var(--oxd-surface) 2px 4px);
+  background: repeating-linear-gradient(90deg, var(--ox-bad) 0 2px, var(--ox-surface) 2px 4px);
 }
 
 .ox-dl {
@@ -124,11 +124,11 @@
   justify-content: space-between;
   gap: 1rem;
   padding: 0.1rem 0;
-  border-bottom: 1px dotted var(--oxd-border);
+  border-bottom: 1px dotted var(--ox-border);
 }
 
 .ox-dl dt {
-  color: var(--oxd-muted);
+  color: var(--ox-muted);
 }
 
 .ox-dl dd {
@@ -144,7 +144,7 @@
 }
 
 .ox-hist figcaption {
-  color: var(--oxd-muted);
+  color: var(--ox-muted);
 }
 
 .ox-hist-rows {
@@ -162,7 +162,7 @@
 
 .ox-hist-bar {
   height: 0.45rem;
-  background: linear-gradient(var(--oxd-info), var(--oxd-info)) no-repeat var(--oxd-surface);
+  background: linear-gradient(var(--ox-info), var(--ox-info)) no-repeat var(--ox-surface);
   background-size: calc(var(--ox-w, 0) * 1%) 100%;
 }
 
@@ -180,13 +180,13 @@
 
 .ox-tile {
   padding: 0.5rem 0.7rem;
-  border: 1px solid var(--oxd-border);
+  border: 1px solid var(--ox-border);
   border-radius: 6px;
-  background: var(--oxd-surface);
+  background: var(--ox-surface);
 }
 
 .ox-tile dt {
-  color: var(--oxd-muted);
+  color: var(--ox-muted);
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
