@@ -265,6 +265,18 @@ fn join(pool: &RoundRobinPool, name: &str, port: u16) -> (ServerHandle, RuntimeE
     (pool.add_server(server, spec).expect("join"), endpoint)
 }
 
+/// Waits for the probes to repeat; a fixed window is shorter than a scheduling stall on a busy host.
+async fn probes_repeat(check: &CountingCheck) -> usize {
+    timeout(Duration::from_secs(5), async {
+        while check.calls.load(Ordering::SeqCst) < 2 {
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the server is probed repeatedly");
+    check.calls.load(Ordering::SeqCst)
+}
+
 async fn probes_settle(check: &CountingCheck) -> usize {
     sleep(Duration::from_millis(60)).await;
     check.calls.load(Ordering::SeqCst)
@@ -285,8 +297,7 @@ async fn a_joining_server_is_checked_and_a_leaving_one_is_not() {
 
     let (handle, endpoint) = join(&pool, "gpu", 9000);
     supervisor.add_target("dynamic", handle.clone(), endpoint);
-    let running_calls = probes_settle(&check).await;
-    assert!(running_calls >= 2, "the new server is probed repeatedly");
+    probes_repeat(&check).await;
     assert_eq!(
         pool.health_snapshot().endpoints[0].state,
         crate::EndpointHealthState::Healthy
@@ -322,7 +333,7 @@ async fn targets_added_before_start_run_once_and_shutdown_cancels_them() {
         let supervisor = supervisor.clone();
         async move { supervisor.run(watch).await }
     });
-    assert!(probes_settle(&check).await >= 2);
+    probes_repeat(&check).await;
 
     shutdown.send(true).expect("shutdown");
     running.await.expect("supervisor stops");
