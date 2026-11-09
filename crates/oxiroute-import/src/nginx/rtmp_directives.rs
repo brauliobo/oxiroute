@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 
+mod directive_macro;
 mod forms;
 mod model;
 mod table;
