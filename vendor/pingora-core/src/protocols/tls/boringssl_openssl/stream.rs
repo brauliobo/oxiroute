@@ -330,6 +330,6 @@ impl SslDigest {
 // TODO: implement Peek if needed
 impl<T> Peek for SslStream<T> {}
 
-#[cfg(all(test, feature = "openssl_derived"))]
+#[cfg(all(test, feature = "openssl"))]
 #[path = "stream_tests.rs"]
 mod tests;

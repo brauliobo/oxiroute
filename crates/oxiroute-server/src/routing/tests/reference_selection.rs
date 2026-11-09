@@ -102,6 +102,21 @@ impl Reference {
         Some(chosen)
     }
 
+    /// The server a request that may reuse an idle pooled connection is bound to.
+    fn reuse(&mut self, pool: &EndpointPool, excluded: &[String]) -> Option<usize> {
+        let members = pool.health.members.load_full();
+        let mut pooled = self.candidates(pool, excluded, now_unix_ms());
+        pooled.retain(|candidate| {
+            let server = &members.endpoints[candidate.index];
+            server.has_capacity() || server.has_idle_connection()
+        });
+        let all = pooled.clone();
+        self.rank(pool, &mut pooled);
+        let chosen = pooled.first()?.index;
+        self.commit(pool, &all, chosen);
+        Some(chosen)
+    }
+
     /// The server `connection_target` hands a pending lease of.
     fn target(&mut self, pool: &EndpointPool, excluded: &[String]) -> Option<usize> {
         let members = pool.health.members.load_full();
@@ -135,19 +150,27 @@ impl Random {
     }
 }
 
-const SERVERS: usize = 9;
+const SERVERS: usize = 12;
 
 fn small(value: usize) -> u16 {
     u16::try_from(value).expect("small")
 }
 
 fn pool_of(algorithm: UpstreamAlgorithm, passive: PassiveFailurePolicy) -> EndpointPool {
+    queued_pool_of(algorithm, passive, None)
+}
+
+fn queued_pool_of(
+    algorithm: UpstreamAlgorithm,
+    passive: PassiveFailurePolicy,
+    queue_timeout: Option<Duration>,
+) -> EndpointPool {
     EndpointPool::new_named_servers_resilient(
         "reference".into(),
         (0..SERVERS).map(|index| runtime_server(&format!("s{index}"), 4000 + small(index), None)),
         algorithm,
         Some(HealthStartup::Healthy),
-        None,
+        queue_timeout,
         passive,
         PoolResiliencePolicy::default(),
     )
@@ -158,10 +181,43 @@ fn name(index: usize) -> String {
     format!("s{index}")
 }
 
+/// Pooled keep-alive connections: they hold a permit, and idle ones can be reused without one.
+fn pool_connection(
+    pool: &EndpointPool,
+    random: &mut Random,
+    connections: &mut Vec<Arc<EndpointLeaseInner>>,
+) {
+    match random.below(4) {
+        0 | 1 => {
+            let lease = pool.select_server_connection_target(&name(random.below(SERVERS)));
+            if let Some(connection) = lease.map(|lease| Arc::clone(&lease.inner))
+                && connection.try_acquire().expect("acquire")
+            {
+                connection.notify_reusable();
+                connections.push(connection);
+            }
+        }
+        2 if !connections.is_empty() => {
+            connections[random.below(connections.len())].notify_in_use();
+        }
+        _ if !connections.is_empty() => {
+            connections.swap_remove(random.below(connections.len()));
+        }
+        _ => {}
+    }
+}
+
+/// More load changes than the index's log keeps between two selections: `churn` leaves and
+/// returns, and then `server` keeps one lease.
+fn burst(pool: &EndpointPool, churn: &str, server: &str, held: &mut Vec<EndpointLease>) {
+    (0..1100).for_each(|_| drop(pool.select_named_server(churn).lease));
+    held.extend(pool.select_named_server(server).lease);
+}
+
 /// Changes something selection depends on, through the pool's own entry points.
 fn disturb(pool: &EndpointPool, random: &mut Random, held: &mut Vec<EndpointLease>) {
     let server = name(random.below(SERVERS));
-    match random.below(10) {
+    match random.below(11) {
         0 => pool
             .set_server_administrative_state(&server, AdministrativeState::Drain)
             .expect("drain"),
@@ -197,20 +253,47 @@ fn disturb(pool: &EndpointPool, random: &mut Random, held: &mut Vec<EndpointLeas
                 held.swap_remove(random.below(held.len()));
             }
         }
-        _ => pool.record_passive_failure(random.below(SERVERS), HealthFailure::Timeout),
+        9 => pool.record_passive_failure(random.below(SERVERS), HealthFailure::Timeout),
+        // More load changes than the index's log keeps between two selections.
+        _ => burst(pool, &name(random.below(SERVERS)), &server, held),
     }
 }
 
 fn run(algorithm: UpstreamAlgorithm, passive: PassiveFailurePolicy, seed: u64) {
-    let pool = pool_of(algorithm, passive);
+    run_reusing(algorithm, passive, seed, None);
+}
+
+/// With a queue timeout, requests may also be bound to idle pooled connections.
+fn run_reusing(
+    algorithm: UpstreamAlgorithm,
+    passive: PassiveFailurePolicy,
+    seed: u64,
+    queue_timeout: Option<Duration>,
+) {
+    let pool = queued_pool_of(algorithm, passive, queue_timeout);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
     let mut reference = Reference::new(SERVERS);
     let mut random = Random(seed);
     let mut held = Vec::new();
+    let mut connections = Vec::new();
     for step in 0..4000 {
         let excluded = (0..random.below(3))
             .map(|_| name(random.below(SERVERS)))
             .collect::<Vec<_>>();
-        if random.below(2) == 0 {
+        if queue_timeout.is_some() && random.below(3) == 0 {
+            let expected = reference.reuse(&pool, &excluded).map(name);
+            let lease = runtime
+                .block_on(pool.select_connection_target_waiting(&excluded, QueueTag::default()));
+            assert_eq!(
+                lease.as_ref().map(|lease| lease.server_name().to_owned()),
+                expected,
+                "reuse at step {step}"
+            );
+            held.extend(lease.filter(|_| random.below(3) != 0));
+        } else if random.below(2) == 0 {
             let expected = reference.acquire(&pool, &excluded).map(name);
             let lease = pool.select_server_excluding(&excluded).lease;
             assert_eq!(
@@ -230,6 +313,9 @@ fn run(algorithm: UpstreamAlgorithm, passive: PassiveFailurePolicy, seed: u64) {
         }
         if random.below(3) == 0 {
             disturb(&pool, &mut random, &mut held);
+        }
+        if queue_timeout.is_some() && random.below(2) == 0 {
+            pool_connection(&pool, &mut random, &mut connections);
         }
     }
 }
@@ -262,6 +348,20 @@ fn first_chooses_like_the_scan_of_every_server() {
 fn least_connections_chooses_like_the_scan_of_every_server() {
     for seed in 1..=4 {
         run(UpstreamAlgorithm::LeastConnections, ejecting(), seed);
+    }
+}
+
+#[test]
+fn every_algorithm_chooses_like_the_scan_when_idle_connections_can_be_reused() {
+    for seed in 1..=2 {
+        for algorithm in [
+            UpstreamAlgorithm::RoundRobin,
+            UpstreamAlgorithm::First,
+            UpstreamAlgorithm::LeastConnections,
+            weighted(),
+        ] {
+            run_reusing(algorithm, ejecting(), seed, Some(Duration::from_millis(1)));
+        }
     }
 }
 
@@ -301,6 +401,15 @@ fn power_of_two_choices_only_chooses_admissible_servers_and_avoids_the_busiest()
         [0, 4, 5, 6, 7, 8].iter().all(|&index| picks[index] > 0),
         "{picks:?}"
     );
+}
+
+#[test]
+fn a_burst_of_load_changes_between_two_selections_is_not_lost() {
+    let pool = pool_of(UpstreamAlgorithm::LeastConnections, ejecting());
+    let mut held = vec![pool.select().expect("first")];
+    burst(&pool, "s7", "s1", &mut held);
+
+    assert_eq!(pool.select().expect("second").server_name(), "s2");
 }
 
 #[test]

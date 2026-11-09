@@ -401,3 +401,25 @@ fn several_servers_join_in_one_membership_change_and_a_duplicate_is_refused_alon
         "joins in the state they asked for"
     );
 }
+
+#[test]
+fn names_resolve_to_their_positions_in_small_and_large_pools() {
+    for count in [1, 5, 16, 17, 64, 700] {
+        let pool = pool(UpstreamAlgorithm::RoundRobin, &[]);
+        let joining = (0..count)
+            .map(|index| NewMember {
+                server: runtime_server(&format!("server-{index}"), 4000, None),
+                spec: dynamic(1, 100),
+                state: AdministrativeState::Ready,
+            })
+            .collect();
+        assert!(pool.add_servers(joining).iter().all(Result::is_ok));
+        let members = pool.health.members.load_full();
+        for (position, member) in members.endpoints.iter().enumerate() {
+            assert_eq!(members.position(&member.name), Some(position), "{count}");
+        }
+        assert_eq!(members.position("server-"), None);
+        assert_eq!(members.position(&format!("server-{count}")), None);
+        assert_eq!(members.position(""), None);
+    }
+}
