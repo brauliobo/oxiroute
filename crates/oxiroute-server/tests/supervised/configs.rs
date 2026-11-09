@@ -32,10 +32,7 @@ pub(super) fn control_http_response(address: SocketAddr, path: &str) -> String {
 }
 
 pub(super) fn reserve_tcp_address() -> SocketAddr {
-    std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("TCP listener probe")
-        .local_addr()
-        .expect("TCP listener address")
+    ports_support::unused_address()
 }
 
 pub(super) fn verify_listener_descriptors(worker_pid: u32, listener_targets: &[PathBuf]) {

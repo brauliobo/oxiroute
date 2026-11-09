@@ -4,10 +4,7 @@ use super::*;
 #[test]
 pub(super) fn supervised_worker_replaces_a_same_manifest_generation() {
     let directory = tempfile::tempdir().expect("supervised fixture directory");
-    let tcp_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("temporary TCP bind")
-        .local_addr()
-        .expect("TCP address");
+    let tcp_address = ports_support::unused_address();
     let unix_path = directory.path().join("replacement.sock");
     let initial = listeners_only_config(tcp_address, unix_path.clone());
     let path = directory.path().join("oxiroute.kdl");
@@ -105,10 +102,7 @@ pub(super) fn supervised_worker_replaces_a_same_manifest_generation() {
 #[test]
 pub(super) fn supervised_worker_reactivates_after_a_replacement_rejection() {
     let directory = tempfile::tempdir().expect("supervised fixture directory");
-    let tcp_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("temporary TCP bind")
-        .local_addr()
-        .expect("TCP address");
+    let tcp_address = ports_support::unused_address();
     let unix_path = directory.path().join("rollback.sock");
     let config = listeners_only_config(tcp_address, unix_path);
     let path = directory.path().join("oxiroute.kdl");
@@ -174,10 +168,7 @@ pub(super) fn supervised_worker_reactivates_after_a_replacement_rejection() {
 #[test]
 pub(super) fn listener_duplication_failure_never_acknowledges_adoption_or_reaches_running() {
     let directory = tempfile::tempdir().expect("supervised fixture directory");
-    let tcp_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("temporary TCP bind")
-        .local_addr()
-        .expect("TCP address");
+    let tcp_address = ports_support::unused_address();
     let unix_path = directory.path().join("failure.sock");
     let config = listeners_only_config(tcp_address, unix_path);
     let path = directory.path().join("oxiroute.kdl");
@@ -208,10 +199,7 @@ pub(super) fn listener_duplication_failure_never_acknowledges_adoption_or_reache
 #[test]
 pub(super) fn supervised_listener_rejection_releases_ownership_and_allows_clean_retry() {
     let directory = tempfile::tempdir().expect("supervised retry fixture directory");
-    let tcp_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("temporary retry TCP bind")
-        .local_addr()
-        .expect("retry TCP address");
+    let tcp_address = ports_support::unused_address();
     let unix_path = directory.path().join("retry.sock");
     let config = listeners_only_config(tcp_address, unix_path.clone());
     let path = directory.path().join("oxiroute.kdl");
@@ -248,10 +236,7 @@ pub(super) fn supervised_listener_rejection_releases_ownership_and_allows_clean_
 #[test]
 pub(super) fn supervised_listener_worker_crash_is_reaped_and_master_cleans_namespace() {
     let directory = tempfile::tempdir().expect("supervised fixture directory");
-    let tcp_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("temporary TCP bind")
-        .local_addr()
-        .expect("TCP address");
+    let tcp_address = ports_support::unused_address();
     let unix_path = directory.path().join("crash.sock");
     let config = listeners_only_config(tcp_address, unix_path.clone());
     let path = directory.path().join("oxiroute.kdl");

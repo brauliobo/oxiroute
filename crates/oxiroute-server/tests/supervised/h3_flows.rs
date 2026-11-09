@@ -4,10 +4,7 @@ use super::*;
 #[tokio::test]
 pub(super) async fn supervised_worker_adopts_h3_and_serves_a_quic_request() {
     let directory = tempfile::tempdir().expect("supervised H3 fixture directory");
-    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("H3 listener probe")
-        .local_addr()
-        .expect("H3 listener address");
+    let listener_address = ports_support::unused_address();
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
     let config = h3_only_config(listener_address, key.path());
     let path = directory.path().join("oxiroute.kdl");
@@ -91,10 +88,7 @@ pub(super) async fn supervised_worker_adopts_h3_and_serves_a_quic_request() {
 pub(super) async fn supervised_worker_replaces_an_active_h3_request_with_goaway_and_owned_descriptors()
  {
     let directory = tempfile::tempdir().expect("supervised H3 replacement directory");
-    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("H3 listener probe")
-        .local_addr()
-        .expect("H3 listener address");
+    let listener_address = ports_support::unused_address();
     let (origin_address, origin_started, release_origin, origin_task) = spawn_slow_h3_origin();
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
     let initial = h3_proxy_config(listener_address, key.path(), origin_address);
@@ -336,10 +330,7 @@ pub(super) async fn supervised_worker_replaces_an_active_h3_request_with_goaway_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 pub(super) async fn supervised_h3_replacement_rolls_back_after_candidate_rejects_adoption() {
     let directory = tempfile::tempdir().expect("supervised H3 rollback directory");
-    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("H3 listener probe")
-        .local_addr()
-        .expect("H3 listener address");
+    let listener_address = ports_support::unused_address();
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
     let config = h3_only_config(listener_address, key.path());
     let path = directory.path().join("oxiroute.kdl");
@@ -394,10 +385,7 @@ pub(super) async fn supervised_h3_replacement_rolls_back_after_candidate_rejects
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 pub(super) async fn supervised_worker_restarts_and_serves_new_h3_traffic_after_clean_shutdown() {
     let directory = tempfile::tempdir().expect("supervised H3 restart directory");
-    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("H3 listener probe")
-        .local_addr()
-        .expect("H3 listener address");
+    let listener_address = ports_support::unused_address();
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
     let config = h3_only_config(listener_address, key.path());
     let path = directory.path().join("oxiroute.kdl");
@@ -444,10 +432,7 @@ pub(super) async fn supervised_worker_restarts_and_serves_new_h3_traffic_after_c
 pub(super) async fn supervised_worker_crash_with_active_h3_request_is_reaped_and_releases_listener()
 {
     let directory = tempfile::tempdir().expect("supervised H3 crash directory");
-    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("H3 listener probe")
-        .local_addr()
-        .expect("H3 listener address");
+    let listener_address = ports_support::unused_address();
     let (origin_address, origin_started, release_origin, origin_task) = spawn_slow_h3_origin();
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
     let config = h3_proxy_config(listener_address, key.path(), origin_address);

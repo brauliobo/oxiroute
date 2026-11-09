@@ -122,10 +122,7 @@ pub(super) fn canonical_revision(path: &Path) -> String {
 #[test]
 pub(super) fn supervised_worker_serves_tcp_and_unix_http_from_transferred_descriptors() {
     let directory = tempfile::tempdir().expect("supervised fixture directory");
-    let tcp_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("temporary TCP bind")
-        .local_addr()
-        .expect("TCP address");
+    let tcp_address = ports_support::unused_address();
     let unix_path = directory.path().join("supervised.sock");
     let config = listeners_only_config(tcp_address, unix_path.clone());
     let path = directory.path().join("oxiroute.kdl");
@@ -181,10 +178,7 @@ pub(super) fn supervised_worker_adopts_udp_and_reports_datagram_status() {
         .set_read_timeout(Some(IO_TIMEOUT))
         .expect("UDP upstream timeout");
     let upstream_address = upstream.local_addr().expect("UDP upstream address");
-    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("UDP listener probe")
-        .local_addr()
-        .expect("UDP listener address");
+    let listener_address = ports_support::unused_address();
     let config = udp_only_config(listener_address, upstream_address);
     let path = directory.path().join("oxiroute.kdl");
     fs::write(

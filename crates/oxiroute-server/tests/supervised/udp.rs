@@ -13,10 +13,7 @@ pub(super) fn supervised_worker_replaces_an_active_udp_session_without_rebinding
     new_upstream
         .set_read_timeout(Some(IO_TIMEOUT))
         .expect("new UDP upstream timeout");
-    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("UDP listener probe")
-        .local_addr()
-        .expect("UDP listener address");
+    let listener_address = ports_support::unused_address();
     let mut initial = udp_only_config(
         listener_address,
         old_upstream.local_addr().expect("old UDP upstream address"),
@@ -170,10 +167,7 @@ pub(super) fn supervised_udp_replacement_rolls_back_after_candidate_rejects_adop
     upstream
         .set_read_timeout(Some(IO_TIMEOUT))
         .expect("UDP upstream timeout");
-    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("UDP listener probe")
-        .local_addr()
-        .expect("UDP listener address");
+    let listener_address = ports_support::unused_address();
     let config = udp_only_config(
         listener_address,
         upstream.local_addr().expect("UDP upstream address"),
@@ -266,10 +260,7 @@ pub(super) fn supervised_worker_restarts_and_serves_new_udp_traffic_after_clean_
     upstream
         .set_read_timeout(Some(IO_TIMEOUT))
         .expect("UDP upstream timeout");
-    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("UDP listener probe")
-        .local_addr()
-        .expect("UDP listener address");
+    let listener_address = ports_support::unused_address();
     let config = udp_only_config(
         listener_address,
         upstream.local_addr().expect("UDP upstream address"),
@@ -353,10 +344,7 @@ pub(super) fn supervised_worker_crash_with_active_udp_session_is_reaped_and_rele
     upstream
         .set_read_timeout(Some(IO_TIMEOUT))
         .expect("UDP upstream timeout");
-    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .expect("UDP listener probe")
-        .local_addr()
-        .expect("UDP listener address");
+    let listener_address = ports_support::unused_address();
     let config = udp_only_config(
         listener_address,
         upstream.local_addr().expect("UDP upstream address"),
