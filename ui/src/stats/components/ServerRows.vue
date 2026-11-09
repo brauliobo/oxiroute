@@ -62,14 +62,14 @@ tbody.ox-row(:class="{ 'ox-changed': flagged, 'ox-open': open }" :data-row="serv
       span(:title="cell.exact(server.counters.errors)") {{ cell.count(server.counters.errors) }}
       span.ox-sub {{ cell.rate(server.rates.errors) }}
       span.ox-sub(:title="cell.exact(retries)") {{ cell.count(retries) }} retries
-    td(data-label="Check")
+    td.ox-nowrap(data-label="Check")
       span {{ wire.check.enabled ? wire.health : 'unchecked' }}
       span.ox-sub checked {{ cell.since(sampledAt, wire.check.lastCheckedAtUnixMs) }}
       span.ox-sub {{ checks }}
     td(data-label="Weight")
       span {{ wire.weight }}
       span.ox-sub(v-if="wire.configuredWeight !== wire.weight") configured {{ wire.configuredWeight }}
-    td(data-label="Downtime")
+    td.ox-nowrap(data-label="Downtime")
       span {{ cell.duration(wire.downtimeMs) }}
       span.ox-sub changed {{ cell.since(sampledAt, wire.lastTransitionAtUnixMs) }}
     td(data-label="Latency")
