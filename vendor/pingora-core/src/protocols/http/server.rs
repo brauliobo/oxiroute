@@ -193,6 +193,26 @@ impl Session {
         }
     }
 
+    /// Writes a complete locally generated response in one buffer, see
+    /// `v1::server::HttpSession::write_rendered_response()`. Returns `Ok(false)` without writing for
+    /// sessions that are not HTTP/1, whose callers use `write_response_header()` instead.
+    pub async fn write_rendered_response(
+        &mut self,
+        status: http::StatusCode,
+        rendered_head: &[u8],
+        request_id: Option<&http::HeaderValue>,
+        body: &[u8],
+    ) -> Result<bool> {
+        match self {
+            Self::H1(s) => {
+                s.write_rendered_response(status, rendered_head, request_id, body)
+                    .await?;
+                Ok(true)
+            }
+            Self::H2(_) | Self::Subrequest(_) | Self::Custom(_) => Ok(false),
+        }
+    }
+
     /// Enable or disable automatically generated downstream response headers.
     pub fn set_automatic_response_headers(&mut self, enabled: bool) {
         match self {

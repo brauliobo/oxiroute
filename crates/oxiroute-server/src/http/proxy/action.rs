@@ -64,8 +64,18 @@ pub(super) async fn execute_route_action(
                 return Ok(false);
             }
             HttpActionPlan::Fixed(response) => {
-                let mut headers = response.headers.to_vec();
-                headers.append(&mut status_headers);
+                if status_headers.is_empty()
+                    && write_rendered_response(service, session, response, method == Method::HEAD)
+                        .await?
+                {
+                    return Ok(true);
+                }
+                let headers = if status_headers.is_empty() {
+                    std::borrow::Cow::Borrowed(&response.headers[..])
+                } else {
+                    status_headers.splice(0..0, response.headers.iter().cloned());
+                    std::borrow::Cow::Owned(status_headers)
+                };
                 write_local_response(
                     session,
                     response.status,
@@ -280,6 +290,34 @@ pub(super) async fn execute_route_action(
     }
 }
 
+/// Writes a fixed response of an HTTP/1 request without a body in one buffer, when nothing between the
+/// route and the socket changes it: the compression module may rewrite the body, so a service with gzip
+/// keeps the generic path, as does everything the rendered head cannot represent.
+async fn write_rendered_response(
+    service: &HttpServicePlan,
+    session: &mut Session,
+    response: &FixedResponsePlan,
+    head: bool,
+) -> pingora::Result<bool> {
+    let Some(rendered_head) = &response.rendered_head else {
+        return Ok(false);
+    };
+    if service.gzip().is_some() || !session.is_body_empty() {
+        return Ok(false);
+    }
+    let request_id = session
+        .req_header()
+        .headers
+        .get(&REQUEST_ID_HEADER)
+        .cloned();
+    let body = if head { &[][..] } else { &response.body[..] };
+    let status = StatusCode::from_u16(response.status).expect("validated fixed-response status");
+    session
+        .downstream_session
+        .write_rendered_response(status, rendered_head, request_id.as_ref(), body)
+        .await
+}
+
 pub(super) async fn write_local_response(
     session: &mut Session,
     status: u16,
@@ -288,7 +326,8 @@ pub(super) async fn write_local_response(
     head: bool,
 ) -> pingora::Result<()> {
     let body_forbidden = matches!(status, 204 | 205 | 304);
-    let mut response = pingora::http::ResponseHeader::build(status, Some(headers.len() + 1))?;
+    let mut response =
+        pingora::http::ResponseHeader::build_no_case(status, Some(headers.len() + 1))?;
     for (name, value) in headers {
         response.append_header(name.clone(), value.clone())?;
     }
@@ -303,9 +342,7 @@ pub(super) async fn write_local_response(
         session.set_close_on_response_before_downstream_finish(true);
     }
     let end = head || body_forbidden || body.is_empty();
-    session
-        .write_response_header(Box::new(response), end)
-        .await?;
+    write_response_header_with_id(session, Box::new(response), end).await?;
     if !head && !body_forbidden && !body.is_empty() {
         session.write_response_body(Some(body), true).await
     } else {
