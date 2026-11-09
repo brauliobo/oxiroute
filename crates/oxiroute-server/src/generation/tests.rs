@@ -11,7 +11,10 @@ use std::{
 use oxiroute_config::{ConfigDraft, Listener, ListenerBind, Management, Protocol, Stats};
 use tempfile::TempDir;
 
-use crate::config::coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome};
+use crate::{
+    config::coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
+    test_ports::unused_tcp_address,
+};
 
 use super::*;
 
@@ -107,22 +110,10 @@ fn document_for(config: &ConfigDraft) -> ResolvedConfigDocument {
 }
 
 fn colliding_listener_document() -> ResolvedConfigDocument {
-    let traffic_management = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("traffic management probe")
-        .local_addr()
-        .expect("traffic management address");
-    let traffic_stats = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("traffic stats probe")
-        .local_addr()
-        .expect("traffic stats address");
-    let management = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("management probe")
-        .local_addr()
-        .expect("management address");
-    let stats = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("stats probe")
-        .local_addr()
-        .expect("stats address");
+    let traffic_management = unused_tcp_address();
+    let traffic_stats = unused_tcp_address();
+    let management = unused_tcp_address();
+    let stats = unused_tcp_address();
     let mut config: ConfigDraft = serde_json::from_value(serde_json::json!({
         "version": 1,
         "listeners": [],
@@ -172,10 +163,7 @@ fn colliding_listener_document() -> ResolvedConfigDocument {
 }
 
 fn rtmp_failure_document(root: &std::path::Path, auto_push: bool) -> ResolvedConfigDocument {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("RTMP probe")
-        .local_addr()
-        .expect("RTMP address");
+    let listener = unused_tcp_address();
     let mut config: ConfigDraft = serde_json::from_value(serde_json::json!({
         "version": 1,
         "listeners": [{

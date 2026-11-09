@@ -80,6 +80,8 @@ mod supervised;
 #[allow(clippy::wildcard_imports)]
 use {forward_apps::*, generation_process::*, listener_services::*, rtmp_ingest::*};
 #[cfg(test)]
+mod test_ports;
+#[cfg(test)]
 #[path = "main/tests.rs"]
 mod tests;
 

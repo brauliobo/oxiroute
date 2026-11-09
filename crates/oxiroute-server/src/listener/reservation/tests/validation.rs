@@ -1,11 +1,10 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::test_ports::unused_tcp_address;
 
 #[test]
 fn validation_tcp_probe_holds_then_releases_the_ephemeral_address() {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral TCP probe");
-    let address = probe.local_addr().expect("ephemeral TCP address");
-    drop(probe);
+    let address = unused_tcp_address();
     let mut config = many_listener_config(1).to_draft();
     config.listeners[0].bind = ListenerBind::Socket { address };
     let config = config.validate().expect("valid TCP probe config");

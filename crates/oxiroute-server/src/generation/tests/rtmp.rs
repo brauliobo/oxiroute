@@ -7,8 +7,7 @@ fn validation_acquires_and_releases_rtmp_resources_without_starting_runtime_effe
 
     let parent = TempDir::new().expect("stage parent");
     let media = parent.path().join("media-do-not-create");
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("RTMP listener probe");
-    let address = listener.local_addr().expect("RTMP listener address");
+    let address = unused_tcp_address();
     let document = document_for(
         &serde_json::from_value(serde_json::json!({
             "version": 1,
@@ -31,7 +30,6 @@ fn validation_acquires_and_releases_rtmp_resources_without_starting_runtime_effe
     );
     let manager = GenerationManager::new();
     reset_rtmp_stage_counts();
-    drop(listener);
 
     manager
         .validate_candidate(document_for(document.validated_config.as_draft()))
@@ -159,14 +157,8 @@ fn rtmp_services_start_in_plan_order_and_partial_failure_rolls_back_in_reverse()
         reset_rtmp_stage_counts, rtmp_start_events, with_rtmp_start_failure,
     };
 
-    let first = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("first RTMP probe")
-        .local_addr()
-        .expect("first RTMP address");
-    let second = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("second RTMP probe")
-        .local_addr()
-        .expect("second RTMP address");
+    let first = unused_tcp_address();
+    let second = unused_tcp_address();
     let config: ConfigDraft = serde_json::from_value(serde_json::json!({
         "version": 1,
         "listeners": [
@@ -389,10 +381,7 @@ fn generation_checks_and_listener_reservation_precede_recording_store_acquisitio
     let mut token_failure = rtmp_failure_document(root.path(), false)
         .validated_config
         .to_draft();
-    let stats_address = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("stats probe")
-        .local_addr()
-        .expect("stats address");
+    let stats_address = unused_tcp_address();
     token_failure.stats = Some(Stats {
         binds: vec![stats_address],
         admin_token_file: Some(root.path().join("missing-token")),
