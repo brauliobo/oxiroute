@@ -36,6 +36,9 @@ use crate::protocols::http::{body_buffer::FixedBuffer, date, HttpTask};
 use crate::protocols::{Digest, SocketAddr, Stream};
 use crate::utils::{BufRef, KVRef};
 
+// A response body chunk of at least this size is written on its own instead of being copied into the batch buffer.
+const DIRECT_BODY_BYTES: usize = 4096;
+
 /// The HTTP 1.x server session
 pub struct HttpSession {
     underlying_stream: Stream,
@@ -1243,6 +1246,21 @@ impl HttpSession {
         }
     }
 
+    /// Small bodies are coalesced into one write; a large one is written from its own buffer after what was queued
+    /// before it, so it is not copied.
+    async fn queue_body_data(&mut self, data: Option<Bytes>, upgraded: bool) -> Result<()> {
+        match data {
+            Some(data) if data.len() >= DIRECT_BODY_BYTES && !self.body_writer.finished() => {
+                self.write_body_buf().await.map_err(|e| e.into_down())?;
+                self.write_non_empty_body(Some(data), upgraded).await
+            }
+            data => {
+                self.buffer_body_data(data, upgraded);
+                Ok(())
+            }
+        }
+    }
+
     async fn response_duplex_tasks<T>(&mut self, tasks: T) -> Result<bool>
     where
         T: IntoIterator<Item = HttpTask>,
@@ -1264,11 +1282,11 @@ impl HttpSession {
                     end_stream
                 }
                 HttpTask::Body(data, end_stream) => {
-                    self.buffer_body_data(data, false);
+                    self.queue_body_data(data, false).await?;
                     end_stream
                 }
                 HttpTask::UpgradedBody(data, end_stream) => {
-                    self.buffer_body_data(data, true);
+                    self.queue_body_data(data, true).await?;
                     end_stream
                 }
                 HttpTask::Trailer(_) => true, // h1 trailer is not supported yet
