@@ -93,6 +93,7 @@ impl WeightIndex {
         view: &SelectableView,
         credit: &mut [i64],
     ) {
+        log.track(true);
         log.take(&mut self.noted);
         if self.view == view.id() {
             self.apply_noted(members);

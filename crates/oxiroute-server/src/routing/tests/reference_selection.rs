@@ -150,7 +150,7 @@ impl Random {
     }
 }
 
-const SERVERS: usize = 9;
+const SERVERS: usize = 12;
 
 fn small(value: usize) -> u16 {
     u16::try_from(value).expect("small")

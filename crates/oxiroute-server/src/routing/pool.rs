@@ -40,10 +40,7 @@ impl EndpointPool {
         let queue = Arc::new(PoolQueue::new(
             queue_timeout.is_some(),
             blueprint.queue.clone(),
-            LoadLog::new(matches!(
-                blueprint.algorithm,
-                UpstreamAlgorithm::LeastConnections | UpstreamAlgorithm::WeightedRoundRobin { .. }
-            )),
+            LoadLog::new(),
         ));
         let health = Arc::new(PoolHealthState::new(
             name.clone(),
