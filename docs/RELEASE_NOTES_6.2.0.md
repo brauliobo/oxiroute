@@ -1,9 +1,9 @@
 # OxiRoute 6.2.0
 
 OxiRoute 6.2.0 makes the same router cheaper to leave running, to start and reload, to query and to scale: an
-idle instance costs about 1.4% of what it did, a farm-size configuration loads about ten times faster, a
-proxied request needs fewer instructions, and route matching and server selection no longer grow with the
-number of routes and servers. The release remains pre-alpha and retains conservative compatibility claims.
+idle instance costs about 1.4% of what it did, a farm-size configuration loads about twelve times faster, a
+proxied request needs 10% to 20% fewer instructions, and route matching and the common server selection
+algorithms no longer grow with the number of routes and servers. The release remains pre-alpha and retains conservative compatibility claims.
 
 ## Summary
 
@@ -12,13 +12,14 @@ number of routes and servers. The release remains pre-alpha and retains conserva
 - **Startup and reload.** Appending to the audit store no longer re-reads it, so a farm that starts with a full
   store reaches quiet in 4.5 s instead of 40 s. Upstream TLS contexts parse the system CA bundle once per
   process instead of about four times per health-checked pool.
-- **Configuration reads.** Canonical files load and render about ten times faster, an unchanged file is not
+- **Configuration reads.** Canonical files load and render about twelve times faster, an unchanged file is not
   parsed again, `GET /api/v1/config` answers `304` to a matching `If-None-Match`, and unrelated files written
   next to the configuration no longer trigger reconciliations.
-- **Request path.** A proxied request needs about 10% fewer instructions, the access log costs 85% less, small
+- **Request path.** A proxied request needs 10% to 20% fewer instructions, the access log costs 85% less, small
   static files are served from memory, and an idle keep-alive connection holds about 65 KB less.
-- **Selection scaling.** Route matching, server selection, sticky sessions and the circuit breaker cost the same
-  with 2 or 2,000 servers for round robin, first and power of two choices, and with 10,000 routes.
+- **Selection scaling.** Route matching costs the same with 10,000 routes as with a few, and server selection
+  and the circuit breaker cost the same with 2 or 2,000 servers for round robin, first and power of two choices.
+  Sticky sessions are 50x to 330x cheaper at 2,000 servers but still grow with the pool.
 - **Queue and registry.** A request with free capacity skips the wait queue, a capacity event no longer wakes
   every waiter, and dynamic-registry operations and `/metrics` stop re-doing whole-pool work.
 - **`listener_workers`.** A new root option runs one HTTP or TCP listener on several threads, so a listener is
@@ -83,10 +84,15 @@ Notes on reading the table:
   connections and weighted round robin still make one pass over the selectable servers and improved by 1.7x to
   3.9x, not by orders of magnitude.
 - The same row can differ between notes because each note measured against the tree at its own merge point.
-  Compare a before with its own after.
+  Compare a before with its own after. The combined comparison of v6.1.0 with the final 6.2 tree
+  ([performance summary](developer/PERF_6_2_SUMMARY.md)) is the reference for the whole release; it shows
+  larger request-path gains (about 17% fewer instructions per keep-alive HTTP/1.1 request, 54% fewer with the
+  access log on), a farm reload that needs 469 M instructions until quiet instead of 119 G, and a farm that
+  reaches ready in 70 ms instead of 2.3 s.
 - A few rows got slightly worse by design: the scratch copy of the lazy read buffer costs about 1% on keep-alive
-  requests, and draining a plain queue of 1,000 waiters is about 7% slower in exchange for cheap removal and
-  cancellation.
+  requests, TCP passthrough costs about 3% more per request, and plain FIFO queue bookkeeping costs 1% to 24%
+  more in exchange for cheap removal and cancellation (see the known limits). Adding and removing one pool
+  member also got more expensive in small pools (see the known limits).
 
 ## Idle cost, startup and reload
 
@@ -311,7 +317,31 @@ The vendored version is the same as in 6.1 (0.8.1).
   indicative, and tail-latency claims need a quiet machine. Each note says what it could not conclude.
 - A full TLS 1.3 handshake still costs about 1.83 M instructions, the same as 23 keep-alive requests, almost all
   inside OpenSSL.
-- Least connections, weighted round robin and hash affinity remain linear in the selectable servers.
+- Least connections, weighted round robin, hash affinity and cookie affinity remain linear in the selectable
+  servers.
+- **Late binding with reusable upstream connections.** With `connection_reuse safe`, a burst behind
+  capacity-limited servers is not always spread over every server. With two servers of capacity 1, one 800 ms
+  request and then 24 requests of 50 ms, the ideal makespan is 1.0 s, and a bad run serves `[1, 24]` in 1.34 s
+  while the first server idles for about 0.5 s. It is not a 6.2 regression: it was measured the same on 6.1.0.
+  It was hidden for clients that sent `Connection: close`, which 6.1 forwarded upstream so that every request
+  opened a new connection; 6.2 no longer forwards it, so such clients now take the reusable-connection path.
+  A request that is bound to a server waits for that server and is not selected again. `connection_reuse never`
+  gives the ideal makespan. See [the pool note](developer/POOL_QUEUE_REGISTRY_PERFORMANCE.md#known-limitation-late-binding-with-reusable-upstream-connections).
+- **Adding or removing a pool member costs more in small pools.** Each membership change now republishes the
+  selectable view. One server added and removed costs about 7 k instructions in a 20-server pool on 6.1 and
+  about 38 k on 6.2 (+443%), +75% at 200 servers, and 81% less at 2,000 servers (20.2 M to 3.8 M). Updates that
+  change nothing are free. Only registrations that join or leave a pool pay the added cost, once per change.
+- **Plain FIFO queue bookkeeping costs more.** Waiters without class weights pay for the ordered sets that make
+  removal and cancellation logarithmic: draining plain queues is 1% to 7% slower, a wake-up storm of plain
+  waiters 19% slower, and a capacity event on a pool nobody waits on 24% slower (about 80 instructions).
+  Weighted queues are much cheaper (up to 97%).
 
 See the developer notes linked in each section, [CONFIG_SPEC](CONFIG_SPEC.md) for `listener_workers`, and
 [the runbook](user/RUNBOOK.md) for `config check`.
+
+## Audit status
+
+The advisories against the vendored Pingora crates remain open in 6.2.0. They are cleared only by the rebase
+onto Pingora 0.9.1, which is not part of this release (the vendored version is still 0.8.1). Treat the
+`cargo audit` and `cargo deny` advisory findings for the Pingora dependency paths as known until that rebase,
+and see [the security audit](developer/SECURITY_AUDIT.md) for the current record.
