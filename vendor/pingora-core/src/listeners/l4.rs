@@ -268,6 +268,16 @@ async fn bind_tcp(addr: &str, opt: Option<TcpSocketOptions>) -> Result<Listener>
     }
 }
 
+/// Linux hands the listener's `TCP_NODELAY` to every accepted socket, which saves a `setsockopt` per connection.
+fn set_listener_nodelay(listener: &Listener) -> Result<()> {
+    if let Listener::Tcp(l) = listener {
+        socket2::SockRef::from(l)
+            .set_tcp_nodelay(true)
+            .or_err(BindError, "failed to set TCP_NODELAY on the listener")?;
+    }
+    Ok(())
+}
+
 async fn bind(addr: &ServerAddress) -> Result<Listener> {
     match addr {
         #[cfg(unix)]
@@ -335,6 +345,7 @@ impl ListenerEndpointBuilder {
             // not found, no fd table
             bind(&listen_addr).await?
         };
+        set_listener_nodelay(&listener)?;
 
         #[cfg(feature = "connection_filter")]
         let connection_filter = self
@@ -356,6 +367,7 @@ impl ListenerEndpointBuilder {
             .expect("Tried to listen with no addr specified");
 
         let listener = bind(&listen_addr).await?;
+        set_listener_nodelay(&listener)?;
 
         #[cfg(feature = "connection_filter")]
         let connection_filter = self
@@ -381,8 +393,7 @@ impl ListenerEndpoint {
     }
 
     fn apply_stream_settings(&self, stream: &mut Stream) -> Result<()> {
-        // settings are applied based on whether the underlying stream supports it
-        stream.set_nodelay()?;
+        // `TCP_NODELAY` is inherited from the listening socket (see `set_listener_nodelay`).
         let Some(op) = self.listen_addr.tcp_sock_opts() else {
             return Ok(());
         };
@@ -471,6 +482,22 @@ mod test {
         tokio::net::TcpStream::connect(addr)
             .await
             .expect("can connect to TCP listener");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn accepted_tcp_streams_inherit_nodelay() {
+        let mut builder = ListenerEndpoint::builder();
+        builder.listen_addr(ServerAddress::Tcp("127.0.0.1:0".into(), None));
+        let endpoint = builder.listen(None).await.unwrap();
+        let Listener::Tcp(tcp) = endpoint.listener.as_ref() else {
+            panic!("a TCP listener");
+        };
+        let addr = tcp.local_addr().unwrap();
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (accepted, _) = tcp.accept().await.unwrap();
+        assert!(accepted.nodelay().unwrap());
+        drop(client);
     }
 
     #[tokio::test]
