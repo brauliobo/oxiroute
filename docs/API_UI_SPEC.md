@@ -482,6 +482,103 @@ Private keys, authorization values, cookies, and raw event strings are not seria
 frames; unknown event values are represented as `unknown`. Adding UI or ACME event publishers
 requires extending the allowlists; audit records remain a separate durable control-history contract.
 
+## Stats page listener
+
+A `stats.pages[]` socket is not the management API: it has no token, no `/api/*` and no management
+UI. Below its `uri_prefix` (exact prefix match; `/statsfoo` is not `/stats`) it serves four routes
+and answers `404` for every other path. The machine-readable contract is
+`contracts/stats-page.openapi.json` (OpenAPI 3.1, `info.version` = `schemaVersion`), generated from
+the snapshot types and checked by `cargo test -p oxiroute --lib stats_page::contract`; the page
+client's types are generated from it (`pnpm generate:stats-page`, `pnpm verify:stats-page`).
+
+| Route | Methods | Answer |
+| --- | --- | --- |
+| `<prefix>` or `<prefix>/` | `GET`, `HEAD`; `POST` when `admin = "localhost"` | The page: a script shell, with the table that needs no script inside `noscript`. `POST` is the administration form |
+| `<prefix>/snapshot.json` | `GET`, `HEAD` | `application/json`, the snapshot document |
+| `<prefix>/stats.csv` | `GET`, `HEAD` | `text/csv`, HAProxy-style rows |
+| `<prefix>/assets/<name>` | `GET`, `HEAD` | One embedded content-hashed file, `immutable`, with `ETag` and `304` |
+
+Another method on these routes is `405` with `Allow: GET, HEAD`. All responses carry the strict page
+`Content-Security-Policy`; the page, `snapshot.json` and `stats.csv` are `no-store`.
+
+Snapshot (`GET <prefix>/snapshot.json`):
+
+- `schemaVersion` (currently `1`) changes only for an incompatible change; a client that does not
+  know the version must stop instead of guessing.
+- Keys are camelCase. Monotonic `u64` counters are decimal strings (`"12345"`); gauges, durations
+  and timestamps (`sampledAtUnixMs`, `...UnixMs`, `...Ms`) are JSON numbers.
+- A key is omitted when the proxy does not know the value; clients treat an absent key as not
+  available and never as zero.
+- `sampledAtUnixMs` is the server time of the sample. `intervalHintMs` is how often to poll: the
+  configured `refresh_ms`, never below `1000`. The server builds one snapshot per second for all
+  viewers, so polling faster returns the same document.
+- `admin` is the only key that depends on the peer: `true` for a loopback peer of a page with
+  `admin = "localhost"` whose generation has an `activeRevision`. The client shows the administration
+  controls only when it is `true`.
+- `bucketBoundsMs` holds the upper bounds of the cumulative histogram buckets; histograms are
+  `{count, sumMs, buckets}`.
+- Sections: `process`, `generation`, `listeners`, `routes`, `pools` (with `servers`), `certificates`,
+  `certificateWatchers`, `warnings`. The page shows all of them to every client; there is no reduced
+  tier. The shape is in the OpenAPI artifact.
+- `503` with `{"error": {"code": "stats_unavailable", ...}}` when no generation is active or the
+  runtime cannot be sampled. A later request may succeed.
+
+The administration form is `POST <prefix>` with `application/x-www-form-urlencoded` fields
+`generation_revision`, `pool`, `server` and `state` (`ready`, `drain`, `maintenance`): `204` on
+success, `400`, `403` (not a same-origin loopback request), `404`, `409` (the active revision changed),
+`413` (over 8 KiB) or `415`.
+
+CSV (`stats.csv`): one header line starting with `# `, then one row per listener (`svname`
+`FRONTEND`, `type` 0), pool (`BACKEND`, `type` 1) and server (`type` 2). Columns: `pxname`, `svname`,
+`qcur`, `scur`, `slim`, `stot`, `bin`, `bout`, `ereq`, `econ`, `eresp`, `wretr`, `status`, `weight`,
+`chkfail`, `lastchg`, `downtime`, `type`, `check_status`, `hrsp_1xx`, `hrsp_2xx`, `hrsp_3xx`,
+`hrsp_4xx`, `hrsp_5xx`, `hrsp_other`, `req_tot`, `qtime`, `rtime`, `ttime`. A value the proxy does not
+know is an empty cell. `status` is `OPEN`, `STOP`, `FAILED` or `CONFIGURED` for a listener, `UP` or
+`DOWN` for a pool, and `UP`, `DOWN`, `DRAIN`, `MAINT`, `EJECTED`, `no check` or `UNKNOWN` for a server.
+`lastchg` and `downtime` are seconds, the `*time` columns lifetime averages in milliseconds. Text
+cells are quoted when needed and a leading `=`, `+`, `-` or `@` gets a `'` prefix.
+
+### Stats page client
+
+The page is a Vue 3.6 Vapor application (`ui/stats.html`, `ui/src/stats/`) embedded in the binary. It
+polls `<page path>/snapshot.json` with one request in flight, every `interval` (the viewer's choice
+or `intervalHintMs`, 2 s before the first snapshot, never below 1 s). It keeps the last snapshot and
+derives rates and sparklines from successive samples in memory; nothing is stored. The status line
+shows one of these states:
+
+| State | Meaning |
+| --- | --- |
+| Live | The last request succeeded and the data is current |
+| Paused | Polling is stopped; the last data stays. Refresh now still loads once |
+| Stale | Nothing refreshed for three intervals (at least 10 s); the last values stay, marked |
+| Retrying | The last request failed after a good one; the last values stay and the client backs off (the interval, doubling up to 30 s) |
+| Unavailable | No snapshot has loaded yet and requests fail (`stats_unavailable`, network, HTTP or decode errors); it keeps retrying |
+| Unsupported version | The server's `schemaVersion` is not one the page knows; polling stops and the banner asks for a reload |
+
+The status line shows how long ago the data was updated; the banner under it states the reason and
+offers retry or reload. Failed or stale data is never replaced by zeros.
+
+View state lives in the query string, so a link reproduces the view; defaults are not written and
+invalid values are dropped. The address bar is rewritten without adding history entries.
+
+| Key | Value |
+| --- | --- |
+| `q` | Search text, up to 200 characters; every word must occur in a row's text |
+| `state` | Comma list of server statuses to show: `up`, `down`, `drain`, `maint`, `ejected`, `unchecked`, `unknown` |
+| `problems` | `1` shows only rows that need attention |
+| `sort` | Column name, or `-name` for descending: `name`, `status`, `active`, `rate`, `errors`, `p99`, `received`, `sent` |
+| `interval` | Polling interval in ms, 1000 to 86400000 |
+| `paused` | `1` opens the page paused (it still loads once) |
+| `theme` | `light` or `dark`; absent follows the system |
+| `open`, `closed` | Repeatable row keys: open detail rows and folded pools |
+
+Keyboard shortcuts are single keys and are ignored while typing in a field, behind a dialog, or with
+Ctrl, Alt or Meta: `/` focuses the search, `?` lists the shortcuts, `p` pauses or resumes, `r`
+refreshes now (also while paused), `t` cycles the theme (automatic, light, dark), `f` toggles
+problems only, and `Esc` clears the search or closes a dialog.
+
+The header links `CSV` (`stats.csv`, downloaded as `stats.csv`) and `JSON` (`snapshot.json`).
+
 ## Vue and Pug frontend
 
 - Vue 3.6 single-page application built with Vite and rendered in Vapor mode: every SFC is
