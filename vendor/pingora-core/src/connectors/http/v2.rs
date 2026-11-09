@@ -536,6 +536,7 @@ pub async fn handshake(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectors::test_servers;
     use crate::upstreams::peer::HttpPeer;
 
     #[tokio::test]
@@ -576,7 +577,8 @@ mod tests {
     #[tokio::test]
     async fn test_connect_h1_plaintext() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 80), false, "".into());
+        let server = test_servers::redirect_server();
+        let mut peer = HttpPeer::new(server.addr, false, "".into());
         peer.options.set_http_version(2, 1);
         let h2 = connector
             .new_http_session::<HttpPeer, ()>(&peer)
