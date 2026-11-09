@@ -333,6 +333,8 @@ impl TlsProfilePlan {
         } else {
             settings.set_options(SslOptions::NO_TICKET);
         }
+        // Read whatever the socket holds in one call instead of a record header, then its body.
+        settings.set_read_ahead(true);
         if self.prefer_server_ciphers {
             settings.set_options(SslOptions::CIPHER_SERVER_PREFERENCE);
         } else {
