@@ -15,6 +15,7 @@ of each per-request feature. Wall-clock numbers on a shared host are unreliable,
 | `tool/` | `r2tool`: in-tree upstream (0 B, 1 KiB, 64 KiB, 1 MiB, chunked, slow, sink, upgrade echo, TCP echo) and a fixed-count load generator (h1, h1+TLS, h2c, h2+TLS, WebSocket-style upgrade, TCP echo; keep-alive or new connection per request; header padding; request bodies; p50/p99/p99.9). `alloc_count.c` is an `LD_PRELOAD` shim counting allocator and `clock_gettime` calls. |
 | `table.py` | Compact table of a `results.json`, optionally with instruction deltas against a previous run. |
 | `profile_summary.py` | Component and symbol summary of a `--profile` `perf.data`. |
+| `soak.py` | Mixed-traffic soak of one process (keep-alive, new connection, POST, 1 MiB upload, slow response, WebSocket-style upgrade over plain and TLS, TLS HTTP/1.1, HTTP/2, TCP echo, paced) with RSS, descriptor and thread samples, a configuration reload through the management API in the middle, an origin stop and a SIGTERM at the end. |
 | `memcpy_profile.py` | Copies of 48 bytes or more per request, by caller (`tool/memcpy_profile.c` preloaded): shows async state machines moved to the heap or into another future. |
 
 ## Method
@@ -95,6 +96,21 @@ alloc_bytes_per_req clock_gettime_per_req`, `heap_live_bytes_per_conn rss_bytes_
   (lock waits) next to `vctxsw_per_req` (voluntary context switches: a thread that slept on a lock or a wake-up).
 * Load-aware pools: `pool_{lc,wrr}_s{8,64,200}` (`least_connections` and `weighted_round_robin` over N servers).
 * `--lock-batch N` holds the shared benchmark lock across N consecutive lanes (re-entrant) so long runs are not starved.
+
+## Soak
+
+```sh
+python3 benchmarks/r2-data-path/soak.py --bin target/release/oxiroute --duration 60 --reload-at 30   # about 90 s
+python3 benchmarks/r2-data-path/soak.py --duration 40 --reload-at 3 --reload-every 2 --mix h2         # reload stress
+```
+
+Everything is loopback, with a management token created for the run. It exits 0 only when no load run failed or hung,
+each persistent connection was closed at most once per reload (`reconnects` of the load tool: an idle connection the
+server closed, or a stream a graceful GOAWAY refused, is opened again, not counted as an error), the descriptors
+returned to their level before the load (the pooled origin connections excluded), no retired generation was left,
+the pool closed every idle origin connection when the origin stopped, every response class carried `x-request-id`,
+and the process exited cleanly on SIGTERM. `r2tool load` gained `--pace-ms`, `--reconnect-closed` and the `wstls`
+protocol for it.
 
 ## Limits
 
