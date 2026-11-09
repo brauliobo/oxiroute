@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use http::{HeaderValue, Response};
+use http::{HeaderValue, Response, header::IF_NONE_MATCH};
 use oxiroute_config::{StatsPage, StatsPageAdminPolicy};
 use pingora::{apps::http_app::ServeHttp, protocols::http::ServerSession};
 
@@ -13,6 +13,7 @@ use super::{
         StatsPageAdminTarget, form_content_type, parse_stats_form, read_stats_form_body,
         request_is_same_origin,
     },
+    assets,
     builder::{MIN_INTERVAL_MS, build_snapshot},
     cache::{Entry, Rendering, SnapshotCache},
 };
@@ -23,10 +24,12 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PageRoute {
+enum PageRoute<'path> {
     Page,
     Snapshot,
     Csv,
+    /// One file name below `<prefix>/assets/`.
+    Asset(&'path str),
 }
 
 pub struct HaproxyStatsPage {
@@ -49,25 +52,38 @@ impl HaproxyStatsPage {
         }
     }
 
-    /// The page, `snapshot.json` and `stats.csv` answer under the prefix; nothing else does.
-    fn route(&self, path: &str) -> Option<PageRoute> {
+    /// The page, `snapshot.json`, `stats.csv` and the files below `assets/` answer under the prefix;
+    /// nothing else does.
+    fn route<'path>(&self, path: &'path str) -> Option<PageRoute<'path>> {
         match path.strip_prefix(self.uri_prefix.trim_end_matches('/'))? {
             "" | "/" => Some(PageRoute::Page),
             "/snapshot.json" => Some(PageRoute::Snapshot),
             "/stats.csv" => Some(PageRoute::Csv),
-            _ => None,
+            asset => asset.strip_prefix("/assets/").map(PageRoute::Asset),
         }
     }
 
     #[must_use]
     pub async fn handle(&self, method: &str, path: &str, peer_is_loopback: bool) -> ApiResponse {
+        self.handle_conditional(method, path, peer_is_loopback, None)
+            .await
+    }
+
+    /// `if_none_match` is the request's validator list: an asset it matches answers `304`.
+    pub(super) async fn handle_conditional(
+        &self,
+        method: &str,
+        path: &str,
+        peer_is_loopback: bool,
+        if_none_match: Option<&str>,
+    ) -> ApiResponse {
         let Some(route) = self.route(path) else {
             return ApiResponse::route_not_found();
         };
         match method {
-            "GET" => self.read(route, peer_is_loopback).await,
+            "GET" => self.read(route, peer_is_loopback, if_none_match).await,
             "HEAD" => {
-                let mut response = self.read(route, peer_is_loopback).await;
+                let mut response = self.read(route, peer_is_loopback, if_none_match).await;
                 response.body.clear();
                 response
             }
@@ -82,7 +98,15 @@ impl HaproxyStatsPage {
         }
     }
 
-    async fn read(&self, route: PageRoute, peer_is_loopback: bool) -> ApiResponse {
+    async fn read(
+        &self,
+        route: PageRoute<'_>,
+        peer_is_loopback: bool,
+        if_none_match: Option<&str>,
+    ) -> ApiResponse {
+        if let PageRoute::Asset(name) = route {
+            return assets::response(name, if_none_match);
+        }
         let Ok(entry) = self
             .cache
             .get(|| build_snapshot(&self.generations, self.refresh_ms))
@@ -99,6 +123,7 @@ impl HaproxyStatsPage {
             PageRoute::Page => (Rendering::Html { admin }, "text/html; charset=utf-8"),
             PageRoute::Snapshot => (Rendering::Json { admin }, "application/json"),
             PageRoute::Csv => (Rendering::Csv, "text/csv; charset=utf-8"),
+            PageRoute::Asset(_) => unreachable!("assets are answered before the snapshot is read"),
         };
         let body = entry.body(rendering, self.refresh_ms, &self.uri_prefix);
         ApiResponse::bytes(200, body.to_vec(), content_type)
@@ -197,18 +222,27 @@ impl ServeHttp for HaproxyStatsPage {
         let request = session.req_header();
         let method = request.method.as_str().to_owned();
         let path = request.uri.path().to_owned();
+        let if_none_match = request
+            .headers
+            .get(IF_NONE_MATCH)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         let peer_is_loopback = session
             .client_addr()
             .and_then(|address| address.as_inet())
             .is_some_and(|address| transport_ip_is_loopback(address.ip()));
         let route = self.route(&path);
         if method == "HEAD" && route.is_some() {
-            return secure_head_page_response(self.handle("GET", &path, peer_is_loopback).await);
+            let response = self
+                .handle_conditional("GET", &path, peer_is_loopback, if_none_match.as_deref())
+                .await;
+            return secure_head_page_response(response);
         }
         let response = if method == "POST" && route == Some(PageRoute::Page) {
             self.post_form(session, peer_is_loopback).await
         } else {
-            self.handle(&method, &path, peer_is_loopback).await
+            self.handle_conditional(&method, &path, peer_is_loopback, if_none_match.as_deref())
+                .await
         };
         secure_page_response(response)
     }
@@ -221,8 +255,11 @@ frame-ancestors 'none'";
 
 pub(super) fn secure_page_response(response: ApiResponse) -> Response<Vec<u8>> {
     let mut response = to_http_response(response);
+    response
+        .headers_mut()
+        .entry("cache-control")
+        .or_insert(HeaderValue::from_static("no-store"));
     for (name, value) in [
-        ("cache-control", "no-store"),
         ("content-security-policy", PAGE_CONTENT_SECURITY_POLICY),
         ("referrer-policy", "no-referrer"),
         ("x-content-type-options", "nosniff"),

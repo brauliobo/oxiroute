@@ -221,8 +221,8 @@ statistics bind; `/stats` and `/api/v1/status` require a loopback peer and the s
 token.
 
 Each canonical `stats.pages[]` socket is separate from those observability binds. Below its
-`uri_prefix` it serves exactly the page, `snapshot.json` and `stats.csv` (see "Stats page API") and
-returns `404` for every other path, for `/metrics`, `/ready`, `/status.json`, `/api/v1/status` and
+`uri_prefix` it serves exactly the page, `snapshot.json`, `stats.csv` and the files below `assets/`
+(see "Stats page API" and "Stats page assets") and returns `404` for every other path, for `/metrics`, `/ready`, `/status.json`, `/api/v1/status` and
 the legacy `/stats` (a path that merely starts with the prefix, such as `/statsfoo`, is not the
 page). The page is public: everyone who can reach the socket sees the same data, including upstream
 addresses, listener binds and revisions, so bind it only where that is acceptable. `admin =
@@ -275,6 +275,32 @@ with `type` 0 for a listener (`svname` `FRONTEND`), 1 for a pool (`BACKEND`) and
 Unknown cells are empty; `econ` is failed connects, `eresp` timeouts and protocol errors, `wretr`
 status retries and rescues, the `*time` columns are lifetime averages in ms and `downtime` is the
 current outage in seconds. Cells starting with `=`, `+`, `-` or `@` get a leading `'`.
+
+### Stats page assets
+
+The page's script and style files are compiled into the binary (a source build or the package
+needs no node), so the page works without `management.ui_dir` or any file on disk.
+
+- `GET <prefix>/assets/<name>` serves one embedded file; only a name that is in the table answers,
+  anything else (`assets/`, nested or encoded paths, `..`) is `404` without touching the file system.
+  `GET` and `HEAD` only; `HEAD` carries the `GET` headers and `Content-Length`.
+- Every file name ends in a content hash (`app-Bx3k9aZ1.js`), so assets are sent with
+  `Cache-Control: public, max-age=31536000, immutable` and a strong `ETag`; a matching
+  `If-None-Match` gets `304`. The page, `snapshot.json` and `stats.csv` stay `no-store`.
+  Assets need no snapshot, so they are served even before a generation is active.
+- The page is a static shell with no inline script or style. The server fills in `<prefix>`, the
+  refresh interval and the table that needs no script; the shell loads its files from
+  `<prefix>/assets/`. Every response carries the policy `default-src 'none'; script-src 'self';
+  style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'self';
+  base-uri 'none'; frame-ancestors 'none'`.
+
+The files live in `crates/oxiroute-server/assets/stats/` (`index.html` and `assets/<name>`) and are
+the committed output of the UI build: `index.html` is the shell, built with the asset base
+`/__stats_prefix__/`. `scripts/generate-stats-assets.sh --from ui/dist-stats` installs a build and
+regenerates the table `src/observability/stats_page/assets/table.rs`; with `--check` it changes
+nothing and fails on any difference. `scripts/verify-stats-assets.sh` runs that check, rebuilds the
+UI with `pnpm build:stats` and compares byte for byte (CI runs it in the `ui` job).
+Until the stats UI source (`ui/stats.html`) exists the embedded files are a placeholder.
 
 Changing the mode of an active Unix listener is not a live reload, even when the candidate contains
 other changes. The configuration API saves the valid candidate as `saved_restart_required` with
