@@ -18,6 +18,8 @@ RELEASE_REQUIRED_PATHS=(
   fuzz/Cargo.lock
   benchmarks/loadgen/Cargo.lock
   ui/pnpm-lock.yaml
+  crates/oxiroute-server/assets/stats/index.html
+  crates/oxiroute-server/src/observability/stats_page/assets/table.rs
   remotion/pnpm-lock.yaml
 )
 

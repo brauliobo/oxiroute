@@ -206,6 +206,9 @@ jobs:
         run: pnpm build
         working-directory: ui
 
+      - name: Verify embedded stats page assets
+        run: ./scripts/verify-stats-assets.sh
+
   browser:
     name: Deterministic dashboard browser tests
     runs-on: ubuntu-24.04
