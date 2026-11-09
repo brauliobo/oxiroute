@@ -13,7 +13,6 @@
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, atomic::Ordering},
 };
 
 use super::{LoadLog, Membership, PoolEndpoint, SelectableView, pool::Capacity};
@@ -41,7 +40,7 @@ pub(super) struct WeightIndex {
     classes: BTreeMap<(u16, u8), Ranked>,
     /// The weight of the members at each level.
     totals: [i64; LEVELS],
-    noted: Vec<Arc<PoolEndpoint>>,
+    noted: Vec<u32>,
 }
 
 fn level_of(server: &PoolEndpoint) -> u8 {
@@ -97,8 +96,8 @@ impl WeightIndex {
         credit: &mut [i64],
     ) {
         log.track(true);
-        log.take(&mut self.noted);
-        if self.view == view.id() {
+        let overflowed = log.take(&mut self.noted);
+        if self.view == view.id() && !overflowed {
             self.apply_noted(members);
             return;
         }
@@ -120,14 +119,15 @@ impl WeightIndex {
 
     fn apply_noted(&mut self, members: &Membership) {
         for index in 0..self.noted.len() {
-            let server = &self.noted[index];
-            let at = server.slot.load(Ordering::Acquire) as usize;
+            let at = self.noted[index] as usize;
+            let Some(server) = members.endpoints.get(at) else {
+                continue;
+            };
             let level = level_of(server);
-            let member = members
-                .endpoints
-                .get(at)
-                .is_some_and(|m| Arc::ptr_eq(m, server));
-            if member && self.members[at].as_ref().is_some_and(|m| m.level != level) {
+            if self.members[at]
+                .as_ref()
+                .is_some_and(|member| member.level != level)
+            {
                 self.change_level(at, level);
             }
         }

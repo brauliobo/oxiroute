@@ -64,8 +64,11 @@ pub(super) struct Membership {
 impl Membership {
     pub(super) fn new(endpoints: Vec<Arc<PoolEndpoint>>) -> Self {
         for (slot, server) in (0..).zip(&endpoints) {
-            server.slot.store(slot, Ordering::Release);
+            server.slot.store(slot, Ordering::Relaxed);
         }
+        // Pairs with the fence in `LoadLog::note`: a change whose note read the old slot is
+        // visible to the index that is built for this membership.
+        fence(Ordering::SeqCst);
         Self {
             names: NameIndex::new(&endpoints),
             endpoints: endpoints.into_boxed_slice(),
@@ -138,8 +141,6 @@ pub(super) struct PoolEndpoint {
     pub(super) reserved_idle: AtomicU64,
     /// The position in the current membership, kept by [`Membership::new`].
     pub(super) slot: AtomicU32,
-    /// Set while the server waits in the pool's load log for the load index to read it.
-    pub(super) load_noted: AtomicBool,
     pub(super) breaker: Breaker,
     breaker_policy: Option<CircuitBreakerPolicy>,
     pub(super) administrative_state: AtomicU8,
@@ -206,7 +207,6 @@ impl PoolEndpoint {
             idle_permits: AtomicU64::new(0),
             reserved_idle: AtomicU64::new(0),
             slot: AtomicU32::new(0),
-            load_noted: AtomicBool::new(false),
             breaker: Breaker::default(),
             breaker_policy,
             administrative_state: AtomicU8::new(AdministrativeState::Ready as u8),
@@ -371,7 +371,7 @@ impl PoolEndpoint {
 
     /// Claims an idle pooled connection for a request that was just selected, so the requests
     /// selected after it see the server busy instead of binding to the same connection.
-    pub(super) fn reserve_idle(self: &Arc<Self>, queue: &PoolQueue) -> bool {
+    pub(super) fn reserve_idle(&self, queue: &PoolQueue) -> bool {
         let reserved = self
             .reserved_idle
             .try_update(Ordering::AcqRel, Ordering::Acquire, |reserved| {
@@ -384,7 +384,7 @@ impl PoolEndpoint {
         reserved
     }
 
-    pub(super) fn release_idle(self: &Arc<Self>, queue: &PoolQueue) {
+    pub(super) fn release_idle(&self, queue: &PoolQueue) {
         let released =
             self.reserved_idle
                 .try_update(Ordering::AcqRel, Ordering::Acquire, |reserved| {
@@ -395,7 +395,7 @@ impl PoolEndpoint {
     }
 
     /// Counts a pooled connection of this server as idle or in use again.
-    pub(super) fn set_connection_idle(self: &Arc<Self>, queue: &PoolQueue, idle: bool) {
+    pub(super) fn set_connection_idle(&self, queue: &PoolQueue, idle: bool) {
         if idle {
             self.idle_permits.fetch_add(1, Ordering::AcqRel);
         } else {
@@ -470,7 +470,7 @@ impl PoolEndpoint {
 
     /// Takes one capacity permit when `admission` allows this server; the caller owns it.
     pub(super) fn try_acquire_permit(
-        self: &Arc<Self>,
+        &self,
         queue: &PoolQueue,
         admission: Admission,
         now_unix_ms: u64,
@@ -490,7 +490,7 @@ impl PoolEndpoint {
     }
 
     pub(super) fn try_acquire_capacity(
-        self: &Arc<Self>,
+        &self,
         queue: &PoolQueue,
         admission: Admission,
         now_unix_ms: u64,
@@ -510,7 +510,7 @@ impl PoolEndpoint {
         Some(())
     }
 
-    pub(super) fn release_capacity(self: &Arc<Self>, queue: &PoolQueue) {
+    pub(super) fn release_capacity(&self, queue: &PoolQueue) {
         let released = self
             .active_work
             .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
