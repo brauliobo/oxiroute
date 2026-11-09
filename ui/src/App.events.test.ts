@@ -1,11 +1,11 @@
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { flushPromises, mount, type VaporWrapper } from './test/mount'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
 import { contractMonitoring, jsonResponse } from './test/contractFixtures'
 
 describe('application event-driven refresh', () => {
-  let wrapper: VueWrapper | undefined
+  let wrapper: VaporWrapper | undefined
   let stream: ControllableStream | undefined
 
   afterEach(() => {

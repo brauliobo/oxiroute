@@ -43,7 +43,7 @@
           span Add on every response status
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, useId } from 'vue'
 import type { HttpRedirectActionConfig, HttpRedirectLocationConfig } from '../config'
 import { defaultRedirectLocation } from './httpDefaults'

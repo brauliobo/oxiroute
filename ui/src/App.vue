@@ -357,7 +357,7 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
     span.mono Live measurements / runtime inventory
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'

@@ -40,7 +40,7 @@ section.client-section(aria-labelledby="client-heading")
   p.client-truncation(v-if="stats?.clientsTruncated") Showing the first 1,024 clients.
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { RtmpClientControlTarget, RtmpClientSnapshot, RtmpStats } from './api'
 import { formatClockTime as formatTime } from './formatters'
 

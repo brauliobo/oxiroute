@@ -97,7 +97,7 @@ fieldset.route-list(data-field="rtmp_services[].exec_profiles")
         button.danger-link(type="button" @click="profile.environment.splice(environmentIndex, 1)") Remove
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import StringListField from '../StringListField.vue'
 import type { RtmpExecProfileConfig, RtmpServiceConfig } from '../config'
 

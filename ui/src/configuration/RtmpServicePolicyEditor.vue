@@ -70,7 +70,7 @@ RtmpCallbackEditor(
 )
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import StringListField from '../StringListField.vue'
 import type { RtmpServiceConfig } from '../config'
 import RtmpCallbackEditor from './RtmpCallbackEditor.vue'

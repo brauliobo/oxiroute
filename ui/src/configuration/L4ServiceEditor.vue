@@ -59,7 +59,7 @@ fieldset.object-block(data-field="l4_services[].udp")
       input(type="number" min="1" max="16777216" step="1" v-model.number="service.udp.max_queue_bytes")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { L4ServiceConfig, UdpPolicyConfig } from '../config'
 
 const props = defineProps<{

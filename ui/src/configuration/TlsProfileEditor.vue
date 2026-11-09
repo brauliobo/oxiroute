@@ -73,7 +73,7 @@ StringListField(
 )
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { AlpnProtocol, TlsProfileConfig } from '../config'
 import StringListField from '../StringListField.vue'
 

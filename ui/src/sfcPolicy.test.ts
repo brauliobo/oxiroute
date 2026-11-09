@@ -1,8 +1,8 @@
 import { parse } from 'vue/compiler-sfc'
 import { describe, expect, it } from 'vitest'
 
-// Templates may only use what the Vapor production compiler supports. `$emit` and friends compile in development
-// and in tests but break the production bundle at runtime, so they are checked on the source.
+// Every SFC is Vapor, so templates may only use what the Vapor production compiler supports. `$emit` and friends
+// compile in development and in tests but break the production bundle at runtime, so they are checked on the source.
 const sources = import.meta.glob<string>('./**/*.vue', { eager: true, query: '?raw', import: 'default' })
 const files = Object.entries(sources).map(([path, source]) => ({ path, descriptor: parse(source).descriptor }))
 
@@ -28,6 +28,12 @@ describe('SFC policy', () => {
     const [, globals] = templateRules[0]!
     expect(["$emit('x')", 'x($attrs)', '{{ $slots.default }}'].every((sample) => globals.test(sample))).toBe(true)
     expect(["$event", "'$name'", '`${emit}`'].some((sample) => globals.test(sample))).toBe(false)
+  })
+
+  it.each(files)('$path is a Vapor <script setup> with a pug template', ({ descriptor }) => {
+    expect(descriptor.scriptSetup?.attrs.vapor).toBe(true)
+    expect(descriptor.script).toBeNull()
+    expect(descriptor.template?.lang).toBe('pug')
   })
 
   it.each(files)('$path template uses only Vapor-safe, CSP-safe syntax', ({ descriptor }) => {

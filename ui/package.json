@@ -9,6 +9,7 @@
     "build:management": "cd .. && nice cargo +1.97.1 build -p oxiroute --bin oxiroute --locked --jobs 4",
     "dev": "vite",
     "generate:control-plane": "node ../scripts/generate-control-plane-types.mjs",
+    "verify:bundle": "node ../scripts/verify-ui-bundle.mjs dist",
     "verify:control-plane": "node ../scripts/generate-control-plane-types.mjs --check",
     "pretest": "pnpm run build:management",
     "test": "vitest run",

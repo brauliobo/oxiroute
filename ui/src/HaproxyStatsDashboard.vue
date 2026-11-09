@@ -148,7 +148,7 @@ section.haproxy-stats(aria-labelledby="stats-heading")
                   td(colspan="7") Last failure: {{ humanize(endpoint.lastFailure) }}
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed } from 'vue'
 
 import {

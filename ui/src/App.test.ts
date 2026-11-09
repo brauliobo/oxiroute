@@ -1,4 +1,5 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount } from './test/mount'
+import { nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
@@ -204,7 +205,7 @@ describe('monitoring dashboard', () => {
     vi.stubGlobal('fetch', fetch)
 
     const wrapper = mount(App)
-    await wrapper.vm.$nextTick()
+    await nextTick()
 
     expect(wrapper.attributes('aria-busy')).toBe('true')
     expect(wrapper.get('.loading-state').attributes('role')).toBe('status')
@@ -259,7 +260,7 @@ describe('monitoring dashboard', () => {
     })
     vi.stubGlobal('fetch', fetch)
     const wrapper = mount(App)
-    await wrapper.vm.$nextTick()
+    await nextTick()
 
     await wrapper.get('a[href="#/configuration"]').trigger('click')
     expect(firstSignals).toHaveLength(4)

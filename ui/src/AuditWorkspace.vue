@@ -137,7 +137,7 @@ section.audit-workspace(aria-labelledby="audit-heading" :aria-busy="loading")
         button.secondary-button(type="button" :disabled="loading" @click="loadNextPage") Load more durable records
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, ref, watch } from 'vue'
 
 import {

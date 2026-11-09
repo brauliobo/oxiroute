@@ -367,7 +367,7 @@ fieldset.route-list(data-field="rtmp_services[].applications")
       )
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type {
   RtmpApplicationConfig,
   RtmpDashPolicyConfig,

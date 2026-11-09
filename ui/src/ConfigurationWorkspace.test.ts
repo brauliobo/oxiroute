@@ -1,4 +1,5 @@
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { flushPromises, mount, type VaporWrapper } from './test/mount'
+import { nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
@@ -325,7 +326,7 @@ function validationResponse(config: CanonicalConfig, diagnostics: ConfigDiagnost
   }
 }
 
-function findButton(wrapper: VueWrapper, text: string) {
+function findButton(wrapper: VaporWrapper, text: string) {
   const button = wrapper.findAll('button').find((candidate) => candidate.text().includes(text))
   if (!button) throw new Error(`Button not found: ${text}`)
   return button
@@ -340,13 +341,13 @@ function findButtonIn(
   return button
 }
 
-async function unlockConfiguration(wrapper: VueWrapper, token = bearerToken): Promise<void> {
+async function unlockConfiguration(wrapper: VaporWrapper, token = bearerToken): Promise<void> {
   await wrapper.get('#config-access-token').setValue(token)
   await wrapper.get('form[data-unlock-form]').trigger('submit')
   await flushPromises()
 }
 
-async function mountUnlocked(attachToBody = false): Promise<VueWrapper> {
+async function mountUnlocked(attachToBody = false): Promise<VaporWrapper> {
   const wrapper = mount(
     ConfigurationWorkspace,
     attachToBody ? { attachTo: document.body } : undefined,
@@ -419,7 +420,7 @@ describe('ConfigurationWorkspace', () => {
     const fetch = installConfigFetch()
     const storageWrite = vi.spyOn(Storage.prototype, 'setItem')
     const wrapper = mount(ConfigurationWorkspace)
-    await wrapper.vm.$nextTick()
+    await nextTick()
 
     expect(fetch).not.toHaveBeenCalled()
     expect(wrapper.get('form[data-unlock-form]').attributes('aria-labelledby')).toBe('config-unlock-heading')

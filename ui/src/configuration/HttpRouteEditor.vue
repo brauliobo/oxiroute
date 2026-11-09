@@ -83,7 +83,7 @@ article.route-card.http-route-card
     HttpStaticFilesEditor(v-else :action="route.action" @changed="emit('changed')")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed } from 'vue'
 
 import StringListField from '../StringListField.vue'

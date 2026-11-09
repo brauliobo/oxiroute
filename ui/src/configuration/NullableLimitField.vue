@@ -12,7 +12,7 @@ fieldset.object-block.limit-control(:data-field="fieldPath")
       input(type="number" :min="min" :max="max" step="1" :value="modelValue" @input="setLimit")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { integerInRange } from '../valueGuards'
 
 const props = withDefaults(

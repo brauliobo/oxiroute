@@ -1,4 +1,5 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount } from './test/mount'
+import { nextTick } from 'vue'
 import type { Component } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -74,7 +75,7 @@ async function expectReplacementRound(
   const requests: PendingRequest[] = []
   vi.stubGlobal('fetch', controlledFetch(requests))
   const wrapper = mount(component, { props: { token: tokenA } })
-  await wrapper.vm.$nextTick()
+  await nextTick()
 
   const requestsA = requestsFor(requests, tokenA)
   expect(requestsA).toHaveLength(requestCount)
@@ -108,7 +109,7 @@ async function expectProvenanceReplacement(staleUnauthorized: boolean): Promise<
   const requests: PendingRequest[] = []
   vi.stubGlobal('fetch', controlledFetch(requests))
   const wrapper = mount(ProvenanceWorkspace, { props: { token: tokenA } })
-  await wrapper.vm.$nextTick()
+  await nextTick()
 
   const inventoryA = requestsFor(requests, tokenA)
   expect(inventoryA).toHaveLength(1)

@@ -50,7 +50,7 @@ section.events-workspace(aria-labelledby="events-heading" :aria-busy="loading ||
       button.secondary-button(type="button" :disabled="loading" @click="loadNextPage") Load more events
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import {
