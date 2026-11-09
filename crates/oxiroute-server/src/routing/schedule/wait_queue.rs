@@ -1,7 +1,9 @@
 //! The waiting requests of a pool in service order.
 //!
 //! Every operation costs O(classes + log waiters): a class is picked by virtual time or priority, the
-//! class serves its least served tenant, and a tenant serves its oldest arrival.
+//! class serves its least served tenant, and a tenant serves its oldest arrival. Without a class
+//! schedule everybody shares one class and tenant, so the order is the arrival order and only the
+//! arrival index is kept.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -124,7 +126,9 @@ impl WaitQueue {
     pub(in crate::routing) fn push(&mut self, waiter: Arc<PoolWaiter>, tag: QueueTag) -> u64 {
         self.next_seq += 1;
         let seq = self.next_seq;
-        self.classes[tag.class].arrive(tag.tenant, seq, self.virtual_time);
+        if self.schedule.is_some() {
+            self.classes[tag.class].arrive(tag.tenant, seq, self.virtual_time);
+        }
         let since = self.aging().map(|_| Instant::now());
         self.entries.insert(seq, Entry { waiter, tag, since });
         seq
@@ -144,6 +148,9 @@ impl WaitQueue {
     }
 
     fn head_seq(&self) -> Option<u64> {
+        if self.schedule.is_none() {
+            return self.entries.first_key_value().map(|(&seq, _)| seq);
+        }
         if let Some(aging) = self.aging()
             && let Some((&seq, oldest)) = self.entries.first_key_value()
             && oldest.since.is_some_and(|since| since.elapsed() >= aging)
@@ -175,11 +182,13 @@ impl WaitQueue {
             return false;
         };
         let QueueTag { class, tenant } = entry.tag;
-        self.classes[class].leave(tenant, seq);
-        if served && let Some(schedule) = &self.schedule {
-            let weight = f64::from(schedule.classes[class].1);
-            self.virtual_time = self.virtual_time.max(self.classes[class].time);
-            self.classes[class].spend_turn(tenant, weight);
+        if let Some(schedule) = &self.schedule {
+            self.classes[class].leave(tenant, seq);
+            if served {
+                let weight = f64::from(schedule.classes[class].1);
+                self.virtual_time = self.virtual_time.max(self.classes[class].time);
+                self.classes[class].spend_turn(tenant, weight);
+            }
         }
         was_head
     }
@@ -190,6 +199,9 @@ impl WaitQueue {
 
     /// Waiting requests per class, in class order.
     pub(in crate::routing) fn depth_by_class(&self) -> Vec<u64> {
+        if self.schedule.is_none() {
+            return vec![self.entries.len() as u64];
+        }
         self.classes.iter().map(|class| class.waiting).collect()
     }
 }

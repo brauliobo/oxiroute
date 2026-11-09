@@ -25,6 +25,8 @@ pub(super) struct PoolQueue {
     selectors: AtomicUsize,
     waiters: Mutex<WaitQueue>,
     pub(super) schedule: Option<Arc<QueueSchedule>>,
+    /// Servers whose load changed, for the algorithms that pick by load.
+    pub(super) load_log: LoadLog,
 }
 
 pub(super) struct CapacityWatch<'a> {
@@ -46,6 +48,7 @@ impl PoolQueue {
     pub(super) fn new(
         capacity_waiters_possible: bool,
         schedule: Option<Arc<QueueSchedule>>,
+        load_log: LoadLog,
     ) -> Self {
         Self {
             capacity_waiters_possible,
@@ -66,6 +69,7 @@ impl PoolQueue {
             selectors: AtomicUsize::new(0),
             waiters: Mutex::new(WaitQueue::new(schedule.clone())),
             schedule,
+            load_log,
         }
     }
 

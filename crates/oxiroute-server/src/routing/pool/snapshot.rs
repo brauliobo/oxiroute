@@ -80,17 +80,16 @@ impl EndpointPool {
     ) -> Vec<Result<ServerHandle, PoolMembershipError>> {
         let mut selection = self.lock_selection();
         let current = self.members();
-        let mut names = current
-            .endpoints
-            .iter()
-            .map(|member| member.name.clone())
-            .collect::<std::collections::HashSet<_>>();
-        let mut endpoints = current.endpoints.to_vec();
+        let mut joined = std::collections::HashSet::new();
+        let mut endpoints = Vec::with_capacity(current.endpoints.len() + joining.len());
+        endpoints.extend_from_slice(&current.endpoints);
         let results = joining
             .into_iter()
             .map(|join| -> Result<ServerHandle, PoolMembershipError> {
                 join.server.endpoint.preflight()?;
-                if !names.insert(join.server.name.clone()) {
+                if current.position(&join.server.name).is_some()
+                    || !joined.insert(join.server.name.clone())
+                {
                     return Err(PoolMembershipError::DuplicateName(join.server.name));
                 }
                 let endpoint = Arc::new(PoolEndpoint::new(
