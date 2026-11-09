@@ -1,19 +1,20 @@
 <script setup vapor lang="ts">
 import { computed } from 'vue'
-import { formatAge, formatCount } from './format'
+import { formatAge } from './format'
 import { useStatsStore } from './useStatsStore'
 
-const { status, model, ageMs } = useStatsStore()
+// The status word is the live region; the age ticks every second and stays outside it.
+const { status, ageMs } = useStatsStore()
 const LABELS = {
   loading: 'Loading', live: 'Live', paused: 'Paused', stale: 'Stale', retrying: 'Retrying', error: 'Unavailable',
-  unsupported: 'Unsupported version: reload the page',
+  unsupported: 'Unsupported version',
 }
 const label = computed(() => LABELS[status.value])
 const age = computed(() => (ageMs.value === undefined ? '' : `updated ${formatAge(ageMs.value)}`))
-const servers = computed(() => model.value?.summary.servers)
 </script>
 
 <template lang="pug">
-p.stats-status(role="status" :data-status="status") {{ label }} {{ age }}
-p.stats-servers(v-if="servers") {{ formatCount(servers.up) }} of {{ formatCount(servers.total) }} servers up
+p.ox-live
+  span.ox-state(role="status" :data-status="status") {{ label }}
+  span.ox-age(v-if="age") {{ age }}
 </template>
