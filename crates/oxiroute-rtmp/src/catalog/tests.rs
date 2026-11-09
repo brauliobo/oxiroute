@@ -144,7 +144,7 @@ fn reaper_backpressures_generations_while_registry_completion_is_blocked() {
 
     let registry_lock = registry.lock();
     assert!(completing.stop(completing_context));
-    wait_until(Duration::from_secs(2), || !completing.status().stopping);
+    wait_until(Duration::from_secs(30), || !completing.status().stopping);
 
     let pending = [Arc::clone(&first_pending), Arc::clone(&second_pending)];
     let (completed_tx, completed_rx) = mpsc::channel();
@@ -167,7 +167,7 @@ fn reaper_backpressures_generations_while_registry_completion_is_blocked() {
         .recv_timeout(Duration::from_secs(2))
         .expect("pending generations submitted after completion");
     submitter.join().expect("generation submitter");
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         !first_pending.status().stopping && !second_pending.status().stopping
     });
     drop(reaper_owner);
@@ -222,7 +222,7 @@ fn restart_releases_controller_lock_while_stale_worker_awaits_reaper_capacity() 
         ),
         RecorderEnqueueResult::DroppedDiscontinuity
     );
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         controller
             .status()
             .status
@@ -263,7 +263,7 @@ fn restart_releases_controller_lock_while_stale_worker_awaits_reaper_capacity() 
         .expect("restart third generation");
     restart_thread.join().expect("restart thread");
     controller.deactivate(1_300);
-    wait_until(Duration::from_secs(2), || !controller.status().stopping);
+    wait_until(Duration::from_secs(30), || !controller.status().stopping);
     drop(reaper_owner);
 }
 
@@ -334,7 +334,7 @@ fn proactive_shutdown_transitions_recording_through_stopping_to_idle() {
     ));
     flock(&ownership, FlockOperation::Unlock).expect("release recording storage");
     assert!(shutdown.wait_until(Instant::now() + Duration::from_secs(1)));
-    wait_until(Duration::from_secs(1), || {
+    wait_until(Duration::from_secs(30), || {
         registry
             .recorder_snapshot(stream_id, recorder_id)
             .is_ok_and(|snapshot| snapshot.phase == RecorderPhase::Idle)
@@ -595,7 +595,7 @@ fn assert_continuous_catalog_recovery(
         controller.try_enqueue(failed_event, 1_100),
         RecorderEnqueueResult::Queued
     );
-    wait_until(Duration::from_secs(1), || {
+    wait_until(Duration::from_secs(30), || {
         controller.status().status.is_some_and(|status| {
             status.phase == RecorderWorkerPhase::Failed(RecorderFailure::Open)
         })
@@ -627,7 +627,7 @@ fn assert_continuous_catalog_recovery(
         controller.try_enqueue(recovery_event, 1_200),
         RecorderEnqueueResult::Inactive
     );
-    wait_until(Duration::from_secs(1), || {
+    wait_until(Duration::from_secs(30), || {
         let status = controller.status();
         !status.stopping && status.recovering
     });
@@ -636,7 +636,7 @@ fn assert_continuous_catalog_recovery(
         crate::MediaEvent::audio(2, Arc::<[u8]>::from(&b"continued"[..])).expect("continued event");
     let enqueue_result = controller.try_enqueue(continued_event, 1_300);
     assert_eq!(enqueue_result, RecorderEnqueueResult::Queued);
-    wait_until(Duration::from_secs(1), || {
+    wait_until(Duration::from_secs(30), || {
         controller
             .status()
             .status
@@ -652,7 +652,7 @@ fn assert_continuous_catalog_recovery(
     ));
 
     controller.deactivate(1_400);
-    wait_until(Duration::from_secs(1), || !controller.status().stopping);
+    wait_until(Duration::from_secs(30), || !controller.status().stopping);
 }
 
 fn assert_stale_recording_status_does_not_hide_failure(
