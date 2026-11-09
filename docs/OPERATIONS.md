@@ -224,13 +224,24 @@ Each canonical `stats.pages[]` socket is separate from those observability binds
 `uri_prefix` it serves exactly the page, `snapshot.json`, `stats.csv` and the files below `assets/`
 (see "Stats page API" and "Stats page assets") and returns `404` for every other path, for `/metrics`, `/ready`, `/status.json`, `/api/v1/status` and
 the legacy `/stats` (a path that merely starts with the prefix, such as `/statsfoo`, is not the
-page). The page is public: everyone who can reach the socket sees the same data, including upstream
-addresses, listener binds and revisions, so bind it only where that is acceptable. `admin =
-"localhost"` adds Ready/Drain/Maintenance forms only to loopback clients. Mutation additionally
+page). `GET <prefix>` is a script page: the browser runs the embedded client, which polls
+`snapshot.json`; a browser without script shows the table that needs no script and refreshes it
+with a `<meta http-equiv="refresh">`, both inside `noscript`. `admin =
+"localhost"` adds Ready/Drain/Maintenance only for loopback clients. Mutation additionally
 requires a `localhost` or loopback-IP Host, a matching Origin or Origin-absent Referer, no forwarded
 identity, and the active generation revision. Each page enforces its own connection cap and
 downstream timeouts and appears in listener metrics. HEAD preserves GET `Content-Length` without a
 body; use `disabled` for an unconditionally read-only page.
+
+Security. The page has no authentication and shows everything the snapshot holds to anyone who reaches
+the page listener: upstream addresses, listener binds, generation revisions, certificate names and
+expiry, and configuration warnings, besides every counter. Bind a page to loopback or a trusted
+interface, and put access control (a firewall, a VPN or an authenticating reverse proxy) in front of
+any wider exposure. Responses carry a strict `Content-Security-Policy` (no inline script or style, no
+other origin), `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff` and
+`X-Frame-Options: DENY`, and the page, `snapshot.json` and `stats.csv` are `no-store`. The
+administration buttons appear only for a loopback peer when `admin = "localhost"`; every other
+client gets a read-only page.
 
 ### Stats page API
 
@@ -295,12 +306,26 @@ needs no node), so the page works without `management.ui_dir` or any file on dis
   base-uri 'none'; frame-ancestors 'none'`.
 
 The files live in `crates/oxiroute-server/assets/stats/` (`index.html` and `assets/<name>`) and are
-the committed output of the UI build: `index.html` is the shell, built with the asset base
-`/__stats_prefix__/`. `scripts/generate-stats-assets.sh --from ui/dist-stats` installs a build and
-regenerates the table `src/observability/stats_page/assets/table.rs`; with `--check` it changes
-nothing and fails on any difference. `scripts/verify-stats-assets.sh` runs that check, rebuilds the
-UI with `pnpm build:stats` and compares byte for byte (CI runs it in the `ui` job).
-Until the stats UI source (`ui/stats.html`) exists the embedded files are a placeholder.
+the committed output of the UI build, so the real bundle is in the repository and `cargo build` needs no
+node. The single source is `ui/stats.html`, built with the asset base `/__stats_prefix__/` and installed
+as `assets/stats/index.html`; the server replaces the token with the configured `uri_prefix` for each
+request. To rebuild after changing the UI:
+
+```sh
+cd ui && pnpm install --frozen-lockfile && pnpm build:stats
+cd .. && scripts/generate-stats-assets.sh --from ui/dist-stats
+```
+
+`generate-stats-assets.sh` installs the build and regenerates the table
+`src/observability/stats_page/assets/table.rs`; with `--check` it changes nothing and fails on any
+difference. `scripts/verify-stats-assets.sh` runs that check, rebuilds the UI with `pnpm build:stats`
+and compares it with the embedded files byte for byte (CI runs it in the `stats-ui` job). `pnpm
+build:stats` also fails when the bundle contains a virtual DOM renderer, an unexpected file, or exceeds
+its size budget.
+
+Cost. One snapshot build per second is shared by every viewer of a page, however many there are. The
+measured cost of a build and the page weight are recorded in the release notes, filled in from the
+benchmark run by the release notes owner.
 
 Changing the mode of an active Unix listener is not a live reload, even when the candidate contains
 other changes. The configuration API saves the valid candidate as `saved_restart_required` with
