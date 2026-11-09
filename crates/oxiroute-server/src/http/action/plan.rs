@@ -1,6 +1,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::http::request_id::REQUEST_ID_HEADER;
+use crate::label::Label;
 use http::header::{CONNECTION, CONTENT_LENGTH, DATE, TRANSFER_ENCODING};
 
 #[derive(Debug)]
@@ -8,7 +9,7 @@ pub(crate) struct HttpRoutePlan {
     pub(crate) access: Option<RouteAccess>,
     pub(crate) action: HttpActionPlan,
     pub(crate) policy: RoutePolicyPlan,
-    pub(crate) route_id: Arc<str>,
+    pub(crate) route_id: Label,
 }
 
 #[derive(Clone, Debug)]

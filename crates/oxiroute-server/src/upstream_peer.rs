@@ -14,6 +14,7 @@ use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
 use tokio::time::Instant;
 
 use crate::clock::promptly;
+use crate::label::Label;
 use crate::routing::{EndpointObservation, QueueTag};
 use crate::{EndpointLease, H3UpstreamPlan, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
 
@@ -56,7 +57,7 @@ pub(crate) struct UpstreamPlan {
     h3: Option<Arc<H3UpstreamPlan>>,
     http_version: HttpVersion,
     /// The pool's name, shared with the records that say where a request is.
-    label: Arc<str>,
+    label: Label,
     selector: Arc<RoundRobinPool>,
     server_timeout: Option<Duration>,
     tls: Option<Arc<UpstreamTlsPlan>>,
@@ -73,7 +74,7 @@ impl UpstreamPlan {
             connection_reuse: UpstreamConnectionReuse::Safe,
             h3: None,
             http_version: HttpVersion::Http11,
-            label: selector.name().into(),
+            label: Label::new(selector.name()),
             selector,
             server_timeout: None,
             tls,
@@ -114,7 +115,7 @@ impl UpstreamPlan {
             connection_reuse,
             h3,
             http_version,
-            label: selector.name().into(),
+            label: Label::new(selector.name()),
             selector,
             server_timeout,
             tls,
@@ -132,7 +133,7 @@ impl UpstreamPlan {
         &self.unavailable
     }
 
-    pub(crate) fn label(&self) -> &Arc<str> {
+    pub(crate) fn label(&self) -> &Label {
         &self.label
     }
 

@@ -11,16 +11,29 @@ trait Json {
     fn write_json(&self, out: &mut Vec<u8>);
 }
 
+const PAIRS: &[u8; 200] = b"0001020304050607080910111213141516171819\
+2021222324252627282930313233343536373839\
+4041424344454647484950515253545556575859\
+6061626364656667686970717273747576777879\
+8081828384858687888990919293949596979899";
+
+/// Two digits per division.
 fn push_u64(out: &mut Vec<u8>, mut value: u64) {
     let mut digits = [0_u8; 20];
     let mut start = digits.len();
-    loop {
+    while value >= 100 {
+        let pair = (value % 100) as usize * 2;
+        value /= 100;
+        start -= 2;
+        digits[start..start + 2].copy_from_slice(&PAIRS[pair..pair + 2]);
+    }
+    if value >= 10 {
+        let pair = value as usize * 2;
+        start -= 2;
+        digits[start..start + 2].copy_from_slice(&PAIRS[pair..pair + 2]);
+    } else {
         start -= 1;
-        digits[start] = b'0' + (value % 10) as u8;
-        value /= 10;
-        if value == 0 {
-            break;
-        }
+        digits[start] = b'0' + value as u8;
     }
     out.extend_from_slice(&digits[start..]);
 }
@@ -87,7 +100,7 @@ impl Json for Count<u128> {
 
 impl Json for Safe<'_> {
     fn write_json(&self, out: &mut Vec<u8>) {
-        push_text(out, &redact_text_cow(&self.0));
+        push_text(out, &self.written());
     }
 }
 
@@ -192,6 +205,36 @@ mod tests {
             timestamp_unix_ms: Some(1_700_000_000_000),
             was_stuck: false,
         }
+    }
+
+    #[test]
+    fn decimals_match_the_standard_rendering() {
+        for value in [
+            0,
+            1,
+            9,
+            10,
+            11,
+            99,
+            100,
+            101,
+            999,
+            1_000,
+            12_345,
+            1_700_000_000_000,
+            u64::MAX,
+        ] {
+            let mut out = Vec::new();
+            push_u64(&mut out, value);
+            assert_eq!(String::from_utf8(out).unwrap(), value.to_string());
+        }
+    }
+
+    #[test]
+    fn a_verified_text_is_written_as_given() {
+        let mut out = Vec::new();
+        Safe::verified("api").write_json(&mut out);
+        assert_eq!(out, br#""api""#);
     }
 
     #[test]

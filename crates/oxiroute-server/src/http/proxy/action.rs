@@ -52,7 +52,7 @@ pub(super) async fn execute_route_action(
                     None => &proxy.pool,
                 };
                 if let Some(inflight) = &ctx.inflight {
-                    inflight.place_pool(Arc::clone(pool.label()));
+                    inflight.place_pool(pool.label().shared());
                 }
                 ctx.queue_tag = pool.selector().queue_tag(
                     proxy.policy.queue_class.as_deref(),
