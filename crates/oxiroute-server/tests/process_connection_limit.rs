@@ -9,21 +9,17 @@ mod http_support;
 #[path = "support/process.rs"]
 mod process_support;
 
-use std::{net::SocketAddr, time::Duration};
+use std::net::SocketAddr;
 
 use oxiroute_config::{
     ConfigDraft, DownstreamTimeoutPolicy, HttpPathSelector, HttpRoute, HttpRouteAction,
     HttpRoutePolicy, HttpService, Listener, Protocol, Stats, StatsPage, StatsPageAdminPolicy,
 };
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::TcpStream,
-    time::sleep,
-};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use config_support::{empty_config, socket_bind};
 use http_support::raw_http_request;
-use process_support::{PROCESS_TIMEOUT, ServerProcess, reserve_tcp_address};
+use process_support::{ServerProcess, reserve_tcp_address};
 
 const SEQUENTIAL_REQUESTS: usize = 300;
 const REQUEST: &[u8] = b"GET /probe HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
@@ -93,7 +89,7 @@ async fn http_listener_with_one_connection_never_rejects_sequential_close_reques
 /// the single admission slot must already be free: any reset means the slot outlived the socket.
 async fn assert_sequential_requests_are_admitted(config: ConfigDraft, address: SocketAddr) {
     let mut server = ServerProcess::start(&config.validate().expect("valid process config"), None);
-    let mut first = connect_when_bound(&mut server, address).await;
+    let mut first = server.connect_when_bound(address).await;
     first.write_all(REQUEST).await.expect("write first request");
     let mut response = Vec::new();
     first
@@ -107,21 +103,4 @@ async fn assert_sequential_requests_are_admitted(config: ConfigDraft, address: S
         assert_eq!(response.status, 200, "sequential request {index}");
     }
     server.shutdown();
-}
-
-/// Keeps the connection that proves the bind: a separate readiness probe would itself occupy the
-/// only slot and race the first request.
-async fn connect_when_bound(server: &mut ServerProcess, address: SocketAddr) -> TcpStream {
-    let deadline = tokio::time::Instant::now() + PROCESS_TIMEOUT;
-    loop {
-        server.assert_running();
-        if let Ok(stream) = TcpStream::connect(address).await {
-            return stream;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "server did not bind {address}"
-        );
-        sleep(Duration::from_millis(10)).await;
-    }
 }
