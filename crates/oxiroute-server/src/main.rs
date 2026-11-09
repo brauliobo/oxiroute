@@ -83,6 +83,12 @@ use {forward_apps::*, generation_process::*, listener_services::*, rtmp_ingest::
 #[path = "main/tests.rs"]
 mod tests;
 
+/// Per-thread allocation caches: with several workers per listener, glibc's shared arenas made every
+/// cross-thread free wait on a lock.
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 const GENERATION_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[allow(clippy::too_many_arguments)]
