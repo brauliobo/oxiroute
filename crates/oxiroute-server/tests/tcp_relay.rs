@@ -275,6 +275,78 @@ async fn traffic_keeps_the_idle_deadline_away_until_it_stops() {
 }
 
 #[tokio::test]
+async fn bulk_data_in_both_directions_arrives_intact_and_is_accounted() {
+    timeout(TEST_TIMEOUT, async {
+        let pattern = |seed: usize, length: usize| -> Vec<u8> {
+            (0..length)
+                .map(|index| {
+                    u8::try_from((index * 31 + seed + index / 7919) % 251).expect("below 251")
+                })
+                .collect()
+        };
+        let upload = pattern(1, 3 * 1024 * 1024 + 17);
+        let download = pattern(2, 2 * 1024 * 1024 + 5);
+        let (mut client, downstream) = duplex(8 * 1024);
+        let (relay_upstream, mut upstream_peer) = duplex(8 * 1024);
+        let (runtime_metrics, connection) = connection_metrics();
+        let (shutdown_tx, shutdown) = watch::channel(false);
+        let relay = tokio::spawn(async move {
+            relay_streams(
+                downstream,
+                relay_upstream,
+                &connection,
+                shutdown,
+                policy(None, None),
+            )
+            .await
+        });
+        let (expected_upload, expected_download) = (upload.clone(), download.clone());
+        let origin = tokio::spawn(async move {
+            let (mut reader, mut writer) = tokio::io::split(&mut upstream_peer);
+            let send = async {
+                writer.write_all(&download).await.expect("origin send");
+                writer.shutdown().await.expect("origin half-close");
+            };
+            let receive = async {
+                let mut received = Vec::new();
+                reader
+                    .read_to_end(&mut received)
+                    .await
+                    .expect("origin receive");
+                received
+            };
+            let ((), received) = tokio::join!(send, receive);
+            assert!(received == expected_upload, "upload differs");
+        });
+        let (mut reader, mut writer) = tokio::io::split(&mut client);
+        let send = async {
+            writer.write_all(&upload).await.expect("client send");
+            writer.shutdown().await.expect("client half-close");
+        };
+        let receive = async {
+            let mut received = Vec::new();
+            reader
+                .read_to_end(&mut received)
+                .await
+                .expect("client receive");
+            received
+        };
+        let ((), received) = tokio::join!(send, receive);
+        assert!(received == expected_download, "download differs");
+        origin.await.expect("origin task");
+        let stats = relay.await.expect("relay task").expect("relay result");
+        assert_eq!(stats.bytes_received, upload.len() as u64);
+        assert_eq!(stats.bytes_sent, expected_download.len() as u64);
+        let snapshot = runtime_metrics.snapshot().expect("traffic snapshot");
+        assert_eq!(snapshot.traffic.bytes_received, upload.len() as u64);
+        assert_eq!(snapshot.traffic.bytes_sent, expected_download.len() as u64);
+        drop(shutdown_tx);
+    })
+    .await
+    .expect("bulk relay test timed out");
+}
+
+#[tokio::test]
 async fn lifetime_timeout_stops_an_active_connection() {
     timeout(TEST_TIMEOUT, async {
         let upstream_listener = TcpListener::bind("127.0.0.1:0")
