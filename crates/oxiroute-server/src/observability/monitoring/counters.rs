@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::sharded::ShardedCounters;
 
 pub(super) const HTTP_RESULT_COUNT: usize = HttpOperationResult::ALL.len();
 
@@ -10,9 +11,9 @@ pub(super) const PROXY_PROTOCOL_RESULT_COUNT: usize = ProxyProtocolResult::ALL.l
 pub(super) const LATENCY_BUCKET_COUNT: usize = OPERATION_LATENCY_BUCKETS_MS.len() + 1;
 
 pub(super) struct OperationMetricsState {
-    http_results: [AtomicU64; HTTP_RESULT_COUNT],
+    http_results: ShardedCounters<HTTP_RESULT_COUNT>,
     http_latency: LatencyCounters,
-    tcp_results: [AtomicU64; TCP_RESULT_COUNT],
+    tcp_results: ShardedCounters<TCP_RESULT_COUNT>,
     tcp_latency: LatencyCounters,
     proxy_protocol_results: [AtomicU64; PROXY_PROTOCOL_RESULT_COUNT],
     cache_events: [AtomicU64; 4],
@@ -21,9 +22,9 @@ pub(super) struct OperationMetricsState {
 impl OperationMetricsState {
     pub(super) fn new() -> Self {
         Self {
-            http_results: std::array::from_fn(|_| AtomicU64::new(0)),
+            http_results: ShardedCounters::new(),
             http_latency: LatencyCounters::new(),
-            tcp_results: std::array::from_fn(|_| AtomicU64::new(0)),
+            tcp_results: ShardedCounters::new(),
             tcp_latency: LatencyCounters::new(),
             proxy_protocol_results: std::array::from_fn(|_| AtomicU64::new(0)),
             cache_events: std::array::from_fn(|_| AtomicU64::new(0)),
@@ -35,8 +36,8 @@ impl OperationMetricsState {
         result: HttpOperationResult,
         duration: Duration,
     ) -> Result<(), MetricsError> {
-        checked_atomic_add(&self.http_results[result.index()], 1, "http.operations")?;
-        self.http_latency.record(duration, "http.latency")
+        self.http_results.add(result.index(), 1);
+        self.http_latency.record(duration)
     }
 
     pub(super) fn record_tcp_relay(
@@ -44,8 +45,8 @@ impl OperationMetricsState {
         result: TcpRelayResult,
         duration: Duration,
     ) -> Result<(), MetricsError> {
-        checked_atomic_add(&self.tcp_results[result.index()], 1, "tcp.relays")?;
-        self.tcp_latency.record(duration, "tcp.latency")
+        self.tcp_results.add(result.index(), 1);
+        self.tcp_latency.record(duration)
     }
 
     pub(super) fn http_snapshot(&self) -> Option<HttpOperationSnapshot> {
@@ -53,10 +54,9 @@ impl OperationMetricsState {
         (latency.count > 0).then(|| HttpOperationSnapshot {
             outcomes: HttpOperationResult::ALL
                 .into_iter()
-                .zip(&self.http_results)
-                .map(|(result, count)| HttpOperationCountSnapshot {
+                .map(|result| HttpOperationCountSnapshot {
                     result,
-                    count: count.load(Ordering::Relaxed),
+                    count: self.http_results.get(result.index()),
                 })
                 .collect(),
             latency,
@@ -115,10 +115,9 @@ impl OperationMetricsState {
         (latency.count > 0).then(|| TcpRelaySnapshot {
             outcomes: TcpRelayResult::ALL
                 .into_iter()
-                .zip(&self.tcp_results)
-                .map(|(result, count)| TcpRelayCountSnapshot {
+                .map(|result| TcpRelayCountSnapshot {
                     result,
-                    count: count.load(Ordering::Relaxed),
+                    count: self.tcp_results.get(result.index()),
                 })
                 .collect(),
             latency,
@@ -129,14 +128,14 @@ impl OperationMetricsState {
 pub(super) const TRANSPORT_OUTCOME_COUNT: usize = TransportOutcome::ALL.len();
 
 pub(super) struct TransportMetricState {
-    outcomes: [AtomicU64; TRANSPORT_OUTCOME_COUNT],
+    outcomes: ShardedCounters<TRANSPORT_OUTCOME_COUNT>,
     latency: LatencyCounters,
 }
 
 impl TransportMetricState {
     fn new() -> Self {
         Self {
-            outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
+            outcomes: ShardedCounters::new(),
             latency: LatencyCounters::new(),
         }
     }
@@ -146,10 +145,8 @@ impl TransportMetricState {
         outcome: TransportOutcome,
         duration: Option<Duration>,
     ) -> Result<(), MetricsError> {
-        checked_atomic_add(&self.outcomes[outcome.index()], 1, "transport.outcomes")?;
-        duration.map_or(Ok(()), |duration| {
-            self.latency.record(duration, "transport.latency")
-        })
+        self.outcomes.add(outcome.index(), 1);
+        duration.map_or(Ok(()), |duration| self.latency.record(duration))
     }
 
     fn snapshot(&self, transport: ObservedTransport) -> Option<TransportOperationSnapshot> {
@@ -158,10 +155,9 @@ impl TransportMetricState {
             transport,
             outcomes: TransportOutcome::ALL
                 .into_iter()
-                .zip(&self.outcomes)
-                .map(|(outcome, count)| TransportOperationCountSnapshot {
+                .map(|outcome| TransportOperationCountSnapshot {
                     outcome,
-                    count: count.load(Ordering::Relaxed),
+                    count: self.outcomes.get(outcome.index()),
                 })
                 .collect(),
             latency,
@@ -169,9 +165,9 @@ impl TransportMetricState {
     }
 
     fn outcomes_present(&self) -> bool {
-        self.outcomes
-            .iter()
-            .any(|count| count.load(Ordering::Relaxed) > 0)
+        TransportOutcome::ALL
+            .into_iter()
+            .any(|outcome| self.outcomes.get(outcome.index()) > 0)
     }
 }
 
@@ -240,40 +236,36 @@ pub(super) fn checked_atomic_add(
 }
 
 /// Latency counters of one operation kind. A sample lands in a single bucket; the cumulative buckets
-/// and the sample count are summed when a snapshot is read, which keeps recording to two atomic updates.
+/// and the sample count are summed when a snapshot is read, which keeps recording to two relaxed
+/// additions on the calling thread's own cache lines.
 pub(super) struct LatencyCounters {
-    buckets: [AtomicU64; LATENCY_BUCKET_COUNT],
-    sum_ms: AtomicU64,
+    /// One counter per bucket, then the sum of the samples in milliseconds.
+    counters: ShardedCounters<{ LATENCY_BUCKET_COUNT + 1 }>,
 }
 
 impl LatencyCounters {
+    const SUM: usize = LATENCY_BUCKET_COUNT;
+
     pub(super) fn new() -> Self {
         Self {
-            buckets: std::array::from_fn(|_| AtomicU64::new(0)),
-            sum_ms: AtomicU64::new(0),
+            counters: ShardedCounters::new(),
         }
     }
 
-    pub(super) fn record(
-        &self,
-        duration: Duration,
-        name: &'static str,
-    ) -> Result<(), MetricsError> {
+    pub(super) fn record(&self, duration: Duration) -> Result<(), MetricsError> {
         let duration_ms = u64::try_from(duration.as_millis())
             .map_err(|_| MetricsError::ValueOutOfRange("operation duration milliseconds"))?;
         let bucket = OPERATION_LATENCY_BUCKETS_MS.partition_point(|bound| *bound < duration_ms);
-        checked_atomic_add(&self.buckets[bucket], 1, name)?;
-        checked_atomic_add(&self.sum_ms, duration_ms, name)
+        self.counters.add(bucket, 1);
+        self.counters.add(Self::SUM, duration_ms);
+        Ok(())
     }
 
     pub(super) fn snapshot(&self) -> LatencySnapshot {
         let mut count = 0;
-        let buckets = self
-            .buckets
-            .iter()
-            .enumerate()
-            .map(|(index, bucket)| {
-                count += bucket.load(Ordering::Relaxed);
+        let buckets = (0..LATENCY_BUCKET_COUNT)
+            .map(|index| {
+                count += self.counters.get(index);
                 LatencyBucketSnapshot {
                     upper_bound_ms: OPERATION_LATENCY_BUCKETS_MS.get(index).copied(),
                     count,
@@ -283,7 +275,7 @@ impl LatencyCounters {
         LatencySnapshot {
             buckets,
             count,
-            sum_ms: self.sum_ms.load(Ordering::Relaxed),
+            sum_ms: self.counters.get(Self::SUM),
         }
     }
 }
