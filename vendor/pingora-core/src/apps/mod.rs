@@ -672,6 +672,21 @@ pub trait HttpServerApp {
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream>;
 
+    /// [`Self::process_new_http()`] for the request loop of an HTTP/1 connection. The connection awaits the
+    /// returned future where it is, whereas the boxed future of `process_new_http` moves the whole request
+    /// state machine (8 KiB and more for a proxy) to the heap for every request. The default calls
+    /// `process_new_http`; an application whose request future is large implements both.
+    fn process_new_http_inline(
+        self: &Arc<Self>,
+        session: ServerSession,
+        shutdown: &ShutdownWatch,
+    ) -> impl std::future::Future<Output = Option<ReusedHttpStream>> + Send
+    where
+        Self: Send + Sync,
+    {
+        async move { self.process_new_http(session, shutdown).await }
+    }
+
     /// Provide options on how HTTP/2 connection should be established. This function will be called
     /// every time a new HTTP/2 **connection** needs to be established.
     ///
@@ -801,14 +816,14 @@ where
                     .and_then(|opts| opts.keepalive_request_limit),
             );
 
-            let mut result = self.process_new_http(session, shutdown).await;
+            let mut result = self.process_new_http_inline(session, shutdown).await;
             while let Some((stream, persistent_settings)) = result.map(|r| r.consume()) {
                 let mut session = ServerSession::new_http1(stream);
                 if let Some(persistent_settings) = persistent_settings {
                     persistent_settings.apply_to_session(&mut session);
                 }
 
-                result = self.process_new_http(session, shutdown).await;
+                result = self.process_new_http_inline(session, shutdown).await;
             }
         }
         None

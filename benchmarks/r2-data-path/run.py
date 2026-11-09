@@ -532,7 +532,8 @@ def measure_memory(args, lane):
 def measure_profile(args, lane):
     """perf record sampled by user-space instructions (deterministic attribution), DWARF call graphs."""
     env = Env(args, lane, args.profile_bin)
-    call_graph = [] if args.flat else ["--user-callchains", "--call-graph", "fp" if args.profile_bin else "dwarf,16384"]
+    mode = args.profile_call_graph or ("fp" if args.profile_bin else "dwarf,16384")
+    call_graph = [] if args.flat else ["--user-callchains", "--call-graph", mode]
     ctl, ack = env.work / "ctl", env.work / "ack"
     os.mkfifo(ctl)
     os.mkfifo(ack)
@@ -614,6 +615,9 @@ def main():
     parser.add_argument("--profile-event", default="instructions:u",
                         help="sampled event; cycles:u attributes cache-line stalls that instruction sampling hides")
     parser.add_argument("--flat", action="store_true", help="--profile without call graphs")
+    parser.add_argument("--profile-call-graph", default=None,
+                        help="perf --call-graph mode of --profile (default fp with --profile-bin, else dwarf,16384; "
+                             "lbr uses the CPU branch records)")
     parser.add_argument("--profile-bin", default=os.environ.get("R2_PROFILE_BIN"),
                         help="frame-pointer build used with --call-graph fp (default: --bin, flat profile)")
     parser.add_argument("--profile-requests", type=int, default=3000)

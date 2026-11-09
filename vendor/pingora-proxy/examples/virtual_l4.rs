@@ -117,7 +117,6 @@ impl VirtualProxy {
     }
 }
 
-#[async_trait::async_trait]
 impl ProxyHttp for VirtualProxy {
     type CTX = ();
 

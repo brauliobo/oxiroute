@@ -82,6 +82,7 @@ mod proxy_cache;
 mod proxy_common;
 mod proxy_custom;
 mod proxy_h1;
+mod proxy_h1_inline;
 mod proxy_h2;
 mod proxy_purge;
 mod proxy_trait;
@@ -218,24 +219,22 @@ where
     {
         // phase 1 read request header
 
+        // A connection waiting between requests ends with the signal its owner shares (one waiter); the first request
+        // of a connection ends when the service stops. Registering for both made every request pay for two.
         let res = tokio::select! {
             biased; // biased select is cheaper, and we don't want to drop already buffered requests
             res = downstream_session.read_request() => { res }
-            _ = self.shutdown.notified() => {
-                // service shutting down, dropping the connection to stop more req from coming in
-                return None;
-            }
-            // The owner of this connection asked it to end, for example because the generation
-            // serving it was replaced. The watch is level triggered, so no signal can be missed
-            // between requests.
             _ = async {
                 match shutdown {
                     Some(shutdown) => {
                         let _ = shutdown.clone().wait_for(|stopping| *stopping).await;
                     }
-                    None => std::future::pending::<()>().await,
+                    None => self.shutdown.notified().await,
                 }
             } => {
+                // service shutting down, or the owner of this connection asked it to end, for example
+                // because the generation serving it was replaced. The watch is level triggered, so no signal can
+                // be missed between requests. Dropping the connection stops more requests from coming in.
                 return None;
             }
         };
@@ -1222,28 +1221,40 @@ where
         session: HttpSession,
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream> {
-        let session = Box::new(session);
+        self.process_new_http_inline(session, shutdown).await
+    }
 
-        // A connection that has not served a request yet keeps its place in the queue, so only the
-        // wait between requests ends on shutdown.
-        let between_requests = session.is_reused_connection().then_some(shutdown);
-        // TODO: keepalive pool, use stack
-        let mut session = match self.handle_new_request(session, between_requests).await {
-            Some(downstream_session) => Session::new(
-                downstream_session,
-                &self.downstream_modules,
-                self.shutdown_flag.clone(),
-            ),
-            None => return None, // bad request
-        };
+    // Written out so the trait's `Send` bound is stated, which `async fn` cannot do for a trait method.
+    #[allow(clippy::manual_async_fn)]
+    fn process_new_http_inline(
+        self: &Arc<Self>,
+        session: HttpSession,
+        shutdown: &ShutdownWatch,
+    ) -> impl std::future::Future<Output = Option<ReusedHttpStream>> + Send {
+        async move {
+            let session = Box::new(session);
 
-        if *shutdown.borrow() {
-            // stop downstream from reusing if this service is shutting down soon
-            session.set_keepalive(None);
+            // A connection that has not served a request yet keeps its place in the queue, so only the
+            // wait between requests ends on shutdown.
+            let between_requests = session.is_reused_connection().then_some(shutdown);
+            // TODO: keepalive pool, use stack
+            let mut session = match self.handle_new_request(session, between_requests).await {
+                Some(downstream_session) => Session::new(
+                    downstream_session,
+                    &self.downstream_modules,
+                    self.shutdown_flag.clone(),
+                ),
+                None => return None, // bad request
+            };
+
+            if *shutdown.borrow() {
+                // stop downstream from reusing if this service is shutting down soon
+                session.set_keepalive(None);
+            }
+
+            let ctx = self.inner.new_ctx();
+            self.process_request(session, ctx).await
         }
-
-        let ctx = self.inner.new_ctx();
-        self.process_request(session, ctx).await
     }
 
     async fn http_cleanup(&self) {
@@ -1665,7 +1676,6 @@ mod upstream_cancellation_tests {
         cancel: Mutex<Option<oneshot::Receiver<()>>>,
     }
 
-    #[async_trait]
     impl ProxyHttp for Cancellable {
         type CTX = ();
 

@@ -172,6 +172,13 @@ impl ChallengeStore {
             .map(|stored| stored.record.key_authorization.clone())
     }
 
+    /// Whether `path` is under the challenge prefix, so [`Self::route`] handles it; lets a caller skip reading the
+    /// clock for every other request.
+    #[must_use]
+    pub fn serves(path: &str) -> bool {
+        path.starts_with(CHALLENGE_PATH_PREFIX)
+    }
+
     /// Handles only the exact ACME challenge path before normal routing.
     ///
     /// A path under the challenge prefix is always handled, including malformed or unknown tokens;

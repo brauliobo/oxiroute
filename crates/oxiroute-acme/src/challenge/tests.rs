@@ -120,3 +120,20 @@ fn cleanup_can_target_authorization_without_revealing_other_records() {
     first.cancel();
     second.cancel();
 }
+
+#[test]
+fn serves_exactly_the_paths_route_handles() {
+    let store = ChallengeStore::default();
+    for path in [
+        "/.well-known/acme-challenge/",
+        "/.well-known/acme-challenge/a/b",
+        "/.well-known/acme-challenge/x",
+    ] {
+        assert!(ChallengeStore::serves(path));
+        assert!(store.route("GET", path, 0).is_some());
+    }
+    for path in ["/", "/.well-known/acme-challenge", "/.well-known/other/x"] {
+        assert!(!ChallengeStore::serves(path));
+        assert!(store.route("GET", path, 0).is_none());
+    }
+}
