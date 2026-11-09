@@ -26,6 +26,14 @@ use crate::utils::KVRef;
 
 pub(super) const MAX_HEADERS: usize = 256;
 
+/// Room for the headers of one message. The parser initialises the slots it fills, so nothing is written here
+/// (`[EMPTY_HEADER; MAX_HEADERS]` stored 8 KiB on every parse attempt).
+pub(super) type HeaderSlots<'buf> = [std::mem::MaybeUninit<httparse::Header<'buf>>; MAX_HEADERS];
+
+pub(super) fn header_slots<'buf>() -> HeaderSlots<'buf> {
+    [const { std::mem::MaybeUninit::uninit() }; MAX_HEADERS]
+}
+
 pub(super) const INIT_HEADER_BUF_SIZE: usize = 4096;
 pub(super) const MAX_HEADER_SIZE: usize = 1048575;
 
