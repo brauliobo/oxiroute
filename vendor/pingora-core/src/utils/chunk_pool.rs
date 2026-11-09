@@ -1,7 +1,7 @@
-//! Per-thread pool of 64 KiB body buffers.
+//! Per-thread pool of 128 KiB body buffers.
 //!
 //! A large HTTP/1 body used to be read into a reader-owned buffer and then copied into a new `Bytes` per chunk,
-//! one 64 KiB allocation and one 64 KiB copy each. Here the buffer itself is handed out as the chunk
+//! one allocation and one copy of the chunk size each. Here the buffer itself is handed out as the chunk
 //! ([`freeze`]) and returns to the pool of the thread that drops the last clone, so a stream of large chunks
 //! reuses the same few buffers and the allocator is not involved.
 
@@ -9,9 +9,11 @@ use std::cell::RefCell;
 
 use bytes::{Bytes, BytesMut};
 
-/// Size of every pooled buffer.
-pub const CHUNK_BYTES: usize = 64 * 1024;
-/// Buffers kept per thread when idle (512 KiB).
+/// Size of every pooled buffer, and so the largest body chunk one socket read can yield. A body that arrives faster
+/// than it is forwarded takes one read, queue hop and write per chunk, so a larger chunk costs fewer instructions per
+/// byte; it also sets how much memory a slow download holds while its chunks are queued.
+pub const CHUNK_BYTES: usize = 128 * 1024;
+/// Buffers kept per thread when idle (1 MiB).
 const POOL_MAX: usize = 8;
 
 thread_local! {
