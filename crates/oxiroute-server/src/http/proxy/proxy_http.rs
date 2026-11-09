@@ -65,7 +65,7 @@ impl ProxyHttp for HttpReverseProxy {
     ) -> pingora::Result<bool> {
         ctx.adopt_downstream_deadline(session);
         ctx.register_inflight(session, self.service.access_log());
-        let arrived = Instant::now();
+        let arrived = ctx.started_at;
         let remaining = ctx.remaining_at(arrived, false)?;
         let write_timeout = session
             .get_write_timeout()
@@ -284,6 +284,7 @@ impl ProxyHttp for HttpReverseProxy {
             .expect("selected endpoint initialized")
             .prepare_peer_with_timeouts(
                 pool,
+                now,
                 attempt(
                     timeouts.connect_ms,
                     pool.connect_timeout(route_policy.connect_timeout),
@@ -511,14 +512,15 @@ impl ProxyHttp for HttpReverseProxy {
         _end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
-        ctx.observe(session);
+        let now = Instant::now();
+        ctx.observe(session, now);
         if session.was_upgraded() {
             return Ok(());
         }
         if session.retry_buffer_truncated() {
             ctx.pin_evacuation(LeftRunning::BodyNotReplayable);
         }
-        let remaining = ctx.remaining(false)?;
+        let remaining = ctx.remaining_at(now, false)?;
         if session.is_http2() {
             if let Some(read_timeout) = session.get_read_timeout() {
                 session.set_read_timeout(Some(read_timeout.min(remaining)));
@@ -809,17 +811,17 @@ impl ProxyHttp for HttpReverseProxy {
         _end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Option<Duration>> {
+        let now = Instant::now();
         if session.was_upgraded() {
-            ctx.observe(session);
+            ctx.observe(session, now);
             return Ok(None);
         }
-        let remaining = ctx.remaining(false)?;
-        if let Some(write_timeout) = session.get_write_timeout() {
-            session.set_write_timeout(Some(write_timeout.min(remaining)));
-        } else {
-            session.set_write_timeout(Some(remaining));
-        }
-        ctx.observe(session);
+        let remaining = ctx.remaining_at(now, false)?;
+        let write_timeout = session
+            .get_write_timeout()
+            .map_or(remaining, |timeout| timeout.min(remaining));
+        session.set_write_timeout(Some(write_timeout));
+        ctx.observe(session, now);
         Ok(None)
     }
 
@@ -830,7 +832,7 @@ impl ProxyHttp for HttpReverseProxy {
         end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Option<Duration>> {
-        if !session.was_upgraded() {
+        if !session.was_upgraded() && !end_of_stream {
             ctx.remaining(true)?;
         }
         if let Some(capture) = ctx.cache_capture.as_mut() {
@@ -919,7 +921,7 @@ impl ProxyHttp for HttpReverseProxy {
                 warn!("could not account for HTTP operation metrics: {metric_error}");
             }
         }
-        ctx.observe(session);
+        ctx.observe(session, now);
         ctx.release_lease();
         ctx.account_final_attempt(session, now);
         ctx.record_failed_evacuations(error);

@@ -231,9 +231,10 @@ impl HttpRequestContext {
         );
     }
 
-    fn observe(&mut self, session: &Session) {
+    /// `now` is the caller's reading of the clock for this step.
+    fn observe(&mut self, session: &Session, now: Instant) {
         if let Some(inflight) = &self.inflight {
-            inflight.progress();
+            inflight.progress(now);
         }
         observe_counter(
             &self.listener,
