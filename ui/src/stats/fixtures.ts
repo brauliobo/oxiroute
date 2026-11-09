@@ -78,12 +78,13 @@ export function wireServer(name: string, address: string, overrides: Partial<Ser
 }
 
 export function wirePool(name: string, servers: ServerStats[], overrides: Partial<PoolStats> = {}): PoolStats {
+  const template = servers[0] ?? wireServer('template', '198.51.100.250:1')
   const available = servers.filter((server) => server.available).length
   const sum = (pick: (server: ServerStats) => bigint) => counter(servers.reduce((total, server) => total + pick(server), 0n))
   return {
     name,
     algorithm: 'round_robin',
-    status: available === servers.length ? 'up' : available === 0 ? 'down' : 'degraded',
+    status: servers.length === 0 ? 'empty' : available === servers.length ? 'up' : available === 0 ? 'down' : 'degraded',
     availableServers: available,
     totalServers: servers.length,
     failOpenSelections: counter(0),
@@ -98,7 +99,7 @@ export function wirePool(name: string, servers: ServerStats[], overrides: Partia
       wait: queueHistogram([0, 5, 50, 500]),
     },
     traffic: {
-      ...servers[0]!.traffic,
+      ...template.traffic,
       sessions: {
         current: servers.reduce((total, server) => total + server.traffic.sessions.current, 0),
         total: sum((server) => BigInt(server.traffic.sessions.total)),
@@ -106,7 +107,7 @@ export function wirePool(name: string, servers: ServerStats[], overrides: Partia
       bytesReceived: sum((server) => BigInt(server.traffic.bytesReceived)),
       bytesSent: sum((server) => BigInt(server.traffic.bytesSent)),
     },
-    latency: servers[0]!.latency,
+    latency: template.latency,
     servers,
     ...overrides,
   }
