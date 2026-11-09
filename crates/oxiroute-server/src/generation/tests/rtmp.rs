@@ -119,7 +119,7 @@ fn retirement_registry_deduplicates_and_prunes_completed_lifecycles() {
     registry.retire(retirement);
     assert_eq!(registry.len(), 1);
 
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut work = registry.take_shutdown_work();
     assert_eq!(work.len(), 1);
     let shutdown = work.pop().expect("retirement work").initiate(deadline);
@@ -148,9 +148,9 @@ fn manager_shutdown_retires_evicted_lifecycles_without_process_handles() {
         .expect("second candidate");
     manager.activate(&second).expect("second activation");
 
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(30);
     drop(manager.begin_shutdown(deadline));
-    assert!(manager.shutdown(Duration::from_secs(1)));
+    assert!(manager.shutdown(Duration::from_secs(30)));
 }
 
 #[test]

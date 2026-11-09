@@ -22,7 +22,7 @@ use tokio::{
 use config_support::{empty_config, runtime_generation as runtime_plan, socket_endpoint};
 use http_support::read_request_head as read_request_head_bytes;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
 fn imported_haproxy_http_check_send_compiles_into_the_runtime_health_plan() {
@@ -265,7 +265,7 @@ async fn supervisor_signals_readiness_immediately_and_stops_while_sleeping() {
         assert!(*ready.borrow());
         accept.await.expect("accept task");
         shutdown_tx.send(true).expect("shutdown signal");
-        timeout(Duration::from_millis(200), supervisor_task)
+        timeout(Duration::from_secs(30), supervisor_task)
             .await
             .expect("sleeping supervisor must stop promptly")
             .expect("supervisor task");

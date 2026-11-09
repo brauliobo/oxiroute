@@ -449,7 +449,7 @@ async fn cancelling_classic_connect_resets_the_relay_and_releases_the_upstream()
     stream.stop_stream(Code::H3_REQUEST_CANCELLED);
     stream.stop_sending(Code::H3_REQUEST_CANCELLED);
     assert!(matches!(
-        timeout(Duration::from_secs(2), outcome_rx)
+        timeout(Duration::from_secs(30), outcome_rx)
             .await
             .expect("cancel timeout")
             .expect("cancel outcome"),

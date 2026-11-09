@@ -37,6 +37,7 @@ fn plan(root: &Path, etag: bool) -> StaticFilesPlan {
         default_type: None,
         headers: Box::new([]),
         error_responses: HashMap::new(),
+        cache: StaticCache::default(),
     }
 }
 
@@ -405,10 +406,12 @@ fn static_request_decision_matrix_is_protocol_neutral() {
     ];
 
     let mut file = StaticFile {
+        content: StaticContent::Open(File::open(path).expect("open static decision file")),
+        content_type: HeaderValue::from_static("text/plain; charset=utf-8"),
         etag: HeaderValue::from_static("\"etag\""),
-        file: File::open(path).expect("open static decision file"),
+        last_modified: HeaderValue::from_static("Thu, 01 Jan 1970 00:01:40 GMT"),
         modified,
-        name: OsString::from("file.txt"),
+        name: OsStr::new("file.txt").into(),
         size: 10,
     };
     for case in cases {
@@ -432,4 +435,146 @@ fn static_request_decision_matrix_is_protocol_neutral() {
             );
         }
     }
+}
+
+fn memory_file(body: &'static [u8]) -> StaticFile {
+    StaticFile {
+        content: StaticContent::Memory(Bytes::from_static(body)),
+        content_type: HeaderValue::from_static("text/plain; charset=utf-8"),
+        etag: HeaderValue::from_static("\"etag\""),
+        last_modified: HeaderValue::from_static("Thu, 01 Jan 1970 00:01:40 GMT"),
+        modified: UNIX_EPOCH,
+        name: OsStr::new("file.txt").into(),
+        size: body.len() as u64,
+    }
+}
+
+#[tokio::test]
+async fn small_files_are_served_from_memory_for_one_validity_window() {
+    let directory = tempfile::tempdir().expect("static cache directory");
+    let path = directory.path().join("hot.txt");
+    std::fs::write(&path, b"first").expect("write file");
+    let plan = plan(directory.path(), true);
+
+    let StaticTarget::File(file) = plan.serve("/hot.txt").await.expect("first read") else {
+        panic!("a file");
+    };
+    assert!(matches!(&file.content, StaticContent::Memory(body) if body.as_ref() == b"first"));
+
+    std::fs::write(&path, b"second!").expect("rewrite file");
+    let StaticTarget::File(file) = plan.serve("/hot.txt").await.expect("cached read") else {
+        panic!("a file");
+    };
+    assert!(matches!(&file.content, StaticContent::Memory(body) if body.as_ref() == b"first"));
+
+    std::fs::remove_file(&path).expect("remove file");
+    assert!(
+        plan.serve("/hot.txt").await.is_ok(),
+        "removal is hidden inside the window"
+    );
+}
+
+#[test]
+fn cache_entries_expire_after_the_validity_window() {
+    let cache = StaticCache::default();
+    let start = Instant::now();
+    cache.insert("/a", &memory_file(b"a"), start);
+    assert!(
+        cache
+            .get("/a", start + Duration::from_millis(999))
+            .is_some()
+    );
+    assert!(cache.get("/a", start + VALIDITY).is_none());
+    assert!(cache.get("/b", start).is_none());
+}
+
+#[test]
+fn a_full_cache_drops_expired_entries_and_otherwise_skips_new_ones() {
+    let cache = StaticCache::default();
+    let start = Instant::now();
+    for index in 0..512 {
+        cache.insert(&format!("/{index}"), &memory_file(b"x"), start);
+    }
+    cache.insert("/late", &memory_file(b"x"), start + VALIDITY / 2);
+    assert!(
+        cache.get("/late", start + VALIDITY / 2).is_none(),
+        "full of fresh entries"
+    );
+    cache.insert("/late", &memory_file(b"x"), start + VALIDITY);
+    assert!(
+        cache.get("/late", start + VALIDITY).is_some(),
+        "expired entries made room"
+    );
+    assert!(cache.get("/0", start + VALIDITY).is_none());
+}
+
+#[test]
+fn files_over_the_memory_limit_are_not_cached() {
+    let directory = tempfile::tempdir().expect("static cache directory");
+    let path = directory.path().join("big.bin");
+    std::fs::write(
+        &path,
+        vec![7; usize::try_from(MEMORY_FILE_BYTES).unwrap() + 1],
+    )
+    .expect("write");
+    let content = StaticContent::Open(File::open(path).expect("open"));
+    let loaded = StaticFile {
+        content: content.load(MEMORY_FILE_BYTES + 1).expect("load"),
+        ..memory_file(b"")
+    };
+    assert!(matches!(loaded.content, StaticContent::Open(_)));
+    let cache = StaticCache::default();
+    cache.insert("/big", &loaded, Instant::now());
+    assert!(cache.get("/big", Instant::now()).is_none());
+}
+
+async fn collect(content: StaticContent, start: u64, length: u64) -> Vec<u8> {
+    let mut reader = content.into_reader(start, length);
+    let mut bytes = Vec::new();
+    while let Some(chunk) = reader.next_chunk().await.expect("chunk") {
+        bytes.extend_from_slice(&chunk);
+    }
+    bytes
+}
+
+#[tokio::test]
+async fn memory_and_open_content_yield_the_same_ranges() {
+    let directory = tempfile::tempdir().expect("static content directory");
+    let path = directory.path().join("data.bin");
+    let data: Vec<u8> = (0..200_000_u32).map(|value| (value % 251) as u8).collect();
+    std::fs::write(&path, &data).expect("write data");
+    for (start, length) in [
+        (0, 200_000),
+        (0, 1),
+        (65_535, 65_538),
+        (199_999, 1),
+        (10, 0),
+    ] {
+        let (from, to) = (
+            usize::try_from(start).unwrap(),
+            usize::try_from(start + length).unwrap(),
+        );
+        let expected = &data[from..to];
+        let open = StaticContent::Open(File::open(&path).expect("open"));
+        assert_eq!(
+            collect(open, start, length).await,
+            expected,
+            "open {start}+{length}"
+        );
+        let memory = StaticContent::Memory(Bytes::from(data.clone()));
+        assert_eq!(
+            collect(memory, start, length).await,
+            expected,
+            "memory {start}+{length}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_truncated_file_ends_the_stream_with_an_error() {
+    let directory = tempfile::tempdir().expect("static content directory");
+    let path = directory.path().join("short.bin");
+    std::fs::write(&path, b"abc").expect("write data");
+    let mut reader = StaticContent::Open(File::open(&path).expect("open")).into_reader(0, 10);
+    assert!(reader.next_chunk().await.is_err());
 }

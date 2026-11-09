@@ -7,6 +7,7 @@ mod lexical;
 mod model;
 mod validated;
 mod validation;
+mod warnings;
 
 pub use composition::{ConfigCompositionError, compose_validated_configs};
 pub use lexical::{
@@ -20,3 +21,4 @@ pub use validated::ValidatedConfig;
 pub use validation::{
     validate_health_check_config, validate_upstream_pool_definitions, validate_upstream_pools,
 };
+pub use warnings::{ConfigWarning, W_PASSIVE_HEALTH_MISSING, W_RETRY_NEVER_REPLAYS};

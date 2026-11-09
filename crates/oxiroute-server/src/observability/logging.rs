@@ -13,6 +13,8 @@ pub(crate) const REDACTED: &str = "<redacted>";
 pub(crate) const RTMP_ACCESS_LOG_QUEUE_CAPACITY: u64 = 1_024;
 
 const MAX_SAFE_TEXT_BYTES: usize = 128;
+/// No marker is shorter, so shorter text (methods, protocols, empty reasons) needs no search.
+const MIN_MARKER_BYTES: usize = 5;
 const SENSITIVE_MARKERS: &[&str] = &[
     "authorization",
     "bearer ",
@@ -51,7 +53,7 @@ fn is_sensitive(text: &str) -> bool {
             .build(SENSITIVE_MARKERS)
             .expect("sensitive markers compile")
     });
-    MARKERS.is_match(text)
+    text.len() >= MIN_MARKER_BYTES && MARKERS.is_match(text)
 }
 
 /// Allocation-free [`redact_text`] for the per-request path.
@@ -318,9 +320,17 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        REDACTED, RtmpAccessLogMetrics, redact_access_record, redact_identifier,
-        redact_rtmp_access_record, redact_text, valid_correlation_id,
+        MIN_MARKER_BYTES, REDACTED, RtmpAccessLogMetrics, SENSITIVE_MARKERS, redact_access_record,
+        redact_identifier, redact_rtmp_access_record, redact_text, valid_correlation_id,
     };
+
+    #[test]
+    fn the_shortest_marker_sets_the_search_threshold() {
+        let shortest = SENSITIVE_MARKERS.iter().map(|marker| marker.len()).min();
+        assert_eq!(shortest, Some(MIN_MARKER_BYTES));
+        assert_eq!(redact_text("token"), REDACTED);
+        assert_eq!(redact_text("toke"), "toke");
+    }
 
     #[test]
     fn redacts_secret_bearing_log_values() {

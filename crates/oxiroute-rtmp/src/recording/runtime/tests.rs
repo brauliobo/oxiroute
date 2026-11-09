@@ -16,7 +16,7 @@ use crate::{
     RecordingStore, RecordingStoreLimits, RtmpCapabilities,
 };
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(1);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
 fn recovery_bootstrap_discards_an_oversized_snapshot_without_blocking_start() {

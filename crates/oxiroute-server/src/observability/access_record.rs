@@ -11,6 +11,8 @@ use serde::{Serialize, Serializer};
 
 use super::logging::{CorrelationId, redact_text_cow, valid_correlation_id};
 
+mod json;
+
 /// Free text, bounded and replaced by a marker when it looks like a credential.
 pub(crate) struct Safe<'a>(Cow<'a, str>);
 

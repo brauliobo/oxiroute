@@ -572,7 +572,14 @@ Current constraints:
   `max_request_body_bytes`). It is for routes where the operator guarantees every accepted request
   is idempotent, including intentionally idempotent `POST` APIs; it MUST NOT be used for
   requests that can create a duplicate side effect. The values are a pair: mixed `get_head`/`buffered`
-  or `all`/`empty` policies fail validation. Every retry also requires the configured
+  or `all`/`empty` policies fail validation. A route with a `methods` list that names neither `GET`
+  nor `HEAD` can never replay a request under the default `get_head` policy; when it also retries
+  after the request was sent (`response_statuses`, or the `empty_response`, `response_timeout` or
+  `junk_response` triggers) or has a `rescue`, `config check` and the import report
+  `W_RETRY_NEVER_REPLAYS`. A pool that serves a route with `response_statuses` and has no
+  `passive_health` reports `W_PASSIVE_HEALTH_MISSING`, because a server that only returns those
+  statuses is never ejected. Both are warnings: the configuration stays valid and the effective
+  policy does not change. Every retry also requires the configured
   `target` to be selectable. `target = "next_server"` requires a distinct named server;
   `target = "same_server"` reselects the same named server. A replay never returns to a server that
   already answered the request when `target = "next_server"`; it is not attempted at all when every
@@ -714,7 +721,10 @@ HAProxy directives:
   ranges, and 416 responses. Disabling ETag suppresses generated tag matching and output, while
   `If-None-Match: *` still tests whether the selected representation exists and takes precedence
   over `If-Modified-Since`.
-  Roots are descriptor-pinned; files are opened no-follow and stream in 64 KiB chunks up to 8 GiB.
+  Roots are descriptor-pinned; files are opened no-follow and stream in 64 KiB chunks up to 8 GiB. Files of
+  up to 128 KiB are read whole and answered from a per-route memory cache (at most 512 files and 16 MiB) for
+  one second, so an edit, replacement or removal is visible within one second; larger files are read on every
+  request.
 - Gzip exposes level 1 through 9, bounded exact content types, `min_length_bytes`, a minimum request
   version of HTTP/1.0 or HTTP/1.1, optional suppression when `Via` is present, and optional
   `Vary: Accept-Encoding`. For compatibility with persisted minimal policies, omitted new fields

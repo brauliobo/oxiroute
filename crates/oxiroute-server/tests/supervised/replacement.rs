@@ -54,7 +54,7 @@ pub(super) fn supervised_worker_replaces_a_same_manifest_generation() {
         .arg(encode_token([0x52; 16]))
         .arg(&path)
         .arg(revision);
-    let mut factory = WorkerSpawner::new(supervisor_launcher(), Duration::from_secs(5))
+    let mut factory = WorkerSpawner::new(supervisor_launcher(), TEST_TIMEOUT)
         .expect("production launcher implementation");
     harness
         .master
@@ -82,7 +82,7 @@ pub(super) fn supervised_worker_replaces_a_same_manifest_generation() {
     }
     let mut stream = TcpStream::connect(tcp_address).expect("replacement TCP connection");
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("TCP read timeout");
     stream
         .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
@@ -135,7 +135,7 @@ pub(super) fn supervised_worker_reactivates_after_a_replacement_rejection() {
         .arg(encode_token([0x53; 16]))
         .arg(&path)
         .arg("0".repeat(64));
-    let mut factory = WorkerSpawner::new(supervisor_launcher(), Duration::from_secs(5))
+    let mut factory = WorkerSpawner::new(supervisor_launcher(), TEST_TIMEOUT)
         .expect("production launcher implementation");
     harness
         .master
