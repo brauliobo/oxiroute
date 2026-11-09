@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use log::warn;
@@ -14,7 +17,7 @@ use pingora::{
     },
     server::ShutdownWatch,
 };
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::sync::watch;
 
 use crate::listener::runtime::{AdmissionError, ListenerRuntime};
 use crate::{ListenerMetrics, RuntimeGeneration, RuntimeReferenceKind, TlsProfilePlan};
@@ -92,22 +95,24 @@ where
     }
 }
 
-fn retirement_monitor(
+/// Merges generation retirement and process shutdown into one signal that every HTTP/1
+/// connection of a service shares, instead of a task and a channel per connection.
+fn retirement_signal(
     generation: &RuntimeGeneration,
     process_shutdown: &ShutdownWatch,
-) -> (ShutdownWatch, JoinHandle<()>) {
+) -> ShutdownWatch {
     let mut retired = generation.retirement_signal();
     let mut process_shutdown = process_shutdown.clone();
     let (shutdown_tx, shutdown_rx) =
         watch::channel(*process_shutdown.borrow() || *retired.borrow());
-    let monitor = tokio::spawn(async move {
+    tokio::spawn(async move {
         tokio::select! {
             _ = retired.wait_for(|retired| *retired) => {}
             _ = process_shutdown.wait_for(|stopping| *stopping) => {}
         }
         let _ = shutdown_tx.send(true);
     });
-    (shutdown_rx, monitor)
+    shutdown_rx
 }
 
 fn log_admission_error(protocol: &str, error: &AdmissionError) {
@@ -117,6 +122,7 @@ fn log_admission_error(protocol: &str, error: &AdmissionError) {
 /// Enforces listener protocol policy on a negotiated transport before HTTP parsing begins.
 pub struct HttpListenerApp<A> {
     generation: Option<Arc<RuntimeGeneration>>,
+    retirement: OnceLock<ShutdownWatch>,
     inner: Arc<A>,
     h2_only: bool,
 }
@@ -126,6 +132,7 @@ impl<A> HttpListenerApp<A> {
     pub fn new(inner: A, tls_profile: Option<&TlsProfilePlan>) -> Self {
         Self {
             generation: None,
+            retirement: OnceLock::new(),
             inner: Arc::new(inner),
             h2_only: tls_profile.is_some_and(TlsProfilePlan::is_h2_only),
         }
@@ -135,6 +142,24 @@ impl<A> HttpListenerApp<A> {
     pub fn with_generation(mut self, generation: Arc<RuntimeGeneration>) -> Self {
         self.generation = Some(generation);
         self
+    }
+}
+
+impl<A> HttpListenerApp<A> {
+    /// A replaced generation closes its idle HTTP/1 connections and lets a busy one finish its
+    /// request with `Connection: close`.
+    fn http1_shutdown(&self, process_shutdown: &ShutdownWatch) -> ShutdownWatch {
+        let Some(generation) = self.generation.as_ref() else {
+            return process_shutdown.clone();
+        };
+        let mut signal = self
+            .retirement
+            .get_or_init(|| retirement_signal(generation, process_shutdown))
+            .clone();
+        if *signal.borrow() {
+            signal.mark_unchanged();
+        }
+        signal
     }
 }
 
@@ -224,17 +249,14 @@ where
                 }
             });
             (Some(shutdown_rx), Some(monitor))
-        } else if let Some(generation) = self.generation.as_ref() {
-            // A replaced generation closes its idle HTTP/1 connections and lets a busy one finish
-            // its request with `Connection: close`.
-            let (shutdown_rx, monitor) = retirement_monitor(generation, shutdown);
-            (Some(shutdown_rx), Some(monitor))
         } else {
             (None, None)
         };
-        let result = match h2_shutdown.as_ref() {
-            Some(h2_shutdown) => self.inner.process_new(downstream, h2_shutdown).await,
-            None => self.inner.process_new(downstream, shutdown).await,
+        let result = if let Some(h2_shutdown) = h2_shutdown.as_ref() {
+            self.inner.process_new(downstream, h2_shutdown).await
+        } else {
+            let shutdown = self.http1_shutdown(shutdown);
+            self.inner.process_new(downstream, &shutdown).await
         };
         if let Some(monitor) = h2_monitor {
             monitor.abort();

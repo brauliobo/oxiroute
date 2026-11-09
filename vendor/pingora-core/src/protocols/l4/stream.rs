@@ -29,7 +29,7 @@ use std::os::windows::io::AsRawSocket;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 #[cfg(target_os = "linux")]
 use tokio::io::Interest;
 use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
@@ -388,8 +388,6 @@ pub struct Stream {
     pub established_ts: SystemTime,
     /// The distributed tracing object for this stream
     pub tracer: Option<Tracer>,
-    read_pending_time: AccumulatedDuration,
-    write_pending_time: AccumulatedDuration,
     /// Last rx timestamp associated with the last recvmsg call.
     pub rx_ts: Option<SystemTime>,
 }
@@ -496,8 +494,6 @@ impl From<TcpStream> for Stream {
             proxy_digest: None,
             socket_digest: None,
             tracer: None,
-            read_pending_time: AccumulatedDuration::new(),
-            write_pending_time: AccumulatedDuration::new(),
             rx_ts: None,
         }
     }
@@ -518,8 +514,6 @@ impl From<virt::VirtualSocketStream> for Stream {
             proxy_digest: None,
             socket_digest: None,
             tracer: None,
-            read_pending_time: AccumulatedDuration::new(),
-            write_pending_time: AccumulatedDuration::new(),
             rx_ts: None,
         }
     }
@@ -541,8 +535,6 @@ impl From<UnixStream> for Stream {
             proxy_digest: None,
             socket_digest: None,
             tracer: None,
-            read_pending_time: AccumulatedDuration::new(),
-            write_pending_time: AccumulatedDuration::new(),
             rx_ts: None,
         }
     }
@@ -620,11 +612,11 @@ impl GetTimingDigest for Stream {
     }
 
     fn get_read_pending_time(&self) -> Duration {
-        self.read_pending_time.total
+        Duration::ZERO
     }
 
     fn get_write_pending_time(&self) -> Duration {
-        self.write_pending_time.total
+        Duration::ZERO
     }
 }
 
@@ -683,7 +675,6 @@ impl AsyncRead for Stream {
         } else {
             Pin::new(&mut self.stream_mut()).poll_read(cx, buf)
         };
-        self.read_pending_time.poll_time(&result);
         self.rx_ts = self.stream().get_ref().rx_ts;
         result
     }
@@ -695,19 +686,15 @@ impl AsyncWrite for Stream {
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let result = if self.buffer_write {
+        if self.buffer_write {
             Pin::new(&mut self.stream_mut()).poll_write(cx, buf)
         } else {
             Pin::new(&mut self.stream_mut().get_mut()).poll_write(cx, buf)
-        };
-        self.write_pending_time.poll_write_time(&result, buf.len());
-        result
+        }
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
-        let result = Pin::new(&mut self.stream_mut()).poll_flush(cx);
-        self.write_pending_time.poll_time(&result);
-        result
+        Pin::new(&mut self.stream_mut()).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
@@ -719,16 +706,11 @@ impl AsyncWrite for Stream {
         cx: &mut Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        let total_size = bufs.iter().fold(0, |acc, s| acc + s.len());
-
-        let result = if self.buffer_write {
+        if self.buffer_write {
             Pin::new(&mut self.stream_mut()).poll_write_vectored(cx, bufs)
         } else {
             Pin::new(&mut self.stream_mut().get_mut()).poll_write_vectored(cx, bufs)
-        };
-
-        self.write_pending_time.poll_write_time(&result, total_size);
-        result
+        }
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -743,59 +725,6 @@ impl AsyncWrite for Stream {
 pub mod async_write_vec;
 
 pub use async_write_vec::AsyncWriteVec;
-
-#[derive(Debug)]
-struct AccumulatedDuration {
-    total: Duration,
-    last_start: Option<Instant>,
-}
-
-impl AccumulatedDuration {
-    fn new() -> Self {
-        AccumulatedDuration {
-            total: Duration::ZERO,
-            last_start: None,
-        }
-    }
-
-    fn start(&mut self) {
-        if self.last_start.is_none() {
-            self.last_start = Some(Instant::now());
-        }
-    }
-
-    fn stop(&mut self) {
-        if let Some(start) = self.last_start.take() {
-            self.total += start.elapsed();
-        }
-    }
-
-    fn poll_write_time(&mut self, result: &Poll<io::Result<usize>>, buf_size: usize) {
-        match result {
-            Poll::Ready(Ok(n)) => {
-                if *n == buf_size {
-                    self.stop();
-                } else {
-                    // partial write
-                    self.start();
-                }
-            }
-            Poll::Ready(Err(_)) => {
-                self.stop();
-            }
-            _ => self.start(),
-        }
-    }
-
-    fn poll_time(&mut self, result: &Poll<io::Result<()>>) {
-        match result {
-            Poll::Ready(_) => {
-                self.stop();
-            }
-            _ => self.start(),
-        }
-    }
-}
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]

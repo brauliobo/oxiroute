@@ -1,7 +1,8 @@
 //! Bytes of a static file: held in memory when small, read in chunks from the open descriptor otherwise.
 
-use std::{io, os::unix::fs::FileExt as _};
+use std::{collections::VecDeque, io, os::unix::fs::FileExt as _};
 
+use pingora::utils::chunk_pool::{self, CHUNK_BYTES};
 use rustix::io::ReadWriteFlags;
 
 #[allow(clippy::wildcard_imports)]
@@ -9,7 +10,8 @@ use super::*;
 
 /// Files up to this size are read whole once and served from memory.
 pub(crate) const MEMORY_FILE_BYTES: u64 = 128 * 1024;
-const CHUNK_BYTES: u64 = 64 * 1024;
+/// Chunks read per blocking-pool hop when the file system cannot answer a read from its cache without waiting.
+const WINDOW_CHUNKS: usize = 2;
 
 #[derive(Debug)]
 pub(crate) enum StaticContent {
@@ -35,7 +37,11 @@ impl StaticContent {
     pub(crate) fn into_reader(self, start: u64, length: u64) -> StaticReader {
         let source = match self {
             Self::Memory(body) => Source::Memory(body),
-            Self::Open(file) => Source::Open(Arc::new(file)),
+            Self::Open(file) => Source::Open(OpenFile {
+                file: Arc::new(file),
+                ahead: VecDeque::new(),
+                blocking: false,
+            }),
         };
         StaticReader {
             source,
@@ -47,7 +53,34 @@ impl StaticContent {
 
 enum Source {
     Memory(Bytes),
-    Open(Arc<File>),
+    Open(OpenFile),
+}
+
+/// A file read from its descriptor. Chunks come from the page cache on the calling thread while the file system
+/// can answer without waiting; after the first read that cannot, the rest is read a window at a time on the
+/// blocking pool and handed out in chunks.
+struct OpenFile {
+    file: Arc<File>,
+    ahead: VecDeque<Bytes>,
+    blocking: bool,
+}
+
+impl OpenFile {
+    async fn read(&mut self, offset: u64, remaining: u64) -> io::Result<Bytes> {
+        if self.ahead.is_empty() && !self.blocking {
+            if let Some(chunk) = cached_chunk(&self.file, offset, remaining)? {
+                return Ok(chunk);
+            }
+            self.blocking = true;
+        }
+        if self.ahead.is_empty() {
+            self.ahead = read_window(&self.file, offset, remaining).await?;
+        }
+        Ok(self
+            .ahead
+            .pop_front()
+            .expect("a window holds at least one chunk"))
+    }
 }
 
 /// Yields `length` bytes from `start` in chunks of at most [`CHUNK_BYTES`].
@@ -62,13 +95,13 @@ impl StaticReader {
         if self.remaining == 0 {
             return Ok(None);
         }
-        let length = usize::try_from(self.remaining.min(CHUNK_BYTES)).expect("chunk bound");
-        let chunk = match &self.source {
+        let length = chunk_length(self.remaining);
+        let chunk = match &mut self.source {
             Source::Memory(body) => {
                 let start = usize::try_from(self.offset).expect("memory offset");
                 body.slice(start..start + length)
             }
-            Source::Open(file) => read_chunk(file, self.offset, length).await?,
+            Source::Open(open) => open.read(self.offset, self.remaining).await?,
         };
         self.offset += length as u64;
         self.remaining -= length as u64;
@@ -76,32 +109,106 @@ impl StaticReader {
     }
 }
 
-/// Pages already cached are copied on the calling thread; a read that would wait on the disk moves to the
-/// blocking pool, so a slow volume never stalls the worker.
-async fn read_chunk(file: &Arc<File>, offset: u64, length: usize) -> io::Result<Bytes> {
-    let mut chunk = vec![0; length];
-    let read = match preadv2_nowait(file, &mut chunk, offset) {
-        Ok(read) => read,
-        Err(Errno::AGAIN | Errno::OPNOTSUPP) => 0,
-        Err(error) => return Err(error.into()),
-    };
-    if read == length {
-        return Ok(chunk.into());
-    }
-    let file = Arc::clone(file);
-    tokio::task::spawn_blocking(move || {
-        file.read_exact_at(&mut chunk[read..], offset + read as u64)
-            .map(|()| chunk.into())
-    })
-    .await
-    .map_err(io::Error::other)?
+fn chunk_length(remaining: u64) -> usize {
+    usize::try_from(remaining).map_or(CHUNK_BYTES, |left| left.min(CHUNK_BYTES))
 }
 
-fn preadv2_nowait(file: &File, chunk: &mut [u8], offset: u64) -> Result<usize, Errno> {
-    rustix::io::preadv2(
+/// The next chunk if the page cache holds all of it; `None` when the read would wait on the disk or the file system
+/// has no non-blocking reads.
+fn cached_chunk(file: &File, offset: u64, remaining: u64) -> io::Result<Option<Bytes>> {
+    let length = chunk_length(remaining);
+    let mut chunk = chunk_pool::take();
+    let read = rustix::io::preadv2(
         file,
-        &mut [io::IoSliceMut::new(chunk)],
+        &mut [io::IoSliceMut::new(&mut chunk[..length])],
         offset,
         ReadWriteFlags::NOWAIT,
-    )
+    );
+    match read {
+        Ok(read) if read == length => Ok(Some(chunk_pool::freeze(chunk, 0, length))),
+        Ok(_) | Err(Errno::AGAIN | Errno::OPNOTSUPP) => {
+            chunk_pool::recycle(chunk);
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Reads up to [`WINDOW_CHUNKS`] chunks on the blocking pool. The buffers come from the pool of the calling thread,
+/// which is also the thread that drops the chunks.
+async fn read_window(file: &Arc<File>, offset: u64, remaining: u64) -> io::Result<VecDeque<Bytes>> {
+    let file = Arc::clone(file);
+    let mut buffers = Vec::with_capacity(WINDOW_CHUNKS);
+    let mut left = remaining;
+    while buffers.len() < WINDOW_CHUNKS && left > 0 {
+        let length = chunk_length(left);
+        buffers.push((chunk_pool::take(), length));
+        left -= length as u64;
+    }
+    let buffers = tokio::task::spawn_blocking(move || {
+        let mut position = offset;
+        for (buffer, length) in &mut buffers {
+            file.read_exact_at(&mut buffer[..*length], position)?;
+            position += *length as u64;
+        }
+        Ok::<_, io::Error>(buffers)
+    })
+    .await
+    .map_err(io::Error::other)??;
+    Ok(buffers
+        .into_iter()
+        .map(|(buffer, length)| chunk_pool::freeze(buffer, 0, length))
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pattern(length: u32) -> Vec<u8> {
+        (0..length).map(|value| (value % 251) as u8).collect()
+    }
+
+    async fn chunks(mut reader: StaticReader) -> Vec<Bytes> {
+        let mut chunks = Vec::new();
+        while let Some(chunk) = reader.next_chunk().await.expect("chunk") {
+            chunks.push(chunk);
+        }
+        chunks
+    }
+
+    #[tokio::test]
+    async fn a_blocking_file_is_read_in_windows_and_handed_out_in_chunks() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("data.bin");
+        let data = pattern(700_000);
+        std::fs::write(&path, &data).expect("write");
+        for (start, length) in [(0, 700_000), (262_100, 300_000), (699_999, 1)] {
+            let mut reader =
+                StaticContent::Open(File::open(&path).expect("open")).into_reader(start, length);
+            let Source::Open(open) = &mut reader.source else {
+                unreachable!()
+            };
+            open.blocking = true;
+            let chunks = chunks(reader).await;
+            assert!(chunks.iter().all(|chunk| chunk.len() <= CHUNK_BYTES));
+            let from = usize::try_from(start).expect("start");
+            let to = usize::try_from(start + length).expect("end");
+            assert_eq!(chunks.concat(), data[from..to], "{start}+{length}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_window_past_the_end_of_the_file_is_an_error() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("short.bin");
+        std::fs::write(&path, pattern(100)).expect("write");
+        let file = Arc::new(File::open(&path).expect("open"));
+        assert!(read_window(&file, 0, 200).await.is_err());
+        let window = read_window(&file, 50, 50).await.expect("window");
+        assert_eq!(
+            window.into_iter().flatten().collect::<Vec<u8>>(),
+            pattern(100)[50..]
+        );
+    }
 }
