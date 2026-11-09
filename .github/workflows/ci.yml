@@ -267,6 +267,10 @@ jobs:
       - name: Verify embedded stats page assets are what the UI builds
         run: ./scripts/verify-stats-assets.sh
 
+      - name: Build the dashboard (Playwright starts its preview server too)
+        run: pnpm build
+        working-directory: ui
+
       - name: Install Chromium and Linux dependencies
         run: pnpm exec playwright install --with-deps chromium
         working-directory: ui
@@ -338,7 +342,7 @@ jobs:
         working-directory: ui
 
       - name: Run dashboard browser tests with bounded workers
-        run: pnpm test:browser -- --project=desktop-chromium --project=mobile-chromium --workers=2
+        run: pnpm test:browser --project=desktop-chromium --project=mobile-chromium --workers=2
         working-directory: ui
 
       - name: Upload browser diagnostics
