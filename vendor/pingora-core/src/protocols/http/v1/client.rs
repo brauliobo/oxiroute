@@ -14,6 +14,10 @@
 
 //! HTTP/1.x client session
 
+/// Header slots a parsed response map has beyond the headers it arrived with, for the request id and the
+/// headers route policy adds, so that adding them does not regrow and rehash the map.
+const RESPONSE_HEADER_HEADROOM: usize = 3;
+
 use bytes::{BufMut, Bytes, BytesMut};
 use http::{header, header::AsHeaderName, HeaderValue, StatusCode, Version};
 use log::{debug, trace};
@@ -336,7 +340,7 @@ impl HttpSession {
 
                     let mut response_header = Box::new(ResponseHeader::build_no_case(
                         resp.code.unwrap(),
-                        Some(resp.headers.len()),
+                        Some(resp.headers.len() + RESPONSE_HEADER_HEADROOM),
                     )?);
 
                     // TODO: enforce https://datatracker.ietf.org/doc/html/rfc9110#section-15.2

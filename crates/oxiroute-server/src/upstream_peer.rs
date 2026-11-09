@@ -333,18 +333,26 @@ impl SelectedEndpoint {
         connection_timeout: Duration,
         io_timeout: Duration,
     ) -> pingora::Result<HttpPeer> {
-        self.prepare_peer_with_timeouts(plan, connection_timeout, io_timeout, io_timeout)
-            .await
+        self.prepare_peer_with_timeouts(
+            plan,
+            std::time::Instant::now(),
+            connection_timeout,
+            io_timeout,
+            io_timeout,
+        )
+        .await
     }
 
+    /// `now` is the caller's reading of the clock for this step.
     pub(crate) async fn prepare_peer_with_timeouts(
         &mut self,
         plan: &UpstreamPlan,
+        now: std::time::Instant,
         connection_timeout: Duration,
         read_timeout: Duration,
         write_timeout: Duration,
     ) -> pingora::Result<HttpPeer> {
-        let remaining = self.remaining_timeout(connection_timeout)?;
+        let mut remaining = self.remaining_timeout(Instant::from_std(now), connection_timeout)?;
         if matches!(self.endpoint, RuntimeEndpoint::Unix { .. }) {
             if !self.unix_pending {
                 return Err(Error::new_in(ErrorType::InternalError));
@@ -361,8 +369,8 @@ impl SelectedEndpoint {
                 .map_err(|_| endpoint_timeout(&self.endpoint, connection_timeout))?
                 .map_err(|source| dns_failure(&self.endpoint, source))?;
             self.addresses = Some(addresses.into_iter());
+            remaining = self.remaining_timeout(Instant::now(), connection_timeout)?;
         }
-        let remaining = self.remaining_timeout(connection_timeout)?;
         let address = self
             .addresses
             .as_mut()
@@ -381,14 +389,14 @@ impl SelectedEndpoint {
             return Err(Error::new_up(ErrorType::ConnectError));
         }
         if self.addresses.is_none() {
-            let remaining = self.remaining_timeout(connection_timeout)?;
+            let remaining = self.remaining_timeout(Instant::now(), connection_timeout)?;
             let addresses = tokio::time::timeout(remaining, self.lease.resolve_addresses())
                 .await
                 .map_err(|_| endpoint_timeout(&self.endpoint, connection_timeout))?
                 .map_err(|source| dns_failure(&self.endpoint, source))?;
             self.addresses = Some(addresses.into_iter());
         }
-        let _remaining = self.remaining_timeout(connection_timeout)?;
+        let _remaining = self.remaining_timeout(Instant::now(), connection_timeout)?;
         self.addresses
             .as_mut()
             .and_then(Iterator::next)
@@ -404,11 +412,8 @@ impl SelectedEndpoint {
                 .is_some_and(|addresses| !addresses.as_slice().is_empty())
     }
 
-    fn remaining_timeout(&mut self, timeout: Duration) -> pingora::Result<Duration> {
-        let deadline = *self
-            .deadline
-            .get_or_insert_with(|| Instant::now() + timeout);
-        let now = Instant::now();
+    fn remaining_timeout(&mut self, now: Instant, timeout: Duration) -> pingora::Result<Duration> {
+        let deadline = *self.deadline.get_or_insert_with(|| now + timeout);
         if now >= deadline {
             Err(endpoint_timeout(&self.endpoint, timeout).into())
         } else {

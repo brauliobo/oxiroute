@@ -122,15 +122,31 @@ connection-pool experiments:
 - `protocols/l4/stream.rs` no longer times how long reads and writes stay pending (two clock reads for every pending
   poll): `get_read_pending_time`, `get_write_pending_time` and so `Session::upstream_write_pending_time` return zero.
   OxiRoute does not use them.
+- `protocols/http/v1/server.rs` adds `write_rendered_response`: a response head rendered by the caller (a fixed response's
+  status line and headers) goes out with the `Date` and `Connection` lines in one buffer, with no `ResponseHeader`.
+  `http_resp_header_to_buf` writes `Date` and `Connection` inline instead of inserting them into the header map, so a
+  proxied response head is no longer grown and rehashed for them; both reuse a per-session buffer of at most 64 KiB.
+  `protocols/http/server.rs` exposes it as `Session::write_rendered_response` (`Ok(false)` for HTTP/2 and HTTP/3,
+  which take the header-map path) and `protocols/http/date.rs` adds `put_cached_date`.
+- `protocols/http/v1/server.rs` and `v1/client.rs` size the parsed request header map for four more headers and the
+  response header map for three more (`REQUEST_HEADER_HEADROOM`, `RESPONSE_HEADER_HEADROOM`): a map built exactly full
+  reallocates and rehashes when the first header is added after parsing.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.
+
+- Tests: the unit tests no longer depend on the Internet, fixed ports, a stored key pair or host sysctls. `connectors/test_servers.rs`
+  provides loopback servers that own a kernel-assigned port (HTTP redirect, TLS with HTTP/1.1 or HTTP/2, a refused address, a
+  blackhole whose accept queue is full), `test_tls.rs` generates a throwaway self-signed certificate per test, and the listener tests
+  bind port 0. The TLS tests (and the `openssl` dev-dependency that generates the certificate) cover the OpenSSL backend only.
+  Streams coalesce writes, so a test server must flush. `scripts/test-vendored.sh` runs every vendored suite against these sources
+  in a network namespace with only loopback.
 
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
-review the connector hook, admission guard and handshake-timeout hook, subject conversion, HTTP/1 HEAD informational-response,
+review the connector hook, admission guard and handshake-timeout hook, rendered response write, inline Date and Connection lines, header map headroom, single-clock timeouts, subject conversion, HTTP/1 HEAD informational-response,
 owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, lazy read buffer, pooled
 gzip state, header-name cache, HTTP/2 test lifecycle, connection-pool changes, the idle pool and the listener `TCP_NODELAY`, then rerun the vendored
 gzip state, header-name cache, body buffer pool and hand-over, direct large body writes, coalescing write buffer,
