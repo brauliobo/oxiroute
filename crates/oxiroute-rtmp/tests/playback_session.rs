@@ -1,4 +1,11 @@
-use std::{collections::VecDeque, fs, net::IpAddr, sync::Arc, thread, time::Duration};
+use std::{
+    collections::VecDeque,
+    fs,
+    net::IpAddr,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use oxiroute_rtmp::{
@@ -159,21 +166,16 @@ fn vod_playback_emits_flv_media_and_completes() {
     );
 
     let mut received = Vec::new();
-    let mut completed = false;
-    for _ in 0..100 {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !has_status(&received, "NetStream.Play.Complete") {
+        assert!(Instant::now() < deadline, "VOD playback did not complete");
         let packets = server.drain_playback(32).expect("VOD playback drain");
         if packets.is_empty() {
             thread::sleep(Duration::from_millis(1));
             continue;
         }
-        let (_, events) = feed_server_packets(&mut client, packets);
-        completed |= has_status(&events, "NetStream.Play.Complete");
-        received.extend(events);
-        if completed {
-            break;
-        }
+        received.extend(feed_server_packets(&mut client, packets).1);
     }
-    assert!(completed, "VOD playback did not complete");
     assert_eq!(event_labels(&received), ["audio", "video", "status"]);
     assert!(registry.snapshot().streams.is_empty());
 }
