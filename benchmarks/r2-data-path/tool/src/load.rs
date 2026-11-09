@@ -51,6 +51,7 @@ enum Proto {
     H2c,
     H2Tls,
     Ws,
+    WsTls,
     Tcp,
 }
 
@@ -64,6 +65,7 @@ impl std::str::FromStr for Proto {
             "h2c" => Self::H2c,
             "h2tls" => Self::H2Tls,
             "ws" => Self::Ws,
+            "wstls" => Self::WsTls,
             "tcp" => Self::Tcp,
             other => return Err(format!("unknown protocol {other}")),
         })
@@ -80,6 +82,9 @@ struct Spec {
     warmup: usize,
     duration: Option<Duration>,
     warmup_duration: Option<Duration>,
+    pace: Option<Duration>,
+    /// Look for an idle connection the peer closed before each request (one extra read per request).
+    reconnect_closed: bool,
     new_conn: bool,
     msg_bytes: usize,
     expect_status: u16,
@@ -100,6 +105,9 @@ struct Stats {
     errors: u64,
     bytes: u64,
     connects: u64,
+    /// Idle connections that the peer closed before the next request used them.
+    reconnects: u64,
+    first_error: Option<String>,
 }
 
 impl Stats {
@@ -110,6 +118,8 @@ impl Stats {
         self.errors += other.errors;
         self.bytes += other.bytes;
         self.connects += other.connects;
+        self.reconnects += other.reconnects;
+        self.first_error = self.first_error.take().or(other.first_error);
     }
 }
 
@@ -117,6 +127,20 @@ enum Client {
     H1(Io),
     H2(SendRequest<Full<Bytes>>),
     Raw(Io),
+}
+
+impl Client {
+    /// The peer already closed an idle connection (an HTTP/2 connection after its GOAWAY): a client reconnects
+    /// before sending instead of counting the request as failed, as every HTTP client does.
+    fn peer_closed(&mut self) -> bool {
+        match self {
+            Self::H2(sender) => sender.is_closed(),
+            Self::H1(io) | Self::Raw(io) => {
+                use futures_util::FutureExt;
+                io.read(&mut [0u8; 1]).now_or_never().is_some()
+            }
+        }
+    }
 }
 
 struct Outcome {
@@ -247,7 +271,7 @@ fn spec_from(flags: &Flags) -> Spec {
     let tls_version: String = flag(flags, "tls-version", "any".to_owned());
     let resume: bool = flag(flags, "resume", false);
     let connector = match proto {
-        Proto::H1Tls => Some(tls_connector(b"http/1.1", &tls_version, resume)),
+        Proto::H1Tls | Proto::WsTls => Some(tls_connector(b"http/1.1", &tls_version, resume)),
         Proto::H2Tls => Some(tls_connector(b"h2", &tls_version, resume)),
         _ => None,
     };
@@ -271,6 +295,8 @@ fn spec_from(flags: &Flags) -> Spec {
         warmup: flag(flags, "warmup", 200),
         duration: flags.get("duration").map(|value| seconds(value, "duration")),
         warmup_duration: flags.get("warmup-duration").map(|value| seconds(value, "warmup-duration")),
+        reconnect_closed: flag(flags, "reconnect-closed", false),
+        pace: flags.get("pace-ms").map(|value| seconds(value, "pace-ms") / 1000),
         new_conn,
         msg_bytes: flag(flags, "msg-bytes", 1024),
         expect_status: flag(flags, "expect-status", 200),
@@ -308,7 +334,7 @@ async fn connect(spec: &Spec, slot: usize) -> io::Result<Client> {
             tokio::spawn(connection);
             Ok(Client::H2(sender))
         }
-        Proto::Ws => {
+        Proto::Ws | Proto::WsTls => {
             let handshake = format!(
                 "GET /ws HTTP/1.1\r\nhost: {}\r\nconnection: upgrade\r\nupgrade: websocket\r\n\
                  sec-websocket-version: 13\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
@@ -379,6 +405,7 @@ async fn read_response(io: &mut Io, buf: &mut Vec<u8>) -> io::Result<Outcome> {
 }
 
 async fn exchange(client: &mut Client, spec: &Spec, scratch: &mut Vec<u8>) -> io::Result<Outcome> {
+    scratch.clear();
     match client {
         Client::H1(io) => {
             io.write_all(&spec.h1_request).await?;
@@ -409,6 +436,21 @@ fn micros(started: Instant) -> u32 {
     u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX)
 }
 
+/// A request that failed on a connection the client had used before, before any byte of an answer arrived, or that a
+/// server refused with a graceful GOAWAY: the server closed the connection while the request was on its way (idle
+/// close at a reload, keep-alive limit), the request was not processed, and a client sends it again on a new
+/// connection. Counted as `reconnects`, never as a failure.
+fn stale_connection(error: &io::Error, text: &str, scratch: &[u8]) -> bool {
+    let closed = matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::UnexpectedEof
+    );
+    (closed && scratch.is_empty()) || (text.contains("GoAway(") && text.contains("NO_ERROR"))
+}
+
 async fn worker(
     spec: Arc<Spec>,
     slot: usize,
@@ -420,7 +462,14 @@ async fn worker(
 ) -> (Option<Client>, Stats) {
     let mut stats = Stats::default();
     let mut scratch = Vec::with_capacity(64 * 1024);
-    while next.fetch_add(1, Ordering::Relaxed) < total && deadline.is_none_or(|limit| Instant::now() < limit) {
+    let mut retrying = false;
+    while retrying || (next.fetch_add(1, Ordering::Relaxed) < total && deadline.is_none_or(|limit| Instant::now() < limit)) {
+        let retry = std::mem::take(&mut retrying);
+        let reused = client.is_some();
+        if spec.reconnect_closed && client.as_mut().is_some_and(Client::peer_closed) {
+            client = None;
+            stats.reconnects += 1;
+        }
         let started = Instant::now();
         if client.is_none() {
             let connecting = Instant::now();
@@ -456,10 +505,20 @@ async fn worker(
                     client = None;
                 }
             }
-            Err(_) => {
-                stats.errors += 1;
+            Err(error) => {
+                let text = format!("{error:?}");
+                if spec.reconnect_closed && reused && !retry && stale_connection(&error, &text, &scratch) {
+                    stats.reconnects += 1;
+                    retrying = true;
+                } else {
+                    stats.errors += 1;
+                    stats.first_error.get_or_insert(text);
+                }
                 client = None;
             }
+        }
+        if let Some(pace) = spec.pace {
+            tokio::time::sleep(pace).await;
         }
     }
     (client, stats)
@@ -557,6 +616,10 @@ async fn drive(spec: Arc<Spec>, flags: &Flags) -> ExitCode {
         println!("{label}_us={}", percentile(&stats.latencies_us, fraction));
     }
     println!("connects={}", stats.connects);
+    println!("reconnects={}", stats.reconnects);
+    if let Some(error) = &stats.first_error {
+        println!("first_error={error}");
+    }
     println!("connect_p50_us={}", percentile(&stats.connect_us, 0.5));
     println!("connect_p99_us={}", percentile(&stats.connect_us, 0.99));
     if stats.errors + warm.errors == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
