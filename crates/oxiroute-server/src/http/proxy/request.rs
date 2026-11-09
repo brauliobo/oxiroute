@@ -165,33 +165,34 @@ pub(super) fn content_length(headers: &http::HeaderMap) -> Result<Option<u64>, (
 
 pub(crate) fn selected_upstream_host(
     endpoint: &RuntimeEndpoint,
-    policy: HttpUpstreamHost,
+    policy: &HttpUpstreamHost,
     incoming: Option<&Authority>,
 ) -> pingora::Result<Option<HeaderValue>> {
-    let value = match policy {
+    let host_value = |text: &str| {
+        HeaderValue::from_str(text)
+            .map(Some)
+            .map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))
+    };
+    match policy {
         HttpUpstreamHost::PreserveIncoming => {
-            let Some(incoming) = incoming else {
-                return Ok(None);
-            };
-            incoming.as_str().to_owned()
+            incoming.map_or(Ok(None), |incoming| host_value(incoming.as_str()))
         }
         HttpUpstreamHost::NginxHost { fallback } => {
-            let fallback = HeaderValue::from_str(&fallback)
+            let fallback = HeaderValue::from_str(fallback)
                 .map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))?;
-            return Ok(nginx_request_host(incoming, &fallback)
+            Ok(nginx_request_host(incoming, &fallback)
                 .map(Some)
-                .map_err(pingora_request_policy_error)?);
+                .map_err(pingora_request_policy_error)?)
         }
         HttpUpstreamHost::Endpoint { unix_fallback } => match endpoint {
-            RuntimeEndpoint::Socket { address } => address.to_string(),
-            RuntimeEndpoint::Dns { host, port } => format!("{host}:{port}"),
-            RuntimeEndpoint::Unix { .. } => unix_fallback.unwrap_or_default(),
+            RuntimeEndpoint::Socket { address } => host_value(&address.to_string()),
+            RuntimeEndpoint::Dns { host, port } => host_value(&format!("{host}:{port}")),
+            RuntimeEndpoint::Unix { .. } => {
+                host_value(unix_fallback.as_deref().unwrap_or_default())
+            }
         },
-        HttpUpstreamHost::Literal { value } => value,
-    };
-    HeaderValue::from_str(&value)
-        .map(Some)
-        .map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))
+        HttpUpstreamHost::Literal { value } => host_value(value),
+    }
 }
 
 pub(super) fn apply_request_header_mutations(

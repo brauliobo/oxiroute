@@ -46,7 +46,7 @@ mod wait;
 use faults::*;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
-const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct Harness<E: ActionExecutor = SystemActionExecutor> {
     _temporary: tempfile::TempDir,

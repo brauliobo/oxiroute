@@ -276,6 +276,56 @@ pub(super) fn populate_headers(
     used_header_index
 }
 
+/// Names seen per thread. A header name outside the standard table is allocated every time it is parsed; real
+/// traffic repeats the same few dozen names, so remembering them turns that allocation into a hash lookup.
+const NAME_CACHE_ENTRIES: usize = 512;
+const NAME_CACHE_MAX_BYTES: usize = 64;
+
+thread_local! {
+    static NAMES: std::cell::RefCell<NameCache> = std::cell::RefCell::new(NameCache::default());
+}
+
+type NameCache =
+    std::collections::HashMap<Box<[u8]>, HeaderName, std::hash::BuildHasherDefault<FnvHasher>>;
+
+/// FNV-1a: header names are short and the cache is bounded, so the default keyed hash buys nothing.
+struct FnvHasher(u64);
+
+impl Default for FnvHasher {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl std::hash::Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
+
+fn header_name(name: &[u8]) -> Result<HeaderName> {
+    if name.len() > NAME_CACHE_MAX_BYTES {
+        return HeaderName::from_bytes(name).map_err(|_| Error::new(InvalidHTTPHeader));
+    }
+    NAMES.with_borrow_mut(|names| {
+        if let Some(cached) = names.get(name) {
+            return Ok(cached.clone());
+        }
+        let parsed = HeaderName::from_bytes(name).map_err(|_| Error::new(InvalidHTTPHeader))?;
+        if names.len() >= NAME_CACHE_ENTRIES {
+            names.clear();
+        }
+        names.insert(name.into(), parsed.clone());
+        Ok(parsed)
+    })
+}
+
 /// Append a header validated by the HTTP/1 parser without retaining its wire casing.
 #[inline]
 pub(super) fn append_parsed_header(
@@ -283,8 +333,7 @@ pub(super) fn append_parsed_header(
     name: &[u8],
     value: HeaderValue,
 ) -> Result<()> {
-    let name = HeaderName::from_bytes(name).map_err(|_| Error::new(InvalidHTTPHeader))?;
-    headers.append(name, value);
+    headers.append(header_name(name)?, value);
     Ok(())
 }
 
@@ -322,6 +371,22 @@ mod test {
         StatusCode, Version,
     };
     use rstest::rstest;
+
+    #[test]
+    fn cached_header_names_equal_parsed_ones() {
+        for _ in 0..2 {
+            assert_eq!(
+                header_name(b"X-Custom-Name").unwrap(),
+                HeaderName::from_static("x-custom-name")
+            );
+        }
+        assert!(header_name(b"bad name").is_err());
+        for index in 0..NAME_CACHE_ENTRIES * 2 {
+            header_name(format!("x-n-{index}").as_bytes()).unwrap();
+        }
+        assert_eq!(header_name(b"Host").unwrap(), header::HOST);
+        assert!(header_name(&[b'a'; NAME_CACHE_MAX_BYTES + 1]).is_ok());
+    }
 
     #[test]
     fn test_check_dup_content_length() {

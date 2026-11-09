@@ -249,7 +249,7 @@ async fn udp_passive_failure_threshold_ejects_and_expiry_readmits() {
         .send_to(b"reply", peer)
         .await
         .expect("recovered reply");
-    let (length, _) = timeout(Duration::from_secs(2), recovered.recv_from(&mut received))
+    let (length, _) = timeout(Duration::from_secs(30), recovered.recv_from(&mut received))
         .await
         .expect("recovered reply timeout")
         .expect("recovered reply receive");

@@ -142,11 +142,11 @@ pub(super) fn supervised_worker_serves_tcp_and_unix_http_from_transferred_descri
     harness.poll_until(MasterState::Running);
     verify_listener_descriptors(harness.worker_pid, &harness.listener_targets);
     let tcp = TcpStream::connect(tcp_address).expect("connect transferred TCP listener");
-    tcp.set_read_timeout(Some(Duration::from_secs(2)))
+    tcp.set_read_timeout(Some(IO_TIMEOUT))
         .expect("TCP read timeout");
     assert_fixed_response(tcp);
     let unix = UnixStream::connect(&unix_path).expect("connect transferred Unix listener");
-    unix.set_read_timeout(Some(Duration::from_secs(2)))
+    unix.set_read_timeout(Some(IO_TIMEOUT))
         .expect("Unix read timeout");
     assert_fixed_response(unix);
 
@@ -178,7 +178,7 @@ pub(super) fn supervised_worker_adopts_udp_and_reports_datagram_status() {
     let directory = tempfile::tempdir().expect("supervised UDP fixture directory");
     let upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP upstream");
     upstream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("UDP upstream timeout");
     let upstream_address = upstream.local_addr().expect("UDP upstream address");
     let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
@@ -212,7 +212,7 @@ pub(super) fn supervised_worker_adopts_udp_and_reports_datagram_status() {
 
     let client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP client");
     client
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(IO_TIMEOUT))
         .expect("UDP client timeout");
     client
         .send_to(b"supervised-udp", listener_address)
@@ -286,8 +286,8 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
     let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
     harness.poll_until(MasterState::Running);
 
-    let management_stream = TcpStream::connect_timeout(&management, Duration::from_secs(2))
-        .expect("connect management listener");
+    let management_stream =
+        TcpStream::connect_timeout(&management, IO_TIMEOUT).expect("connect management listener");
     drop(management_stream);
     let metrics = control_http_response(stats_address, "/metrics");
     assert!(metrics.starts_with("HTTP/1.1 200"), "{metrics}");
@@ -297,7 +297,7 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
     let page = control_http_response(stats_page, "/stats");
     assert!(page.starts_with("HTTP/1.1 200"), "{page}");
     // An idle worker looks for a change once a second.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + TEST_TIMEOUT;
     let status = loop {
         harness.master.poll(Instant::now()).expect("status poll");
         let status = harness

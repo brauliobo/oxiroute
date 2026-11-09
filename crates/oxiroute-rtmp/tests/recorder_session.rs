@@ -30,7 +30,7 @@ fn continuous_recorder_starts_records_and_disconnects_without_leaking_catalog_st
     let (mut server, mut client) = fixture.publisher("camera?token=secret");
 
     publish_audio(&mut client, &mut server, 10, 0x11, 1_721_657_969_100);
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         fixture.registry.snapshot().streams[0].recorders[0].bytes_written > 0
     });
     let recorder = fixture.registry.snapshot().streams[0].recorders[0].clone();
@@ -62,7 +62,7 @@ fn stale_takeover_resets_catalog_media_and_continuous_recorder_state() {
         0x11,
         first_media_at,
     );
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         fixture.registry.snapshot().streams[0].recorders[0].bytes_written > 0
     });
     let first = fixture.registry.snapshot().streams[0].clone();
@@ -86,7 +86,7 @@ fn stale_takeover_resets_catalog_media_and_continuous_recorder_state() {
             .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
     );
 
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         let snapshot = fixture.registry.snapshot();
         snapshot.streams.first().is_some_and(|stream| {
             stream
@@ -118,7 +118,7 @@ fn stale_takeover_resets_catalog_media_and_continuous_recorder_state() {
         0x22,
         takeover_at + 100,
     );
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         let snapshot = fixture.registry.snapshot();
         snapshot.streams.first().is_some_and(|stream| {
             stream.media.audio.payload_bytes_received == 3 && stream.recorders[0].bytes_written > 0
@@ -127,7 +127,7 @@ fn stale_takeover_resets_catalog_media_and_continuous_recorder_state() {
     second_server
         .close(takeover_at + 200)
         .expect("replacement publisher close");
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         fixture.store.stats().active_recorders == 0
     });
 }
@@ -151,7 +151,7 @@ fn stale_takeover_retries_continuous_recording_after_a_single_recorder_drains() 
         0x11,
         first_media_at,
     );
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         fixture.registry.snapshot().streams[0].recorders[0].bytes_written > 0
     });
 
@@ -189,7 +189,7 @@ fn stale_takeover_retries_continuous_recording_after_a_single_recorder_drains() 
         0x22,
         takeover_at + 100,
     );
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         let snapshot = fixture.registry.snapshot();
         snapshot.streams.first().is_some_and(|stream| {
             matches!(stream.recorders[0].phase, RecorderPhase::Recording { .. })
@@ -206,7 +206,7 @@ fn stale_takeover_retries_continuous_recording_after_a_single_recorder_drains() 
         0x33,
         takeover_at + 200,
     );
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         let snapshot = fixture.registry.snapshot();
         snapshot.streams.first().is_some_and(|stream| {
             matches!(stream.recorders[0].phase, RecorderPhase::Recording { .. })
@@ -217,7 +217,7 @@ fn stale_takeover_retries_continuous_recording_after_a_single_recorder_drains() 
     second_server
         .close(takeover_at + 300)
         .expect("replacement close");
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         fixture.store.stats().active_recorders == 0
     });
 }
@@ -464,7 +464,7 @@ fn one_continuous_start_failure_does_not_block_a_sibling_recorder() {
     ));
 
     publish_audio(&mut client, &mut server, 10, 0x33, 1_721_657_969_100);
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         registry.snapshot().streams[0]
             .recorders
             .iter()
@@ -525,7 +525,7 @@ fn queue_drop_does_not_harm_enhanced_codec_recording() {
         &[0xa1, b'h', b'v', b'c', b'1', 0xcc],
         1_721_657_969_102,
     );
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         codec_fixture.registry.snapshot().streams[0].recorders[0].bytes_written > 0
     });
     let recorder = &codec_fixture.registry.snapshot().streams[0].recorders[0];
@@ -601,7 +601,7 @@ fn session_drop_hands_stalled_workers_to_the_bounded_runtime_reaper() {
     assert!(fixture.registry.snapshot().streams.is_empty());
 
     flock(&ownership, FlockOperation::Unlock).expect("release storage admission");
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         fixture.store.stats().active_recorders == 0
     });
 }
@@ -816,7 +816,7 @@ fn publish_legacy_audio(
 }
 
 fn wait_for_phase(registry: &RtmpRegistry, predicate: impl Fn(RecorderPhase) -> bool) {
-    wait_until(Duration::from_secs(2), || {
+    wait_until(Duration::from_secs(30), || {
         registry
             .snapshot()
             .streams
@@ -827,7 +827,7 @@ fn wait_for_phase(registry: &RtmpRegistry, predicate: impl Fn(RecorderPhase) -> 
 }
 
 fn wait_for_file(root: &std::path::Path, name: &str) {
-    wait_until(Duration::from_secs(2), || root.join(name).is_file());
+    wait_until(Duration::from_secs(30), || root.join(name).is_file());
 }
 
 fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) {

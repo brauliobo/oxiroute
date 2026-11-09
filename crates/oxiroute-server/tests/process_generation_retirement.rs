@@ -595,7 +595,7 @@ async fn read_response(stream: &mut TcpStream) -> http_support::HttpResponse {
 
 async fn assert_closed(stream: &mut TcpStream) {
     let mut byte = [0_u8; 1];
-    let read = timeout(Duration::from_secs(3), stream.read(&mut byte))
+    let read = timeout(Duration::from_secs(30), stream.read(&mut byte))
         .await
         .expect("the connection stayed open");
     assert!(

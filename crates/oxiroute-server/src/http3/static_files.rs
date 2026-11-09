@@ -333,7 +333,7 @@ where
     headers.extend(h3_static_validator_headers(files, &file));
     headers.push((
         HeaderName::from_static("content-type"),
-        files.content_type(&file.name),
+        file.content_type.clone(),
     ));
     headers.push((
         HeaderName::from_static("accept-ranges"),
@@ -381,25 +381,15 @@ where
         return Some(status_code);
     }
 
-    let mut file = TokioFile::from_std(file.file);
-    if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
-        return None;
-    }
-    let mut remaining = length;
-    let mut buffer = vec![0; 64 * 1024];
-    while remaining != 0 {
-        let chunk_size = usize::try_from(remaining.min(buffer.len() as u64)).expect("chunk bound");
-        let read = match timeout_at(deadline, file.read(&mut buffer[..chunk_size])).await {
-            Ok(Ok(read)) if read != 0 => read,
+    let mut reader = file.content.into_reader(start, length);
+    loop {
+        let chunk = match timeout_at(deadline, reader.next_chunk()).await {
+            Ok(Ok(Some(chunk))) => chunk,
+            Ok(Ok(None)) => break,
             _ => return None,
         };
-        remaining -= u64::try_from(read).expect("read length fits u64");
         if !matches!(
-            timeout_at(
-                deadline,
-                stream.send_data(Bytes::copy_from_slice(&buffer[..read])),
-            )
-            .await,
+            timeout_at(deadline, stream.send_data(chunk)).await,
             Ok(Ok(()))
         ) {
             return None;

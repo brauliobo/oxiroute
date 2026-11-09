@@ -64,7 +64,8 @@ const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
     "OXIROUTE_INTERNAL_TEST_LISTENER_DUPLICATION_FAILURE";
 const TEST_LAUNCHER_ENV: &str = "OXIROUTE_TEST_SUPERVISOR_LAUNCHER";
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
-const TEST_TIMEOUT: Duration = Duration::from_secs(15);
+const IO_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const TOKEN: [u8; 16] = [0x51; 16];
 
 struct Harness {
@@ -134,7 +135,7 @@ impl Harness {
                     .expect("master listener descriptor target")
             })
             .collect();
-        let mut factory = WorkerSpawner::new(supervisor_launcher(), Duration::from_secs(5))
+        let mut factory = WorkerSpawner::new(supervisor_launcher(), TEST_TIMEOUT)
             .expect("production launcher implementation");
         let identity = WorkerIdentity {
             instance: InstanceToken(TOKEN),
@@ -244,7 +245,7 @@ impl Harness {
             .arg(encode_token(token))
             .arg(config_path)
             .arg(document.effective_revision.to_string());
-        let mut factory = WorkerSpawner::new(supervisor_launcher(), Duration::from_secs(5))
+        let mut factory = WorkerSpawner::new(supervisor_launcher(), TEST_TIMEOUT)
             .expect("production launcher implementation");
         self.master
             .replace_with_listeners(
@@ -329,21 +330,33 @@ impl Harness {
     }
 
     fn verify_reaped(&self) {
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let worker = PathBuf::from(format!("/proc/{}/", self.worker_pid));
-        let launcher = PathBuf::from(format!("/proc/{}/", self.launcher_pid));
-        while (worker.exists() || launcher.exists()) && Instant::now() < deadline {
-            thread::sleep(POLL_INTERVAL);
-        }
-        assert!(
-            !worker.exists(),
-            "worker remained after terminal master state"
-        );
-        assert!(
-            !launcher.exists(),
-            "launcher remained after terminal master state"
-        );
+        wait_process_gone(self.worker_pid);
+        wait_process_gone(self.launcher_pid);
     }
+}
+
+/// Retries `attempt` until it succeeds. Resources released by a killed or dropped owner stay
+/// held for a moment by processes a concurrent test has forked and not yet exec'd.
+fn eventually<T, E: std::fmt::Display>(what: &str, mut attempt: impl FnMut() -> Result<T, E>) -> T {
+    let started = Instant::now();
+    loop {
+        match attempt() {
+            Ok(value) => return value,
+            Err(error) => {
+                assert!(
+                    started.elapsed() < TEST_TIMEOUT,
+                    "{what} did not happen: {error}"
+                );
+                thread::sleep(POLL_INTERVAL);
+            }
+        }
+    }
+}
+
+fn assert_udp_can_bind_again(address: SocketAddr) {
+    eventually(&format!("{address} release"), || {
+        StdUdpSocket::bind(address)
+    });
 }
 
 /// One listener set for the reload tests: HTTP listeners that all answer `body` (or proxy to

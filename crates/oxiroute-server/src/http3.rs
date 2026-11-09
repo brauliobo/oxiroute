@@ -27,8 +27,6 @@ use quinn::crypto::rustls::QuicServerConfig;
 use quinn::{Endpoint, ServerConfig, TransportConfig, VarInt};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use tokio::{
-    fs::File as TokioFile,
-    io::{AsyncReadExt as _, AsyncSeekExt as _},
     runtime::Builder,
     sync::{OwnedSemaphorePermit, Semaphore, watch},
     time::{Instant, timeout_at},

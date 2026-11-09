@@ -495,7 +495,7 @@ fn exposition_counts_live_requests_per_pool_and_flags_overdue_ones() {
     live.set_pool("inflight-series");
     let stuck = registry().register(arrival("prom-stuck", std::time::Duration::from_secs(30)));
     stuck.set_pool("inflight-series");
-    stuck.set_phase(Phase::AwaitingHeaders);
+    stuck.set_phase(Phase::AwaitingHeaders, std::time::Instant::now());
     std::thread::sleep(std::time::Duration::from_millis(20));
     assert!(
         !registry()

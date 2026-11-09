@@ -14,11 +14,23 @@ pub(crate) fn nginx_add_header_status(status: u16) -> bool {
 
 #[derive(Debug)]
 pub(crate) struct StaticFile {
+    pub(crate) content: StaticContent,
+    pub(crate) content_type: HeaderValue,
     pub(crate) etag: HeaderValue,
-    pub(crate) file: File,
+    pub(crate) last_modified: HeaderValue,
     pub(crate) modified: std::time::SystemTime,
-    pub(crate) name: OsString,
+    pub(crate) name: Arc<OsStr>,
     pub(crate) size: u64,
+}
+
+impl StaticFile {
+    /// Reads a small file into memory so that serving it needs no further file access.
+    pub(super) fn load(self) -> Result<Self, StaticServeError> {
+        Ok(Self {
+            content: self.content.load(self.size)?,
+            ..self
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -28,6 +40,15 @@ pub(crate) enum StaticTarget {
     DirectoryRedirect { path: String },
     InternalRedirect { path: String },
     Status(u16),
+}
+
+impl StaticTarget {
+    pub(super) fn load(self) -> Result<Self, StaticServeError> {
+        match self {
+            Self::File(file) => file.load().map(Self::File),
+            other => Ok(other),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -172,16 +193,20 @@ fn read_regular_file(descriptor: OwnedFd, name: &OsStr) -> Result<StaticFile, St
     if size > MAX_STATIC_FILE_BYTES {
         return Err(StaticServeError::TooLarge);
     }
+    let modified = u64::try_from(before.st_mtime)
+        .ok()
+        .and_then(|seconds| {
+            std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds))
+        })
+        .unwrap_or(std::time::UNIX_EPOCH);
     Ok(StaticFile {
+        content: StaticContent::Open(File::from(descriptor)),
+        content_type: HeaderValue::from_static(builtin_content_type(name)),
         etag: nginx_static_etag(before.st_mtime, size),
-        file: File::from(descriptor),
-        modified: u64::try_from(before.st_mtime)
-            .ok()
-            .and_then(|seconds| {
-                std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds))
-            })
-            .unwrap_or(std::time::UNIX_EPOCH),
-        name: name.to_os_string(),
+        last_modified: HeaderValue::from_str(&httpdate::fmt_http_date(modified))
+            .expect("HTTP date is a valid header value"),
+        modified,
+        name: name.into(),
         size,
     })
 }

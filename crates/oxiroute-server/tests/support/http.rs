@@ -82,6 +82,22 @@ pub async fn http_request(
     headers: &[(&str, &str)],
     body: &[u8],
 ) -> HttpResponse {
+    raw_http_request(address, &close_request(method, path, headers, body)).await
+}
+
+/// Like [`http_request`] on a connection the caller already holds, so that connection can be the
+/// one that proves a listener is bound instead of a probe that occupies a connection slot.
+pub async fn http_request_on(
+    stream: &mut TcpStream,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> HttpResponse {
+    exchange(stream, &close_request(method, path, headers, body)).await
+}
+
+fn close_request(method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
     let mut request =
         format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
     for (name, value) in headers {
@@ -94,14 +110,18 @@ pub async fn http_request(
     request.push_str("\r\n");
     let mut request = request.into_bytes();
     request.extend_from_slice(body);
-    raw_http_request(address, &request).await
+    request
 }
 
 pub async fn raw_http_request(address: SocketAddr, request: &[u8]) -> HttpResponse {
+    let mut stream = TcpStream::connect(address)
+        .await
+        .expect("connect to server HTTP endpoint");
+    exchange(&mut stream, request).await
+}
+
+async fn exchange(stream: &mut TcpStream, request: &[u8]) -> HttpResponse {
     timeout(HTTP_TIMEOUT, async {
-        let mut stream = TcpStream::connect(address)
-            .await
-            .expect("connect to server HTTP endpoint");
         stream.write_all(request).await.expect("write HTTP request");
         let mut response = Vec::new();
         stream

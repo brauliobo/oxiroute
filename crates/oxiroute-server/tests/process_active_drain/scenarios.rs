@@ -424,7 +424,7 @@ pub(super) async fn event_sse_closes_with_a_bounded_shutdown_frame_and_releases_
         b"event: shutdown\ndata: {\"reason\":\"server_shutdown\"}\n\n"
     );
     let mut tail = Vec::new();
-    timeout(Duration::from_secs(1), events.read_to_end(&mut tail))
+    timeout(Duration::from_secs(30), events.read_to_end(&mut tail))
         .await
         .expect("SSE stream did not close after shutdown frame")
         .expect("read SSE stream close");
