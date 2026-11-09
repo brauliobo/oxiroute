@@ -3,7 +3,7 @@ header.form-heading
   div
     p.eyebrow Ingress object
     h3 {{ listener.name || 'Unnamed listener' }}
-  button.danger-button(type="button" @click="$emit('remove')") Remove listener
+  button.danger-button(type="button" @click="emit('remove')") Remove listener
 .field-grid
   label.field(data-field="listeners[].name")
     span Stable name
@@ -95,7 +95,7 @@ const props = defineProps<{
   tlsProfiles: TlsProfileConfig[]
 }>()
 
-defineEmits<{ remove: [] }>()
+const emit = defineEmits<{ remove: [] }>()
 
 const serviceNames = computed(() => {
   switch (props.listener.protocol) {

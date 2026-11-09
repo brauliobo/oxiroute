@@ -2,7 +2,7 @@
 article.route-card
   header.route-card-heading
     strong Endpoint {{ index + 1 }}
-    button.danger-link(type="button" :aria-label="`Remove endpoint ${index + 1}`" @click="$emit('remove')") Remove
+    button.danger-link(type="button" :aria-label="`Remove endpoint ${index + 1}`" @click="emit('remove')") Remove
   .field-grid
     label.field(data-field="upstream_pools[].servers[].endpoint.type")
       span Endpoint type

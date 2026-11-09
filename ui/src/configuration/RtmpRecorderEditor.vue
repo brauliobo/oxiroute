@@ -2,7 +2,7 @@
 article.route-card.recorder-card
   header.route-card-heading
     strong Recorder {{ index + 1 }}
-    button.danger-link(type="button" :aria-label="`Remove recorder ${index + 1}`" @click="$emit('remove')") Remove
+    button.danger-link(type="button" :aria-label="`Remove recorder ${index + 1}`" @click="emit('remove')") Remove
   .field-grid
     label.field(data-field="rtmp_services[].applications[].recorders[].name")
       span Stable name
@@ -134,5 +134,5 @@ defineProps<{
   index: number
 }>()
 
-defineEmits<{ remove: [] }>()
+const emit = defineEmits<{ remove: [] }>()
 </script>

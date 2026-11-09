@@ -3,7 +3,7 @@ header.form-heading
   div
     p.eyebrow Origin group
     h3 {{ pool.name || 'Unnamed pool' }}
-  button.danger-button(type="button" @click="$emit('remove')") Remove pool
+  button.danger-button(type="button" @click="emit('remove')") Remove pool
 .field-grid
   label.field(data-field="upstream_pools[].name")
     span Stable name

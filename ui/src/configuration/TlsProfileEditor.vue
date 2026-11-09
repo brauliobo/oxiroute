@@ -3,7 +3,7 @@ header.form-heading
   div
     p.eyebrow Plural SNI policy
     h3 {{ profile.name || 'Unnamed SNI profile' }}
-  button.danger-button(type="button" @click="$emit('remove')") Remove profile
+  button.danger-button(type="button" @click="emit('remove')") Remove profile
 .field-grid
   label.field(data-field="tls_profiles[].name")
     span Stable name
@@ -82,7 +82,7 @@ const props = defineProps<{
   certificateNames: string[]
 }>()
 
-defineEmits<{ remove: [] }>()
+const emit = defineEmits<{ remove: [] }>()
 
 function setAlpnPolicy(event: Event): void {
   props.profile.alpn = (event.target as HTMLSelectElement).value.split(',') as AlpnProtocol[]
