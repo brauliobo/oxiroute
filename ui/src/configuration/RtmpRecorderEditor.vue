@@ -2,7 +2,7 @@
 article.route-card.recorder-card
   header.route-card-heading
     strong Recorder {{ index + 1 }}
-    button.danger-link(type="button" :aria-label="`Remove recorder ${index + 1}`" @click="$emit('remove')") Remove
+    button.danger-link(type="button" :aria-label="`Remove recorder ${index + 1}`" @click="emit('remove')") Remove
   .field-grid
     label.field(data-field="rtmp_services[].applications[].recorders[].name")
       span Stable name
@@ -125,7 +125,7 @@ article.route-card.recorder-card
         input(type="number" min="1" max="256" step="1" v-model.number="recorder.max_active_recorders")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { RtmpRecorderConfig } from '../config'
 import NullableLimitField from './NullableLimitField.vue'
 
@@ -134,5 +134,5 @@ defineProps<{
   index: number
 }>()
 
-defineEmits<{ remove: [] }>()
+const emit = defineEmits<{ remove: [] }>()
 </script>

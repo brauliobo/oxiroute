@@ -146,6 +146,7 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
         .header("content-length")
         .expect("GET content length")
         .to_owned();
+    let policy = page.header("content-security-policy").map(str::to_owned);
     let html = String::from_utf8(page.body).expect("stats page HTML");
     assert!(html.contains("<td>public</td><td>origin-a</td>"));
     let revision = html
@@ -175,6 +176,48 @@ async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
         head.header("content-length"),
         Some(get_content_length.as_str())
     );
+    assert_eq!(
+        policy.as_deref(),
+        Some(
+            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; \
+             img-src 'self' data:; font-src 'self'; form-action 'self'; base-uri 'none'; \
+             frame-ancestors 'none'"
+        )
+    );
+
+    let snapshot = http_request(page_address, "GET", "/haproxy/snapshot.json", &[], &[]).await;
+    assert_eq!(snapshot.status, 200);
+    assert_eq!(snapshot.header("content-type"), Some("application/json"));
+    assert_eq!(snapshot.header("cache-control"), Some("no-store"));
+    let snapshot_length = snapshot.header("content-length").map(str::to_owned);
+    let snapshot = snapshot.json();
+    assert_eq!(snapshot["schemaVersion"], 1);
+    assert_eq!(snapshot["admin"], true);
+    assert_eq!(snapshot["generation"]["activeRevision"], revision);
+    assert_eq!(snapshot["pools"][0]["name"], "public");
+    assert_eq!(snapshot["pools"][0]["servers"][0]["name"], "origin-a");
+    let snapshot_head =
+        http_request(page_address, "HEAD", "/haproxy/snapshot.json", &[], &[]).await;
+    assert!(snapshot_head.body.is_empty());
+    assert_eq!(
+        snapshot_head.header("content-length"),
+        snapshot_length.as_deref()
+    );
+    let csv = http_request(page_address, "GET", "/haproxy/stats.csv", &[], &[]).await;
+    assert_eq!(csv.status, 200);
+    assert_eq!(csv.header("content-type"), Some("text/csv; charset=utf-8"));
+    let csv = String::from_utf8(csv.body().to_vec()).expect("CSV UTF-8");
+    assert!(csv.starts_with("# pxname,svname,"), "{csv}");
+    assert!(csv.contains("\npublic,origin-a,"), "{csv}");
+    for path in ["/haproxy/other", "/haproxyfoo", "/haproxy/snapshot.json/x"] {
+        assert_eq!(
+            http_request(page_address, "GET", path, &[], &[])
+                .await
+                .status,
+            404,
+            "{path}"
+        );
+    }
 
     let form = format!("generation_revision={revision}&pool=public&server=origin-a&state=drain");
     let denied = http_request(

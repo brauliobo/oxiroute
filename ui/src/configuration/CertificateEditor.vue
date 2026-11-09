@@ -3,7 +3,7 @@ header.form-heading
   div
     p.eyebrow Certificate identity
     h3 {{ certificate.name || 'Unnamed certificate' }}
-  button.danger-button(type="button" @click="$emit('remove')") Remove certificate
+  button.danger-button(type="button" @click="emit('remove')") Remove certificate
 .field-grid
   label.field(data-field="certificates[].name")
     span Stable name
@@ -97,7 +97,7 @@ fieldset.object-block(data-field="certificates[].source")
     .tls-alpn-deployment(v-if="certificate.source.challenge === 'tls_alpn01'")
       strong Prepare the TLS-ALPN listener in this draft
       p The assistant reuses a compatible TCP/TLS listener on port 443 or adds an isolated 404 HTTP service, TLS profile, and listener. Nothing is deployed until validation, review, and the revision-checked save.
-      button.add-row(type="button" data-action="prepare-tls-alpn-listener" @click="$emit('prepare-tls-alpn')") Prepare TLS-ALPN listener
+      button.add-row(type="button" data-action="prepare-tls-alpn-listener" @click="emit('prepare-tls-alpn')") Prepare TLS-ALPN listener
   .field-grid(v-else)
     label.field(data-field="certificates[].source.validity_days")
       span Validity days
@@ -109,12 +109,12 @@ fieldset.object-block(data-field="certificates[].source")
         option(value="rsa_2048") RSA 2048
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { CertificateConfig, SelfSignedKeyType } from '../config'
 import StringListField from '../StringListField.vue'
 
 const props = defineProps<{ certificate: CertificateConfig }>()
-defineEmits<{
+const emit = defineEmits<{
   remove: []
   'prepare-tls-alpn': []
 }>()

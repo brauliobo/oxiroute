@@ -3,7 +3,7 @@ header.form-heading
   div
     p.eyebrow Ingress object
     h3 {{ listener.name || 'Unnamed listener' }}
-  button.danger-button(type="button" @click="$emit('remove')") Remove listener
+  button.danger-button(type="button" @click="emit('remove')") Remove listener
 .field-grid
   label.field(data-field="listeners[].name")
     span Stable name
@@ -80,7 +80,7 @@ fieldset.object-block(data-field="listeners[].proxy_protocol")
       input(type="number" min="1" max="60000" step="1" v-model.number="listener.proxy_protocol.timeout_ms")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed } from 'vue'
 
 import type { ForwardProxyServiceConfig, ListenerConfig, TlsProfileConfig } from '../config'
@@ -95,7 +95,7 @@ const props = defineProps<{
   tlsProfiles: TlsProfileConfig[]
 }>()
 
-defineEmits<{ remove: [] }>()
+const emit = defineEmits<{ remove: [] }>()
 
 const serviceNames = computed(() => {
   switch (props.listener.protocol) {

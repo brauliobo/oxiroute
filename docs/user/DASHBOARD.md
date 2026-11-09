@@ -1,7 +1,9 @@
 # Dashboard Guide
 
-The management UI is a build-time Vue 3 application with Pug templates. It is served from the
-configured `management.ui_dir`; it is not a separate remote SaaS console.
+The management UI is a build-time Vue 3 (Vapor mode) application with Pug templates. It is served
+from the configured `management.ui_dir`; it is not a separate remote SaaS console. It needs no inline
+styles or scripts, so it also runs behind a strict `default-src 'none'; script-src 'self';
+style-src 'self'; connect-src 'self'` Content-Security-Policy set by a fronting proxy.
 
 ![Remotion recording of the OxiRoute runtime observatory](../../website/assets/admin-overview.gif)
 
@@ -61,6 +63,103 @@ The table distinguishes:
 - configured connection capacity from a runtime override;
 - successful and failed checks from consecutive transition streaks;
 - active queue depth from cumulative queue totals.
+
+## Stats Page
+
+The stats page is the read-only dashboard of a `stats.pages[]` listener, for operators who have no
+management token. Open the page's `uri_prefix` in a browser, for example `http://192.0.2.10:8404/stats`.
+It needs no sign-in, so it is shown to everyone who can reach that listener: keep it on a trusted
+interface or loopback. It shows addresses, binds, revisions, certificate names and warnings.
+
+The page refreshes itself. The status line under the title says **Live**, **Paused**, **Stale**,
+**Retrying**, **Unavailable** or **Unsupported version**, and how long ago the data was updated. When a
+refresh fails or goes stale, the page keeps the last values, marks them, and says why in a banner; it
+never replaces them with zeros. **Unsupported version** means the proxy was upgraded to a format this
+page does not know: reload the page.
+
+### What it shows
+
+- **Overview strip.** Version and uptime, generation, connections, request rate and error share,
+  traffic in and out, pools and servers up, listeners ok, the certificate closest to expiry, and the
+  number of warnings (a link to them).
+- **Listeners.** Name, state, connections, request rate, bytes in and out, errors and latency.
+  Expanding a listener lists its bind, protocol, service, TLS profile, relay pool, connection counters, outcomes and cache counters.
+- **Routes.** The selectors, action and pool of each route, with a link to the pool.
+- **Pools and servers.** One table per pool, with the pool status, how many servers are available,
+  the algorithm and the queue. Each server row shows status, sessions, request rate, bytes, response
+  classes (1xx to 5xx), errors, check result, weight, downtime and latency. Expand a pool or a server
+  for its address, origin, administrative state, health override, check and passive-ejection counters,
+  attempts by outcome, a latency histogram and sparklines. A pool or server whose status changed in the
+  last 10 seconds is marked "status changed".
+- **Generation.** The active, candidate, previous, on-disk and quarantined revisions, counters, the last
+  failure or rejection, and replaced generations that still drain.
+- **Process.** CPU, memory, threads, file descriptors, in-flight upstream requests and host load.
+- **Certificates.** Expiry of each certificate, its source and last renewal outcome, and the renewal
+  watchers.
+- **Warnings.** Configuration warnings of the running generation, with their codes.
+
+### Status words
+
+Every status is a word and a shape, so it reads without colour: **UP** (check mark in a circle),
+**DOWN** and **EJECTED** (cross in an octagon), **DRAIN** (exclamation in a triangle), **MAINT**
+(diamond), **UNCHECKED** and **UNKNOWN** (dash in a circle). `UNCHECKED` is a server with no health
+checks. `EJECTED` is a server removed by passive health after failing requests. A pool shows **UP**
+when all its servers are available, **DEGRADED** when some are, **DOWN** when none is, and **EMPTY**
+when it has no servers. A server counts as a problem unless it is `UP` or `UNCHECKED`.
+
+### Rates and percentiles
+
+Request, error and byte rates are per second, computed in the browser from the counters of two
+consecutive samples. The first sample, a proxy restart, a new generation, or a long gap in samples
+has no rate, so the cell shows an em dash instead of zero. A zero means the counter did not move.
+Sparklines keep the samples of this visit only; reloading the page starts them empty. Unknown points
+are gaps.
+
+Latency percentiles (p50, p90, p99) are read from the proxy's lifetime histograms. Each value is the
+upper bound of its bucket, so read "at most N ms"; a value shown with `>` is above the last bucket.
+They describe everything since the proxy started, not the last minute. An em dash means there are no
+observations yet. Sizes, counts and durations are shortened (1.2M, 3.4 GiB); hover a value for the
+exact number.
+
+### Filters, sort and view
+
+- **Search** narrows pools, servers and listeners to rows containing every word you type (name,
+  address, status, protocol and so on).
+- **Status chips** show only servers in the chosen statuses. **Problems only** keeps the rows that need
+  attention.
+- **Sort** by name, status (worst first), sessions, request rate, errors, p99 latency, bytes in or
+  bytes out: click a column header, or use the Sort menu on a phone.
+- **Pause** stops the refresh and keeps what is on screen; **Refresh now** loads once, also while
+  paused. **Refresh every** chooses 1, 2, 5, 10, 30 or 60 seconds, or follows the interval the proxy
+  suggests (`refresh_ms`, at least 1 s).
+- **Theme** is automatic (your system), light or dark.
+- Filters, sort, interval, pause, theme and the open rows are kept in the address bar, so copy the
+  address to share the view. Nothing secret is in it.
+
+### Shortcuts and export
+
+Press `?` for the list. `/` focuses the search, `p` pauses or resumes, `r` refreshes now, `t` changes the
+theme, `f` toggles problems only, and `Esc` clears the search or closes a dialog. Shortcuts do not act
+while you type in a field.
+
+The header links download the data: **CSV** (HAProxy-style columns, for spreadsheets and scripts) and
+**JSON** (the full snapshot). Printing the page gives a plain light copy of the data without the
+controls. The page works on narrow screens (rows become cards) and with high-contrast and
+reduced-motion settings.
+
+### Without JavaScript
+
+A browser with scripts disabled shows a plain table of pools and servers (administrative state, health
+and active connections) that reloads itself at the refresh interval.
+
+### Administration buttons
+
+When the page is configured with `admin = "localhost"` and you open it from the same machine, an
+Administration section lets you choose a pool and a server and set it to **Ready**, **Drain** or
+**Maintenance**. Each change asks for confirmation and then reports the result. If the configuration
+changed since the page loaded, the change is refused, the page refreshes, and you can try again.
+Everyone else, and every page with `admin = "disabled"`, gets the read-only page. The same forms work
+in the no-JavaScript table.
 
 ## Configuration Workspace
 

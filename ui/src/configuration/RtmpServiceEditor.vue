@@ -3,7 +3,7 @@ header.form-heading
   div
     p.eyebrow RTMP dispatch
     h3 {{ service.name || 'Unnamed RTMP service' }}
-  button.danger-button(type="button" @click="$emit('remove')") Remove service
+  button.danger-button(type="button" @click="emit('remove')") Remove service
 RtmpServicePolicyEditor(:service="service" @set-access-log="setAccessLog")
 RtmpExecProfilesEditor(
   :service="service"
@@ -367,7 +367,7 @@ fieldset.route-list(data-field="rtmp_services[].applications")
       )
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type {
   RtmpApplicationConfig,
   RtmpDashPolicyConfig,

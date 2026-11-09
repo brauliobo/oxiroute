@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { mount } from './test/mount'
 import { describe, expect, it } from 'vitest'
 
 import HaproxyStatsDashboard from './HaproxyStatsDashboard.vue'

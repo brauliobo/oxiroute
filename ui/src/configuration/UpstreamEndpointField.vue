@@ -2,7 +2,7 @@
 article.route-card
   header.route-card-heading
     strong Endpoint {{ index + 1 }}
-    button.danger-link(type="button" :aria-label="`Remove endpoint ${index + 1}`" @click="$emit('remove')") Remove
+    button.danger-link(type="button" :aria-label="`Remove endpoint ${index + 1}`" @click="emit('remove')") Remove
   .field-grid
     label.field(data-field="upstream_pools[].servers[].endpoint.type")
       span Endpoint type
@@ -25,7 +25,7 @@ article.route-card
       input(type="text" v-model="endpoint.path" placeholder="/run/oxiroute/backend.sock")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { UpstreamEndpoint } from '../config'
 
 defineProps<{

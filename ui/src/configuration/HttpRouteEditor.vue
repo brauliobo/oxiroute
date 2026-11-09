@@ -4,7 +4,7 @@ article.route-card.http-route-card
     div
       strong Route {{ index + 1 }}
       span.route-summary {{ routeSummary }}
-    button.danger-link(type="button" :aria-label="`Remove route ${index + 1}`" @click="$emit('remove')") Remove
+    button.danger-link(type="button" :aria-label="`Remove route ${index + 1}`" @click="emit('remove')") Remove
 
   fieldset.object-block(data-field="http_services[].routes[].host")
     legend Host matcher
@@ -43,7 +43,7 @@ article.route-card.http-route-card
     field-path="http_services[].routes[].methods"
     hint="An empty list matches every method. The server canonicalizes valid tokens to uppercase."
     :max-items="16"
-    @update:model-value="$emit('changed')"
+    @update:model-value="emit('changed')"
   )
 
   fieldset.object-block(data-field="http_services[].routes[].access_policy")
@@ -77,13 +77,13 @@ article.route-card.http-route-card
         option(value="redirect") Redirect
         option(value="static_files") Static files
 
-    HttpProxyActionEditor(v-if="route.action.type === 'proxy'" :action="route.action" :route-policy="route.policy" :pool-names="poolNames" :cache-store-names="cacheStoreNames" @changed="$emit('changed')")
-    HttpFixedResponseEditor(v-else-if="route.action.type === 'fixed_response'" :action="route.action" @changed="$emit('changed')")
+    HttpProxyActionEditor(v-if="route.action.type === 'proxy'" :action="route.action" :route-policy="route.policy" :pool-names="poolNames" :cache-store-names="cacheStoreNames" @changed="emit('changed')")
+    HttpFixedResponseEditor(v-else-if="route.action.type === 'fixed_response'" :action="route.action" @changed="emit('changed')")
     HttpRedirectEditor(v-else-if="route.action.type === 'redirect'" :action="route.action")
-    HttpStaticFilesEditor(v-else :action="route.action" @changed="$emit('changed')")
+    HttpStaticFilesEditor(v-else :action="route.action" @changed="emit('changed')")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed } from 'vue'
 
 import StringListField from '../StringListField.vue'
@@ -101,7 +101,7 @@ const props = defineProps<{
   cacheStoreNames: string[]
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   changed: []
   remove: []
 }>()

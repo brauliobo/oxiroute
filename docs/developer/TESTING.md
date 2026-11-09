@@ -13,6 +13,7 @@ cargo +1.97.1 test --workspace --locked --jobs 4
 ./scripts/verify-fuzz.sh
 pnpm --dir ui test
 pnpm --dir ui build
+pnpm --dir ui verify:bundle
 pnpm --dir ui test:browser -- --workers=2
 ```
 
@@ -118,6 +119,29 @@ The browser suite runs against the built static UI with Playwright route interce
 or non-local requests fail the test, SSE responses are scripted locally, and no daemon, public
 endpoint, or ACME server is contacted. Install Chromium once with
 `pnpm --dir ui test:browser:install` when running the suite locally.
+
+### UI stack notes
+
+- The UI is Vue 3.6 in Vapor mode on an exact-pinned release candidate (`ui/package.json`). Vapor
+  components cannot be mounted by `@vue/test-utils`, so the unit tests import `mount` and
+  `flushPromises` from `ui/src/test/mount.ts`: it mounts with `createVaporApp` and wraps the result
+  in the VTU `DOMWrapper`. Setup state is closed in Vapor; a test that needs it reads what the
+  component publishes with `defineExpose` through `wrapper.vm`.
+- `ui/vitest.config.ts` aliases `vue` and the `@vue/*` runtime packages to their esm-bundler builds
+  (Node would otherwise load the CommonJS builds, which have no Vapor runtime).
+- `ui/src/sfcPolicy.test.ts` fails when a template uses `$emit`, `$props`, `$attrs`, `$slots`, inline
+  styles, or other syntax that Vapor's production build or a strict CSP rejects. Unit tests compile
+  in development mode, so only a production build (`pnpm --dir ui build` plus the browser suite)
+  proves the bundle runs; `pnpm --dir ui verify:bundle` checks that no VDOM renderer was bundled.
+- `vue-tsc` does not type-check `lang="pug"` templates. `@vue/language-plugin-pug` would, but it
+  currently reports 21 template errors that are not fixed yet: 13 `:inert` bindings typed as
+  `'' | null` instead of a boolean, 2 `:aria-busy` bindings typed `string | null`, an unchecked
+  `origins[0]`, `HeaderMutation<T>` generics, the bearer-only access policy inputs on the union that
+  also contains the htpasswd policy, and a `stream_name` field passed to a setter that does not
+  accept it. Fix them before adding the plugin and `vueCompilerOptions.plugins`.
+- The local Playwright run needs Chromium; when the Playwright download is unavailable, point a
+  config that extends `ui/playwright.config.ts` at a system Chromium with
+  `use.launchOptions.executablePath`.
 
 The current browser coverage includes authenticated GET-only native import report browsing, redacted
 source/provenance/preview rendering, read-only boundaries, and desktop/mobile layout. It does not

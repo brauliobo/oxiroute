@@ -2,7 +2,9 @@ use std::time::SystemTime;
 
 use http::{
     HeaderValue, Response, StatusCode,
-    header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName, WWW_AUTHENTICATE},
+    header::{
+        ALLOW, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderName, WWW_AUTHENTICATE,
+    },
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -20,6 +22,7 @@ pub struct ApiResponse {
     pub content_range: Option<String>,
     pub accept_ranges: bool,
     pub etag: Option<String>,
+    pub cache_control: Option<&'static str>,
 }
 
 impl ApiResponse {
@@ -34,6 +37,7 @@ impl ApiResponse {
             content_range: None,
             accept_ranges: false,
             etag: None,
+            cache_control: None,
         }
     }
 
@@ -48,6 +52,11 @@ impl ApiResponse {
         let mut response = Self::bytes(304, Vec::new(), "application/json");
         response.etag = Some(etag);
         response
+    }
+
+    pub(crate) fn with_cache_control(mut self, cache_control: &'static str) -> Self {
+        self.cache_control = Some(cache_control);
+        self
     }
 
     pub(crate) fn with_etag(mut self, etag: String) -> Self {
@@ -97,6 +106,13 @@ impl ApiResponse {
     }
 }
 
+/// Weak comparison of an `If-None-Match` list (RFC 9110, section 13.1.2).
+pub(crate) fn matches_validator(header: &str, etag: &str) -> bool {
+    header.split(',').map(str::trim).any(|candidate| {
+        candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate) == etag
+    })
+}
+
 pub(super) fn system_time_ms() -> Result<u64, ApiResponse> {
     let duration = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -134,6 +150,11 @@ pub(crate) fn to_http_response(response: ApiResponse) -> Response<Vec<u8>> {
             ETAG,
             HeaderValue::from_str(&etag).expect("revision validators are valid headers"),
         );
+    }
+    if let Some(cache_control) = response.cache_control {
+        result
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static(cache_control));
     }
     if let Some(allow) = response.allow {
         result

@@ -1,4 +1,5 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount } from './test/mount'
+import { nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
@@ -10,6 +11,8 @@ import {
   contractTopology,
   jsonResponse,
 } from './test/contractFixtures'
+
+const fill = (element: Element) => (element as HTMLElement).style.getPropertyValue('--fill')
 
 const exactHealthCounter = '18446744073709551615'
 const catalog = contractCatalog()
@@ -87,6 +90,8 @@ describe('monitoring dashboard', () => {
     expect(wrapper.get('.traffic-panel').text()).toContain('42')
     expect(wrapper.get('.traffic-panel').text()).toContain(new Intl.NumberFormat().format(12_345))
     expect(wrapper.get('.host-panel').text()).toContain('0.42')
+    expect(wrapper.findAll('.load-track span').map((bar) => fill(bar.element))).toEqual(['42', '31', '25'])
+    expect(fill(wrapper.get('.memory-track span').element)).toBe('75')
     expect(wrapper.get('.process-panel').text()).toContain('12.5%')
     expect(wrapper.get('.readout-bar').text()).toContain('75%')
     expect(wrapper.get('.readout-bar').text()).toContain('1d 1h')
@@ -204,7 +209,7 @@ describe('monitoring dashboard', () => {
     vi.stubGlobal('fetch', fetch)
 
     const wrapper = mount(App)
-    await wrapper.vm.$nextTick()
+    await nextTick()
 
     expect(wrapper.attributes('aria-busy')).toBe('true')
     expect(wrapper.get('.loading-state').attributes('role')).toBe('status')
@@ -259,7 +264,7 @@ describe('monitoring dashboard', () => {
     })
     vi.stubGlobal('fetch', fetch)
     const wrapper = mount(App)
-    await wrapper.vm.$nextTick()
+    await nextTick()
 
     await wrapper.get('a[href="#/configuration"]').trigger('click')
     expect(firstSignals).toHaveLength(4)

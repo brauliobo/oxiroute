@@ -3,7 +3,7 @@ header.form-heading
   div
     p.eyebrow Opaque relay
     h3 {{ service.name || 'Unnamed L4 service' }}
-  button.danger-button(type="button" @click="$emit('remove')") Remove service
+  button.danger-button(type="button" @click="emit('remove')") Remove service
 .field-grid
   label.field(data-field="l4_services[].name")
     span Stable name
@@ -59,7 +59,7 @@ fieldset.object-block(data-field="l4_services[].udp")
       input(type="number" min="1" max="16777216" step="1" v-model.number="service.udp.max_queue_bytes")
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import type { L4ServiceConfig, UdpPolicyConfig } from '../config'
 
 const props = defineProps<{
@@ -67,7 +67,7 @@ const props = defineProps<{
   poolNames: string[]
 }>()
 
-defineEmits<{ remove: [] }>()
+const emit = defineEmits<{ remove: [] }>()
 
 function setLifetimeTimeout(event: Event): void {
   const value = (event.target as HTMLInputElement).value

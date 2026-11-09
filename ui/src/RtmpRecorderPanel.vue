@@ -53,7 +53,7 @@ section.recorder-panel(aria-label="Recording controls")
       small(v-if="relay.last_failure") Last operational failure: {{ relay.last_failure }}
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed } from 'vue'
 
 import type { RecorderSnapshot, StreamSnapshot } from './api'

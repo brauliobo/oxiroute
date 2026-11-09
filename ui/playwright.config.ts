@@ -23,6 +23,7 @@ export default defineConfig({
   projects: [
     {
       name: 'desktop-chromium',
+      testIgnore: '**/stats/**',
       use: {
         ...devices['Desktop Chrome'],
         viewport: { width: 1440, height: 1000 },
@@ -30,15 +31,41 @@ export default defineConfig({
     },
     {
       name: 'mobile-chromium',
+      testIgnore: '**/stats/**',
       use: {
         ...devices['Pixel 5'],
       },
     },
+    {
+      name: 'stats-chromium',
+      testMatch: '**/stats/**/*.spec.ts',
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: 'http://127.0.0.1:4174',
+        viewport: { width: 1440, height: 1000 },
+      },
+    },
+    {
+      name: 'stats-mobile-chromium',
+      testMatch: '**/stats/**/*.spec.ts',
+      use: {
+        ...devices['Pixel 5'],
+        baseURL: 'http://127.0.0.1:4174',
+      },
+    },
   ],
-  webServer: {
-    command: 'pnpm exec vite preview --host 127.0.0.1 --port 4173',
-    url: 'http://127.0.0.1:4173',
-    reuseExistingServer: false,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command: 'pnpm exec vite preview --host 127.0.0.1 --port 4173',
+      url: 'http://127.0.0.1:4173',
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+    {
+      command: 'pnpm exec vite preview --config vite.stats.config.ts --base / --host 127.0.0.1 --port 4174',
+      url: 'http://127.0.0.1:4174/stats.html',
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+  ],
 })

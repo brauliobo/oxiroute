@@ -1,0 +1,35 @@
+/* Data views of the stats page. Colours and the focus ring come from the page tokens and rules in ../stats.css. */
+.ox-dashboard {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.ox-dashboard h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+.ox-dashboard h3 {
+  margin: 0.9rem 0 0.35rem;
+  font-size: 0.9rem;
+}
+
+.ox-dashboard h4 {
+  margin: 0.6rem 0 0.25rem;
+  font-size: 0.8rem;
+  color: var(--ox-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.ox-panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.ox-panels > #certificates,
+.ox-panels > #warnings {
+  grid-column: 1 / -1;
+}

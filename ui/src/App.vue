@@ -172,14 +172,14 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
           .load-row(v-for="load in hostLoads" :key="load.label")
             span.load-window {{ load.label }}
             .load-track(aria-hidden="true")
-              span(:style="{ width: loadBarWidth(load.value) }")
+              span(v-css-vars="{ '--fill': loadFillPercent(load.value) }")
             strong {{ formatDecimal(load.value) }}
         .memory-readout
           .memory-copy
             span.label Memory used
             strong {{ formatOptionalBytes(usedMemoryBytes) }} / {{ formatOptionalBytes(monitoring.host.totalMemoryBytes) }}
           .memory-track(aria-hidden="true")
-            span(:style="{ width: `${memoryUsagePercent ?? 0}%` }")
+            span(v-css-vars="{ '--fill': memoryUsagePercent ?? 0 }")
           span.available-copy {{ formatOptionalBytes(monitoring.host.availableMemoryBytes) }} available
 
       article.monitor-panel.process-panel
@@ -357,7 +357,7 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
     span.mono Live measurements / runtime inventory
 </template>
 
-<script setup lang="ts">
+<script setup lang="ts" vapor>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
@@ -379,6 +379,7 @@ import { listenerStateLabels } from './runtimeStates'
 import TopologyView from './TopologyView.vue'
 import OperationsWorkspace from './OperationsWorkspace.vue'
 import ProvenanceWorkspace from './ProvenanceWorkspace.vue'
+import { vCssVars } from './cssVars'
 import {
   ApiError,
   connectEventStream,
@@ -847,9 +848,9 @@ function formatSampleAge(sampledAt: number): string {
   return minutes < 60 ? `${minutes}m ago` : `${Math.floor(minutes / 60)}h ago`
 }
 
-function loadBarWidth(value: number | null): string {
-  if (value === null || value <= 0) return '0%'
-  return `${Math.max(4, (value / maximumHostLoad.value) * 100)}%`
+function loadFillPercent(value: number | null): number {
+  if (value === null || value <= 0) return 0
+  return Math.max(4, (value / maximumHostLoad.value) * 100)
 }
 
 function formatAge(startedAt: number): string {
@@ -1352,6 +1353,7 @@ button:disabled {
 .load-track span,
 .memory-track span {
   display: block;
+  width: calc(var(--fill, 0) * 1%);
   height: 100%;
   background: #b6ff51;
 }

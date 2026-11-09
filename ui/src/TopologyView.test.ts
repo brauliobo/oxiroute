@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { mount } from './test/mount'
 import { describe, expect, it } from 'vitest'
 
 import TopologyView from './TopologyView.vue'
@@ -108,6 +108,20 @@ const topology: TopologySnapshot = {
 }
 
 describe('TopologyView', () => {
+  it('positions the stage and nodes with custom properties instead of inline style bindings', () => {
+    const wrapper = mount(TopologyView, { props: { topology } })
+    const property = (element: Element, name: string) => (element as HTMLElement).style.getPropertyValue(name)
+
+    expect(property(wrapper.get('.topology-stage').element, '--stage-width')).toMatch(/^\d+px$/)
+    expect(property(wrapper.get('.topology-stage').element, '--stage-height')).toMatch(/^\d+px$/)
+    const nodes = wrapper.findAll('.topology-node')
+    expect(nodes).toHaveLength(topology.nodes.length)
+    for (const node of nodes) {
+      expect(property(node.element, '--node-x')).toMatch(/^\d+px$/)
+      expect(property(node.element, '--node-y')).toMatch(/^\d+px$/)
+    }
+  })
+
   it.each([
     ['starting', 'Starting'],
     ['degraded', 'Degraded'],
