@@ -9,39 +9,39 @@ use http::{HeaderMap, HeaderName, HeaderValue};
 use pingora::http::{RequestHeader, ResponseHeader};
 
 pub(crate) trait HeaderOps {
-    fn has_case_map(&self) -> bool;
-    fn header_map(&mut self) -> &mut HeaderMap;
+    /// The header map when the header has no case map to keep in step.
+    fn header_map_no_case(&mut self) -> Option<&mut HeaderMap>;
     fn insert_with_case(&mut self, name: HeaderName, value: HeaderValue) -> pingora::Result<()>;
     fn append_with_case(&mut self, name: HeaderName, value: HeaderValue) -> pingora::Result<()>;
 
     /// Replaces every value under `name`, as `insert_header` does.
     fn set_header(&mut self, name: HeaderName, value: HeaderValue) -> pingora::Result<()> {
-        if self.has_case_map() {
-            return self.insert_with_case(name, value);
+        match self.header_map_no_case() {
+            Some(map) => {
+                map.insert(name, value);
+                Ok(())
+            }
+            None => self.insert_with_case(name, value),
         }
-        self.header_map().insert(name, value);
-        Ok(())
     }
 
     /// Adds a value under `name`, as `append_header` does.
     fn add_header(&mut self, name: HeaderName, value: HeaderValue) -> pingora::Result<()> {
-        if self.has_case_map() {
-            return self.append_with_case(name, value);
+        match self.header_map_no_case() {
+            Some(map) => {
+                map.append(name, value);
+                Ok(())
+            }
+            None => self.append_with_case(name, value),
         }
-        self.header_map().append(name, value);
-        Ok(())
     }
 }
 
 macro_rules! header_ops {
     ($header:ty) => {
         impl HeaderOps for $header {
-            fn has_case_map(&self) -> bool {
-                self.has_case()
-            }
-
-            fn header_map(&mut self) -> &mut HeaderMap {
-                &mut self.headers
+            fn header_map_no_case(&mut self) -> Option<&mut HeaderMap> {
+                self.headers_mut_no_case()
             }
 
             fn insert_with_case(

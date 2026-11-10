@@ -56,7 +56,7 @@ use tempfile::TempDir;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{Mutex as TokioMutex, watch},
+    sync::watch,
     task::{JoinHandle, JoinSet, spawn_blocking},
     time::{Instant, sleep, timeout},
 };
