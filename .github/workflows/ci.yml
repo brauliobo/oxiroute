@@ -172,7 +172,10 @@ jobs:
         run: ./packaging/arch/test-service.sh
 
       - name: Verify the package recipes pin the checksums of the files they ship
-        run: ./packaging/arch/test-verify-checksums.sh && ./packaging/arch/verify-checksums.sh
+        run: |
+          ./packaging/arch/test-verify-checksums.sh
+          ./packaging/arch/test-pin-bin-release.sh
+          ./packaging/arch/verify-checksums.sh
 
   ui:
     name: UI tests and build
