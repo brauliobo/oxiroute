@@ -72,7 +72,13 @@ fn assert_same(buf: &[u8], edits: &[OwnedEdit]) -> Vec<u8> {
         (0, None),
     ] {
         let mut classic = classic_response(buf).unwrap();
-        apply(&mut classic.header.headers, edits);
+        apply(
+            classic
+                .header
+                .headers_mut_no_case()
+                .expect("built without a case map"),
+            edits,
+        );
         let theirs = serialize_response(&classic.header, minor, auto.map(|c| (DATE, c)));
         let ours = written(buf, &head, &lend(&all), minor, auto);
         assert_eq!(

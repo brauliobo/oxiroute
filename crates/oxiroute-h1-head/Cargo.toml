@@ -13,7 +13,7 @@ version.workspace = true
 bytes.workspace = true
 http.workspace = true
 httparse = "1.10"
-pingora-http = "=0.8.1"
+pingora-http = "=0.9.1"
 
 [lints.rust]
 unsafe_code = "forbid"

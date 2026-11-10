@@ -69,7 +69,10 @@ pub fn classic_response(buf: &[u8]) -> Result<ClassicResponse, Classic> {
             n if is_hop_by_hop(n) => facts.hop_by_hop = true,
             _ => {}
         }
-        header.headers.append(name, value);
+        header
+            .headers_mut_no_case()
+            .expect("built without a case map")
+            .append(name, value);
         arrival.push((h.name.to_owned(), h.value.to_vec()));
     }
     if facts.content_lengths > 0 && facts.transfer_encoding {
