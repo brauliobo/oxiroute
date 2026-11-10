@@ -165,6 +165,7 @@ impl ServerProcess {
     }
 
     /// Stops the server and returns what it wrote to standard error.
+    #[allow(dead_code)]
     pub fn shutdown_output(mut self) -> String {
         self.stop();
         read_pipe(self.child.stderr.take())

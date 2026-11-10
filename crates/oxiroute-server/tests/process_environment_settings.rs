@@ -48,11 +48,11 @@ fn validated(config: ConfigDraft) -> ValidatedConfig {
     config.validate().expect("valid process config")
 }
 
-fn audit_limit(max_records: u64) -> Option<Audit> {
-    Some(Audit {
+fn audit_limit(max_records: u64) -> Audit {
+    Audit {
         max_records: Some(max_records),
         ..Audit::default()
-    })
+    }
 }
 
 /// The status code and JSON body of a management request, or `None` while the socket is between
@@ -174,11 +174,11 @@ async fn log_verbosity_comes_from_the_configuration() {
 async fn an_audit_change_takes_effect_with_the_next_reload() {
     let token_directory = TempDir::new().expect("token directory");
     let (management, mut config) = management_config(&token_directory);
-    config.audit = audit_limit(123);
+    config.audit = Some(audit_limit(123));
     let server = ServerProcess::start(&validated(config.clone()), None);
     wait_for_max_records(management, 123).await;
 
-    config.audit = audit_limit(456);
+    config.audit = Some(audit_limit(456));
     write_config(&server.config_path, &validated(config));
 
     wait_for_max_records(management, 456).await;
@@ -189,11 +189,11 @@ async fn an_audit_change_takes_effect_with_the_next_reload() {
 async fn a_log_filter_change_takes_effect_with_the_next_reload() {
     let token_directory = TempDir::new().expect("token directory");
     let (management, mut config) = management_config(&token_directory);
-    config.audit = audit_limit(123);
+    config.audit = Some(audit_limit(123));
     let server = ServerProcess::start(&validated(config.clone()), None);
     wait_for_max_records(management, 123).await;
 
-    config.audit = audit_limit(456);
+    config.audit = Some(audit_limit(456));
     config.log_filter = Some("info".into());
     write_config(&server.config_path, &validated(config));
     wait_for_max_records(management, 456).await;

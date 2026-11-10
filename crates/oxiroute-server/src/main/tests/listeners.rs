@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use std::path::PathBuf;
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
