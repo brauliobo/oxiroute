@@ -202,3 +202,21 @@ fn mutated_valid_scripts_never_panic() {
         "mutations should mostly stay valid, accepted {accepted}"
     );
 }
+
+#[test]
+fn fuzz_corpus_seeds_run_clean() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/h2_frames");
+    let mut accepted = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+        let hex = text.trim().strip_prefix("hex:").unwrap();
+        let bytes: Vec<u8> = (0..hex.len() / 2)
+            .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
+        accepted += harness::run(&bytes);
+    }
+    assert!(
+        accepted >= 5,
+        "the seeds should reach the request path, accepted {accepted}"
+    );
+}
