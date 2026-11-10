@@ -552,7 +552,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
     default_certificate: 'forward',
     min_version: '1.3',
     alpn: ['h3'],
-    policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
+    policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true, ktls: 'off' },
   }]
   snapshot.config.listeners = [{
     name: 'forward-h3',

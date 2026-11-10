@@ -133,7 +133,10 @@ export interface TlsPolicyConfig {
   session_timeout_seconds: number | null
   session_tickets: boolean
   prefer_server_ciphers: boolean
+  ktls: KtlsMode
 }
+
+export type KtlsMode = 'off' | 'static'
 
 export type TlsClientAuthMode = 'disabled' | 'optional' | 'required'
 

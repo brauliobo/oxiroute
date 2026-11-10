@@ -55,6 +55,11 @@ header.form-heading
   label.checkbox-field(data-field="tls_profiles[].policy.prefer_server_ciphers")
     input(type="checkbox" v-model="profile.policy.prefer_server_ciphers")
     span Prefer server cipher order
+  label.field(data-field="tls_profiles[].policy.ktls")
+    span Kernel TLS
+    select(v-model="profile.policy.ktls")
+      option(value="off") Off
+      option(value="static") Large static files
 StringListField(
   v-model="profile.policy.client_auth.allowed_dns_names"
   label="Allowed client SANs"
