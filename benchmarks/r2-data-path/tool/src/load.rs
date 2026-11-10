@@ -53,6 +53,8 @@ enum Proto {
     Ws,
     WsTls,
     Tcp,
+    /// An HTTP/1.1 `CONNECT` tunnel to `--connect-to`, then raw messages through it.
+    Connect,
 }
 
 impl std::str::FromStr for Proto {
@@ -67,6 +69,7 @@ impl std::str::FromStr for Proto {
             "ws" => Self::Ws,
             "wstls" => Self::WsTls,
             "tcp" => Self::Tcp,
+            "connect" => Self::Connect,
             other => return Err(format!("unknown protocol {other}")),
         })
     }
@@ -90,7 +93,11 @@ struct Spec {
     expect_status: u16,
     expect_len: Option<usize>,
     connector: Option<TlsConnector>,
+    connect_to: String,
     h1_request: Vec<u8>,
+    /// Offset of an eight-digit counter in `h1_request` (`--vary`): every request carries a distinct query, so a
+    /// cache sees a new key each time.
+    vary_at: Option<usize>,
     h2_method: Method,
     h2_uri: Uri,
     h2_headers: HeaderMap,
@@ -268,6 +275,8 @@ fn spec_from(flags: &Flags) -> Spec {
         padding.push((name.trim().to_ascii_lowercase(), value.trim().to_owned()));
     }
     let body = Bytes::from(vec![b'b'; flag(flags, "body-bytes", 0)]);
+    let vary: bool = flag(flags, "vary", false);
+    let path = if vary { format!("{path}?k=00000000") } else { path };
     let tls_version: String = flag(flags, "tls-version", "any".to_owned());
     let resume: bool = flag(flags, "resume", false);
     let connector = match proto {
@@ -305,6 +314,8 @@ fn spec_from(flags: &Flags) -> Spec {
             .map(|value| value.parse().expect("--expect-len")),
         connector,
         h1_request: h1_request(&method, &path, &host, &padding, &body, flag(flags, "chunk-bytes", 0), !new_conn),
+        connect_to: flag(flags, "connect-to", String::new()),
+        vary_at: vary.then(|| method.len() + 1 + path.len() - 8),
         h2_method: method.parse().expect("method"),
         h2_uri: format!("{scheme}://{host}{path}").parse().expect("uri"),
         h2_headers,
@@ -326,6 +337,21 @@ async fn connect(spec: &Spec, slot: usize) -> io::Result<Client> {
     match spec.proto {
         Proto::H1 | Proto::H1Tls => Ok(Client::H1(io)),
         Proto::Tcp => Ok(Client::Raw(io)),
+        Proto::Connect => {
+            let destination = &spec.connect_to;
+            let request = format!("CONNECT {destination} HTTP/1.1\r\nhost: {destination}\r\n\r\n");
+            io.write_all(request.as_bytes()).await?;
+            let mut head = Vec::with_capacity(256);
+            while find(&head, b"\r\n\r\n").is_none() {
+                if io.read_buf(&mut head).await? == 0 {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+            }
+            if !head.starts_with(b"HTTP/1.1 200") {
+                return Err(io::Error::other(format!("CONNECT answered {}", String::from_utf8_lossy(&head))));
+            }
+            Ok(Client::Raw(io))
+        }
         Proto::H2c | Proto::H2Tls => {
             let (sender, connection) =
                 hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(io))
@@ -408,7 +434,16 @@ async fn exchange(client: &mut Client, spec: &Spec, scratch: &mut Vec<u8>) -> io
     scratch.clear();
     match client {
         Client::H1(io) => {
-            io.write_all(&spec.h1_request).await?;
+            match spec.vary_at {
+                Some(at) => {
+                    static VARY: AtomicUsize = AtomicUsize::new(0);
+                    let mut request = spec.h1_request.clone();
+                    let counter = format!("{:08}", VARY.fetch_add(1, Ordering::Relaxed) % 100_000_000);
+                    request[at..at + 8].copy_from_slice(counter.as_bytes());
+                    io.write_all(&request).await?;
+                }
+                None => io.write_all(&spec.h1_request).await?,
+            }
             read_response(io, scratch).await
         }
         Client::H2(sender) => {
