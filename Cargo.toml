@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/oxiroute-aged-executor",
     "crates/oxiroute-cache",
     "crates/oxiroute-acme",
     "crates/oxiroute-config",
@@ -35,6 +36,7 @@ version = "6.3.0"
 aho-corasick = "1.1.5"
 arc-swap = "1.9.4"
 async-trait = "0.1.92"
+atomic-waker = "1.1"
 base64 = "0.23"
 bcrypt = "0.19"
 bytes = "1.12"
@@ -70,6 +72,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11"
 signal-hook = "0.4"
+slab = "0.4.12"
 tempfile = "3.27"
 thiserror = "2.0.21"
 tikv-jemallocator = "0.6"
