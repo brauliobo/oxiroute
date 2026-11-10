@@ -26,7 +26,12 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 target=${PGO_TARGET:-x86_64-unknown-linux-gnu}
 work=${PGO_WORK:-/dev/shm/oxiroute-pgo}
 profile=${PGO_PROFILE:-${work}/oxiroute.profdata}
-lanes=${PGO_LANES:-h1_b1k,f_fixed,h1_newconn_b1k,tls_h1_keepalive,static_f1k,h2_b1k_c4s16,tls_hs_full_tls13,h1_b64k,h1_post4k,f_access_log}
+# Core lanes (weight 4) keep the hot proxy path laid out as the 6.3 mix did; the weight-1 lanes add the features that
+# the core lanes never execute (HTTP/2 bodies, WebSocket, TCP relay, cache, gzip, large bodies, TLS 1.2, the 6.0
+# features, least-connections pools, forward proxy), which a profile without them lays out as cold code.
+core_lanes=h1_b1k:4,f_fixed:4,h1_newconn_b1k:4,tls_h1_keepalive:4,static_f1k:4,h2_b1k_c4s16:4,tls_hs_full_tls13:4,h1_b64k:4,h1_post4k:4,f_access_log:4
+wide_lanes=h2_b64k_c4s16,h2_post1k_c4s16,ws_echo_1k,l4_echo_1k,cache_hit_b1k,gzip_html64k,h1_post64k,h1_b1m,tls_h1_b1m,tls_hs_full_tls12,f_all_6_0,pool_lc_s64,h1_hdr2048,fwd_h1_b1k
+lanes=${PGO_LANES:-${core_lanes},${wide_lanes}}
 scale=${PGO_SCALE:-0.5}
 jobs=${PGO_JOBS:-4}
 max_missing_pct=${PGO_MAX_MISSING_PCT:-5}
