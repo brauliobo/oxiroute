@@ -53,7 +53,16 @@ class Lane:
     servers: int = 1
     storm: int = 0  # TLS handshakes per second that new connections add during the measured window (`r2tool storm`)
     target_offset: int = 0  # proxy port offset the load goes to (forward listener: 3, TCP listener: 1)
+    requires: tuple = ()  # (what the proxy must support, the `oxiroute config check` rejection of a binary that lacks it)
     note: str = ""
+
+
+H3_ORIGIN = ("an http3 listener that proxies to an HTTP/1.1 origin pool",
+             "HTTP/3 reverse routes require an exact HTTP/3 upstream pool")
+
+
+class Unsupported(Exception):
+    """The proxy binary lacks a capability the lane needs: no number is better than a bogus one."""
 
 
 def lane(name, load=(), features=(), **kwargs):
@@ -142,6 +151,21 @@ def build_lanes():
                                "--expect-len", "65536"], features=["tls"], requests=5000, warmup=200))
     add(lane("h2_post1k_c4s16", ["--proto", "h2tls", "--method", "POST", "--path", "/sink", "--body-bytes", "1024",
                                  "--conns", "4", "--streams", "16"], features=["tls"], requests=20000))
+    # HTTP/3 listener (`r2tool load --proto h3`: quinn + h3 client, self-signed development certificate, no verification
+    # as in the TLS lanes). `fixed_*` lanes answer from the listener itself; the others proxy to the HTTP/1.1 origin.
+    h3 = ["--proto", "h3", "--conns", "8", "--streams", "4"]
+    add(lane("h3_fixed_b1k_c8s4", h3 + ["--path", "/fixed", "--expect-len", "1024"], features=["h3", "fixed_b1k"],
+             requests=16000))
+    add(lane("h3_fixed_b1k_c1s1", ["--proto", "h3", "--path", "/fixed", "--expect-len", "1024"],
+             features=["h3", "fixed_b1k"], requests=10000))
+    add(lane("h3_fixed_b64k_c8s4", h3 + ["--path", "/fixed", "--expect-len", "65536"], features=["h3", "fixed_b64k"],
+             requests=5000, warmup=200))
+    add(lane("h3_b1k_c8s4", h3 + ["--path", "/b1k", "--expect-len", "1024"], features=["h3"], requests=16000,
+             requires=H3_ORIGIN))
+    add(lane("h3_post1k_c8s4", h3 + ["--method", "POST", "--path", "/sink", "--body-bytes", "1024"], features=["h3"],
+             requests=16000, requires=H3_ORIGIN))
+    add(lane("h3_newconn_fixed_b1k", ["--proto", "h3", "--new-conn", "--conns", "8", "--path", "/fixed",
+                                      "--expect-len", "1024"], features=["h3", "fixed_b1k"], requests=2000, warmup=100))
     add(lane("h1_b1k_h2up", ["--path", "/b1k", "--expect-len", "1024"] + base, features=["upstream_h2"]))
     add(lane("h1_b64k_h2up", ["--path", "/b64k", "--expect-len", "65536"] + base, features=["upstream_h2"],
              requests=5000, warmup=200))
@@ -269,6 +293,25 @@ def wait_port(port, process, timeout=30.0):
     raise RuntimeError(f"port {port} not ready")
 
 
+def wait_udp(port, process, timeout=30.0):
+    """A QUIC server answers a datagram of an unknown version with Version Negotiation: that proves it is bound."""
+    probe = bytes([0xC0]) + bytes.fromhex("1a2a3a4a") + bytes([8]) + os.urandom(8) + bytes([8]) + os.urandom(8)
+    probe += bytes(1200 - len(probe))
+    deadline = time.monotonic() + timeout
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+        udp.settimeout(0.2)
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError(f"process exited before listening on udp {port}")
+            try:
+                udp.sendto(probe, ("127.0.0.1", port))
+                udp.recv(2048)
+                return
+            except (socket.timeout, ConnectionRefusedError):
+                time.sleep(0.05)
+    raise RuntimeError(f"udp port {port} not ready")
+
+
 def children(pid):
     path = Path(f"/proc/{pid}/task/{pid}/children")
     return [int(child) for child in path.read_text().split()] if path.exists() else []
@@ -316,7 +359,7 @@ class Env:
         for name, size in (("f1k", 1024), ("f64k", 65536), ("f1m", 1048576)):
             (www / f"{name}.bin").write_bytes(b"x" * size)
 
-    def start(self, wrap=(), proxy_env=None):
+    def render_config(self):
         lane = self.lane
         self.prepare_files()
         config = self.work / "oxiroute.lua"
@@ -329,6 +372,11 @@ class Env:
             + [item for feature in lane.features for item in ("--feature", feature)],
             check=True, capture_output=True, text=True, timeout=LANE_TIMEOUT)
         self.generated = generated.stdout
+        return config
+
+    def start(self, wrap=(), proxy_env=None):
+        lane = self.lane
+        config = self.render_config()
         if lane.servers > 2:  # many servers share one port on 127.0.0.1 .. 127.0.0.N
             listen = ",".join(f"127.0.0.{index + 1}:{UPSTREAM_PORT}" for index in range(lane.servers))
         else:
@@ -343,7 +391,7 @@ class Env:
                             "R2_PROXY_PORT": str(PROXY_PORT), "R2_UPSTREAM_PORT": str(UPSTREAM_PORT),
                             **dict(item.split("=", 1) for item in self.args.proxy_env), **(proxy_env or {})})
         for port in self.http_ports():
-            wait_port(port, self.proxy)
+            (wait_udp if "h3" in lane.features else wait_port)(port, self.proxy)
 
     def upstream_tls(self):
         """A self-signed upstream certificate that the generated pool trusts as its CA (`origin.pem`)."""
@@ -647,7 +695,27 @@ def train_lane(args, lane):
             env.close()
 
 
+def check_support(args, lane):
+    """Run `oxiroute config check` on the lane's configuration: a binary that predates what the lane exercises is skipped."""
+    if not lane.requires:
+        return
+    needed, rejection = lane.requires
+    with bench_lock():
+        pick_ports(lane)
+        env = Env(args, lane)
+        try:
+            checked = subprocess.run([env.binary, "config", "check", str(env.render_config())], capture_output=True, text=True)
+        finally:
+            env.close()
+    output = checked.stdout + checked.stderr
+    if checked.returncode != 0 and rejection in output:
+        raise Unsupported(f"{env.binary} does not support {needed}")
+    if checked.returncode != 0:
+        raise RuntimeError(f"oxiroute config check rejected the {lane.name} configuration: {output}")
+
+
 def run_lane(args, lane):
+    check_support(args, lane)
     row = {"lane": lane.name, "features": ",".join(lane.features) or "-", "listeners": lane.listeners}
     if args.train:
         return {**row, **train_lane(args, lane)}
@@ -748,7 +816,10 @@ def main():
                 chosen = LANES[name]
                 chosen.requests = max(50, int(chosen.requests * args.scale))
                 chosen.warmup = max(20, int(chosen.warmup * args.scale))
-                row = run_lane(args, chosen)
+                try:
+                    row = run_lane(args, chosen)
+                except Unsupported as unsupported:
+                    row = {"lane": name, "skipped": str(unsupported)}
                 rows.append(row)
                 print(render(row), flush=True)
     (args.out / "results.json").write_text(json.dumps(rows, indent=2))
