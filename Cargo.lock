@@ -2828,6 +2828,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxiroute-h1-head"
+version = "6.3.0"
+dependencies = [
+ "bytes",
+ "http",
+ "httparse",
+ "pingora-http",
+]
+
+[[package]]
 name = "oxiroute-import"
 version = "6.3.0"
 dependencies = [
