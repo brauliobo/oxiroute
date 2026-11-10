@@ -301,8 +301,14 @@ impl Connection {
                 Err(Fail::Stream(id, Reason::REFUSED_STREAM))
             }
             Target::New => {
-                match request::decode_request(&mut self.dec, block, max_list, end_stream)
-                    .map_err(compression)?
+                match request::decode_request(
+                    &mut self.dec,
+                    &mut self.fields,
+                    block,
+                    max_list,
+                    end_stream,
+                )
+                .map_err(compression)?
                 {
                     Block::Request {
                         parts,
@@ -332,7 +338,7 @@ impl Connection {
     fn open_stream(
         &mut self,
         id: u32,
-        parts: Box<http::request::Parts>,
+        parts: http::request::Parts,
         content_length: u64,
         end_stream: bool,
     ) {

@@ -102,14 +102,14 @@ impl<IO: AsyncRead + AsyncWrite + Unpin + Send + 'static> Server<IO> {
             {
                 let mut c = self.shared.lock();
                 if let Some((idx, id, parts)) = c.pop_accept() {
-                    c.arm_driver(cx.waker());
+                    c.disarm_driver();
                     drop(c);
                     let stream = Stream {
                         shared: self.shared.clone(),
                         id,
                         idx,
                     };
-                    return Poll::Ready(Some(Ok((*parts, stream))));
+                    return Poll::Ready(Some(Ok((parts, stream))));
                 }
                 if self.done {
                     return Poll::Ready(c.take_report().map(Err));

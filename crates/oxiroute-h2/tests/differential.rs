@@ -1,6 +1,11 @@
 //! Differential tests: every scenario is a raw-byte client script run against the `h2` crate's server and this
 //! crate's server through the same in-memory harness; both must show the same class of reaction (GOAWAY code,
 //! RST_STREAM code, response status). Rows with `differs` record an intentional difference and its reason.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown,
+    clippy::too_many_lines
+)]
 mod support;
 use std::future::poll_fn;
 
