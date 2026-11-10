@@ -2,7 +2,7 @@
 
 use crate::class::Class;
 use crate::edit::{Edits, EditsFull, Value, names};
-use crate::emit::{emit, size_bound};
+use crate::emit::{Walk, emit};
 use crate::order::{HeaderOrder, Items};
 use crate::response::ResponseHead;
 use alloc::vec::Vec;
@@ -35,29 +35,27 @@ pub fn write_response(
         headers: head.headers(),
         edits: edits.as_slice(),
     };
+    let automatic_bytes = automatic.map_or(0, |a| a.date.len() + a.connection.len() + 32);
+    out.reserve(
+        head.head_len as usize
+            + usize::from(head.count)
+            + edits.added_bytes()
+            + automatic_bytes
+            + 2,
+    );
+    let line = out.len();
+    out.extend_from_slice(&buf[..head.line_len as usize]);
+    if head.minor != minor {
+        out[line + 7] = b'0' + minor;
+    }
     let order = HeaderOrder::after_edits(&items, head.facts.duplicate_names, head.facts.present);
-    let extra = automatic.map_or(0, |a| a.date.len() + a.connection.len() + 32);
-    out.reserve(head.reason.len as usize + size_bound(&items) + extra + 24);
-    out.extend_from_slice(if minor == 0 {
-        b"HTTP/1.0 "
-    } else {
-        b"HTTP/1.1 "
-    });
-    out.extend_from_slice(&[
-        b'0' + (head.status / 100) as u8,
-        b'0' + (head.status / 10 % 10) as u8,
-        b'0' + (head.status % 10) as u8,
-    ]);
-    out.push(b' ');
-    out.extend_from_slice(head.reason(buf));
-    out.extend_from_slice(b"\r\n");
     match automatic {
-        None => emit(out, &items, &order, 0),
+        None => emit(out, &items, Walk::Map(&order), 0),
         Some(auto) => {
             emit(
                 out,
                 &items,
-                &order,
+                Walk::Map(&order),
                 Class::Date.bit() | Class::Connection.bit(),
             );
             out.extend_from_slice(b"Date: ");

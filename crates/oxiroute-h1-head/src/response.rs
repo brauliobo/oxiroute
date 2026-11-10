@@ -1,7 +1,7 @@
 //! The response scanner: the common clean shape of an upstream response head, or "ask the classic parser".
 
 use crate::class::{Class, HOP_BY_HOP_RESPONSE};
-use crate::fields::{Header, MAX_HEADERS, Stop, scan_fields};
+use crate::fields::{Block, Header, MAX_HEADERS, Stop, scan_fields};
 use crate::miss::{MissReason, ScanResponse};
 use crate::request::{Connection, Span, chunked_final, connection, content_length};
 
@@ -38,6 +38,8 @@ pub struct ResponseHead {
     pub minor: u8,
     /// The reason phrase as sent: tabs, spaces and visible ASCII, possibly empty.
     pub reason: Span,
+    /// Bytes of the status line, CRLF included.
+    pub line_len: u32,
     /// Bytes through the blank line.
     pub head_len: u32,
     pub count: u8,
@@ -58,6 +60,7 @@ impl ResponseHead {
             status: 0,
             minor: 1,
             reason: Span { start: 0, len: 0 },
+            line_len: 0,
             head_len: 0,
             count: 0,
             facts: ResponseFacts {
@@ -164,7 +167,8 @@ fn status_line(buf: &[u8]) -> Result<(u16, u8, Span, usize), Stop> {
 
 fn scan(buf: &[u8], out: &mut ResponseHead) -> Result<(), Stop> {
     let (status, minor, reason, fields_start) = status_line(buf)?;
-    let block = scan_fields(buf, fields_start, &mut out.headers)?;
+    let mut block = Block::new();
+    scan_fields(buf, fields_start, &mut out.headers, &mut block)?;
     let facts = &mut out.facts;
     let has = |class: Class| block.seen & class.bit() != 0;
     let duplicated = |class: Class| block.dup & class.bit() != 0;
@@ -196,13 +200,14 @@ fn scan(buf: &[u8], out: &mut ResponseHead) -> Result<(), Stop> {
     facts.request_id = has(Class::XRequestId);
     facts.upstream_request_id = has(Class::XUpstreamRequestId);
     facts.informational = status < 200;
-    facts.has_underscore = block.underscore;
-    facts.has_uppercase = block.upper;
+    facts.has_underscore = block.underscore();
+    facts.has_uppercase = block.upper();
     facts.duplicate_names = block.duplicate_names;
     facts.present = block.seen;
     out.status = status;
     out.minor = minor;
     out.reason = reason;
+    out.line_len = fields_start as u32;
     out.head_len = block.head_len;
     out.count = block.count;
     Ok(())
