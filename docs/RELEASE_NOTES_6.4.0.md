@@ -23,7 +23,10 @@ conservative compatibility claims.
   more over plain HTTP/1.1 are sent with `sendfile`.
 - **Pingora 0.9.1.** The vendored Pingora crates are rebased; the advisories RUSTSEC-2026-0388, RUSTSEC-2026-0390 and
   RUSTSEC-2026-0253 are no longer reported against the build.
-- **Configuration.** New options: `tls_handshake_threads`, `http_fast_lane`, `connection_scheduling`,
+- **rustls backend (opt-in).** `tls_profiles[].policy.backend = "rustls"` runs the handshakes and records of a profile's
+  listeners with rustls and aws-lc-rs instead of OpenSSL; `openssl` stays the default. See
+  [the rustls backend](developer/PERF_6_4_RUSTLS.md).
+- **Configuration.** New options: `tls_profiles[].policy.backend`, `tls_handshake_threads`, `http_fast_lane`, `connection_scheduling`,
   `connection_age_ms`, `log_filter`, `management.token_file` and the `audit` block.
 
 ## Behaviour changes to know before upgrading
@@ -113,6 +116,14 @@ Details: [TLS handshake offload and the HTTP/2 session](developer/PERF_6_4_TLS_H
   rapid reset, CONTINUATION floods, header-list and HPACK bombs, control-frame floods, stream limits and window
   overflow, a differential test against the `h2` crate and two fuzz targets (`hpack`, `h2_frames`). The `h2` crate stays
   for the HTTP/2 upstream client.
+
+- **rustls backend.** A profile with `policy.backend = "rustls"` serves certificate selection, SNI, ALPN, TLS-ALPN-01,
+  client certificates, session cache, tickets and certificate reloads as the OpenSSL backend does. It rejects
+  `cipher_list` and `dh_parameters_path` (OpenSSL-only) at validation, offers only the TLS 1.3 and ECDHE AEAD suites
+  (no DHE, CBC or RSA key exchange), answers a TLS 1.0 or 1.1 client with `handshake_failure` instead of
+  `protocol_version`, reports TLS 1.2 cipher names in IANA form, and does not request a client certificate on a
+  TLS-ALPN-01 challenge connection. Upstream TLS, ACME and HTTP/3 keep their libraries. HTTP/3 now reads its server
+  certificate from a key that is built once per certificate generation instead of on every handshake.
 
 ## Kernel offload
 
