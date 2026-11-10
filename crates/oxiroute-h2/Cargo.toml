@@ -15,7 +15,7 @@ tokio = { workspace = true, features = ["io-util", "time"] }
 
 [dev-dependencies]
 h2.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "io-util", "time", "sync"] }
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "time", "sync", "test-util"] }
 
 [lints]
 workspace = true
