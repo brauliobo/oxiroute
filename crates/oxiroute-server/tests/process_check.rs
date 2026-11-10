@@ -95,6 +95,7 @@ impl Scratch {
             management: Some(Management {
                 bind: self.management,
                 ui_dir: None,
+                token_file: None,
             }),
             registry: Some(Registry {
                 state_dir: self.state.path().join("state"),

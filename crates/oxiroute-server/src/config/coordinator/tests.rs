@@ -56,6 +56,7 @@ fn minimal_config() -> ConfigDraft {
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
+        audit: None,
     }
 }
 

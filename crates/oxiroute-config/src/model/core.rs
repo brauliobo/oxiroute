@@ -17,6 +17,9 @@ pub struct ConfigDraft {
     pub retirement: Option<Retirement>,
     #[serde(default)]
     pub management: Option<Management>,
+    /// Durable audit log of management operations: location and retention bounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit: Option<Audit>,
     /// Runtime server registration: state directory, tokens, and registry-only endpoints.
     #[serde(default)]
     pub registry: Option<Registry>,
@@ -71,12 +74,56 @@ impl Default for Retirement {
     }
 }
 
+/// Where the audit log lives and how much of it is retained. Every omitted setting keeps its
+/// default; `OXIROUTE_AUDIT_*` environment variables fill the omitted settings for deployments
+/// that predate this block.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Audit {
+    /// Directory of the durable audit files. Omitted means an `audit` directory next to the
+    /// management token file, or in-memory records when there is no token file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<PathBuf>,
+    /// Records retained (default 10000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_records: Option<u64>,
+    /// Largest single record in bytes (default 16384).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_record_bytes: Option<u64>,
+    /// Size at which the active file rotates (default 1 MiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_bytes: Option<u64>,
+    /// Bytes retained across the active and rotated files (default 8 MiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_bytes: Option<u64>,
+    /// Rotated files kept besides the active file (default 7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rotated_files: Option<u64>,
+}
+
+impl Audit {
+    pub const DEFAULT_MAX_RECORDS: u64 = 10_000;
+    pub const DEFAULT_MAX_RECORD_BYTES: u64 = 16 * 1024;
+    pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024;
+    pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
+    pub const DEFAULT_MAX_ROTATED_FILES: u64 = 7;
+    pub const MAX_RECORDS: u64 = 100_000;
+    pub const MAX_RECORD_BYTES: u64 = 64 * 1024;
+    pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+    pub const MAX_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
+    pub const MAX_ROTATED_FILES: u64 = 7;
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Management {
     pub bind: SocketAddr,
     #[serde(default)]
     pub ui_dir: Option<PathBuf>,
+    /// File that holds the bearer token for the management API. The token itself is never part
+    /// of the configuration. Omitted means `OXIROUTE_MANAGEMENT_TOKEN_FILE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

@@ -87,6 +87,7 @@ fn document_with_max_connections(max_connections: Option<u64>) -> ResolvedConfig
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
+        audit: None,
     })
 }
 
@@ -153,6 +154,7 @@ fn colliding_listener_document() -> ResolvedConfigDocument {
     config.management = Some(Management {
         bind: management,
         ui_dir: None,
+        token_file: None,
     });
     config.stats = Some(Stats {
         binds: vec![stats],

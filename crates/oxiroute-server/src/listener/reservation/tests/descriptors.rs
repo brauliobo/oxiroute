@@ -26,6 +26,7 @@ fn descriptor_export_is_canonical_typed_and_cloexec() {
     config.management = Some(oxiroute_config::Management {
         bind: management,
         ui_dir: None,
+        token_file: None,
     });
     config.stats = Some(oxiroute_config::Stats {
         binds: vec![stats],

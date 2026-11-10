@@ -118,6 +118,7 @@ pub(super) async fn missing_candidate_ui_assets_are_rejected_without_mutating_di
     candidate.management = Some(Management {
         bind: "127.0.0.1:9090".parse().unwrap(),
         ui_dir: Some(harness.config_path.with_file_name("missing-ui")),
+        token_file: None,
     });
     let request = serde_json::json!({ "config": candidate });
 

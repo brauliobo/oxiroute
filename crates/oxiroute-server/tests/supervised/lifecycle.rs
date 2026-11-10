@@ -243,6 +243,7 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
         management: Some(Management {
             bind: management,
             ui_dir: None,
+            token_file: None,
         }),
         registry: None,
         stats: Some(Stats {
@@ -266,6 +267,7 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
+        audit: None,
     };
     let path = directory.path().join("control-listeners.kdl");
     fs::write(
@@ -345,6 +347,7 @@ pub(super) fn supervised_control_listener_callback_failure_prevents_readiness() 
         management: Some(Management {
             bind: reserve_tcp_address(),
             ui_dir: None,
+            token_file: None,
         }),
         registry: None,
         stats: Some(Stats {
@@ -368,6 +371,7 @@ pub(super) fn supervised_control_listener_callback_failure_prevents_readiness() 
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
+        audit: None,
     };
     let path = directory.path().join("control-listener-failure.kdl");
     fs::write(

@@ -39,6 +39,7 @@ export type AccessLogConfig = { type: 'disabled' } | { type: 'file'; path: strin
 export interface ManagementConfig {
   bind: string
   ui_dir: string | null
+  token_file?: string
 }
 
 export interface StatsConfig {
@@ -1014,12 +1015,22 @@ export interface RetirementConfig {
   max_retired_generations: number
 }
 
+export interface AuditConfig {
+  dir?: string
+  max_records?: number
+  max_record_bytes?: number
+  max_file_bytes?: number
+  max_total_bytes?: number
+  max_rotated_files?: number
+}
+
 export interface CanonicalConfig {
   version: number
   max_connections: number | null
   listener_workers?: number
   retirement?: RetirementConfig
   management: ManagementConfig | null
+  audit?: AuditConfig
   registry?: RegistryConfig | null
   stats?: StatsConfig | null
   certificates: CertificateConfig[]
