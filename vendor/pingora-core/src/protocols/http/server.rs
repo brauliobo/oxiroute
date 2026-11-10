@@ -653,7 +653,7 @@ impl Session {
     /// stream reset reasons.
     ///
     /// See [`super::v2::server::HttpSession::shutdown_with_reason`] for available reasons.
-    pub fn shutdown_with_reason(&mut self, reason: h2::Reason) {
+    pub fn shutdown_with_reason(&mut self, reason: super::v2::server::Reason) {
         if let Self::H2(s) = self {
             s.shutdown_with_reason(reason);
         }

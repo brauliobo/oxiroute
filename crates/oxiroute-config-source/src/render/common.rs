@@ -16,6 +16,9 @@ impl Renderer {
             max_connections,
             listener_workers,
             http_fast_lane,
+            connection_scheduling,
+            connection_age_ms,
+            tls_handshake_threads,
             retirement,
             management,
             registry,
@@ -43,6 +46,15 @@ impl Renderer {
         }
         if let Some(enabled) = http_fast_lane {
             self.boolean_field("http_fast_lane", *enabled);
+        }
+        if let Some(scheduling) = connection_scheduling {
+            self.string_field("connection_scheduling", scheduling.as_str());
+        }
+        if let Some(age) = connection_age_ms {
+            self.integer_field("connection_age_ms", age);
+        }
+        if let Some(threads) = tls_handshake_threads {
+            self.integer_field("tls_handshake_threads", threads);
         }
         self.optional_table_field("retirement", retirement.as_ref(), Self::retirement);
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;

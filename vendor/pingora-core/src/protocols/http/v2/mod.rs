@@ -688,31 +688,37 @@ mod test {
             headers.set_end_stream();
             codec.send(headers.into()).await.unwrap();
 
-            // Drain frames from the server. Break once we've seen the
-            // response and at least one GOAWAY so the test doesn't race
-            // its own outer timeout while waiting on a quiet codec.
+            // Drain frames from the server, answering its PING like a real peer (the server waits one
+            // round trip between the two GOAWAY frames). Break once the closing GOAWAY names stream 1.
             let mut saw_response = false;
-            let mut saw_goaway = false;
+            let mut saw_final_goaway = false;
             let _ = pingora_timeout::timeout(Duration::from_secs(3), async {
                 while let Some(frame) = codec.next().await {
                     match frame {
                         Ok(h2::frame::Frame::Headers(h)) if h.stream_id() == 1 => {
                             saw_response = true;
                         }
-                        Ok(h2::frame::Frame::GoAway(_)) => {
-                            saw_goaway = true;
+                        Ok(h2::frame::Frame::Ping(ping)) if !ping.is_ack() => {
+                            let _ = codec
+                                .send(h2::frame::Ping::pong(*ping.payload()).into())
+                                .await;
+                        }
+                        Ok(h2::frame::Frame::GoAway(goaway))
+                            if u32::from(goaway.last_stream_id()) == 1 =>
+                        {
+                            saw_final_goaway = true;
                         }
                         Ok(_) => {}
                         Err(_) => break,
                     }
-                    if saw_response && saw_goaway {
+                    if saw_response && saw_final_goaway {
                         break;
                     }
                 }
             })
             .await;
             assert!(saw_response, "expected response for stream 1");
-            assert!(saw_goaway, "expected at least one GOAWAY frame");
+            assert!(saw_final_goaway, "expected the closing GOAWAY for stream 1");
 
             // Try to open stream 3 (above last_stream_id). The send may
             // succeed locally (duplex buffer) or fail (peer half closed);

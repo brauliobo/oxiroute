@@ -133,6 +133,9 @@ optional = true
 [dependencies.h2]
 version = ">=0.4.16"
 
+[dependencies.oxiroute-h2]
+path = "../../crates/oxiroute-h2"
+
 [dependencies.http]
 version = "1"
 

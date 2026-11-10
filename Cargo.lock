@@ -2800,6 +2800,7 @@ dependencies = [
  "notify",
  "openssl",
  "oxiroute-acme",
+ "oxiroute-aged-executor",
  "oxiroute-cache",
  "oxiroute-config",
  "oxiroute-config-source",
@@ -2853,6 +2854,15 @@ dependencies = [
  "time",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "oxiroute-aged-executor"
+version = "6.3.1"
+dependencies = [
+ "atomic-waker",
+ "slab",
+ "tokio",
 ]
 
 [[package]]
@@ -2924,6 +2934,17 @@ dependencies = [
  "http",
  "httparse",
  "pingora-http",
+]
+
+[[package]]
+name = "oxiroute-h2"
+version = "6.3.1"
+dependencies = [
+ "bytes",
+ "h2",
+ "http",
+ "log",
+ "tokio",
 ]
 
 [[package]]
@@ -3213,6 +3234,7 @@ dependencies = [
  "once_cell",
  "openssl-probe 0.1.6",
  "ouroboros",
+ "oxiroute-h2",
  "parking_lot 0.13.0",
  "percent-encoding",
  "pingora-boringssl",
@@ -3409,14 +3431,12 @@ dependencies = [
 [[package]]
 name = "pingora-runtime"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09d2c5be0a8fcffa36c23d21b3d6ec5bad113395086f5b4e1a0c50b300c674c0"
 dependencies = [
  "log",
  "once_cell",
+ "oxiroute-aged-executor",
  "rand 0.8.8",
  "serde",
- "thread_local",
  "tokio",
 ]
 

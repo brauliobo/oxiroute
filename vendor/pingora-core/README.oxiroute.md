@@ -166,6 +166,11 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   `request_facts()` (`RequestFacts::UNKNOWN` for HTTP/2 and HTTP/3, which makes the caller look the headers up) and
   `modules/http/mod.rs` `HttpModuleCtx::is_empty`. `protocols/http/v1/client.rs` `write_request_header_noted` writes a
   borrowed request with the facts the caller already has (`write_request_header_ref` computes them).
+  The facts also note whether a hop-by-hop field (`is_hop_by_hop`: `Keep-Alive`, `Proxy-Connection`, `Proxy-Authenticate`,
+  `Proxy-Authorization`, `TE`, `Trailer`) is present (`hop_by_hop`), decided once per header name in the header-name cache,
+  and `set_request_facts` (`ServerSession`, `HttpSession`; a no-op for sessions that answer `UNKNOWN`) records the facts of
+  a request whose headers the caller changed and whose resulting facts it knows, so the product strips the hop-by-hop
+  fields of a request once at its head and the session does not look the headers up again.
   `validate_content_length_facts` gives upstream's Content-Length verdicts (identical duplicates are accepted and
   reconciled, conflicting or invalid values refused) but skips the header lookup when the facts rule `Content-Length`
   out. `RequestHeader` and `ResponseHeader` have no `DerefMut` in 0.9, so the parsers fill a plain `HeaderMap` (with the
@@ -204,6 +209,15 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   no `pingora-rustls` dependency and no `rustls` feature (the crate is no longer vendored; a lint table keeps
   `cfg(feature = "rustls")` code warning-free), and without the `h1_pipelining` bench (its source is not published).
   `sfv` stays at `0.10` because later releases change the parser and integer APIs used by compression.
+- `services/listening.rs` spawns every accepted connection through `pingora_runtime::spawn_connection`, which on a
+  non-stealing runtime picks the worker with the fewest open connections (the vendored `pingora-runtime`, see its
+  README). `listeners/mod.rs` records the runtime that accepted a connection and, when the connection task starts on
+  another runtime, `protocols/l4/stream.rs` `set_buffer(buffer, own_driver)` moves the socket to the I/O driver of the runtime
+  that serves it (`into_std` then `from_std`: one `epoll_ctl` DELETE and one ADD), so its readiness events are
+  delivered on the serving thread and not forwarded from the accepting one.
+- `server/configuration/mod.rs` adds `ServerConf::connection_age_ms`, passed to the runtime through
+  `RuntimeOpts::connection_age`; with `work_stealing` off and the age set, the workers of the service runtime serve their
+  connections newest first and the oldest after that age (the vendored `pingora-runtime`, see its README).
 
 - Tests: the unit tests no longer depend on the Internet, fixed ports, a stored key pair or host sysctls. `connectors/test_servers.rs`
   provides loopback servers that own a kernel-assigned port (HTTP redirect, TLS with HTTP/1.1 or HTTP/2, a refused address, a
@@ -221,7 +235,22 @@ response facts, noted request write, inline request loop, zero-copy request body
 `try_read_response_task`, connector hook, admission guard and handshake-timeout hook, rendered response write, inline
 Date and Connection lines, header map headroom, single-clock timeouts, the parked idle wait (`apps/idle_wait.rs`), the pooled request future (`apps/pooled_future.rs`), the pooled coalescing write buffer, owned-preread, borrowed-request-write,
 parsed-header ownership, response-task batch, lazy read buffer and coalescing writer, pooled gzip state, header-name
-cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`.
+cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, the per-worker connection placement (`set_buffer(own_driver)`) and
+`ServerConf::connection_age_ms`.
 Every upstream H1 correctness fix whose code our forks replace (`idle.rs`, `proxy_h1_inline.rs` in `pingora-proxy`,
 the inline relay) must be re-derived by hand. Then run `scripts/test-vendored.sh`, the OxiRoute TLS and HTTP wire
 tests and strict clippy.
+- `protocols/http/v2/server.rs` serves downstream HTTP/2 with the in-tree `oxiroute-h2` server (`crates/oxiroute-h2`) instead
+  of `h2::server`. `H2Options` is now `oxiroute_h2::server::Config` and `Reason` is `oxiroute_h2::Reason`; `handshake`,
+  `HttpSession` and its methods keep their signatures. The session holds an `oxiroute_h2::server::Stream` (no
+  `SendResponse`/`SendStream`/`RecvStream`); response bodies wait for send-window capacity with `poll_capacity` and
+  `send_data`; `poll_read_body_bytes` and `take_response_body_writer` (unused by OxiRoute) are removed. A request whose
+  stream the peer reset before it was accepted is not delivered, and an empty request DATA frame carrying
+  END_STREAM ends the body without yielding an empty chunk. `Cargo.toml` gains a path dependency on `oxiroute-h2`.
+  The `h2` crate stays for the upstream client and as the differential-test reference. `apps/mod.rs` is unchanged: the
+  connection loop (`graceful_shutdown`, `accept`) is the same, and `apps/h2_shutdown_tests.rs` passes. The 0.9.1 acceptance
+  checks (request target bytes, Content-Length framing, authority, the malformed-stream budget, idle timeout) stay in
+  `HttpSession` on top of the new session. `Session::shutdown_with_reason` takes `oxiroute_h2::Reason`. The two
+  graceful-shutdown/authority unit tests that relied on `h2` behaviour were adapted: the client answers the server's
+  PING before the closing GOAWAY is expected, and a request reset before it was handed out never reaches the
+  application.

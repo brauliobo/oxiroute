@@ -404,11 +404,15 @@ fn serve_generation(
         None
     };
 
+    let aged_per_worker = aged_per_worker(config);
     let server_config = ServerConf {
         max_retries: MAX_HTTP_ATTEMPTS,
         grace_period_seconds: Some(0),
         graceful_shutdown_timeout_seconds: Some(0),
         upstream_keepalive_pool_size: UPSTREAM_IDLE_CONNECTIONS,
+        work_stealing: !aged_per_worker,
+        aged_connections: aged_per_worker,
+        connection_age_ms: config.connection_age_ms,
         ..ServerConf::default()
     };
     let mut server = Server::new_with_opt_and_conf(None, server_config)?;
@@ -418,6 +422,7 @@ fn serve_generation(
     });
 
     let workers = listener_workers(config);
+    let handshake_threads = tls_handshake_threads(config);
     let plan = generation.plan();
     let services = generation.services().to_vec();
     let health_supervisor = generation.health_supervisor();
@@ -591,6 +596,7 @@ fn serve_generation(
                     &listener_name,
                     &listener_bind,
                     listener_tls.as_deref(),
+                    handshake_threads,
                 )?;
                 server.add_service(
                     RuntimeListenerService::new(service, reservation, Some(metrics))
@@ -618,6 +624,7 @@ fn serve_generation(
                     &listener_name,
                     &listener_bind,
                     listener_tls.as_deref(),
+                    handshake_threads,
                 )?;
                 server.add_service(
                     RuntimeListenerService::new(service, reservation, Some(metrics))
@@ -656,6 +663,7 @@ fn serve_generation(
                     &listener_name,
                     &listener_bind,
                     listener_tls.as_deref(),
+                    handshake_threads,
                 )?;
                 server.add_service(
                     RuntimeListenerService::new(service, reservation, Some(metrics))

@@ -6,7 +6,7 @@
 set -euo pipefail
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-all=(core http proxy load-balancing timeout)
+all=(core http proxy load-balancing runtime timeout)
 declare -A openssl_features=([core]=openssl,connection_filter [proxy]=openssl [load-balancing]=openssl)
 
 crates=()

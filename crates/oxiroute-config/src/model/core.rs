@@ -17,6 +17,19 @@ pub struct ConfigDraft {
     /// Omitted means on; `false` sends every request through the classic path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_fast_lane: Option<bool>,
+    /// How each listener worker orders the connections that are ready: `work_stealing` (the default) shares them
+    /// between the workers of a listener; `aged_per_worker` gives every worker its own queue, served newest first
+    /// and oldest first once a connection has waited `connection_age_ms`, by default a few passes over the ready connections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_scheduling: Option<ConnectionScheduling>,
+    /// Longest a ready connection waits behind newer ones with `aged_per_worker`. Omitted means a multiple of the time one
+    /// pass over the worker's ready connections takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_age_ms: Option<u64>,
+    /// Threads that run the TLS handshakes of every TLS listener, away from the workers that serve connections.
+    /// Omitted means one thread per 8 CPUs (1 to 4); `0` handshakes on the workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_handshake_threads: Option<u64>,
     /// Bounds on how long and how many replaced generations keep serving their in-flight work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<Retirement>,
@@ -48,11 +61,45 @@ pub struct ConfigDraft {
 
 impl ConfigDraft {
     pub const MAX_LISTENER_WORKERS: u64 = 256;
+    pub const MAX_CONNECTION_AGE_MS: u64 = 1_000;
+    pub const MAX_TLS_HANDSHAKE_THREADS: u64 = 64;
 
     /// Whether the HTTP/1.1 fast lane serves the requests it can: on unless `http_fast_lane` says `false`.
     #[must_use]
     pub fn fast_lane_enabled(&self) -> bool {
         self.http_fast_lane.unwrap_or(true)
+    }
+
+    /// The handshake threads for a host with `cpus` CPUs: the configured count, or one per 8 CPUs between 1 and 4.
+    #[must_use]
+    pub fn effective_tls_handshake_threads(&self, cpus: usize) -> usize {
+        self.tls_handshake_threads.map_or_else(
+            || cpus.div_ceil(8).clamp(1, 4),
+            |threads| usize::try_from(threads).unwrap_or(usize::MAX),
+        )
+    }
+
+    /// Whether the workers of a listener serve per-worker queues.
+    #[must_use]
+    pub fn aged_per_worker(&self) -> bool {
+        self.connection_scheduling == Some(ConnectionScheduling::AgedPerWorker)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionScheduling {
+    WorkStealing,
+    AgedPerWorker,
+}
+
+impl ConnectionScheduling {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkStealing => "work_stealing",
+            Self::AgedPerWorker => "aged_per_worker",
+        }
     }
 }
 

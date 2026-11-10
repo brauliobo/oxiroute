@@ -2239,10 +2239,12 @@ dependencies = [
  "notify",
  "openssl",
  "oxiroute-acme",
+ "oxiroute-aged-executor",
  "oxiroute-cache",
  "oxiroute-config",
  "oxiroute-config-source",
  "oxiroute-forward-proxy",
+ "oxiroute-h1-head",
  "oxiroute-import",
  "oxiroute-rtmp",
  "oxiroute-supervision",
@@ -2286,6 +2288,15 @@ dependencies = [
  "time",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "oxiroute-aged-executor"
+version = "6.3.1"
+dependencies = [
+ "atomic-waker",
+ "slab",
+ "tokio",
 ]
 
 [[package]]
@@ -2343,6 +2354,7 @@ name = "oxiroute-fuzz"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "http",
  "httparse",
  "libfuzzer-sys",
  "oxiroute",
@@ -2350,6 +2362,7 @@ dependencies = [
  "oxiroute-config-source",
  "oxiroute-forward-proxy",
  "oxiroute-h1-head",
+ "oxiroute-h2",
  "oxiroute-import",
  "oxiroute-rtmp",
  "pingora-core",
@@ -2361,7 +2374,17 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-h1-head"
-version = "6.3.0"
+version = "6.3.1"
+
+[[package]]
+name = "oxiroute-h2"
+version = "6.3.1"
+dependencies = [
+ "bytes",
+ "http",
+ "log",
+ "tokio",
+]
 
 [[package]]
 name = "oxiroute-import"
@@ -2613,6 +2636,7 @@ dependencies = [
  "nix",
  "once_cell",
  "openssl-probe 0.1.6",
+ "oxiroute-h2",
  "parking_lot 0.13.0",
  "percent-encoding",
  "pingora-error",
@@ -2767,14 +2791,12 @@ dependencies = [
 [[package]]
 name = "pingora-runtime"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09d2c5be0a8fcffa36c23d21b3d6ec5bad113395086f5b4e1a0c50b300c674c0"
 dependencies = [
  "log",
  "once_cell",
+ "oxiroute-aged-executor",
  "rand 0.8.8",
  "serde",
- "thread_local",
  "tokio",
 ]
 

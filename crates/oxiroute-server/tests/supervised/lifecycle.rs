@@ -230,6 +230,7 @@ pub(super) fn supervised_worker_adopts_udp_and_reports_datagram_status() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_counters_once() {
     let directory = tempfile::tempdir().expect("control listener fixture directory");
     let management = reserve_tcp_address();
@@ -238,6 +239,9 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
     let config = ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -341,6 +345,9 @@ pub(super) fn supervised_control_listener_callback_failure_prevents_readiness() 
     let config = ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         version: 1,
         max_connections: None,

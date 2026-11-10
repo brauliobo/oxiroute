@@ -6,6 +6,7 @@
 //! `--hook-stop` run to completion before and after the measured phase), never by timers.
 
 mod load;
+mod storm;
 mod upstream;
 
 use std::{collections::HashMap, process::ExitCode};
@@ -43,8 +44,9 @@ fn main() -> ExitCode {
     match command.as_str() {
         "upstream" => upstream::run(&flags),
         "load" => return load::run(&flags),
+        "storm" => return storm::run(&flags),
         _ => {
-            eprintln!("usage: r2tool upstream|load [--flag value]...");
+            eprintln!("usage: r2tool upstream|load|storm [--flag value]...");
             return ExitCode::from(2);
         }
     }

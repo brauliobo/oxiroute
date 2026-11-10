@@ -291,6 +291,25 @@ Current constraints:
   affinity, TLS upstreams, gzip, access logs, pipelining, unusual heads) takes the classic path either way. Changing the
   value is an ordinary reload: the lane belongs to the generation, new connections of the new generation use the new
   setting and connections of the replaced generation finish as they were accepted.
+- Root `tls_handshake_threads` is an optional integer (0 to 64) that sets how many threads run the TLS handshakes of
+  every TLS listener. Omitted means one thread per 8 CPUs, at least 1 and at most 4. The accepted socket's whole server
+  handshake (key exchange, certificate selection, ALPN and client-certificate verification, signature) runs on these
+  threads and the established connection returns to its listener worker, so a burst of new connections no longer delays
+  the connections a worker is already serving. `0` runs the handshakes on the listener workers. The threads belong to the
+  generation: changing the value is an ordinary reload, new connections of the new generation use the new count and the
+  replaced generation finishes its handshakes on its own threads (as with `listener_workers`). The count does not bound how
+  many handshakes wait: `max_connections` and the handshake timeout do. It does not change certificate selection,
+  protocols, ciphers or session resumption.
+- Root `connection_scheduling` is optional: `work_stealing` (the default) lets the workers of a listener
+  share their ready connections; `aged_per_worker` gives every worker its own queue and its own I/O driver, places
+  each new connection on the worker with the fewest open connections, and serves the newest ready connection first
+  and the oldest first once it has waited `connection_age_ms` (1 to 1000, default 40, only valid with
+  `aged_per_worker`). It keeps a connection's data hot in the core's caches, which lifts the request rate with
+  hundreds to thousands of busy keep-alive connections per worker, and no ready connection waits for more than about
+  the age plus the time to serve the connections already older than it. It changes only the order in which ready
+  connections are served: parsing, admission, limits, drain, retirement and evacuation are the same. A slow handler
+  delays every connection of its worker, which work stealing hides. HTTP/2 stream tasks keep Tokio's order.
+  Changing it is an ordinary reload. See `docs/developer/PERF_6_4_CORE_MODEL.md`.
 - `retirement` is optional and bounds how a replaced generation drains: `drain_deadline_ms`
   (1000 to 86400000) is how long its in-flight work may continue after its accept gate closes,
   and `max_retired_generations` (1 to 16, default 4) is how many replaced generations may drain at

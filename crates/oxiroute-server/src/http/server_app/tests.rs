@@ -164,6 +164,9 @@ fn generation() -> Arc<RuntimeGeneration> {
     let config = ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         version: 1,
         max_connections: None,
