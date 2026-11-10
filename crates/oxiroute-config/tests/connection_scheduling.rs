@@ -17,6 +17,7 @@ fn connection_scheduling_is_absent_by_default_and_stays_out_of_the_canonical_for
     let config = validate(&json!({})).unwrap();
 
     assert_eq!(config.as_draft().connection_scheduling, None);
+    assert!(!config.as_draft().aged_per_worker());
     assert_eq!(config.as_draft().connection_age_ms, None);
     let canonical = serde_json::to_value(&config).unwrap();
     assert!(canonical.get("connection_scheduling").is_none());
@@ -24,15 +25,16 @@ fn connection_scheduling_is_absent_by_default_and_stays_out_of_the_canonical_for
 }
 
 #[test]
-fn the_aged_per_worker_mode_takes_the_default_age_or_a_configured_one() {
+fn the_aged_per_worker_mode_adapts_its_age_or_takes_a_configured_one() {
     let config = validate(&json!({"connection_scheduling": "aged_per_worker"})).unwrap();
     assert_eq!(
         config.as_draft().connection_scheduling,
         Some(ConnectionScheduling::AgedPerWorker)
     );
     assert_eq!(
-        config.as_draft().effective_connection_age_ms(),
-        Some(ConfigDraft::DEFAULT_CONNECTION_AGE_MS)
+        config.as_draft().connection_age_ms,
+        None,
+        "without an age the queues use the adaptive one"
     );
 
     for age in [1, 100, ConfigDraft::MAX_CONNECTION_AGE_MS] {
@@ -41,20 +43,15 @@ fn the_aged_per_worker_mode_takes_the_default_age_or_a_configured_one() {
             "connection_age_ms": age,
         }))
         .unwrap();
-        assert_eq!(config.as_draft().effective_connection_age_ms(), Some(age));
+        assert!(config.as_draft().aged_per_worker());
+        assert_eq!(config.as_draft().connection_age_ms, Some(age));
     }
 }
 
 #[test]
 fn work_stealing_has_no_age() {
     for scheduling in [json!({}), json!({"connection_scheduling": "work_stealing"})] {
-        assert_eq!(
-            validate(&scheduling)
-                .unwrap()
-                .as_draft()
-                .effective_connection_age_ms(),
-            None
-        );
+        assert!(!validate(&scheduling).unwrap().as_draft().aged_per_worker());
     }
 }
 

@@ -211,7 +211,7 @@ of the events API reports it with the event name `unknown`; read it from `/api/v
 | `oxiroute_server_max_connections` | `pool`, `server` | effective connection limit |
 | `oxiroute_generation_info` | `generation`, `revision` | value 1 for the serving generation |
 | `oxiroute_connection_scheduling_info` | `mode`, `age_ms` (only with `aged_per_worker`) | value 1: how the listener workers order ready connections (`connection_scheduling`) |
-| `oxiroute_aged_queue_tasks`, `oxiroute_aged_queue_ready`, `oxiroute_aged_queue_oldest_ready_seconds`, `oxiroute_aged_queue_polls_total`, `oxiroute_aged_queue_aged_polls_total` | none | only with `aged_per_worker`: connections owned by the worker queues, connections ready now, how long the oldest has waited, polls served, and polls that served the oldest because it had waited `age_ms` |
+| `oxiroute_aged_queue_tasks`, `oxiroute_aged_queue_ready`, `oxiroute_aged_queue_oldest_ready_seconds`, `oxiroute_aged_queue_age_seconds`, `oxiroute_aged_queue_polls_total`, `oxiroute_aged_queue_aged_polls_total` | none | only with `aged_per_worker`: connections owned by the worker queues, connections ready now, how long the oldest has waited, the age in force (the largest over the workers), polls served, and polls that served the oldest because it had waited that age; `age_ms` is `adaptive` unless `connection_age_ms` is set |
 
 The per-server histograms are exported only while at most 256 servers are configured; above that
 only the counters are. Labels are limited to configured names, never a path, client or request id.

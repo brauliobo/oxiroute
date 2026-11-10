@@ -627,10 +627,22 @@ fn scheduling_series_name_the_mode_and_the_age_and_only_the_aged_mode_reports_it
     assert!(aged.contains(
         "oxiroute_connection_scheduling_info{mode=\"aged_per_worker\",age_ms=\"25\"} 1\n"
     ));
+    let adaptive = serde_json::from_value::<oxiroute_config::ConfigDraft>(serde_json::json!({
+        "version": 1,
+        "listeners": [],
+        "connection_scheduling": "aged_per_worker",
+    }))
+    .unwrap();
+    let mut output = String::new();
+    render_connection_scheduling(&mut output, Some(&adaptive)).unwrap();
+    assert!(output.contains(
+        "oxiroute_connection_scheduling_info{mode=\"aged_per_worker\",age_ms=\"adaptive\"} 1\n"
+    ));
     for series in [
         "oxiroute_aged_queue_tasks ",
         "oxiroute_aged_queue_ready ",
         "oxiroute_aged_queue_oldest_ready_seconds ",
+        "oxiroute_aged_queue_age_seconds ",
         "oxiroute_aged_queue_polls_total ",
         "oxiroute_aged_queue_aged_polls_total ",
     ] {

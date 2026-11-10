@@ -31,6 +31,14 @@ pub enum Age {
 }
 
 impl Age {
+    /// Passes over the ready tasks an adaptive age lasts by default.
+    pub const DEFAULT_PASSES: f64 = 4.0;
+
+    #[must_use]
+    pub fn adaptive() -> Self {
+        Self::Adaptive(Self::DEFAULT_PASSES)
+    }
+
     pub const MIN: Duration = Duration::from_millis(1);
     pub const MAX: Duration = Duration::from_secs(1);
 }
