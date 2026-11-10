@@ -243,7 +243,7 @@ impl HttpSession {
     /// After the request header is sent, the caller can either start reading the response or
     /// sending request body if any.
     pub async fn write_request_header_ref(&mut self, req: &RequestHeader) -> Result<usize> {
-        self.write_request_header_noted(req, RequestFacts::of(&req.headers))
+        self.write_request_header_noted(req, RequestFacts::of_framing(&req.headers))
             .await
     }
 

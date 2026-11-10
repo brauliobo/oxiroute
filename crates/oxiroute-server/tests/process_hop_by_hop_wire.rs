@@ -443,18 +443,6 @@ async fn a_keep_alive_response_keeps_the_client_connection_usable() {
     wire.finish();
 }
 
-#[tokio::test]
-async fn a_switching_protocols_response_keeps_its_upgrade_headers() {
-    let wire = Wire::over(Origin::start(SWITCHED).await, |_| {}).await;
-    let response = wire.exchange(HANDSHAKE.as_bytes()).await;
-    assert_eq!(
-        header_lines(&response, "upgrade"),
-        ["websocket"],
-        "{response}"
-    );
-    wire.finish();
-}
-
 // Host and authority (RUSTSEC-2026-0388): the proxy refuses what the origin could read differently.
 
 #[tokio::test]

@@ -19,10 +19,6 @@ if [[ -n "${1:-}" && "${1}" != -* ]]; then
 else
   mkdir -p -- "${source_dir}"
   archive="${source_dir}/${archive_name}"
-  source_date_epoch=${SOURCE_DATE_EPOCH:-$(
-    git -C "${repo_dir}" log -1 --format=%ct HEAD -- . ':(exclude)packaging/arch'
-  )}
-  export SOURCE_DATE_EPOCH=${source_date_epoch}
   "${repo_dir}/scripts/create-release-archive.sh" "${archive}" "${pkgver}"
 fi
 
