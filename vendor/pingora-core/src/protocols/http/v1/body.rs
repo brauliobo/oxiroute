@@ -25,7 +25,6 @@ use std::pin::{pin, Pin};
 use std::task::{ready, Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::protocols::l4::stream::AsyncWriteVec;
 use crate::utils::chunk_pool::{self, CHUNK_BYTES};
 use crate::utils::BufRef;
 
@@ -335,6 +334,7 @@ impl BodyReader {
         self.body_state = PS::Partial(0, cl);
     }
 
+    #[cfg(test)]
     pub fn init_close_delimited(&mut self, buf_to_rewind: &[u8]) {
         self.owned_preread = None;
         self.prepare_buf(buf_to_rewind);
@@ -1526,7 +1526,7 @@ impl BodyWriter {
                 let (head, head_len) = chunk_size_line(chunk_size);
                 let mut output_buf = Buf::chain(&head[..head_len], buf).chain(&b"\r\n"[..]);
                 stream
-                    .write_vec_all(&mut output_buf)
+                    .write_all_buf(&mut output_buf)
                     .await
                     .or_err(WriteError, "while writing body")?;
                 stream.flush().await.or_err(WriteError, "flushing body")?;

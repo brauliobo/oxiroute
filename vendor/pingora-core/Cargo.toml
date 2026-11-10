@@ -91,11 +91,6 @@ path = "examples/client_cert.rs"
 name = "service_dependencies"
 path = "examples/service_dependencies.rs"
 
-[[bench]]
-name = "h1_pipelining"
-path = "benches/h1_pipelining.rs"
-harness = false
-
 [dependencies.ahash]
 version = ">=0.8.9"
 

@@ -63,7 +63,7 @@ pub struct ServiceReadyNotifier {
     sender: watch::Sender<bool>,
     notify_on_drop: bool,
     notified: bool,
-    ready_callback: Option<Box<dyn FnOnce() + Send + 'static>>,
+    ready_callback: Option<Box<dyn FnOnce() + Send + Sync + 'static>>,
 }
 
 impl Drop for ServiceReadyNotifier {
@@ -98,7 +98,7 @@ impl ServiceReadyNotifier {
 
     /// Runs `callback` immediately before explicit readiness is published.
     #[must_use]
-    pub fn with_ready_callback(mut self, callback: impl FnOnce() + Send + 'static) -> Self {
+    pub fn with_ready_callback(mut self, callback: impl FnOnce() + Send + Sync + 'static) -> Self {
         self.ready_callback = Some(Box::new(callback));
         self
     }
