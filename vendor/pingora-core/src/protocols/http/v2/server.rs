@@ -16,18 +16,16 @@
 
 use bytes::Bytes;
 use futures::Future;
-use h2::server;
-use h2::server::SendResponse;
-use h2::{RecvStream, SendStream};
 use http::header::HeaderName;
 use http::uri::PathAndQuery;
-use http::{header, HeaderMap, Response};
+use http::{header, HeaderMap};
 use log::{debug, warn};
+pub use oxiroute_h2::{server::Config as H2Options, Reason};
+use oxiroute_h2::server::{Server, Stream as H2Stream};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_timeout::timeout;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::task::ready;
 use std::time::Duration;
 
 use crate::protocols::http::body_buffer::FixedBuffer;
@@ -39,9 +37,8 @@ use crate::{Error, ErrorType, OrErr, Result};
 
 const BODY_BUF_LIMIT: usize = 1024 * 64;
 
-type H2Connection<S> = server::Connection<S, Bytes>;
+type H2Connection<S> = Server<S>;
 
-pub use h2::server::Builder as H2Options;
 
 // 64 KiB decoded header-list limit.
 const DEFAULT_MAX_HEADER_LIST_SIZE: u32 = 64 * 1024;
@@ -68,7 +65,7 @@ pub fn default_h2_options() -> H2Options {
 /// used. See [`H2Options`] for more details.
 pub async fn handshake(io: Stream, options: Option<H2Options>) -> Result<H2Connection<Stream>> {
     let options = options.unwrap_or_else(default_h2_options);
-    let res = options.handshake(io).await;
+    let res = Server::handshake(io, options).await;
 
     match res {
         Ok(connection) => {
@@ -83,6 +80,46 @@ pub async fn handshake(io: Stream, options: Option<H2Options>) -> Result<H2Conne
     }
 }
 
+/// Writes `data` as response body of `stream`, waiting for send-window capacity as often as needed. Every wait
+/// is bounded by `write_timeout`.
+async fn write_body(
+    stream: &mut H2Stream,
+    mut data: Bytes,
+    end: bool,
+    write_timeout: Option<Duration>,
+) -> Result<()> {
+    // Cannot poll 0 capacity, so send it directly.
+    if data.is_empty() {
+        return stream
+            .send_data(data, end)
+            .or_err(ErrorType::WriteError, "while writing h2 response body");
+    }
+    while !data.is_empty() {
+        let step = reserve_and_send(stream, &mut data, end);
+        match write_timeout {
+            Some(t) => timeout(t, step).await.or_else(|_| {
+                Error::e_explain(
+                    ErrorType::WriteTimedout,
+                    format!("while writing h2 response body, timeout: {t:?}"),
+                )
+            })??,
+            None => step.await?,
+        }
+    }
+    Ok(())
+}
+
+async fn reserve_and_send(stream: &mut H2Stream, data: &mut Bytes, end: bool) -> Result<()> {
+    let want = data.len();
+    let granted = std::future::poll_fn(|cx| stream.poll_capacity(cx, want))
+        .await
+        .or_err(ErrorType::H2Error, "while waiting for capacity")?;
+    let chunk = data.split_to(granted.min(want));
+    stream
+        .send_data(chunk, data.is_empty() && end)
+        .or_err(ErrorType::WriteError, "while writing h2 response body")
+}
+
 use futures::task::Context;
 use futures::task::Poll;
 use std::pin::Pin;
@@ -92,26 +129,22 @@ use std::pin::Pin;
 pub struct Idle<'a>(&'a mut HttpSession);
 
 impl Future for Idle<'_> {
-    type Output = Result<h2::Reason>;
+    type Output = Result<Reason>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(body_writer) = self.0.send_response_body.as_mut() {
-            body_writer.poll_reset(cx)
-        } else {
-            self.0.send_response.poll_reset(cx)
-        }
-        .map_err(|e| Error::because(ErrorType::H2Error, "downstream error while idling", e))
+        self.0
+            .stream
+            .poll_reset(cx)
+            .map_err(|e| Error::because(ErrorType::H2Error, "downstream error while idling", e))
     }
 }
 
 /// HTTP/2 server session
 pub struct HttpSession {
     request_header: RequestHeader,
-    request_body_reader: RecvStream,
-    // The end of the request stream, once seen: asking `RecvStream` takes the connection's stream lock.
+    stream: H2Stream,
+    // The end of the request stream, once seen: asking the stream takes the connection lock.
     request_ended: AtomicBool,
-    send_response: SendResponse<Bytes>,
-    send_response_body: Option<SendStream<Bytes>>,
     // Remember what has been written
     response_written: Option<Box<ResponseHeader>>,
     // Indicate that whether a END_STREAM is already sent
@@ -160,14 +193,11 @@ impl HttpSession {
             "while accepting new downstream requests",
         )?;
 
-        Ok(res.map(|(req, send_response)| {
-            let (request_header, request_body_reader) = req.into_parts();
+        Ok(res.map(|(request_header, stream)| {
             HttpSession {
                 request_header: request_header.into(),
-                request_body_reader,
+                stream,
                 request_ended: AtomicBool::new(false),
-                send_response,
-                send_response_body: None,
                 response_written: None,
                 ended: false,
                 body_read: 0,
@@ -215,42 +245,22 @@ impl HttpSession {
     }
 
     async fn read_body_bytes_inner(&mut self) -> Result<Option<Bytes>> {
-        let data = self.request_body_reader.data().await.transpose().or_err(
-            ErrorType::ReadError,
-            "while reading downstream request body",
-        )?;
+        let stream = &mut self.stream;
+        let data = std::future::poll_fn(|cx| stream.poll_data(cx))
+            .await
+            .transpose()
+            .or_err(
+                ErrorType::ReadError,
+                "while reading downstream request body",
+            )?;
         if let Some(data) = data.as_ref() {
             self.body_read += data.len();
             if let Some(buffer) = self.retry_buffer.as_mut() {
                 buffer.write_to_buffer(data);
             }
-            let _ = self
-                .request_body_reader
-                .flow_control()
-                .release_capacity(data.len());
+            self.stream.release_capacity(data.len());
         }
         Ok(data)
-    }
-
-    #[doc(hidden)]
-    pub fn poll_read_body_bytes(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Bytes, h2::Error>>> {
-        let data = match ready!(self.request_body_reader.poll_data(cx)).transpose() {
-            Ok(data) => data,
-            Err(err) => return Poll::Ready(Some(Err(err))),
-        };
-
-        if let Some(data) = data {
-            self.body_read += data.len();
-            self.request_body_reader
-                .flow_control()
-                .release_capacity(data.len())?;
-            return Poll::Ready(Some(Ok(data)));
-        }
-
-        Poll::Ready(None)
     }
 
     async fn do_drain_request_body(&mut self) -> Result<()> {
@@ -359,17 +369,15 @@ impl HttpSession {
         header.remove_header(&PROXY_CONNECTION);
 
         // The frame takes the headers: `response_written` keeps the status, not a second copy of the map.
-        let mut resp = Response::new(());
-        *resp.status_mut() = header.status;
-        *resp.headers_mut() = std::mem::take(&mut header.headers);
-
-        let body_writer = self.send_response.send_response(resp, end).or_err(
-            ErrorType::WriteError,
-            "while writing h2 response to downstream",
-        )?;
+        let headers = std::mem::take(&mut header.headers);
+        self.stream
+            .send_response(header.status, headers, end)
+            .or_err(
+                ErrorType::WriteError,
+                "while writing h2 response to downstream",
+            )?;
 
         self.response_written = Some(header);
-        self.send_response_body = Some(body_writer);
         self.ended = self.ended || end;
         Ok(())
     }
@@ -395,14 +403,14 @@ impl HttpSession {
             warn!("Try to write body after end of stream, dropping the extra data");
             return Ok(());
         }
-        let Some(writer) = self.send_response_body.as_mut() else {
+        if self.response_written.is_none() {
             return Err(Error::explain(
                 ErrorType::H2Error,
                 "try to send body before header is sent",
             ));
-        };
+        }
         let data_len = data.len();
-        super::write_body(writer, data, end, self.write_timeout)
+        write_body(&mut self.stream, data, end, self.write_timeout)
             .await
             .map_err(|e| e.into_down())?;
         self.body_sent += data_len;
@@ -416,13 +424,13 @@ impl HttpSession {
             warn!("Tried to write trailers after end of stream, dropping them");
             return Ok(());
         }
-        let Some(writer) = self.send_response_body.as_mut() else {
+        if self.response_written.is_none() {
             return Err(Error::explain(
                 ErrorType::H2Error,
                 "try to send trailers before header is sent",
             ));
-        };
-        writer.send_trailers(trailers).or_err(
+        }
+        self.stream.send_trailers(trailers).or_err(
             ErrorType::WriteError,
             "while writing h2 response trailers to downstream",
         )?;
@@ -448,9 +456,9 @@ impl HttpSession {
             // already ended the stream
             return Ok(());
         }
-        if let Some(writer) = self.send_response_body.as_mut() {
+        if self.response_written.is_some() {
             // use an empty data frame to signal the end
-            writer.send_data("".into(), true).or_err(
+            self.stream.send_data(Bytes::new(), true).or_err(
                 ErrorType::WriteError,
                 "while writing h2 response body to downstream",
             )?;
@@ -539,19 +547,14 @@ impl HttpSession {
     ///
     /// This will send a `INTERNAL_ERROR` stream error to the client
     pub fn shutdown(&mut self) {
-        self.reset(h2::Reason::INTERNAL_ERROR);
+        self.reset(Reason::INTERNAL_ERROR);
     }
 
     /// End this stream with an explicit HTTP/2 reset reason.
-    pub fn reset(&mut self, reason: h2::Reason) {
+    pub fn reset(&mut self, reason: Reason) {
         if !self.ended {
-            self.send_response.send_reset(reason);
+            self.stream.send_reset(reason);
         }
-    }
-
-    #[doc(hidden)]
-    pub fn take_response_body_writer(&mut self) -> Option<SendStream<Bytes>> {
-        self.send_response_body.take()
     }
 
     // This is a hack for pingora-proxy to create subrequests from h2 server session
@@ -572,7 +575,7 @@ impl HttpSession {
         if self.request_ended.load(Ordering::Relaxed) {
             return true;
         }
-        let ended = self.request_body_reader.is_end_stream();
+        let ended = self.stream.is_end_stream();
         self.request_ended.store(ended, Ordering::Relaxed);
         ended
     }
@@ -794,7 +797,7 @@ mod test {
             tokio::select! {
                 result = &mut client => result.unwrap(),
                 accepted = connection.accept() => {
-                    assert!(accepted.is_none(), "unexpected second request: {accepted:?}");
+                    assert!(accepted.is_none(), "unexpected second request");
                     client.await.unwrap();
                 },
             }
@@ -1086,9 +1089,8 @@ mod test {
                 http.write_body(server_body.into(), true).await.unwrap();
                 assert_eq!(http.body_bytes_sent(), 16);
 
-                // 3. Wait for the empty request DATA frame carrying EOS.
-                let body = http.read_body_or_idle(false).await.unwrap().unwrap();
-                assert!(body.is_empty());
+                // 3. Wait for the empty request DATA frame carrying EOS: the body just ends.
+                assert!(http.read_body_or_idle(false).await.unwrap().is_none());
                 assert!(http.is_body_done());
                 assert_eq!(http.body_bytes_read(), 0);
             }));

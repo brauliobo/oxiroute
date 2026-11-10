@@ -3117,6 +3117,7 @@ dependencies = [
  "once_cell",
  "openssl-probe 0.1.6",
  "ouroboros",
+ "oxiroute-h2",
  "parking_lot 0.13.0",
  "percent-encoding",
  "pingora-boringssl",
