@@ -29,6 +29,15 @@ OxiRoute 6.3.1 is a security fix for the HTTP reverse proxy: hop-by-hop fields o
   refused by the proxy with 400 for HTTP/1 and HTTP/2; two new tests pin it. The audit still lists it until the
   vendored Pingora is rebased.
 
+## Cost
+
+User-space instructions per request (`benchmarks/r2-data-path`, same host, 6.3.0 and the fix built the same way, three
+runs each, the spread of a run is 0.2% to 1.5%): HTTP/1.1 proxied 1 KiB over a keep-alive connection (the harness
+client sends `Connection: keep-alive`) 42,120 and 42,060 (no change: the origin no longer gets the header, which pays
+for the check); HTTP/2 over TLS 1 KiB 68,470 and 68,710 (no change within the noise); a new connection per request
+(`Connection: close`) 54,800 and 55,240 (+0.8%); WebSocket echo 12,044 and 12,052. A request without any hop-by-hop
+field costs one flag test; the HTTP/1 parser notes the fields while it appends the headers.
+
 ## Behaviour changes to know before upgrading
 
 - A request whose `Connection` header names `Content-Length`, `Transfer-Encoding` or `Host`, or contains an option
