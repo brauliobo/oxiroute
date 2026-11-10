@@ -62,3 +62,80 @@ pub fn wire(mut request: ClassicRequest, edits: &[OwnedEdit]) -> Vec<u8> {
     out.extend_from_slice(b"\r\n");
     out
 }
+
+/// `titled_name` of the vendored `v1/server.rs`.
+fn titled_name(name: &HeaderName) -> &str {
+    use http::header;
+    match *name {
+        header::ACCEPT_RANGES => "Accept-Ranges",
+        header::AGE => "Age",
+        header::CACHE_CONTROL => "Cache-Control",
+        header::CONNECTION => "Connection",
+        header::CONTENT_TYPE => "Content-Type",
+        header::CONTENT_ENCODING => "Content-Encoding",
+        header::CONTENT_LENGTH => "Content-Length",
+        header::DATE => "Date",
+        header::TRANSFER_ENCODING => "Transfer-Encoding",
+        header::HOST => "Host",
+        header::SERVER => "Server",
+        header::SET_COOKIE => "Set-Cookie",
+        _ => name.as_str(),
+    }
+}
+
+/// `http_resp_header_to_buf` of the vendored `v1/server.rs`, with the date text and connection word given.
+pub fn serialize_response(
+    resp: &pingora_http::ResponseHeader,
+    minor: u8,
+    automatic: Option<(&str, &str)>,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(if minor == 0 {
+        b"HTTP/1.0 "
+    } else {
+        b"HTTP/1.1 "
+    });
+    buf.extend_from_slice(resp.status.as_str().as_bytes());
+    buf.push(b' ');
+    if let Some(reason) = resp.get_reason_phrase() {
+        buf.extend_from_slice(reason.as_bytes());
+    }
+    buf.extend_from_slice(b"\r\n");
+    match automatic {
+        None => resp.header_to_h1_wire(&mut buf),
+        Some((date, connection)) => {
+            for (name, value) in &resp.headers {
+                if name == http::header::DATE || name == http::header::CONNECTION {
+                    continue;
+                }
+                buf.extend_from_slice(titled_name(name).as_bytes());
+                buf.extend_from_slice(b": ");
+                buf.extend_from_slice(value.as_bytes());
+                buf.extend_from_slice(b"\r\n");
+            }
+            buf.extend_from_slice(
+                format!("Date: {date}\r\nConnection: {connection}\r\n").as_bytes(),
+            );
+        }
+    }
+    buf.extend_from_slice(b"\r\n");
+    buf
+}
+
+/// `stamp_response` of `crates/oxiroute-server/src/http/request_id.rs`.
+pub fn stamp_response(response: &mut pingora_http::ResponseHeader, id: &HeaderValue) {
+    use http::header::Entry;
+    let request_id = HeaderName::from_static("x-request-id");
+    if let Entry::Vacant(slot) = response.headers.entry(request_id.clone()) {
+        slot.insert(id.clone());
+        return;
+    }
+    if let Some(upstream) = response.remove_header(&request_id)
+        && upstream != *id
+    {
+        response
+            .insert_header(HeaderName::from_static("x-upstream-request-id"), upstream)
+            .unwrap();
+    }
+    response.insert_header(request_id, id.clone()).unwrap();
+}

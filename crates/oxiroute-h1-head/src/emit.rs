@@ -58,7 +58,10 @@ pub(crate) fn emit(out: &mut Vec<u8>, items: &Items<'_>, order: &HeaderOrder, sk
         let index = usize::from(item);
         if index >= MAX_HEADERS {
             flush(out, &mut run);
-            put_added(out, &items.edits[index - MAX_HEADERS]);
+            let edit = &items.edits[index - MAX_HEADERS];
+            if skip & edit.name().class.bit() == 0 {
+                put_added(out, edit);
+            }
             return;
         }
         let h = &items.headers[index];

@@ -14,6 +14,7 @@ mod request;
 mod response;
 mod tables;
 mod write_request;
+mod write_response;
 
 pub use class::{Class, classify};
 pub use class::{
@@ -33,3 +34,4 @@ pub use request::*;
 pub use response::{ResponseFacts, ResponseHead, scan_response};
 pub use tables::is_header_value;
 pub use write_request::write_request;
+pub use write_response::{Automatic, write_response};
