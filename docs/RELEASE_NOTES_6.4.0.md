@@ -203,6 +203,11 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
 - With per-worker (non-stealing) runtimes, a replaced generation's workers left their runtime in thread-local state, so the
   next generation's listener tasks could land on a dead runtime; reachable only with
   `connection_scheduling = aged_per_worker`.
+- On a route with a cache, a request the origin revalidated (a 304, or a stale answer after an upstream failure) was
+  answered correctly, but the proxy closed an HTTP/1.1 client connection afterwards, so the next request on a keep-alive
+  connection was reset (the second revalidation of an always-stale entry, plain or TLS). The connection now stays open
+  for any number of revalidations, with the HTTP/1.1 fast lane on or off, and the request no longer logs an error line.
+  HTTP/2 clients were not affected.
 
 ## Upgrade notes
 
