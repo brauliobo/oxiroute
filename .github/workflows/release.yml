@@ -102,7 +102,7 @@ jobs:
           archive="release/oxiroute-${RELEASE_VERSION}.tar.gz"
           sha256sum "${archive}" > release/SHA256SUMS
           commit="$(git rev-parse HEAD)"
-          source_date_epoch="$(git log -1 --format=%ct HEAD)"
+          source_date_epoch="$(git log -1 --format=%ct HEAD -- . ':(exclude)packaging/arch/**')"
           checksum="$(cut -d' ' -f1 release/SHA256SUMS)"
           printf '{\n  "schema": "oxiroute.release-provenance.v1",\n  "version": "%s",\n  "commit": "%s",\n  "source_date_epoch": %s,\n  "archive_sha256": "%s"\n}\n' \
             "${RELEASE_VERSION}" "${commit}" "${source_date_epoch}" "${checksum}" > release/SOURCE-PROVENANCE.json
@@ -158,7 +158,7 @@ jobs:
       - name: Build release binaries (profile-guided unless disabled)
         env:
           RELEASE_REF: ${{ inputs.tag || github.ref_name }}
-          PGO_WORK: ${{ runner.temp }}/pgo
+          PGO_WORK: /tmp/oxiroute-pgo
         run: ./scripts/build-release-binaries.sh "${RELEASE_REF#v}" release-binaries
 
       - name: Upload release binaries

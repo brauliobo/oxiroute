@@ -154,6 +154,11 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   reconciled, conflicting or invalid values refused) but skips the header lookup when the facts rule `Content-Length`
   out. `RequestHeader` and `ResponseHeader` have no `DerefMut` in 0.9, so the parsers fill a plain `HeaderMap` (with the
   name cache) and `request_header_with_headers` / `ResponseHeader::from(Parts)` build the head around it.
+  The facts also note whether a hop-by-hop field (`is_hop_by_hop`: `Keep-Alive`, `Proxy-Connection`, `Proxy-Authenticate`,
+  `Proxy-Authorization`, `TE`, `Trailer`) is present (`hop_by_hop`), decided once per header name in the header-name cache,
+  and `set_request_facts` (`ServerSession`, `HttpSession`; a no-op for sessions that answer `UNKNOWN`) records the facts of
+  a request whose headers the caller changed and whose resulting facts it knows, so the product strips the hop-by-hop
+  fields of a request once at its head and the session does not look the headers up again.
 - `protocols/http/v1/server.rs` `prepare_response_header` returns the serialised buffer so the inline `Date` and
   `Connection` lines and the reusable buffer survive upstream's proxy-task writer; response head bytes no longer count
   in `body_bytes_sent`, and `write_rendered_response` counts only the body (upstream's accounting).
