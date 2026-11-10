@@ -36,6 +36,15 @@ pub struct Origin {
 
 impl Origin {
     pub async fn start(reply: &'static [u8]) -> Self {
+        Self::serve(reply, false).await
+    }
+
+    /// An origin that closes the connection after each reply.
+    pub async fn start_closing(reply: &'static [u8]) -> Self {
+        Self::serve(reply, true).await
+    }
+
+    async fn serve(reply: &'static [u8], closes: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let address = listener.local_addr().expect("origin address");
         let requests = Captured::default();
@@ -47,7 +56,7 @@ impl Origin {
                 tokio::spawn(async move {
                     while let Some(request) = read_request(&mut stream).await {
                         seen.lock().expect("captured requests").push(request);
-                        if stream.write_all(reply).await.is_err() {
+                        if stream.write_all(reply).await.is_err() || closes {
                             return;
                         }
                     }

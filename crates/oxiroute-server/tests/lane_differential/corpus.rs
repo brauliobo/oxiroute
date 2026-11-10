@@ -742,3 +742,58 @@ pub fn sequences() -> Vec<Case> {
         Case::many("many keep-alive", &vec![lane.as_bytes(); 12]),
     ]
 }
+
+/// The few requests a response shape is tried with: the response is what differs, not the request.
+pub fn probes(base: &str) -> Vec<Case> {
+    let mut cases = Vec::new();
+    add(&mut cases, "plain", get(base, ""));
+    add(
+        &mut cases,
+        "head",
+        format!("HEAD {base} HTTP/1.1\r\n{HOST}\r\n"),
+    );
+    add(&mut cases, "close", get(base, "Connection: close\r\n"));
+    cases.push(Case::many(
+        "two on one connection",
+        &[get(base, "").as_bytes(), get(base, "").as_bytes()],
+    ));
+    cases
+}
+
+/// Origin replies of every shape the response side has a rule for: framing, hop-by-hop fields, ids, informational
+/// heads, heads the codec leaves to the classic parser and replies that end badly. The flag says the origin
+/// closes the connection after the reply.
+pub fn replies() -> Vec<(&'static str, &'static [u8], bool)> {
+    vec![
+        ("chunked", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-A: 1\r\n\r\n5\r\nhello\r\n3\r\nabc\r\n0\r\n\r\n", false),
+        ("chunked with a length", b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", false),
+        ("close delimited", b"HTTP/1.1 200 OK\r\nX-A: 1\r\n\r\nbody until close", true),
+        ("http 1.0 close delimited", b"HTTP/1.0 200 OK\r\nX-A: 1\r\n\r\nbody until close", true),
+        ("http 1.0 with a length", b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok", false),
+        ("no content", b"HTTP/1.1 204 No Content\r\nX-A: 1\r\n\r\n", false),
+        ("not modified", b"HTTP/1.1 304 Not Modified\r\nContent-Length: 10\r\nETag: \"x\"\r\n\r\n", false),
+        ("connection close", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok", true),
+        ("connection keep-alive", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok", false),
+        ("keep-alive parameters", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5, max=3\r\n\r\nok", false),
+        ("hop-by-hop fields", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nProxy-Authenticate: Basic\r\nTE: trailers\r\nTrailer: X-T\r\nProxy-Connection: keep-alive\r\nX-A: 1\r\n\r\nok", false),
+        ("nominated field", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: x-hop\r\nX-Hop: 1\r\nX-A: 1\r\n\r\nok", false),
+        ("nominated length", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: content-length\r\n\r\nok", false),
+        ("upgrade field", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nUpgrade: h2c\r\n\r\nok", false),
+        ("repeated names", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nSet-Cookie: a=1\r\nX-Dup: 1\r\nSet-Cookie: b=2\r\nx-dup: 2\r\n\r\nok", false),
+        ("mixed case names", b"HTTP/1.1 200 OK\r\nCONTENT-LENGTH: 2\r\nX-MiXeD: v\r\nCache-control: no-store\r\n\r\nok", false),
+        ("origin request id", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Request-Id: from-origin\r\n\r\nok", false),
+        ("origin date and connection", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nServer: origin\r\n\r\nok", false),
+        ("continue before the answer", b"HTTP/1.1 100 Continue\r\nX-I: 1\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", false),
+        ("switching protocols", b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\nConnection: Upgrade\r\n\r\n", true),
+        ("pool unavailable", b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nX-Oxiroute-Pool-Unavailable: 1\r\n\r\n", false),
+        ("obsolete folding", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-A: one\r\n two\r\n\r\nok", false),
+        ("space before the colon", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-A : 1\r\n\r\nok", false),
+        ("bare line feeds", b"HTTP/1.1 200 OK\nContent-Length: 2\nX-A: 1\n\nok", false),
+        ("no reason phrase", b"HTTP/1.1 200\r\nContent-Length: 2\r\n\r\nok", false),
+        ("garbage", b"this is not http\r\n\r\n", true),
+        ("empty reply", b"", true),
+        ("short body", b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc", true),
+        ("conflicting lengths", b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nok", false),
+        ("redirect", b"HTTP/1.1 302 Found\r\nLocation: /elsewhere\r\nContent-Length: 0\r\n\r\n", false),
+    ]
+}

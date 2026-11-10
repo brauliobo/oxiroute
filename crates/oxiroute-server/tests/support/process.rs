@@ -264,7 +264,10 @@ fn spawn_server(
     direct: bool,
     environment: &[(&str, &str)],
 ) -> Child {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_oxiroute"));
+    // A build directory shared with other builds can replace the binary between the build and the run.
+    let binary = std::env::var_os("OXIROUTE_TEST_BIN")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_oxiroute").into());
+    let mut command = Command::new(binary);
     command
         .arg(config_path)
         .env_remove("OXIROUTE_MANAGEMENT_TOKEN_FILE")

@@ -61,13 +61,24 @@ struct Pair {
 
 impl Pair {
     async fn start(reply: &'static [u8]) -> Self {
+        Self::serving(reply, false).await
+    }
+
+    async fn serving(reply: &'static [u8], closes: bool) -> Self {
+        let origin = |closes| async move {
+            if closes {
+                Origin::start_closing(reply).await
+            } else {
+                Origin::start(reply).await
+            }
+        };
         let classic = Wire::over_with_env(
-            Origin::start(reply).await,
+            origin(closes).await,
             with_fixed_route,
             &[("OXIROUTE_HTTP_LANE", "off")],
         )
         .await;
-        let lane = Wire::over(Origin::start(reply).await, with_fixed_route).await;
+        let lane = Wire::over(origin(closes).await, with_fixed_route).await;
         Self { classic, lane }
     }
 
@@ -197,4 +208,30 @@ async fn connections_that_alternate_between_the_lane_and_the_classic_path_are_id
     let pair = Pair::start(OK).await;
     compare(&pair, &corpus::sequences()).await;
     pair.finish();
+}
+
+#[tokio::test]
+async fn proxied_responses_of_every_shape_are_identical_on_both_paths() {
+    let mut differences = Vec::new();
+    for (name, reply, closes) in corpus::replies() {
+        let pair = Pair::serving(reply, closes).await;
+        for case in corpus::probes("/r") {
+            let script = case.script();
+            let classic = play(&pair.classic, &script).await;
+            let lane = play(&pair.lane, &script).await;
+            if classic != lane {
+                differences.push(format!(
+                    "reply `{name}`, request `{}`\n classic: {classic:#?}\n lane: {lane:#?}",
+                    case.name
+                ));
+            }
+        }
+        pair.finish();
+    }
+    assert!(
+        differences.is_empty(),
+        "{} differ:\n{}",
+        differences.len(),
+        differences.join("\n")
+    );
 }
