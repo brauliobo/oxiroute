@@ -45,6 +45,9 @@ task handoffs and response batches, the cancellable upstream attempt, and compat
 - `lib.rs` `HttpProxy::process_request` borrows the request context (`&mut CTX`) from a `Box` made by its callers instead
   of taking it by value: an async fn stores a by-value parameter and the local it is moved into, so the 1.9 KiB OxiRoute
   context was in every suspend state of the request future twice.
+- Cold or alternative awaitees are boxed so they stay out of the request future: `handle_error` (now a plain fn that
+  returns the boxed `handle_error_unboxed`), the HTTP/2 and custom upstream arms of `proxy_attempt`, and
+  `proxy_1to1_pumped` (the two-pump relay that `proxy_1to1` falls back to when the inline relay does not apply).
 - `lib.rs` `HttpProxy` implements `HttpServerApp::process_new_http_inline` (see `pingora-core`); `process_new_http`
   delegates to it.
 - `lib.rs` `handle_new_request` waits for one shutdown signal while it reads a request head: the watch its owner
