@@ -334,6 +334,7 @@ features = [
     "net",
     "fs",
     "uio",
+    "zerocopy",
 ]
 
 [target."cfg(unix)".dev-dependencies.hyperlocal]
