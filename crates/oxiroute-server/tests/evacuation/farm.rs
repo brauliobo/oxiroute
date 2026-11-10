@@ -256,6 +256,7 @@ pub fn config(
         .collect();
     ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         listeners: vec![Listener {
             name: "http-loopback".into(),

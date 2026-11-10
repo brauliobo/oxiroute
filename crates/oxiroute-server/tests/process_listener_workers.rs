@@ -25,6 +25,7 @@ const REQUEST: &[u8] = b"GET /probe HTTP/1.1\r\nHost: localhost\r\nConnection: c
 fn config(address: SocketAddr, workers: Option<u64>) -> ConfigDraft {
     ConfigDraft {
         listener_workers: workers,
+        http_fast_lane: None,
         listeners: vec![Listener {
             name: "web".into(),
             bind: socket_bind(address),

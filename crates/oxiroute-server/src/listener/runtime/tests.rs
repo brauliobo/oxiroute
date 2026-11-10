@@ -5,6 +5,7 @@ use super::*;
 fn generation() -> std::sync::Arc<crate::RuntimeGeneration> {
     let config = ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         version: 1,
         max_connections: None,

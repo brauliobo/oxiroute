@@ -12,6 +12,11 @@ pub struct ConfigDraft {
     /// The workers share the listener's socket, pools and limits. Omitted means one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listener_workers: Option<u64>,
+    /// Whether plain HTTP/1.1 requests of fixed-response and plain proxy routes are served on the compiled fast
+    /// lane, which skips the session machinery for requests it can prove the classic path answers the same way.
+    /// Omitted means on; `false` sends every request through the classic path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_fast_lane: Option<bool>,
     /// Bounds on how long and how many replaced generations keep serving their in-flight work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<Retirement>,
@@ -43,6 +48,12 @@ pub struct ConfigDraft {
 
 impl ConfigDraft {
     pub const MAX_LISTENER_WORKERS: u64 = 256;
+
+    /// Whether the HTTP/1.1 fast lane serves the requests it can: on unless `http_fast_lane` says `false`.
+    #[must_use]
+    pub fn fast_lane_enabled(&self) -> bool {
+        self.http_fast_lane.unwrap_or(true)
+    }
 }
 
 /// Lifetime of a replaced generation. Its accept gate closes at once; work already admitted

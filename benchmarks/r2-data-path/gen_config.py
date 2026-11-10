@@ -209,6 +209,8 @@ def build(args):
             dict(listener, name=f"bench{index}", bind={"type": "socket", "address": f"127.0.0.1:{args.proxy_port + 10 + index}"}))
     if args.workers:
         config["listener_workers"] = args.workers
+    if args.classic:
+        config["http_fast_lane"] = False
     if on("l4"):
         config["upstream_pools"].append({
             "name": "echo",
@@ -245,6 +247,7 @@ def main():
     parser.add_argument("--servers", type=int, default=1)
     parser.add_argument("--listeners", type=int, default=1)
     parser.add_argument("--workers", type=int, default=0, help="listener_workers (0 leaves the setting out)")
+    parser.add_argument("--classic", action="store_true", help="http_fast_lane = false (the classic request path)")
     parser.add_argument("--run-dir", default="/tmp")
     parser.add_argument("--feature", action="append", default=[])
     args = parser.parse_args()

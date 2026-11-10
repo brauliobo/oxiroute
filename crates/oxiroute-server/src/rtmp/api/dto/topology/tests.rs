@@ -6,6 +6,7 @@ use super::*;
 fn empty_topology() -> TopologySnapshot {
     TopologySnapshot::compile(&oxiroute_config::ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         version: 1,
         max_connections: None,

@@ -181,6 +181,7 @@ fn manual_api_start_and_stop_control_the_exact_runtime_recorder() {
 fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         listeners: vec![Listener {
             name: "live".into(),

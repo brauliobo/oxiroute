@@ -310,13 +310,16 @@ impl<A> HttpDownstreamPolicyApp<A> {
         generation: Arc<RuntimeGeneration>,
         challenge: Option<ChallengeStore>,
         upstream: Arc<Connector>,
+        enabled: bool,
     ) -> Self {
         let timeouts = LaneTimeouts {
             request: self.request_timeout,
             write: self.write_timeout,
             keepalive: self.keepalive_timeout,
         };
-        self.front = LaneFront::new(service, metrics, generation, challenge, timeouts, upstream);
+        self.front = LaneFront::new(
+            service, metrics, generation, challenge, timeouts, upstream, enabled,
+        );
         self
     }
 }

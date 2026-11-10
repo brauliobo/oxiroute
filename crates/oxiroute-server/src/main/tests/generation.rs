@@ -8,6 +8,7 @@ async fn generation_runtime_marker_publishes_readiness_after_start_claim() {
     let path = directory.path().join("oxiroute.kdl");
     let config = ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -277,6 +278,7 @@ fn generation_join_detaches_at_the_absolute_process_deadline() {
     let path = directory.path().join("oxiroute.kdl");
     let config = ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         version: 1,
         max_connections: None,

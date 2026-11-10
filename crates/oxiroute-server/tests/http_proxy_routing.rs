@@ -7666,6 +7666,7 @@ impl ProxyHarness {
         let address = ports_support::unused_address();
         let config = ConfigDraft {
             listener_workers: None,
+            http_fast_lane: None,
             retirement: None,
             listeners: vec![Listener {
                 name: "http-loopback".into(),

@@ -61,34 +61,20 @@ pub struct ServerProcess {
 
 impl ServerProcess {
     pub fn start(config: &ValidatedConfig, token: Option<&str>) -> Self {
-        Self::launch(config, token, true, &[])
-    }
-
-    /// [`Self::start`] with extra environment variables for the server process.
-    pub fn start_with_env(
-        config: &ValidatedConfig,
-        token: Option<&str>,
-        environment: &[(&str, &str)],
-    ) -> Self {
-        Self::launch(config, token, true, environment)
+        Self::launch(config, token, true)
     }
 
     /// Starts the production topology: a master that replaces its worker on every accepted file.
     pub fn start_supervised(config: &ValidatedConfig, token: &str) -> Self {
-        Self::launch(config, Some(token), false, &[])
+        Self::launch(config, Some(token), false)
     }
 
-    fn launch(
-        config: &ValidatedConfig,
-        token: Option<&str>,
-        direct: bool,
-        environment: &[(&str, &str)],
-    ) -> Self {
+    fn launch(config: &ValidatedConfig, token: Option<&str>, direct: bool) -> Self {
         let directory = TempDir::new().expect("server process directory");
         let config_path = directory.path().join("oxiroute.lua");
         write_config(&config_path, config);
         let token_path = token.map(|token| write_token(directory.path(), token, 0o600));
-        let child = spawn_server(&config_path, token_path.as_deref(), direct, environment);
+        let child = spawn_server(&config_path, token_path.as_deref(), direct);
         Self {
             child,
             config_path,
@@ -236,7 +222,7 @@ pub fn write_token(directory: &Path, token: &str, mode: u32) -> PathBuf {
 }
 
 pub fn run_to_failure(config_path: &Path, token_path: Option<&Path>) -> Output {
-    let mut child = spawn_server(config_path, token_path, true, &[]);
+    let mut child = spawn_server(config_path, token_path, true);
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     loop {
         if child.try_wait().expect("inspect failing server").is_some() {
@@ -258,22 +244,13 @@ pub fn run_to_failure(config_path: &Path, token_path: Option<&Path>) -> Output {
     }
 }
 
-fn spawn_server(
-    config_path: &Path,
-    token_path: Option<&Path>,
-    direct: bool,
-    environment: &[(&str, &str)],
-) -> Child {
-    // A build directory shared with other builds can replace the binary between the build and the run.
-    let binary = std::env::var_os("OXIROUTE_TEST_BIN")
-        .unwrap_or_else(|| env!("CARGO_BIN_EXE_oxiroute").into());
-    let mut command = Command::new(binary);
+fn spawn_server(config_path: &Path, token_path: Option<&Path>, direct: bool) -> Child {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxiroute"));
     command
         .arg(config_path)
         .env_remove("OXIROUTE_MANAGEMENT_TOKEN_FILE")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    command.envs(environment.iter().copied());
     if direct && token_path.is_some() {
         command.env("OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME", "1");
     }

@@ -641,6 +641,7 @@ fn serve_generation(
                             Arc::clone(generation),
                             Some(challenge_store.clone()),
                             upstream,
+                            config.fast_lane_enabled(),
                         ),
                         listener_tls.as_deref(),
                     )
