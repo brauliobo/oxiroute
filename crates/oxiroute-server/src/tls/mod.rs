@@ -20,6 +20,7 @@ mod certbot_watcher;
 mod certificate;
 mod file_reconcile;
 mod file_watcher;
+mod handshake_pool;
 mod tls_alpn;
 mod upstream;
 mod watcher_engine;
@@ -49,6 +50,7 @@ pub use file_watcher::{
     FileWatcherConfig, FileWatcherError, FileWatcherMonitor, FileWatcherStatus,
     FileWatcherSupervisor,
 };
+pub use handshake_pool::{HandshakePoolStats, handshake_pool_stats};
 pub use tls_alpn::{
     TLS_ALPN_IDENTIFIER_OID, TLS_ALPN_PROTOCOL, TlsAlpnChallenge, TlsAlpnChallengeError,
     TlsAlpnChallengeIdentity, TlsAlpnChallengeLease, TlsAlpnChallengeStore,
