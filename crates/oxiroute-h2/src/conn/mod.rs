@@ -68,7 +68,7 @@ enum Shutdown {
 pub(crate) struct Pending {
     id: u32,
     idx: u32,
-    parts: Option<Box<Parts>>,
+    parts: Option<Parts>,
     /// The peer's reset of this stream counts against `max_pending_accept_reset_streams` until it is dequeued.
     counted: bool,
 }
@@ -97,6 +97,7 @@ pub struct Connection {
     out: Output,
     streams: Streams,
     dec: Decoder,
+    fields: request::FieldCache,
     enc: Encoder,
     scratch: Vec<u8>,
     send_window: i64,
@@ -141,6 +142,7 @@ impl Connection {
             out: Output::default(),
             streams: Streams::default(),
             dec: Decoder::new(cfg.header_table_size as usize),
+            fields: request::FieldCache::default(),
             enc: Encoder::new(4096),
             scratch: Vec::new(),
             send_window: i64::from(DEFAULT_WINDOW),
@@ -259,6 +261,11 @@ impl Connection {
             self.driver = Some(waker.clone());
         }
         self.armed = true;
+    }
+
+    /// The driver returns a request and polls again right away: no wake-up needed for new output meanwhile.
+    pub(crate) fn disarm_driver(&mut self) {
+        self.armed = false;
     }
 
     /// Wakes the driver once per arming.
