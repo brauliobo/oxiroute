@@ -81,8 +81,9 @@ use crate::protocols::{l4::socket::SocketAddr, tls::TlsRef, Stream};
 use crate::server::ListenFds;
 
 use async_trait::async_trait;
-use pingora_error::Result;
+use pingora_error::{ErrorType::AcceptError, OrErr, Result};
 use std::{any::Any, fs::Permissions, sync::Arc};
+use tokio::runtime::{self, Handle};
 
 use l4::{ListenerEndpoint, Stream as L4Stream};
 use tls::{Acceptor, TlsSettings};
@@ -301,6 +302,7 @@ impl TransportStack {
         Ok(UninitializedStream {
             l4: stream,
             tls: self.tls.clone(),
+            accepted_by: Handle::current().id(),
             l4_buffer: self.l4_buffer,
             pre_tls_callback: self.pre_tls_callback.clone(),
         })
@@ -314,6 +316,8 @@ impl TransportStack {
 pub(crate) struct UninitializedStream {
     l4: L4Stream,
     tls: Option<Arc<Acceptor>>,
+    /// The runtime whose I/O driver the socket is registered with.
+    accepted_by: runtime::Id,
     l4_buffer: L4BufferSettings,
     pre_tls_callback: Option<PreTlsCallback>,
 }
@@ -324,7 +328,10 @@ impl UninitializedStream {
     }
 
     pub async fn handshake(mut self) -> Result<Stream> {
-        self.l4.set_buffer(self.l4_buffer);
+        let own_driver = Handle::current().id() != self.accepted_by;
+        self.l4
+            .set_buffer(self.l4_buffer, own_driver)
+            .or_err(AcceptError, "failed to move the connection to its runtime")?;
         if let Some(tls) = self.tls {
             // Process pre-TLS data if a callback is configured (e.g., PROXY protocol)
             if let Some(ref callback) = self.pre_tls_callback {

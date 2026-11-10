@@ -6,7 +6,8 @@ use serde_json::json;
 
 fn validated() -> ValidatedConfig {
     serde_json::from_value::<ConfigDraft>(
-        json!({"version": 1, "listeners": [], "listener_workers": 3}),
+        json!({"version": 1, "listeners": [], "listener_workers": 3,
+            "connection_scheduling": "aged_per_worker", "connection_age_ms": 25}),
     )
     .expect("authored configuration")
     .validate()

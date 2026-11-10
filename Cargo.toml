@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/oxiroute-aged-executor",
     "crates/oxiroute-cache",
     "crates/oxiroute-acme",
     "crates/oxiroute-config",
@@ -19,6 +20,7 @@ members = [
 exclude = [
     "vendor/pingora-core",
     "vendor/pingora-load-balancing",
+    "vendor/pingora-runtime",
     "vendor/pingora-timeout",
 ]
 resolver = "3"
@@ -34,6 +36,7 @@ version = "6.3.1"
 aho-corasick = "1.1.5"
 arc-swap = "1.9.4"
 async-trait = "0.1.92"
+atomic-waker = "1.1"
 base64 = "0.23"
 bcrypt = "0.19"
 bytes = "1.12"
@@ -70,6 +73,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11"
 signal-hook = "0.4"
+slab = "0.4.12"
 tempfile = "3.27"
 thiserror = "2.0.21"
 tikv-jemallocator = "0.6"
@@ -87,6 +91,7 @@ h3 = { git = "https://github.com/hyperium/h3", rev = "43745ad87e95b0c035ac9c547a
 pingora-core = { path = "vendor/pingora-core" }
 pingora-load-balancing = { path = "vendor/pingora-load-balancing" }
 pingora-proxy = { path = "vendor/pingora-proxy" }
+pingora-runtime = { path = "vendor/pingora-runtime" }
 pingora-timeout = { path = "vendor/pingora-timeout" }
 rml_rtmp = { path = "vendor/rml_rtmp" }
 

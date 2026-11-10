@@ -527,6 +527,8 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'l4_services[].udp.max_queue_bytes', kind: 'integer' },
   { path: 'max_connections', kind: 'integer' },
   { path: 'listener_workers', kind: 'integer' },
+  { path: 'connection_scheduling', kind: 'enum' },
+  { path: 'connection_age_ms', kind: 'integer' },
   { path: 'retirement', kind: 'object' },
   { path: 'retirement.drain_deadline_ms', kind: 'integer' },
   { path: 'retirement.max_retired_generations', kind: 'integer' },

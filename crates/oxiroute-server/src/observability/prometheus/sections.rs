@@ -88,6 +88,51 @@ pub(super) fn render_server_traffic(
     Ok(())
 }
 
+/// The connection scheduling mode of the serving generation and, with `aged_per_worker`, what its queues hold.
+#[allow(clippy::cast_precision_loss)]
+pub(super) fn render_connection_scheduling(
+    output: &mut String,
+    config: Option<&oxiroute_config::ConfigDraft>,
+) -> Result<(), PrometheusError> {
+    let Some(config) = config.filter(|config| config.aged_per_worker()) else {
+        return Ok(labels(
+            output,
+            "oxiroute_connection_scheduling_info",
+            &[("mode", "work_stealing")],
+            1,
+        )?);
+    };
+    let age = config
+        .connection_age_ms
+        .map_or_else(|| "adaptive".to_owned(), |age| age.to_string());
+    let queues = oxiroute_aged_executor::AgedExecutor::process_stats();
+    labels(
+        output,
+        "oxiroute_connection_scheduling_info",
+        &[("mode", "aged_per_worker"), ("age_ms", &age)],
+        1,
+    )?;
+    sample(output, "oxiroute_aged_queue_tasks", queues.tasks)?;
+    sample(output, "oxiroute_aged_queue_ready", queues.ready)?;
+    sample(
+        output,
+        "oxiroute_aged_queue_oldest_ready_seconds",
+        queues.oldest_ready.as_secs_f64(),
+    )?;
+    sample(
+        output,
+        "oxiroute_aged_queue_age_seconds",
+        queues.age.as_secs_f64(),
+    )?;
+    sample(output, "oxiroute_aged_queue_polls_total", queues.polls)?;
+    sample(
+        output,
+        "oxiroute_aged_queue_aged_polls_total",
+        queues.aged_polls,
+    )?;
+    Ok(())
+}
+
 pub(super) fn render_retirement(
     output: &mut String,
     generations: &crate::GenerationManager,
