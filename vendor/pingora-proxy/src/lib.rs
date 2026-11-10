@@ -1710,7 +1710,7 @@ where
     }
 
     fn h2_options(&self) -> Option<H2Options> {
-        self.h2_options.clone()
+        self.h2_options
     }
     async fn process_custom_session(
         self: Arc<Self>,
