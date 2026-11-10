@@ -49,6 +49,36 @@ fn the_aged_per_worker_mode_adapts_its_age_or_takes_a_configured_one() {
 }
 
 #[test]
+fn auto_is_per_worker_queues_from_two_listener_workers_up() {
+    for (workers, aged) in [(None, false), (Some(1), false), (Some(2), true), (Some(8), true)] {
+        let mut extra = json!({"connection_scheduling": "auto"});
+        if let Some(workers) = workers {
+            extra["listener_workers"] = json!(workers);
+        }
+        let config = validate(&extra).unwrap();
+        assert_eq!(
+            config.as_draft().connection_scheduling,
+            Some(ConnectionScheduling::Auto)
+        );
+        assert_eq!(config.as_draft().aged_per_worker(), aged, "{workers:?}");
+        assert_eq!(
+            config.as_draft().effective_connection_scheduling(),
+            if aged {
+                ConnectionScheduling::AgedPerWorker
+            } else {
+                ConnectionScheduling::WorkStealing
+            }
+        );
+    }
+}
+
+#[test]
+fn auto_takes_a_configured_age_whatever_the_worker_count_resolves_to() {
+    let config = validate(&json!({"connection_scheduling": "auto", "connection_age_ms": 40})).unwrap();
+    assert_eq!(config.as_draft().connection_age_ms, Some(40));
+}
+
+#[test]
 fn work_stealing_has_no_age() {
     for scheduling in [json!({}), json!({"connection_scheduling": "work_stealing"})] {
         assert!(!validate(&scheduling).unwrap().as_draft().aged_per_worker());

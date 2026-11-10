@@ -649,3 +649,27 @@ fn scheduling_series_name_the_mode_and_the_age_and_only_the_aged_mode_reports_it
         assert!(aged.contains(series), "{series}");
     }
 }
+
+#[test]
+fn auto_scheduling_reports_the_mode_the_worker_count_resolves_to() {
+    let render = |workers: u64| {
+        let config = serde_json::from_value::<oxiroute_config::ConfigDraft>(serde_json::json!({
+            "version": 1,
+            "listeners": [],
+            "listener_workers": workers,
+            "connection_scheduling": "auto",
+        }))
+        .unwrap();
+        let mut output = String::new();
+        render_connection_scheduling(&mut output, Some(&config)).unwrap();
+        output
+    };
+
+    assert_eq!(
+        render(1),
+        "oxiroute_connection_scheduling_info{mode=\"work_stealing\"} 1\n"
+    );
+    assert!(render(2).contains(
+        "oxiroute_connection_scheduling_info{mode=\"aged_per_worker\",age_ms=\"adaptive\"} 1\n"
+    ));
+}
