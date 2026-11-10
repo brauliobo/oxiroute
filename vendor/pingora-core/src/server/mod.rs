@@ -978,7 +978,7 @@ mod tests {
                 starts: Arc::clone(&starts),
             }),
             #[cfg(unix)]
-            None,
+            Arc::new(Mutex::new(Fds::new())),
             shutdown.clone(),
             1,
             true,
@@ -994,7 +994,7 @@ mod tests {
                 starts: Arc::clone(&starts),
             }),
             #[cfg(unix)]
-            None,
+            Arc::new(Mutex::new(Fds::new())),
             shutdown,
             1,
             true,
@@ -1040,7 +1040,7 @@ mod tests {
         let background_runtime = Server::run_service(
             Box::new(background_service("failing", FailingBackground(failure))),
             #[cfg(unix)]
-            None,
+            Arc::new(Mutex::new(Fds::new())),
             shutdown.clone(),
             1,
             true,
@@ -1056,7 +1056,7 @@ mod tests {
                 starts: Arc::clone(&starts),
             }),
             #[cfg(unix)]
-            None,
+            Arc::new(Mutex::new(Fds::new())),
             shutdown,
             1,
             true,
