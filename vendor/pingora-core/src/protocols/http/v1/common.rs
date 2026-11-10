@@ -445,9 +445,22 @@ pub(super) fn request_header_with_headers(
         .map_err(|_| Error::explain(InvalidHTTPHeader, "invalid method"))?;
     parts.version = version;
     parts.headers = headers;
+    // An origin-form target without a fragment or an escape-needing byte is stored as the URI alone, which is what
+    // `set_raw_path` makes of it; the generic parse also classifies absolute and authority forms.
+    if let Some(uri) = origin_form_uri(path) {
+        parts.uri = uri;
+        return Ok(RequestHeader::from(parts));
+    }
     let mut request = RequestHeader::from(parts);
     request.set_raw_path(path)?;
     Ok(request)
+}
+
+fn origin_form_uri(path: &[u8]) -> Option<http::Uri> {
+    if path.first() != Some(&b'/') || path.contains(&b'#') || std::str::from_utf8(path).is_err() {
+        return None;
+    }
+    http::Uri::from_maybe_shared(bytes::Bytes::copy_from_slice(path)).ok()
 }
 
 /// Parse a `Content-Length` field value as an ASCII digit string, matching
@@ -496,6 +509,12 @@ pub(crate) fn content_length_parse_all(headers: &HMap) -> Option<u64> {
     // If multiple Content-Length headers were sent, everything can still be
     // alright if they all contain the same value, and all parse correctly. If
     // not, then it's an error.
+    // The usual message has one field of plain digits: no UTF-8 check, no list split.
+    let mut values = headers.get_all(header::CONTENT_LENGTH).iter();
+    let first = values.next().and_then(|v| from_digits(v.as_bytes()));
+    if first.is_some() && values.next().is_none() {
+        return first;
+    }
     let mut content_length: Option<u64> = None;
     for value in headers.get_all(header::CONTENT_LENGTH) {
         // A non-visible-ASCII value can't be a valid Content-Length, so the
@@ -655,6 +674,59 @@ mod test {
         }
     }
 
+    #[test]
+    fn origin_form_fast_path_matches_the_generic_parse() {
+        for target in [
+            "/",
+            "/a/b?c=d",
+            "/a%20b?x",
+            "/ü",
+            "/a#f",
+            "*",
+            "?q",
+            "http://h/p?q",
+            "/a b",
+        ] {
+            let fast = request_header_with_headers(
+                b"GET",
+                target.as_bytes(),
+                http::Version::HTTP_11,
+                HMap::new(),
+            );
+            let mut generic = RequestHeader::build_no_case("GET", b"/", None).unwrap();
+            let generic = generic.set_raw_path(target.as_bytes()).map(|()| generic);
+            assert_eq!(fast.is_ok(), generic.is_ok(), "{target}");
+            if let (Ok(fast), Ok(generic)) = (fast, generic) {
+                assert_eq!(fast.uri, generic.uri, "{target}");
+                assert_eq!(fast.raw_path(), generic.raw_path(), "{target}");
+            }
+        }
+    }
+
+    #[test]
+    fn plain_content_length_takes_the_fast_path_with_the_same_verdicts() {
+        for (values, expected) in [
+            (&["5"][..], Some(5)),
+            (&["5", "5"], Some(5)),
+            (&["5", "6"], None),
+            (&["5,5"], Some(5)),
+            (&[" 5 "], Some(5)),
+            (&["+5"], None),
+            (&["x"], None),
+            (&[], None),
+        ] {
+            let mut headers = HMap::new();
+            for value in values {
+                headers.append(
+                    header::CONTENT_LENGTH,
+                    HeaderValue::from_str(value).unwrap(),
+                );
+            }
+            assert_eq!(content_length_parse_all(&headers), expected, "{values:?}");
+        }
+    }
+
+    #[test]
     fn test_validate_content_length() {
         let mut headers = HMap::new();
 
