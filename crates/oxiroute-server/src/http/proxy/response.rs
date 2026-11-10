@@ -8,11 +8,32 @@ pub(super) async fn respond_error(
     reason: Option<ErrorReason>,
     pool: Option<&UpstreamPlan>,
 ) -> pingora::Result<()> {
+    let id = session
+        .req_header()
+        .headers
+        .get(&REQUEST_ID_HEADER)
+        .cloned();
+    let head = session.req_header().method == Method::HEAD;
+    let (response, body) = error_response(code, error, reason, pool, id.as_ref(), head)?;
+    session.write_error_response(response, body).await
+}
+
+/// The response of a request that ended with `error`: the status, the marker headers the error calls for and the
+/// id of the request.
+pub(super) fn error_response(
+    code: u16,
+    error: &Error,
+    reason: Option<ErrorReason>,
+    pool: Option<&UpstreamPlan>,
+    id: Option<&HeaderValue>,
+    head: bool,
+) -> pingora::Result<(pingora::http::ResponseHeader, Bytes)> {
     let pool_unavailable = is_pool_unavailable(error);
-    if !pool_unavailable && reason.is_none() {
-        return respond_status(session, code).await;
-    }
     let mut response = ServerSession::generate_error(code);
+    if !pool_unavailable && reason.is_none() {
+        stamp_request_id(id, &mut response)?;
+        return Ok((response, Bytes::new()));
+    }
     // Pingora's error responder carries a placeholder Date that only the automatic headers replace.
     response.insert_header(DATE, httpdate::fmt_http_date(SystemTime::now()))?;
     if let Some((name, value)) = reason.map(ErrorReason::header) {
@@ -22,11 +43,11 @@ pub(super) async fn respond_error(
     if pool_unavailable {
         response.insert_header(POOL_UNAVAILABLE_HEADER, "1")?;
         if let Some(plan) = pool {
-            body = unavailable_body(session, &mut response, plan.unavailable_response())?;
+            body = unavailable_body(head, &mut response, plan.unavailable_response())?;
         }
     }
-    stamp_request_id(session, &mut response)?;
-    session.write_error_response(response, body).await
+    stamp_request_id(id, &mut response)?;
+    Ok((response, body))
 }
 
 /// Writes a response header built here, with the request's id on it, as the response of a request filter
@@ -49,10 +70,10 @@ pub(super) async fn write_response_header_with_id(
 
 /// Error responses bypass Pingora's response modules, so they copy the id the request filter set.
 fn stamp_request_id(
-    session: &Session,
+    id: Option<&HeaderValue>,
     response: &mut pingora::http::ResponseHeader,
 ) -> pingora::Result<()> {
-    if let Some(id) = session.req_header().headers.get(&REQUEST_ID_HEADER) {
+    if let Some(id) = id {
         response.insert_header(REQUEST_ID_HEADER, id.clone())?;
     }
     Ok(())
@@ -71,12 +92,17 @@ pub(super) async fn respond_status_with_body(
     if !body.is_empty() {
         response.set_content_length(body.len())?;
     }
-    stamp_request_id(session, &mut response)?;
+    let id = session
+        .req_header()
+        .headers
+        .get(&REQUEST_ID_HEADER)
+        .cloned();
+    stamp_request_id(id.as_ref(), &mut response)?;
     session.write_error_response(response, body).await
 }
 
 fn unavailable_body(
-    session: &Session,
+    head: bool,
     response: &mut pingora::http::ResponseHeader,
     unavailable: &UnavailableResponse,
 ) -> pingora::Result<Bytes> {
@@ -88,7 +114,6 @@ fn unavailable_body(
     }
     response.insert_header(CONTENT_TYPE, "text/plain; charset=utf-8")?;
     response.insert_header(CONTENT_LENGTH, unavailable.body.len().to_string())?;
-    let head = session.req_header().method == Method::HEAD;
     Ok(if head {
         Bytes::new()
     } else {
@@ -141,7 +166,7 @@ impl ErrorReason {
 pub(super) fn error_reason(
     error: &Error,
     ctx: &HttpRequestContext,
-    session: &Session,
+    response_started: bool,
 ) -> Option<ErrorReason> {
     if is_evacuated(error) {
         return Some(ErrorReason::Evacuated);
@@ -162,7 +187,7 @@ pub(super) fn error_reason(
     match error.etype() {
         ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout => Some(ErrorReason::Connect),
         ErrorType::WriteTimedout => Some(ErrorReason::UpstreamWrite),
-        ErrorType::ReadTimedout if response_started(session) => Some(ErrorReason::UpstreamIdle),
+        ErrorType::ReadTimedout if response_started => Some(ErrorReason::UpstreamIdle),
         ErrorType::ReadTimedout => Some(ErrorReason::UpstreamHeader),
         _ => None,
     }
@@ -172,12 +197,12 @@ pub(super) fn error_reason(
 pub(super) fn failure_reason(
     error: &Error,
     ctx: &HttpRequestContext,
-    session: &Session,
+    response_started: bool,
 ) -> &'static str {
     if ctx.trace.budget_spent.load(Ordering::Relaxed) {
         return "retry_budget_spent";
     }
-    if let Some(reason) = error_reason(error, ctx, session) {
+    if let Some(reason) = error_reason(error, ctx, response_started) {
         return reason.as_str();
     }
     if is_pool_unavailable(error) {
@@ -228,7 +253,7 @@ pub(super) fn attempt_outcome(error: &Error) -> AttemptOutcome {
     }
 }
 
-fn response_started(session: &Session) -> bool {
+pub(super) fn response_started(session: &Session) -> bool {
     session
         .response_written()
         .is_some_and(|response| !response.status.is_informational())

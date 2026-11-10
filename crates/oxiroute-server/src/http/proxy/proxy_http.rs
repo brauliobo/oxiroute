@@ -13,49 +13,12 @@ impl ProxyHttp for HttpReverseProxy {
     }
 
     fn new_ctx(&self) -> Self::CTX {
-        let started_at = Instant::now();
-        HttpRequestContext {
-            listener: self.metrics.clone(),
-            observed_received: 0,
-            observed_sent: 0,
-            authority: None,
-            attempted_upstreams: Vec::new(),
-            pool: None,
-            route: None,
-            selected: None,
-            selected_observation: None,
-            selected_upstream_host: None,
-            request_header_decisions: Box::new([]),
-            connection_retryable: false,
-            replay_retryable: false,
-            evacuation_pin: None,
-            evacuations: 0,
-            evacuated_from: Vec::new(),
-            retry_server: None,
-            queue_tag: QueueTag::default(),
-            retry_delay_pending: false,
-            prior_attempts: 0,
-            rescued: false,
-            retry_prepaid: false,
-            response_status_override: None,
-            response_header_overrides: Vec::new(),
-            started_at,
-            request_facts: RequestFacts::default(),
-            now: started_at,
-            total_deadline: started_at + self.service.upstream_io_timeout(),
-            client_deadline: None,
-            deadline: started_at + self.service.upstream_io_timeout(),
-            operation_result: None,
-            websocket_reference: None,
-            generation: self.generation.clone(),
-            cache_transaction: None,
-            cache_capture: None,
-            response_buffer: None,
-            cache_response_handled: false,
-            trace: AttemptTrace::default(),
-            inflight: None,
-            request_id: None,
-        }
+        HttpRequestContext::new(
+            self.metrics.clone(),
+            self.generation.clone(),
+            Instant::now(),
+            self.service.upstream_io_timeout(),
+        )
     }
 
     #[allow(clippy::too_many_lines)]
@@ -228,101 +191,14 @@ impl ProxyHttp for HttpReverseProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
-        if ctx.has_attempted() {
-            ctx.refresh_clock();
-        }
-        let mut now = ctx.now;
-        let remaining = ctx.remaining_at(now, true)?;
-        let Some(pool) = &ctx.pool else {
-            return Err(Error::new_in(ErrorType::InternalError));
+        let request = session.req_header();
+        let host = |endpoint: &RuntimeEndpoint,
+                    policy: &HttpUpstreamHost,
+                    authority: Option<&Authority>| {
+            selected_upstream_host_for(request, endpoint, policy, authority)
         };
-        if ctx.selected.is_none() {
-            if ctx.retry_delay_pending {
-                let delay = proxy_policy(ctx).next_retry_delay();
-                if delay > remaining {
-                    return Err(Error::new_up(ErrorType::ReadTimedout));
-                }
-                ctx.enter_phase(Phase::RetryWait, now);
-                tokio::time::sleep(delay).await;
-                ctx.retry_delay_pending = false;
-                ctx.now = Instant::now();
-                now = ctx.now;
-            }
-            ctx.enter_phase(Phase::Queued, now);
-            let selection_started = now;
-            let (selected, waited) = if let Some(server) = ctx.retry_server.take() {
-                (
-                    pool.select_server_endpoint(&server, ctx.queue_tag).await?,
-                    true,
-                )
-            } else if let Some(server) = affinity_server(session, ctx) {
-                (
-                    pool.select_server_endpoint(&server, ctx.queue_tag).await?,
-                    true,
-                )
-            } else {
-                let wait = ctx.remaining_at(now, true)?;
-                let (selected, waited) = promptly(
-                    wait,
-                    pool.select_endpoint(&ctx.attempted_upstreams, ctx.queue_tag),
-                )
-                .await
-                .map_err(|_| Error::new_up(ErrorType::ReadTimedout))?;
-                (selected?, waited)
-            };
-            if waited {
-                ctx.now = Instant::now();
-                now = ctx.now;
-            }
-            ctx.trace.queue_wait += now.saturating_duration_since(selection_started);
-            ctx.trace.attempt_started = Some(now);
-            let server: Arc<str> = selected.server_name().into();
-            ctx.trace.servers.push(Arc::clone(&server));
-            ctx.trace.stats = Some(Arc::clone(selected.server_stats()));
-            if let Some(inflight) = &ctx.inflight {
-                inflight.place_pool(pool.label().shared());
-                inflight.place_server(server);
-                selected.observe_queue_position(inflight.queue_cell());
-                inflight.set_phase(Phase::Connecting, now);
-            }
-            ctx.selected_upstream_host = selected_upstream_host_for(
-                session.req_header(),
-                selected.endpoint(),
-                &proxy_policy(ctx).upstream_host,
-                ctx.authority.as_ref(),
-            )?;
-            ctx.attempted_upstreams
-                .push(selected.server_name().to_owned());
-            ctx.selected_observation = Some(selected.observation());
-            ctx.selected = Some(selected);
-        }
-        let remaining = ctx.remaining_at(now, true)?;
-        let route_policy = proxy_route(ctx).policy;
-        let timeouts = proxy_policy(ctx).timeouts;
-        let attempt = |explicit: Option<u64>, inherited: Duration| {
-            explicit
-                .map_or(inherited, Duration::from_millis)
-                .min(remaining)
-        };
-        let response = pool.server_timeout(route_policy.read_timeout);
-        let mut peer = ctx
-            .selected
-            .as_mut()
-            .expect("selected endpoint initialized")
-            .prepare_peer_with_timeouts(
-                pool,
-                now,
-                attempt(
-                    timeouts.connect_ms,
-                    pool.connect_timeout(route_policy.connect_timeout),
-                ),
-                attempt(timeouts.header_ms, response),
-                pool.server_timeout(route_policy.write_timeout)
-                    .min(remaining),
-            )
-            .await?;
-        peer.options.body_read_timeout = Some(attempt(timeouts.idle_ms, response));
-        Ok(Box::new(peer))
+        let affinity = |ctx: &HttpRequestContext| affinity_server(session, ctx);
+        ctx.next_peer(affinity, host).await
     }
 
     fn upstream_attempt_cancelled(
@@ -338,54 +214,9 @@ impl ProxyHttp for HttpReverseProxy {
         _session: &mut Session,
         _peer: &HttpPeer,
         ctx: &mut Self::CTX,
-        mut error: Box<Error>,
+        error: Box<Error>,
     ) -> Box<Error> {
-        if let Some(cancelled) = ctx.cancelled_by_operator() {
-            return cancelled;
-        }
-        let has_address_fallback = ctx
-            .selected
-            .as_ref()
-            .is_some_and(SelectedEndpoint::has_address_fallback);
-        if !has_address_fallback {
-            if let Some(failure) = passive_failure_for_error(&error) {
-                ctx.record_passive_failure(failure);
-            }
-            ctx.release_lease();
-        }
-        let policy = proxy_policy(ctx);
-        let has_budget = ctx.attempt_count() <= usize::from(policy.max_retries);
-        let retry_target = retry_target_for(ctx, false);
-        let target_available = match retry_target {
-            HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
-            HttpRetryTarget::NextServer => ctx
-                .pool
-                .as_ref()
-                .is_some_and(|pool| pool.has_unattempted(&ctx.attempted_upstreams)),
-        };
-        let trigger = connect_retry_trigger(&error);
-        let route_retry_allowed = !has_address_fallback
-            && ctx.connection_retryable
-            && trigger.is_some_and(|trigger| policy.retries_on(trigger))
-            && has_budget
-            && target_available
-            && ctx.remaining(true).is_ok()
-            && ctx.spend_retry_budget();
-        let retry = should_retry_connection(has_address_fallback, route_retry_allowed);
-        error.set_retry(retry);
-        if !has_address_fallback {
-            ctx.settle_attempt(&error, retry);
-        }
-        if retry {
-            if !has_address_fallback {
-                if retry_target == HttpRetryTarget::SameServer {
-                    ctx.retry_server = ctx.attempted_upstreams.last().cloned();
-                }
-                ctx.retry_delay_pending = retry_target == HttpRetryTarget::SameServer;
-            }
-            ctx.listener.record_retry_attempt();
-        }
-        error
+        ctx.connect_failed(error)
     }
 
     fn error_while_proxy(
@@ -446,7 +277,7 @@ impl ProxyHttp for HttpReverseProxy {
         error: &Error,
         ctx: &mut Self::CTX,
     ) -> FailToProxy {
-        ctx.trace.failure_reason = Some(failure_reason(error, ctx, session));
+        ctx.trace.failure_reason = Some(failure_reason(error, ctx, response_started(session)));
         if ctx.client_deadline_expired() {
             return FailToProxy {
                 error_code: 0,
@@ -483,7 +314,7 @@ impl ProxyHttp for HttpReverseProxy {
                 };
             }
         }
-        let reason = error_reason(error, ctx, session);
+        let reason = error_reason(error, ctx, response_started(session));
         let code = reason.map_or_else(|| proxy_error_status(error), ErrorReason::status);
         if let Some(reason) = reason {
             debug!("request ended by {}", reason.as_str());
@@ -820,36 +651,7 @@ impl ProxyHttp for HttpReverseProxy {
         digest: Option<&Digest>,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
-        let queued = ctx
-            .selected
-            .as_ref()
-            .is_some_and(|selected| selected.queue_position() > 0);
-        let now = if reused && !queued {
-            ctx.now
-        } else {
-            ctx.refresh_clock()
-        };
-        ctx.remaining_at(now, true)?;
-        ctx.enter_phase(Phase::AwaitingHeaders, now);
-        ctx.trace.connected_at = Some(now);
-        ctx.trace.connect = ctx
-            .trace
-            .attempt_started
-            .map(|started| now.saturating_duration_since(started));
-        let result =
-            validate_tls_connection(ctx.pool.as_deref().and_then(UpstreamPlan::tls), digest);
-        if result.is_err() {
-            if let Err(error) = &result
-                && let Some(failure) = passive_failure_for_error(error)
-            {
-                ctx.record_passive_failure(failure);
-            }
-            ctx.release_lease();
-        } else {
-            // The Pingora socket digest now owns the lease until the physical connection closes.
-            ctx.detach_lease();
-        }
-        result
+        ctx.connected(reused, digest)
     }
 
     fn response_body_filter(
