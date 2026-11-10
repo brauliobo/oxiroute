@@ -232,6 +232,16 @@ impl HttpServicePlan {
         self.route_plans.get(route.route_id()).cloned()
     }
 
+    pub(crate) fn select_route_path(
+        &self,
+        authority: Option<&Authority>,
+        path: &str,
+        method: &Method,
+    ) -> Option<Arc<HttpRoutePlan>> {
+        let route = self.routes.select_path(authority, path, method)?;
+        self.route_plans.get(route.route_id()).cloned()
+    }
+
     #[must_use]
     pub fn select(
         &self,

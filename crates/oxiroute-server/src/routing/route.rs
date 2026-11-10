@@ -196,8 +196,18 @@ impl RouteTable {
         uri: &Uri,
         method: &Method,
     ) -> Option<&Route> {
-        let authority = authority.or_else(|| uri.authority());
-        let path = canonicalize_http_path(uri.path())?;
+        self.select_path(authority.or_else(|| uri.authority()), uri.path(), method)
+    }
+
+    /// [`Self::select`] for a request whose authority and path are already at hand.
+    #[must_use]
+    pub fn select_path(
+        &self,
+        authority: Option<&Authority>,
+        path: &str,
+        method: &Method,
+    ) -> Option<&Route> {
+        let path = canonicalize_http_path(path)?;
         let best = self.index.best(&self.routes, authority, &path, method)?;
         Some(&self.routes[best.order()])
     }
