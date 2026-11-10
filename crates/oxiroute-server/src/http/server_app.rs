@@ -369,6 +369,10 @@ where
         self.keepalive_timeout
     }
 
+    fn closes_idle_on_shutdown(&self) -> bool {
+        self.inner.closes_idle_on_shutdown()
+    }
+
     fn h2_options(&self) -> Option<H2Options> {
         self.inner.h2_options()
     }

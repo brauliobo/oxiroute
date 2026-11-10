@@ -1663,6 +1663,10 @@ where
     <SV as ProxyHttp>::CTX: Send + Sync,
     C: custom::Connector,
 {
+    fn closes_idle_on_shutdown(&self) -> bool {
+        true
+    }
+
     async fn process_new_http(
         self: &Arc<Self>,
         session: HttpSession,
