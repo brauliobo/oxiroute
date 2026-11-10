@@ -535,6 +535,57 @@ fn listener_inventory_is_an_explicit_secret_safe_allowlist() {
     assert!(!json.contains("session-secret"));
 }
 
+/// Every optional and enumerated value in play, awkward text, and counters that need all twenty digits.
+fn varied_pools() -> Vec<PoolHealthSnapshot> {
+    let mut busy = pool();
+    busy.name = "quo\"te\\ \u{e9}\n".into();
+    busy.unavailable_selections = u64::MAX;
+    busy.queued = 0;
+    let mut server = busy.endpoints[1].clone();
+    server.name = "dyn\tamic".into();
+    server.origin = crate::ServerOrigin::Dynamic;
+    server.address = RuntimeEndpoint::Dns {
+        host: "backend.example.com".into(),
+        port: 8443,
+    };
+    server.active_connections = u64::MAX;
+    server.last_failure = None;
+    server.passive_ejection_reason = Some(HealthFailure::Slow);
+    server.configured_max_connections = Some(u64::MAX);
+    busy.endpoints.push(server);
+    let mut unix = busy.endpoints[0].clone();
+    unix.address = RuntimeEndpoint::Unix {
+        path: "/run/app \"x\".sock".into(),
+    };
+    unix.administrative_state = AdministrativeState::Drain;
+    unix.state = EndpointHealthState::Healthy;
+    unix.health_override = HealthOverride::Auto;
+    unix.weight = 0;
+    busy.endpoints.push(unix);
+    let mut empty = secondary_pool();
+    empty.endpoints.clear();
+    vec![busy, secondary_pool(), empty, pool()]
+}
+
+#[test]
+fn direct_inventory_bodies_are_the_dto_serialization_byte_for_byte() {
+    for pools in [Vec::new(), vec![pool()], varied_pools()] {
+        assert_eq!(
+            String::from_utf8(servers_body(&pools)).unwrap(),
+            serde_json::to_string(&ServerInventoryResponse::from(pools.clone())).unwrap()
+        );
+        assert_eq!(
+            String::from_utf8(pools_body(&pools)).unwrap(),
+            serde_json::to_string(&PoolInventoryResponse::from(pools.clone())).unwrap()
+        );
+        assert_eq!(
+            String::from_utf8(pools_json(&pools)).unwrap(),
+            serde_json::to_string(&pools.into_iter().map(PoolDto::from).collect::<Vec<_>>())
+                .unwrap()
+        );
+    }
+}
+
 fn generation() -> GenerationStatus {
     GenerationStatus {
         build_version: "0.5-test",

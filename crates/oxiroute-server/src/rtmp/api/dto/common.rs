@@ -62,7 +62,7 @@ impl Serialize for DecimalCounter {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&self.0.to_string())
+        crate::wire::serialize_u64_string(&self.0, serializer)
     }
 }
 

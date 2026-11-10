@@ -601,5 +601,8 @@ api_enum!(ProxyProtocolResultDto from ProxyProtocolResult {
     ProxyProtocolResult::IoError => IoError,
 });
 
+mod inventory;
+pub(crate) use inventory::{pools_body, pools_json, servers_body};
+
 #[cfg(test)]
 mod tests;
