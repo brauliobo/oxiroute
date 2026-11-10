@@ -78,6 +78,27 @@ pub struct HttpSession {
     // If allowed, does not fail with error on invalid content-length
     // (treats as close-delimited response).
     allow_h1_response_invalid_content_length: bool,
+    // How the body of a response whose head the caller scanned itself is framed; see `accept_fast_head`.
+    fast_framing: Option<FastFraming>,
+}
+
+/// How the body of a response is framed, as a caller that scanned the head itself reports it.
+#[derive(Clone, Copy, Debug)]
+pub struct FastFraming {
+    pub chunked: bool,
+    pub content_length: Option<usize>,
+}
+
+/// What a caller that scanned a response head itself tells the session about it (see
+/// [`HttpSession::accept_fast_head`]): the facts the session needs for keepalive and body framing.
+#[derive(Clone, Debug)]
+pub struct FastHead {
+    pub status: StatusCode,
+    pub version: Version,
+    pub head_len: usize,
+    pub connection: Option<HeaderValue>,
+    pub transfer_encoding: bool,
+    pub framing: FastFraming,
 }
 
 /// The parts of a response header the session still reads after the header moved to the caller.
@@ -164,6 +185,7 @@ impl HttpSession {
             received_upgrade_req_body: false,
             close_delimited_resp: false,
             allow_h1_response_invalid_content_length: false,
+            fast_framing: None,
         }
     }
 
@@ -502,6 +524,96 @@ impl HttpSession {
         Ok(header)
     }
 
+    /// Reads a response head without parsing it: up to and including the first empty line, with the limits,
+    /// timeouts and errors of [`Self::read_response()`]. The bytes (and any body bytes that arrived with them)
+    /// stay in the session; the caller scans them and then either reports what they say with
+    /// [`Self::accept_fast_head()`] or leaves them to [`Self::reparse_raw_head()`].
+    pub async fn read_raw_head(&mut self) -> Result<Bytes> {
+        let mut buf = BytesMut::with_capacity(INIT_HEADER_BUF_SIZE);
+        let mut scanned = 0;
+        loop {
+            if buf.len() > MAX_HEADER_SIZE {
+                return Error::e_explain(
+                    InvalidHTTPHeader,
+                    format!("Response header larger than {MAX_HEADER_SIZE}"),
+                );
+            }
+            let read_fut = self.underlying_stream.read_buf(&mut buf);
+            let read_result = match self.read_timeout {
+                Some(t) => timeout(t, read_fut)
+                    .await
+                    .map_err(|_| Error::explain(ReadTimedout, "while reading response headers"))?,
+                None => read_fut.await,
+            };
+            match read_result {
+                Ok(0) => {
+                    let mut e = Error::explain(
+                        ConnectionClosed,
+                        format!(
+                            "while reading response headers, bytes already read: {}",
+                            buf.len()
+                        ),
+                    );
+                    e.retry = RetryType::ReusedOnly;
+                    return Err(e);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    let true_io_error = e.raw_os_error().is_some();
+                    let mut e = Error::because(
+                        ReadError,
+                        format!(
+                            "while reading response headers, bytes already read: {}",
+                            buf.len()
+                        ),
+                        e,
+                    );
+                    if true_io_error {
+                        e.retry = RetryType::ReusedOnly;
+                    }
+                    return Err(e);
+                }
+            }
+            if head_end(&buf, scanned).is_some() {
+                self.buf = buf.freeze();
+                self.preread_body = None;
+                return Ok(self.buf.clone());
+            }
+            scanned = buf.len();
+        }
+    }
+
+    /// Leaves the bytes of [`Self::read_raw_head()`] to the parser of [`Self::read_response()`], which reads them
+    /// before it reads from the stream.
+    pub fn reparse_raw_head(&mut self) {
+        self.preread_body = Some(BufRef(0, self.buf.len()));
+    }
+
+    /// Takes the facts of a head the caller scanned (the bytes of [`Self::read_raw_head()`]) as the response of
+    /// the session, as [`Self::read_response()`] followed by [`Self::read_resp_header_parts()`] would leave it. Only
+    /// for a final response that is not an upgrade.
+    pub fn accept_fast_head(&mut self, head: FastHead) {
+        self.raw_header = Some(BufRef(0, head.head_len));
+        self.preread_body = Some(BufRef(head.head_len, self.buf.len()));
+        self.response_noted = RequestFacts {
+            transfer_encoding: head.transfer_encoding,
+            content_lengths: u8::from(head.framing.content_length.is_some()),
+            connection: head.connection.is_some(),
+            ..RequestFacts::default()
+        };
+        self.response_facts = Some(ResponseFacts {
+            status: head.status,
+            version: head.version,
+            connection: head.connection,
+            keep_alive: None,
+            transfer_encoding: head.transfer_encoding,
+        });
+        self.fast_framing = Some(head.framing);
+        self.upgraded = false;
+        self.read_timeout = self.body_read_timeout.or(self.read_timeout);
+        self.init_body_reader();
+    }
+
     /// Return a reference of the [`ResponseHeader`] if the response is read and not yet taken by
     /// [`Self::read_resp_header_parts()`]
     pub fn resp_header(&self) -> Option<&ResponseHeader> {
@@ -801,10 +913,12 @@ impl HttpSession {
             } else if self.is_chunked_encoding() {
                 // if chunked encoding, content-length should be ignored
                 self.body_reader.init_chunked(&preread_body);
-            } else if let Some(cl) = (self.response_noted.content_lengths > 0)
-                .then(|| self.get_content_length().unwrap_or(None))
-                .flatten()
-            {
+            } else if let Some(cl) = match self.fast_framing {
+                Some(framing) => framing.content_length,
+                None => (self.response_noted.content_lengths > 0)
+                    .then(|| self.get_content_length().unwrap_or(None))
+                    .flatten(),
+            } {
                 self.body_reader.init_content_length_owned(cl, preread_body);
             } else {
                 self.body_reader.init_close_delimited_owned(preread_body);
@@ -856,6 +970,9 @@ impl HttpSession {
     }
 
     fn is_chunked_encoding(&self) -> bool {
+        if let Some(framing) = self.fast_framing {
+            return framing.chunked;
+        }
         self.response_noted.transfer_encoding
             && self
                 .resp_header()
@@ -1009,6 +1126,21 @@ fn parse_resp_buffer<'buf, 'h>(
         httparse::Status::Complete(s) => HeaderParseState::Complete(s),
         _ => HeaderParseState::Partial,
     }
+}
+
+/// The index after the first empty line of `buf` that ends at or after `from - 2`, for a head whose lines end in
+/// CRLF or a bare LF.
+fn head_end(buf: &[u8], from: usize) -> Option<usize> {
+    let mut at = from.saturating_sub(2);
+    while let Some(offset) = buf.get(at..)?.iter().position(|byte| *byte == b'\n') {
+        let line_end = at + offset;
+        match (buf.get(line_end + 1), buf.get(line_end + 2)) {
+            (Some(b'\n'), _) => return Some(line_end + 2),
+            (Some(b'\r'), Some(b'\n')) => return Some(line_end + 3),
+            _ => at = line_end + 1,
+        }
+    }
+    None
 }
 
 // TODO: change it to to_buf
