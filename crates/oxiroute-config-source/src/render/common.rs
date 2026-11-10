@@ -17,6 +17,7 @@ impl Renderer {
             listener_workers,
             connection_scheduling,
             connection_age_ms,
+            tls_handshake_threads,
             retirement,
             management,
             registry,
@@ -47,6 +48,9 @@ impl Renderer {
         }
         if let Some(age) = connection_age_ms {
             self.integer_field("connection_age_ms", age);
+        }
+        if let Some(threads) = tls_handshake_threads {
+            self.integer_field("tls_handshake_threads", threads);
         }
         self.optional_table_field("retirement", retirement.as_ref(), Self::retirement);
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;

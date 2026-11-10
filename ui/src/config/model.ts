@@ -1022,6 +1022,7 @@ export interface CanonicalConfig {
   listener_workers?: number
   connection_scheduling?: ConnectionScheduling
   connection_age_ms?: number
+  tls_handshake_threads?: number
   retirement?: RetirementConfig
   management: ManagementConfig | null
   registry?: RegistryConfig | null

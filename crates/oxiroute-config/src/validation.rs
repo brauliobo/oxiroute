@@ -97,6 +97,15 @@ use upstream::{validate_l4_services, validate_proxy_protocol_timeout};
 const MAX_UDP_WIRE_DATAGRAM_BYTES: u64 = 65_507;
 const MAX_UDP_PROXY_V2_ADDRESS_HEADER_BYTES: u64 = 52;
 
+fn validate_tls_handshake_threads(config: &ConfigDraft) -> Result<(), ConfigError> {
+    match config.tls_handshake_threads {
+        Some(threads) if threads > ConfigDraft::MAX_TLS_HANDSHAKE_THREADS => {
+            Err(ConfigError::InvalidTlsHandshakeThreads(threads))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn validate_connection_age(config: &ConfigDraft) -> Result<(), ConfigError> {
     let Some(age) = config.connection_age_ms else {
         return Ok(());
@@ -132,6 +141,7 @@ pub(crate) fn validate_config_in_place(config: &mut ConfigDraft) -> Result<(), C
         return Err(ConfigError::InvalidListenerWorkers(workers));
     }
     validate_connection_age(config)?;
+    validate_tls_handshake_threads(config)?;
     retirement::validate_retirement(config)?;
     validate_management(config.management.as_ref())?;
     validate_stats(config.stats.as_ref())?;

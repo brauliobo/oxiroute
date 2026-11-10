@@ -23,6 +23,7 @@ fn config(name: &str, address: SocketAddr) -> ConfigDraft {
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         listeners: vec![oxiroute_config::Listener {
             name: name.into(),
@@ -43,6 +44,7 @@ fn empty_config() -> ConfigDraft {
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         version: 1,
         max_connections: None,

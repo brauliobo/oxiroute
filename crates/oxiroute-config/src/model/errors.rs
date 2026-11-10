@@ -440,6 +440,8 @@ pub enum ConfigError {
     InvalidStatsBinds,
     #[error("listener_workers {0} is invalid: it must be between 1 and 256")]
     InvalidListenerWorkers(u64),
+    #[error("tls_handshake_threads {0} is invalid: it must be between 0 and 64")]
+    InvalidTlsHandshakeThreads(u64),
     #[error("connection_age_ms {0} is invalid: it must be between 1 and 1000")]
     InvalidConnectionAge(u64),
     #[error("connection_age_ms needs connection_scheduling = \"aged_per_worker\"")]

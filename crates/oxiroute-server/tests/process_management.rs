@@ -2119,6 +2119,7 @@ fn management_config(
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         management: Some(Management {
             bind: management_address,
@@ -2183,6 +2184,7 @@ fn rtmp_listener_config(bind: ListenerBind) -> ConfigDraft {
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         listeners: vec![Listener {
             name: "live".into(),

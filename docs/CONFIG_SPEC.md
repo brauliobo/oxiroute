@@ -284,6 +284,15 @@ Current constraints:
   cross-thread wake-ups per request. The management, statistics, RTMP, `udp`, `http3` and
   `forward_http3` listeners keep their dedicated single threads. Changing the value is an ordinary
   reload: the replaced generation drains on its own threads.
+- Root `tls_handshake_threads` is an optional integer (0 to 64) that sets how many threads run the TLS handshakes of
+  every TLS listener. Omitted means one thread per 8 CPUs, at least 1 and at most 4. The accepted socket's whole server
+  handshake (key exchange, certificate selection, ALPN and client-certificate verification, signature) runs on these
+  threads and the established connection returns to its listener worker, so a burst of new connections no longer delays
+  the connections a worker is already serving. `0` runs the handshakes on the listener workers. The threads belong to the
+  generation: changing the value is an ordinary reload, new connections of the new generation use the new count and the
+  replaced generation finishes its handshakes on its own threads (as with `listener_workers`). The count does not bound how
+  many handshakes wait: `max_connections` and the handshake timeout do. It does not change certificate selection,
+  protocols, ciphers or session resumption.
 - Root `connection_scheduling` is optional: `work_stealing` (the default) lets the workers of a listener
   share their ready connections; `aged_per_worker` gives every worker its own queue and its own I/O driver, places
   each new connection on the worker with the fewest open connections, and serves the newest ready connection first

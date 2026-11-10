@@ -101,6 +101,7 @@ fn exclude_nonintegrated_component_controls(
         "listener_workers",
         "connection_scheduling",
         "connection_age_ms",
+        "tls_handshake_threads",
         "http_services[].drain_deadline_ms",
         "forward_proxy_services[].drain_deadline_ms",
         "l4_services[].drain_deadline_ms",

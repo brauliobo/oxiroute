@@ -21,6 +21,10 @@ pub struct ConfigDraft {
     /// pass over the worker's ready connections takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_age_ms: Option<u64>,
+    /// Threads that run the TLS handshakes of every TLS listener, away from the workers that serve connections.
+    /// Omitted means one thread per 8 CPUs (1 to 4); `0` handshakes on the workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_handshake_threads: Option<u64>,
     /// Bounds on how long and how many replaced generations keep serving their in-flight work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<Retirement>,
@@ -53,6 +57,16 @@ pub struct ConfigDraft {
 impl ConfigDraft {
     pub const MAX_LISTENER_WORKERS: u64 = 256;
     pub const MAX_CONNECTION_AGE_MS: u64 = 1_000;
+    pub const MAX_TLS_HANDSHAKE_THREADS: u64 = 64;
+
+    /// The handshake threads for a host with `cpus` CPUs: the configured count, or one per 8 CPUs between 1 and 4.
+    #[must_use]
+    pub fn effective_tls_handshake_threads(&self, cpus: usize) -> usize {
+        self.tls_handshake_threads.map_or_else(
+            || cpus.div_ceil(8).clamp(1, 4),
+            |threads| usize::try_from(threads).unwrap_or(usize::MAX),
+        )
+    }
 
     /// Whether the workers of a listener serve per-worker queues.
     #[must_use]

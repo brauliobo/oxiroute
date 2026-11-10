@@ -81,6 +81,7 @@ pub(super) fn editable_config() -> ConfigDraft {
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         certificates: vec![Certificate {
             name: "test-certificate".into(),

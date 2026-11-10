@@ -183,6 +183,7 @@ fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) 
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         listeners: vec![Listener {
             name: "live".into(),
