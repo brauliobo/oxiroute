@@ -1,9 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-pub(super) const KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
-pub(super) const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
-
 pub(super) fn request_deadline(
     service: &HttpServicePlan,
     downstream_timeouts: DownstreamTimeoutPolicy,
@@ -73,27 +70,8 @@ pub(super) fn h3_static_validator_headers(
     headers
 }
 
-fn strip_h3_hop_by_hop_headers(headers: &mut HeaderMap) -> Result<(), ()> {
-    let mut nominated = Vec::new();
-    for value in headers.get_all(CONNECTION) {
-        for token in value.to_str().map_err(|_| ())?.split(',') {
-            nominated.push(HeaderName::from_bytes(token.trim().as_bytes()).map_err(|_| ())?);
-        }
-    }
-    for name in nominated {
-        headers.remove(name);
-    }
-    for name in [
-        CONNECTION,
-        KEEP_ALIVE,
-        HeaderName::from_static("proxy-authenticate"),
-        HeaderName::from_static("proxy-authorization"),
-        PROXY_CONNECTION,
-        TE,
-        TRAILER,
-        TRANSFER_ENCODING,
-        UPGRADE,
-    ] {
+pub(super) fn strip_h3_hop_by_hop_headers(headers: &mut HeaderMap) -> Result<(), ()> {
+    for name in hop_by_hop_removals(headers).map_err(|_| ())? {
         headers.remove(name);
     }
     Ok(())

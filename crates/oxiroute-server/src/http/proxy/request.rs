@@ -246,6 +246,16 @@ pub(super) fn apply_request_header_mutations(
     Ok(())
 }
 
+/// Removes the hop-by-hop fields from the downstream request itself, before anything reads or adds a header; the
+/// downstream session keeps the facts of the request it now holds.
+pub(super) fn strip_hop_by_hop(session: &mut Session) -> Result<(), InvalidNomination> {
+    let (http2, facts) = (session.is_http2(), session.request_facts());
+    let request = session.req_header_mut_keeping_facts();
+    let facts = strip_request(request, facts, http2)?;
+    session.set_request_facts(facts);
+    Ok(())
+}
+
 fn connection_tokens(headers: &http::HeaderMap) -> impl Iterator<Item = &str> {
     headers
         .get_all(CONNECTION)

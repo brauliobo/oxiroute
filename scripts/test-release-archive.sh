@@ -61,4 +61,16 @@ tar --delete --file="${test_root}/missing-required.tar" "${root}/Cargo.lock"
 gzip -n <"${test_root}/missing-required.tar" >"${test_root}/missing-required.tar.gz"
 expect_rejected 'an omitted required file' "${test_root}/missing-required.tar.gz"
 
+# A commit that only touches the excluded recipe directory must not change the archive, so pinning its checksum
+# after the release commit keeps the pin valid.
+epoch_source="${test_root}/epoch-source"
+git clone --no-hardlinks --quiet "${repo_dir}" "${epoch_source}"
+cp "${repo_dir}/scripts/create-release-archive.sh" "${repo_dir}/scripts/release-archive-policy.sh" \
+  "${repo_dir}/scripts/verify-release-archive.sh" "${epoch_source}/scripts/"
+"${epoch_source}/scripts/create-release-archive.sh" "${test_root}/before-pin.tar.gz" "${version}" >/dev/null
+printf '\n' >>"${epoch_source}/packaging/arch/PKGBUILD"
+GIT_COMMITTER_DATE="1700000000 +0000" git -C "${epoch_source}" -c user.name=test -c user.email=test@example.com commit --quiet -m 'packaging: pin' -- packaging/arch/PKGBUILD
+"${epoch_source}/scripts/create-release-archive.sh" "${test_root}/after-pin.tar.gz" "${version}" >/dev/null
+cmp "${test_root}/before-pin.tar.gz" "${test_root}/after-pin.tar.gz"
+
 printf 'release archive policy tests passed\n'

@@ -119,6 +119,11 @@ jobs:
       - name: Test the release archive policy
         run: ./scripts/test-release-archive.sh
 
+      - name: Test the release binary build gates
+        run: |
+          ./scripts/test-verify-binary-paths.sh
+          ./benchmarks/scripts/test-pgo.sh
+
       - name: Build and verify the source archive from the commit under test
         run: ./scripts/create-release-archive.sh "${RUNNER_TEMP}/oxiroute-ci.tar.gz" ci
 
@@ -170,6 +175,12 @@ jobs:
 
       - name: Validate service and package lifecycle metadata
         run: ./packaging/arch/test-service.sh
+
+      - name: Verify the package recipes pin the checksums of the files they ship
+        run: |
+          ./packaging/arch/test-verify-checksums.sh
+          ./packaging/arch/test-pin-bin-release.sh
+          ./packaging/arch/verify-checksums.sh
 
   ui:
     name: UI tests and build

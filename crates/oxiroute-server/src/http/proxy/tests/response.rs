@@ -209,9 +209,9 @@ fn hop_by_hop_adapters_remove_nominations_from_every_connection_field() {
 }
 
 #[test]
-fn hop_by_hop_adapters_reject_empty_nominations_before_mutating() {
+fn hop_by_hop_adapters_reject_invalid_nominations_before_mutating() {
     let mut initial = HeaderMap::new();
-    initial.insert(CONNECTION, HeaderValue::from_static("x-first, "));
+    initial.insert(CONNECTION, HeaderValue::from_static("x-first, two words"));
     initial.insert("x-first", HeaderValue::from_static("still-present"));
     let mut map = initial.clone();
     assert!(apply_response_policy_map(StatusCode::OK, &mut map, &empty_proxy_policy()).is_err());
