@@ -1,6 +1,8 @@
 //! Requests of the differential tests: browser and tool shaped heads, hop-by-hop fields and `Connection` tokens,
 //! smuggling shaped framing, request targets of every form, `Expect`, upgrades, pipelining and split writes.
 
+use std::fmt::Write as _;
+
 pub struct Case {
     pub name: String,
     writes: Vec<Vec<u8>>,
@@ -36,6 +38,14 @@ fn get(path: &str, headers: &str) -> String {
     format!("GET {path} HTTP/1.1\r\n{HOST}{headers}\r\n")
 }
 
+fn numbered_headers(count: usize) -> String {
+    (0..count).fold(String::new(), |mut out, i| {
+        let _ = write!(out, "X-H{i}: v{i}\r\n");
+        out
+    })
+}
+
+#[allow(clippy::too_many_lines)]
 pub fn requests(base: &str) -> Vec<Case> {
     let mut cases = Vec::new();
     add(&mut cases, "plain", get(base, ""));
@@ -388,35 +398,16 @@ pub fn requests(base: &str) -> Vec<Case> {
     add(&mut cases, "no colon", get(base, "X-Broken\r\n"));
     add(&mut cases, "underscore name", get(base, "X_Under: 1\r\n"));
     add(&mut cases, "bad name char", get(base, "X@Bad: 1\r\n"));
-    add(
-        &mut cases,
-        "many headers",
-        get(
-            base,
-            &(0..70)
-                .map(|i| format!("X-H{i}: v{i}\r\n"))
-                .collect::<String>(),
-        ),
-    );
+    add(&mut cases, "many headers", get(base, &numbered_headers(70)));
     add(
         &mut cases,
         "sixty four headers",
-        get(
-            base,
-            &(0..63)
-                .map(|i| format!("X-H{i}: v{i}\r\n"))
-                .collect::<String>(),
-        ),
+        get(base, &numbered_headers(63)),
     );
     add(
         &mut cases,
         "two hundred sixty headers",
-        get(
-            base,
-            &(0..260)
-                .map(|i| format!("X-H{i}: v{i}\r\n"))
-                .collect::<String>(),
-        ),
+        get(base, &numbered_headers(260)),
     );
     add(
         &mut cases,
@@ -692,7 +683,7 @@ pub fn sequences() -> Vec<Case> {
     let close = get("/r", "Connection: close\r\n");
     let body = format!("POST /r HTTP/1.1\r\n{HOST}Content-Length: 3\r\n\r\nabc");
     let upgrade = get("/r", "Connection: Upgrade\r\nUpgrade: websocket\r\n");
-    let absolute = format!("GET http://example.test/r HTTP/1.1\r\nHost: example.test\r\n\r\n");
+    let absolute = String::from("GET http://example.test/r HTTP/1.1\r\nHost: example.test\r\n\r\n");
     vec![
         Case::many(
             "lane lane lane",
@@ -739,7 +730,7 @@ pub fn sequences() -> Vec<Case> {
                 lane.as_bytes(),
             ],
         ),
-        Case::many("many keep-alive", &vec![lane.as_bytes(); 12]),
+        Case::many("many keep-alive", &[lane.as_bytes(); 12]),
     ]
 }
 
@@ -768,6 +759,7 @@ pub fn replies() -> Vec<(&'static str, &'static [u8], bool)> {
         ("chunked", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-A: 1\r\n\r\n5\r\nhello\r\n3\r\nabc\r\n0\r\n\r\n", false),
         ("chunked with a length", b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", false),
         ("close delimited", b"HTTP/1.1 200 OK\r\nX-A: 1\r\n\r\nbody until close", true),
+        ("close delimited, origin stays open", b"HTTP/1.1 200 OK\r\nX-A: 1\r\n\r\nopen", false),
         ("http 1.0 close delimited", b"HTTP/1.0 200 OK\r\nX-A: 1\r\n\r\nbody until close", true),
         ("http 1.0 with a length", b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok", false),
         ("no content", b"HTTP/1.1 204 No Content\r\nX-A: 1\r\n\r\n", false),

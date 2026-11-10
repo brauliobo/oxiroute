@@ -113,6 +113,7 @@ impl HttpRequestContext {
     }
 
     /// An attempt could not connect: records the failure and decides, with the retry policy, whether to go on.
+    #[allow(clippy::unnecessary_box_returns)]
     pub(super) fn connect_failed(&mut self, mut error: Box<Error>) -> Box<Error> {
         if let Some(cancelled) = self.cancelled_by_operator() {
             return cancelled;
@@ -213,6 +214,7 @@ impl HttpRequestContext {
     }
 
     /// An attempt ended in `error`: what `error_while_proxy` settles for a route that does not retry.
+    #[allow(clippy::unnecessary_box_returns)]
     pub(super) fn attempt_failed_for_lane(&mut self, mut error: Box<Error>) -> Box<Error> {
         if let Some(cancelled) = self.cancelled_by_operator() {
             return cancelled;
