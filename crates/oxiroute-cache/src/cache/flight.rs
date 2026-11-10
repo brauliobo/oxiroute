@@ -127,18 +127,7 @@ impl Shared {
 impl State {
     pub(super) fn next_sequence(&mut self) -> u64 {
         if self.sequence == u64::MAX {
-            let mut order = self
-                .entries
-                .iter()
-                .map(|(key, stored)| (stored.last_access, key.clone()))
-                .collect::<Vec<_>>();
-            order.sort_unstable();
-            for (index, (_, key)) in order.into_iter().enumerate() {
-                if let Some(stored) = self.entries.get_mut(&key) {
-                    stored.last_access = index as u64;
-                }
-            }
-            self.sequence = self.entries.len() as u64;
+            self.sequence = self.entries.renumber();
         }
         self.sequence += 1;
         self.sequence
@@ -181,14 +170,15 @@ pub(super) fn matching_key(
 ) -> Option<CacheKey> {
     state
         .entries
-        .keys()
+        .variants(base)
+        .iter()
         .filter(|key| {
             key.matches_request(base, headers, max_key_bytes)
-                && state.entries.get(*key).is_some_and(|stored| {
+                && state.entries.get(key).is_some_and(|stored| {
                     !authorized || stored.entry.policy.allows_authorized_reuse
                 })
         })
-        .max_by_key(|key| state.entries.get(*key).map_or(0, |entry| entry.last_access))
+        .max_by_key(|key| state.entries.get(key).map_or(0, |entry| entry.last_access))
         .cloned()
 }
 
@@ -205,8 +195,9 @@ pub(super) fn insert_entry(
     }
     let mut conflicting = state
         .entries
-        .keys()
-        .filter(|key| key.base() == entry.key.base() && !key.same_vary_schema(&entry.key))
+        .variants(entry.key.base())
+        .iter()
+        .filter(|key| !key.same_vary_schema(&entry.key))
         .cloned()
         .collect::<Vec<_>>();
     conflicting.sort_unstable();
@@ -220,14 +211,7 @@ pub(super) fn insert_entry(
     while state.entries.len() >= config.max_entries
         || state.bytes_used.saturating_add(entry.charge) > config.max_total_bytes
     {
-        let lru = state
-            .entries
-            .iter()
-            .min_by(|(left_key, left), (right_key, right)| {
-                (left.last_access, *left_key).cmp(&(right.last_access, *right_key))
-            })
-            .map(|(key, _)| key.clone());
-        let Some(lru) = lru else {
+        let Some(lru) = state.entries.least_recently_used().cloned() else {
             break;
         };
         if let Some(old) = state.entries.remove(&lru) {
@@ -238,9 +222,7 @@ pub(super) fn insert_entry(
     }
     let last_access = state.next_sequence();
     state.bytes_used = state.bytes_used.saturating_add(entry.charge);
-    state
-        .entries
-        .insert(entry.key.clone(), StoredEntry { entry, last_access });
+    state.entries.insert(entry, last_access);
     state.stats.evictions = state.stats.evictions.saturating_add(evicted as u64);
     InsertionDelta {
         inserted,

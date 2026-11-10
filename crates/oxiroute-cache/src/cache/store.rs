@@ -18,16 +18,11 @@ pub(super) struct Shared {
 pub(super) struct CacheIdentity;
 
 pub(super) struct State {
-    pub(super) entries: HashMap<CacheKey, StoredEntry>,
+    pub(super) entries: Entries,
     pub(super) flights: HashMap<BaseKey, Flight>,
     pub(super) bytes_used: usize,
     pub(super) sequence: u64,
     pub(super) stats: CacheStats,
-}
-
-pub(super) struct StoredEntry {
-    pub(super) entry: PreparedEntry,
-    pub(super) last_access: u64,
 }
 
 pub(super) struct Flight {
@@ -61,7 +56,7 @@ impl Cache {
                 config,
                 clock,
                 state: Mutex::new(State {
-                    entries: HashMap::new(),
+                    entries: Entries::default(),
                     flights: HashMap::new(),
                     bytes_used: 0,
                     sequence: 0,
@@ -315,9 +310,8 @@ impl Cache {
         let access = state.next_sequence();
         let stored = state
             .entries
-            .get_mut(&key)
+            .touch(&key, access)
             .ok_or(CacheError::InvalidNotModified)?;
-        stored.last_access = access;
         let age = stored
             .entry
             .policy
@@ -395,7 +389,7 @@ impl Cache {
             response_snapshot(&stored.entry, age)
         };
         let access = state.next_sequence();
-        state.entries.get_mut(key)?.last_access = access;
+        state.entries.touch(key, access)?;
         state.stats.stale_if_error = state.stats.stale_if_error.saturating_add(1);
         Some(response)
     }
@@ -462,12 +456,7 @@ impl Cache {
     #[must_use]
     pub fn purge_base(&self, base: &BaseKey) -> PurgeResult {
         let mut state = self.shared.lock();
-        let keys = state
-            .entries
-            .keys()
-            .filter(|key| key.base() == base)
-            .cloned()
-            .collect::<Vec<_>>();
+        let keys = state.entries.variants(base).to_vec();
         let mut result = PurgeResult::default();
         for key in keys {
             if let Some(stored) = state.entries.remove(&key) {
