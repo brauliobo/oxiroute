@@ -160,6 +160,9 @@ connection-pool experiments:
   `HttpServerApp::idle_keepalive_timeout()` (new, default `None`) or else the keep-alive seconds of the last response
   (`HttpPersistentSettings::idle_timeout`). A stream that cannot tell if it is readable (TLS) is ready at once, and the
   request read that follows waits as before.
+- `apps/mod.rs` `process_new`: the HTTP/1 request future is boxed per request (`Box::pin`) so the future of the
+  connection, which lives for the connection, no longer contains it, and the HTTP/2 loop is the boxed free function
+  `process_h2` (same code, `self` renamed to `app`).
 - `protocols/l4/lazy_read.rs` `CoalescingWriter` takes its 1,460-byte buffer from a per-thread pool when the first
   bytes are staged and gives it back once they are sent (flush, or a large write behind the staged head), instead of
   one buffer per connection for its whole life.

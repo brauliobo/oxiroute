@@ -732,6 +732,67 @@ pub trait HttpServerApp {
     }
 }
 
+/// The HTTP/2 connection loop. Boxed by its caller: its state is not needed by an HTTP/1 connection, which must stay
+/// small while it waits.
+async fn process_h2<T>(app: &Arc<T>, stream: Stream, shutdown: &ShutdownWatch) -> Option<Stream>
+where
+    T: HttpServerApp + Send + Sync + 'static,
+{
+    // create a shared connection digest
+    let digest = Arc::new(Digest {
+        ssl_digest: stream.get_ssl_digest(),
+        // TODO: log h2 handshake time
+        timing_digest: stream.get_timing_digest(),
+        proxy_digest: stream.get_proxy_digest(),
+        socket_digest: stream.get_socket_digest(),
+    });
+
+    let h2_options = app.h2_options();
+    let h2_conn = server::handshake(stream, h2_options).await;
+    let mut h2_conn = match h2_conn {
+        Err(e) => {
+            error!("H2 handshake error {e}");
+            return None;
+        }
+        Ok(c) => c,
+    };
+
+    let mut shutdown = shutdown.clone();
+    let mut shutting_down = false;
+    loop {
+        // this loop ends when the client decides to close the h2 conn
+        // TODO: add a timeout?
+        let h2_stream = tokio::select! {
+            _ = shutdown.changed(), if !shutting_down => {
+                // GOAWAY: the client opens no more streams. Streams it opened before it saw the GOAWAY
+                // are still waiting to be accepted, and `accept` also ends the connection once the
+                // last stream is done, so the loop goes on accepting instead of only waiting for the
+                // close: a stream that is never accepted is never answered either.
+                h2_conn.graceful_shutdown();
+                shutting_down = true;
+                continue;
+            }
+            h2_stream = server::HttpSession::from_h2_conn(&mut h2_conn, digest.clone()) => h2_stream
+        };
+        let h2_stream = match h2_stream {
+            Err(e) => {
+                // It is common for the client to just disconnect TCP without properly
+                // closing H2. So we don't log the errors here
+                debug!("H2 error when accepting new stream {e}");
+                return None;
+            }
+            Ok(s) => s?, // None means the connection is ready to be closed
+        };
+        let app = app.clone();
+        let shutdown = shutdown.clone();
+        pingora_runtime::current_handle().spawn(async move {
+            // Note, `PersistentSettings` not currently relevant for h2
+            app.process_new_http(ServerSession::new_http2(h2_stream), &shutdown)
+                .await;
+        });
+    }
+}
+
 #[async_trait]
 impl<T> ServerApp for T
 where
@@ -767,59 +828,7 @@ where
             }
         }
         if h2c || matches!(stream.selected_alpn_proto(), Some(ALPN::H2)) {
-            // create a shared connection digest
-            let digest = Arc::new(Digest {
-                ssl_digest: stream.get_ssl_digest(),
-                // TODO: log h2 handshake time
-                timing_digest: stream.get_timing_digest(),
-                proxy_digest: stream.get_proxy_digest(),
-                socket_digest: stream.get_socket_digest(),
-            });
-
-            let h2_options = self.h2_options();
-            let h2_conn = server::handshake(stream, h2_options).await;
-            let mut h2_conn = match h2_conn {
-                Err(e) => {
-                    error!("H2 handshake error {e}");
-                    return None;
-                }
-                Ok(c) => c,
-            };
-
-            let mut shutdown = shutdown.clone();
-            let mut shutting_down = false;
-            loop {
-                // this loop ends when the client decides to close the h2 conn
-                // TODO: add a timeout?
-                let h2_stream = tokio::select! {
-                    _ = shutdown.changed(), if !shutting_down => {
-                        // GOAWAY: the client opens no more streams. Streams it opened before it saw the GOAWAY
-                        // are still waiting to be accepted, and `accept` also ends the connection once the
-                        // last stream is done, so the loop goes on accepting instead of only waiting for the
-                        // close: a stream that is never accepted is never answered either.
-                        h2_conn.graceful_shutdown();
-                        shutting_down = true;
-                        continue;
-                    }
-                    h2_stream = server::HttpSession::from_h2_conn(&mut h2_conn, digest.clone()) => h2_stream
-                };
-                let h2_stream = match h2_stream {
-                    Err(e) => {
-                        // It is common for the client to just disconnect TCP without properly
-                        // closing H2. So we don't log the errors here
-                        debug!("H2 error when accepting new stream {e}");
-                        return None;
-                    }
-                    Ok(s) => s?, // None means the connection is ready to be closed
-                };
-                let app = self.clone();
-                let shutdown = shutdown.clone();
-                pingora_runtime::current_handle().spawn(async move {
-                    // Note, `PersistentSettings` not currently relevant for h2
-                    app.process_new_http(ServerSession::new_http2(h2_stream), &shutdown)
-                        .await;
-                });
-            }
+            return Box::pin(process_h2(self, stream, shutdown)).await;
         } else if custom || matches!(stream.selected_alpn_proto(), Some(ALPN::Custom(_))) {
             return self.clone().process_custom_session(stream, shutdown).await;
         } else {
@@ -837,7 +846,8 @@ where
                     .and_then(|opts| opts.keepalive_request_limit),
             );
 
-            let mut result = self.process_new_http_inline(session, shutdown).await;
+            // Boxed per request: the connection's own future stays small while it waits between requests.
+            let mut result = Box::pin(self.process_new_http_inline(session, shutdown)).await;
             while let Some((mut stream, persistent_settings)) = result.map(|r| r.consume()) {
                 // The connection waits for its next request holding no session and no request state.
                 let idle = self.idle_keepalive_timeout().or_else(|| {
@@ -853,7 +863,7 @@ where
                     persistent_settings.apply_to_session(&mut session);
                 }
 
-                result = self.process_new_http_inline(session, shutdown).await;
+                result = Box::pin(self.process_new_http_inline(session, shutdown)).await;
             }
         }
         None

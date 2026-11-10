@@ -346,9 +346,11 @@ where
                         (server_reused, error)
                     }
                     ClientSession::H2(mut h2) => {
-                        let (server_reused, mut error) = self
-                            .proxy_to_h2_upstream(session, &mut h2, client_reused, peer, ctx)
-                            .await;
+                        // Boxed: HTTP/2 and custom upstreams must not enlarge the request future of HTTP/1 ones.
+                        let (server_reused, mut error) = Box::pin(
+                            self.proxy_to_h2_upstream(session, &mut h2, client_reused, peer, ctx),
+                        )
+                        .await;
                         let session = ClientSession::H2(h2);
                         self.client_upstream
                             .release_http_session(session, peer, peer.idle_timeout())
@@ -375,9 +377,10 @@ where
                         (server_reused, error)
                     }
                     ClientSession::Custom(mut c) => {
-                        let (server_reused, error) = self
-                            .proxy_to_custom_upstream(session, &mut c, client_reused, peer, ctx)
-                            .await;
+                        let (server_reused, error) = Box::pin(
+                            self.proxy_to_custom_upstream(session, &mut c, client_reused, peer, ctx),
+                        )
+                        .await;
                         let session = ClientSession::Custom(c);
                         self.client_upstream
                             .release_http_session(session, peer, peer.idle_timeout())
@@ -1032,7 +1035,22 @@ where
             .await
     }
 
-    async fn handle_error(
+    /// Boxed: the future of this rarely taken path is 4 KiB and would otherwise be part of every request's state.
+    fn handle_error<'a>(
+        &'a self,
+        session: Session,
+        ctx: &'a mut <SV as ProxyHttp>::CTX,
+        e: Box<Error>,
+        context: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ReusedHttpStream>> + Send + 'a>>
+    where
+        SV: ProxyHttp + Send + Sync + 'static,
+        <SV as ProxyHttp>::CTX: Send + Sync,
+    {
+        Box::pin(self.handle_error_unboxed(session, ctx, e, context))
+    }
+
+    async fn handle_error_unboxed(
         &self,
         mut session: Session,
         ctx: &mut <SV as ProxyHttp>::CTX,
