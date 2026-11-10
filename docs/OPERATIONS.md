@@ -123,6 +123,16 @@ certificate sampling happens when the management API or `/metrics` asks for it. 
 thread sleeps until its earliest armed timer (and wakes once a second at most while none is armed).
 `docs/developer/PERF_6_2_IDLE_AUDIT.md` has the measurements.
 
+## TLS handshake threads
+
+TLS handshakes cost 0.6M to 1.7M instructions each (an RSA-2048 certificate costs 15 times the signature of an ECDSA P-256 one),
+so they run on `tls_handshake_threads` threads (default one per 8 CPUs, 1 to 4) instead of on the listener workers; a
+burst of new connections then adds latency to the connections being served only by the CPU it takes, not by queueing them
+behind handshakes. A busy handshake thread shows in `top -H` as `downstream TLS offload`. Raise the value when
+a listener takes thousands of new TLS connections per second and those threads are saturated; set `0` to handshake on the
+workers. A change is an ordinary reload (the new generation starts its own threads, the replaced one finishes its handshakes
+on its own). Handshakes waiting for a thread count against `max_connections` and the handshake timeout.
+
 ## Shutdown
 
 Pingora is configured with a 3-second connection grace period followed by a 2-second runtime

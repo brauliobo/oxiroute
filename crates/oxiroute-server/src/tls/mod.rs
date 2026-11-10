@@ -20,7 +20,6 @@ mod certbot_watcher;
 mod certificate;
 mod file_reconcile;
 mod file_watcher;
-mod handshake_pool;
 mod tls_alpn;
 mod upstream;
 mod watcher_engine;

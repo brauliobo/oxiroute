@@ -209,6 +209,8 @@ def build(args):
             dict(listener, name=f"bench{index}", bind={"type": "socket", "address": f"127.0.0.1:{args.proxy_port + 10 + index}"}))
     if args.workers:
         config["listener_workers"] = args.workers
+    if args.tls_handshake_threads >= 0:
+        config["tls_handshake_threads"] = args.tls_handshake_threads
     if on("l4"):
         config["upstream_pools"].append({
             "name": "echo",
@@ -245,6 +247,8 @@ def main():
     parser.add_argument("--servers", type=int, default=1)
     parser.add_argument("--listeners", type=int, default=1)
     parser.add_argument("--workers", type=int, default=0, help="listener_workers (0 leaves the setting out)")
+    parser.add_argument("--tls-handshake-threads", type=int, default=-1,
+                        help="tls_handshake_threads (-1 leaves the setting out: automatic, 0: inline handshakes)")
     parser.add_argument("--run-dir", default="/tmp")
     parser.add_argument("--feature", action="append", default=[])
     args = parser.parse_args()

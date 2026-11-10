@@ -94,6 +94,9 @@ alloc_bytes_per_req clock_gettime_per_req`, `heap_live_bytes_per_conn rss_bytes_
 * Scaling over the worker threads of one listener (`listener_workers`): `scale_w{1,2,4,8}` and `scale_all_w{1,2,4,8}`;
   they need `N + 1` proxy CPUs (`R2_PROXY_CPUS=4-11`). Run them with `--sys` to read the futex calls per request
   (lock waits) next to `vctxsw_per_req` (voluntary context switches: a thread that slept on a lock or a wake-up).
+* TLS handshake offload: `tls_storm{1000,3000}_h2_c1s1` serve one HTTP/2 stream while `r2tool storm` opens that many TLS
+  1.3 handshakes per second on other CPUs (`R2_STORM_CPUS`), and the `_inline` variants set `tls_handshake_threads = 0`
+  (handshakes on the worker thread) for the comparison. The p99 and p99.9 columns are the result.
 * Load-aware pools: `pool_{lc,wrr}_s{8,64,200}` (`least_connections` and `weighted_round_robin` over N servers).
 * `--lock-batch N` holds the shared benchmark lock across N consecutive lanes (re-entrant) so long runs are not starved.
 
