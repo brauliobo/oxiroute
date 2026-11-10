@@ -143,7 +143,7 @@ Manual recorder responses are exact:
 ### Configuration authentication
 
 Whenever `management` is configured, startup requires a valid management token file. The packaged
-service supplies its path through `OXIROUTE_MANAGEMENT_TOKEN_FILE`; the file is opened without
+service supplies its path through `management.token_file` or, as the fallback, `OXIROUTE_MANAGEMENT_TOKEN_FILE`; the file is opened without
 following symlinks, MUST be a regular file with mode `0400` or `0600`, and is bounded to 514 bytes so
 a maximum-size token may include one line ending. One trailing LF or CRLF is removed; the remaining
 token MUST be 32 through 512 visible ASCII bytes (`0x21` through `0x7e`). Other whitespace is part
@@ -448,12 +448,13 @@ category, result, and optional configuration revision. Request bodies, bearer va
 certificate material, endpoint addresses, and arbitrary query strings are not persisted.
 
 The store is initialized under the management token directory as `audit/`, or under the explicit
-`OXIROUTE_AUDIT_DIR` path. Directories are descriptor-relative and mode `0700`; audit files are mode
-`0600`. Retention, record, file, total-size, and rotated-file limits are bounded by the corresponding
-`OXIROUTE_AUDIT_MAX_*` environment variables. Corrupt lines are skipped and reported as degraded;
+`audit.dir` path (the deprecated `OXIROUTE_AUDIT_DIR` variable fills it when the configuration omits it).
+Directories are descriptor-relative and mode `0700`; audit files are mode `0600`. Retention, record, file,
+total-size, and rotated-file limits are bounded by the corresponding `audit.max_*` configuration keys
+(the deprecated `OXIROUTE_AUDIT_MAX_*` variables fill omitted keys). Corrupt lines are skipped and reported as degraded;
 control operations continue without treating audit persistence failure as an operation failure.
 
-The store keeps its retained records (at most `OXIROUTE_AUDIT_MAX_RECORDS`) in memory and mirrors them to the
+The store keeps its retained records (at most `audit.max_records`) in memory and mirrors them to the
 files, so reading, counting and appending never rescan the files. Operator actions (reloads, imports,
 certificate and administrative operations) are written and synced before the operation is reported. Records
 that follow the rate of the traffic, namely upstream health and passive ejection or recovery events and RTMP
