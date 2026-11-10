@@ -15,6 +15,7 @@
 //! The abstraction and implementation interface for service application logic
 
 pub mod http_app;
+mod idle_wait;
 pub mod prometheus_http_app;
 
 use crate::server::ShutdownWatch;
@@ -623,6 +624,13 @@ impl HttpPersistentSettings {
         }
     }
 
+    /// How long the connection may wait for its next request, when this keep-alive says (`0` is no limit).
+    fn idle_timeout(&self) -> Option<Duration> {
+        self.keepalive_timeout
+            .filter(|seconds| *seconds > 0)
+            .map(Duration::from_secs)
+    }
+
     pub fn apply_to_session(self, session: &mut ServerSession) {
         let Self {
             keepalive_timeout,
@@ -688,6 +696,12 @@ pub trait HttpServerApp {
         Self: Send + Sync,
     {
         async move { self.process_new_http(session, shutdown).await }
+    }
+
+    /// How long an HTTP/1 connection may sit idle between two requests before it is closed, when the application sets
+    /// it apart from the keep-alive of the response. `None` leaves it to the keep-alive of the last response.
+    fn idle_keepalive_timeout(&self) -> Option<Duration> {
+        None
     }
 
     /// Provide options on how HTTP/2 connection should be established. This function will be called
@@ -824,7 +838,16 @@ where
             );
 
             let mut result = self.process_new_http_inline(session, shutdown).await;
-            while let Some((stream, persistent_settings)) = result.map(|r| r.consume()) {
+            while let Some((mut stream, persistent_settings)) = result.map(|r| r.consume()) {
+                // The connection waits for its next request holding no session and no request state.
+                let idle = self.idle_keepalive_timeout().or_else(|| {
+                    persistent_settings
+                        .as_ref()
+                        .and_then(HttpPersistentSettings::idle_timeout)
+                });
+                if !idle_wait::wait_for_next_request(&mut stream, idle, shutdown).await {
+                    break;
+                }
                 let mut session = ServerSession::new_http1(stream);
                 if let Some(persistent_settings) = persistent_settings {
                     persistent_settings.apply_to_session(&mut session);

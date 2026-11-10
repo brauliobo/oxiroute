@@ -154,6 +154,12 @@ connection-pool experiments:
 - `apps/mod.rs` `HttpServerApp::process_new_http_inline`: the HTTP/1 request loop awaits an application's request
   future where it stands instead of boxing it (`async_trait` copied 8 KiB and more of state machine to the heap for every
   request). The default calls `process_new_http`.
+- `apps/mod.rs` and `apps/idle_wait.rs`: after a reusable response the HTTP/1 loop of `process_new` waits for the next
+  request holding no `Session` and no request future (`wait_for_next_request`: `poll_read_ready` of the stream, the
+  shutdown watch, and the keep-alive timeout), then builds the session. The timeout is
+  `HttpServerApp::idle_keepalive_timeout()` (new, default `None`) or else the keep-alive seconds of the last response
+  (`HttpPersistentSettings::idle_timeout`). A stream that cannot tell if it is readable (TLS) is ready at once, and the
+  request read that follows waits as before.
 - `protocols/http/v1/common.rs` `RequestFacts` / `ResponseFacts`: while a head is parsed, the HTTP/1 server and client note
   whether it carries `Transfer-Encoding`, `Connection` and `Upgrade` and how many `Content-Length` headers it has, so the
   keepalive, framing, duplicate `Content-Length` and upgrade checks read flags instead of looking the headers up again. Header values are appended to
@@ -178,7 +184,7 @@ The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
-review the HTTP/2 shutdown accept loop, the header slots, request and response facts, the noted request write, inline request loop, the zero-copy request body and retry buffer, `try_read_response_task`, the connector hook, admission guard and handshake-timeout hook, rendered response write, inline Date and Connection lines, header map headroom, single-clock timeouts, subject conversion, HTTP/1 HEAD informational-response,
+review the HTTP/2 shutdown accept loop, the parked idle wait, the header slots, request and response facts, the noted request write, inline request loop, the zero-copy request body and retry buffer, `try_read_response_task`, the connector hook, admission guard and handshake-timeout hook, rendered response write, inline Date and Connection lines, header map headroom, single-clock timeouts, subject conversion, HTTP/1 HEAD informational-response,
 owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, lazy read buffer, pooled
 gzip state, header-name cache, HTTP/2 test lifecycle, connection-pool changes, the idle pool and the listener `TCP_NODELAY`, then rerun the vendored
 gzip state, header-name cache, body buffer pool and hand-over, direct large body writes, coalescing write buffer,

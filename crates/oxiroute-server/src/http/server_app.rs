@@ -331,6 +331,10 @@ where
         }
     }
 
+    fn idle_keepalive_timeout(&self) -> Option<Duration> {
+        self.keepalive_timeout
+    }
+
     fn h2_options(&self) -> Option<H2Options> {
         self.inner.h2_options()
     }
