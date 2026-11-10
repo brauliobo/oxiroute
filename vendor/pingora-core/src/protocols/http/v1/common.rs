@@ -296,8 +296,11 @@ thread_local! {
     static NAMES: std::cell::RefCell<NameCache> = std::cell::RefCell::new(NameCache::default());
 }
 
-type NameCache =
-    std::collections::HashMap<Box<[u8]>, HeaderName, std::hash::BuildHasherDefault<FnvHasher>>;
+type NameCache = std::collections::HashMap<
+    Box<[u8]>,
+    (HeaderName, Noted),
+    std::hash::BuildHasherDefault<FnvHasher>,
+>;
 
 /// FNV-1a: header names are short and the cache is bounded, so the default keyed hash buys nothing.
 struct FnvHasher(u64);
@@ -320,21 +323,64 @@ impl std::hash::Hasher for FnvHasher {
     }
 }
 
-fn header_name(name: &[u8]) -> Result<HeaderName> {
+fn header_name(name: &[u8]) -> Result<(HeaderName, Noted)> {
+    let parse = || {
+        let parsed = HeaderName::from_bytes(name).map_err(|_| Error::new(InvalidHTTPHeader))?;
+        let noted = Noted::of(&parsed);
+        Ok((parsed, noted))
+    };
     if name.len() > NAME_CACHE_MAX_BYTES {
-        return HeaderName::from_bytes(name).map_err(|_| Error::new(InvalidHTTPHeader));
+        return parse();
     }
     NAMES.with_borrow_mut(|names| {
         if let Some(cached) = names.get(name) {
             return Ok(cached.clone());
         }
-        let parsed = HeaderName::from_bytes(name).map_err(|_| Error::new(InvalidHTTPHeader))?;
+        let parsed = parse()?;
         if names.len() >= NAME_CACHE_ENTRIES {
             names.clear();
         }
         names.insert(name.into(), parsed.clone());
         Ok(parsed)
     })
+}
+
+/// The hop-by-hop fields of RFC 9110 section 7.6.1 that need no handling of their own: `Connection`, `Upgrade` and
+/// `Transfer-Encoding` are the other three, and each has its own fact.
+pub fn is_hop_by_hop(name: &HeaderName) -> bool {
+    matches!(
+        *name,
+        header::TE | header::TRAILER | header::PROXY_AUTHENTICATE | header::PROXY_AUTHORIZATION
+    ) || matches!(name.as_str(), "keep-alive" | "proxy-connection")
+}
+
+/// What a header name contributes to [`RequestFacts`], decided once per name and cached with it.
+#[derive(Clone, Copy, Debug)]
+enum Noted {
+    Other,
+    ContentLength,
+    TransferEncoding,
+    Connection,
+    Upgrade,
+    HopByHop,
+}
+
+impl Noted {
+    fn of(name: &HeaderName) -> Self {
+        if *name == header::CONTENT_LENGTH {
+            Self::ContentLength
+        } else if *name == header::TRANSFER_ENCODING {
+            Self::TransferEncoding
+        } else if *name == header::CONNECTION {
+            Self::Connection
+        } else if *name == header::UPGRADE {
+            Self::Upgrade
+        } else if is_hop_by_hop(name) {
+            Self::HopByHop
+        } else {
+            Self::Other
+        }
+    }
 }
 
 /// What a request head says about its framing and connection handling, noted while its headers are appended so
@@ -346,6 +392,8 @@ pub struct RequestFacts {
     pub content_lengths: u8,
     pub connection: bool,
     pub upgrade: bool,
+    /// Whether any of the fields [`is_hop_by_hop`] names is present.
+    pub hop_by_hop: bool,
 }
 
 impl RequestFacts {
@@ -355,6 +403,7 @@ impl RequestFacts {
         content_lengths: 1,
         connection: true,
         upgrade: true,
+        hop_by_hop: true,
     };
 
     /// The facts of headers that were not noted as they were appended.
@@ -368,18 +417,18 @@ impl RequestFacts {
                 .count() as u8,
             connection: headers.contains_key(header::CONNECTION),
             upgrade: headers.contains_key(header::UPGRADE),
+            hop_by_hop: headers.keys().any(is_hop_by_hop),
         }
     }
 
-    fn note(&mut self, name: &HeaderName) {
-        if *name == header::CONTENT_LENGTH {
-            self.content_lengths = (self.content_lengths + 1).min(2);
-        } else if *name == header::TRANSFER_ENCODING {
-            self.transfer_encoding = true;
-        } else if *name == header::CONNECTION {
-            self.connection = true;
-        } else if *name == header::UPGRADE {
-            self.upgrade = true;
+    fn note(&mut self, noted: Noted) {
+        match noted {
+            Noted::ContentLength => self.content_lengths = (self.content_lengths + 1).min(2),
+            Noted::TransferEncoding => self.transfer_encoding = true,
+            Noted::Connection => self.connection = true,
+            Noted::Upgrade => self.upgrade = true,
+            Noted::HopByHop => self.hop_by_hop = true,
+            Noted::Other => {}
         }
     }
 }
@@ -414,8 +463,8 @@ pub(super) fn append_parsed_request_header(
     value: HeaderValue,
     facts: &mut RequestFacts,
 ) -> Result<()> {
-    let name = header_name(name)?;
-    facts.note(&name);
+    let (name, noted) = header_name(name)?;
+    facts.note(noted);
     headers.append(name, value);
     Ok(())
 }
@@ -472,7 +521,7 @@ mod test {
     fn cached_header_names_equal_parsed_ones() {
         for _ in 0..2 {
             assert_eq!(
-                header_name(b"X-Custom-Name").unwrap(),
+                header_name(b"X-Custom-Name").unwrap().0,
                 HeaderName::from_static("x-custom-name")
             );
         }
@@ -480,7 +529,7 @@ mod test {
         for index in 0..NAME_CACHE_ENTRIES * 2 {
             header_name(format!("x-n-{index}").as_bytes()).unwrap();
         }
-        assert_eq!(header_name(b"Host").unwrap(), header::HOST);
+        assert_eq!(header_name(b"Host").unwrap().0, header::HOST);
         assert!(header_name(&[b'a'; NAME_CACHE_MAX_BYTES + 1]).is_ok());
     }
 
