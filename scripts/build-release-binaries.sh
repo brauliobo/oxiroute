@@ -2,6 +2,8 @@
 # Builds the release binaries of one target and packs them as a tarball with checksum, build record and release-note
 # line. Profile-guided by default (benchmarks/scripts/pgo.sh: instrumented build, training replay, merge, profile-use
 # build); PGO=0 builds plain. A training or profile failure fails the script: there is no silent plain fallback.
+# The binaries must not embed a home-directory, runner or checkout path (scripts/verify-binary-paths.sh). The vendored
+# OpenSSL records its own build directory, so PGO_WORK must lie outside /home.
 #
 #   build-release-binaries.sh VERSION OUT_DIR
 #
@@ -39,6 +41,9 @@ else
   note="a plain build without profile-guided optimization (the release workflow was started with PGO disabled)"
   profile_sha256=null
 fi
+for binary in oxiroute oxiroute-worker-launcher; do
+  "${repo}/scripts/verify-binary-paths.sh" "${release}/${binary}" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
+done
 "${pgo_script}" smoke "${release}/oxiroute"
 
 stage=$(mktemp -d)
