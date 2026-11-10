@@ -184,3 +184,9 @@ gzip state, header-name cache, HTTP/2 test lifecycle, connection-pool changes, t
 gzip state, header-name cache, body buffer pool and hand-over, direct large body writes, coalescing write buffer,
 HTTP/2 test lifecycle, and connection-pool changes, then rerun the vendored
 connector pool, BodyReader, H1 client, and H2 server suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.
+- `listeners/tls/boringssl_openssl/mod.rs` adds `HandshakeExecutor` and `TlsSettings::set_handshake_executor`
+  (answering upstream's "TODO: be able to offload this handshake in a thread pool"). With an executor set, the
+  accepted `Acceptor` runs the whole server handshake (key exchange, certificate callback, signature) as a job on
+  the executor and hands the established stream back, aborting the job when the caller gives up (the service's
+  handshake timeout) and failing the connection when the executor refuses the job. `Acceptor` keeps its callbacks
+  in an `Arc` for that, and `tls_handshake` requires `S: 'static`. Without an executor the path is unchanged.

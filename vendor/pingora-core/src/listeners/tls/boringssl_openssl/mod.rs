@@ -13,8 +13,12 @@
 // limitations under the License.
 
 use log::debug;
-use pingora_error::{ErrorType, OrErr, Result};
+use pingora_error::{Error, ErrorType, OrErr, Result};
+use std::future::Future;
 use std::ops::{Deref, DerefMut};
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::task::JoinHandle;
 
 use crate::listeners::tls::boringssl_openssl::alpn::valid_alpn;
 pub use crate::protocols::tls::ALPN;
@@ -39,15 +43,34 @@ unsafe extern "C" {
 }
 pub const TLS_CONF_ERR: ErrorType = ErrorType::Custom("TLSConfigError");
 
+/// Runs server side TLS handshakes on threads other than the one that owns the connection, so the
+/// key exchange and signature (hundreds of microseconds of CPU each) do not stall the connections
+/// that are being served on that thread.
+pub trait HandshakeExecutor: Send + Sync {
+    /// Starts `job`. `None` refuses it (the executor's queue is full) and the connection is dropped.
+    /// The job is aborted through the returned handle when the handshake is given up.
+    fn spawn(&self, job: Pin<Box<dyn Future<Output = ()> + Send>>) -> Option<JoinHandle<()>>;
+}
+
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub(crate) struct Acceptor {
     ssl_acceptor: SslAcceptor,
-    callbacks: Option<TlsAcceptCallbacks>,
+    callbacks: Option<Arc<TlsAcceptCallbacks>>,
+    executor: Option<Arc<dyn HandshakeExecutor>>,
 }
 
 /// The TLS settings of a listening endpoint
 pub struct TlsSettings {
     accept_builder: SslAcceptorBuilder,
     callbacks: Option<TlsAcceptCallbacks>,
+    executor: Option<Arc<dyn HandshakeExecutor>>,
 }
 
 impl From<SslAcceptorBuilder> for TlsSettings {
@@ -55,6 +78,7 @@ impl From<SslAcceptorBuilder> for TlsSettings {
         TlsSettings {
             accept_builder: settings,
             callbacks: None,
+            executor: None,
         }
     }
 }
@@ -93,6 +117,7 @@ impl TlsSettings {
         Ok(TlsSettings {
             accept_builder,
             callbacks: None,
+            executor: None,
         })
     }
 
@@ -106,7 +131,13 @@ impl TlsSettings {
         Ok(TlsSettings {
             accept_builder,
             callbacks: Some(callbacks),
+            executor: None,
         })
+    }
+
+    /// Run this endpoint's handshakes on `executor` instead of the accepting thread.
+    pub fn set_handshake_executor(&mut self, executor: Arc<dyn HandshakeExecutor>) {
+        self.executor = Some(executor);
     }
 
     /// Enable HTTP/2 support for this endpoint, which is default off.
@@ -157,19 +188,45 @@ impl TlsSettings {
     pub(crate) fn build(self) -> Acceptor {
         Acceptor {
             ssl_acceptor: self.accept_builder.build(),
-            callbacks: self.callbacks,
+            callbacks: self.callbacks.map(Arc::new),
+            executor: self.executor,
         }
     }
 }
 
 impl Acceptor {
-    pub async fn tls_handshake<S: IO>(&self, stream: S) -> Result<SslStream<S>> {
+    pub async fn tls_handshake<S: IO + 'static>(&self, stream: S) -> Result<SslStream<S>> {
         debug!("new ssl session");
-        // TODO: be able to offload this handshake in a thread pool
-        if let Some(cb) = self.callbacks.as_ref() {
-            handshake_with_callback(&self.ssl_acceptor, stream, cb).await
-        } else {
-            handshake(&self.ssl_acceptor, stream).await
+        let Some(executor) = self.executor.as_ref() else {
+            return Self::accept(&self.ssl_acceptor, self.callbacks.as_deref(), stream).await;
+        };
+        let (done, result) = tokio::sync::oneshot::channel();
+        let ssl_acceptor = self.ssl_acceptor.clone();
+        let callbacks = self.callbacks.clone();
+        let job = Box::pin(async move {
+            let accepted = Self::accept(&ssl_acceptor, callbacks.as_deref(), stream).await;
+            let _ = done.send(accepted);
+        });
+        let task = executor.spawn(job).ok_or_else(|| {
+            Error::explain(
+                ErrorType::TLSHandshakeFailure,
+                "TLS handshake queue is full",
+            )
+        })?;
+        let _abort = AbortOnDrop(task);
+        result
+            .await
+            .or_err(ErrorType::TLSHandshakeFailure, "TLS handshake was dropped")?
+    }
+
+    async fn accept<S: IO>(
+        ssl_acceptor: &SslAcceptor,
+        callbacks: Option<&TlsAcceptCallbacks>,
+        stream: S,
+    ) -> Result<SslStream<S>> {
+        match callbacks {
+            Some(cb) => handshake_with_callback(ssl_acceptor, stream, cb).await,
+            None => handshake(ssl_acceptor, stream).await,
         }
     }
 }
@@ -237,5 +294,129 @@ mod alpn {
             Some(p) => Ok(p),
             _ => Err(AlpnError::ALERT_FATAL), // cannot agree
         }
+    }
+}
+
+#[cfg(all(test, feature = "openssl"))]
+mod handshake_executor_tests {
+    use super::*;
+    use crate::protocols::tls::SslStream;
+    use crate::tls::ssl;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::io::{AsyncReadExt, DuplexStream};
+
+    /// Runs jobs on a runtime whose only thread is named `handshake-test`.
+    struct Pool {
+        runtime: Option<tokio::runtime::Runtime>,
+        refuse: AtomicBool,
+    }
+
+    impl Drop for Pool {
+        fn drop(&mut self) {
+            // The test's own runtime is dropping this: a runtime cannot be dropped from async code.
+            self.runtime.take().unwrap().shutdown_background();
+        }
+    }
+
+    impl Pool {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                runtime: Some(
+                    tokio::runtime::Builder::new_multi_thread()
+                        .worker_threads(1)
+                        .thread_name("handshake-test")
+                        .build()
+                        .unwrap(),
+                ),
+                refuse: AtomicBool::new(false),
+            })
+        }
+    }
+
+    impl HandshakeExecutor for Pool {
+        fn spawn(&self, job: Pin<Box<dyn Future<Output = ()> + Send>>) -> Option<JoinHandle<()>> {
+            (!self.refuse.load(Ordering::Relaxed))
+                .then(|| self.runtime.as_ref().unwrap().spawn(job))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct ThreadProbe(Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl crate::listeners::TlsAccept for ThreadProbe {
+        async fn certificate_callback(&self, ssl: &mut crate::protocols::tls::TlsRef) {
+            let cert = crate::test_tls::TestCert::new();
+            let chain = std::fs::read(&cert.cert_path).unwrap();
+            let key = std::fs::read(&cert.key_path).unwrap();
+            let chain = crate::tls::x509::X509::from_pem(&chain).unwrap();
+            let key = crate::tls::pkey::PKey::private_key_from_pem(&key).unwrap();
+            crate::tls::ext::ssl_use_certificate(ssl, &chain).unwrap();
+            crate::tls::ext::ssl_use_private_key(ssl, &key).unwrap();
+            let name = std::thread::current().name().unwrap_or_default().to_owned();
+            self.0.lock().unwrap().push(name);
+        }
+    }
+
+    fn acceptor(executor: Arc<Pool>, probe: &ThreadProbe) -> Acceptor {
+        let mut settings = TlsSettings::with_callbacks(Box::new(probe.clone())).unwrap();
+        settings.set_handshake_executor(executor);
+        settings.build()
+    }
+
+    async fn client(io: DuplexStream) {
+        let context = ssl::SslContext::builder(ssl::SslMethod::tls())
+            .unwrap()
+            .build();
+        let mut session = ssl::Ssl::new(&context).unwrap();
+        session.set_hostname("pingora.org").unwrap();
+        session.set_verify(ssl::SslVerifyMode::NONE);
+        let mut stream = SslStream::new(session, io).unwrap();
+        Pin::new(&mut stream).connect().await.unwrap();
+        let _ = stream.read(&mut [0; 1]).await;
+    }
+
+    #[tokio::test]
+    async fn handshake_runs_on_the_executor_thread_and_the_stream_returns() {
+        let pool = Pool::new();
+        let probe = ThreadProbe::default();
+        let acceptor = acceptor(pool, &probe);
+        let (peer, server) = tokio::io::duplex(1024);
+        tokio::spawn(client(peer));
+        let stream = acceptor.tls_handshake(server).await.unwrap();
+        assert_eq!(
+            stream.ssl().servername(ssl::NameType::HOST_NAME),
+            Some("pingora.org")
+        );
+        assert_eq!(*probe.0.lock().unwrap(), ["handshake-test"]);
+    }
+
+    #[tokio::test]
+    async fn refused_handshake_fails_the_connection() {
+        let pool = Pool::new();
+        pool.refuse.store(true, Ordering::Relaxed);
+        let acceptor = acceptor(pool, &ThreadProbe::default());
+        let (_peer, server) = tokio::io::duplex(1024);
+        let error = acceptor.tls_handshake(server).await.err().unwrap();
+        assert_eq!(*error.etype(), ErrorType::TLSHandshakeFailure);
+    }
+
+    #[tokio::test]
+    async fn abandoned_handshake_aborts_the_job() {
+        let pool = Pool::new();
+        let acceptor = acceptor(pool, &ThreadProbe::default());
+        let (peer, server) = tokio::io::duplex(1024);
+        // The peer never speaks: the job waits for a ClientHello until the caller gives up.
+        let attempt = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            acceptor.tls_handshake(server),
+        );
+        assert!(attempt.await.is_err());
+        // The aborted job dropped the server half, so the peer sees the end of the stream.
+        let mut peer = peer;
+        let mut byte = [0; 1];
+        let read =
+            tokio::time::timeout(std::time::Duration::from_secs(5), peer.read(&mut byte)).await;
+        assert_eq!(read.unwrap().unwrap(), 0);
     }
 }
