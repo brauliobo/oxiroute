@@ -65,6 +65,7 @@ pub fn proxy_config(
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         certificates: vec![Certificate {
             name: "downstream".into(),
@@ -225,7 +226,7 @@ impl ProxyHarness {
         service.add_tls_with_settings(
             &bind,
             None,
-            tls.tls_settings().expect("downstream TLS settings"),
+            tls.tls_settings(2).expect("downstream TLS settings"),
         );
 
         let inherited = generation

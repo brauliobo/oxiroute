@@ -5,6 +5,14 @@ use std::time::Duration;
 ///
 /// The limits mirror the `h2` crate's server builder where one exists (same names, same defaults); the
 /// remaining fields cover protections this crate adds.
+///
+/// None of these is an operator option, by decision: the proxy sets only `max_header_list_size` (64 KiB, or the
+/// forward proxy's configured `max_header_bytes`) and `max_concurrent_streams` (100) and keeps every other field at
+/// its default. The abuse limits are protocol-safety bounds with no deployment-dependent right value (each is the
+/// `h2` crate's own default where one exists, which carried the same traffic before 6.4; the others are generous
+/// bounds chosen with the regression tests of each protection), and the windows stay at the protocol's
+/// 65,535 so that a connection's buffered memory stays bounded by the stream count times 64 KiB. A value that needs
+/// to change for a deployment becomes a root configuration option, never an environment variable.
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     /// `SETTINGS_MAX_CONCURRENT_STREAMS`; a stream opened beyond it is refused (`REFUSED_STREAM`).

@@ -44,7 +44,7 @@ fn prepares_metadata_redacted_generation_and_callback_settings() {
             .revision,
         metadata.revision
     );
-    let mut settings = profile.tls_settings().unwrap();
+    let mut settings = profile.tls_settings(0).unwrap();
     assert!(settings.options().contains(SslOptions::NO_TICKET));
     assert!(
         settings
@@ -84,7 +84,7 @@ fn applies_explicit_server_tls_policy_to_openssl_settings() {
 
     let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
     let profile = prepared.profiles().get("public").unwrap();
-    let mut settings = profile.tls_settings().unwrap();
+    let mut settings = profile.tls_settings(0).unwrap();
 
     assert_eq!(profile.policy(), &config.tls_profiles[0].policy);
     assert_eq!(settings.set_session_cache_size(1), 40_960);
@@ -112,7 +112,7 @@ fn downstream_client_auth_defaults_to_disabled_and_is_reported_as_configured_pol
     assert_eq!(profile.client_auth_mode(), TlsClientAuthMode::Disabled);
     assert!(!profile.client_auth_ca_configured());
     assert_eq!(profile.client_auth_allowed_dns_name_count(), 0);
-    assert!(profile.tls_settings().is_ok());
+    assert!(profile.tls_settings(0).is_ok());
 }
 
 #[test]
@@ -131,10 +131,10 @@ fn client_auth_ca_is_loaded_once_into_an_immutable_profile_snapshot() {
     assert_eq!(profile.client_auth_mode(), TlsClientAuthMode::Required);
     assert!(profile.client_auth_ca_configured());
     assert_eq!(profile.client_auth_allowed_dns_name_count(), 1);
-    assert!(profile.tls_settings().is_ok());
+    assert!(profile.tls_settings(0).is_ok());
 
     fs::write(&files.ca, b"not a CA bundle").unwrap();
-    assert!(profile.tls_settings().is_ok());
+    assert!(profile.tls_settings(0).is_ok());
     assert!(matches!(
         prepare_tls(&config.clone().validate().expect("valid TLS test config")),
         Err(TlsBuildError::ClientCaParse { .. } | TlsBuildError::InvalidPem { .. })

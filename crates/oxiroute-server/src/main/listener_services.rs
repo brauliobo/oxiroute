@@ -19,6 +19,13 @@ pub(super) fn listener_workers(config: &oxiroute_config::ConfigDraft) -> usize {
     })
 }
 
+/// Threads that run the TLS handshakes of every TLS listener (0: on the listener workers).
+pub(super) fn tls_handshake_threads(config: &oxiroute_config::ConfigDraft) -> usize {
+    config.effective_tls_handshake_threads(
+        std::thread::available_parallelism().map_or(1, usize::from),
+    )
+}
+
 pub(super) fn add_plain_listener<A>(
     service: &mut Service<A>,
     listener_name: &str,
@@ -223,10 +230,15 @@ pub(super) fn add_http_listener<A>(
     listener_name: &str,
     bind: &ListenerBind,
     tls: Option<&TlsProfilePlan>,
+    handshake_threads: usize,
 ) -> Result<(), Box<dyn Error>> {
     match (bind, tls) {
         (ListenerBind::Socket { address }, Some(tls)) => {
-            service.add_tls_with_settings(&address.to_string(), None, tls.tls_settings()?);
+            service.add_tls_with_settings(
+                &address.to_string(),
+                None,
+                tls.tls_settings(handshake_threads)?,
+            );
             Ok(())
         }
         (ListenerBind::Udp { .. }, Some(_)) => Err(io::Error::new(

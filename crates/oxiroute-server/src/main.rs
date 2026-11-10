@@ -422,6 +422,7 @@ fn serve_generation(
     });
 
     let workers = listener_workers(config);
+    let handshake_threads = tls_handshake_threads(config);
     let plan = generation.plan();
     let services = generation.services().to_vec();
     let health_supervisor = generation.health_supervisor();
@@ -595,6 +596,7 @@ fn serve_generation(
                     &listener_name,
                     &listener_bind,
                     listener_tls.as_deref(),
+                    handshake_threads,
                 )?;
                 server.add_service(
                     RuntimeListenerService::new(service, reservation, Some(metrics))
@@ -622,6 +624,7 @@ fn serve_generation(
                     &listener_name,
                     &listener_bind,
                     listener_tls.as_deref(),
+                    handshake_threads,
                 )?;
                 server.add_service(
                     RuntimeListenerService::new(service, reservation, Some(metrics))
@@ -651,6 +654,7 @@ fn serve_generation(
                     &listener_name,
                     &listener_bind,
                     listener_tls.as_deref(),
+                    handshake_threads,
                 )?;
                 server.add_service(
                     RuntimeListenerService::new(service, reservation, Some(metrics))

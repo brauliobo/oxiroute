@@ -49,6 +49,7 @@ class Lane:
     warmup: int = 1000
     listeners: int = 1
     workers: int = 0  # `listener_workers` of the generated configuration; 0 leaves the setting out
+    handshake_threads: int = -1  # `tls_handshake_threads`; -1 leaves the setting out (automatic), 0 handshakes inline
     servers: int = 1
     storm: int = 0  # TLS handshakes per second that new connections add during the measured window (`r2tool storm`)
     target_offset: int = 0  # proxy port offset the load goes to (forward listener: 3, TCP listener: 1)
@@ -140,8 +141,10 @@ def build_lanes():
              features=["upstream_h2"]))
     # Data-path latency of established connections while new ones arrive (open-loop handshakes per second).
     for rate in (1000, 3000):
-        add(lane(f"tls_storm{rate}_h2_c1s1", ["--proto", "h2tls", "--path", "/b1k", "--conns", "1", "--streams", "1",
-                                              "--expect-len", "1024"], features=["tls"], requests=20000, storm=rate))
+        for name, threads in (("", -1), ("_inline", 0)):
+            add(lane(f"tls_storm{rate}{name}_h2_c1s1", ["--proto", "h2tls", "--path", "/b1k", "--conns", "1",
+                                                      "--streams", "1", "--expect-len", "1024"],
+                     features=["tls"], requests=20000, storm=rate, handshake_threads=threads))
     add(lane("h2_b0_c1s1", ["--proto", "h2tls", "--path", "/b0", "--conns", "1", "--streams", "1",
                             "--expect-len", "0"], features=["tls"], requests=10000))
     # Scaling over listeners (each listener is one Pingora service with one worker thread).
@@ -312,7 +315,8 @@ class Env:
         generated = subprocess.run(
             [sys.executable, str(HERE / "gen_config.py"), str(config), "--proxy-port", str(PROXY_PORT),
              "--upstream-port", str(UPSTREAM_PORT), "--echo-port", str(ECHO_PORT), "--servers", str(lane.servers),
-             "--listeners", str(lane.listeners), "--workers", str(lane.workers), "--run-dir", str(self.work)]
+             "--listeners", str(lane.listeners), "--workers", str(lane.workers),
+             "--tls-handshake-threads", str(lane.handshake_threads), "--run-dir", str(self.work)]
             + [item for feature in lane.features for item in ("--feature", feature)],
             check=True, capture_output=True, text=True, timeout=LANE_TIMEOUT)
         self.generated = generated.stdout
