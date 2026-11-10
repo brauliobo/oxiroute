@@ -323,6 +323,32 @@ async fn peer_reset_mid_body_fails_reads_and_completes_poll_reset() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn peer_reset_before_any_body_byte_fails_reads() {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    fn watch(_: http::request::Parts, mut stream: Stream) -> Fut {
+        Box::pin(async move {
+            let next = poll_fn(|cx| stream.poll_data(cx)).await.unwrap();
+            SEEN.lock().unwrap().push(format!("{}", next.is_err()));
+        })
+    }
+    let (client, server) = h2_client(Config::default(), watch).await;
+    let mut client = client.ready().await.unwrap();
+    let (_response, mut send) = client
+        .send_request(
+            Request::post("https://example.test/").body(()).unwrap(),
+            false,
+        )
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send.send_reset(h2::Reason::CANCEL);
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    assert_eq!(SEEN.lock().unwrap().as_slice(), ["true"]);
+    drop(client);
+    drop(server);
+}
+
+#[tokio::test(start_paused = true)]
 async fn server_reset_reaches_the_client() {
     fn refuse(_: http::request::Parts, mut stream: Stream) -> Fut {
         Box::pin(async move { stream.send_reset(oxiroute_h2::Reason::REFUSED_STREAM) })

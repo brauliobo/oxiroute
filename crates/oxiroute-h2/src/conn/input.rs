@@ -465,8 +465,7 @@ impl Connection {
             self.peer_max_frame = size as usize;
         }
         if let Some(size) = s.header_table_size {
-            // TODO(hpack): call `Encoder::set_max_table_size(size)` once the encoder has it.
-            let _ = size;
+            self.enc.set_max_table_size(size as usize);
         }
         if let Some(initial) = s.initial_window_size {
             let delta = i64::from(initial) - self.peer_initial_window;
