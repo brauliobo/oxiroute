@@ -431,10 +431,6 @@ async fn no_case_host_preparation_uses_semantic_value_and_duplicate_count() {
         (b"GET / HTTP/1.1\r\nhost: example.test\r\n\r\n", false),
         (b"GET / HTTP/1.1\r\nHOST: example.test\r\n\r\n", false),
         (b"GET / HTTP/1.1\r\nHost: other.test\r\n\r\n", true),
-        (
-            b"GET / HTTP/1.1\r\nHost: example.test\r\nhost: example.test\r\n\r\n",
-            true,
-        ),
     ];
 
     for (raw_request, should_own) in cases {
@@ -476,13 +472,19 @@ async fn no_case_host_preparation_uses_semantic_value_and_duplicate_count() {
 
 #[tokio::test]
 async fn no_case_duplicate_host_rejects_borrowing_and_preserves_field_order() {
-    let raw_request = b"GET / HTTP/1.1\r\nX-Before: one\r\nHost: first.test\r\nhost: second.test\r\nX-After: two\r\n\r\n";
+    // Pingora 0.9 refuses duplicate Host fields while it parses an HTTP/1 head, so the second one is added here.
+    let raw_request =
+        b"GET / HTTP/1.1\r\nX-Before: one\r\nHost: first.test\r\nX-After: two\r\n\r\n";
     let (proxy, mut session, mut context, _client) = request_preparation_fixture(
         HttpProxyPolicy::default(),
         UpstreamConnectionReuse::Safe,
         raw_request,
     )
     .await;
+    session
+        .req_header_mut()
+        .append_header(HOST, HeaderValue::from_static("second.test"))
+        .expect("second Host");
     assert!(!session.req_header().has_case());
     assert_eq!(
         session
