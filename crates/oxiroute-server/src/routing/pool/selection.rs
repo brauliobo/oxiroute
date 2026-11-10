@@ -330,6 +330,11 @@ impl EndpointPool {
             .await
     }
 
+    /// Whether requests queue by class or tenant, which needs the headers of the request to place.
+    pub(crate) fn schedules_queue(&self) -> bool {
+        self.queue.schedule.is_some()
+    }
+
     /// Where a request queues in this pool: the route class, else the class header, plus the tenant.
     pub(crate) fn queue_tag(&self, route_class: Option<&str>, headers: &HeaderMap) -> QueueTag {
         self.queue

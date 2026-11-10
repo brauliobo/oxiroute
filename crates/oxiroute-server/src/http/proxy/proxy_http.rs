@@ -191,11 +191,10 @@ impl ProxyHttp for HttpReverseProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
-        let request = session.req_header();
         let host = |endpoint: &RuntimeEndpoint,
                     policy: &HttpUpstreamHost,
                     authority: Option<&Authority>| {
-            selected_upstream_host_for(request, endpoint, policy, authority)
+            selected_upstream_host_for(session.req_header(), endpoint, policy, authority)
         };
         let affinity = |ctx: &HttpRequestContext| affinity_server(session, ctx);
         ctx.next_peer(affinity, host).await
