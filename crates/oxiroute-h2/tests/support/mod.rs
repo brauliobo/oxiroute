@@ -1,5 +1,10 @@
 //! Test helpers: a raw HTTP/2 wire (frame writer and reader over an in-memory pipe), request header block
 //! encoding, and the servers under test (this crate's and the `h2` crate's) with the same inline responder.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown,
+    clippy::too_many_lines
+)]
 #![allow(dead_code)]
 use std::future::poll_fn;
 use std::task::Poll;

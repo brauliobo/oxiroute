@@ -50,7 +50,7 @@ impl Connection {
     }
 
     /// Next request the application has not seen: slot index, stream id and request head.
-    pub fn pop_accept(&mut self) -> Option<(u32, u32, Box<Parts>)> {
+    pub fn pop_accept(&mut self) -> Option<(u32, u32, Parts)> {
         while let Some(p) = self.accept.pop_front() {
             if p.counted {
                 self.pending_resets -= 1;

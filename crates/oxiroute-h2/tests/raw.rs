@@ -1,5 +1,10 @@
 //! Raw-frame tests: drive the server with hand-built frames and assert the observable reaction (`GOAWAY` code,
 //! `RST_STREAM` code or response status). Paused time makes `Wire::settle` a deterministic quiescence barrier.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown,
+    clippy::too_many_lines
+)]
 #![allow(clippy::many_single_char_names)]
 mod support;
 use std::time::Duration;
