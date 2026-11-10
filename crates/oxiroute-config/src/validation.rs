@@ -97,11 +97,6 @@ use upstream::{validate_l4_services, validate_proxy_protocol_timeout};
 const MAX_UDP_WIRE_DATAGRAM_BYTES: u64 = 65_507;
 const MAX_UDP_PROXY_V2_ADDRESS_HEADER_BYTES: u64 = 52;
 
-/// Validates and normalizes a complete configuration regardless of how it was constructed.
-///
-/// # Errors
-///
-#[allow(clippy::too_many_lines)]
 fn validate_connection_age(config: &ConfigDraft) -> Result<(), ConfigError> {
     let Some(age) = config.connection_age_ms else {
         return Ok(());
@@ -115,6 +110,11 @@ fn validate_connection_age(config: &ConfigDraft) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// Validates and normalizes a complete configuration regardless of how it was constructed.
+///
+/// # Errors
+///
+#[allow(clippy::too_many_lines)]
 pub(crate) fn validate_config_in_place(config: &mut ConfigDraft) -> Result<(), ConfigError> {
     if config.version != 1 {
         return Err(ConfigError::UnsupportedVersion(config.version));
