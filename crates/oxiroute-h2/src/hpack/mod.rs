@@ -32,9 +32,9 @@ pub enum DecodeError {
 pub enum Indexing {
     /// Literal with incremental indexing (or an indexed representation when the pair is already known).
     Incremental,
-    /// Literal without indexing.
+    /// Literal without indexing (an indexed representation when the pair is already in a table, which adds nothing).
     None,
-    /// Literal never indexed (secrets and unique values such as request ids).
+    /// Literal never indexed (secrets and unique values such as request ids), always a literal.
     Never,
 }
 
