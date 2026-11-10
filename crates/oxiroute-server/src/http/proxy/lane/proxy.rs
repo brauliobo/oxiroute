@@ -315,7 +315,7 @@ impl super::LaneFront {
                 (status, framing, refused, keepalive, buffered)
             } else {
                 session.reparse_raw_head();
-                let mut response = read_final_head(stream, &mut session).await?;
+                let mut response = read_final_head(stream, ctx, &mut session, forward).await?;
                 let refused = response.status == StatusCode::SERVICE_UNAVAILABLE
                     && response.headers.contains_key(&POOL_UNAVAILABLE_HEADER);
                 let (framing, close_delimited) =
@@ -373,6 +373,7 @@ impl super::LaneFront {
             let mut frame = head;
             if !buffered {
                 write(stream, &frame).await?;
+                flush(stream).await?;
                 frame.clear();
             }
             let mut first = true;
@@ -393,6 +394,7 @@ impl super::LaneFront {
                     frame.extend_from_slice(&data);
                 }
                 write(stream, &frame).await?;
+                flush(stream).await?;
                 frame.clear();
             }
             if !frame.is_empty() {
@@ -403,9 +405,7 @@ impl super::LaneFront {
                 write(stream, b"0\r\n\r\n").await?;
             }
             buffers::give_write(frame);
-            stream.flush().await.map_err(|error| {
-                Error::because(ErrorType::WriteError, "flushing the response", error).into_down()
-            })
+            flush(stream).await
         };
         within(deadline, body)
             .await
@@ -492,6 +492,13 @@ impl super::LaneFront {
         ctx.account_attempt(0, sent, now);
         ctx.record_failed_evacuations(error);
     }
+}
+
+/// The stream buffers its writes: what a client waits for must be flushed before the next wait on the origin.
+async fn flush(stream: &mut Stream) -> Result<(), Box<Error>> {
+    stream.flush().await.map_err(|error| {
+        Error::because(ErrorType::WriteError, "flushing the response", error).into_down()
+    })
 }
 
 async fn write(stream: &mut Stream, bytes: &[u8]) -> Result<(), Box<Error>> {
@@ -630,10 +637,10 @@ fn render_fast(
     }
     let no_body = is_head || matches!(head.status, 204 | 304);
     let chunked = !no_body && facts.content_length.is_none();
+    edit(edits.stamp_request_id(raw, head, Value::trusted(forward.id.as_bytes())));
     if chunked {
         edit(edits.set(names::TRANSFER_ENCODING, Value::trusted(b"chunked")));
     }
-    edit(edits.stamp_request_id(raw, head, Value::trusted(forward.id.as_bytes())));
     let date = get_cached_date();
     let automatic = Automatic {
         date: date.as_bytes(),
@@ -669,13 +676,16 @@ fn render_fast(
     }
 }
 
-/// The final response head of the session's parser; informational heads on the way go to the client as they are.
+/// The final response head of the session's parser; informational heads on the way go to the client filtered and
+/// stamped as the classic response filter does.
 async fn read_final_head(
     stream: &mut Stream,
+    ctx: &HttpRequestContext,
     session: &mut HttpSession,
+    forward: &Forward<'_>,
 ) -> Result<pingora::http::ResponseHeader, Box<Error>> {
     loop {
-        let header = *session
+        let mut header = *session
             .read_resp_header_parts()
             .await
             .map_err(Error::into_up)?;
@@ -685,12 +695,12 @@ async fn read_final_head(
         if !header.status.is_informational() {
             return Ok(header);
         }
+        apply_response_policy(&mut header, proxy_policy(ctx), true)?;
+        stamp_response(&mut header, forward.id)?;
         let mut head = BytesMut::new();
         render_informational_head(&header, &mut head).map_err(Error::into_up)?;
         write(stream, &head).await?;
-        stream.flush().await.map_err(|error| {
-            Error::because(ErrorType::WriteError, "flushing the response", error).into_down()
-        })?;
+        flush(stream).await?;
     }
 }
 

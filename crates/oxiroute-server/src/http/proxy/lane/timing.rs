@@ -47,7 +47,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn work_that_waits_past_the_deadline_expires() {
         let deadline = Instant::now() + Duration::from_millis(50);
-        let stuck = tokio::time::sleep(Duration::from_secs(60));
+        let stuck = tokio::time::sleep(Duration::from_mins(1));
         assert!(within(deadline, stuck).await.is_err());
         assert!(Instant::now() >= deadline);
     }

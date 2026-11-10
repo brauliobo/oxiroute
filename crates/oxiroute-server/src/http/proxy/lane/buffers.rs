@@ -13,7 +13,10 @@ const WRITE_CAPACITY: usize = 1024;
 
 thread_local! {
     static READ: RefCell<Vec<BytesMut>> = const { RefCell::new(Vec::new()) };
+    // The heads are large and move in and out of the pool by pointer.
+    #[allow(clippy::vec_box)]
     static HEADS: RefCell<Vec<Box<RequestHead>>> = const { RefCell::new(Vec::new()) };
+    #[allow(clippy::vec_box)]
     static RESPONSES: RefCell<Vec<Box<ResponseHead>>> = const { RefCell::new(Vec::new()) };
     static WRITE: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
 }
