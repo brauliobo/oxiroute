@@ -14,6 +14,7 @@ libfuzzer-sys = "0.4"
 oxiroute-config = { path = "../crates/oxiroute-config" }
 oxiroute-config-source = { path = "../crates/oxiroute-config-source" }
 oxiroute-forward-proxy = { path = "../crates/oxiroute-forward-proxy" }
+oxiroute-h2 = { path = "../crates/oxiroute-h2" }
 oxiroute-import = { path = "../crates/oxiroute-import" }
 oxiroute-rtmp = { path = "../crates/oxiroute-rtmp", features = ["fuzzing"] }
 oxiroute-server = { package = "oxiroute", path = "../crates/oxiroute-server" }
@@ -112,6 +113,13 @@ bench = false
 [[bin]]
 name = "http1"
 path = "fuzz_targets/http1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hpack"
+path = "fuzz_targets/hpack.rs"
 test = false
 doc = false
 bench = false
