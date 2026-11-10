@@ -63,7 +63,7 @@ uses `stable` or `partial` so component integration is not confused with product
 | Transparent interception/source spoofing | research | Only a separately approved privileged helper could own this; it is never ordinary proxy behavior. |
 | DNAT/SNAT/MASQUERADE/firewall | out-of-scope | Remains kernel nftables/iptables functionality. |
 
-OxiRoute carries a narrow pinned `pingora-core` 0.8.1 patch that exposes a per-peer OpenSSL
+OxiRoute carries a narrow pinned `pingora-core` 0.9.1 patch that exposes a per-peer OpenSSL
 configuration hook and pre-handshake application admission. Upstream TLS applies a TLS 1.2 minimum,
 security level 2, strict partial-chain verification, and modern AEAD cipher policy before handshake;
 in-process TLS 1.0/1.1 controls verify refusal without origin HTTP bytes. The patch and upgrade
