@@ -15,25 +15,27 @@
 use super::*;
 use pingora_cache::{
     key::HashBinary,
-    CacheKey, CacheMeta, ForcedFreshness, HitHandler,
+    CacheKey, CacheMeta, ForcedFreshness, HitHandler, PurgeAction,
     RespCacheable::{self, *},
 };
 use proxy_cache::range_filter::{self};
-use std::future::Future;
-use std::pin::Pin;
+use std::any::Any;
 use std::time::Duration;
 
-/// Resolves with the error that ends the upstream attempt in progress, when the application
-/// abandons it.
-pub type UpstreamCancellation = Pin<Box<dyn Future<Output = Box<Error>> + Send + 'static>>;
-
-/// The request header prepared for a plain HTTP/1 upstream attempt.
+/// Context for proxy warning logs that can be suppressed by
+/// [`ProxyHttp::suppress_proxy_warn_log`].
 ///
-/// `Borrowed` means the unchanged downstream request header can be written directly. `Owned`
-/// carries a request header that was cloned and potentially modified for this attempt.
-pub enum PreparedUpstreamRequest {
-    Borrowed,
-    Owned(Box<RequestHeader>),
+/// These contexts are distinct from final proxy errors, which are handled by
+/// [`ProxyHttp::suppress_error_log`].
+///
+/// Experimental: this API may change or be removed until indicated otherwise.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ProxyWarnLogContext {
+    /// A proxy upstream attempt failed with a retryable error.
+    UpstreamRetry,
+    /// A downstream error was ignored so cache fill could continue.
+    DownstreamCache,
 }
 
 /// The interface to control the HTTP proxy
@@ -42,6 +44,7 @@ pub enum PreparedUpstreamRequest {
 /// particular stage (if applicable).
 ///
 /// If any of the filters returns [Result::Err], the request will fail, and the error will be logged.
+#[cfg_attr(not(doc_async_trait), async_trait)]
 pub trait ProxyHttp {
     /// The per request object to share state across the different filters
     type CTX;
@@ -53,11 +56,11 @@ pub trait ProxyHttp {
     ///
     /// The returned [HttpPeer] contains the information regarding where and how this request should
     /// be forwarded to.
-    fn upstream_peer(
+    async fn upstream_peer(
         &self,
         session: &mut Session,
         ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<Box<HttpPeer>>> + Send;
+    ) -> Result<Box<HttpPeer>>;
 
     /// Set up downstream modules.
     ///
@@ -70,6 +73,23 @@ pub trait ProxyHttp {
         modules.add_module(ResponseCompressionBuilder::enable(0));
     }
 
+    /// Set up upstream modules.
+    ///
+    /// In this phase, users can add [HttpModules] that will process upstream responses
+    /// **before** `upstream_compression`. This is the correct place to register modules
+    /// that need to observe the raw (pre-compression) upstream response body, such as
+    /// a dictionary store for shared dictionary compression.
+    ///
+    /// Upstream modules are ordered by [`HttpModuleBuilder::order()`]: higher values run
+    /// first. They are invoked on each upstream response task (header, body, trailers)
+    /// before `upstream_compression` processes the task.
+    ///
+    /// By default this method does nothing.
+    ///
+    /// This method requires the `upstream_modules` feature to be enabled.
+    #[cfg(feature = "upstream_modules")]
+    fn init_upstream_modules(&self, _modules: &mut HttpModules) {}
+
     /// Handle the incoming request.
     ///
     /// In this phase, users can parse, validate, rate limit, perform access control and/or
@@ -79,16 +99,11 @@ pub trait ProxyHttp {
     /// the proxy would exit. The proxy continues to the next phases when `Ok(false)` is returned.
     ///
     /// By default this filter does nothing and returns `Ok(false)`.
-    fn request_filter(
-        &self,
-        _session: &mut Session,
-        _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<bool>> + Send
+    async fn request_filter(&self, _session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(false) }
+        Ok(false)
     }
 
     /// Handle the incoming request before any downstream module is executed.
@@ -100,16 +115,11 @@ pub trait ProxyHttp {
     /// Note that because this function is executed before any module that might provide access
     /// control or rate limiting, logic should stay in request_filter() if it can in order to be
     /// protected by said modules.
-    fn early_request_filter(
-        &self,
-        _session: &mut Session,
-        _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<()>> + Send
+    async fn early_request_filter(&self, _session: &mut Session, _ctx: &mut Self::CTX) -> Result<()>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(()) }
+        Ok(())
     }
 
     /// Returns whether this session is allowed to spawn subrequests.
@@ -135,24 +145,17 @@ pub trait ProxyHttp {
     /// The async nature of this function allows to throttle the upload speed and/or executing
     /// heavy computation logic such as WAF rules on offloaded threads without blocking the threads
     /// who process the requests themselves.
-    fn request_body_filter(
+    async fn request_body_filter(
         &self,
         _session: &mut Session,
         _body: &mut Option<Bytes>,
         _end_of_stream: bool,
         _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<()>> + Send
+    ) -> Result<()>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(()) }
-    }
-
-    /// Return a bounded capacity when the complete request body must be read before connecting
-    /// upstream. The buffered body is replayed through the normal body-filter path.
-    fn request_body_buffer_limit(&self, _ctx: &Self::CTX) -> Option<usize> {
-        None
+        Ok(())
     }
 
     /// This filter decides if the request is cacheable and what cache backend to use
@@ -202,19 +205,18 @@ pub trait ProxyHttp {
     ///
     /// The value returned indicates if the force invalidation should be used,
     /// and which kind. Returning `None` indicates no forced invalidation
-    fn cache_hit_filter(
+    async fn cache_hit_filter(
         &self,
         _session: &mut Session,
         _meta: &CacheMeta,
         _hit_handler: &mut HitHandler,
         _is_fresh: bool,
         _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<Option<ForcedFreshness>>> + Send
+    ) -> Result<Option<ForcedFreshness>>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(None) }
+        Ok(None)
     }
 
     /// Decide if a request should continue to upstream after not being served from cache.
@@ -227,16 +229,15 @@ pub trait ProxyHttp {
     ///
     /// By default the session will attempt to be reused after returning Ok(false). It is the
     /// caller's responsibility to disable keepalive or drain the request body if needed.
-    fn proxy_upstream_filter(
+    async fn proxy_upstream_filter(
         &self,
         _session: &mut Session,
         _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<bool>> + Send
+    ) -> Result<bool>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(true) }
+        Ok(true)
     }
 
     /// Decide if the response is cacheable
@@ -309,43 +310,58 @@ pub trait ProxyHttp {
         )
     }
 
-    /// Modify the request before it is sent to the upstream
+    /// Modify the request before it is sent to the upstream.
     ///
-    /// Unlike [Self::request_filter()], this filter allows to change the request headers to send
-    /// to the upstream.
-    fn upstream_request_filter(
+    /// Unlike [Self::request_filter()], this filter allows changing the request headers sent to
+    /// the upstream. Automatic upstream request-header policy configured on the selected peer is
+    /// applied before this callback. Headers deliberately added by this callback are treated as
+    /// application-controlled upstream behavior, including framing and protocol-upgrade fields.
+    /// For an HTTP/1 upstream, if the downstream request has a non-empty body and this callback
+    /// leaves neither `Content-Length` nor `Transfer-Encoding`, Pingora adds
+    /// `Transfer-Encoding: chunked`.
+    async fn upstream_request_filter(
         &self,
         _session: &mut Session,
         _upstream_request: &mut RequestHeader,
         _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<()>> + Send
+    ) -> Result<()>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(()) }
+        Ok(())
     }
 
-    /// Prepare a plain HTTP/1 request when protocol conversion and cache mutation are unnecessary.
+    /// Adjust upstream modules before they process the response header.
     ///
-    /// The default preserves [`Self::upstream_request_filter()`] behavior by cloning the downstream
-    /// request and invoking that mutable filter. Implementations may return
-    /// [`PreparedUpstreamRequest::Borrowed`] only when the downstream request can be sent unchanged.
-    fn prepare_upstream_request(
+    /// This filter is called when the upstream response header arrives, before upstream modules
+    /// (such as `upstream_compression`) run their response header filter. Use this to configure
+    /// module behavior based on the response, e.g. setting a dictionary for dictionary-based
+    /// content encoding.
+    ///
+    /// This filter may be called more than once per request if the upstream sends informational
+    /// (1xx) response headers before the final response. Implementations can check
+    /// [`upstream_response.status.is_informational()`](http::StatusCode::is_informational) to
+    /// distinguish informational headers from the final response if needed.
+    ///
+    /// `end_of_stream` indicates whether the response header is also the end of the response
+    /// (e.g. for HEAD responses or 304s with no body).
+    ///
+    /// The response header is provided as an immutable reference. To modify the response header
+    /// itself, use [`Self::upstream_response_filter()`] instead.
+    ///
+    /// This filter requires the `upstream_modules` feature to be enabled.
+    #[cfg(feature = "upstream_modules")]
+    async fn adjust_upstream_modules(
         &self,
-        session: &mut Session,
-        ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<PreparedUpstreamRequest>> + Send
+        _session: &mut Session,
+        _upstream_response: &ResponseHeader,
+        _end_of_stream: bool,
+        _ctx: &mut Self::CTX,
+    ) -> Result<()>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move {
-            let mut upstream_request = session.req_header().clone();
-            self.upstream_request_filter(session, &mut upstream_request, ctx)
-                .await?;
-            Ok(PreparedUpstreamRequest::Owned(Box::new(upstream_request)))
-        }
+        Ok(())
     }
 
     /// Modify the response header from the upstream
@@ -355,82 +371,77 @@ pub trait ProxyHttp {
     /// Responses served from cache won't trigger this filter. If the cache needed revalidation,
     /// only the 304 from upstream will trigger the filter (though it will be merged into the
     /// cached header, not served directly to downstream).
-    fn upstream_response_filter(
+    async fn upstream_response_filter(
         &self,
         _session: &mut Session,
         _upstream_response: &mut ResponseHeader,
         _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<()>> + Send
+    ) -> Result<()>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(()) }
+        Ok(())
     }
 
     /// Modify the response header before it is send to the downstream
     ///
     /// The modification is after caching. This filter is called for all responses including
     /// responses served from cache.
-    fn response_filter(
+    async fn response_filter(
         &self,
         _session: &mut Session,
         _upstream_response: &mut ResponseHeader,
         _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<()>> + Send
+    ) -> Result<()>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(()) }
+        Ok(())
     }
 
     // custom_forwarding is called when downstream and upstream connections are successfully established.
     #[doc(hidden)]
-    fn custom_forwarding(
+    async fn custom_forwarding(
         &self,
         _session: &mut Session,
         _ctx: &mut Self::CTX,
         _custom_message_to_upstream: Option<mpsc::Sender<Bytes>>,
         _custom_message_to_downstream: mpsc::Sender<Bytes>,
-    ) -> impl Future<Output = Result<()>> + Send
+    ) -> Result<()>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(()) }
+        Ok(())
     }
 
     // received a custom message from the downstream before sending it to the upstream.
     #[doc(hidden)]
-    fn downstream_custom_message_proxy_filter(
+    async fn downstream_custom_message_proxy_filter(
         &self,
         _session: &mut Session,
         custom_message: Bytes,
         _ctx: &mut Self::CTX,
         _final_hop: bool,
-    ) -> impl Future<Output = Result<Option<Bytes>>> + Send
+    ) -> Result<Option<Bytes>>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(Some(custom_message)) }
+        Ok(Some(custom_message))
     }
 
     // received a custom message from the upstream before sending it to the downstream.
     #[doc(hidden)]
-    fn upstream_custom_message_proxy_filter(
+    async fn upstream_custom_message_proxy_filter(
         &self,
         _session: &mut Session,
         custom_message: Bytes,
         _ctx: &mut Self::CTX,
         _final_hop: bool,
-    ) -> impl Future<Output = Result<Option<Bytes>>> + Send
+    ) -> Result<Option<Bytes>>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(Some(custom_message)) }
+        Ok(Some(custom_message))
     }
 
     /// Similar to [Self::upstream_response_filter()] but for response body
@@ -476,17 +487,16 @@ pub trait ProxyHttp {
     /// trailers being written to the response body.
     ///
     /// TODO: make this interface more intuitive
-    fn response_trailer_filter(
+    async fn response_trailer_filter(
         &self,
         _session: &mut Session,
         _upstream_trailers: &mut header::HeaderMap,
         _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<Option<Bytes>>> + Send
+    ) -> Result<Option<Bytes>>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(None) }
+        Ok(None)
     }
 
     /// This filter is called when the entire response is sent to the downstream successfully or
@@ -494,26 +504,86 @@ pub trait ProxyHttp {
     ///
     /// An error log is already emitted if there is any error. This phase is used for collecting
     /// metrics and sending access logs.
-    fn logging(
-        &self,
-        _session: &mut Session,
-        _e: Option<&Error>,
-        _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = ()> + Send
+    async fn logging(&self, _session: &mut Session, _e: Option<&Error>, _ctx: &mut Self::CTX)
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move {}
+    }
+
+    /// Called after [`Self::logging`] when the downstream connection will be reused for another
+    /// HTTP/1.x keepalive request. The returned value, if any, will be carried to the next
+    /// request on this connection and delivered via [`Self::on_connection_reuse`].
+    ///
+    /// Use this to persist debugging or timing information across keepalive requests.
+    /// This is only called for HTTP/1.x keepalive connections, not for HTTP/2.
+    /// It is also called on error paths when the downstream connection is eligible for reuse.
+    ///
+    /// The default implementation returns `None` (no context persisted).
+    fn persist_connection_context(
+        &self,
+        _session: &Session,
+        _ctx: &Self::CTX,
+    ) -> Option<Box<dyn Any + Send + Sync>> {
+        None
+    }
+
+    /// Called at the start of a new request on a reused HTTP/1.x keepalive connection,
+    /// before [`Self::early_request_filter`]. The `prev_ctx` argument is the value returned
+    /// by [`Self::persist_connection_context`] from the previous request on this connection.
+    ///
+    /// This is only called for HTTP/1.x keepalive connections, not for HTTP/2.
+    /// It is not called when `persist_connection_context` returned `None` on the previous request.
+    ///
+    /// Use this to transfer state from the previous request into the new request's context.
+    fn on_connection_reuse(
+        &self,
+        _session: &mut Session,
+        _ctx: &mut Self::CTX,
+        _prev_ctx: Box<dyn Any + Send + Sync>,
+    ) {
     }
 
     /// A value of true means that the log message will be suppressed. The default value is false.
+    ///
+    /// See also: [`Self::suppress_proxy_warn_log`].
     fn suppress_error_log(&self, _session: &Session, _ctx: &Self::CTX, _error: &Error) -> bool {
+        false
+    }
+
+    /// A value of true means that the proxy warning log message will be suppressed.
+    /// The default value is false.
+    ///
+    /// This hook currently applies to retryable proxy upstream failures and downstream errors
+    /// ignored while cache fill continues. Final proxy errors are still handled by
+    /// [`Self::suppress_error_log`].
+    ///
+    /// Suppressing retry warning logs can remove the only per-retry audit record. Callers that
+    /// suppress these logs should provide alternative observability, such as metrics or logs in
+    /// their implementation of this hook.
+    ///
+    /// This hook runs inline on retry and cache-error paths, so implementations should be cheap.
+    ///
+    /// Experimental: this API may change or be removed until indicated otherwise.
+    fn suppress_proxy_warn_log(
+        &self,
+        _session: &Session,
+        _ctx: &Self::CTX,
+        _error: &Error,
+        _context: ProxyWarnLogContext,
+    ) -> bool {
         false
     }
 
     /// This filter is called when there is an error **after** a connection is established (or reused)
     /// to the upstream.
+    ///
+    /// By default, this hook forces retry to false, regardless of the incoming retry state, when
+    /// the request method is non-idempotent or the body retry buffer was truncated. For eligible
+    /// requests, [`pingora_error::RetryType::ReusedOnly`] errors are retried only on a reused
+    /// connection.
+    ///
+    /// Implementations that override this hook replace the default policy and are responsible for
+    /// deciding when a retry is safe.
     fn error_while_proxy(
         &self,
         peer: &HttpPeer,
@@ -523,26 +593,13 @@ pub trait ProxyHttp {
         client_reused: bool,
     ) -> Box<Error> {
         let mut e = e.more_context(format!("Peer: {}", peer));
-        // only reused client connections where retry buffer is not truncated
-        e.retry
-            .decide_reuse(client_reused && !session.as_ref().retry_buffer_truncated());
+        if !session.req_header().method.is_idempotent() || session.as_ref().retry_buffer_truncated()
+        {
+            e.set_retry(false);
+        } else {
+            e.retry.decide_reuse(client_reused);
+        }
         e
-    }
-
-    /// Called once per upstream attempt, right after [Self::upstream_peer()] returned, to let the
-    /// application abandon the attempt while it is in progress.
-    ///
-    /// The returned future is polled for as long as the attempt runs (connect, proxy and release of
-    /// the upstream session). When it resolves first, the attempt is dropped and the error it
-    /// resolved with goes through [Self::error_while_proxy()], so the retry decision, including
-    /// [Error::set_retry()], is the application's. `None` (the default) means the attempt cannot be
-    /// cancelled.
-    fn upstream_attempt_cancelled(
-        &self,
-        _session: &Session,
-        _ctx: &Self::CTX,
-    ) -> Option<UpstreamCancellation> {
-        None
     }
 
     /// This filter is called when there is an error in the process of establishing a connection
@@ -571,46 +628,43 @@ pub trait ProxyHttp {
     /// Additionally, the user can return whether this session may be reused in spite of the error.
     /// Today this reuse status is only respected for errors that occur prior to upstream peer
     /// selection, and the keepalive configured on the `Session` itself still takes precedent.
-    fn fail_to_proxy(
+    async fn fail_to_proxy(
         &self,
         session: &mut Session,
         e: &Error,
         _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = FailToProxy> + Send
+    ) -> FailToProxy
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move {
-            let code = match e.etype() {
-                HTTPStatus(code) => *code,
-                _ => {
-                    match e.esource() {
-                        ErrorSource::Upstream => 502,
-                        ErrorSource::Downstream => {
-                            match e.etype() {
-                                WriteError | ReadError | ConnectionClosed => {
-                                    /* conn already dead */
-                                    0
-                                }
-                                _ => 400,
+        let code = match e.etype() {
+            HTTPStatus(code) => *code,
+            _ => {
+                match e.esource() {
+                    ErrorSource::Upstream => 502,
+                    ErrorSource::Downstream => {
+                        match e.etype() {
+                            WriteError | ReadError | ConnectionClosed => {
+                                /* conn already dead */
+                                0
                             }
+                            _ => 400,
                         }
-                        ErrorSource::Internal | ErrorSource::Unset => 500,
                     }
+                    ErrorSource::Internal | ErrorSource::Unset => 500,
                 }
-            };
-            if code > 0 {
-                session.respond_error(code).await.unwrap_or_else(|e| {
-                    error!("failed to send error response to downstream: {e}");
-                });
             }
+        };
+        if code > 0 {
+            session.respond_error(code).await.unwrap_or_else(|e| {
+                error!("failed to send error response to downstream: {e}");
+            });
+        }
 
-            FailToProxy {
-                error_code: code,
-                // default to no reuse, which is safest
-                can_reuse_downstream: false,
-            }
+        FailToProxy {
+            error_code: code,
+            // default to no reuse, which is safest
+            can_reuse_downstream: false,
         }
     }
 
@@ -638,7 +692,7 @@ pub trait ProxyHttp {
     /// This filter is called when the request just established or reused a connection to the upstream
     ///
     /// This filter allows user to log timing and connection related info.
-    fn connected_to_upstream(
+    async fn connected_to_upstream(
         &self,
         _session: &mut Session,
         _reused: bool,
@@ -647,12 +701,11 @@ pub trait ProxyHttp {
         #[cfg(windows)] _sock: std::os::windows::io::RawSocket,
         _digest: Option<&Digest>,
         _ctx: &mut Self::CTX,
-    ) -> impl Future<Output = Result<()>> + Send
+    ) -> Result<()>
     where
-        Self: Sync,
         Self::CTX: Send + Sync,
     {
-        async move { Ok(()) }
+        Ok(())
     }
 
     /// This callback is invoked every time request related error log needs to be generated
@@ -668,6 +721,16 @@ pub trait ProxyHttp {
     /// - `false`: this request is a treated as a normal request
     fn is_purge(&self, _session: &Session, _ctx: &Self::CTX) -> bool {
         false
+    }
+
+    /// What a purge request should do to the cached asset.
+    ///
+    /// Only consulted when [`ProxyHttp::is_purge`] returns `true`. The default deletes the asset.
+    /// Returning [`PurgeAction::Expire`] asks to keep it and mark it stale instead, so it
+    /// revalidates against the origin rather than being refetched in full. Storage that cannot
+    /// mark an entry stale falls back to deleting it.
+    fn purge_action(&self, _session: &Session, _ctx: &Self::CTX) -> PurgeAction {
+        PurgeAction::Delete
     }
 
     /// This filter is called after the proxy cache generates the downstream response to the purge

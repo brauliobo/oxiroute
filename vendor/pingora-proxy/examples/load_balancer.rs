@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use async_trait::async_trait;
 use log::info;
 use pingora_core::services::background::background_service;
 use std::{sync::Arc, time::Duration};
@@ -25,6 +26,7 @@ use pingora_proxy::{ProxyHttp, Session};
 
 pub struct LB(Arc<LoadBalancer<RoundRobin>>);
 
+#[async_trait]
 impl ProxyHttp for LB {
     type CTX = ();
     fn new_ctx(&self) -> Self::CTX {}

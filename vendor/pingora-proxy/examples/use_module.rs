@@ -79,6 +79,7 @@ mod my_acl {
 
 pub struct MyProxy;
 
+#[async_trait]
 impl ProxyHttp for MyProxy {
     type CTX = ();
     fn new_ctx(&self) -> Self::CTX {}
