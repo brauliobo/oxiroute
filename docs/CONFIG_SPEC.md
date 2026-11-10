@@ -32,6 +32,7 @@ return {
   version = 1,
   max_connections = 4096,
   listener_workers = 4,
+  log_filter = "info,oxiroute::audit=debug",
   management = {
     bind = "127.0.0.1:9080",
     ui_dir = "./ui/dist",
@@ -297,6 +298,13 @@ Current constraints:
   `drain_deadline_ms` of an HTTP, forward proxy or L4 service only raises that deadline and never
   lowers it. The values are read from the generation being replaced when it retires; an apply
   that introduces the keys retires a generation that has none and uses the defaults.
+- Root `log_filter` is an optional log verbosity in `RUST_LOG` syntax without regex filters: comma-separated
+  directives, each a level (`off`, `error`, `warn`, `info`, `debug`, `trace`) or `module::path=level`, at most
+  1024 bytes. When it is set it replaces the `RUST_LOG` environment variable, which stays the fallback; when
+  neither is set only errors are logged. The supervised master applies it when it starts and on every accepted
+  reload; each supervised worker applies its own generation's value at start (workers do not inherit
+  `RUST_LOG`), and the direct runtime applies it with each generation, so a draining generation shares the
+  process-wide filter.
 - `management` is optional and MUST use a loopback IP with a nonzero port. The current
   configuration routes use bearer authentication, but the schema does not expose a remote
   management mode.

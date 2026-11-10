@@ -164,6 +164,12 @@ impl ServerProcess {
         assert!(self.child.wait().expect("server exit").success());
     }
 
+    /// Stops the server and returns what it wrote to standard error.
+    pub fn shutdown_output(mut self) -> String {
+        self.stop();
+        read_pipe(self.child.stderr.take())
+    }
+
     pub fn wait_for_exit(mut self) {
         let deadline = Instant::now() + PROCESS_TIMEOUT;
         while self
