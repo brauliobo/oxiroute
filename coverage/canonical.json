@@ -396,6 +396,16 @@
       "required_tests": ["decode", "render", "interop"]
     },
     {
+      "id": "canonical.tls-profiles.policy.backend",
+      "kind": "field",
+      "path": "tls_profiles[].policy.backend",
+      "editability": "operator",
+      "normalization": ["default to openssl"],
+      "validation": ["openssl or rustls", "rustls rejects cipher_list and dh_parameters_path"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "interop"]
+    },
+    {
       "id": "canonical.config.listeners",
       "kind": "field",
       "path": "listeners[]",
