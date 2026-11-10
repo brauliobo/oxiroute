@@ -50,7 +50,12 @@ fn the_aged_per_worker_mode_adapts_its_age_or_takes_a_configured_one() {
 
 #[test]
 fn auto_is_per_worker_queues_from_two_listener_workers_up() {
-    for (workers, aged) in [(None, false), (Some(1), false), (Some(2), true), (Some(8), true)] {
+    for (workers, aged) in [
+        (None, false),
+        (Some(1), false),
+        (Some(2), true),
+        (Some(8), true),
+    ] {
         let mut extra = json!({"connection_scheduling": "auto"});
         if let Some(workers) = workers {
             extra["listener_workers"] = json!(workers);
@@ -74,7 +79,8 @@ fn auto_is_per_worker_queues_from_two_listener_workers_up() {
 
 #[test]
 fn auto_takes_a_configured_age_whatever_the_worker_count_resolves_to() {
-    let config = validate(&json!({"connection_scheduling": "auto", "connection_age_ms": 40})).unwrap();
+    let config =
+        validate(&json!({"connection_scheduling": "auto", "connection_age_ms": 40})).unwrap();
     assert_eq!(config.as_draft().connection_age_ms, Some(40));
 }
 
