@@ -2828,6 +2828,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxiroute-h2"
+version = "6.3.0"
+dependencies = [
+ "bytes",
+ "h2",
+ "http",
+ "log",
+ "tokio",
+]
+
+[[package]]
 name = "oxiroute-import"
 version = "6.3.0"
 dependencies = [

@@ -5,6 +5,7 @@ members = [
     "crates/oxiroute-config",
     "crates/oxiroute-config-source",
     "crates/oxiroute-forward-proxy",
+    "crates/oxiroute-h2",
     "crates/oxiroute-import",
     "crates/oxiroute-rtmp",
     "crates/oxiroute-server",
