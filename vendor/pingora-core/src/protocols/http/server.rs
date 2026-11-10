@@ -19,7 +19,7 @@ use super::error_resp;
 use super::subrequest::server::HttpSession as SessionSubrequest;
 use super::v1::server::HttpSession as SessionV1;
 use super::v2::server::{HttpSession as SessionV2, Idle};
-use super::HttpTask;
+use super::{HttpTask, HttpTaskBatch};
 use crate::custom_session;
 use crate::protocols::{Digest, SocketAddr, Stream};
 use bytes::{Bytes, BytesMut};
@@ -58,6 +58,10 @@ pub enum Session {
     H2(SessionV2),
     Subrequest(SessionSubrequest),
     Custom(Box<dyn SessionCustom>),
+}
+
+fn batch_into_vec(tasks: HttpTaskBatch) -> Vec<HttpTask> {
+    tasks.into_vec()
 }
 
 impl Session {
@@ -151,6 +155,24 @@ impl Session {
         }
     }
 
+    /// Like [`Self::req_header_mut()`] for a caller that changes none of `Content-Length`, `Transfer-Encoding`,
+    /// `Connection` and `Upgrade`: an HTTP/1 session then keeps what it noted about them while parsing.
+    pub fn req_header_mut_keeping_facts(&mut self) -> &mut RequestHeader {
+        match self {
+            Self::H1(s) => s.req_header_mut_keeping_facts(),
+            other => other.req_header_mut(),
+        }
+    }
+
+    /// What the request says about its framing: noted while an HTTP/1 request was parsed. Any other session
+    /// answers [`RequestFacts::UNKNOWN`], so that the caller looks the header up.
+    pub fn request_facts(&self) -> super::v1::common::RequestFacts {
+        match self {
+            Self::H1(s) => s.request_facts(),
+            _ => super::v1::common::RequestFacts::UNKNOWN,
+        }
+    }
+
     /// Return the header by name. None if the header doesn't exist.
     ///
     /// In case there are multiple headers under the same name, the first one will be returned. To
@@ -219,6 +241,35 @@ impl Session {
                 Ok(())
             }
             Self::Custom(s) => s.write_response_header_ref(resp, false).await,
+        }
+    }
+
+    /// Writes a complete locally generated response in one buffer, see
+    /// `v1::server::HttpSession::write_rendered_response()`. Returns `Ok(false)` without writing for
+    /// sessions that are not HTTP/1, whose callers use `write_response_header()` instead.
+    pub async fn write_rendered_response(
+        &mut self,
+        status: http::StatusCode,
+        rendered_head: &[u8],
+        request_id: Option<&http::HeaderValue>,
+        body: &[u8],
+    ) -> Result<bool> {
+        match self {
+            Self::H1(s) => {
+                s.write_rendered_response(status, rendered_head, request_id, body)
+                    .await?;
+                Ok(true)
+            }
+            Self::H2(_) | Self::Subrequest(_) | Self::Custom(_) => Ok(false),
+        }
+    }
+
+    /// Enable or disable automatically generated downstream response headers.
+    pub fn set_automatic_response_headers(&mut self, enabled: bool) {
+        match self {
+            Self::H1(session) => session.set_automatic_response_headers(enabled),
+            Self::H2(session) => session.set_automatic_response_headers(enabled),
+            Self::Subrequest(_) | Self::Custom(_) => {}
         }
     }
 
@@ -311,6 +362,16 @@ impl Session {
         }
     }
 
+    /// Write a batch of response tasks, retaining inline storage for HTTP/1 downstreams.
+    pub async fn response_duplex_batch(&mut self, tasks: HttpTaskBatch) -> Result<bool> {
+        match self {
+            Self::H1(s) => s.response_duplex_batch(tasks).await,
+            Self::H2(s) => s.response_duplex_vec(batch_into_vec(tasks)).await,
+            Self::Subrequest(s) => s.response_duplex_vec(batch_into_vec(tasks)).await,
+            Self::Custom(s) => s.response_duplex_vec(batch_into_vec(tasks)).await,
+        }
+    }
+
     /// Set connection reuse. `duration` defines how long the connection is kept open for the next
     /// request to reuse. Noop for h2 and subrequest
     pub fn set_keepalive(&mut self, duration: Option<u64>) {
@@ -320,6 +381,31 @@ impl Session {
             Self::Subrequest(_) => {}
             Self::Custom(_) => {}
         }
+    }
+
+    /// Sets an exact idle timeout used only while a reused HTTP/1 connection awaits a request.
+    pub fn set_idle_keepalive_timeout(&mut self, timeout: Option<Duration>) {
+        if let Self::H1(session) = self {
+            session.set_idle_keepalive_timeout(timeout);
+        }
+    }
+
+    /// Sets the timeout for an active HTTP/1 request header.
+    pub fn set_request_header_timeout(&mut self, timeout: Option<Duration>) {
+        if let Self::H1(session) = self {
+            session.set_request_header_timeout(timeout);
+        }
+    }
+
+    pub(crate) fn mark_reused_connection(&mut self) {
+        if let Self::H1(session) = self {
+            session.mark_reused_connection();
+        }
+    }
+
+    /// Whether an earlier request was already served on this H1 connection.
+    pub fn is_reused_connection(&self) -> bool {
+        matches!(self, Self::H1(session) if session.is_reused_connection())
     }
 
     /// Get the keepalive timeout. None if keepalive is disabled. Not applicable for h2 or
@@ -375,11 +461,11 @@ impl Session {
     /// Sets the downstream read timeout. This will trigger if we're unable
     /// to read from the stream after `timeout`.
     ///
-    /// This is a noop for h2.
+    /// This applies to request body reads and cancellation waits for h2.
     pub fn set_read_timeout(&mut self, timeout: Option<Duration>) {
         match self {
             Self::H1(s) => s.set_read_timeout(timeout),
-            Self::H2(_) => {}
+            Self::H2(s) => s.set_read_timeout(timeout),
             Self::Subrequest(s) => s.set_read_timeout(timeout),
             Self::Custom(c) => c.set_read_timeout(timeout),
         }
@@ -389,7 +475,7 @@ impl Session {
     pub fn get_read_timeout(&self) -> Option<Duration> {
         match self {
             Self::H1(s) => s.get_read_timeout(),
-            Self::H2(_) => None,
+            Self::H2(s) => s.get_read_timeout(),
             Self::Subrequest(s) => s.get_read_timeout(),
             Self::Custom(s) => s.get_read_timeout(),
         }
@@ -673,6 +759,15 @@ impl Session {
             Self::H2(s) => s.enable_retry_buffering(),
             Self::Subrequest(s) => s.enable_retry_buffering(),
             Self::Custom(s) => s.enable_retry_buffering(),
+        }
+    }
+
+    pub fn enable_retry_buffering_with_capacity(&mut self, capacity: usize) {
+        match self {
+            Self::H1(s) => s.enable_retry_buffering_with_capacity(capacity),
+            Self::H2(s) => s.enable_retry_buffering_with_capacity(capacity),
+            Self::Subrequest(s) => s.enable_retry_buffering_with_capacity(capacity),
+            Self::Custom(s) => s.enable_retry_buffering_with_capacity(capacity),
         }
     }
 
@@ -1280,5 +1375,27 @@ mod tests {
         ) -> Result<()> {
             unreachable!("not used by proxy task dispatch test")
         }
+    }
+}
+
+#[cfg(test)]
+mod task_batch_tests {
+    use super::*;
+
+    #[test]
+    fn h2_subrequest_and_custom_fallback_conversion_preserves_order() {
+        let mut tasks = HttpTaskBatch::new();
+        tasks.push(HttpTask::Body(Some(Bytes::from_static(b"first")), false));
+        tasks.push(HttpTask::Trailer(None));
+        tasks.push(HttpTask::Done);
+
+        let tasks = batch_into_vec(tasks);
+
+        assert!(matches!(
+            &tasks[0],
+            HttpTask::Body(Some(body), false) if body.as_ref() == b"first"
+        ));
+        assert!(matches!(&tasks[1], HttpTask::Trailer(None)));
+        assert!(matches!(&tasks[2], HttpTask::Done));
     }
 }
