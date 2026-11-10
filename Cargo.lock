@@ -2956,6 +2956,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxiroute-h3"
+version = "6.3.1"
+dependencies = [
+ "atomic-waker",
+ "bytes",
+ "h3",
+ "h3-quinn",
+ "http",
+ "oxiroute-h2",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "oxiroute-import"
 version = "6.3.1"
 dependencies = [

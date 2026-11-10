@@ -1,0 +1,28 @@
+[package]
+name = "oxiroute-h3"
+description = "Purpose-built HTTP/3 server layer over quinn streams: frame codec, QPACK without a dynamic table, abuse limits"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+atomic-waker.workspace = true
+bytes.workspace = true
+http.workspace = true
+oxiroute-h2 = { path = "../oxiroute-h2" }
+quinn.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+h3.workspace = true
+h3-quinn.workspace = true
+rcgen = "0.14.10"
+rustls.workspace = true
+rustls-pki-types.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "time", "sync"] }
+
+[lints]
+workspace = true
