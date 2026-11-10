@@ -39,10 +39,10 @@ impl Connection {
     }
 
     fn frame(&mut self, head: Head, input: &mut BytesMut) -> Res {
-        if let Some(c) = &self.cont {
-            if head.kind != frame::CONTINUATION || head.stream != c.id {
-                return Err(PROTOCOL);
-            }
+        if let Some(c) = &self.cont
+            && (head.kind != frame::CONTINUATION || head.stream != c.id)
+        {
+            return Err(PROTOCOL);
         }
         if !self.got_settings && head.kind != frame::SETTINGS {
             return Err(PROTOCOL);
@@ -148,10 +148,10 @@ impl Connection {
         if end {
             s.recv = RecvState::Ended;
         }
-        if nonempty || end {
-            if let Some(w) = s.wakers.recv.take() {
-                w.wake();
-            }
+        if (nonempty || end)
+            && let Some(w) = s.wakers.recv.take()
+        {
+            w.wake();
         }
         self.update_open(idx);
         Ok(())
@@ -267,7 +267,7 @@ impl Connection {
                 Target::Reject(Reason::PROTOCOL_ERROR)
             });
         }
-        if id % 2 == 0 {
+        if id.is_multiple_of(2) {
             return Err(PROTOCOL);
         }
         if id <= self.highest_id {
@@ -471,10 +471,10 @@ impl Connection {
                     return Err(FLOW_CONTROL);
                 }
                 slot.send_window = window as i32;
-                if delta > 0 {
-                    if let Some(w) = slot.wakers.send.take() {
-                        w.wake();
-                    }
+                if delta > 0
+                    && let Some(w) = slot.wakers.send.take()
+                {
+                    w.wake();
                 }
             }
         }

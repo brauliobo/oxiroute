@@ -263,10 +263,10 @@ impl Connection {
 
     /// Wakes the driver once per arming.
     fn wake_driver(&mut self) {
-        if std::mem::take(&mut self.armed) {
-            if let Some(w) = &self.driver {
-                w.wake_by_ref();
-            }
+        if std::mem::take(&mut self.armed)
+            && let Some(w) = &self.driver
+        {
+            w.wake_by_ref();
         }
     }
 

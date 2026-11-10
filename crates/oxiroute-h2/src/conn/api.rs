@@ -157,6 +157,9 @@ impl Connection {
 
     // ---- response ----
 
+    /// # Errors
+    ///
+    /// The stream was reset, the connection closed or a response was already sent.
     pub fn send_response(
         &mut self,
         idx: u32,
@@ -247,6 +250,9 @@ impl Connection {
         Poll::Pending
     }
 
+    /// # Errors
+    ///
+    /// The stream was reset, the connection closed, no response is in progress or `data` exceeds the grant.
     pub fn send_data(
         &mut self,
         idx: u32,
@@ -299,6 +305,9 @@ impl Connection {
         }
     }
 
+    /// # Errors
+    ///
+    /// The stream was reset, the connection closed or no response is in progress.
     pub fn send_trailers(&mut self, idx: u32, id: u32, trailers: &HeaderMap) -> Result<(), Error> {
         let s = self.live(idx, id)?;
         if s.send != SendState::Open {
@@ -361,8 +370,7 @@ impl Connection {
             return;
         };
         let reason = match (s.reset, s.send, s.recv) {
-            (Some(_), ..) => None,
-            (None, SendState::Ended, RecvState::Ended) => None,
+            (Some(_), ..) | (None, SendState::Ended, RecvState::Ended) => None,
             (None, SendState::Ended, _) => Some(Reason::NO_ERROR),
             (None, ..) => Some(Reason::CANCEL),
         };
