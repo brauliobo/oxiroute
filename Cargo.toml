@@ -3,6 +3,7 @@ members = [
     "crates/oxiroute-aged-executor",
     "crates/oxiroute-cache",
     "crates/oxiroute-acme",
+    "crates/oxiroute-allocator",
     "crates/oxiroute-config",
     "crates/oxiroute-config-source",
     "crates/oxiroute-forward-proxy",
@@ -101,6 +102,12 @@ rml_rtmp = { path = "vendor/rml_rtmp" }
 [profile.release]
 codegen-units = 1
 lto = "fat"
+
+# Fail-fast flavour published as a separate artefact (scripts/build-release-binaries.sh FLAVOUR=abort): a panic ends the
+# whole worker process instead of one connection. The default build keeps unwinding (docs/developer/RELEASING.md).
+[profile.release-abort]
+inherits = "release"
+panic = "abort"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

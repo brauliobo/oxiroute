@@ -2801,6 +2801,7 @@ dependencies = [
  "openssl",
  "oxiroute-acme",
  "oxiroute-aged-executor",
+ "oxiroute-allocator",
  "oxiroute-cache",
  "oxiroute-config",
  "oxiroute-config-source",
@@ -2825,7 +2826,6 @@ dependencies = [
  "signal-hook",
  "tempfile",
  "thiserror 2.0.21",
- "tikv-jemallocator",
  "time",
  "tokio",
  "tokio-openssl",
@@ -2863,6 +2863,14 @@ dependencies = [
  "atomic-waker",
  "slab",
  "tokio",
+]
+
+[[package]]
+name = "oxiroute-allocator"
+version = "6.3.1"
+dependencies = [
+ "tikv-jemalloc-sys",
+ "tikv-jemallocator",
 ]
 
 [[package]]

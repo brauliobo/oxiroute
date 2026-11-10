@@ -87,17 +87,20 @@ Before creating an archive, verify the version metadata and release notes:
 Read [packaging/arch/README.md](../../packaging/arch/README.md) before changing service permissions,
 recording roots, or package files.
 
-## Release Binaries And PGO
+## Release Binaries, PGO, BOLT And The Abort Flavour
 
 `.github/workflows/release.yml` has a second job, `binaries`, that runs after the archive job and builds the
 `x86_64-unknown-linux-gnu` binaries (`oxiroute`, the `oxr` alias and `oxiroute-worker-launcher`) with
 profile-guided optimization, which cuts user-space instructions per request by 14 to 27%
-([PERF_6_3_BUILD_AND_ALLOCATOR.md](PERF_6_3_BUILD_AND_ALLOCATOR.md)). The job is a thin call of
-`scripts/build-release-binaries.sh VERSION OUT_DIR`, which calls `benchmarks/scripts/pgo.sh`:
+([PERF_6_3_BUILD_AND_ALLOCATOR.md](PERF_6_3_BUILD_AND_ALLOCATOR.md)), and lays the result out with BOLT
+([PERF_6_4_BINARY_LEVEL.md](PERF_6_4_BINARY_LEVEL.md)). The job is a thin call of
+`scripts/build-release-binaries.sh VERSION OUT_DIR`, which calls `benchmarks/scripts/pgo.sh` and
+`benchmarks/scripts/bolt.sh`:
 
-1. `pgo.sh train`: instrumented build (`-Cprofile-generate`), replay of ten R2 data-path lanes through the
-   instrumented proxy with `benchmarks/r2-data-path/run.sh --train` (loopback only, no `perf`, so it runs on GitHub
-   runners), `llvm-profdata merge` into one profile.
+1. `pgo.sh train`: instrumented build (`-Cprofile-generate`), replay of 24 R2 data-path lanes (the ten core lanes
+   with weight 4, fourteen feature lanes with weight 1) through the instrumented proxy with
+   `benchmarks/r2-data-path/run.sh --train` (loopback only, no `perf`, so it runs on GitHub runners),
+   `llvm-profdata merge` with the weights into one profile.
 2. `pgo.sh build`: release build with `-Cprofile-use` and the same cargo command. It parses the compiler's
    `-pgo-warn-missing-function` diagnostics and fails when more than 5% of the profile's functions were not matched,
    so a profile the compiler ignored cannot be published as a PGO build.
@@ -107,33 +110,69 @@ profile-guided optimization, which cuts user-space instructions per request by 1
    contains `/home/`, `/runner/work`, the checkout or the cargo home. The vendored OpenSSL records its own build
    directory, which no rustc flag can remap, so `PGO_WORK` must lie outside `/home` (the workflow uses `/tmp`).
 3. `pgo.sh smoke`: `oxiroute config check` of a generated configuration and two lanes of proxied requests through the
-   final binary; any load error fails the job.
+   binary; any load error fails the job.
+4. `bolt.sh all` (skipped with `BOLT=0`): the PGO binary is linked with `-Wl,-q` (relocations kept; code generation is
+   unchanged, so the profile still matches), `llvm-bolt -instrument` adds counters (no `perf`, no LBR: it works in the
+   virtual machines of hosted runners), ten lanes replay through the counted binary, and `llvm-bolt` rewrites the PGO
+   binary (block order, function order, hot/cold splitting). The stage fails when fewer than 1000 functions got a
+   profile, when the output grew by more than 50%, or when it is no longer PIE, lost `GNU_RELRO` or `BIND_NOW`, or does
+   not start. Then `smoke` runs again on the rewritten binary and `scripts/test-release-binary.sh` runs the whole
+   workspace test suite with the rewritten binary as `CARGO_BIN_EXE_oxiroute`, so every process, supervised, CLI and
+   panic-containment test drives the shipped bytes. Any failure fails the job; nothing falls back to the PGO binary.
+
+BOLT comes from `scripts/install-bolt.sh DIR`: the Ubuntu 24.04 `bolt-18` and `libbolt-18-dev` 18.1.3-1 packages are
+downloaded and used only when their SHA-256 matches the values pinned in the script (a mismatch or an unreachable
+mirror fails the step). The workflow runs it before the build and exports `BOLT_BIN_DIR`. To update BOLT, take the new
+package hashes from the `Packages` index of the Ubuntu archive and change the pins in the script. BOLT is a pipeline
+tool only, it is not linked into the product. BOLT bugs are binary-level and invisible to a normal `cargo test`: that
+is why the suite runs against the final artefact.
 
 The tarball `oxiroute-VERSION-TARGET.tar.gz` (layout of the Arch package: `bin/oxiroute`, `bin/oxr`,
 `lib/oxiroute/oxiroute-worker-launcher`, `LICENSE`, `BUILD-INFO.json`), its `.sha256` and `.build.json` (version,
-commit, `rustc --version`, `pgo`, SHA-256 of the profile) are uploaded as workflow artifacts, attested, and attached to
-the tag's release; a line stating that the binaries are PGO builds is appended to the release notes. A training,
-profile or smoke failure fails the job: there is no silent plain build. A manual run can start with the `pgo` input set
-to `false`, which publishes a plain build and says so in the notes line.
+commit, `rustc --version`, `pgo`, `bolt`, `panic`, SHA-256 of the profile) are uploaded as workflow artifacts,
+attested, and attached to the tag's release; a line stating how the binaries were built is appended to the release
+notes. A training, profile, BOLT or test failure fails the job: there is no silent plain build. A manual run can start
+with the `pgo` input set to `false` (a plain build, said so in the notes line) or `bolt` set to `false`.
+
+### Abort flavour
+
+A second matrix leg builds `FLAVOUR=abort`: cargo profile `release-abort` (`inherits = "release"`, `panic = "abort"`),
+its own profile data (unwinding changes the control-flow hashes, so the default profile matches only 78% of it), the
+same BOLT stage, and the artefact `oxiroute-VERSION-TARGET-abort.tar.gz` with its own checksum, build record and notes
+line. A tag always publishes it; a manual run can skip it with `abort_flavour: false`. The default artefact, the Arch
+recipe and the source archive keep `panic = "unwind"`.
+
+The trade-off is the reason it is a separate artefact. With unwinding, tokio and Pingora contain a panic to one
+connection, the listener service wrapper (`catch_unwind` in `listener_services.rs`) turns a panic into a failed
+generation that the supervisor rolls back, and the RTMP recorder reports `worker_panicked`. With `panic = "abort"` the
+first panic anywhere ends the worker process: every connection of that worker closes, the supervisor sees a worker exit
+and treats the generation as failed (the same path as a killed worker), and recorder panics are no longer reported
+because the process is gone. It is meant for operators who prefer fail-fast with supervisor restarts and accept that one
+bad request can take down every connection of the worker; it measures 3 to 9% fewer instructions per request.
 
 Requirements: the toolchain that trains must be the toolchain that builds. The profile is keyed by symbol names, and
 rustc hashes its own version and the unit configuration into every symbol, so the job installs the pinned Rust 1.97.1
 with the `llvm-tools` component (its `llvm-profdata` reads that compiler's raw format) and nothing else compiles
 between training and the final build. The profile is generated in the job and never committed or archived: the source
 archive, its checksum and `scripts/create-release-archive.sh` are unaffected, and the Arch recipe keeps building from
-source without a profile.
+source without a profile. Each leg takes about an hour on a hosted runner (training build, 24 lanes, profile build,
+BOLT counted replay and the workspace tests).
 
 To regenerate locally with the same compiler:
 
 ```sh
 export PATH=$HOME/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:$PATH   # rustup component add llvm-tools
-PGO_WORK=/dev/shm/oxiroute-pgo ./scripts/build-release-binaries.sh 6.3.1 /tmp/oxiroute-release
-PGO=0 ./scripts/build-release-binaries.sh 6.3.1 /tmp/oxiroute-plain               # plain build of the same command
+BOLT_BIN_DIR=$(scripts/install-bolt.sh /var/tmp/oxiroute-bolt-tools) \
+  ./scripts/build-release-binaries.sh 6.4.0 /path/to/oxiroute-release
+BOLT=0 ./scripts/build-release-binaries.sh 6.4.0 /path/to/oxiroute-pgo          # PGO only
+PGO=0 BOLT=0 ./scripts/build-release-binaries.sh 6.4.0 /path/to/oxiroute-plain  # plain build of the same command
+FLAVOUR=abort BOLT=0 ./scripts/build-release-binaries.sh 6.4.0 /path/to/oxiroute-abort
 ```
 
-`PGO_LANES` and `PGO_SCALE` shorten the training for a local check of the flow; a profile from a shortened or different
-workload still builds and passes the gate but gives less than the 14 to 27%. Release binaries are linked against the
-glibc of the runner image (Ubuntu 24.04); older distributions need the Arch-style source build.
+`PGO_WORK` (default `/var/tmp/oxiroute-pgo`: a disk directory outside `/home`, because the vendored OpenSSL records its build directory; the build directories are several GB) moves the
+scratch data, `PGO_LANES` and `PGO_SCALE` shorten the training for a local check of the flow; a profile from a shortened
+or different workload still builds and passes the gate but gives less than the 14 to 27%. Release binaries are linked
+against the glibc of the runner image (Ubuntu 24.04); older distributions need the Arch-style source build.
 
 ## Binary Package
 
