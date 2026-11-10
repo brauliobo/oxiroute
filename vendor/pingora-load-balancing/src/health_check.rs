@@ -24,8 +24,15 @@ use pingora_core::protocols::http::custom::client::Session;
 use pingora_core::upstreams::peer::{BasicPeer, HttpPeer, Peer};
 use pingora_error::{Error, ErrorType::CustomCode, Result};
 use pingora_http::{RequestHeader, ResponseHeader};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+
+// Checks that keep the default connector probe over fresh connections, so they share one connector
+// (and its TLS client context) instead of each building and holding their own.
+static SHARED_TCP_CONNECTOR: LazyLock<Arc<TransportConnector>> =
+    LazyLock::new(|| Arc::new(TransportConnector::new(None)));
+static SHARED_HTTP_CONNECTOR: LazyLock<Arc<HttpConnector>> =
+    LazyLock::new(|| Arc::new(HttpConnector::new(None)));
 
 /// [HealthObserve] is an interface for observing health changes of backends,
 /// this is what's used for our health observation callback.
@@ -83,7 +90,7 @@ pub struct TcpHealthCheck {
     /// By default, this check will try to establish a TCP connection. When the `sni` field is
     /// set, it will also try to establish a TLS connection on top of the TCP connection.
     pub peer_template: BasicPeer,
-    connector: TransportConnector,
+    connector: Arc<TransportConnector>,
     /// A callback that is invoked when the `healthy` status changes for a [Backend].
     pub health_changed_callback: Option<HealthObserveCallback>,
 }
@@ -96,7 +103,7 @@ impl Default for TcpHealthCheck {
             consecutive_success: 1,
             consecutive_failure: 1,
             peer_template,
-            connector: TransportConnector::new(None),
+            connector: Arc::clone(&SHARED_TCP_CONNECTOR),
             health_changed_callback: None,
         }
     }
@@ -121,8 +128,8 @@ impl TcpHealthCheck {
     }
 
     /// Replace the internal tcp connector with the given [TransportConnector]
-    pub fn set_connector(&mut self, connector: TransportConnector) {
-        self.connector = connector;
+    pub fn set_connector(&mut self, connector: impl Into<Arc<TransportConnector>>) {
+        self.connector = connector.into();
     }
 }
 
@@ -179,7 +186,7 @@ where
     pub reuse_connection: bool,
     /// The request header to send to the backend
     pub req: RequestHeader,
-    connector: HttpConnector<C>,
+    connector: Arc<HttpConnector<C>>,
     /// Optional field to define how to validate the response from the server.
     ///
     /// If not set, any response with a `200 OK` is considered a successful check.
@@ -213,7 +220,7 @@ impl HttpHealthCheck<()> {
             consecutive_success: 1,
             consecutive_failure: 1,
             peer_template,
-            connector: HttpConnector::new(None),
+            connector: Arc::clone(&SHARED_HTTP_CONNECTOR),
             reuse_connection: false,
             req,
             validator: None,
@@ -247,7 +254,7 @@ where
             consecutive_success: 1,
             consecutive_failure: 1,
             peer_template,
-            connector: custom,
+            connector: Arc::new(custom),
             reuse_connection: false,
             req,
             validator: None,
@@ -258,8 +265,8 @@ where
     }
 
     /// Replace the internal http connector with the given [HttpConnector]
-    pub fn set_connector(&mut self, connector: HttpConnector<C>) {
-        self.connector = connector;
+    pub fn set_connector(&mut self, connector: impl Into<Arc<HttpConnector<C>>>) {
+        self.connector = connector.into();
     }
 
     pub fn set_backend_summary<F>(&mut self, callback: F)
@@ -411,7 +418,7 @@ mod test {
     };
 
     use super::*;
-    use crate::{discovery, Backends, SocketAddr};
+    use crate::{discovery, test_servers, Backends, SocketAddr};
     use async_trait::async_trait;
     use http::Extensions;
 
@@ -419,16 +426,18 @@ mod test {
     async fn test_tcp_check() {
         let tcp_check = TcpHealthCheck::default();
 
+        let server = test_servers::redirect_server();
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:80".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
 
         assert!(tcp_check.check(&backend).await.is_ok());
 
+        let refused = test_servers::refused();
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:79".parse().unwrap()),
+            addr: SocketAddr::Inet(refused.addr),
             weight: 1,
             ext: Extensions::new(),
         };
@@ -436,12 +445,15 @@ mod test {
         assert!(tcp_check.check(&backend).await.is_err());
     }
 
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     #[tokio::test]
     async fn test_tls_check() {
-        let tls_check = TcpHealthCheck::new_tls("one.one.one.one");
+        let server = test_servers::tls_server();
+        let mut tls_check = TcpHealthCheck::new_tls("localhost");
+        tls_check.peer_template.options.verify_cert = false;
+        tls_check.peer_template.options.verify_hostname = false;
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:443".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
@@ -449,13 +461,16 @@ mod test {
         assert!(tls_check.check(&backend).await.is_ok());
     }
 
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     #[tokio::test]
     async fn test_https_check() {
-        let https_check = HttpHealthCheck::new("one.one.one.one", true);
+        let server = test_servers::tls_server();
+        let mut https_check = HttpHealthCheck::new("localhost", true);
+        https_check.peer_template.options.verify_cert = false;
+        https_check.peer_template.options.verify_hostname = false;
 
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:443".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
@@ -477,8 +492,9 @@ mod test {
             }
         }));
 
+        let server = test_servers::redirect_server();
         let backend = Backend {
-            addr: SocketAddr::Inet("1.1.1.1:80".parse().unwrap()),
+            addr: SocketAddr::Inet(server.addr),
             weight: 1,
             ext: Extensions::new(),
         };
@@ -502,7 +518,8 @@ mod test {
             }
         }
 
-        let good_backend = Backend::new("127.0.0.1:79").unwrap();
+        let refused = test_servers::refused();
+        let good_backend = Backend::new(&refused.addr.to_string()).unwrap();
         let new_good_backends = || -> (BTreeSet<Backend>, HashMap<u64, bool>) {
             let mut healthy = HashMap::new();
             healthy.insert(good_backend.hash_key(), true);

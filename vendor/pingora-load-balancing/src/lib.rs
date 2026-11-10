@@ -126,12 +126,7 @@
 //! 6. The task guard clears the slot's running state and notifies waiters.
 //! 7. After destruction completes, the gate permit is released.
 
-// https://github.com/mcarton/rust-derivative/issues/112
-// False positive for macro generated code
-#![allow(clippy::non_canonical_partial_ord_impl)]
-
 use arc_swap::ArcSwap;
-use derivative::Derivative;
 use futures::FutureExt;
 pub use http::Extensions;
 use pingora_core::protocols::l4::socket::SocketAddr;
@@ -154,6 +149,8 @@ mod background;
 pub mod discovery;
 pub mod health_check;
 pub mod selection;
+#[cfg(test)]
+mod test_servers;
 
 use discovery::ServiceDiscovery;
 use health_check::Health;
@@ -167,8 +164,7 @@ pub mod prelude {
 }
 
 /// [Backend] represents a server to proxy or connect to.
-#[derive(Derivative)]
-#[derivative(Clone, Hash, PartialEq, PartialOrd, Eq, Ord, Debug)]
+#[derive(Clone, Debug)]
 pub struct Backend {
     /// The address to the backend server.
     pub addr: SocketAddr,
@@ -182,11 +178,36 @@ pub struct Backend {
     /// [SocketAddr] and the same weight but different `ext` data are considered
     /// identical.
     /// See [Extensions] for how to add and read the data.
-    #[derivative(PartialEq = "ignore")]
-    #[derivative(PartialOrd = "ignore")]
-    #[derivative(Hash = "ignore")]
-    #[derivative(Ord = "ignore")]
     pub ext: Extensions,
+}
+
+impl Hash for Backend {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.addr.hash(state);
+        self.weight.hash(state);
+    }
+}
+
+impl PartialEq for Backend {
+    fn eq(&self, other: &Self) -> bool {
+        self.addr == other.addr && self.weight == other.weight
+    }
+}
+
+impl Eq for Backend {}
+
+impl PartialOrd for Backend {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Backend {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.addr
+            .cmp(&other.addr)
+            .then_with(|| self.weight.cmp(&other.weight))
+    }
 }
 
 impl Backend {
@@ -1923,8 +1944,17 @@ mod test {
     use std::sync::Condvar;
 
     use super::*;
+    use crate::test_servers::{self, Loopback};
     use async_trait::async_trait;
     use pingora_core::services::ServiceReadyNotifier;
+
+    fn live_and_refused() -> (Loopback, Loopback, Loopback) {
+        (
+            test_servers::redirect_server(),
+            test_servers::redirect_server(),
+            test_servers::refused(),
+        )
+    }
 
     struct BuildTracker {
         blocked: Mutex<bool>,
@@ -2303,12 +2333,13 @@ mod test {
 
     #[tokio::test]
     async fn test_backends() {
+        let (server1, server2, refused) = live_and_refused();
         let discovery = discovery::Static::default();
-        let good1 = Backend::new("1.1.1.1:80").unwrap();
+        let good1 = Backend::new(&server1.addr.to_string()).unwrap();
         discovery.add(good1.clone());
-        let good2 = Backend::new("1.0.0.1:80").unwrap();
+        let good2 = Backend::new(&server2.addr.to_string()).unwrap();
         discovery.add(good2.clone());
-        let bad = Backend::new("127.0.0.1:79").unwrap();
+        let bad = Backend::new(&refused.addr.to_string()).unwrap();
         discovery.add(bad.clone());
 
         let mut backends = Backends::new(Box::new(discovery));
@@ -2413,12 +2444,13 @@ mod test {
 
     #[tokio::test]
     async fn test_parallel_health_check() {
+        let (server1, server2, refused) = live_and_refused();
         let discovery = discovery::Static::default();
-        let good1 = Backend::new("1.1.1.1:80").unwrap();
+        let good1 = Backend::new(&server1.addr.to_string()).unwrap();
         discovery.add(good1.clone());
-        let good2 = Backend::new("1.0.0.1:80").unwrap();
+        let good2 = Backend::new(&server2.addr.to_string()).unwrap();
         discovery.add(good2.clone());
-        let bad = Backend::new("127.0.0.1:79").unwrap();
+        let bad = Backend::new(&refused.addr.to_string()).unwrap();
         discovery.add(bad.clone());
 
         let mut backends = Backends::new(Box::new(discovery));
