@@ -10,7 +10,11 @@ use std::{
 use bytes::Bytes;
 use http::{HeaderName, HeaderValue, Version};
 use oxiroute_config::{HttpVersion, PoolResilience, UpstreamConnectionReuse};
-use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
+use pingora::{
+    Error, ErrorType,
+    protocols::Digest,
+    upstreams::peer::{HttpPeer, HttpUpstreamRequestPolicy},
+};
 use tokio::time::Instant;
 
 use crate::clock::promptly;
@@ -270,6 +274,8 @@ impl UpstreamPlan {
         peer.options.total_connection_timeout = Some(connection_timeout);
         peer.options.read_timeout = Some(read_timeout);
         peer.options.write_timeout = Some(write_timeout);
+        // The route policy owns request header sanitation, so the request is written without a copy.
+        peer.options.http_upstream_request_policy = HttpUpstreamRequestPolicy::preserve();
     }
 }
 

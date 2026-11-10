@@ -21,7 +21,9 @@ async fn write_buffered_response(session: &mut ServerSession, response: ApiRespo
 async fn finish_http_session(session: ServerSession) -> Option<ReusedHttpStream> {
     let persistent_settings = HttpPersistentSettings::for_session(&session);
     match session.finish().await {
-        Ok(stream) => stream.map(|stream| ReusedHttpStream::new(stream, Some(persistent_settings))),
+        Ok(stream) => {
+            stream.map(|stream| ReusedHttpStream::from_reusable_stream(stream, persistent_settings))
+        }
         Err(_) => None,
     }
 }

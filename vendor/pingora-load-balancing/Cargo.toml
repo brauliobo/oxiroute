@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "pingora-load-balancing"
-version = "0.8.1"
+version = "0.9.1"
 authors = ["Yuchen Wu <yuchen@cloudflare.com>"]
 build = false
 autolib = false
@@ -44,10 +44,6 @@ openssl = [
     "openssl_derived",
 ]
 openssl_derived = ["any_tls"]
-rustls = [
-    "pingora-core/rustls",
-    "any_tls",
-]
 s2n = [
     "pingora-core/s2n",
     "any_tls",
@@ -68,7 +64,7 @@ version = "0.1.42"
 version = "1"
 
 [dependencies.futures]
-version = "0"
+version = "0.3"
 
 [dependencies.http]
 version = "1"
@@ -77,20 +73,20 @@ version = "1"
 version = "0.4"
 
 [dependencies.pingora-core]
-version = "0.8.1"
+version = "0.9.1"
 default-features = false
 
 [dependencies.pingora-error]
-version = "0.8.1"
+version = "0.9.1"
 
 [dependencies.pingora-http]
-version = "0.8.1"
+version = "0.9.1"
 
 [dependencies.pingora-ketama]
-version = "0.8.1"
+version = "0.9.1"
 
 [dependencies.pingora-runtime]
-version = "0.8.1"
+version = "0.9.1"
 
 [dependencies.rand]
 version = "0.8"

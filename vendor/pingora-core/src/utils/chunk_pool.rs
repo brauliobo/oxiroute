@@ -20,15 +20,16 @@ thread_local! {
     static POOL: RefCell<Vec<BytesMut>> = const { RefCell::new(Vec::new()) };
 }
 
-/// A buffer of [`CHUNK_BYTES`] initialised bytes, taken from the pool when one is available.
+/// An empty buffer with room for [`CHUNK_BYTES`] bytes, taken from the pool when one is available.
 pub fn take() -> BytesMut {
     POOL.with_borrow_mut(Vec::pop)
-        .unwrap_or_else(|| BytesMut::zeroed(CHUNK_BYTES))
+        .unwrap_or_else(|| BytesMut::with_capacity(CHUNK_BYTES))
 }
 
-/// Puts a buffer back unless it was shrunk or split (only whole buffers keep their initialised length).
-pub fn recycle(buf: BytesMut) {
-    if buf.len() == CHUNK_BYTES && buf.capacity() == CHUNK_BYTES {
+/// Empties a buffer and puts it back unless it was shrunk or split (only whole buffers keep their capacity).
+pub fn recycle(mut buf: BytesMut) {
+    if buf.capacity() == CHUNK_BYTES {
+        buf.clear();
         POOL.with_borrow_mut(|pool| {
             if pool.len() < POOL_MAX {
                 pool.push(buf);
@@ -67,7 +68,7 @@ mod tests {
     #[test]
     fn a_dropped_chunk_returns_its_buffer() {
         let mut buf = take();
-        buf[..3].copy_from_slice(b"abc");
+        buf.extend_from_slice(b"abc");
         let pointer = buf.as_ptr();
         let chunk = freeze(buf, 0, 3);
         let tail = chunk.slice(1..);
@@ -76,13 +77,15 @@ mod tests {
         drop(tail);
         let again = take();
         assert_eq!(again.as_ptr(), pointer);
-        assert_eq!(again.len(), CHUNK_BYTES);
+        assert_eq!(again.len(), 0);
+        assert_eq!(again.capacity(), CHUNK_BYTES);
     }
 
     #[test]
     fn a_shrunk_buffer_is_not_pooled() {
         let mut buf = take();
-        buf.truncate(10);
+        buf.extend_from_slice(b"abcdefghij");
+        let _tail = buf.split_off(10);
         recycle(buf);
         assert_eq!(POOL.with_borrow(Vec::len), 0);
     }

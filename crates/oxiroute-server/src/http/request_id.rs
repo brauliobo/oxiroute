@@ -94,11 +94,14 @@ pub(crate) fn stamp_request(
         return Ok(id.clone());
     }
     let id = resolve_request_id(first);
-    if request.has_case() {
-        request.insert_header(REQUEST_ID_HEADER_NAME, id.clone())?;
-    } else {
-        request.headers.insert(REQUEST_ID_HEADER, id.clone());
-    }
+    match request.headers_mut_no_case() {
+        Some(headers) => headers.insert(REQUEST_ID_HEADER, id.clone()),
+        None => {
+            return request
+                .insert_header(REQUEST_ID_HEADER_NAME, id.clone())
+                .map(|()| id);
+        }
+    };
     Ok(id)
 }
 
@@ -112,8 +115,8 @@ pub(crate) fn stamp_response(
     let mut id = id.clone();
     id.set_sensitive(true);
     // The usual response has no id and no case map: one lookup, and no name to parse.
-    if !response.has_case()
-        && let Entry::Vacant(slot) = response.headers.entry(REQUEST_ID_HEADER)
+    if let Some(headers) = response.headers_mut_no_case()
+        && let Entry::Vacant(slot) = headers.entry(REQUEST_ID_HEADER)
     {
         slot.insert(id);
         return Ok(());

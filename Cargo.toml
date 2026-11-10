@@ -18,8 +18,8 @@ members = [
 ]
 exclude = [
     "vendor/pingora-core",
+    "vendor/pingora-http",
     "vendor/pingora-load-balancing",
-    "vendor/pingora-rustls",
     "vendor/pingora-timeout",
 ]
 resolver = "3"
@@ -59,7 +59,8 @@ kdl = { version = "=6.7.1", default-features = false }
 mlua = { version = "0.12", features = ["lua54", "serialize", "vendored"] }
 notify = "8.2"
 openssl = "0.10.82"
-pingora = { version = "=0.8.1", features = ["lb", "openssl", "proxy"] }
+parking_lot = { version = "0.13", features = ["arc_lock"] }
+pingora = { version = "=0.9.1", features = ["lb", "openssl", "proxy"] }
 quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rml_rtmp = "=0.8.0"
 rustix = { version = "1.1.6", features = ["event", "fs", "net", "process", "stdio"] }
@@ -85,9 +86,9 @@ zeroize = "1.9.1"
 [patch.crates-io]
 h3 = { git = "https://github.com/hyperium/h3", rev = "43745ad87e95b0c035ac9c547aad467303213425" }
 pingora-core = { path = "vendor/pingora-core" }
+pingora-http = { path = "vendor/pingora-http" }
 pingora-load-balancing = { path = "vendor/pingora-load-balancing" }
 pingora-proxy = { path = "vendor/pingora-proxy" }
-pingora-rustls = { path = "vendor/pingora-rustls" }
 pingora-timeout = { path = "vendor/pingora-timeout" }
 rml_rtmp = { path = "vendor/rml_rtmp" }
 

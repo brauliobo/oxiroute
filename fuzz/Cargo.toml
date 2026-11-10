@@ -29,9 +29,9 @@ tokio-test = "0.4.6"
 
 [patch.crates-io]
 pingora-core = { path = "../vendor/pingora-core" }
+pingora-http = { path = "../vendor/pingora-http" }
 pingora-load-balancing = { path = "../vendor/pingora-load-balancing" }
 pingora-proxy = { path = "../vendor/pingora-proxy" }
-pingora-rustls = { path = "../vendor/pingora-rustls" }
 rml_rtmp = { path = "../vendor/rml_rtmp" }
 
 [[bin]]
