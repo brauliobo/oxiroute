@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "pingora-timeout"
-version = "0.8.1"
+version = "0.9.1"
 authors = ["Yuchen Wu <yuchen@cloudflare.com>"]
 build = false
 autolib = false
@@ -37,6 +37,11 @@ repository = "https://github.com/cloudflare/pingora"
 name = "pingora_timeout"
 path = "src/lib.rs"
 
+[[bench]]
+name = "benchmark"
+path = "benches/benchmark.rs"
+harness = false
+
 [dependencies.once_cell]
 version = "1"
 
@@ -57,3 +62,6 @@ features = [
     "macros",
     "sync",
 ]
+
+[dev-dependencies.bencher]
+version = "0.1.5"
