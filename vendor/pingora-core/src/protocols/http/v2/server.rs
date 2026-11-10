@@ -25,7 +25,7 @@ use http::{header, HeaderMap, Response, StatusCode};
 use log::{debug, warn};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_timeout::timeout;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::ready;
 use std::time::Duration;
@@ -55,6 +55,9 @@ pub use h2::server::Builder as H2Options;
 // 64 KiB decoded header-list limit.
 const DEFAULT_MAX_HEADER_LIST_SIZE: u32 = 64 * 1024;
 const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 100;
+
+const KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
+const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
 
 // Per-connection budget for requests rejected during acceptance. Valid streams do not reset it,
 // preventing unbounded rejection work, but interoperability errors can also consume the budget.
@@ -270,6 +273,8 @@ impl Future for Idle<'_> {
 pub struct HttpSession {
     request_header: RequestHeader,
     request_body_reader: RecvStream,
+    // The end of the request stream, once seen: asking `RecvStream` takes the connection's stream lock.
+    request_ended: AtomicBool,
     send_response: SendResponse<Bytes>,
     send_response_body: Option<SendStream<Bytes>>,
     // Remember what has been written
@@ -281,6 +286,8 @@ pub struct HttpSession {
     body_read: usize,
     // How many (application, not wire) response body bytes have been sent so far.
     body_sent: usize,
+    /// The read timeout applied to request body reads and client cancellation waits.
+    read_timeout: Option<Duration>,
     // buffered request body for retry logic
     retry_buffer: Option<FixedBuffer>,
     // digest to record underlying connection info
@@ -291,6 +298,7 @@ pub struct HttpSession {
     pub write_timeout: Option<Duration>,
     // How long to wait when draining (discarding) request body
     total_drain_timeout: Option<Duration>,
+    automatic_response_headers: bool,
 }
 
 /// The outcome of accepting the next event on an HTTP/2 downstream connection.
@@ -489,16 +497,19 @@ impl HttpSession {
         Ok(Some(H2Accept::Session(HttpSession {
             request_header,
             request_body_reader,
+            request_ended: AtomicBool::new(false),
             send_response,
             send_response_body: None,
             response_written: None,
             ended: false,
             body_read: 0,
             body_sent: 0,
+            read_timeout: None,
             retry_buffer: None,
             digest,
             write_timeout: None,
             total_drain_timeout: None,
+            automatic_response_headers: true,
         })))
     }
 
@@ -520,7 +531,21 @@ impl HttpSession {
 
     /// Read request body bytes. `None` when there is no more body to read.
     pub async fn read_body_bytes(&mut self) -> Result<Option<Bytes>> {
-        // TODO: timeout
+        match self.read_timeout {
+            Some(timeout_duration) => {
+                match timeout(timeout_duration, self.read_body_bytes_inner()).await {
+                    Ok(result) => result,
+                    Err(_) => Error::e_explain(
+                        ErrorType::ReadTimedout,
+                        format!("reading downstream request body, timeout: {timeout_duration:?}"),
+                    ),
+                }
+            }
+            None => self.read_body_bytes_inner().await,
+        }
+    }
+
+    async fn read_body_bytes_inner(&mut self) -> Result<Option<Bytes>> {
         let data = self.request_body_reader.data().await.transpose().or_err(
             ErrorType::ReadError,
             "while reading downstream request body",
@@ -593,6 +618,16 @@ impl HttpSession {
         self.write_timeout = timeout;
     }
 
+    /// Sets the read timeout applied to request body reads and client cancellation waits.
+    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) {
+        self.read_timeout = timeout;
+    }
+
+    /// Get the request body read timeout.
+    pub fn get_read_timeout(&self) -> Option<Duration> {
+        self.read_timeout
+    }
+
     /// Get the write timeout.
     pub fn get_write_timeout(&self) -> Option<Duration> {
         self.write_timeout
@@ -602,6 +637,10 @@ impl HttpSession {
     /// the request body.
     pub fn set_total_drain_timeout(&mut self, timeout: Option<Duration>) {
         self.total_drain_timeout = timeout;
+    }
+
+    pub(crate) fn set_automatic_response_headers(&mut self, enabled: bool) {
+        self.automatic_response_headers = enabled;
     }
 
     /// Get the total drain timeout.
@@ -638,18 +677,22 @@ impl HttpSession {
             return Ok(());
         }
 
-        /* update headers */
-        header.insert_header(header::DATE, get_cached_date())?;
+        if self.automatic_response_headers {
+            header.insert_header(header::DATE, get_cached_date())?;
+        }
 
         // remove other h1 hop headers that cannot be present in H2
         // https://httpwg.org/specs/rfc7540.html#n-connection-specific-header-fields
         header.remove_header(&header::TRANSFER_ENCODING);
         header.remove_header(&header::CONNECTION);
         header.remove_header(&header::UPGRADE);
-        header.remove_header(&HeaderName::from_static("keep-alive"));
-        header.remove_header(&HeaderName::from_static("proxy-connection"));
+        header.remove_header(&KEEP_ALIVE);
+        header.remove_header(&PROXY_CONNECTION);
 
-        let resp = Response::from_parts(header.as_owned_parts(), ());
+        // The frame takes the headers: `response_written` keeps the status, not a second copy of the map.
+        let mut written = Response::new(()).into_parts().0;
+        written.status = header.status;
+        let resp = Response::from_parts(std::mem::replace(&mut *header, written.into()).into(), ());
 
         let body_writer = self.send_response.send_response(resp, end).or_err(
             ErrorType::WriteError,
@@ -867,13 +910,22 @@ impl HttpSession {
     pub fn is_body_done(&self) -> bool {
         // Check no body in request
         // Also check we hit end of stream
-        self.is_body_empty() || self.request_body_reader.is_end_stream()
+        self.is_body_empty() || self.request_ended()
+    }
+
+    fn request_ended(&self) -> bool {
+        if self.request_ended.load(Ordering::Relaxed) {
+            return true;
+        }
+        let ended = self.request_body_reader.is_end_stream();
+        self.request_ended.store(ended, Ordering::Relaxed);
+        ended
     }
 
     /// Whether there is any body to read. true means there no body in request.
     pub fn is_body_empty(&self) -> bool {
         self.body_read == 0
-            && (self.request_body_reader.is_end_stream()
+            && (self.request_ended()
                 || self
                     .request_header
                     .headers
@@ -888,8 +940,12 @@ impl HttpSession {
     }
 
     pub fn enable_retry_buffering(&mut self) {
+        self.enable_retry_buffering_with_capacity(BODY_BUF_LIMIT);
+    }
+
+    pub fn enable_retry_buffering_with_capacity(&mut self, capacity: usize) {
         if self.retry_buffer.is_none() {
-            self.retry_buffer = Some(FixedBuffer::new(BODY_BUF_LIMIT))
+            self.retry_buffer = Some(FixedBuffer::new(capacity));
         }
     }
 
@@ -915,7 +971,20 @@ impl HttpSession {
     /// until the client closes the connection
     pub async fn read_body_or_idle(&mut self, no_body_expected: bool) -> Result<Option<Bytes>> {
         if no_body_expected || self.is_body_done() {
-            let reason = self.idle().await?;
+            let reason = match self.read_timeout {
+                Some(timeout_duration) => match timeout(timeout_duration, self.idle()).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        return Error::e_explain(
+                            ErrorType::ReadTimedout,
+                            format!(
+                                "waiting for downstream cancellation, timeout: {timeout_duration:?}"
+                            ),
+                        );
+                    }
+                },
+                None => self.idle().await?,
+            };
             Error::e_explain(
                 ErrorType::H2Error,
                 format!("Client closed H2, reason: {reason}"),
@@ -1544,6 +1613,80 @@ mod test {
 
         assert_eq!(settings.max_header_list_size(), Some(1234));
         assert_eq!(settings.max_concurrent_streams(), Some(42));
+    }
+
+    #[tokio::test]
+    async fn disabled_automatic_headers_omit_date_and_still_remove_hop_headers() {
+        let (client, server) = duplex(65536);
+        let mut client = tokio::spawn(async move {
+            let (h2, connection) = h2::client::handshake(client).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            let request = Request::builder()
+                .method(Method::GET)
+                .uri("https://www.example.com/")
+                .body(())
+                .unwrap();
+            let (response, _) = h2
+                .ready()
+                .await
+                .unwrap()
+                .send_request(request, true)
+                .unwrap();
+            let response = response.await.unwrap();
+            for name in [
+                "date",
+                "connection",
+                "transfer-encoding",
+                "upgrade",
+                "keep-alive",
+                "proxy-connection",
+            ] {
+                assert!(response.headers().get(name).is_none(), "unexpected {name}");
+            }
+        });
+
+        let mut connection = handshake(Box::new(server), None).await.unwrap();
+        let H2Accept::Session(session) =
+            HttpSession::from_h2_conn(&mut connection, Arc::new(Digest::default()))
+                .await
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("request was rejected");
+        };
+        let mut session = crate::protocols::http::server::Session::new_http2(session);
+        session.set_automatic_response_headers(false);
+        let mut response = ResponseHeader::build(200, None).unwrap();
+        for (name, value) in [
+            ("connection", "close"),
+            ("transfer-encoding", "chunked"),
+            ("upgrade", "websocket"),
+            ("keep-alive", "timeout=5"),
+            ("proxy-connection", "close"),
+        ] {
+            response.insert_header(name, value).unwrap();
+        }
+        session
+            .write_response_header(Box::new(response))
+            .await
+            .unwrap();
+        session
+            .write_response_body(Bytes::new(), true)
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(1), async {
+            tokio::select! {
+                result = &mut client => result.unwrap(),
+                accepted = connection.accept() => {
+                    assert!(accepted.is_none(), "unexpected second request: {accepted:?}");
+                    client.await.unwrap();
+                },
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

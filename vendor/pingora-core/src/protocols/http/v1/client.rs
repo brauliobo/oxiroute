@@ -14,11 +14,16 @@
 
 //! HTTP/1.x client session
 
+/// Header slots a parsed response map has beyond the headers it arrived with, for the request id and the
+/// headers route policy adds, so that adding them does not regrow and rehash the map.
+const RESPONSE_HEADER_HEADROOM: usize = 3;
+
 use bytes::{BufMut, Bytes, BytesMut};
+use futures::FutureExt;
 use http::{header, header::AsHeaderName, HeaderValue, StatusCode, Version};
 use log::{debug, trace};
 use pingora_error::{Error, ErrorType::*, OrErr, Result, RetryType};
-use pingora_http::{HMap, IntoCaseHeaderName, RequestHeader, ResponseHeader};
+use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_timeout::timeout;
 use std::io::ErrorKind;
 use std::str;
@@ -29,7 +34,7 @@ use super::body::{BodyReader, BodyWriter};
 use super::common::*;
 use crate::protocols::http::HttpTask;
 use crate::protocols::{Digest, SocketAddr, Stream, UniqueID, UniqueIDType};
-use crate::utils::{BufRef, KVRef};
+use crate::utils::BufRef;
 
 /// The HTTP 1.x client session
 pub struct HttpSession {
@@ -46,6 +51,8 @@ pub struct HttpSession {
     /// The timeout is reset on every read. This is not a timeout on the overall duration of the
     /// response.
     pub read_timeout: Option<Duration>,
+    /// Replaces `read_timeout` once the final response header has been read.
+    pub body_read_timeout: Option<Duration>,
     /// The write timeout which will be applied to both writing request header and body.
     /// The timeout is reset on every write. This is not a timeout on the overall duration of the
     /// request.
@@ -53,7 +60,13 @@ pub struct HttpSession {
     keepalive_timeout: KeepaliveStatus,
     pub(crate) digest: Box<Digest>,
     response_header: Option<Box<ResponseHeader>>,
-    request_written: Option<Box<RequestHeader>>,
+    // What keepalive and framing need once `response_header` went to the caller of `read_resp_header_parts`.
+    response_facts: Option<ResponseFacts>,
+    // What the response header said about its framing when it was parsed.
+    response_noted: RequestFacts,
+    request_written: Option<RequestMetadata>,
+    // Preserve extension and resource lifetime for the legacy owned write API.
+    _request_written_owned: Option<Box<RequestHeader>>,
     bytes_sent: usize,
     /// Total response body payload bytes received from upstream
     body_recv: usize,
@@ -67,6 +80,56 @@ pub struct HttpSession {
     // If allowed, does not fail with error on invalid content-length
     // (treats as close-delimited response).
     allow_h1_response_invalid_content_length: bool,
+}
+
+/// The parts of a response header the session still reads after the header moved to the caller.
+#[derive(Debug)]
+struct ResponseFacts {
+    status: StatusCode,
+    version: Version,
+    connection: Option<HeaderValue>,
+    keep_alive: Option<HeaderValue>,
+    transfer_encoding: bool,
+}
+
+impl ResponseFacts {
+    fn of(response: &ResponseHeader, noted: RequestFacts) -> Self {
+        let connection = noted
+            .connection
+            .then(|| response.headers.get(header::CONNECTION).cloned())
+            .flatten();
+        // Only a `Connection: keep-alive` response is asked for its `Keep-Alive` parameters.
+        let keep_alive = connection
+            .as_ref()
+            .and_then(|_| response.headers.get("Keep-Alive").cloned());
+        Self {
+            status: response.status,
+            version: response.version,
+            connection,
+            keep_alive,
+            transfer_encoding: noted.transfer_encoding,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RequestMetadata {
+    is_head: bool,
+    connection_keepalive: Option<bool>,
+    is_upgrade: bool,
+}
+
+impl RequestMetadata {
+    fn of(req: &RequestHeader, facts: RequestFacts) -> Self {
+        Self {
+            is_head: req.method == http::method::Method::HEAD,
+            connection_keepalive: facts
+                .connection
+                .then(|| is_buf_keepalive(req.headers.get(header::CONNECTION)))
+                .flatten(),
+            is_upgrade: facts.upgrade && is_upgrade_req(req),
+        }
+    }
 }
 
 /// HTTP 1.x client session
@@ -90,8 +153,12 @@ impl HttpSession {
             body_writer: BodyWriter::new(),
             keepalive_timeout: KeepaliveStatus::Off,
             response_header: None,
+            response_facts: None,
+            response_noted: RequestFacts::default(),
             request_written: None,
+            _request_written_owned: None,
             read_timeout: None,
+            body_read_timeout: None,
             write_timeout: None,
             digest,
             bytes_sent: 0,
@@ -118,11 +185,32 @@ impl HttpSession {
     /// After the request header is sent. The caller can either start reading the response or
     /// sending request body if any.
     pub async fn write_request_header(&mut self, req: Box<RequestHeader>) -> Result<usize> {
+        let written = self.write_request_header_ref(&req).await?;
+        self._request_written_owned = Some(req);
+        Ok(written)
+    }
+
+    /// Write a borrowed request header to the server.
+    /// After the request header is sent, the caller can either start reading the response or
+    /// sending request body if any.
+    pub async fn write_request_header_ref(&mut self, req: &RequestHeader) -> Result<usize> {
+        self.write_request_header_noted(req, RequestFacts::of(&req.headers))
+            .await
+    }
+
+    /// Like [`Self::write_request_header_ref()`] for a caller that already knows what `req` says about its
+    /// framing and connection handling (see [`RequestFacts`]), so the headers are not looked up again.
+    pub async fn write_request_header_noted(
+        &mut self,
+        req: &RequestHeader,
+        facts: RequestFacts,
+    ) -> Result<usize> {
         // TODO: make sure this can only be called once
         // init body writer
-        self.init_req_body_writer(&req);
+        self.init_req_body_writer(req, facts);
+        let request_metadata = RequestMetadata::of(req, facts);
 
-        let to_wire = http_req_header_to_wire(&req).ok_or_else(|| {
+        let to_wire = http_req_header_to_wire(req).ok_or_else(|| {
             Error::explain(
                 InvalidHTTPHeader,
                 "request-line contains forbidden delimiter bytes or unsupported HTTP version",
@@ -151,7 +239,7 @@ impl HttpSession {
             .or_err(WriteError, "flushing request header")?;
 
         // write was successful
-        self.request_written = Some(req);
+        self.request_written = Some(request_metadata);
         Ok(to_wire.len())
     }
 
@@ -215,7 +303,9 @@ impl HttpSession {
         // unrecoverable framing error. A peer may opt to tolerate a single,
         // otherwise-invalid value and treat the response as close-delimited.
         // Note: Content-Length is already removed if Transfer-Encoding is present.
-        if let Err(e) = super::common::validate_content_length(&resp_header.headers) {
+        if let Err(e) =
+            super::common::validate_content_length_facts(self.response_noted, &resp_header.headers)
+        {
             if self.allow_h1_response_invalid_content_length
                 && super::common::content_length_is_single_token(&resp_header.headers)
             {
@@ -271,72 +361,62 @@ impl HttpSession {
 
         loop {
             if parse_existing_buffer {
-                let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-                let mut resp = httparse::Response::new(&mut headers);
-                let parsed = parse_resp_buffer(&mut resp, &self.response_header_read_buf);
+                let mut slots = header_slots();
+                let mut resp = httparse::Response::new(&mut []);
+                let parsed =
+                    parse_resp_buffer(&mut resp, &self.response_header_read_buf, &mut slots);
                 match parsed {
                     HeaderParseState::Complete(s) => {
                         let total_read = self.response_header_read_buf.len();
                         let base = self.response_header_read_buf.as_ptr() as usize;
-                        let mut header_refs = Vec::<KVRef>::with_capacity(resp.headers.len());
+                        let mut header_refs = HeaderRefs::new();
 
                         // Note: resp.headers has the correct number of headers
                         // while header_refs doesn't as it is still empty
                         let _num_headers = populate_headers(base, &mut header_refs, resp.headers);
 
-                        let mut response_header = match ResponseHeader::build(
-                            resp.code.unwrap(),
-                            Some(resp.headers.len()),
-                        ) {
-                            Ok(header) => Box::new(header),
-                            Err(e) => return self.fail_response_header_read(e),
+                        let status = match StatusCode::from_u16(resp.code.unwrap()) {
+                            Ok(status) => status,
+                            Err(e) => {
+                                return self.fail_response_header_read(Error::because(
+                                    InvalidHTTPHeader,
+                                    "invalid status",
+                                    e,
+                                ))
+                            }
                         };
-
                         // TODO: enforce https://datatracker.ietf.org/doc/html/rfc9110#section-15.2
                         // "Since HTTP/1.0 did not define any 1xx status codes,
                         // a server MUST NOT send a 1xx response to an HTTP/1.0 client."
-                        response_header.set_version(match resp.version {
+                        let version = match resp.version {
                             Some(1) => Version::HTTP_11,
                             Some(0) => Version::HTTP_10,
                             _ => Version::HTTP_09,
-                        });
-
-                        if let Err(e) = response_header.set_reason_phrase(resp.reason) {
-                            return self.fail_response_header_read(e);
-                        }
+                        };
+                        // the canonical phrase needs no copy: it is what an unset phrase means
+                        let reason = resp
+                            .reason
+                            .filter(|reason| Some(*reason) != status.canonical_reason())
+                            .map(String::from);
 
                         let buf = std::mem::take(&mut self.response_header_read_buf).freeze();
 
-                        for header in header_refs {
-                            let header_name = header.get_name_bytes(&buf);
-                            let header_name = header_name.into_case_header_name();
-                            let value_bytes = header.get_value_bytes(&buf);
-                            let header_value = pingora_http::header_value_from_raw(value_bytes);
-                            if let Err(e) = response_header
-                                .append_header(header_name, header_value)
-                                .or_err(InvalidHTTPHeader, "while parsing request header")
-                            {
-                                return self.fail_response_header_read(e);
-                            }
-                        }
-
-                        let contains_transfer_encoding = response_header
-                            .headers
-                            .contains_key(header::TRANSFER_ENCODING);
-                        let contains_content_length =
-                            response_header.headers.contains_key(header::CONTENT_LENGTH);
-
-                        // Transfer encoding overrides content length, so when
-                        // both are present, we MUST remove content length. This is
-                        // https://datatracker.ietf.org/doc/html/rfc9112#section-6.3-2.3
-                        if contains_content_length && contains_transfer_encoding {
-                            response_header.remove_header(&header::CONTENT_LENGTH);
-                        }
+                        let (response_header, facts) = match parsed_response_header(
+                            status,
+                            version,
+                            reason.as_deref(),
+                            header_refs,
+                            &buf,
+                        ) {
+                            Ok(parsed) => parsed,
+                            Err(e) => return self.fail_response_header_read(e),
+                        };
 
                         self.raw_header = Some(BufRef(0, s));
                         self.preread_body = Some(BufRef(s, total_read));
                         self.buf = buf;
                         self.response_header = Some(response_header);
+                        self.response_noted = facts;
                         if let Err(e) = self.validate_response() {
                             return self.fail_response_header_read(e);
                         }
@@ -434,16 +514,51 @@ impl HttpSession {
         }
     }
 
-    /// Similar to [`Self::read_response()`], read the response header and then return a copy of it.
+    /// Similar to [`Self::read_response()`], read the response header and then return it. The header moves
+    /// to the caller: [`Self::resp_header()`] and [`Self::get_header()`] no longer see it, the session keeps
+    /// the status, version and the headers keepalive depends on.
     pub async fn read_resp_header_parts(&mut self) -> Result<Box<ResponseHeader>> {
         self.read_response().await?;
-        // safe to unwrap because it is just read
-        Ok(Box::new(self.resp_header().unwrap().clone()))
+        let header = self
+            .response_header
+            .take()
+            .expect("response header was just read");
+        self.response_facts = Some(ResponseFacts::of(&header, self.response_noted));
+        Ok(header)
     }
 
-    /// Return a reference of the [`ResponseHeader`] if the response is read
+    /// Return a reference of the [`ResponseHeader`] if the response is read and not yet taken by
+    /// [`Self::read_resp_header_parts()`]
     pub fn resp_header(&self) -> Option<&ResponseHeader> {
         self.response_header.as_deref()
+    }
+
+    fn resp_version(&self) -> Option<Version> {
+        match (&self.response_header, &self.response_facts) {
+            (Some(header), _) => Some(header.version),
+            (None, facts) => facts.as_ref().map(|facts| facts.version),
+        }
+    }
+
+    fn resp_connection(&self) -> Option<&HeaderValue> {
+        match (&self.response_header, &self.response_facts) {
+            (Some(header), _) => header.headers.get(header::CONNECTION),
+            (None, facts) => facts.as_ref().and_then(|facts| facts.connection.as_ref()),
+        }
+    }
+
+    fn resp_keep_alive(&self) -> Option<&HeaderValue> {
+        match (&self.response_header, &self.response_facts) {
+            (Some(header), _) => header.headers.get("Keep-Alive"),
+            (None, facts) => facts.as_ref().and_then(|facts| facts.keep_alive.as_ref()),
+        }
+    }
+
+    fn resp_has_transfer_encoding(&self) -> bool {
+        match (&self.response_header, &self.response_facts) {
+            (Some(header), _) => header.headers.contains_key(header::TRANSFER_ENCODING),
+            (None, facts) => facts.as_ref().is_some_and(|facts| facts.transfer_encoding),
+        }
     }
 
     /// Get the header value for the given header name from the response header
@@ -463,13 +578,23 @@ impl HttpSession {
 
     /// Return the status code of the response if read
     pub fn get_status(&self) -> Option<StatusCode> {
-        self.response_header.as_ref().map(|h| h.status)
+        match (&self.response_header, &self.response_facts) {
+            (Some(header), _) => Some(header.status),
+            (None, facts) => facts.as_ref().map(|facts| facts.status),
+        }
     }
 
     async fn do_read_body(&mut self) -> Result<Option<BufRef>> {
         self.init_body_reader();
         self.body_reader
             .read_body(&mut self.underlying_stream)
+            .await
+    }
+
+    async fn do_read_body_bytes(&mut self) -> Result<Option<Bytes>> {
+        self.init_body_reader();
+        self.body_reader
+            .read_body_bytes(&mut self.underlying_stream)
             .await
     }
 
@@ -496,8 +621,18 @@ impl HttpSession {
 
     /// Similar to [`Self::read_body_ref`] but return `Bytes` instead of a slice reference.
     pub async fn read_body_bytes(&mut self) -> Result<Option<Bytes>> {
-        let read = self.read_body_ref().await?;
-        Ok(read.map(Bytes::copy_from_slice))
+        let result = match self.read_timeout {
+            Some(t) => match timeout(t, self.do_read_body_bytes()).await {
+                Ok(res) => res,
+                Err(_) => Error::e_explain(ReadTimedout, format!("reading body, timeout: {t:?}")),
+            },
+            None => self.do_read_body_bytes().await,
+        }?;
+
+        if let Some(body) = &result {
+            self.body_recv = self.body_recv.saturating_add(body.len());
+        }
+        Ok(result)
     }
 
     /// Upstream response body bytes received (payload only; excludes headers/framing).
@@ -573,12 +708,7 @@ impl HttpSession {
 
         // Per [RFC 9112 Section 6.1-16](https://datatracker.ietf.org/doc/html/rfc9112#section-6.1-16),
         // if Transfer-Encoding is received in HTTP/1.0 response, connection MUST be closed after processing.
-        if self.resp_header().map(|h| h.version) == Some(Version::HTTP_10)
-            && self
-                .resp_header()
-                .and_then(|h| h.headers.get(header::TRANSFER_ENCODING))
-                .is_some()
-        {
+        if self.resp_version() == Some(Version::HTTP_10) && self.resp_has_transfer_encoding() {
             self.set_keepalive(None);
             return;
         }
@@ -593,7 +723,7 @@ impl HttpSession {
             } else {
                 self.set_keepalive(None);
             }
-        } else if self.resp_header().map(|h| h.version) == Some(Version::HTTP_11) {
+        } else if self.resp_version() == Some(Version::HTTP_11) {
             self.set_keepalive(Some(0)); // on by default for http 1.1
         } else {
             self.set_keepalive(None); // off by default for http 1.0
@@ -609,12 +739,12 @@ impl HttpSession {
         let request_keepalive = self
             .request_written
             .as_ref()
-            .and_then(|req| is_buf_keepalive(req.headers.get(header::CONNECTION)));
+            .and_then(|req| req.connection_keepalive);
 
         match request_keepalive {
             // ignore what the server sends if request disables keepalive explicitly
             Some(false) => Some(false),
-            _ => is_buf_keepalive(self.get_header(header::CONNECTION)),
+            _ => is_buf_keepalive(self.resp_connection()),
         }
     }
 
@@ -623,7 +753,7 @@ impl HttpSession {
     /// it's behavior is different on different platforms.
     /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Keep-Alive
     fn get_keepalive_values(&self) -> (Option<u64>, Option<usize>) {
-        let Some(keep_alive_header) = self.get_header("Keep-Alive") else {
+        let Some(keep_alive_header) = self.resp_keep_alive() else {
             return (None, None);
         };
 
@@ -677,7 +807,7 @@ impl HttpSession {
     fn init_body_reader(&mut self) {
         if self.body_reader.need_init() {
             // follow https://datatracker.ietf.org/doc/html/rfc9112#section-6.3
-            let preread_body = self.preread_body.as_ref().unwrap().get(&self.buf[..]);
+            let preread_body = self.preread_body.as_ref().unwrap().get_bytes(&self.buf);
 
             let upgraded = if let Some(code) = self.get_status() {
                 match code.as_u16() {
@@ -688,7 +818,7 @@ impl HttpSession {
                     }
                     204 | 304 => {
                         // no body by definition
-                        self.body_reader.init_content_length(0, preread_body);
+                        self.body_reader.init_content_length(0, &preread_body);
                         return;
                     }
                     _ => false,
@@ -697,23 +827,25 @@ impl HttpSession {
                 false
             };
 
-            if let Some(req) = self.request_written.as_ref() {
-                if req.method == http::method::Method::HEAD {
-                    self.body_reader.init_content_length(0, preread_body);
-                    return;
-                }
+            if self.request_written.as_ref().is_some_and(|req| req.is_head) {
+                self.body_reader.init_content_length(0, &preread_body);
+                return;
             }
 
             if upgraded {
-                self.body_reader.init_close_delimited(preread_body);
+                self.body_reader.init_close_delimited_preread(preread_body);
                 self.close_delimited_resp = true;
             } else if self.is_chunked_encoding() {
                 // if chunked encoding, content-length should be ignored
-                self.body_reader.init_chunked(preread_body);
-            } else if let Some(cl) = self.get_content_length().unwrap_or(None) {
-                self.body_reader.init_content_length(cl, preread_body);
+                self.body_reader.init_chunked(&preread_body);
+            } else if let Some(cl) = (self.response_noted.content_lengths > 0)
+                .then(|| self.get_content_length().unwrap_or(None))
+                .flatten()
+            {
+                self.body_reader
+                    .init_content_length_preread(cl, preread_body);
             } else {
-                self.body_reader.init_close_delimited(preread_body);
+                self.body_reader.init_close_delimited_preread(preread_body);
                 self.close_delimited_resp = true;
             }
         }
@@ -721,10 +853,9 @@ impl HttpSession {
 
     /// Whether this request is for upgrade
     pub fn is_upgrade_req(&self) -> bool {
-        match self.request_written.as_deref() {
-            Some(req) => is_upgrade_req(req),
-            None => false,
-        }
+        self.request_written
+            .as_ref()
+            .is_some_and(|req| req.is_upgrade)
     }
 
     /// `Some(true)` if the this is a successful upgrade
@@ -763,17 +894,16 @@ impl HttpSession {
     }
 
     fn is_chunked_encoding(&self) -> bool {
-        self.resp_header()
-            .map(|h| is_chunked_encoding_from_headers(&h.headers))
-            .unwrap_or(false)
+        self.response_noted.transfer_encoding
+            && self
+                .resp_header()
+                .map(|h| is_chunked_encoding_from_headers(&h.headers))
+                .unwrap_or(false)
     }
 
-    fn init_req_body_writer(&mut self, header: &RequestHeader) {
-        self.init_body_writer_comm(&header.headers)
-    }
-
-    fn init_body_writer_comm(&mut self, headers: &HMap) {
-        if is_chunked_encoding_from_headers(headers) {
+    fn init_req_body_writer(&mut self, header: &RequestHeader, facts: RequestFacts) {
+        let headers = &header.headers;
+        if facts.transfer_encoding && is_chunked_encoding_from_headers(headers) {
             // transfer-encoding takes priority over content-length
             self.body_writer.init_chunked();
             return;
@@ -783,19 +913,20 @@ impl HttpSession {
         // truncated. Per RFC 9112, requests are never close-delimited: an absent
         // or unusable Content-Length means a zero-length body. Headers are
         // expected to be validated on read.
-        match content_length_for_framing(headers) {
-            Ok(Some(length)) => self.body_writer.init_content_length(length),
-            Ok(None) => self.body_writer.init_content_length(0),
-            Err(e) => {
-                // Headers are validated on read, so this is not expected here;
-                // log the fallback to a zero-length body rather than failing
-                // silently if validation was somehow bypassed.
-                debug!(
-                    "invalid Content-Length while writing request; framing zero-length body: {e}"
-                );
-                self.body_writer.init_content_length(0);
-            }
-        }
+        let framing = if facts.content_lengths > 0 {
+            content_length_for_framing(headers)
+        } else {
+            Ok(None)
+        };
+        let content_length = framing.unwrap_or_else(|e| {
+            // Headers are validated on read, so this is not expected here;
+            // log the fallback to a zero-length body rather than failing
+            // silently if validation was somehow bypassed.
+            debug!("invalid Content-Length while writing request; framing zero-length body: {e}");
+            None
+        });
+        self.body_writer
+            .init_content_length(content_length.unwrap_or(0));
     }
 
     // should (continue to) try to read response header or start reading response body
@@ -813,6 +944,9 @@ impl HttpSession {
             let resp_header = self.read_resp_header_parts().await?;
             let end_of_body = self.is_body_done();
             debug!("Response header: {resp_header:?}");
+            if !resp_header.status.is_informational() {
+                self.read_timeout = self.body_read_timeout.or(self.read_timeout);
+            }
             trace!(
                 "Raw Response header: {:?}",
                 str::from_utf8(self.get_headers_raw()).unwrap()
@@ -825,19 +959,42 @@ impl HttpSession {
         } else {
             /* need to read body */
             let body = self.read_body_bytes().await?;
-            let end_of_body = self.is_body_done();
-            debug!(
-                "Response body: {} bytes, end: {end_of_body}",
-                body.as_ref().map_or(0, |b| b.len())
-            );
-            trace!("Response body: {body:?}, upgraded: {}", self.upgraded);
-            if self.upgraded {
-                Ok(HttpTask::UpgradedBody(body, end_of_body))
-            } else {
-                Ok(HttpTask::Body(body, end_of_body))
-            }
+            Ok(self.body_task(body))
         }
         // TODO: support h1 trailer
+    }
+
+    /// The next response task if it needs no wait for the network: the end of a response, or a body chunk the
+    /// connection holds already or that a read returns at once. Where [`Self::read_response_task`] would wait this
+    /// returns `None`, without arming a read timeout; a response header is always left to `read_response_task`.
+    pub fn try_read_response_task(&mut self) -> Option<Result<HttpTask>> {
+        if self.should_read_resp_header() {
+            return None;
+        }
+        if self.is_body_done() {
+            return Some(Ok(HttpTask::Done));
+        }
+        let body = self.do_read_body_bytes().now_or_never()?;
+        Some(body.map(|body| {
+            if let Some(body) = &body {
+                self.body_recv = self.body_recv.saturating_add(body.len());
+            }
+            self.body_task(body)
+        }))
+    }
+
+    fn body_task(&mut self, body: Option<Bytes>) -> HttpTask {
+        let end_of_body = self.is_body_done();
+        debug!(
+            "Response body: {} bytes, end: {end_of_body}",
+            body.as_ref().map_or(0, |b| b.len())
+        );
+        trace!("Response body: {body:?}, upgraded: {}", self.upgraded);
+        if self.upgraded {
+            HttpTask::UpgradedBody(body, end_of_body)
+        } else {
+            HttpTask::Body(body, end_of_body)
+        }
     }
 
     /// Return the [Digest] of the connection
@@ -883,14 +1040,15 @@ impl HttpSession {
 }
 
 #[inline]
-fn parse_resp_buffer<'buf>(
-    resp: &mut httparse::Response<'_, 'buf>,
+fn parse_resp_buffer<'buf, 'h>(
+    resp: &mut httparse::Response<'h, 'buf>,
     buf: &'buf [u8],
+    slots: &'h mut HeaderSlots<'buf>,
 ) -> HeaderParseState {
     let mut parser = httparse::ParserConfig::default();
     parser.allow_spaces_after_header_name_in_responses(true);
     parser.allow_obsolete_multiline_headers_in_responses(true);
-    let res = match parser.parse_response(resp, buf) {
+    let res = match parser.parse_response_with_uninit_headers(resp, buf, slots) {
         Ok(s) => s,
         Err(e) => {
             return HeaderParseState::Invalid(e);
@@ -900,6 +1058,66 @@ fn parse_resp_buffer<'buf>(
         httparse::Status::Complete(s) => HeaderParseState::Complete(s),
         _ => HeaderParseState::Partial,
     }
+}
+
+/// The response header of a parsed head, and what its headers say about framing and connection handling. The
+/// values stay slices of `buf`, no header value is copied.
+fn parsed_response_header(
+    status: StatusCode,
+    version: Version,
+    reason: Option<&str>,
+    header_refs: HeaderRefs,
+    buf: &Bytes,
+) -> Result<(Box<ResponseHeader>, RequestFacts)> {
+    // `ResponseHeader` does not hand out its header map mutably (pingora-http 0.9): the map is filled first
+    let mut parts = http::Response::new(()).into_parts().0;
+    parts.status = status;
+    parts.version = version;
+    parts
+        .headers
+        .reserve(header_refs.len() + RESPONSE_HEADER_HEADROOM);
+
+    let mut facts = RequestFacts::default();
+    for header in header_refs {
+        let value_bytes = header.get_value_bytes(buf);
+        let header_value = if is_header_value(&value_bytes) {
+            // httparse accepts some bytes that are not valid HeaderValue contents, so the value is checked
+            // above; it is a slice of the read buffer.
+            unsafe { HeaderValue::from_maybe_shared_unchecked(value_bytes) }
+        } else {
+            folded_header_value(value_bytes)?
+        };
+        append_parsed_request_header(
+            &mut parts.headers,
+            header.get_name(buf),
+            header_value,
+            &mut facts,
+        )
+        .or_err(InvalidHTTPHeader, "while parsing request header")?;
+    }
+
+    // Transfer encoding overrides content length, so when
+    // both are present, we MUST remove content length. This is
+    // https://datatracker.ietf.org/doc/html/rfc9112#section-6.3-2.3
+    if facts.content_lengths > 0 && facts.transfer_encoding {
+        parts.headers.remove(header::CONTENT_LENGTH);
+        facts.content_lengths = 0;
+    }
+
+    let mut response_header = Box::new(ResponseHeader::from(parts));
+    response_header.set_reason_phrase(reason)?;
+    Ok((response_header, facts))
+}
+
+/// A value with obsolete line folding, or a stray CR, LF or NUL: normalized the way pingora-http does (each fold
+/// becomes one space). Any other byte `HeaderValue` rejects is an error.
+fn folded_header_value(value: Bytes) -> Result<HeaderValue> {
+    if !value.iter().all(|byte| {
+        matches!(byte, b'\r' | b'\n' | 0) || is_header_value(std::slice::from_ref(byte))
+    }) {
+        return Error::e_explain(InvalidHTTPHeader, "invalid response header value");
+    }
+    Ok(pingora_http::header_value_from_raw(value))
 }
 
 /// Returns `true` if `path` contains a byte that must never appear in an HTTP/1.1
@@ -955,6 +1173,11 @@ impl UniqueID for HttpSession {
 
 #[cfg(test)]
 mod tests_stream {
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
+
     use super::*;
     use crate::protocols::http::v1::body::{BodyMode, ParseState};
     use crate::upstreams::peer::PeerOptions;
@@ -966,6 +1189,24 @@ mod tests_stream {
         let _ = env_logger::builder().is_test(true).try_init();
     }
 
+    struct CloneProbe(Arc<AtomicUsize>);
+
+    impl Clone for CloneProbe {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    #[derive(Clone)]
+    struct DropProbe(Arc<AtomicBool>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
     #[tokio::test]
     async fn read_basic_response() {
         init_log();
@@ -975,6 +1216,52 @@ mod tests_stream {
         let res = http_stream.read_response().await;
         assert_eq!(input.len(), res.unwrap());
         assert_eq!(0, http_stream.resp_header().unwrap().headers.len());
+    }
+
+    #[tokio::test]
+    async fn parsed_response_omits_case_map_and_normalizes_h1_wire_names() {
+        let input = b"HTTP/1.1 200 OK\r\n\
+            sEt-CoOkIe: a=1; Path=/\r\n\
+            SET-cOOkie: b=2; Path=/\r\n\
+            X-MiXeD: retained\r\n\
+            cAcHe-CoNtRoL: public, max-age=60\r\n\
+            CoNnEcTiOn: x-hop\r\n\
+            X-HoP: secret\r\n\
+            cOnTeNt-LeNgTh: 0\r\n\r\n";
+        let mock_io = Builder::new().read(input).build();
+        let mut session = HttpSession::new(Box::new(mock_io));
+        session.read_response().await.unwrap();
+
+        let buffer_start = session.buf.as_ptr() as usize;
+        let buffer_end = buffer_start + session.buf.len();
+        let response = session.response_header.as_mut().unwrap();
+        assert!(!response.has_case());
+        assert_eq!(
+            response
+                .headers
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .map(HeaderValue::as_bytes)
+                .collect::<Vec<_>>(),
+            [b"a=1; Path=/".as_slice(), b"b=2; Path=/".as_slice()]
+        );
+        for value in response.headers.values() {
+            let value_start = value.as_bytes().as_ptr() as usize;
+            assert!((buffer_start..buffer_end).contains(&value_start));
+        }
+
+        response.remove_header(&header::CONNECTION);
+        response.remove_header("x-hop");
+        let mut wire = Vec::new();
+        response.header_to_h1_wire(&mut wire);
+        assert_eq!(
+            wire,
+            b"Set-Cookie: a=1; Path=/\r\n\
+              Set-Cookie: b=2; Path=/\r\n\
+              x-mixed: retained\r\n\
+              Cache-Control: public, max-age=60\r\n\
+              Content-Length: 0\r\n"
+        );
     }
 
     #[tokio::test]
@@ -1108,6 +1395,94 @@ mod tests_stream {
     }
 
     #[tokio::test]
+    async fn content_length_preread_body_task_shares_header_allocation() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+        let body_offset = response.len() - 3;
+        let mock = Builder::new().read(response).build();
+        let mut http = HttpSession::new(Box::new(mock));
+
+        assert!(matches!(
+            http.read_response_task().await.unwrap(),
+            HttpTask::Header(_, false)
+        ));
+        let expected_ptr = http.buf.as_ptr().wrapping_add(body_offset);
+        match http.read_response_task().await.unwrap() {
+            HttpTask::Body(Some(body), true) => {
+                assert_eq!(body, b"abc"[..]);
+                assert_eq!(body.as_ptr(), expected_ptr);
+            }
+            task => panic!("expected final preread body, got {task:?}"),
+        }
+        assert!(http.body_reader.body_buf.is_none());
+    }
+
+    #[tokio::test]
+    async fn content_length_partial_preread_continues_with_socket_read() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nab";
+        let body_offset = response.len() - 2;
+        let mock = Builder::new().read(response).read(b"c").build();
+        let mut http = HttpSession::new(Box::new(mock));
+
+        assert!(matches!(
+            http.read_response_task().await.unwrap(),
+            HttpTask::Header(_, false)
+        ));
+        let expected_ptr = http.buf.as_ptr().wrapping_add(body_offset);
+        match http.read_response_task().await.unwrap() {
+            HttpTask::Body(Some(body), false) => {
+                assert_eq!(body, b"ab"[..]);
+                assert_eq!(body.as_ptr(), expected_ptr);
+            }
+            task => panic!("expected partial preread body, got {task:?}"),
+        }
+        assert!(matches!(
+            http.read_response_task().await.unwrap(),
+            HttpTask::Body(Some(body), true) if body == b"c"[..]
+        ));
+        assert_eq!(http.body_bytes_received(), 3);
+    }
+
+    #[tokio::test]
+    async fn content_length_preread_overread_disables_reuse() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nabc";
+        let body_offset = response.len() - 3;
+        let mock = Builder::new().read(response).build();
+        let mut http = HttpSession::new(Box::new(mock));
+
+        assert!(matches!(
+            http.read_response_task().await.unwrap(),
+            HttpTask::Header(_, false)
+        ));
+        let expected_ptr = http.buf.as_ptr().wrapping_add(body_offset);
+        match http.read_response_task().await.unwrap() {
+            HttpTask::Body(Some(body), true) => {
+                assert_eq!(body, b"ab"[..]);
+                assert_eq!(body.as_ptr(), expected_ptr);
+            }
+            task => panic!("expected truncated preread body, got {task:?}"),
+        }
+        assert_eq!(http.body_reader.get_body_overread(), Some(&b"c"[..]));
+        http.respect_keepalive();
+        assert!(!http.will_keepalive());
+    }
+
+    #[tokio::test]
+    async fn close_delimited_preread_shares_header_allocation() {
+        let response = b"HTTP/1.1 200 OK\r\n\r\nabc";
+        let body_offset = response.len() - 3;
+        let mock = Builder::new().read(response).read(b"").build();
+        let mut http = HttpSession::new(Box::new(mock));
+
+        http.read_response().await.unwrap();
+        let expected_ptr = http.buf.as_ptr().wrapping_add(body_offset);
+        let body = http.read_body_bytes().await.unwrap().unwrap();
+        assert_eq!(body, b"abc"[..]);
+        assert_eq!(body.as_ptr(), expected_ptr);
+        assert!(http.read_body_bytes().await.unwrap().is_none());
+        assert_eq!(http.body_reader.body_state, ParseState::Complete(3));
+    }
+
+    #[tokio::test]
     async fn h1_body_bytes_received_overread_content_length() {
         init_log();
         let header1 = b"HTTP/1.1 200 OK\r\n";
@@ -1224,6 +1599,42 @@ mod tests_stream {
         http_stream.read_timeout = Some(Duration::from_secs(1));
         let res = http_stream.read_response().await;
         assert_eq!(res.unwrap_err().etype(), &ErrorType::ReadTimedout);
+    }
+
+    #[tokio::test]
+    async fn try_read_response_task_returns_only_what_needs_no_wait() {
+        init_log();
+        let head = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabc";
+        let rest = b"def";
+        let mock_io = Builder::new()
+            .read(&head[..])
+            .wait(Duration::from_millis(50))
+            .read(&rest[..])
+            .build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        http_stream.read_timeout = Some(Duration::from_secs(5));
+        // A header is left to `read_response_task`.
+        assert!(http_stream.try_read_response_task().is_none());
+        let task = http_stream.read_response_task().await.unwrap();
+        assert!(matches!(task, HttpTask::Header(_, false)));
+        // The first body bytes came with the header; the rest is not there yet.
+        let Some(Ok(HttpTask::Body(Some(body), false))) = http_stream.try_read_response_task()
+        else {
+            panic!("the buffered body is ready");
+        };
+        assert_eq!(&body[..], b"abc");
+        assert!(http_stream.try_read_response_task().is_none());
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let Some(Ok(HttpTask::Body(Some(body), true))) = http_stream.try_read_response_task()
+        else {
+            panic!("the rest has arrived");
+        };
+        assert_eq!(&body[..], b"def");
+        assert_eq!(http_stream.body_bytes_received(), 6);
+        assert!(matches!(
+            http_stream.try_read_response_task(),
+            Some(Ok(HttpTask::Done))
+        ));
     }
 
     #[tokio::test]
@@ -1378,6 +1789,26 @@ mod tests_stream {
     }
 
     #[tokio::test]
+    async fn read_rejects_malformed_response_header_name_before_no_case_append() {
+        let input = b"HTTP/1.1 200 OK\r\nBad@Name: value\r\nContent-Length: 0\r\n\r\n";
+        let mock_io = Builder::new().read(input).build();
+        let mut session = HttpSession::new(Box::new(mock_io));
+
+        let error = session.read_response().await.unwrap_err();
+        assert_eq!(error.etype(), &ErrorType::InvalidHTTPHeader);
+    }
+
+    #[tokio::test]
+    async fn read_rejects_invalid_response_header_value_before_unchecked_append() {
+        let input = b"HTTP/1.1 200 OK\r\nX-Folded: a\r\n \x7fb\r\n\r\nhello";
+        let mock_io = Builder::new().read(input).build();
+        let mut session = HttpSession::new(Box::new(mock_io));
+
+        let error = session.read_response().await.unwrap_err();
+        assert_eq!(error.etype(), &ErrorType::InvalidHTTPHeader);
+    }
+
+    #[tokio::test]
     async fn write() {
         let wire = b"GET /test HTTP/1.1\r\nFoo: Bar\r\n\r\n";
         let mock_io = Builder::new().write(wire).build();
@@ -1389,6 +1820,90 @@ mod tests_stream {
             .await
             .unwrap();
         assert_eq!(wire.len(), n);
+    }
+
+    #[tokio::test]
+    async fn borrowed_write_does_not_clone_and_preserves_body_framing() {
+        let header = b"POST /test HTTP/1.1\r\nContent-Length: 3\r\n\r\n";
+        let body = b"abc";
+        let mock_io = Builder::new().write(header).write(body).build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        let clones = Arc::new(AtomicUsize::new(0));
+        let mut request = RequestHeader::build("POST", b"/test", None).unwrap();
+        request.insert_header("Content-Length", "3").unwrap();
+        request
+            .extensions_mut()
+            .insert(CloneProbe(Arc::clone(&clones)));
+
+        http_stream
+            .write_request_header_ref(&request)
+            .await
+            .unwrap();
+        http_stream.write_body(body).await.unwrap();
+
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn boxed_write_retains_request_extensions_until_session_drop() {
+        let wire = b"GET / HTTP/1.1\r\n\r\n";
+        let mock_io = Builder::new().write(wire).build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut request = RequestHeader::build("GET", b"/", None).unwrap();
+        request
+            .extensions_mut()
+            .insert(DropProbe(Arc::clone(&dropped)));
+
+        http_stream
+            .write_request_header(Box::new(request))
+            .await
+            .unwrap();
+        assert!(!dropped.load(Ordering::Relaxed));
+
+        drop(http_stream);
+        assert!(dropped.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn borrowed_write_leaves_request_extension_lifetime_with_caller() {
+        let wire = b"GET / HTTP/1.1\r\n\r\n";
+        let mock_io = Builder::new().write(wire).build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut request = RequestHeader::build("GET", b"/", None).unwrap();
+        request
+            .extensions_mut()
+            .insert(DropProbe(Arc::clone(&dropped)));
+
+        http_stream
+            .write_request_header_ref(&request)
+            .await
+            .unwrap();
+        assert!(!dropped.load(Ordering::Relaxed));
+
+        drop(request);
+        assert!(dropped.load(Ordering::Relaxed));
+        drop(http_stream);
+    }
+
+    #[tokio::test]
+    async fn borrowed_connection_close_request_disables_reuse() {
+        let request_wire = b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n";
+        let response = b"HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
+        let mock_io = Builder::new().write(request_wire).read(response).build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        let mut request = RequestHeader::build("GET", b"/", None).unwrap();
+        request.insert_header("Connection", "close").unwrap();
+
+        http_stream
+            .write_request_header_ref(&request)
+            .await
+            .unwrap();
+        http_stream.read_response().await.unwrap();
+        http_stream.respect_keepalive();
+
+        assert!(!http_stream.will_keepalive());
     }
 
     #[rstest]
@@ -1476,6 +1991,40 @@ mod tests_stream {
         let mut http_stream = HttpSession::new(Box::new(mock_io));
         let res = http_stream.read_response().await;
         assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn response_facts_follow_the_headers_that_were_parsed() {
+        for (head, expected) in [
+            (
+                &b"HTTP/1.1 200 OK\r\nServer: test\r\n\r\n"[..],
+                RequestFacts::default(),
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\n",
+                RequestFacts {
+                    content_lengths: 1,
+                    connection: true,
+                    ..RequestFacts::default()
+                },
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\n",
+                RequestFacts {
+                    transfer_encoding: true,
+                    ..RequestFacts::default()
+                },
+            ),
+        ] {
+            let mock_io = Builder::new().read(head).build();
+            let mut http_stream = HttpSession::new(Box::new(mock_io));
+            http_stream.read_response().await.unwrap();
+            assert_eq!(http_stream.response_noted, expected);
+            assert_eq!(
+                RequestFacts::of(&http_stream.resp_header().unwrap().headers),
+                expected
+            );
+        }
     }
 
     #[tokio::test]
@@ -1677,6 +2226,55 @@ mod tests_stream {
         assert_eq!(wire.len(), n);
     }
 
+    #[rstest]
+    #[case(100)]
+    #[case(103)]
+    #[tokio::test]
+    async fn head_informational_response_precedes_final(#[case] informational_status: u16) {
+        let request = b"HEAD / HTTP/1.1\r\n\r\n";
+        let responses = format!(
+            "HTTP/1.1 {informational_status} Informational\r\nX-EaRlY: hint\r\n\r\nHTTP/1.1 200 OK\r\ncOnTeNt-LeNgTh: 7\r\nX-FiNaL: done\r\n\r\n"
+        );
+        let mock_io = Builder::new()
+            .write(&request[..])
+            .read(responses.as_bytes())
+            .build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        let request = RequestHeader::build("HEAD", b"/", None).unwrap();
+        http_stream
+            .write_request_header_ref(&request)
+            .await
+            .unwrap();
+
+        match http_stream.read_response_task().await.unwrap() {
+            HttpTask::Header(header, end_of_body) => {
+                assert_eq!(header.status.as_u16(), informational_status);
+                assert!(!end_of_body);
+                assert!(!header.has_case());
+                let mut wire = Vec::new();
+                header.header_to_h1_wire(&mut wire);
+                assert_eq!(wire, b"x-early: hint\r\n");
+            }
+            task => panic!("expected informational header, got {task:?}"),
+        }
+
+        match http_stream.read_response_task().await.unwrap() {
+            HttpTask::Header(header, end_of_body) => {
+                assert_eq!(header.status, StatusCode::OK);
+                assert!(end_of_body);
+                assert!(!header.has_case());
+                let mut wire = Vec::new();
+                header.header_to_h1_wire(&mut wire);
+                assert_eq!(wire, b"Content-Length: 7\r\nx-final: done\r\n");
+            }
+            task => panic!("expected final header, got {task:?}"),
+        }
+        assert!(matches!(
+            http_stream.read_response_task().await.unwrap(),
+            HttpTask::Done
+        ));
+    }
+
     #[tokio::test]
     async fn read_informational() {
         init_log();
@@ -1868,7 +2466,7 @@ mod tests_stream {
     async fn init_body_for_upgraded_req() {
         let wire =
             b"GET / HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: WS\r\nContent-Length: 0\r\n\r\n";
-        let input1 = b"HTTP/1.1 101 Switching Protocols\r\n\r\n";
+        let input1 = b"HTTP/1.1 101 Switching Protocols\r\ncOnNeCtIoN: Upgrade\r\nuPgRaDe: WS\r\nX-UpGrAdE: retained\r\n\r\n";
         let input2 = b"PAYLOAD";
         let ws_data = b"data";
 
@@ -1884,7 +2482,7 @@ mod tests_stream {
         new_request.insert_header("Upgrade", "WS").unwrap();
         new_request.insert_header("Content-Length", "0").unwrap();
         let _ = http_stream
-            .write_request_header(Box::new(new_request))
+            .write_request_header_ref(&new_request)
             .await
             .unwrap();
         assert_eq!(
@@ -1898,6 +2496,13 @@ mod tests_stream {
             HttpTask::Header(h, eob) => {
                 assert_eq!(h.status, 101);
                 assert!(!eob);
+                assert!(!h.has_case());
+                let mut wire = Vec::new();
+                h.header_to_h1_wire(&mut wire);
+                assert_eq!(
+                    wire,
+                    b"Connection: Upgrade\r\nupgrade: WS\r\nx-upgrade: retained\r\n"
+                );
             }
             _ => {
                 panic!("task should be header")
