@@ -247,6 +247,16 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   PING before the closing GOAWAY is expected, and a request reset before it was handed out never reaches the
   application.
 
+- `listeners/custom_tls.rs` (new) lets an endpoint hand every accepted connection to an application-provided
+  `StreamTlsAcceptor` instead of the TLS library Pingora was compiled with: `CustomTlsSettings` (the acceptor and the
+  same handshake offload pool as `TlsSettings`), `ListenerConfig::custom_tls`, `Listeners::add_custom_tls` and
+  `Service::add_custom_tls`. `UninitializedStream::handshake` runs the pre-TLS callback, then the custom acceptor, which
+  returns the established `Stream`. OxiRoute's rustls backend (`crates/oxiroute-tls-rustls`) is such an acceptor. This
+  replaces re-vendoring `pingora-rustls`: the 0.9.1 rebase had already dropped the `rustls` feature (its `Cargo.toml`
+  no longer lists it, the `pingora-rustls` crate is not part of the 0.9.1 set in the offline registry, and Pingora
+  compiles one backend, so `rustls` and `openssl` cannot be enabled together). The unused `protocols/tls/rustls/` and
+  `listeners/tls/rustls/` sources stay unbuilt, as in the pristine import.
+
 - Tests: the unit tests no longer depend on the Internet, fixed ports, a stored key pair or host sysctls. `connectors/test_servers.rs`
   provides loopback servers that own a kernel-assigned port (HTTP redirect, TLS with HTTP/1.1 or HTTP/2, a refused address, a
   blackhole whose accept queue is full), `test_tls.rs` generates a throwaway self-signed certificate per test, and the listener tests
@@ -264,7 +274,7 @@ response facts, noted request write, inline request loop, zero-copy request body
 Date and Connection lines, header map headroom, single-clock timeouts, the parked idle wait (`apps/idle_wait.rs`), the pooled request future (`apps/pooled_future.rs`), the pooled coalescing write buffer, owned-preread, borrowed-request-write,
 parsed-header ownership, response-task batch, lazy read buffer and coalescing writer, pooled gzip state, header-name
 cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, the per-worker connection placement (`set_buffer(own_driver)`) and
-`ServerConf::connection_age_ms`, the stream buffer accessors (`tcp_socket`, `has_read_ahead`, `has_write_behind`) and the
+`ServerConf::connection_age_ms`, the custom TLS acceptor (`listeners/custom_tls.rs`), the stream buffer accessors (`tcp_socket`, `has_read_ahead`, `has_write_behind`) and the
 sendfile body write (`write_body_from_file`).
 Every upstream H1 correctness fix whose code our forks replace (`idle.rs`, `proxy_h1_inline.rs` in `pingora-proxy`,
 the inline relay) must be re-derived by hand. Then run `scripts/test-vendored.sh`, the OxiRoute TLS and HTTP wire
