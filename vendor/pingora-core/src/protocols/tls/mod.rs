@@ -47,6 +47,12 @@ pub type HandshakeCompleteHook = std::sync::Arc<
     dyn Fn(&TlsRef) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> + Send + Sync,
 >;
 
+/// A per-peer hook for configuring an OpenSSL-derived TLS object before its client handshake.
+#[cfg(feature = "openssl_derived")]
+pub type TlsConfigureHook = std::sync::Arc<
+    dyn Fn(&mut TlsRef) -> Result<(), crate::tls::error::ErrorStack> + Send + Sync + 'static,
+>;
+
 /// The protocol for Application-Layer Protocol Negotiation
 #[derive(Hash, Clone, Debug, PartialEq, PartialOrd)]
 pub enum ALPN {

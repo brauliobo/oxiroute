@@ -17,16 +17,15 @@
 use crate::connectors::{l4::BindTo, L4Connect};
 use crate::protocols::l4::socket::SocketAddr;
 use crate::protocols::tls::CaType;
-#[cfg(feature = "openssl_derived")]
-use crate::protocols::tls::HandshakeCompleteHook;
 #[cfg(feature = "s2n")]
 use crate::protocols::tls::PskType;
+#[cfg(feature = "openssl_derived")]
+use crate::protocols::tls::{HandshakeCompleteHook, TlsConfigureHook};
 #[cfg(unix)]
 use crate::protocols::ConnFdReusable;
 use crate::protocols::TcpKeepalive;
 use crate::utils::tls::{get_organization_unit, CertKey};
 use ahash::AHasher;
-use derivative::Derivative;
 use pingora_error::{
     ErrorType::{InternalError, SocketError},
     OrErr, Result,
@@ -35,7 +34,7 @@ use pingora_error::{
 use pingora_s2n::S2NPolicy;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, SocketAddr as InetSocketAddr, ToSocketAddrs as ToInetSocketAddrs};
 #[cfg(unix)]
@@ -43,7 +42,7 @@ use std::os::unix::{net::SocketAddr as UnixSocketAddr, prelude::AsRawFd};
 #[cfg(windows)]
 use std::os::windows::io::AsRawSocket;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::net::TcpSocket;
 
@@ -100,6 +99,10 @@ pub trait Peer: Display + Clone {
     /// The connections to two peers are considered reusable to each other if their reuse hashes are
     /// the same
     fn reuse_hash(&self) -> u64;
+    /// Returns state retained only when the connector establishes a new physical connection.
+    fn connection_lifetime(&self) -> Option<Arc<dyn crate::protocols::ConnectionLifetime>> {
+        None
+    }
     /// Get the proxy setting to connect to the remote server
     fn get_proxy(&self) -> Option<&Proxy> {
         None
@@ -267,6 +270,14 @@ pub trait Peer: Display + Clone {
         self.address().check_sock_match(sock)
     }
 
+    /// Compare this peer with a physical peer address cached when the connection was established.
+    ///
+    /// Returning `None` preserves the descriptor-based identity check. Implementations should only
+    /// opt in when they can identify the physical next hop from the cached address.
+    fn matches_cached_addr(&self, _addr: &SocketAddr) -> Option<bool> {
+        None
+    }
+
     fn get_tracer(&self) -> Option<Tracer> {
         None
     }
@@ -287,6 +298,14 @@ pub trait Peer: Display + Clone {
     fn proxy_digest_user_data_hook(&self) -> Option<&ProxyDigestUserDataHook> {
         self.get_peer_options()?
             .proxy_digest_user_data_hook
+            .as_ref()
+    }
+
+    /// Returns a hook that configures the OpenSSL-derived TLS object before the handshake.
+    #[cfg(feature = "openssl_derived")]
+    fn upstream_tls_configure_hook(&self) -> Option<&TlsConfigureHook> {
+        self.get_peer_options()?
+            .upstream_tls_configure_hook
             .as_ref()
     }
 
@@ -368,6 +387,10 @@ impl Peer for BasicPeer {
         let mut hasher = AHasher::default();
         self._address.hash(&mut hasher);
         hasher.finish()
+    }
+
+    fn matches_cached_addr(&self, addr: &SocketAddr) -> Option<bool> {
+        Some(socket_addrs_match(&self._address, addr))
     }
 
     fn get_peer_options(&self) -> Option<&PeerOptions> {
@@ -494,13 +517,14 @@ pub enum H1UpgradePolicy {
 ///
 /// See [`Peer`] for the meaning of the fields
 #[non_exhaustive]
-#[derive(Clone, Derivative)]
-#[derivative(Debug)]
+#[derive(Clone)]
 pub struct PeerOptions {
     pub bind_to: Option<BindTo>,
     pub connection_timeout: Option<Duration>,
     pub total_connection_timeout: Option<Duration>,
     pub read_timeout: Option<Duration>,
+    /// Replaces `read_timeout` once the final response header arrived (time between body reads).
+    pub body_read_timeout: Option<Duration>,
     pub idle_timeout: Option<Duration>,
     pub write_timeout: Option<Duration>,
     pub verify_cert: bool,
@@ -555,18 +579,68 @@ pub struct PeerOptions {
     pub tracer: Option<Tracer>,
     /// A custom L4 connector to use to establish new L4 connections
     pub custom_l4: Option<Arc<dyn L4Connect + Send + Sync>>,
-    #[derivative(Debug = "ignore")]
     pub upstream_tcp_sock_tweak_hook:
         Option<Arc<dyn Fn(&TcpSocket) -> Result<()> + Send + Sync + 'static>>,
-    #[derivative(Debug = "ignore")]
     pub proxy_digest_user_data_hook: Option<ProxyDigestUserDataHook>,
+    /// Hook that configures this peer's OpenSSL-derived TLS object before its handshake.
+    #[cfg(feature = "openssl_derived")]
+    pub upstream_tls_configure_hook: Option<TlsConfigureHook>,
     /// Hook that allows returning an optional `SslDigestExtension`.
     /// Any returned value will be saved into the `SslDigest`.
     ///
     /// Currently only enabled for openssl variants with meaningful `TlsRef`s.
     #[cfg(feature = "openssl_derived")]
-    #[derivative(Debug = "ignore")]
     pub upstream_tls_handshake_complete_hook: Option<HandshakeCompleteHook>,
+}
+
+impl Debug for PeerOptions {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("PeerOptions");
+        debug
+            .field("bind_to", &self.bind_to)
+            .field("connection_timeout", &self.connection_timeout)
+            .field("total_connection_timeout", &self.total_connection_timeout)
+            .field("read_timeout", &self.read_timeout)
+            .field("body_read_timeout", &self.body_read_timeout)
+            .field("idle_timeout", &self.idle_timeout)
+            .field("write_timeout", &self.write_timeout)
+            .field("verify_cert", &self.verify_cert)
+            .field("verify_hostname", &self.verify_hostname);
+        #[cfg(feature = "s2n")]
+        debug.field("use_system_certs", &self.use_system_certs);
+        debug
+            .field("alternative_cn", &self.alternative_cn)
+            .field("alpn", &self.alpn)
+            .field("ca", &self.ca)
+            .field("tcp_keepalive", &self.tcp_keepalive)
+            .field("tcp_recv_buf", &self.tcp_recv_buf)
+            .field("dscp", &self.dscp)
+            .field("h2_ping_interval", &self.h2_ping_interval);
+        #[cfg(feature = "s2n")]
+        debug
+            .field("psk", &self.psk)
+            .field("s2n_security_policy", &self.s2n_security_policy)
+            .field("max_blinding_delay", &self.max_blinding_delay);
+        debug
+            .field("max_h2_streams", &self.max_h2_streams)
+            .field("h2_stream_window_size", &self.h2_stream_window_size)
+            .field("h2_connection_window_size", &self.h2_connection_window_size)
+            .field(
+                "allow_h1_response_invalid_content_length",
+                &self.allow_h1_response_invalid_content_length,
+            )
+            .field(
+                "http_upstream_request_policy",
+                &self.http_upstream_request_policy,
+            )
+            .field("extra_proxy_headers", &self.extra_proxy_headers)
+            .field("curves", &self.curves)
+            .field("second_keyshare", &self.second_keyshare)
+            .field("tcp_fast_open", &self.tcp_fast_open)
+            .field("tracer", &self.tracer)
+            .field("custom_l4", &self.custom_l4)
+            .finish()
+    }
 }
 
 impl PeerOptions {
@@ -577,6 +651,7 @@ impl PeerOptions {
             connection_timeout: None,
             total_connection_timeout: None,
             read_timeout: None,
+            body_read_timeout: None,
             idle_timeout: None,
             write_timeout: None,
             verify_cert: true,
@@ -609,6 +684,8 @@ impl PeerOptions {
             custom_l4: None,
             upstream_tcp_sock_tweak_hook: None,
             proxy_digest_user_data_hook: None,
+            #[cfg(feature = "openssl_derived")]
+            upstream_tls_configure_hook: None,
             #[cfg(feature = "openssl_derived")]
             upstream_tls_handshake_complete_hook: None,
         }
@@ -691,6 +768,7 @@ pub struct HttpPeer {
     /// cannot share connections with each other.
     pub group_key: u64,
     pub options: PeerOptions,
+    pub connection_lifetime: Option<Weak<dyn crate::protocols::ConnectionLifetime>>,
 }
 
 impl HttpPeer {
@@ -711,6 +789,7 @@ impl HttpPeer {
             client_cert_key: None,
             group_key: 0,
             options: PeerOptions::new(),
+            connection_lifetime: None,
         }
     }
 
@@ -753,6 +832,7 @@ impl HttpPeer {
             client_cert_key: None,
             group_key: 0,
             options: PeerOptions::new(),
+            connection_lifetime: None,
         }
     }
 
@@ -834,6 +914,10 @@ impl Peer for HttpPeer {
         self.peer_hash()
     }
 
+    fn connection_lifetime(&self) -> Option<Arc<dyn crate::protocols::ConnectionLifetime>> {
+        self.connection_lifetime.as_ref().and_then(Weak::upgrade)
+    }
+
     fn get_peer_options(&self) -> Option<&PeerOptions> {
         Some(&self.options)
     }
@@ -844,6 +928,21 @@ impl Peer for HttpPeer {
 
     fn get_proxy(&self) -> Option<&Proxy> {
         self.proxy.as_ref()
+    }
+
+    fn matches_cached_addr(&self, addr: &SocketAddr) -> Option<bool> {
+        if let Some(proxy) = self.get_proxy() {
+            #[cfg(unix)]
+            return Some(
+                addr.as_unix().and_then(UnixSocketAddr::as_pathname)
+                    == Some(proxy.next_hop.as_ref()),
+            );
+
+            #[cfg(windows)]
+            panic!("windows do not support peers with proxy")
+        }
+
+        Some(socket_addrs_match(&self._address, addr))
     }
 
     #[cfg(unix)]
@@ -875,6 +974,12 @@ impl Peer for HttpPeer {
     }
 }
 
+fn socket_addrs_match(expected: &SocketAddr, connected: &SocketAddr) -> bool {
+    const ZERO: IpAddr = IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+
+    expected.as_inet().is_some_and(|addr| addr.ip() == ZERO) || expected == connected
+}
+
 /// The proxy settings to connect to the remote server, CONNECT only for now
 #[derive(Debug, Hash, Clone)]
 pub struct Proxy {
@@ -899,6 +1004,72 @@ impl Display for Proxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standard_peers_match_cached_ipv4_and_ipv6_addresses_exactly() {
+        let ipv4 = BasicPeer::new("192.0.2.1:8080");
+        assert_eq!(
+            ipv4.matches_cached_addr(&SocketAddr::Inet("192.0.2.1:8080".parse().unwrap())),
+            Some(true)
+        );
+        assert_eq!(
+            ipv4.matches_cached_addr(&SocketAddr::Inet("192.0.2.2:8080".parse().unwrap())),
+            Some(false)
+        );
+
+        let ipv6 = HttpPeer::new("[2001:db8::1]:8443", false, String::new());
+        assert_eq!(
+            ipv6.matches_cached_addr(&SocketAddr::Inet("[2001:db8::1]:8443".parse().unwrap())),
+            Some(true)
+        );
+        assert_eq!(
+            ipv6.matches_cached_addr(&SocketAddr::Inet("[2001:db8::1]:443".parse().unwrap())),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn zero_ipv4_destination_preserves_descriptor_match_behavior() {
+        let peer = BasicPeer::new("0.0.0.0:8080");
+
+        assert_eq!(
+            peer.matches_cached_addr(&SocketAddr::Inet("127.0.0.1:8080".parse().unwrap())),
+            Some(true)
+        );
+        assert_eq!(
+            peer.matches_cached_addr(&SocketAddr::Inet("[::1]:8080".parse().unwrap())),
+            Some(true)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn standard_and_proxy_peers_match_cached_unix_pathnames() {
+        let direct = BasicPeer::new_uds("/tmp/direct.sock").unwrap();
+        let direct_addr =
+            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/direct.sock").unwrap());
+        let other_addr =
+            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/other.sock").unwrap());
+        assert_eq!(direct.matches_cached_addr(&direct_addr), Some(true));
+        assert_eq!(direct.matches_cached_addr(&other_addr), Some(false));
+
+        let proxy = HttpPeer::new_proxy(
+            "/tmp/proxy.sock",
+            "192.0.2.1".parse().unwrap(),
+            443,
+            true,
+            "example.test",
+            BTreeMap::new(),
+        );
+        let proxy_addr =
+            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/proxy.sock").unwrap());
+        assert_eq!(proxy.matches_cached_addr(&proxy_addr), Some(true));
+        assert_eq!(proxy.matches_cached_addr(&direct_addr), Some(false));
+        assert_eq!(
+            proxy.matches_cached_addr(&SocketAddr::Inet("192.0.2.1:443".parse().unwrap())),
+            Some(false)
+        );
+    }
 
     #[test]
     fn default_http_upstream_request_policy_is_standards_oriented() {

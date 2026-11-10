@@ -74,6 +74,7 @@ pub mod tls;
 #[cfg(not(feature = "any_tls"))]
 pub use crate::tls::listeners as tls;
 
+use crate::apps::ConnectionAdmission;
 use crate::protocols::{l4::socket::SocketAddr, tls::TlsRef, Stream};
 
 #[cfg(unix)]
@@ -313,6 +314,10 @@ pub(crate) struct UninitializedStream {
 }
 
 impl UninitializedStream {
+    pub fn hold_admission(&mut self, admission: ConnectionAdmission) {
+        self.l4.hold_admission(admission);
+    }
+
     pub async fn handshake(mut self) -> Result<Stream> {
         self.l4.set_buffer(self.l4_buffer);
         if let Some(tls) = self.tls {
@@ -672,14 +677,13 @@ mod test {
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_listen_tls() {
+        use crate::test_tls::TestCert;
         use tokio::io::AsyncReadExt;
 
-        let addr = "127.0.0.1:7103";
-        let cert_path = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
-        let key_path = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
-        let mut listeners = Listeners::tls(addr, &cert_path, &key_path).unwrap();
+        let cert = TestCert::new();
+        let mut listeners = Listeners::tls("127.0.0.1:0", &cert.cert_path, &cert.key_path).unwrap();
         let listener = listeners
             .build(
                 #[cfg(unix)]
@@ -689,6 +693,7 @@ mod test {
             .unwrap()
             .pop()
             .unwrap();
+        let addr = listener.l4.local_addr().unwrap();
 
         tokio::spawn(async move {
             // just try to accept once
@@ -700,6 +705,8 @@ mod test {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\na")
                 .await
                 .unwrap();
+            // pingora streams coalesce writes until flushed
+            stream.flush().await.unwrap();
         });
         // The listener is already bound, so the kernel accepts connections
         // into the backlog immediately. No readiness wait needed.
@@ -713,15 +720,15 @@ mod test {
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_listen_tls_with_offload() {
+        use crate::test_tls::TestCert;
         use tokio::io::AsyncReadExt;
 
         const REQUESTS: usize = 8;
 
-        let cert_path = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
-        let key_path = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
-        let mut tls_settings = TlsSettings::intermediate(&cert_path, &key_path).unwrap();
+        let cert = TestCert::new();
+        let mut tls_settings = TlsSettings::intermediate(&cert.cert_path, &cert.key_path).unwrap();
         let conf = crate::server::configuration::ServerConf {
             downstream_tls_offload_threadpools: Some(2),
             downstream_tls_offload_thread_per_pool: Some(2),
@@ -758,6 +765,8 @@ mod test {
                         .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\na")
                         .await
                         .unwrap();
+                    // pingora streams coalesce writes until flushed
+                    stream.flush().await.unwrap();
                 }));
             }
 
@@ -804,7 +813,7 @@ mod test {
         let mut listeners = Listeners::new();
 
         // Add an endpoint before setting filter
-        listeners.add_tcp("127.0.0.1:7104");
+        listeners.add_tcp("127.0.0.1:0");
 
         // Set the connection filter
         let filter = Arc::new(TestFilter {
@@ -813,16 +822,12 @@ mod test {
         listeners.set_connection_filter(filter.clone());
 
         // Add endpoints after setting filter
-        listeners.add_tcp("127.0.0.1:7105");
-        #[cfg(feature = "any_tls")]
+        listeners.add_tcp("127.0.0.1:0");
+        #[cfg(feature = "openssl")]
         {
-            // Only test TLS if the feature is enabled
-            if let Ok(tls_settings) = TlsSettings::intermediate(
-                &format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR")),
-                &format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR")),
-            ) {
-                listeners.add_tls_with_settings("127.0.0.1:7106", None, tls_settings);
-            }
+            let cert = crate::test_tls::TestCert::new();
+            let tls_settings = TlsSettings::intermediate(&cert.cert_path, &cert.key_path).unwrap();
+            listeners.add_tls_with_settings("127.0.0.1:0", None, tls_settings);
         }
 
         // Verify all stacks have the filter (only when feature is enabled)

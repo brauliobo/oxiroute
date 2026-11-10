@@ -98,7 +98,9 @@ where
         _listeners_per_fd: usize,
         ready: ServiceReadyNotifier,
     ) {
-        self.task.start_with_ready_notifier(shutdown, ready).await;
+        self.task
+            .start_with_ready_notifier(shutdown, ready.require_explicit())
+            .await;
     }
 
     fn name(&self) -> &str {
