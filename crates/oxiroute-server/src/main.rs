@@ -632,6 +632,7 @@ fn serve_generation(
                         .with_challenge_store(challenge_store.clone())
                         .with_generation(Arc::clone(generation)),
                 );
+                let upstream = proxy.upstream_h1_connector();
                 let app = MonitoredHttpApp::new(
                     HttpListenerApp::new(
                         HttpDownstreamPolicyApp::new(proxy, downstream_timeouts).with_lane(
@@ -639,6 +640,7 @@ fn serve_generation(
                             metrics.clone(),
                             Arc::clone(generation),
                             Some(challenge_store.clone()),
+                            upstream,
                         ),
                         listener_tls.as_deref(),
                     )

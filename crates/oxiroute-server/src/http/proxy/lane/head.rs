@@ -11,7 +11,10 @@ pub(super) struct Request {
     pub(super) method: Span,
     pub(super) path: Span,
     pub(super) host: Span,
+    /// The first `X-Request-Id`, when it is a valid id: the one the request goes on with.
     pub(super) request_id: Option<Span>,
+    /// The request carries that one id and no other, so nothing is stamped on it.
+    pub(super) id_stamped: bool,
     pub(super) close: bool,
     pub(super) head_len: usize,
     pub(super) is_head: bool,
@@ -34,10 +37,10 @@ impl Request {
     }
 }
 
-/// `None` when the classic path must see the request: it is partial, refused or not of the lane's shape.
-pub(super) fn scan(buf: &[u8]) -> Option<Request> {
-    let mut head = RequestHead::new();
-    if scan_request(buf, &mut head) != Scan::Head {
+/// `None` when the classic path must see the request: it is partial, refused or not of the lane's shape. `head`
+/// describes the headers of the request when it is the lane's.
+pub(super) fn scan(buf: &[u8], head: &mut RequestHead) -> Option<Request> {
+    if scan_request(buf, head) != Scan::Head {
         return None;
     }
     let facts = head.facts;
@@ -57,7 +60,7 @@ pub(super) fn scan(buf: &[u8]) -> Option<Request> {
         start: target.start,
         len: query.map_or(target.len, |at| u32::try_from(at).unwrap_or(target.len)),
     };
-    let request_id = (facts.request_id_count == 1)
+    let request_id = (facts.request_id_count >= 1)
         .then(|| head.headers()[usize::from(facts.request_id)])
         .filter(|header| header.class == Class::XRequestId)
         .map(|header| value_span(&header))
@@ -67,6 +70,7 @@ pub(super) fn scan(buf: &[u8]) -> Option<Request> {
         path,
         host: value_span(&head.headers()[usize::from(facts.host)]),
         request_id,
+        id_stamped: request_id.is_some() && facts.request_id_count == 1,
         close,
         head_len: head.head_len as usize,
         is_head: head.method(buf) == b"HEAD",

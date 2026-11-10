@@ -11,6 +11,7 @@ use pingora::{
         AcceptGate, ConnectionAdmission, Http1Front, HttpServerApp, HttpServerOptions,
         ReusedHttpStream, ServerApp,
     },
+    connectors::http::v1::Connector,
     protocols::{
         ALPN, Stream,
         http::{ServerSession, v2::server::H2Options},
@@ -308,13 +309,14 @@ impl<A> HttpDownstreamPolicyApp<A> {
         metrics: ListenerMetrics,
         generation: Arc<RuntimeGeneration>,
         challenge: Option<ChallengeStore>,
+        upstream: Arc<Connector>,
     ) -> Self {
         let timeouts = LaneTimeouts {
             request: self.request_timeout,
             write: self.write_timeout,
             keepalive: self.keepalive_timeout,
         };
-        self.front = LaneFront::new(service, metrics, generation, challenge, timeouts);
+        self.front = LaneFront::new(service, metrics, generation, challenge, timeouts, upstream);
         self
     }
 }

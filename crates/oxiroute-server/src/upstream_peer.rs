@@ -133,6 +133,15 @@ impl UpstreamPlan {
         &self.unavailable
     }
 
+    /// Whether requests reach the pool's servers as plain HTTP/1.1 over a stream the lane can drive itself, with
+    /// nothing queued by class.
+    pub(crate) fn is_plain_http1(&self) -> bool {
+        self.tls.is_none()
+            && self.h3.is_none()
+            && self.http_version == HttpVersion::Http11
+            && !self.selector.schedules_queue()
+    }
+
     pub(crate) fn label(&self) -> &Label {
         &self.label
     }

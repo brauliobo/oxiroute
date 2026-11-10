@@ -10,6 +10,8 @@ mod buffers;
 mod direct;
 mod head;
 mod plan;
+mod proxy;
+mod timing;
 
 use std::{
     future::poll_fn,
@@ -19,11 +21,13 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::BytesMut;
-use http::{Method, uri::Authority};
+use http::{HeaderValue, Method, uri::Authority};
 use oxiroute_acme::ChallengeStore;
 use oxiroute_config::is_unambiguous_http_path;
+use oxiroute_h1_head::RequestHead;
 use pingora::{
     apps::{Http1Connection, Http1Front, Http1FrontOutcome},
+    connectors::http::v1::Connector,
     protocols::Stream,
     server::ShutdownWatch,
 };
@@ -50,6 +54,17 @@ pub(crate) struct LaneTimeouts {
     pub(crate) keepalive: Option<Duration>,
 }
 
+impl LaneTimeouts {
+    /// The write timeout a session has: the request timeout caps it.
+    fn session_write(&self) -> Option<Duration> {
+        match (self.request, self.write) {
+            (Some(request), Some(write)) => Some(request.min(write)),
+            (request, None) => request,
+            (None, write) => write,
+        }
+    }
+}
+
 pub(crate) struct LaneFront {
     challenge: Option<ChallengeStore>,
     first_request: Notify,
@@ -57,6 +72,8 @@ pub(crate) struct LaneFront {
     metrics: ListenerMetrics,
     service: Arc<HttpServicePlan>,
     timeouts: LaneTimeouts,
+    /// The upstream connector of the classic proxy, whose idle connections the proxied lane shares.
+    upstream: Arc<Connector>,
     /// Time a response write may take before the connection is given up: the least of the service deadline and
     /// the downstream timeouts.
     write_budget: Duration,
@@ -75,6 +92,7 @@ impl LaneFront {
         generation: Arc<RuntimeGeneration>,
         challenge: Option<ChallengeStore>,
         timeouts: LaneTimeouts,
+        upstream: Arc<Connector>,
     ) -> Option<Self> {
         let eligible = service.gzip().is_none()
             && service.access_log().is_none()
@@ -94,6 +112,7 @@ impl LaneFront {
             metrics,
             service,
             timeouts,
+            upstream,
             write_budget,
         })
     }
@@ -149,8 +168,12 @@ impl LaneFront {
         }
     }
 
-    /// The route the request is served by, when the lane may serve it.
-    fn select_route(&self, buffer: &[u8], request: &head::Request) -> Option<Arc<HttpRoutePlan>> {
+    /// The route the request is served by, when the lane may serve it, and the authority it was selected for.
+    fn select_route(
+        &self,
+        buffer: &[u8],
+        request: &head::Request,
+    ) -> Option<(Arc<HttpRoutePlan>, Authority)> {
         let path = request.path(buffer);
         let authority = request.host(buffer)?.parse::<Authority>().ok()?;
         if authority.as_str().contains('@') || !is_unambiguous_http_path(path) {
@@ -160,16 +183,11 @@ impl LaneFront {
         if self.challenge.is_some() && ChallengeStore::serves(path) {
             return None;
         }
-        self.service
+        let route = self
+            .service
             .select_route_path(Some(&authority), path, &method)
-            .filter(|route| route.lane != LaneRoute::Classic)
-    }
-
-    /// The request the lane serves from the bytes of `buffer`, with its route.
-    fn decide(&self, buffer: &[u8]) -> Option<(head::Request, Arc<HttpRoutePlan>)> {
-        let request = head::scan(buffer).filter(|request| request.head_len == buffer.len())?;
-        let route = self.select_route(buffer, &request)?;
-        Some((request, route))
+            .filter(|route| route.lane != LaneRoute::Classic)?;
+        Some((route, authority))
     }
 
     async fn serve_request(
@@ -179,7 +197,28 @@ impl LaneFront {
         shutdown: &ShutdownWatch,
         buffer: &[u8],
     ) -> Served {
-        let Some((request, route)) = self.decide(buffer) else {
+        let mut scanned = buffers::take_head();
+        let served = self
+            .serve_scanned(stream, connection, shutdown, buffer, &mut scanned)
+            .await;
+        buffers::give_head(scanned);
+        served
+    }
+
+    async fn serve_scanned(
+        &self,
+        stream: &mut Stream,
+        connection: &mut Http1Connection,
+        shutdown: &ShutdownWatch,
+        buffer: &[u8],
+        scanned: &mut RequestHead,
+    ) -> Served {
+        let Some(request) =
+            head::scan(buffer, scanned).filter(|request| request.head_len == buffer.len())
+        else {
+            return Served::Handoff;
+        };
+        let Some((route, authority)) = self.select_route(buffer, &request) else {
             return Served::Handoff;
         };
         let started = Instant::now();
@@ -192,6 +231,20 @@ impl LaneFront {
         let id = request
             .request_id
             .map_or(&generated[..], |span| span.of(buffer));
+        if route.lane == LaneRoute::Proxy {
+            let id = HeaderValue::from_bytes(id).expect("request ids are visible ASCII");
+            let forward = proxy::Forward {
+                buffer,
+                head: scanned,
+                request: &request,
+                route: &route,
+                id: &id,
+                keepalive: connection.will_keepalive(),
+            };
+            return self
+                .serve_proxied(stream, connection, forward, authority)
+                .await;
+        }
         let automatic = if connection.will_keepalive() {
             "keep-alive"
         } else {

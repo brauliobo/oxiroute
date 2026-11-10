@@ -98,7 +98,7 @@ fn compile_http_route(
     };
     let route_id = Label::new(route.route.route_id());
     let plan = Arc::new(HttpRoutePlan {
-        lane: LaneRoute::compile(&action, access.as_ref()),
+        lane: LaneRoute::compile(&action, &route.policy, access.as_ref()),
         access,
         action,
         policy: route.policy,
