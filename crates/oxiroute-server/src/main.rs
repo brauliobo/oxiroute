@@ -129,7 +129,7 @@ fn main() -> ExitCode {
         return exit_code;
     }
 
-    env_logger::init();
+    oxiroute_server::init_logging();
 
     let cli = Cli::parse_process();
     let result = match cli.command() {
@@ -398,6 +398,7 @@ fn serve_generation(
 ) -> Result<(), Box<dyn Error>> {
     let active_revision = generation.revision().candidate.clone();
     let config = generation.config().as_draft();
+    oxiroute_server::apply_log_filter(config.log_filter.as_deref());
     let management_token_file = config
         .management
         .as_ref()

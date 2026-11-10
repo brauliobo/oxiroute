@@ -71,6 +71,7 @@ pub use l4::tcp::{
 pub use l4::udp::{UdpRelayStats, UdpRuntime};
 pub use listener::reservation::{ListenerReservation, ListenerReservations};
 pub use listener::runtime::{AdmissionError, ListenerRuntime, TrafficLease};
+pub use observability::log_filter::{apply_log_filter, init_logging};
 pub use observability::monitoring::{
     ACCESS_RECORD_CAPACITY, AccessRecord, AcmeManagedCertificateSnapshot, CacheSnapshot,
     CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot, ComponentState,
