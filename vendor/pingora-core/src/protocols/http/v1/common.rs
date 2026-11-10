@@ -557,6 +557,7 @@ pub(crate) fn content_length_for_framing(headers: &HMap) -> Result<Option<usize>
 /// HTTP/2 does not use `Content-Length` for framing, but reconciling it here
 /// keeps the H2 and downgraded-H1 paths consistent and rejects genuinely
 /// ambiguous values before they cross a proxy boundary.
+#[cfg(test)]
 pub(crate) fn validate_content_length(headers: &HMap) -> Result<()> {
     if headers.get(header::TRANSFER_ENCODING).is_some() {
         // HTTP/1: Transfer-Encoding takes precedence over Content-Length.
