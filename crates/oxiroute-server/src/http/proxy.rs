@@ -210,6 +210,56 @@ struct ResponseBuffer {
 }
 
 impl HttpRequestContext {
+    fn new(
+        listener: ListenerMetrics,
+        generation: Option<Arc<RuntimeGeneration>>,
+        started_at: Instant,
+        io_timeout: Duration,
+    ) -> Self {
+        Self {
+            listener,
+            observed_received: 0,
+            observed_sent: 0,
+            authority: None,
+            attempted_upstreams: Vec::new(),
+            pool: None,
+            route: None,
+            selected: None,
+            selected_observation: None,
+            selected_upstream_host: None,
+            request_header_decisions: Box::new([]),
+            connection_retryable: false,
+            replay_retryable: false,
+            evacuation_pin: None,
+            evacuations: 0,
+            evacuated_from: Vec::new(),
+            retry_server: None,
+            queue_tag: QueueTag::default(),
+            retry_delay_pending: false,
+            prior_attempts: 0,
+            rescued: false,
+            retry_prepaid: false,
+            response_status_override: None,
+            response_header_overrides: Vec::new(),
+            started_at,
+            request_facts: RequestFacts::default(),
+            now: started_at,
+            total_deadline: started_at + io_timeout,
+            client_deadline: None,
+            deadline: started_at + io_timeout,
+            operation_result: None,
+            websocket_reference: None,
+            generation,
+            cache_transaction: None,
+            cache_capture: None,
+            response_buffer: None,
+            cache_response_handled: false,
+            trace: AttemptTrace::default(),
+            inflight: None,
+            request_id: None,
+        }
+    }
+
     fn enter_phase(&self, phase: Phase, now: Instant) {
         if let Some(inflight) = &self.inflight {
             inflight.set_phase(phase, now);
@@ -218,12 +268,25 @@ impl HttpRequestContext {
 
     fn register_inflight(&mut self, session: &Session, access_log: Option<&Arc<AccessLog>>) {
         let request = session.req_header();
-        let header = |name| {
-            request
-                .headers
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-        };
+        let host = request
+            .headers
+            .get(&HOST)
+            .and_then(|value| value.to_str().ok());
+        let client_ip = session
+            .client_addr()
+            .and_then(|address| address.as_inet())
+            .map(std::net::SocketAddr::ip);
+        self.register_arrival(&request.method, host, request.uri.path(), client_ip, access_log);
+    }
+
+    fn register_arrival(
+        &mut self,
+        method: &Method,
+        host: Option<&str>,
+        path: &str,
+        client_ip: Option<std::net::IpAddr>,
+        access_log: Option<&Arc<AccessLog>>,
+    ) {
         self.inflight = Some(
             inflight::registry().register(InflightArrival {
                 request_id: self
@@ -232,13 +295,10 @@ impl HttpRequestContext {
                     .and_then(|id| id.to_str().ok())
                     .unwrap_or_default(),
                 listener: self.listener.shared_name(),
-                method: request.method.clone(),
-                host: header(&HOST),
-                path: request.uri.path(),
-                client_ip: session
-                    .client_addr()
-                    .and_then(|address| address.as_inet())
-                    .map(std::net::SocketAddr::ip),
+                method: method.clone(),
+                host,
+                path,
+                client_ip,
                 started: self.started_at,
                 deadline: self.deadline.saturating_duration_since(self.started_at),
                 access_log: access_log.cloned(),
@@ -248,21 +308,15 @@ impl HttpRequestContext {
 
     /// `now` is the caller's reading of the clock for this step.
     fn observe(&mut self, session: &Session, now: Instant) {
+        self.observe_bytes(session.body_bytes_read(), session.body_bytes_sent(), now);
+    }
+
+    fn observe_bytes(&mut self, received: usize, sent: usize, now: Instant) {
         if let Some(inflight) = &self.inflight {
             inflight.progress(now);
         }
-        observe_counter(
-            &self.listener,
-            session.body_bytes_read(),
-            &mut self.observed_received,
-            true,
-        );
-        observe_counter(
-            &self.listener,
-            session.body_bytes_sent(),
-            &mut self.observed_sent,
-            false,
-        );
+        observe_counter(&self.listener, received, &mut self.observed_received, true);
+        observe_counter(&self.listener, sent, &mut self.observed_sent, false);
     }
 
     /// Servers tried over the whole request, including those of a rescue pool already left.
@@ -309,14 +363,15 @@ impl HttpRequestContext {
 
     /// Settles the last attempt and adds what the finished request sent and received to its server.
     fn account_final_attempt(&mut self, session: &Session, now: Instant) {
+        self.account_attempt(session.body_bytes_read(), session.body_bytes_sent(), now);
+    }
+
+    fn account_attempt(&mut self, received: usize, sent: usize, now: Instant) {
         if self.trace.responded {
             if let (Some(stats), Some(connected)) = (&self.trace.stats, self.trace.connected_at) {
                 let bytes = |count: usize| u64::try_from(count).unwrap_or(u64::MAX);
                 stats.record_request_duration(now.saturating_duration_since(connected));
-                stats.record_bytes(
-                    bytes(session.body_bytes_read()),
-                    bytes(session.body_bytes_sent()),
-                );
+                stats.record_bytes(bytes(received), bytes(sent));
             }
         } else {
             let fallback = match self.trace.failure_reason {
@@ -415,7 +470,11 @@ impl HttpRequestContext {
     }
 
     fn adopt_downstream_deadline(&mut self, session: &Session) {
-        self.client_deadline = [session.get_read_timeout(), session.get_write_timeout()]
+        self.adopt_client_timeouts([session.get_read_timeout(), session.get_write_timeout()]);
+    }
+
+    fn adopt_client_timeouts(&mut self, timeouts: [Option<Duration>; 2]) {
+        self.client_deadline = timeouts
             .into_iter()
             .flatten()
             .map(|timeout| self.started_at + timeout)
@@ -518,6 +577,7 @@ impl Drop for HttpRequestContext {
 
 mod access_record;
 mod action;
+mod attempt;
 mod cache;
 mod compression;
 mod evacuation;

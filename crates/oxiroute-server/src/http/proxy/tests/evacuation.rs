@@ -75,10 +75,10 @@ async fn a_killed_attempt_is_not_retried_and_answers_with_the_evacuated_reason()
 
     assert!(!error.retry());
     assert_eq!(
-        error_reason(&error, &context, &session),
+        error_reason(&error, &context, response_started(&session)),
         Some(ErrorReason::Evacuated)
     );
-    assert_eq!(failure_reason(&error, &context, &session), "evacuated");
+    assert_eq!(failure_reason(&error, &context, response_started(&session)), "evacuated");
     assert_eq!(ErrorReason::Evacuated.status(), 503);
     assert_eq!(ErrorReason::Evacuated.header().1, "evacuated");
     assert_eq!(context.attempt_count(), 1);
