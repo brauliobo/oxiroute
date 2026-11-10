@@ -605,3 +605,35 @@ fn exposition_reports_the_canary_of_each_pool_that_declares_one() {
     );
     assert!(!output.contains("oxiroute_canary_success{pool=\"no-canary-series\"}"));
 }
+
+#[test]
+fn scheduling_series_name_the_mode_and_the_age_and_only_the_aged_mode_reports_its_queues() {
+    let mut shared = String::new();
+    render_connection_scheduling(&mut shared, None).unwrap();
+    assert_eq!(
+        shared,
+        "oxiroute_connection_scheduling_info{mode=\"work_stealing\"} 1\n"
+    );
+
+    let config = serde_json::from_value::<oxiroute_config::ConfigDraft>(serde_json::json!({
+        "version": 1,
+        "listeners": [],
+        "connection_scheduling": "aged_per_worker",
+        "connection_age_ms": 25,
+    }))
+    .unwrap();
+    let mut aged = String::new();
+    render_connection_scheduling(&mut aged, Some(&config)).unwrap();
+    assert!(aged.contains(
+        "oxiroute_connection_scheduling_info{mode=\"aged_per_worker\",age_ms=\"25\"} 1\n"
+    ));
+    for series in [
+        "oxiroute_aged_queue_tasks ",
+        "oxiroute_aged_queue_ready ",
+        "oxiroute_aged_queue_oldest_ready_seconds ",
+        "oxiroute_aged_queue_polls_total ",
+        "oxiroute_aged_queue_aged_polls_total ",
+    ] {
+        assert!(aged.contains(series), "{series}");
+    }
+}
