@@ -88,6 +88,7 @@ fn document_with_max_connections(max_connections: Option<u64>) -> ResolvedConfig
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     })
 }
 

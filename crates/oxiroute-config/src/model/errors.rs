@@ -440,6 +440,8 @@ pub enum ConfigError {
     InvalidStatsBinds,
     #[error("listener_workers {0} is invalid: it must be between 1 and 256")]
     InvalidListenerWorkers(u64),
+    #[error("log_filter is invalid: {detail}")]
+    InvalidLogFilter { detail: &'static str },
     #[error("audit setting `{pointer}` is invalid: {detail}")]
     InvalidAudit {
         pointer: &'static str,

@@ -24,6 +24,7 @@ async fn generation_runtime_marker_publishes_readiness_after_start_claim() {
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     };
     fs::write(
         &path,
@@ -294,6 +295,7 @@ fn generation_join_detaches_at_the_absolute_process_deadline() {
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     };
     let (_, manager, generation) = activate_test_generation(&path, &config);
     let (release, released) = mpsc::sync_channel(0);

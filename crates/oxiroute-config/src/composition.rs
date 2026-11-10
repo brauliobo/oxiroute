@@ -49,6 +49,11 @@ fn compose_drafts(
             config.management.as_ref(),
         )?;
         merge_optional("audit", &mut composed.audit, config.audit.as_ref())?;
+        merge_optional(
+            "log_filter",
+            &mut composed.log_filter,
+            config.log_filter.as_ref(),
+        )?;
         merge_optional("registry", &mut composed.registry, config.registry.as_ref())?;
         merge_stats(&mut composed.stats, config.stats.as_ref())?;
         composed.certificates.extend(config.certificates);

@@ -1030,6 +1030,7 @@ export interface CanonicalConfig {
   listener_workers?: number
   retirement?: RetirementConfig
   management: ManagementConfig | null
+  log_filter?: string
   audit?: AuditConfig
   registry?: RegistryConfig | null
   stats?: StatsConfig | null

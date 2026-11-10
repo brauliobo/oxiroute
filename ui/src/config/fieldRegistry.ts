@@ -528,6 +528,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'l4_services[].udp.max_queue_bytes', kind: 'integer' },
   { path: 'max_connections', kind: 'integer' },
   { path: 'listener_workers', kind: 'integer' },
+  { path: 'log_filter', kind: 'string' },
   { path: 'audit', kind: 'object' },
   { path: 'audit.dir', kind: 'string' },
   { path: 'audit.max_records', kind: 'integer' },

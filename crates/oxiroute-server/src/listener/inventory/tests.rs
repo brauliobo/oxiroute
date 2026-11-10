@@ -27,6 +27,7 @@ fn inventory_core_is_platform_independent_and_unbounded() {
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     }
     .validate()
     .expect("valid empty inventory config");
@@ -274,6 +275,7 @@ fn inventory_config(
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     };
     config.upstream_pools.push(oxiroute_config::UpstreamPool {
         name: "origin".into(),

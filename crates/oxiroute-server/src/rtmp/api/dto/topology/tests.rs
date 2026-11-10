@@ -22,6 +22,7 @@ fn empty_topology() -> TopologySnapshot {
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     })
 }
 

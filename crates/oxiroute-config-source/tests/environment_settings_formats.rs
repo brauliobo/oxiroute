@@ -56,3 +56,10 @@ fn audit_settings_round_trip_through_every_source_format() {
 fn a_partial_audit_block_round_trips_through_every_source_format() {
     assert_round_trips(&validated(json!({"audit": {"max_records": 500}})));
 }
+
+#[test]
+fn log_filter_round_trips_through_every_source_format() {
+    assert_round_trips(&validated(
+        json!({"log_filter": "warn,oxiroute::audit=debug"}),
+    ));
+}

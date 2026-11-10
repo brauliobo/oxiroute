@@ -773,6 +773,7 @@ fn empty_config() -> ConfigDraft {
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     }
 }
 
