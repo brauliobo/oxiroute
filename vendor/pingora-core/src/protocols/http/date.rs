@@ -59,19 +59,6 @@ thread_local! {
         = RefCell::new(CacheableDate::new());
 }
 
-/// Appends the cached `Date` value to `buf` without cloning it.
-pub fn put_cached_date(buf: &mut bytes::BytesMut) {
-    CACHED_DATE.with(|cache_date| {
-        let mut cache_date = cache_date.borrow_mut();
-        cache_date.update(
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap(),
-        );
-        buf.extend_from_slice(cache_date.h1_date.as_bytes());
-    });
-}
-
 pub fn get_cached_date() -> HeaderValue {
     CACHED_DATE.with(|cache_date| (*cache_date.borrow_mut()).get_date())
 }

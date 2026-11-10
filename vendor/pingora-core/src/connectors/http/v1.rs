@@ -17,6 +17,8 @@ use crate::protocols::http::v1::client::HttpSession;
 use crate::upstreams::peer::Peer;
 
 use pingora_error::Result;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub struct Connector {
@@ -34,24 +36,9 @@ impl Connector {
         &self,
         peer: &P,
     ) -> Result<(HttpSession, bool)> {
-        let Some(lifetime) = peer.connection_lifetime() else {
-            let (stream, reused) = self.transport.get_stream(peer).await?;
-            return Ok((HttpSession::new_with_options(stream, peer), reused));
-        };
-        loop {
-            let generation = lifetime.capacity_generation();
-            if let Some(stream) = self.transport.reused_stream(peer).await {
-                return Ok((HttpSession::new_with_options(stream, peer), true));
-            }
-            if lifetime.try_acquire()? {
-                let stream = self
-                    .transport
-                    .new_stream_with_lifetime(peer, Some(lifetime))
-                    .await?;
-                return Ok((HttpSession::new_with_options(stream, peer), false));
-            }
-            lifetime.wait_for_capacity(generation).await?;
-        }
+        let (stream, reused) = self.transport.get_stream(peer).await?;
+        let http = HttpSession::new_with_options(stream, peer);
+        Ok((http, reused))
     }
 
     pub async fn reused_http_session<P: Peer + Send + Sync + 'static>(
@@ -75,19 +62,28 @@ impl Connector {
                 .release_stream(stream, peer.reuse_hash(), idle_timeout);
         }
     }
+
+    /// Return the number of times a pooled connection was found to contain
+    /// unexpected data from the server.
+    pub fn unexpected_data_connection_count(&self) -> u64 {
+        self.transport.unexpected_data_connection_count()
+    }
+
+    /// Return a shared reference to the unexpected data connection counter for periodic metric reporting.
+    pub fn unexpected_data_connection_counter(&self) -> Arc<AtomicU64> {
+        self.transport.unexpected_data_connection_counter()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connectors::test_servers;
-    #[cfg(feature = "openssl")]
-    use crate::listeners::ALPN;
     use crate::protocols::l4::socket::SocketAddr;
     use crate::upstreams::peer::HttpPeer;
     use crate::upstreams::peer::Peer;
     use pingora_http::RequestHeader;
     use std::fmt::{Display, Formatter, Result as FmtResult};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     async fn get_http(http: &mut HttpSession, expected_status: u16) {
         let mut req = Box::new(RequestHeader::build("GET", b"/", None).unwrap());
@@ -103,12 +99,11 @@ mod tests {
     #[tokio::test]
     async fn test_connect() {
         let connector = Connector::new(None);
-        let server = test_servers::redirect_server();
-        let peer = HttpPeer::new(server.addr, false, "".into());
-        // make a new connection to the server
+        let peer = HttpPeer::new(("1.1.1.1", 80), false, "".into());
+        // make a new connection to 1.1.1.1
         let (http, reused) = connector.get_http_session(&peer).await.unwrap();
         let server_addr = http.server_addr().unwrap();
-        assert_eq!(*server_addr, SocketAddr::Inet(server.addr));
+        assert_eq!(*server_addr, "1.1.1.1:80".parse::<SocketAddr>().unwrap());
         assert!(!reused);
 
         // this http is not even used, so not be able to reuse
@@ -120,6 +115,44 @@ mod tests {
         connector.release_http_session(http, &peer, None).await;
         let (_, reused) = connector.get_http_session(&peer).await.unwrap();
         assert!(reused);
+    }
+
+    #[tokio::test]
+    async fn malformed_response_is_not_returned_to_pool() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request_byte = [0];
+            stream.read_exact(&mut request_byte).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\n\
+Transfer-Encoding: chunked\r\n\
+\r\n\
+ZZ\r\n",
+                )
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        let connector = Connector::new(None);
+        let peer = HttpPeer::new(address, false, "".into());
+        let (mut http, reused) = connector.get_http_session(&peer).await.unwrap();
+        assert!(!reused);
+
+        let request = RequestHeader::build("GET", b"/", None).unwrap();
+        http.write_request_header(Box::new(request)).await.unwrap();
+        assert!(matches!(
+            http.read_response_task().await.unwrap(),
+            crate::protocols::http::HttpTask::Header(_, false)
+        ));
+        assert!(http.read_response_task().await.is_err());
+
+        connector.release_http_session(http, &peer, None).await;
+        assert!(connector.reused_http_session(&peer).await.is_none());
+        server.abort();
     }
 
     #[cfg(unix)]
@@ -162,8 +195,7 @@ mod tests {
         }
 
         let connector = Connector::new(None);
-        let server = test_servers::redirect_server();
-        let peer = HttpPeer::new(server.addr, false, "".into());
+        let peer = HttpPeer::new(("1.1.1.1", 80), false, "".into());
         let (mut http, reused) = connector.get_http_session(&peer).await.unwrap();
         assert!(!reused);
         get_http(&mut http, 301).await;
@@ -181,17 +213,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "openssl")]
+    #[cfg(feature = "any_tls")]
     async fn test_connect_tls() {
         let connector = Connector::new(None);
-        let server = test_servers::tls_server(ALPN::H1).await;
-        let mut peer = HttpPeer::new(server.addr, true, "localhost".into());
-        peer.options.verify_cert = false;
-        peer.options.verify_hostname = false;
-        // make a new connection to the TLS server
+        let peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        // make a new connection to https://1.1.1.1
         let (http, reused) = connector.get_http_session(&peer).await.unwrap();
         let server_addr = http.server_addr().unwrap();
-        assert_eq!(*server_addr, SocketAddr::Inet(server.addr));
+        assert_eq!(*server_addr, "1.1.1.1:443".parse::<SocketAddr>().unwrap());
         assert!(!reused);
 
         // this http is not even used, so not be able to reuse

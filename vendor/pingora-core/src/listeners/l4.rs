@@ -36,7 +36,7 @@ use super::connection_filter::ConnectionFilter;
 #[cfg(feature = "connection_filter")]
 use crate::listeners::AcceptAllFilter;
 
-use crate::protocols::l4::ext::{set_dscp, set_tcp_fastopen_backlog};
+use crate::protocols::l4::ext::{set_dscp, set_recv_buf, set_snd_buf, set_tcp_fastopen_backlog};
 use crate::protocols::l4::listener::Listener;
 pub use crate::protocols::l4::stream::Stream;
 #[cfg(feature = "connection_filter")]
@@ -44,6 +44,20 @@ use crate::protocols::GetSocketDigest;
 use crate::protocols::TcpKeepalive;
 #[cfg(unix)]
 use crate::server::ListenFds;
+#[cfg(unix)]
+use std::sync::LazyLock;
+
+/// Per-address async lock map for serializing the check-bind-insert sequence
+/// in [`ListenerEndpointBuilder::listen`].
+///
+/// With `ListenFds` using a synchronous `parking_lot::Mutex`, the lock cannot
+/// be held across `bind().await`. This global map ensures that only one task at
+/// a time can be in the process of looking up, binding, and inserting a given
+/// address — preventing two concurrent callers from both seeing "not found" and
+/// racing to bind the same address.
+#[cfg(unix)]
+static BIND_LOCKS: LazyLock<flurry::HashMap<String, Arc<tokio::sync::Mutex<()>>>> =
+    LazyLock::new(flurry::HashMap::new);
 
 const TCP_LISTENER_MAX_TRY: usize = 30;
 const TCP_LISTENER_TRY_STEP: Duration = Duration::from_secs(1);
@@ -99,6 +113,12 @@ pub struct TcpSocketOptions {
     /// This is useful for load balancing across multiple worker processes.
     /// See the [man page](https://man7.org/linux/man-pages/man7/socket.7.html) for more information.
     pub so_reuseport: Option<bool>,
+    /// Set the send buffer size for accepted connections. See
+    /// [SO_SNDBUF](https://man7.org/linux/man-pages/man7/socket.7.html).
+    pub tcp_snd_buf: Option<usize>,
+    /// Set the receive buffer size for accepted connections. See
+    /// [SO_RCVBUF](https://man7.org/linux/man-pages/man7/socket.7.html).
+    pub tcp_recv_buf: Option<usize>,
     // TODO: allow configuring reuseaddr, backlog, etc. from here?
 }
 
@@ -268,16 +288,6 @@ async fn bind_tcp(addr: &str, opt: Option<TcpSocketOptions>) -> Result<Listener>
     }
 }
 
-/// Linux hands the listener's `TCP_NODELAY` to every accepted socket, which saves a `setsockopt` per connection.
-fn set_listener_nodelay(listener: &Listener) -> Result<()> {
-    if let Listener::Tcp(l) = listener {
-        socket2::SockRef::from(l)
-            .set_tcp_nodelay(true)
-            .or_err(BindError, "failed to set TCP_NODELAY on the listener")?;
-    }
-    Ok(())
-}
-
 async fn bind(addr: &ServerAddress) -> Result<Listener> {
     match addr {
         #[cfg(unix)]
@@ -330,22 +340,40 @@ impl ListenerEndpointBuilder {
         let listener = if let Some(fds_table) = fds {
             let addr_str = listen_addr.as_ref();
 
-            // consider make this mutex std::sync::Mutex or OnceCell
-            let mut table = fds_table.lock().await;
+            // Acquire a per-address async lock so that only one task at a
+            // time can go through the check-bind-insert sequence for a given
+            // address. The flurry guard is dropped before the await so its
+            // !Send pointer does not cross an await point.
+            let addr_lock = {
+                let guard = BIND_LOCKS.pin();
+                match guard.get(addr_str) {
+                    Some(existing) => existing.clone(),
+                    None => {
+                        let new_lock = Arc::new(tokio::sync::Mutex::new(()));
+                        match guard.try_insert(addr_str.to_string(), new_lock.clone()) {
+                            Ok(inserted) => inserted.clone(),
+                            Err(e) => e.current.clone(),
+                        }
+                    }
+                }
+            };
+            let _guard = addr_lock.lock().await;
 
-            if let Some(fd) = table.get(addr_str) {
-                from_raw_fd(&listen_addr, *fd)?
+            let existing_fd = fds_table.lock().get(addr_str).copied();
+
+            if let Some(fd) = existing_fd {
+                from_raw_fd(&listen_addr, fd)?
             } else {
-                // not found
                 let listener = bind(&listen_addr).await?;
-                table.add(addr_str.to_string(), listener.as_raw_fd());
+                fds_table
+                    .lock()
+                    .add(addr_str.to_string(), listener.as_raw_fd());
                 listener
             }
         } else {
-            // not found, no fd table
+            // no fd table
             bind(&listen_addr).await?
         };
-        set_listener_nodelay(&listener)?;
 
         #[cfg(feature = "connection_filter")]
         let connection_filter = self
@@ -367,7 +395,6 @@ impl ListenerEndpointBuilder {
             .expect("Tried to listen with no addr specified");
 
         let listener = bind(&listen_addr).await?;
-        set_listener_nodelay(&listener)?;
 
         #[cfg(feature = "connection_filter")]
         let connection_filter = self
@@ -392,18 +419,18 @@ impl ListenerEndpoint {
         self.listen_addr.as_ref()
     }
 
-    /// The address a TCP endpoint listens on, for tests that bind port 0.
+    /// Return the local address this endpoint is bound to.
+    ///
+    /// Useful when the listener was bound to port 0 (OS-assigned) to
+    /// discover the actual port.
     #[cfg(test)]
-    pub(crate) fn tcp_addr(&self) -> std::net::SocketAddr {
-        match self.listener.as_ref() {
-            Listener::Tcp(tcp) => tcp.local_addr().unwrap(),
-            #[cfg(unix)]
-            Listener::Unix(_) => panic!("a TCP listener"),
-        }
+    pub fn local_addr(&self) -> Option<std::net::SocketAddr> {
+        self.listener.local_addr()
     }
 
     fn apply_stream_settings(&self, stream: &mut Stream) -> Result<()> {
-        // `TCP_NODELAY` is inherited from the listening socket (see `set_listener_nodelay`).
+        // settings are applied based on whether the underlying stream supports it
+        stream.set_nodelay()?;
         let Some(op) = self.listen_addr.tcp_sock_opts() else {
             return Ok(());
         };
@@ -415,6 +442,18 @@ impl ListenerEndpoint {
             set_dscp(stream.as_raw_fd(), dscp)?;
             #[cfg(windows)]
             set_dscp(stream.as_raw_socket(), dscp)?;
+        }
+        if let Some(snd_buf) = op.tcp_snd_buf {
+            #[cfg(unix)]
+            set_snd_buf(stream.as_raw_fd(), snd_buf)?;
+            #[cfg(windows)]
+            set_snd_buf(stream.as_raw_socket(), snd_buf)?;
+        }
+        if let Some(recv_buf) = op.tcp_recv_buf {
+            #[cfg(unix)]
+            set_recv_buf(stream.as_raw_fd(), recv_buf)?;
+            #[cfg(windows)]
+            set_recv_buf(stream.as_raw_socket(), recv_buf)?;
         }
         Ok(())
     }
@@ -483,7 +522,8 @@ mod test {
         #[cfg(windows)]
         let listener = builder.listen().await.unwrap();
 
-        let addr = listener.tcp_addr();
+        let addr = listener.local_addr().unwrap();
+
         tokio::spawn(async move {
             // just try to accept once
             listener.accept().await.unwrap();
@@ -493,22 +533,6 @@ mod test {
             .expect("can connect to TCP listener");
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn accepted_tcp_streams_inherit_nodelay() {
-        let mut builder = ListenerEndpoint::builder();
-        builder.listen_addr(ServerAddress::Tcp("127.0.0.1:0".into(), None));
-        let endpoint = builder.listen(None).await.unwrap();
-        let Listener::Tcp(tcp) = endpoint.listener.as_ref() else {
-            panic!("a TCP listener");
-        };
-        let addr = tcp.local_addr().unwrap();
-        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (accepted, _) = tcp.accept().await.unwrap();
-        assert!(accepted.nodelay().unwrap());
-        drop(client);
-    }
-
     #[tokio::test]
     async fn test_listen_tcp_ipv6_only() {
         let sock_opt = Some(TcpSocketOptions {
@@ -516,23 +540,9 @@ mod test {
             ..Default::default()
         });
 
-        if std::net::TcpListener::bind("[::1]:0").is_err() {
-            eprintln!("skipped: the host has no IPv6 loopback");
-            return;
-        }
-
-        // The IPv4 side of the port is held by a socket that does not listen, so connecting to it is refused,
-        // and an IPv6-only listener can only bind the same port if it leaves IPv4 alone.
-        let v4 = tokio::net::TcpSocket::new_v4().unwrap();
-        v4.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-        let v4_addr = v4.local_addr().unwrap();
-
         let mut builder = ListenerEndpoint::builder();
 
-        builder.listen_addr(ServerAddress::Tcp(
-            format!("[::]:{}", v4_addr.port()),
-            sock_opt,
-        ));
+        builder.listen_addr(ServerAddress::Tcp("[::]:0".into(), sock_opt));
 
         #[cfg(unix)]
         let listener = builder.listen(None).await.unwrap();
@@ -540,14 +550,17 @@ mod test {
         #[cfg(windows)]
         let listener = builder.listen().await.unwrap();
 
+        let port = listener.local_addr().unwrap().port();
+
         tokio::spawn(async move {
-            // just try to accept once
+            // just try to accept twice
+            listener.accept().await.unwrap();
             listener.accept().await.unwrap();
         });
-        tokio::net::TcpStream::connect(v4_addr)
+        tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
             .await
             .expect_err("cannot connect to v4 addr");
-        tokio::net::TcpStream::connect(("::1", v4_addr.port()))
+        tokio::net::TcpStream::connect(format!("[::1]:{port}"))
             .await
             .expect("can connect to v6 addr");
     }
@@ -555,7 +568,7 @@ mod test {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_listen_uds() {
-        let addr = &crate::connectors::test_utils::unique_uds_path("listen_uds");
+        let addr = "/tmp/test_listen_uds";
 
         let mut builder = ListenerEndpoint::builder();
 
@@ -570,12 +583,12 @@ mod test {
         tokio::net::UnixStream::connect(addr)
             .await
             .expect("can connect to UDS listener");
-        std::fs::remove_file(addr).unwrap();
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn test_tcp_so_reuseport() {
+        let addr = "127.0.0.1:7201";
         let sock_opt = TcpSocketOptions {
             so_reuseport: Some(true),
             ..Default::default()
@@ -583,26 +596,23 @@ mod test {
 
         // Create first listener with SO_REUSEPORT
         let mut builder1 = ListenerEndpoint::builder();
-        builder1.listen_addr(ServerAddress::Tcp(
-            "127.0.0.1:0".into(),
-            Some(sock_opt.clone()),
-        ));
+        builder1.listen_addr(ServerAddress::Tcp(addr.into(), Some(sock_opt.clone())));
         let listener1 = builder1.listen(None).await.unwrap();
-        let addr = listener1.tcp_addr().to_string();
 
         // Create second listener with the same address and SO_REUSEPORT
         // This should succeed because SO_REUSEPORT is enabled
         let mut builder2 = ListenerEndpoint::builder();
-        builder2.listen_addr(ServerAddress::Tcp(addr.clone(), Some(sock_opt)));
+        builder2.listen_addr(ServerAddress::Tcp(addr.into(), Some(sock_opt)));
         let listener2 = builder2.listen(None).await.unwrap();
 
         // Both listeners should be able to bind to the same address
+        assert_eq!(listener1.as_str(), addr);
         assert_eq!(listener2.as_str(), addr);
-        assert_eq!(listener2.tcp_addr(), listener1.tcp_addr());
     }
 
     #[tokio::test]
     async fn test_tcp_so_reuseport_false() {
+        let addr = "127.0.0.1:7202";
         let sock_opt_no_reuseport = TcpSocketOptions {
             so_reuseport: Some(false), // Explicitly disable SO_REUSEPORT
             ..Default::default()
@@ -611,19 +621,15 @@ mod test {
         // Create first listener without SO_REUSEPORT
         let mut builder1 = ListenerEndpoint::builder();
         builder1.listen_addr(ServerAddress::Tcp(
-            "127.0.0.1:0".into(),
+            addr.into(),
             Some(sock_opt_no_reuseport.clone()),
         ));
         let listener1 = builder1.listen(None).await.unwrap();
-        let addr = listener1.tcp_addr().to_string();
 
         // Try to create second listener with the same address and no SO_REUSEPORT
         // This should fail with "address already in use"
         let mut builder2 = ListenerEndpoint::builder();
-        builder2.listen_addr(ServerAddress::Tcp(
-            addr.clone(),
-            Some(sock_opt_no_reuseport),
-        ));
+        builder2.listen_addr(ServerAddress::Tcp(addr.into(), Some(sock_opt_no_reuseport)));
         let result = builder2.listen(None).await;
 
         // The second bind should fail
@@ -636,7 +642,7 @@ mod test {
         );
 
         // Verify the first listener still works
-        assert_eq!(listener1.tcp_addr().to_string(), addr);
+        assert_eq!(listener1.as_str(), addr);
     }
 
     #[cfg(feature = "connection_filter")]
@@ -656,7 +662,7 @@ mod test {
         impl ConnectionFilter for CountingFilter {
             async fn should_accept(&self, _addr: Option<&SocketAddr>) -> bool {
                 let count = self.accept_count.fetch_add(1, Ordering::SeqCst);
-                if count.is_multiple_of(2) {
+                if count % 2 == 0 {
                     true
                 } else {
                     self.reject_count.fetch_add(1, Ordering::SeqCst);
@@ -665,6 +671,7 @@ mod test {
             }
         }
 
+        let addr = "127.0.0.1:7300";
         let accept_count = Arc::new(AtomicUsize::new(0));
         let reject_count = Arc::new(AtomicUsize::new(0));
 
@@ -675,7 +682,7 @@ mod test {
 
         let mut builder = ListenerEndpoint::builder();
         builder
-            .listen_addr(ServerAddress::Tcp("127.0.0.1:0".into(), None))
+            .listen_addr(ServerAddress::Tcp(addr.into(), None))
             .connection_filter(filter);
 
         #[cfg(unix)]
@@ -683,25 +690,19 @@ mod test {
         #[cfg(windows)]
         let listener = builder.listen().await.unwrap();
 
-        let addr = listener.tcp_addr();
         let listener_clone = listener.clone();
         tokio::spawn(async move {
             let _stream1 = listener_clone.accept().await.unwrap();
             let _stream2 = listener_clone.accept().await.unwrap();
         });
 
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
         let _conn1 = tokio::net::TcpStream::connect(addr).await.unwrap();
         let _conn2 = tokio::net::TcpStream::connect(addr).await.unwrap();
         let _conn3 = tokio::net::TcpStream::connect(addr).await.unwrap();
 
-        // the filter runs on the accepting task, so wait until it has seen all three connections
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while accept_count.load(Ordering::SeqCst) < 3 {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         assert_eq!(accept_count.load(Ordering::SeqCst), 3);
         assert_eq!(reject_count.load(Ordering::SeqCst), 1);
@@ -727,11 +728,12 @@ mod test {
             }
         }
 
+        let addr = "127.0.0.1:7301";
         let reject_count = Arc::new(AtomicUsize::new(0));
 
         let mut builder = ListenerEndpoint::builder();
         builder
-            .listen_addr(ServerAddress::Tcp("127.0.0.1:0".into(), None))
+            .listen_addr(ServerAddress::Tcp(addr.into(), None))
             .connection_filter(Arc::new(RejectAllFilter {
                 reject_count: reject_count.clone(),
             }));
@@ -741,12 +743,13 @@ mod test {
         #[cfg(windows)]
         let listener = builder.listen().await.unwrap();
 
-        let addr = listener.tcp_addr();
         let listener_clone = listener.clone();
         let _accept_handle = tokio::spawn(async move {
             // This will never return since all connections are rejected
             let _ = listener_clone.accept().await;
         });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         let mut handles = vec![];
         for _ in 0..3 {

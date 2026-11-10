@@ -15,7 +15,6 @@
 //! Transport layer protocol implementation
 
 pub mod ext;
-mod lazy_read;
 pub mod listener;
 pub mod socket;
 pub mod stream;

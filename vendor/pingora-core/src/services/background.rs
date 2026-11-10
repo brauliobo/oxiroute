@@ -98,9 +98,7 @@ where
         _listeners_per_fd: usize,
         ready: ServiceReadyNotifier,
     ) {
-        self.task
-            .start_with_ready_notifier(shutdown, ready.require_explicit())
-            .await;
+        self.task.start_with_ready_notifier(shutdown, ready).await;
     }
 
     fn name(&self) -> &str {
@@ -109,6 +107,10 @@ where
 
     fn threads(&self) -> Option<usize> {
         self.threads
+    }
+
+    fn listen_addresses(&self) -> Option<Vec<String>> {
+        Some(Vec::new())
     }
 }
 

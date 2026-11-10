@@ -95,14 +95,12 @@ pub mod apps;
 pub mod connectors;
 pub mod listeners;
 pub mod modules;
+pub(crate) mod offload;
 pub mod protocols;
 pub mod server;
 pub mod services;
 pub mod upstreams;
 pub mod utils;
-
-#[cfg(all(test, feature = "openssl"))]
-mod test_tls;
 
 pub use pingora_error::{ErrorType::*, *};
 

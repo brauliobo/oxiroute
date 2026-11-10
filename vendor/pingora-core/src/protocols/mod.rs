@@ -52,31 +52,6 @@ pub trait UniqueID {
     fn id(&self) -> UniqueIDType;
 }
 
-/// Application-owned admission and state retained for one physical upstream connection.
-#[async_trait]
-pub trait ConnectionLifetime: Debug + Send + Sync + 'static {
-    /// Attempt to reserve capacity for a new physical connection.
-    fn try_acquire(&self) -> crate::Result<bool> {
-        Ok(true)
-    }
-
-    /// Return a version that changes when capacity or a reusable connection becomes available.
-    fn capacity_generation(&self) -> u64 {
-        0
-    }
-
-    /// Wait until connection acquisition should retry.
-    async fn wait_for_capacity(&self, _generation: u64) -> crate::Result<()> {
-        Ok(())
-    }
-
-    /// Notify capacity waiters that this physical connection can serve another request.
-    fn notify_reusable(&self) {}
-
-    /// Notify that this idle pooled connection was taken to serve a request.
-    fn notify_in_use(&self) {}
-}
-
 /// Interface to get TLS info
 pub trait Ssl {
     /// Return the TLS info if the connection is over TLS
@@ -103,15 +78,6 @@ pub trait Peek {
     /// Return `false` if peeking is not supported/allowed.
     async fn try_peek(&mut self, _buf: &mut [u8]) -> std::io::Result<bool> {
         Ok(false)
-    }
-
-    /// Whether a read could make progress, without reading. `Ready` also means "unknown";
-    /// `Pending` means nothing can be read and the waker is registered for when something can.
-    fn poll_read_ready(
-        &mut self,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::Poll::Ready(Ok(()))
     }
 }
 
@@ -324,26 +290,6 @@ use std::{net::SocketAddr as InetSocketAddr, path::Path};
 
 use crate::protocols::tls::TlsRef;
 
-#[cfg(all(test, unix))]
-thread_local! {
-    static PEER_IDENTITY_SYSCALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(all(test, unix, feature = "any_tls"))]
-pub(crate) fn reset_peer_identity_syscalls() {
-    PEER_IDENTITY_SYSCALLS.set(0);
-}
-
-#[cfg(all(test, unix, feature = "any_tls"))]
-pub(crate) fn peer_identity_syscalls() -> usize {
-    PEER_IDENTITY_SYSCALLS.get()
-}
-
-#[cfg(all(test, unix))]
-fn record_peer_identity_syscall() {
-    PEER_IDENTITY_SYSCALLS.set(PEER_IDENTITY_SYSCALLS.get() + 1);
-}
-
 #[cfg(unix)]
 impl ConnFdReusable for SocketAddr {
     fn check_fd_match<V: AsRawFd>(&self, fd: V) -> bool {
@@ -370,8 +316,6 @@ impl ConnSockReusable for SocketAddr {
 impl ConnFdReusable for Path {
     fn check_fd_match<V: AsRawFd>(&self, fd: V) -> bool {
         let fd = fd.as_raw_fd();
-        #[cfg(test)]
-        record_peer_identity_syscall();
         match getpeername::<UnixAddr>(fd) {
             Ok(peer) => match UnixAddr::new(self) {
                 Ok(addr) => {
@@ -400,8 +344,6 @@ impl ConnFdReusable for Path {
 impl ConnFdReusable for InetSocketAddr {
     fn check_fd_match<V: AsRawFd>(&self, fd: V) -> bool {
         let fd = fd.as_raw_fd();
-        #[cfg(test)]
-        record_peer_identity_syscall();
         match getpeername::<SockaddrStorage>(fd) {
             Ok(peer) => {
                 const ZERO: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));

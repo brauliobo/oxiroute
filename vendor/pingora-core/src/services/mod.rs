@@ -34,6 +34,7 @@ use tokio::sync::watch;
 
 #[cfg(unix)]
 use crate::server::ListenFds;
+use crate::server::RuntimeOpts;
 use crate::server::ShutdownWatch;
 
 pub mod background;
@@ -60,18 +61,14 @@ pub mod listening;
 /// ```
 pub struct ServiceReadyNotifier {
     sender: watch::Sender<bool>,
-    notify_on_drop: bool,
-    notified: bool,
-    ready_callback: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 impl Drop for ServiceReadyNotifier {
     /// In the event that the notifier is dropped before notifying that the
-    /// service is ready, legacy services signal ready unless explicit notification was required.
+    /// service is ready, we opt to signal ready anyway
     fn drop(&mut self) {
-        if self.notify_on_drop && !self.notified {
-            self.signal_ready();
-        }
+        // Ignore errors - if there are no receivers, that's fine
+        let _ = self.sender.send(true);
     }
 }
 
@@ -80,45 +77,15 @@ impl ServiceReadyNotifier {
     /// You will not need to create one of these for normal usage, but being
     /// able to is useful for testing.
     pub fn new(sender: watch::Sender<bool>) -> Self {
-        Self {
-            sender,
-            notify_on_drop: true,
-            notified: false,
-            ready_callback: None,
-        }
-    }
-
-    /// Requires the service to notify readiness explicitly.
-    #[must_use]
-    pub fn require_explicit(mut self) -> Self {
-        self.notify_on_drop = false;
-        self
-    }
-
-    /// Runs `callback` immediately before explicit readiness is published.
-    #[must_use]
-    pub fn with_ready_callback(mut self, callback: impl FnOnce() + Send + 'static) -> Self {
-        self.ready_callback = Some(Box::new(callback));
-        self
+        Self { sender }
     }
 
     /// Notifies dependent services that this service is ready.
     ///
     /// Consumes the notifier to ensure ready is only signaled once.
-    pub fn notify_ready(mut self) {
-        self.signal_ready();
-    }
-
-    fn signal_ready(&mut self) {
-        if self.notified {
-            return;
-        }
-        if let Some(callback) = self.ready_callback.take() {
-            callback();
-        }
-        self.notified = true;
-        // Ignore errors - if there are no receivers, that's fine.
-        let _ = self.sender.send(true);
+    pub fn notify_ready(self) {
+        // Dropping the notifier will signal that the service is ready
+        drop(self);
     }
 }
 
@@ -355,6 +322,15 @@ pub trait ServiceWithDependents: Send + Sync {
         None
     }
 
+    /// Override the runtime options for this service.
+    ///
+    /// Returning [`None`] uses the global runtime options derived from
+    /// [`ServerConf`](crate::server::configuration::ServerConf).
+    fn runtime_opts_override(&self, global: &RuntimeOpts) -> Option<RuntimeOpts> {
+        let _ = global;
+        None
+    }
+
     /// This is currently called to inform the service about the delay it
     /// experienced from between waiting on its dependencies. Default behavior
     /// is to log the time.
@@ -370,6 +346,11 @@ pub trait ServiceWithDependents: Send + Sync {
             time_waited.as_millis()
         );
     }
+
+    /// See [`Service::listen_addresses`].
+    fn listen_addresses(&self) -> Option<Vec<String>> {
+        None
+    }
 }
 
 #[async_trait]
@@ -384,13 +365,15 @@ where
         listeners_per_fd: usize,
         ready_notifier: ServiceReadyNotifier,
     ) {
-        S::start_service_with_ready_notifier(
+        // Signal ready immediately
+        ready_notifier.notify_ready();
+
+        S::start_service(
             self,
             #[cfg(unix)]
             fds,
             shutdown,
             listeners_per_fd,
-            ready_notifier.require_explicit(),
         )
         .await
     }
@@ -403,36 +386,22 @@ where
         S::threads(self)
     }
 
+    fn runtime_opts_override(&self, global: &RuntimeOpts) -> Option<RuntimeOpts> {
+        S::runtime_opts_override(self, global)
+    }
+
     fn on_startup_delay(&self, time_waited: Duration) {
         S::on_startup_delay(self, time_waited)
+    }
+
+    fn listen_addresses(&self) -> Option<Vec<String>> {
+        S::listen_addresses(self)
     }
 }
 
 /// The service interface
 #[async_trait]
 pub trait Service: Sync + Send {
-    /// Starts the service with control over when readiness is published.
-    ///
-    /// The default preserves legacy behavior by publishing readiness before entering
-    /// [`Self::start_service`]. Services with asynchronous initialization should override this
-    /// method and consume `ready_notifier` only after initialization succeeds.
-    async fn start_service_with_ready_notifier(
-        &mut self,
-        #[cfg(unix)] fds: Option<ListenFds>,
-        shutdown: ShutdownWatch,
-        listeners_per_fd: usize,
-        ready_notifier: ServiceReadyNotifier,
-    ) {
-        ready_notifier.notify_ready();
-        self.start_service(
-            #[cfg(unix)]
-            fds,
-            shutdown,
-            listeners_per_fd,
-        )
-        .await;
-    }
-
     /// Start the service without readiness notification.
     ///
     /// This is a simpler version of [`Self::start_service()`] for services that don't need
@@ -466,6 +435,15 @@ pub trait Service: Sync + Send {
         None
     }
 
+    /// Override the runtime options for this service.
+    ///
+    /// Returning [`None`] uses the global runtime options derived from
+    /// [`ServerConf`](crate::server::configuration::ServerConf).
+    fn runtime_opts_override(&self, global: &RuntimeOpts) -> Option<RuntimeOpts> {
+        let _ = global;
+        None
+    }
+
     /// This is currently called to inform the service about the delay it
     /// experienced from between waiting on its dependencies. Default behavior
     /// is to log the time.
@@ -481,30 +459,19 @@ pub trait Service: Sync + Send {
             time_waited.as_millis()
         );
     }
+
+    /// The bind addresses of the listening sockets this service owns.
+    ///
+    /// Addresses must match the keys used for transferred listening fds. Return [`None`] (the
+    /// default) if the service may consume fds without declaring every key; this disables cleanup.
+    fn listen_addresses(&self) -> Option<Vec<String>> {
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn explicit_readiness_requires_notification_and_runs_callback_once() {
-        let (sender, receiver) = watch::channel(false);
-        drop(ServiceReadyNotifier::new(sender).require_explicit());
-        assert!(!*receiver.borrow());
-
-        let (sender, receiver) = watch::channel(false);
-        let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let callback_count = Arc::clone(&callbacks);
-        ServiceReadyNotifier::new(sender)
-            .require_explicit()
-            .with_ready_callback(move || {
-                callback_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            })
-            .notify_ready();
-        assert!(*receiver.borrow());
-        assert_eq!(callbacks.load(std::sync::atomic::Ordering::Relaxed), 1);
-    }
 
     #[test]
     fn test_service_handle_creation() {

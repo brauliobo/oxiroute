@@ -14,7 +14,7 @@
 
 //! TLS server specific implementation
 
-use crate::listeners::TlsAcceptCallbacks;
+use crate::listeners::TlsAccept;
 use crate::protocols::tls::SslStream;
 use crate::protocols::{Shutdown, IO};
 use crate::tls::ext;
@@ -32,11 +32,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 pub fn prepare_tls_stream<S: IO>(ssl_acceptor: &SslAcceptor, io: S) -> Result<SslStream<S>> {
     let ssl = ssl_from_acceptor(ssl_acceptor)
         .explain_err(TLSHandshakeFailure, |e| format!("ssl_acceptor error: {e}"))?;
-    let mut stream = SslStream::new(ssl, io)
-        .explain_err(TLSHandshakeFailure, |e| format!("ssl stream error: {e}"))?;
-    stream.coalesce_writes();
-    stream.probe_reads(S::poll_read_ready);
-    Ok(stream)
+    SslStream::new(ssl, io).explain_err(TLSHandshakeFailure, |e| format!("ssl stream error: {e}"))
 }
 
 /// Perform TLS handshake for the given connection with the given configuration
@@ -53,7 +49,7 @@ pub async fn handshake<S: IO>(ssl_acceptor: &SslAcceptor, io: S) -> Result<SslSt
 pub async fn handshake_with_callback<S: IO>(
     ssl_acceptor: &SslAcceptor,
     io: S,
-    callbacks: &TlsAcceptCallbacks,
+    callbacks: &(dyn TlsAccept + Send + Sync),
 ) -> Result<SslStream<S>> {
     let mut tls_stream = prepare_tls_stream(ssl_acceptor, io)?;
     let done = Pin::new(&mut tls_stream)
@@ -170,17 +166,13 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "openssl")]
+    #[cfg(feature = "any_tls")]
     async fn test_async_cert() {
-        let test_cert = crate::test_tls::TestCert::new();
         let acceptor = ssl::SslAcceptor::mozilla_intermediate_v5(ssl::SslMethod::tls())
             .unwrap()
             .build();
 
-        struct Callback {
-            cert: String,
-            key: String,
-        }
+        struct Callback;
         #[async_trait]
         impl TlsAccept for Callback {
             async fn certificate_callback(&self, ssl: &mut TlsRef) -> () {
@@ -188,37 +180,37 @@ mod tests {
                     ssl.servername(ssl::NameType::HOST_NAME).unwrap(),
                     "pingora.org"
                 );
-                let cert_bytes = std::fs::read(&self.cert).unwrap();
+                let cert = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
+                let key = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
+
+                let cert_bytes = std::fs::read(cert).unwrap();
                 let cert = crate::tls::x509::X509::from_pem(&cert_bytes).unwrap();
 
-                let key_bytes = std::fs::read(&self.key).unwrap();
+                let key_bytes = std::fs::read(key).unwrap();
                 let key = crate::tls::pkey::PKey::private_key_from_pem(&key_bytes).unwrap();
                 ext::ssl_use_certificate(ssl, &cert).unwrap();
                 ext::ssl_use_private_key(ssl, &key).unwrap();
             }
         }
 
-        let cb: TlsAcceptCallbacks = Box::new(Callback {
-            cert: test_cert.cert_path.clone(),
-            key: test_cert.key_path.clone(),
-        });
+        let cb: TlsAcceptCallbacks = Box::new(Callback);
 
         let (client, server) = tokio::io::duplex(1024);
 
         tokio::spawn(client_task(client));
 
-        handshake_with_callback(&acceptor, server, &cb)
+        handshake_with_callback(&acceptor, server, cb.as_ref())
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    #[cfg(feature = "openssl")]
+    #[cfg(feature = "openssl_derived")]
     async fn test_handshake_complete_callback() {
         use crate::tls::ssl::SslFiletype;
 
-        let test_cert = crate::test_tls::TestCert::new();
-        let (cert, key) = (&test_cert.cert_path, &test_cert.key_path);
+        let cert = format!("{}/tests/keys/server.crt", env!("CARGO_MANIFEST_DIR"));
+        let key = format!("{}/tests/keys/key.pem", env!("CARGO_MANIFEST_DIR"));
 
         let acceptor = {
             let mut builder =
@@ -247,7 +239,7 @@ mod tests {
 
         tokio::spawn(client_task(client));
 
-        let stream = handshake_with_callback(&acceptor, server, &cb)
+        let stream = handshake_with_callback(&acceptor, server, cb.as_ref())
             .await
             .unwrap();
         let ssl_digest = stream.ssl_digest().unwrap();

@@ -14,19 +14,10 @@
 
 use bytes::{Bytes, BytesMut};
 
-/// Chunks of at least this many bytes are kept as the (reference counted) buffer they were read into; shorter ones are
-/// copied into a joined tail. A chunk handed over from a socket read keeps its whole read buffer alive, so keeping a
-/// short one would pin many times its size.
-const SHARE_MIN_BYTES: usize = 64 * 1024;
-
 /// A buffer with size limit. When the total amount of data written to the buffer is below the limit
-/// all the data will be held in the buffer. Otherwise, the buffer will report to be truncated and let go of its data.
-///
-/// Large chunks are held as written, without a copy; reading back more than one piece joins them.
+/// all the data will be held in the buffer. Otherwise, the buffer will report to be truncated.
 pub struct FixedBuffer {
-    shared: Vec<Bytes>,
-    tail: BytesMut,
-    len: usize,
+    buffer: BytesMut,
     capacity: usize,
     truncated: bool,
 }
@@ -34,62 +25,43 @@ pub struct FixedBuffer {
 impl FixedBuffer {
     pub fn new(capacity: usize) -> Self {
         FixedBuffer {
-            shared: Vec::new(),
-            tail: BytesMut::new(),
-            len: 0,
+            buffer: BytesMut::new(),
             capacity,
             truncated: false,
         }
     }
 
+    // TODO: maybe store a Vec of Bytes for zero-copy
     pub fn write_to_buffer(&mut self, data: &Bytes) {
-        if self.truncated || self.len + data.len() > self.capacity {
-            self.truncated = true;
-            self.clear_data();
+        if self.truncated {
             return;
         }
-        self.len += data.len();
-        if data.len() >= SHARE_MIN_BYTES {
-            if !self.tail.is_empty() {
-                self.shared.push(self.tail.split().freeze());
-            }
-            self.shared.push(data.clone());
-        } else {
-            self.tail.extend_from_slice(data);
-        }
-    }
 
-    fn clear_data(&mut self) {
-        self.len = 0;
-        self.shared = Vec::new();
-        self.tail = BytesMut::new();
+        if self.buffer.len() + data.len() <= self.capacity {
+            self.buffer.extend_from_slice(data);
+        } else {
+            // Buffered data is no longer usable for a retry, so release its allocation.
+            self.buffer = BytesMut::new();
+            self.truncated = true;
+        }
     }
 
     pub fn clear(&mut self) {
         self.truncated = false;
-        self.len = 0;
-        self.shared.clear();
-        self.tail.clear();
+        self.buffer.clear();
     }
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.buffer.len() == 0
     }
     pub fn is_truncated(&self) -> bool {
         self.truncated
     }
     pub fn get_buffer(&self) -> Option<Bytes> {
-        match (self.shared.as_slice(), self.tail.is_empty()) {
-            ([], true) => None,
-            ([], false) => Some(self.tail.clone().freeze()),
-            ([chunk], true) => Some(chunk.clone()),
-            (shared, _) => {
-                let mut joined = BytesMut::with_capacity(self.len);
-                shared
-                    .iter()
-                    .for_each(|chunk| joined.extend_from_slice(chunk));
-                joined.extend_from_slice(&self.tail);
-                Some(joined.freeze())
-            }
+        // TODO: return None if truncated?
+        if !self.is_empty() {
+            Some(self.buffer.clone().freeze())
+        } else {
+            None
         }
     }
 }
@@ -99,36 +71,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn small_chunks_are_joined_in_order_and_a_large_chunk_is_shared() {
-        let mut buffer = FixedBuffer::new(4 * SHARE_MIN_BYTES);
-        assert!(buffer.get_buffer().is_none());
-        buffer.write_to_buffer(&Bytes::from_static(b"abc"));
-        buffer.write_to_buffer(&Bytes::new());
-        buffer.write_to_buffer(&Bytes::from_static(b"def"));
-        assert_eq!(&buffer.get_buffer().unwrap()[..], b"abcdef");
-        assert!(!buffer.is_truncated() && !buffer.is_empty());
-
-        buffer.clear();
-        let large = Bytes::from(vec![b'x'; SHARE_MIN_BYTES]);
-        buffer.write_to_buffer(&large);
-        assert_eq!(buffer.get_buffer().unwrap().as_ptr(), large.as_ptr());
-        buffer.write_to_buffer(&Bytes::from_static(b"yz"));
-        let joined = buffer.get_buffer().unwrap();
-        assert_eq!(joined.len(), SHARE_MIN_BYTES + 2);
-        assert_eq!(&joined[SHARE_MIN_BYTES - 1..], b"xyz");
-    }
-
-    #[test]
-    fn a_chunk_over_the_capacity_truncates_and_releases_the_data() {
+    fn releases_storage_when_truncated() {
         let mut buffer = FixedBuffer::new(4);
-        buffer.write_to_buffer(&Bytes::from_static(b"abc"));
-        buffer.write_to_buffer(&Bytes::from_static(b"de"));
-        assert!(buffer.is_truncated() && buffer.is_empty());
-        buffer.write_to_buffer(&Bytes::from_static(b"a"));
+        buffer.write_to_buffer(&Bytes::from_static(b"1234"));
+        assert!(buffer.buffer.capacity() >= 4);
+
+        buffer.write_to_buffer(&Bytes::from_static(b"5"));
+
         assert!(buffer.is_truncated());
-        buffer.clear();
-        buffer.write_to_buffer(&Bytes::from_static(b"abcd"));
-        assert!(!buffer.is_truncated());
-        assert_eq!(&buffer.get_buffer().unwrap()[..], b"abcd");
+        assert_eq!(buffer.buffer.capacity(), 0);
+        assert!(buffer.get_buffer().is_none());
     }
 }
