@@ -38,6 +38,7 @@ local-ip-address.workspace = true
 notify.workspace = true
 openssl.workspace = true
 oxiroute-acme = { path = "../oxiroute-acme" }
+oxiroute-aged-executor = { path = "../oxiroute-aged-executor" }
 oxiroute-config = { path = "../oxiroute-config" }
 oxiroute-config-source = { path = "../oxiroute-config-source" }
 oxiroute-cache = { path = "../oxiroute-cache" }

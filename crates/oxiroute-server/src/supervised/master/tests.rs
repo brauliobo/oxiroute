@@ -512,6 +512,8 @@ fn the_retiring_generation_sets_its_own_drain_window() {
 
     let plain = validated(&ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         ..config()
     });

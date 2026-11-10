@@ -11,6 +11,8 @@ pub(super) fn management(address: SocketAddr) -> Management {
 pub(super) fn management_config_only(address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         management: Some(management(address)),
         ..empty_config()
@@ -24,6 +26,8 @@ pub(super) fn http_config(
 ) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {
@@ -69,6 +73,8 @@ pub(super) fn forward_h2_config(
 ) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         management: Some(management(management_address)),
         certificates: vec![Certificate {
@@ -136,6 +142,8 @@ pub(super) fn tcp_config(
 ) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {
@@ -186,6 +194,8 @@ pub(super) fn rtmp_config(
 ) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         management: Some(management(management_address)),
         listeners: vec![Listener {

@@ -81,6 +81,13 @@ pub struct ServerConf {
     /// Requires building with `--cfg tokio_unstable`. Ignored when
     /// [`Self::work_stealing`] is disabled.
     pub runtime_enable_alt_timer: bool,
+    /// With `work_stealing` off: serve each worker's connections newest first, and the oldest first once it has
+    /// waited `connection_age_ms`, or a few passes over the ready connections when that is absent. Off keeps Tokio's
+    /// first-in first-out order.
+    #[serde(default)]
+    pub aged_connections: bool,
+    #[serde(default)]
+    pub connection_age_ms: Option<u64>,
     /// The path to CA file the SSL library should use. If empty, the default trust store location
     /// defined by the SSL library will be used.
     pub ca_file: Option<String>,
@@ -237,6 +244,8 @@ impl Default for ServerConf {
             listener_tasks_per_fd: 1,
             work_stealing: true,
             runtime_enable_alt_timer: false,
+            aged_connections: false,
+            connection_age_ms: None,
             upstream_keepalive_pool_size: 128,
             upstream_connect_offload_threadpools: None,
             upstream_connect_offload_thread_per_pool: None,
@@ -428,6 +437,10 @@ impl ServerConf {
                 poll_time_histogram_buckets: self.runtime_metrics_poll_time_histogram_buckets,
             },
             enable_alt_timer: self.runtime_enable_alt_timer,
+            connection_age: self.aged_connections.then(|| match self.connection_age_ms {
+                Some(ms) => pingora_runtime::Age::Fixed(Duration::from_millis(ms)),
+                None => pingora_runtime::Age::adaptive(),
+            }),
             #[cfg(feature = "dial9")]
             dial9: None,
         }
@@ -487,6 +500,8 @@ mod tests {
             listener_tasks_per_fd: 1,
             work_stealing: true,
             runtime_enable_alt_timer: false,
+            aged_connections: false,
+            connection_age_ms: None,
             upstream_keepalive_pool_size: 4,
             upstream_connect_offload_threadpools: None,
             upstream_connect_offload_thread_per_pool: None,

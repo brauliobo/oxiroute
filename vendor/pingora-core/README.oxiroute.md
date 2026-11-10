@@ -170,6 +170,18 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   no `pingora-rustls` dependency and no `rustls` feature (the crate is no longer vendored; a lint table keeps
   `cfg(feature = "rustls")` code warning-free), and without the `h1_pipelining` bench (its source is not published).
   `sfv` stays at `0.10` because later releases change the parser and integer APIs used by compression.
+- `services/listening.rs` spawns every accepted connection through `pingora_runtime::spawn_connection`, which on a
+  non-stealing runtime picks the worker with the fewest open connections (the vendored `pingora-runtime`, see its
+  README). `listeners/mod.rs` records the runtime that accepted a connection and, when the connection task starts on
+  another runtime, `protocols/l4/stream.rs` `set_buffer(buffer, own_driver)` moves the socket to the I/O driver of the runtime
+  that serves it (`into_std` then `from_std`: one `epoll_ctl` DELETE and one ADD), so its readiness events are
+  delivered on the serving thread and not forwarded from the accepting one.
+- `server/configuration/mod.rs` adds `ServerConf::connection_age_ms`, passed to the runtime through
+  `RuntimeOpts::connection_age`; with `work_stealing` off and the age set, the workers of the service runtime serve their
+  connections newest first and the oldest after that age (the vendored `pingora-runtime`, see its README).
+- `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
+  `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
+  stays at `0.10` because later releases change the parser and integer APIs used by compression.
 
 - Tests: the unit tests no longer depend on the Internet, fixed ports, a stored key pair or host sysctls. `connectors/test_servers.rs`
   provides loopback servers that own a kernel-assigned port (HTTP redirect, TLS with HTTP/1.1 or HTTP/2, a refused address, a
@@ -187,7 +199,8 @@ response facts, noted request write, inline request loop, zero-copy request body
 `try_read_response_task`, connector hook, admission guard and handshake-timeout hook, rendered response write, inline
 Date and Connection lines, header map headroom, single-clock timeouts, owned-preread, borrowed-request-write,
 parsed-header ownership, response-task batch, lazy read buffer and coalescing writer, pooled gzip state, header-name
-cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`.
+cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, the per-worker connection placement (`set_buffer(own_driver)`) and
+`ServerConf::connection_age_ms`.
 Every upstream H1 correctness fix whose code our forks replace (`idle.rs`, `proxy_h1_inline.rs` in `pingora-proxy`,
 the inline relay) must be re-derived by hand. Then run `scripts/test-vendored.sh`, the OxiRoute TLS and HTTP wire
 tests and strict clippy.

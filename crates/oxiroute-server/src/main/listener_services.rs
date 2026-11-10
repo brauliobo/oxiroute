@@ -4,6 +4,14 @@ use super::*;
 const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
     "OXIROUTE_INTERNAL_TEST_LISTENER_DUPLICATION_FAILURE";
 
+const TEST_AGED_PER_WORKER_ENV: &str = "OXIROUTE_INTERNAL_TEST_AGED_PER_WORKER";
+
+/// Whether the workers of a listener serve per-worker queues. The test variable runs a whole process suite in that
+/// mode.
+pub(super) fn aged_per_worker(config: &oxiroute_config::ConfigDraft) -> bool {
+    config.aged_per_worker() || std::env::var_os(TEST_AGED_PER_WORKER_ENV).is_some()
+}
+
 /// Worker threads for each HTTP, forward HTTP/1, forward HTTP/2 and TCP listener.
 pub(super) fn listener_workers(config: &oxiroute_config::ConfigDraft) -> usize {
     config.listener_workers.map_or(1, |workers| {

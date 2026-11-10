@@ -62,15 +62,16 @@ use crate::{
     },
     model::{
         AccessLogPolicy, AcmeDns01Config, AlpnProtocol, Certificate, CertificateSource,
-        ConfigDraft, ConfigError, DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService,
-        HealthCheck, HealthCheckType, HttpRequestHeaderMutation, HttpResponseHeaderMutation,
-        HttpRouteAction, HttpService, HttpVersion, L4Service, Listener, ListenerBind, Management,
-        Protocol, ProxyProtocolVersion, RegistryEndpoint, RtmpAccessPolicy, RtmpAutoPushPolicy,
-        RtmpCallbackConfig, RtmpCredentialReference, RtmpExecFilesystemPolicy, RtmpExecMode,
-        RtmpExecProfile, RtmpExecTrigger, RtmpOutboundPolicy, RtmpRecorder, RtmpRelayPolicy,
-        RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings, RtmpTokenSource, RtmpTransport,
-        RtmpVodSource, Stats, StatsPage, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
-        UpstreamEndpoint, UpstreamPool, cidr_contains,
+        ConfigDraft, ConfigError, ConnectionScheduling, DnsResolutionPolicy, ForwardHttpVersion,
+        ForwardProxyService, HealthCheck, HealthCheckType, HttpRequestHeaderMutation,
+        HttpResponseHeaderMutation, HttpRouteAction, HttpService, HttpVersion, L4Service, Listener,
+        ListenerBind, Management, Protocol, ProxyProtocolVersion, RegistryEndpoint,
+        RtmpAccessPolicy, RtmpAutoPushPolicy, RtmpCallbackConfig, RtmpCredentialReference,
+        RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecProfile, RtmpExecTrigger,
+        RtmpOutboundPolicy, RtmpRecorder, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService,
+        RtmpSessionCeilings, RtmpTokenSource, RtmpTransport, RtmpVodSource, Stats, StatsPage,
+        TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
+        cidr_contains,
     },
 };
 
@@ -96,6 +97,19 @@ use upstream::{validate_l4_services, validate_proxy_protocol_timeout};
 const MAX_UDP_WIRE_DATAGRAM_BYTES: u64 = 65_507;
 const MAX_UDP_PROXY_V2_ADDRESS_HEADER_BYTES: u64 = 52;
 
+fn validate_connection_age(config: &ConfigDraft) -> Result<(), ConfigError> {
+    let Some(age) = config.connection_age_ms else {
+        return Ok(());
+    };
+    if config.connection_scheduling != Some(ConnectionScheduling::AgedPerWorker) {
+        return Err(ConfigError::ConnectionAgeWithoutAgedScheduling);
+    }
+    if !(1..=ConfigDraft::MAX_CONNECTION_AGE_MS).contains(&age) {
+        return Err(ConfigError::InvalidConnectionAge(age));
+    }
+    Ok(())
+}
+
 /// Validates and normalizes a complete configuration regardless of how it was constructed.
 ///
 /// # Errors
@@ -117,6 +131,7 @@ pub(crate) fn validate_config_in_place(config: &mut ConfigDraft) -> Result<(), C
     {
         return Err(ConfigError::InvalidListenerWorkers(workers));
     }
+    validate_connection_age(config)?;
     retirement::validate_retirement(config)?;
     validate_management(config.management.as_ref())?;
     validate_stats(config.stats.as_ref())?;

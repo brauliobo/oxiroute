@@ -440,6 +440,10 @@ pub enum ConfigError {
     InvalidStatsBinds,
     #[error("listener_workers {0} is invalid: it must be between 1 and 256")]
     InvalidListenerWorkers(u64),
+    #[error("connection_age_ms {0} is invalid: it must be between 1 and 1000")]
+    InvalidConnectionAge(u64),
+    #[error("connection_age_ms needs connection_scheduling = \"aged_per_worker\"")]
+    ConnectionAgeWithoutAgedScheduling,
     #[error("retirement setting `{pointer}` is invalid: {detail}")]
     InvalidRetirement {
         pointer: String,

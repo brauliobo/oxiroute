@@ -63,6 +63,8 @@ pub fn proxy_config(
     let private_key_path = copy_private_key_fixture(directory.path(), "proxy-a-key.pem");
     let config = ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         certificates: vec![Certificate {
             name: "downstream".into(),

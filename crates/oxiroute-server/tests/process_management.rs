@@ -2117,6 +2117,8 @@ fn management_config(
 ) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         management: Some(Management {
             bind: management_address,
@@ -2179,6 +2181,8 @@ fn recording_candidate(active: &ConfigDraft, root: &Path) -> ConfigDraft {
 fn rtmp_listener_config(bind: ListenerBind) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         listeners: vec![Listener {
             name: "live".into(),
