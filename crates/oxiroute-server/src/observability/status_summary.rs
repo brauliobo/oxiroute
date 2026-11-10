@@ -190,7 +190,7 @@ pub(crate) fn status_document(
         generation.as_ref(),
         &registry().totals(),
         Moment {
-            ready: ReadinessResponse::project(&runtime, generation.clone()).ready(),
+            ready: ReadinessResponse::project(runtime.serving(), generation.clone()).ready(),
             unix_ms: u64::try_from(now).unwrap_or(u64::MAX),
         },
     );
