@@ -2330,11 +2330,13 @@ name = "oxiroute-fuzz"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "httparse",
  "libfuzzer-sys",
  "oxiroute",
  "oxiroute-config",
  "oxiroute-config-source",
  "oxiroute-forward-proxy",
+ "oxiroute-h1-head",
  "oxiroute-import",
  "oxiroute-rtmp",
  "pingora-core",
@@ -2343,6 +2345,10 @@ dependencies = [
  "tokio",
  "tokio-test",
 ]
+
+[[package]]
+name = "oxiroute-h1-head"
+version = "6.3.0"
 
 [[package]]
 name = "oxiroute-import"

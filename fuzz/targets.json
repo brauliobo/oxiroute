@@ -12,6 +12,7 @@
     { "name": "proxy_protocol", "max_input_bytes": 131072 },
     { "name": "udp_datagram", "max_input_bytes": 131059 },
     { "name": "tls_client_hello", "max_input_bytes": 65536 },
-    { "name": "http1", "max_input_bytes": 131072 }
+    { "name": "http1", "max_input_bytes": 131072 },
+    { "name": "h1_head", "max_input_bytes": 131072 }
   ]
 }
