@@ -17,6 +17,7 @@ members = [
     "crates/oxiroute-supervision",
     "crates/oxiroute-supervision-unix",
     "crates/oxiroute-tls-client",
+    "crates/oxiroute-worker-scaling",
     "vendor/pingora-proxy",
 ]
 exclude = [

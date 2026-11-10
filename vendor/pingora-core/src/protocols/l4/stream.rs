@@ -722,6 +722,16 @@ impl Peek for Stream {
             RawStream::Virtual(_) => Poll::Ready(Ok(())),
         }
     }
+
+    fn can_move_to_current_runtime(&self) -> bool {
+        self.tcp_socket().is_some() && !self.has_read_ahead() && !self.has_write_behind()
+    }
+
+    fn move_to_current_runtime(&mut self) -> io::Result<()> {
+        let stream = self.stream.take().expect("stream should always be set");
+        self.stream = Some(stream.try_map_inner(RawStreamWrapper::into_current_runtime)?);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -782,8 +792,10 @@ impl Drop for Stream {
         // 1. Drop cannot be async
         // 2. write should usually be ready, unless the buf is full.
         // A broken socket fails the flush; probing it first would cost a syscall per connection.
-        if let Some(Err(e)) = self.flush().now_or_never() {
-            debug!("Socket is already broken {:?}", e);
+        if self.stream.is_some() {
+            if let Some(Err(e)) = self.flush().now_or_never() {
+                debug!("Socket is already broken {:?}", e);
+            }
         }
         debug!("Dropping socket {:?}", self.stream);
     }

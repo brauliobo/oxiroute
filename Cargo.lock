@@ -2813,6 +2813,7 @@ dependencies = [
  "oxiroute-supervision-unix",
  "oxiroute-supervisor-master",
  "oxiroute-supervisor-process",
+ "oxiroute-worker-scaling",
  "parking_lot 0.13.0",
  "pingora",
  "quinn",
@@ -3045,6 +3046,10 @@ dependencies = [
  "openssl",
  "tempfile",
 ]
+
+[[package]]
+name = "oxiroute-worker-scaling"
+version = "6.3.1"
 
 [[package]]
 name = "parking"
@@ -3443,6 +3448,7 @@ dependencies = [
  "log",
  "once_cell",
  "oxiroute-aged-executor",
+ "oxiroute-worker-scaling",
  "rand 0.8.8",
  "serde",
  "tokio",

@@ -5,7 +5,7 @@ This directory contains the published `pingora-runtime 0.9.1` source from crates
 under its upstream Apache-2.0 license. The benchmark target and `benches/` are dropped; the normalized manifest
 is kept with `thread_local` removed and a path dependency on `crates/oxiroute-aged-executor` added.
 
-OxiRoute's delta is limited to `src/lib.rs`:
+OxiRoute's delta is limited to `src/lib.rs` (and `src/scaling_tests.rs`, `Cargo.toml`):
 
 - `spawn_connection` places a new connection task on the non-stealing worker with the fewest open connections, the
   calling worker winning ties, and gives the slot back when the task ends. Upstream's `current_handle().spawn` picks a
@@ -22,6 +22,14 @@ OxiRoute's delta is limited to `src/lib.rs`:
   worker's aged executor when the runtime has one: upstream spawns it on a random worker, which moved the data of
   every HTTP/2 connection between cores (512 requests in flight on two workers: p99 five times higher than work
   stealing). Without aged queues it behaves as upstream does.
+- `RuntimeOpts::worker_scaling` (a `ScalingPolicy`, with `connection_age`; the table is a `Table` with the pools and an
+  optional `oxiroute_worker_scaling::Scaling`) makes the runtime keep only as many workers active as the load needs:
+  `spawn_connection` places on the active workers only, `wants_relocation` and `relocate_connection` move a connection
+  between two requests to a lighter active worker (the connection's task is handed from one worker's executor to
+  another's, see `oxiroute-aged-executor` `move_to`; the caller re-registers the socket), and a controller thread
+  (`oxiroute-worker-scaling`) reads each executor's busy time and connection count. The worker executors are then
+  `new_measured` (two clock reads per batch). Without the option nothing changes: `Pool::load` is an `Arc` and
+  `LoadGuard` keeps its index in an atomic, nothing else. Tests in `src/scaling_tests.rs`.
 - The worker table of the calling thread is a std `thread_local!`, not the `thread_local` crate: the crate hands the
   entry of an exited thread to any later thread with the same identifier, so after a generation replacement a worker
   of the new runtime inherited the shut down runtime's table and its listener tasks were spawned on a dead runtime

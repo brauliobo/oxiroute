@@ -91,7 +91,7 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   socket and a `oneshot`, `Notify`, LRU node and mutex handshake with the next checkout (two scheduler round trips
   per request). Now a release polls the socket once with a waker that queues the connection on a shared event list
   and wakes one pool-wide task, which drops connections that closed, sent data or passed `idle_timeout`; a checkout
-  pops an entry from a per-thread stripe, then runs the same identity and readiness checks. Capacity is the global
+  pops an entry from a per-thread stripe (one stripe per CPU, at least eight, so the workers of a listener do not share a lock up to as many workers as CPUs), then runs the same identity and readiness checks. Capacity is the global
   `keepalive_pool_size` (0.9 sizes it per worker times the thread count); a release at capacity evicts the oldest
   connection of its own stripe, else of the next non-empty one, and reports how long it had been idle to
   `keepalive_pool_callback`. Idle sockets that deliver data count in the 0.9 unexpected-data counter. `idle_timeout` of zero
@@ -217,6 +217,13 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   another runtime, `protocols/l4/stream.rs` `set_buffer(buffer, own_driver)` moves the socket to the I/O driver of the runtime
   that serves it (`into_std` then `from_std`: one `epoll_ctl` DELETE and one ADD), so its readiness events are
   delivered on the serving thread and not forwarded from the accepting one.
+- `protocols/mod.rs` `Peek::can_move_to_current_runtime` and `move_to_current_runtime` (default: no) and their
+  `protocols/l4/stream.rs` implementation (a plain TCP stream with empty buffers re-registers its socket with the
+  I/O driver of the runtime it is called on; `LazyReadStream::try_map_inner` keeps the buffer sizes; `Drop` no longer
+  flushes a stream that lost its transport). `apps/relocate.rs` `relocate_idle_connection` is called by the HTTP/1
+  loop before it waits for the next request of a kept-alive connection (and by OxiRoute's lane front): with
+  `ServerConf::worker_scaling` it moves a connection off a released or crowded worker.
+  `ServerConf::worker_scaling` (`WorkerScalingConf`, only with `aged_connections`) becomes `RuntimeOpts::worker_scaling`.
 - `apps/mod.rs` spawns HTTP/2 stream tasks with `pingora_runtime::spawn_stream` (the calling worker's executor under aged
   queues, `current_handle().spawn` otherwise).
 - `server/configuration/mod.rs` adds `ServerConf::aged_connections` and `connection_age_ms`, passed to the runtime through

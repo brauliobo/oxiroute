@@ -24,11 +24,16 @@
 //! program to use multiple cores.
 
 use once_cell::sync::OnceCell;
-use oxiroute_aged_executor::AgedExecutor;
 pub use oxiroute_aged_executor::Age;
+use oxiroute_aged_executor::AgedExecutor;
+pub use oxiroute_worker_scaling::{
+    process_stats as scaling_stats, Policy as ScalingPolicy, Stats as ScalingStats,
+};
+use oxiroute_worker_scaling::{Scaling, Workers};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
+use std::ops::Deref;
 #[cfg(feature = "dial9")]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -90,6 +95,9 @@ pub struct RuntimeOpts {
     /// OxiRoute: on a runtime without work stealing, the connection tasks started with [`spawn_connection`] run
     /// newest first and the oldest first once it has waited this long. `None` keeps Tokio's first-in first-out queue.
     pub connection_age: Option<Age>,
+    /// OxiRoute: with `connection_age` set, keep only as many workers active as the load needs: new connections go
+    /// to the active ones, and idle connections move off released or crowded workers ([`relocate_connection`]).
+    pub worker_scaling: Option<ScalingPolicy>,
     /// Options for dial9 Tokio telemetry.
     #[cfg(feature = "dial9")]
     pub dial9: Option<Dial9RuntimeOpts>,
@@ -574,9 +582,40 @@ impl Runtime {
 struct Pool {
     handle: Handle,
     /// Connections placed on this worker and not yet finished.
-    load: AtomicUsize,
+    load: Arc<AtomicUsize>,
     /// Runs the connection tasks of the worker in aged newest-first order instead of Tokio's first-in first-out.
     executor: Option<AgedExecutor>,
+}
+
+/// The workers of a non-stealing runtime and, when it scales them, which are active.
+struct Table {
+    pools: Box<[Pool]>,
+    scaling: Option<Arc<Scaling>>,
+}
+
+impl Deref for Table {
+    type Target = [Pool];
+
+    fn deref(&self) -> &[Pool] {
+        &self.pools
+    }
+}
+
+/// What the scaling controller reads of the workers; it holds no reference to the table it controls.
+struct PoolWorkers(Vec<(AgedExecutor, Arc<AtomicUsize>)>);
+
+impl Workers for PoolWorkers {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn busy_nanos(&self, worker: usize) -> u64 {
+        self.0[worker].0.busy_nanos()
+    }
+
+    fn connections(&self, worker: usize) -> usize {
+        self.0[worker].1.load(Ordering::Relaxed)
+    }
 }
 
 struct Local {
@@ -594,6 +633,15 @@ thread_local! {
 /// The worker table and index of the calling thread when it is a worker of a non-stealing runtime.
 fn current_worker() -> Option<(Pools, usize)> {
     CURRENT_HANDLE.with(|local| local.get().map(|local| (local.pools.clone(), local.index)))
+}
+
+/// Runs `f` with the worker table and index of the calling thread, without taking a reference count (the count is
+/// shared by every worker).
+fn with_worker<T>(f: impl FnOnce(&Table, usize) -> T) -> Option<T> {
+    CURRENT_HANDLE.with(|local| {
+        let local = local.get()?;
+        Some(f(local.pools.get()?, local.index))
+    })
 }
 
 /// Return the [Handle] of current runtime.
@@ -635,19 +683,26 @@ where
 
 struct LoadGuard {
     pools: Pools,
-    index: usize,
+    /// The worker the connection is counted on: it changes when the connection moves.
+    index: AtomicUsize,
+}
+
+tokio::task_local! {
+    /// The guard of the connection being polled, for a runtime that scales its workers.
+    static CONNECTION: LoadGuard;
 }
 
 impl Drop for LoadGuard {
     fn drop(&mut self) {
-        self.pools.get().unwrap()[self.index]
+        self.pools.get().unwrap()[self.index.load(Ordering::Relaxed)]
             .load
             .fetch_sub(1, Ordering::Relaxed);
     }
 }
 
 /// Spawns a connection task. On a non-stealing runtime the least loaded worker takes it (ties go to the
-/// calling worker); on a work stealing runtime it is a plain `spawn`.
+/// calling worker), among the active ones when the runtime scales its workers; on a work stealing runtime it is a
+/// plain `spawn`.
 pub fn spawn_connection<F>(future: F)
 where
     F: Future<Output = ()> + Send + 'static,
@@ -657,30 +712,82 @@ where
         return;
     };
     let pools = worker_pools.get().unwrap();
-    let count = pools.len();
-    let index = (0..count)
-        .map(|step| (own + step) % count)
-        .min_by_key(|index| pools[*index].load.load(Ordering::Relaxed))
-        .unwrap();
+    let index = match &pools.scaling {
+        Some(scaling) => scaling.place(own, |index| pools[index].load.load(Ordering::Relaxed)),
+        None => least_loaded(pools, own),
+    };
     pools[index].load.fetch_add(1, Ordering::Relaxed);
     let guard = LoadGuard {
         pools: worker_pools.clone(),
-        index,
+        index: AtomicUsize::new(index),
     };
-    let task = async move {
-        let _guard = guard;
-        future.await
-    };
-    match &pools[index].executor {
-        Some(executor) => executor.spawn(task),
-        None => {
-            pools[index].handle.spawn(task);
+    match (&pools[index].executor, &pools.scaling) {
+        (Some(executor), Some(scaling)) => {
+            executor.spawn(CONNECTION.scope(guard, future));
+            scaling.connection_placed();
+        }
+        (executor, _) => {
+            let task = async move {
+                let _guard = guard;
+                future.await
+            };
+            match executor {
+                Some(executor) => executor.spawn(task),
+                None => {
+                    pools[index].handle.spawn(task);
+                }
+            }
         }
     }
 }
 
+fn least_loaded(pools: &[Pool], own: usize) -> usize {
+    let count = pools.len();
+    (0..count)
+        .map(|step| (own + step) % count)
+        .min_by_key(|index| pools[*index].load.load(Ordering::Relaxed))
+        .unwrap()
+}
+
+/// Whether the calling connection should move to another worker: it sits on a released one, or on one holding more
+/// connections than its share. A few loads and no reference count, so a connection can ask between two requests.
+pub fn wants_relocation() -> bool {
+    with_worker(|pools, own| {
+        let load = pools[own].load.load(Ordering::Relaxed);
+        pools
+            .scaling
+            .as_ref()
+            .is_some_and(|scaling| scaling.wants_relocation(own, load))
+    })
+    .unwrap_or(false)
+}
+
+/// Moves the calling connection task, which must be between two requests with nothing parked, to a lighter active
+/// worker; true when it now runs there. The caller has to move what is tied to the old worker's thread (its socket's
+/// I/O registration) before it waits for anything.
+pub async fn relocate_connection() -> bool {
+    if !oxiroute_aged_executor::in_task() {
+        return false;
+    }
+    let target = with_worker(|pools, own| {
+        let scaling = pools.scaling.as_ref()?;
+        let to = scaling.relocation(own, |index| pools[index].load.load(Ordering::Relaxed))?;
+        let executor = pools[to].executor.clone()?;
+        pools[own].load.fetch_sub(1, Ordering::Relaxed);
+        pools[to].load.fetch_add(1, Ordering::Relaxed);
+        scaling.note_relocated();
+        Some((to, executor))
+    })
+    .flatten();
+    let Some((to, executor)) = target else {
+        return false;
+    };
+    CONNECTION.with(|guard| guard.index.store(to, Ordering::Relaxed));
+    oxiroute_aged_executor::move_to(executor).await
+}
+
 type Control = (Sender<Duration>, JoinHandle<()>);
-type Pools = Arc<OnceCell<Box<[Pool]>>>;
+type Pools = Arc<OnceCell<Table>>;
 
 /// Multi-threaded runtime backed by a pool of single threaded tokio runtime
 pub struct NoStealRuntime {
@@ -713,7 +820,7 @@ impl NoStealRuntime {
         }
     }
 
-    fn init_pools(&self) -> (Box<[Pool]>, Vec<Control>) {
+    fn init_pools(&self) -> (Table, Vec<Control>) {
         let mut pools = Vec::with_capacity(self.threads);
         let mut controls = Vec::with_capacity(self.threads);
         for index in 0..self.threads {
@@ -729,8 +836,13 @@ impl NoStealRuntime {
                 .build()
                 .expect("failed to build no-steal Tokio runtime worker");
             let handler = rt.handle().clone();
+            let scaled = self.runtime_opts.worker_scaling.is_some();
             let executor = self.runtime_opts.connection_age.map(|max_age| {
-                let (executor, runner) = AgedExecutor::new(max_age);
+                let (executor, runner) = if scaled {
+                    AgedExecutor::new_measured(max_age)
+                } else {
+                    AgedExecutor::new(max_age)
+                };
                 rt.spawn(runner);
                 executor
             });
@@ -752,13 +864,44 @@ impl NoStealRuntime {
                 .unwrap();
             pools.push(Pool {
                 handle: handler,
-                load: AtomicUsize::new(0),
+                load: Arc::new(AtomicUsize::new(0)),
                 executor,
             });
             controls.push((tx, join));
         }
 
-        (pools.into_boxed_slice(), controls)
+        (self.scaled(pools), controls)
+    }
+
+    /// The table of `pools`, with the scaling controller running when the options ask for one and every worker has an
+    /// executor to measure.
+    fn scaled(&self, pools: Vec<Pool>) -> Table {
+        let workers = pools
+            .iter()
+            .map(|pool| Some((pool.executor.clone()?, Arc::clone(&pool.load))))
+            .collect::<Option<Vec<_>>>();
+        let policy = self
+            .runtime_opts
+            .worker_scaling
+            .filter(|policy| pools.len() > policy.min_active);
+        let scaling = policy.zip(workers).map(|(policy, workers)| {
+            let scaling = Arc::new(Scaling::new(&self.name, policy, pools.len()));
+            scaling.start(Arc::new(PoolWorkers(workers)));
+            scaling
+        });
+        Table {
+            pools: pools.into_boxed_slice(),
+            scaling,
+        }
+    }
+
+    /// What the scaling controller of this runtime has decided, if it runs one.
+    pub fn scaling_stats(&self) -> Option<ScalingStats> {
+        self.pools
+            .get()?
+            .scaling
+            .as_ref()
+            .map(|scaling| scaling.stats())
     }
 
     /// Return the &[Handle] of a random thread of this runtime
@@ -774,7 +917,7 @@ impl NoStealRuntime {
         self.threads
     }
 
-    fn get_pools(&self) -> &[Pool] {
+    fn get_pools(&self) -> &Table {
         if let Some(p) = self.pools.get() {
             p
         } else {
@@ -801,6 +944,9 @@ impl NoStealRuntime {
     /// Call tokio's `shutdown_timeout` of all the runtimes. This function is blocking until
     /// all runtimes exit.
     pub fn shutdown_timeout(mut self, timeout: Duration) {
+        if let Some(scaling) = self.pools.get().and_then(|table| table.scaling.as_ref()) {
+            scaling.stop();
+        }
         if let Some(controls) = self.controls.take() {
             let (txs, joins): (Vec<Sender<_>>, Vec<JoinHandle<()>>) = controls.into_iter().unzip();
             for tx in txs {
@@ -891,6 +1037,9 @@ fn test_dial9_zero_worker_poll_interval_is_rejected() {
         "dial9 worker_poll_interval must be greater than zero"
     );
 }
+
+#[cfg(test)]
+mod scaling_tests;
 
 #[cfg(test)]
 mod connection_tests {
