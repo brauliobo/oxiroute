@@ -1387,9 +1387,15 @@ mod tests_stream {
         let mut http_stream = HttpSession::new(Box::new(Builder::new().read(&input).build()));
         let raw = http_stream.read_raw_head().await.unwrap();
         assert_eq!(&raw[..head.len()], head);
-        let framing = FastFraming { chunked: false, content_length: Some(5) };
+        let framing = FastFraming {
+            chunked: false,
+            content_length: Some(5),
+        };
         http_stream.accept_fast_head(fast(head, framing, None));
-        assert_eq!(http_stream.read_body_bytes().await.unwrap().unwrap(), "hello");
+        assert_eq!(
+            http_stream.read_body_bytes().await.unwrap().unwrap(),
+            "hello"
+        );
         assert!(http_stream.is_body_done());
         http_stream.respect_keepalive();
         assert!(http_stream.will_keepalive());
@@ -1401,7 +1407,10 @@ mod tests_stream {
         let input = [&head[..], b"3\r\nabc\r\n0\r\n\r\n"].concat();
         let mut http_stream = HttpSession::new(Box::new(Builder::new().read(&input).build()));
         http_stream.read_raw_head().await.unwrap();
-        let framing = FastFraming { chunked: true, content_length: None };
+        let framing = FastFraming {
+            chunked: true,
+            content_length: None,
+        };
         http_stream.accept_fast_head(fast(head, framing, None));
         assert_eq!(http_stream.read_body_bytes().await.unwrap().unwrap(), "abc");
         assert!(http_stream.read_body_bytes().await.unwrap().is_none());
@@ -1413,7 +1422,10 @@ mod tests_stream {
         let head = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         let mut http_stream = HttpSession::new(Box::new(Builder::new().read(head).build()));
         http_stream.read_raw_head().await.unwrap();
-        let framing = FastFraming { chunked: false, content_length: Some(0) };
+        let framing = FastFraming {
+            chunked: false,
+            content_length: Some(0),
+        };
         http_stream.accept_fast_head(fast(head, framing, Some("close")));
         assert!(http_stream.read_body_bytes().await.unwrap().is_none());
         http_stream.respect_keepalive();
@@ -1440,7 +1452,13 @@ mod tests_stream {
             .read(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n")
             .build();
         let mut http_stream = HttpSession::new(Box::new(mock));
-        assert_eq!(http_stream.write_request_head_raw(request, true).await.unwrap(), request.len());
+        assert_eq!(
+            http_stream
+                .write_request_head_raw(request, true)
+                .await
+                .unwrap(),
+            request.len()
+        );
         http_stream.read_response().await.unwrap();
         http_stream.respect_keepalive();
         assert!(http_stream.read_body_bytes().await.unwrap().is_none());

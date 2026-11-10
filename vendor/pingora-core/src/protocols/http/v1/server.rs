@@ -2194,7 +2194,9 @@ mod tests_stream {
         let mut closing = ResponseHeader::build_no_case(204, None).unwrap();
         let mut buf = BytesMut::new();
         render_final_response_head(&mut closing, false, &mut buf).unwrap();
-        assert!(String::from_utf8(buf.to_vec()).unwrap().ends_with("Connection: close\r\n\r\n"));
+        assert!(String::from_utf8(buf.to_vec())
+            .unwrap()
+            .ends_with("Connection: close\r\n\r\n"));
     }
 
     #[test]

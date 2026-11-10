@@ -276,7 +276,13 @@ impl HttpRequestContext {
             .client_addr()
             .and_then(|address| address.as_inet())
             .map(std::net::SocketAddr::ip);
-        self.register_arrival(&request.method, host, request.uri.path(), client_ip, access_log);
+        self.register_arrival(
+            &request.method,
+            host,
+            request.uri.path(),
+            client_ip,
+            access_log,
+        );
     }
 
     fn register_arrival(
