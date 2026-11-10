@@ -153,3 +153,7 @@ cargo clippy --workspace --all-targets --locked --offline -- -D warnings
 
 Then run formatting and diff checks.
 - `src/lib.rs` `HttpProxy::h2_options` returns the `Copy` `oxiroute_h2::server::Config` (the downstream HTTP/2 options of `pingora-core`) without a clone.
+- `src/lib.rs` `HttpProxy::process_request` honors `FailToProxy::can_reuse_downstream` for the final error of the
+  upstream attempts too (upstream's only honors it for errors before peer selection): a hook that wrote a complete
+  response and ends the request through an error, as OxiRoute's cache does after a revalidation, keeps the keep-alive
+  connection. The default hook still returns `false`. `proxy_trait.rs` documents the changed contract.
