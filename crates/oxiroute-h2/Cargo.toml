@@ -1,0 +1,21 @@
+[package]
+name = "oxiroute-h2"
+description = "Purpose-built HTTP/2 server session for the proxy: frame codec, HPACK, flow control, abuse limits"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+bytes.workspace = true
+http.workspace = true
+log.workspace = true
+tokio = { workspace = true, features = ["io-util", "time"] }
+
+[dev-dependencies]
+h2.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "time", "sync"] }
+
+[lints]
+workspace = true
