@@ -659,7 +659,9 @@ impl HttpPersistentSettings {
 
     /// Whether the next request has arrived already (pipelined bytes read together with the last one).
     fn has_next_request(&self) -> bool {
-        self.pipelined_prefix.as_ref().is_some_and(|prefix| !prefix.is_empty())
+        self.pipelined_prefix
+            .as_ref()
+            .is_some_and(|prefix| !prefix.is_empty())
     }
 
     /// How long the connection may wait for its next request, when this keep-alive says (`0` is no limit).
@@ -929,7 +931,8 @@ where
             );
 
             // On the heap per request: the connection's own future stays small while it waits between requests.
-            let mut result = PooledFuture::new(|| self.process_new_http_inline(session, shutdown)).await;
+            let mut result =
+                PooledFuture::new(|| self.process_new_http_inline(session, shutdown)).await;
             while let Some((mut stream, persistent_settings)) = result.map(|r| r.consume()) {
                 // The connection waits for its next request holding no session and no request state.
                 let idle = self.idle_keepalive_timeout().or_else(|| {
@@ -937,8 +940,11 @@ where
                         .as_ref()
                         .and_then(HttpPersistentSettings::idle_timeout)
                 });
-                let arrived = persistent_settings.as_ref().is_some_and(HttpPersistentSettings::has_next_request);
-                if !arrived && !idle_wait::wait_for_next_request(&mut stream, idle, shutdown).await {
+                let arrived = persistent_settings
+                    .as_ref()
+                    .is_some_and(HttpPersistentSettings::has_next_request);
+                if !arrived && !idle_wait::wait_for_next_request(&mut stream, idle, shutdown).await
+                {
                     break;
                 }
                 let mut session = ServerSession::new_http1(stream);
@@ -946,7 +952,8 @@ where
                     persistent_settings.apply_to_session(&mut session);
                 }
 
-                result = PooledFuture::new(|| self.process_new_http_inline(session, shutdown)).await;
+                result =
+                    PooledFuture::new(|| self.process_new_http_inline(session, shutdown)).await;
             }
         }
         None

@@ -4,7 +4,7 @@
 //! allocator walk its slabs (a measured 5% of the cache misses per request at 2,048 connections), whereas a block
 //! the thread just gave back is still in its cache.
 
-use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use std::cell::RefCell;
 use std::future::Future;
 use std::pin::Pin;
@@ -80,8 +80,8 @@ impl<F: Future> Future for PooledFuture<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn big() -> impl Future<Output = usize> {
         async {
