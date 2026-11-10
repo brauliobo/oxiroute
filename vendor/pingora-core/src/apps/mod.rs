@@ -15,7 +15,10 @@
 //! The abstraction and implementation interface for service application logic
 
 pub mod http_app;
+mod idle_wait;
+mod pooled_future;
 
+use self::pooled_future::PooledFuture;
 use crate::server::ShutdownWatch;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -654,6 +657,13 @@ impl HttpPersistentSettings {
         }
     }
 
+    /// How long the connection may wait for its next request, when this keep-alive says (`0` is no limit).
+    fn idle_timeout(&self) -> Option<Duration> {
+        self.keepalive_timeout
+            .filter(|seconds| *seconds > 0)
+            .map(Duration::from_secs)
+    }
+
     /// Set a user-defined context to be carried to the next request on this connection.
     pub fn set_user_context(&mut self, ctx: Box<dyn Any + Send + Sync>) {
         self.user_context = Some(ctx);
@@ -779,6 +789,13 @@ impl Http1Connection {
             .is_some_and(|prefix| !prefix.is_empty())
     }
 
+    /// How long the connection may wait for its next request, as the previous session's keep-alive says.
+    fn idle_timeout(&self) -> Option<Duration> {
+        self.carried
+            .as_ref()
+            .and_then(HttpPersistentSettings::idle_timeout)
+    }
+
     /// Whether the connection served a request already.
     pub fn is_reused(&self) -> bool {
         self.reused
@@ -888,6 +905,12 @@ pub trait HttpServerApp {
         async move { self.process_new_http(session, shutdown).await }
     }
 
+    /// How long an HTTP/1 connection may sit idle between two requests before it is closed, when the application sets
+    /// it apart from the keep-alive of the response. `None` leaves it to the keep-alive of the last response.
+    fn idle_keepalive_timeout(&self) -> Option<Duration> {
+        None
+    }
+
     /// Provide options on how HTTP/2 connection should be established. This function will be called
     /// every time a new HTTP/2 **connection** needs to be established.
     ///
@@ -919,6 +942,58 @@ pub trait HttpServerApp {
     ) -> Option<Stream> {
         None
     }
+}
+
+/// The HTTP/2 connection loop. Boxed by its caller: its state is not needed by an HTTP/1 connection, which must stay
+/// small while it waits.
+async fn process_h2<T>(app: &Arc<T>, stream: Stream, shutdown: &ShutdownWatch) -> Option<Stream>
+where
+    T: HttpServerApp + Send + Sync + 'static,
+{
+    // create a shared connection digest
+    let digest = Arc::new(Digest {
+        ssl_digest: stream.get_ssl_digest(),
+        // TODO: log h2 handshake time
+        timing_digest: stream.get_timing_digest(),
+        proxy_digest: stream.get_proxy_digest(),
+        socket_digest: stream.get_socket_digest(),
+    });
+
+    let h2_options = app.h2_options();
+    let h2_conn = match server::handshake(stream, h2_options).await {
+        Err(e) => {
+            error!("H2 handshake error {e}");
+            return None;
+        }
+        Ok(c) => c,
+    };
+
+    // The accept-loop body — including the graceful-shutdown state
+    // machine — lives in `server::accept_downstream_sessions` so that
+    // the same code path is exercised by tests in `protocols::http::v2`.
+    let app_for_session = app.clone();
+    let shutdown_for_session = shutdown.clone();
+    let h2_idle_timeout = app.server_options().and_then(|o| o.h2_idle_timeout);
+    server::accept_downstream_sessions(
+        h2_conn,
+        digest,
+        shutdown.clone(),
+        h2_idle_timeout,
+        |h2_stream, guard| {
+            let app = app_for_session.clone();
+            let shutdown = shutdown_for_session.clone();
+            pingora_runtime::current_handle().spawn(async move {
+                // hold `guard` for the session's lifetime so the accept
+                // loop's idle timeout sees this connection as busy.
+                let _guard = guard;
+                // Note, `PersistentSettings` not currently relevant for h2
+                app.process_new_http(ServerSession::new_http2(h2_stream), &shutdown)
+                    .await;
+            });
+        },
+    )
+    .await;
+    None
 }
 
 #[async_trait]
@@ -961,49 +1036,7 @@ where
             }
         }
         if h2c || matches!(stream.selected_alpn_proto(), Some(ALPN::H2)) {
-            // create a shared connection digest
-            let digest = Arc::new(Digest {
-                ssl_digest: stream.get_ssl_digest(),
-                // TODO: log h2 handshake time
-                timing_digest: stream.get_timing_digest(),
-                proxy_digest: stream.get_proxy_digest(),
-                socket_digest: stream.get_socket_digest(),
-            });
-
-            let h2_options = self.h2_options();
-            let h2_conn = match server::handshake(stream, h2_options).await {
-                Err(e) => {
-                    error!("H2 handshake error {e}");
-                    return None;
-                }
-                Ok(c) => c,
-            };
-
-            // The accept-loop body — including the graceful-shutdown state
-            // machine — lives in `server::accept_downstream_sessions` so that
-            // the same code path is exercised by tests in `protocols::http::v2`.
-            let app = self.clone();
-            let shutdown_for_session = shutdown.clone();
-            let h2_idle_timeout = self.server_options().and_then(|o| o.h2_idle_timeout);
-            server::accept_downstream_sessions(
-                h2_conn,
-                digest,
-                shutdown.clone(),
-                h2_idle_timeout,
-                |h2_stream, guard| {
-                    let app = app.clone();
-                    let shutdown = shutdown_for_session.clone();
-                    pingora_runtime::current_handle().spawn(async move {
-                        // hold `guard` for the session's lifetime so the accept
-                        // loop's idle timeout sees this connection as busy.
-                        let _guard = guard;
-                        // Note, `PersistentSettings` not currently relevant for h2
-                        app.process_new_http(ServerSession::new_http2(h2_stream), &shutdown)
-                            .await;
-                    });
-                },
-            )
-            .await;
+            return Box::pin(process_h2(self, stream, shutdown)).await;
         } else if custom || matches!(stream.selected_alpn_proto(), Some(ALPN::Custom(_))) {
             return self.clone().process_custom_session(stream, shutdown).await;
         } else {
@@ -1026,13 +1059,22 @@ where
                             preloaded = bytes;
                         }
                     }
+                } else if connection.is_reused() && !connection.has_buffered_request() {
+                    // The connection waits for its next request holding no session and no request state.
+                    let idle = self
+                        .idle_keepalive_timeout()
+                        .or_else(|| connection.idle_timeout());
+                    if !idle_wait::wait_for_next_request(&mut stream, idle, shutdown).await {
+                        return None;
+                    }
                 }
                 let mut session = ServerSession::new_http1_preloaded(stream, preloaded);
                 connection.apply_to_session(&mut session);
-                let Some((next, settings)) = self
-                    .process_new_http_inline(session, shutdown)
-                    .await
-                    .map(ReusedHttpStream::consume)
+                // On the heap per request: the connection's own future stays small while it waits between requests.
+                let Some((next, settings)) =
+                    PooledFuture::new(|| self.process_new_http_inline(session, shutdown))
+                        .await
+                        .map(ReusedHttpStream::consume)
                 else {
                     return None;
                 };
@@ -1040,7 +1082,6 @@ where
                 connection = Http1Connection::after(settings);
             }
         }
-        None
     }
 
     async fn cleanup(&self) {

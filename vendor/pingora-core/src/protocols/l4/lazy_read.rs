@@ -19,7 +19,7 @@
 //! all the connections of a thread, and only the bytes the caller did not ask for yet are kept per
 //! connection, in a buffer that is released as soon as the socket has nothing more to read.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::io::IoSlice;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
@@ -29,7 +29,13 @@ use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf};
 thread_local! {
     /// Empty until the first buffered read of the thread. Taken for the length of one `poll_read`.
     static SCRATCH: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
+    /// Write buffers of the connections of the thread that have nothing staged.
+    static WRITE_BUFFERS: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
 }
+
+/// A connection takes a buffer when it stages its first bytes and gives it back once they are sent, so the buffers of
+/// the connections that are not writing cost nothing; only as many are kept as were in use at the same time.
+const POOLED_WRITE_BUFFERS: usize = 256;
 
 #[derive(Debug)]
 pub(crate) struct LazyReadStream<RW> {
@@ -55,8 +61,29 @@ impl<W> CoalescingWriter<W> {
     fn with_capacity(capacity: usize, inner: W) -> Self {
         Self {
             inner,
-            buf: Vec::with_capacity(capacity),
+            buf: Vec::new(),
             capacity,
+        }
+    }
+
+    fn stage(&mut self, data: &[u8]) {
+        if self.buf.capacity() == 0 {
+            self.buf = WRITE_BUFFERS.with_borrow_mut(Vec::pop).unwrap_or_default();
+            self.buf.reserve_exact(self.capacity);
+        }
+        self.buf.extend_from_slice(data);
+    }
+
+    /// Gives the emptied buffer back to the thread.
+    fn release(&mut self) {
+        debug_assert!(self.buf.is_empty());
+        let buf = std::mem::take(&mut self.buf);
+        if buf.capacity() > 0 {
+            WRITE_BUFFERS.with_borrow_mut(|pool| {
+                if pool.len() < POOLED_WRITE_BUFFERS {
+                    pool.push(buf);
+                }
+            });
         }
     }
 
@@ -82,6 +109,7 @@ impl<W: AsyncWrite + Unpin> CoalescingWriter<W> {
             }
             self.buf.drain(..written);
         }
+        self.release();
         Poll::Ready(Ok(()))
     }
 
@@ -99,6 +127,7 @@ impl<W: AsyncWrite + Unpin> CoalescingWriter<W> {
             }
             let accepted = written - self.buf.len();
             self.buf.clear();
+            self.release();
             // Only the head went out: report progress through a plain write of the data.
             return if accepted == 0 {
                 Pin::new(&mut self.inner).poll_write(cx, data)
@@ -117,12 +146,12 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for CoalescingWriter<W> {
     ) -> Poll<io::Result<usize>> {
         let this = &mut *self;
         if this.buf.len() + data.len() <= this.capacity {
-            this.buf.extend_from_slice(data);
+            this.stage(data);
             return Poll::Ready(Ok(data.len()));
         }
         if data.len() < this.capacity {
             ready!(this.flush_buf(cx))?;
-            this.buf.extend_from_slice(data);
+            this.stage(data);
             return Poll::Ready(Ok(data.len()));
         }
         if this.buf.is_empty() || !this.inner.is_write_vectored() {
@@ -155,7 +184,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for CoalescingWriter<W> {
         if total >= this.capacity {
             return Pin::new(&mut this.inner).poll_write_vectored(cx, bufs);
         }
-        bufs.iter().for_each(|buf| this.buf.extend_from_slice(buf));
+        bufs.iter().for_each(|buf| this.stage(buf));
         Poll::Ready(Ok(total))
     }
 
@@ -309,6 +338,42 @@ mod tests {
         stream.read_exact(&mut large).await.unwrap();
         assert!(large.iter().all(|byte| *byte == 7));
         assert!(stream.pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_connection_holds_a_write_buffer_only_while_bytes_are_staged() {
+        let (mut stream, mut far) = stream_over_duplex();
+        assert_eq!(stream.inner.buf.capacity(), 0);
+        stream.write_all(b"head").await.unwrap();
+        assert!(stream.inner.buf.capacity() >= 16);
+        stream.flush().await.unwrap();
+        assert_eq!(stream.inner.buf.capacity(), 0);
+        let mut received = [0; 4];
+        far.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"head");
+    }
+
+    #[tokio::test]
+    async fn the_write_buffer_of_a_finished_response_serves_the_next_connection() {
+        let (mut first, _far_first) = stream_over_duplex();
+        first.write_all(b"one").await.unwrap();
+        let address = first.inner.buf.as_ptr();
+        first.flush().await.unwrap();
+        let (mut second, _far_second) = stream_over_duplex();
+        second.write_all(b"two").await.unwrap();
+        assert_eq!(second.inner.buf.as_ptr(), address);
+    }
+
+    #[tokio::test]
+    async fn a_write_larger_than_the_buffer_behind_staged_bytes_leaves_no_buffer() {
+        let (mut stream, mut far) = stream_over_duplex();
+        stream.write_all(b"head").await.unwrap();
+        stream.write_all(&[9; 100]).await.unwrap();
+        assert_eq!(stream.inner.buf.capacity(), 0);
+        let mut received = [0; 104];
+        far.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received[..4], b"head");
+        assert!(received[4..].iter().all(|byte| *byte == 9));
     }
 
     #[tokio::test]

@@ -365,6 +365,10 @@ where
         self.front.as_ref().map(|front| front as &dyn Http1Front)
     }
 
+    fn idle_keepalive_timeout(&self) -> Option<Duration> {
+        self.keepalive_timeout
+    }
+
     fn h2_options(&self) -> Option<H2Options> {
         self.inner.h2_options()
     }

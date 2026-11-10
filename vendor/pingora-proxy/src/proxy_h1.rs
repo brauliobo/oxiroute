@@ -198,6 +198,21 @@ where
             return self.proxy_1to1_inline(session, client_session, ctx).await;
         }
 
+        // Boxed: the request future would otherwise keep the state of this rarely taken path in every request.
+        Box::pin(self.proxy_1to1_pumped(session, client_session, ctx)).await
+    }
+
+    /// The part of [`Self::proxy_1to1`] for a request that is not relayed inline: two task pumps joined.
+    async fn proxy_1to1_pumped(
+        &self,
+        session: &mut Session,
+        client_session: &mut HttpSessionV1,
+        ctx: &mut SV::CTX,
+    ) -> (bool, bool, Option<Box<Error>>)
+    where
+        SV: ProxyHttp + Send + Sync,
+        SV::CTX: Send + Sync,
+    {
         let mut downstream_custom_message_writer = session
             .downstream_session
             .as_custom_mut()
