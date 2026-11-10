@@ -203,6 +203,7 @@ fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> Co
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         listeners: vec![Listener {
             name: "websocket".into(),

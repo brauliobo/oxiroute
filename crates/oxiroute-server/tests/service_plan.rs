@@ -225,6 +225,7 @@ fn host-b_host-a_and_host-c_pool_shapes_compile_with_named_policy() {
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         max_connections: Some(4_096),
         upstream_pools: vec![
@@ -1086,7 +1087,7 @@ fn compiles_and_retains_one_shared_listener_tls_profile() {
     assert_eq!(first.name(), "public");
     assert_eq!(first.name(), prepared.name());
     assert_eq!(first.min_version(), TlsVersion::Tls12);
-    assert!(first.tls_settings().is_ok());
+    assert!(first.tls_settings(0).is_ok());
     assert_eq!(tls.certificates().len(), 1);
     assert_eq!(tls.profiles().len(), 1);
 }
@@ -1615,6 +1616,7 @@ fn canonical_config() -> ConfigDraft {
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         listeners: vec![
             Listener {

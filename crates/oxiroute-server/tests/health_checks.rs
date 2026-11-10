@@ -291,6 +291,7 @@ async fn health_groups_schedule_independently() {
             listener_workers: None,
             connection_scheduling: None,
             connection_age_ms: None,
+            tls_handshake_threads: None,
             retirement: None,
             upstream_pools: vec![
                 pool(
@@ -350,6 +351,7 @@ async fn endpoints_in_one_pool_schedule_from_their_own_completion() {
             listener_workers: None,
             connection_scheduling: None,
             connection_age_ms: None,
+            tls_handshake_threads: None,
             retirement: None,
             upstream_pools: vec![UpstreamPool {
                 name: "mixed".into(),
@@ -434,6 +436,7 @@ async fn validation_enforces_programmatic_endpoint_cardinality() {
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         upstream_pools: vec![UpstreamPool {
             name: "oversized".into(),
@@ -562,6 +565,7 @@ fn config(endpoint: UpstreamEndpoint, health_check: HealthCheck) -> ConfigDraft 
         listener_workers: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         upstream_pools: vec![pool("checked", endpoint, health_check)],
         ..empty_config()
