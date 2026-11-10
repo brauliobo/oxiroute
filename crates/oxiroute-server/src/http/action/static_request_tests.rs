@@ -580,3 +580,82 @@ async fn a_truncated_file_ends_the_stream_with_an_error() {
     let mut reader = StaticContent::Open(File::open(&path).expect("open")).into_reader(0, 10);
     assert!(reader.next_chunk().await.is_err());
 }
+
+/// A directory on a file system that keeps every page in memory: the kernel path is only offered for files whose
+/// pages are known to be resident, which the test file system of the build host may not tell.
+fn memory_directory() -> tempfile::TempDir {
+    tempfile::tempdir_in("/dev/shm").expect("static content directory in memory")
+}
+
+fn written_file(length: usize) -> (tempfile::TempDir, File) {
+    let directory = memory_directory();
+    let path = directory.path().join("data.bin");
+    std::fs::write(&path, vec![1_u8; length]).expect("write data");
+    (directory, File::open(path).expect("open"))
+}
+
+#[test]
+fn a_large_cached_file_is_handed_to_the_kernel_in_slices_and_the_tail_goes_through_chunks() {
+    let length = 2 * 1024 * 1024 + 40_000;
+    let (_directory, file) = written_file(length);
+    let mut reader = StaticContent::Open(file).into_reader(0, length as u64);
+    let mut covered = 0;
+    while let Some(slice) = reader.kernel_slice() {
+        assert_eq!(slice.offset, covered);
+        assert!(slice.length >= 64 * 1024 && slice.length <= 1024 * 1024);
+        covered += slice.length as u64;
+        reader.advance(slice.length as u64);
+    }
+    assert_eq!(covered, 2 * 1024 * 1024);
+    assert!(
+        !reader.is_done(),
+        "40,000 bytes are left for the chunk reader"
+    );
+}
+
+#[test]
+fn ranges_below_the_threshold_and_memory_content_stay_with_the_chunk_reader() {
+    let (_directory, file) = written_file(1_000_000);
+    let mut small = StaticContent::Open(file).into_reader(10, 60_000);
+    assert!(small.kernel_slice().is_none());
+    let mut memory = StaticContent::Memory(Bytes::from(vec![0; 500_000])).into_reader(0, 500_000);
+    assert!(memory.kernel_slice().is_none());
+}
+
+#[test]
+fn a_connection_that_cannot_take_the_kernel_path_stops_asking_for_it() {
+    let (_directory, file) = written_file(1_000_000);
+    let mut reader = StaticContent::Open(file).into_reader(0, 1_000_000);
+    assert!(reader.kernel_slice().is_some());
+    reader.without_kernel();
+    assert!(reader.kernel_slice().is_none());
+}
+
+#[test]
+fn a_range_past_the_end_of_the_file_is_not_sent_by_the_kernel() {
+    let (_directory, file) = written_file(100_000);
+    let mut reader = StaticContent::Open(file).into_reader(0, 300_000);
+    assert!(reader.kernel_slice().is_none());
+}
+
+#[tokio::test]
+async fn the_chunk_reader_continues_where_the_kernel_slices_ended() {
+    let data: Vec<u8> = (0..1_300_000_u32)
+        .map(|value| (value % 251) as u8)
+        .collect();
+    let directory = memory_directory();
+    let path = directory.path().join("data.bin");
+    std::fs::write(&path, &data).expect("write data");
+    let mut reader =
+        StaticContent::Open(File::open(&path).expect("open")).into_reader(5, 1_200_000);
+    let slice = reader.kernel_slice().expect("a first slice");
+    reader.advance(slice.length as u64);
+    let mut rest = Vec::new();
+    while let Some(chunk) = reader.next_chunk().await.expect("chunk") {
+        rest.extend_from_slice(&chunk);
+    }
+    assert!(
+        rest == data[5 + slice.length..5 + 1_200_000],
+        "the tail differs"
+    );
+}

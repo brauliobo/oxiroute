@@ -100,6 +100,15 @@ impl HttpModule for ConfiguredCompression {
     }
 }
 
+/// Whether a response module may still rewrite the body of this response: bytes sent by the kernel would skip it.
+pub(super) fn body_may_change(session: &Session) -> bool {
+    let modules = &session.downstream_modules_ctx;
+    !modules.is_empty()
+        && modules
+            .get::<ConfiguredCompression>()
+            .is_none_or(|compression| compression.ready)
+}
+
 pub(super) fn gzip_matches(gzip: &HttpGzipPlan, response: &pingora::http::ResponseHeader) -> bool {
     if !matches!(
         response.status,

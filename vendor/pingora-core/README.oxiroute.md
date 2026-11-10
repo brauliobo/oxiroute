@@ -219,6 +219,30 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   `RuntimeOpts::connection_age`; with `work_stealing` off and the age set, the workers of the service runtime serve their
   connections newest first and the oldest after that age (the vendored `pingora-runtime`, see its README).
 
+- `protocols/l4/stream.rs` and `protocols/l4/lazy_read.rs` expose `Stream::tcp_socket`, `has_read_ahead` and
+  `has_write_behind`: the TCP socket under the buffers and whether bytes are held in user space on either side. OxiRoute moves
+  bulk payload on the socket itself (`splice(2)`) only when both are empty. Tests in `protocols/l4/stream/tests.rs`.
+
+- `protocols/l4/sendfile.rs`, `protocols/http/v1/server.rs`, `protocols/http/v1/body.rs` and `protocols/http/server.rs`: `Session::write_response_body_from_file`
+  sends a range of an open file as the body of a `Content-Length` response with `sendfile(2)` (flushes the response head first, accounts the
+  bytes in the body writer and `body_bytes_sent`, applies the write timeout) and returns `None`, sending nothing, for chunked bodies, HTTP/2, TLS
+  and any other transport than a plain TCP stream. Tests in `protocols/l4/sendfile.rs`.
+
+- `protocols/http/v2/server.rs` serves downstream HTTP/2 with the in-tree `oxiroute-h2` server (`crates/oxiroute-h2`) instead
+  of `h2::server`. `H2Options` is now `oxiroute_h2::server::Config` and `Reason` is `oxiroute_h2::Reason`; `handshake`,
+  `HttpSession` and its methods keep their signatures. The session holds an `oxiroute_h2::server::Stream` (no
+  `SendResponse`/`SendStream`/`RecvStream`); response bodies wait for send-window capacity with `poll_capacity` and
+  `send_data`; `poll_read_body_bytes` and `take_response_body_writer` (unused by OxiRoute) are removed. A request whose
+  stream the peer reset before it was accepted is not delivered, and an empty request DATA frame carrying
+  END_STREAM ends the body without yielding an empty chunk. `Cargo.toml` gains a path dependency on `oxiroute-h2`.
+  The `h2` crate stays for the upstream client and as the differential-test reference. `apps/mod.rs` is unchanged: the
+  connection loop (`graceful_shutdown`, `accept`) is the same, and `apps/h2_shutdown_tests.rs` passes. The 0.9.1 acceptance
+  checks (request target bytes, Content-Length framing, authority, the malformed-stream budget, idle timeout) stay in
+  `HttpSession` on top of the new session. `Session::shutdown_with_reason` takes `oxiroute_h2::Reason`. The two
+  graceful-shutdown/authority unit tests that relied on `h2` behaviour were adapted: the client answers the server's
+  PING before the closing GOAWAY is expected, and a request reset before it was handed out never reaches the
+  application.
+
 - Tests: the unit tests no longer depend on the Internet, fixed ports, a stored key pair or host sysctls. `connectors/test_servers.rs`
   provides loopback servers that own a kernel-assigned port (HTTP redirect, TLS with HTTP/1.1 or HTTP/2, a refused address, a
   blackhole whose accept queue is full), `test_tls.rs` generates a throwaway self-signed certificate per test, and the listener tests
@@ -236,21 +260,8 @@ response facts, noted request write, inline request loop, zero-copy request body
 Date and Connection lines, header map headroom, single-clock timeouts, the parked idle wait (`apps/idle_wait.rs`), the pooled request future (`apps/pooled_future.rs`), the pooled coalescing write buffer, owned-preread, borrowed-request-write,
 parsed-header ownership, response-task batch, lazy read buffer and coalescing writer, pooled gzip state, header-name
 cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, the per-worker connection placement (`set_buffer(own_driver)`) and
-`ServerConf::connection_age_ms`.
+`ServerConf::connection_age_ms`, the stream buffer accessors (`tcp_socket`, `has_read_ahead`, `has_write_behind`) and the
+sendfile body write (`write_body_from_file`).
 Every upstream H1 correctness fix whose code our forks replace (`idle.rs`, `proxy_h1_inline.rs` in `pingora-proxy`,
 the inline relay) must be re-derived by hand. Then run `scripts/test-vendored.sh`, the OxiRoute TLS and HTTP wire
 tests and strict clippy.
-- `protocols/http/v2/server.rs` serves downstream HTTP/2 with the in-tree `oxiroute-h2` server (`crates/oxiroute-h2`) instead
-  of `h2::server`. `H2Options` is now `oxiroute_h2::server::Config` and `Reason` is `oxiroute_h2::Reason`; `handshake`,
-  `HttpSession` and its methods keep their signatures. The session holds an `oxiroute_h2::server::Stream` (no
-  `SendResponse`/`SendStream`/`RecvStream`); response bodies wait for send-window capacity with `poll_capacity` and
-  `send_data`; `poll_read_body_bytes` and `take_response_body_writer` (unused by OxiRoute) are removed. A request whose
-  stream the peer reset before it was accepted is not delivered, and an empty request DATA frame carrying
-  END_STREAM ends the body without yielding an empty chunk. `Cargo.toml` gains a path dependency on `oxiroute-h2`.
-  The `h2` crate stays for the upstream client and as the differential-test reference. `apps/mod.rs` is unchanged: the
-  connection loop (`graceful_shutdown`, `accept`) is the same, and `apps/h2_shutdown_tests.rs` passes. The 0.9.1 acceptance
-  checks (request target bytes, Content-Length framing, authority, the malformed-stream budget, idle timeout) stay in
-  `HttpSession` on top of the new session. `Session::shutdown_with_reason` takes `oxiroute_h2::Reason`. The two
-  graceful-shutdown/authority unit tests that relied on `h2` behaviour were adapted: the client answers the server's
-  PING before the closing GOAWAY is expected, and a request reset before it was handed out never reaches the
-  application.

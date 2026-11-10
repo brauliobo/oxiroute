@@ -82,7 +82,7 @@ alloc_bytes_per_req clock_gettime_per_req`, `heap_live_bytes_per_conn rss_bytes_
 * Feature A/B on one workload (16 keep-alive connections, 1 KiB): `f_base f_fixed f_forwarded f_access_log f_timeouts f_retry
   f_queue f_capacity f_passive f_breaker f_outlier f_nginx_host f_all_6_0`, plus `dns_on_connect`, `dns_startup`,
   `pool_s2`.
-* Other actions: `gzip_html64k nogzip_html64k cache_hit_b1k cache_hit_b64k static_f{1k,64k,1m} ws_echo_{64,1k,16k} l4_echo_{1k,256k}`
+* Other actions: `gzip_html64k nogzip_html64k cache_hit_b1k cache_hit_b64k static_f{1k,64k,1m} ws_echo_{64,1k,16k} l4_echo_{1k,16k,64k,256k}, l4_echo_{16k,64k,256k}_paced`
   (a `ws_echo` request is one message echoed through an upgraded connection).
 * TLS (OpenSSL via Pingora) and HTTP/2: `tls_h1_keepalive tls_hs_full_{tls13,tls12,rsa2048}
   tls_hs_resume_{cache_tls12,cache_tls13,tickets_tls13,client_only} tls_h1_b1m h2_b1k_c4s16 h2_b64k_c4s16 h2_b0_c1s1 h2_post1k_c4s16`.

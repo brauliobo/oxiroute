@@ -111,6 +111,14 @@ def build_lanes():
     add(lane("ws_echo_16k", ["--proto", "ws", "--conns", "16", "--msg-bytes", "16384"], requests=10000))
     add(lane("ws_echo_1k", ["--proto", "ws", "--conns", "16", "--msg-bytes", "1024"]))
     add(lane("l4_echo_1k", ["--proto", "tcp", "--conns", "16", "--msg-bytes", "1024"], features=["l4"]))
+    add(lane("l4_echo_16k", ["--proto", "tcp", "--conns", "16", "--msg-bytes", "16384"], features=["l4"],
+             requests=10000))
+    add(lane("l4_echo_64k", ["--proto", "tcp", "--conns", "16", "--msg-bytes", "65536"], features=["l4"],
+             requests=5000))
+    # Paced: the relay is idle between messages, so the cost per message does not depend on how busy the host is.
+    for size in (16384, 65536, 262144):
+        add(lane(f"l4_echo_{size // 1024}k_paced", ["--proto", "tcp", "--conns", "16", "--msg-bytes", str(size),
+                                                    "--pace-ms", "2"], features=["l4"], requests=3000, warmup=100))
     add(lane("l4_echo_256k", ["--proto", "tcp", "--conns", "16", "--msg-bytes", "262144"], features=["l4"],
              requests=3000, warmup=100))
     # TLS termination (OpenSSL via Pingora).
@@ -385,7 +393,7 @@ def context_switches(path):
 
 
 def thread_usage(before, after, elapsed):
-    """(busiest-thread shares as percent of one CPU, kernel share of all proxy CPU time in percent) over the window."""
+    """(busiest-thread shares as percent of one CPU, kernel share of all proxy CPU time in percent, CPU seconds) over the window."""
     ticks = os.sysconf("SC_CLK_TCK")
 
     def usage(path):
@@ -402,7 +410,8 @@ def thread_usage(before, after, elapsed):
     shares = sorted((((user + kernel) * 100 / ticks / elapsed, comm[tid]) for tid, (user, kernel) in spent.items()),
                     reverse=True)
     user, kernel = (sum(times[index] for times in spent.values()) for index in (0, 1))
-    return [f"{name}:{round(share)}" for share, name in shares[:4]], round(100 * kernel / max(user + kernel, 1))
+    return ([f"{name}:{round(share)}" for share, name in shares[:4]], round(100 * kernel / max(user + kernel, 1)),
+            (user + kernel) / ticks)
 
 
 def parse_perf(path):
@@ -452,9 +461,9 @@ def measured_rep(env, rep, idle):
     switched = context_switches(env.work / f"sw{rep}.b")
     elapsed = float(load["elapsed_ms"]) / 1000
     requests = int(load["ok"])
-    busy, kernel_pct = thread_usage(env.work / f"st{rep}.a", env.work / f"st{rep}.b", elapsed)
+    busy, kernel_pct, cpu_seconds = thread_usage(env.work / f"st{rep}.a", env.work / f"st{rep}.b", elapsed)
     return {
-        "busy": busy, "kernel_pct": kernel_pct,
+        "busy": busy, "kernel_pct": kernel_pct, "cpu_us": cpu_seconds * 1e6 / requests,
         "instr": (counters["instructions"] - idle["instructions"] * elapsed) / requests,
         "cycles": (counters["cycles"] - idle["cycles"] * elapsed) / requests,
         "extra": {event.split(":")[0]: counters.get(event.split(":")[0], 0) / requests for event in PERF_EXTRA},
@@ -490,7 +499,7 @@ def measure_perf(env, reps):
         "p999_us": round(median(column("p999"))), "connect_p50_us": round(median(column("connect_p50"))),
         "connects": round(median(column("connects"))), "errors": sum(column("errors")), "rss_kb": status["rss_kb"], "hwm_kb": status["hwm_kb"],
         "threads": status["threads"], "fds": status["fds"], "busy_threads_pct": "/".join(map(str, samples[-1]["busy"])),
-        "kernel_cpu_pct": round(median(column("kernel_pct"))),
+        "kernel_cpu_pct": round(median(column("kernel_pct"))), "cpu_us_per_req": round(median(column("cpu_us")), 1),
     }
 
 

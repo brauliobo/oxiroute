@@ -63,6 +63,7 @@ pub use l4::proxy_protocol::{
     ParsedProxyHeader, PrefixedStream, ProxyProtocolError, ProxyProtocolErrorKind,
     ProxyProtocolResult, ProxyProtocolTransport, accept_stream, encode_header, parse_header,
 };
+pub use l4::relay::end::{CopyOnly, RelayEnd};
 pub use l4::service::L4ServicePlan;
 pub use l4::tcp::{
     RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,

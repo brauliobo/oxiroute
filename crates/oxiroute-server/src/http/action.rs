@@ -57,6 +57,7 @@ mod proxy_policy;
 mod static_cache;
 mod static_content;
 mod static_files;
+mod static_kernel;
 mod static_serve;
 
 pub(crate) use access::*;
