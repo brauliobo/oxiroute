@@ -69,7 +69,7 @@ cp "${repo_dir}/scripts/create-release-archive.sh" "${repo_dir}/scripts/release-
   "${repo_dir}/scripts/verify-release-archive.sh" "${epoch_source}/scripts/"
 "${epoch_source}/scripts/create-release-archive.sh" "${test_root}/before-pin.tar.gz" "${version}" >/dev/null
 printf '\n' >>"${epoch_source}/packaging/arch/PKGBUILD"
-GIT_COMMITTER_DATE="1700000000 +0000" git -C "${epoch_source}" commit --quiet -m 'packaging: pin' -- packaging/arch/PKGBUILD
+GIT_COMMITTER_DATE="1700000000 +0000" git -C "${epoch_source}" -c user.name=test -c user.email=test@example.com commit --quiet -m 'packaging: pin' -- packaging/arch/PKGBUILD
 "${epoch_source}/scripts/create-release-archive.sh" "${test_root}/after-pin.tar.gz" "${version}" >/dev/null
 cmp "${test_root}/before-pin.tar.gz" "${test_root}/after-pin.tar.gz"
 
