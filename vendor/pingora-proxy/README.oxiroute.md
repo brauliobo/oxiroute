@@ -42,6 +42,9 @@ task handoffs and response batches, the cancellable upstream attempt, and compat
   `impl Trait` in traits) instead of `#[async_trait]`: an implementation still writes `async fn`, and a hook is
   awaited inside the future of the request instead of being boxed (and its state copied to the heap) for every call.
   A hook default with no body of its own is an `async move` block that returns at once.
+- `lib.rs` `HttpProxy::process_request` borrows the request context (`&mut CTX`) from a `Box` made by its callers instead
+  of taking it by value: an async fn stores a by-value parameter and the local it is moved into, so the 1.9 KiB OxiRoute
+  context was in every suspend state of the request future twice.
 - `lib.rs` `HttpProxy` implements `HttpServerApp::process_new_http_inline` (see `pingora-core`); `process_new_http`
   delegates to it.
 - `lib.rs` `handle_new_request` waits for one shutdown signal while it reads a request head: the watch its owner
