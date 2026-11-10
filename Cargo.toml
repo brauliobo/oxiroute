@@ -18,7 +18,6 @@ members = [
 exclude = [
     "vendor/pingora-core",
     "vendor/pingora-load-balancing",
-    "vendor/pingora-rustls",
     "vendor/pingora-timeout",
 ]
 resolver = "3"
@@ -86,7 +85,6 @@ h3 = { git = "https://github.com/hyperium/h3", rev = "43745ad87e95b0c035ac9c547a
 pingora-core = { path = "vendor/pingora-core" }
 pingora-load-balancing = { path = "vendor/pingora-load-balancing" }
 pingora-proxy = { path = "vendor/pingora-proxy" }
-pingora-rustls = { path = "vendor/pingora-rustls" }
 pingora-timeout = { path = "vendor/pingora-timeout" }
 rml_rtmp = { path = "vendor/rml_rtmp" }
 
