@@ -50,7 +50,6 @@ pub use file_watcher::{
     FileWatcherConfig, FileWatcherError, FileWatcherMonitor, FileWatcherStatus,
     FileWatcherSupervisor,
 };
-pub use handshake_pool::{HandshakePoolStats, handshake_pool_stats};
 pub use tls_alpn::{
     TLS_ALPN_IDENTIFIER_OID, TLS_ALPN_PROTOCOL, TlsAlpnChallenge, TlsAlpnChallengeError,
     TlsAlpnChallengeIdentity, TlsAlpnChallengeLease, TlsAlpnChallengeStore,

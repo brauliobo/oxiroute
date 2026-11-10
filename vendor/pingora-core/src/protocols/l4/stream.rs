@@ -19,8 +19,8 @@ use futures::FutureExt;
 use log::debug;
 
 use pingora_error::{ErrorType::*, OrErr, Result};
-#[cfg(target_os = "linux")]
 use std::any::Any;
+#[cfg(target_os = "linux")]
 use std::io::IoSliceMut;
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
@@ -181,7 +181,7 @@ impl RawStreamWrapper {
             #[cfg(target_os = "linux")]
             enable_rx_ts: false,
             #[cfg(target_os = "linux")]
-            reusable_cmsg_space: nix::cmsg_space!(nix::sys::time::TimeSpec),
+            reusable_cmsg_space: nix::cmsg_space!(nix::sys::socket::Timestamps),
         }
     }
 
@@ -244,7 +244,8 @@ impl AsyncRead for RawStreamWrapper {
                             as *mut [u8])
                     };
                     let mut iov = [IoSliceMut::new(b)];
-                    rs_wrapper.reusable_cmsg_space.clear();
+
+                    rs_wrapper.reusable_cmsg_space.fill(0);
 
                     match s.try_io(Interest::READABLE, || {
                         recvmsg::<SockaddrStorage>(
@@ -257,7 +258,7 @@ impl AsyncRead for RawStreamWrapper {
                     }) {
                         Ok(r) => {
                             if let Some(ControlMessageOwned::ScmTimestampsns(rtime)) = r
-                                .cmsgs()
+                                .cmsgs()?
                                 .find(|i| matches!(i, ControlMessageOwned::ScmTimestampsns(_)))
                             {
                                 // The returned timestamp is a real (i.e. not monotonic) timestamp
@@ -356,18 +357,69 @@ impl AsRawSocket for RawStreamWrapper {
     }
 }
 
-// Large read buffering helps reducing syscalls with little trade-off
-// Ssl layer always does "small" reads in 16k (TLS record size) so L4 read buffer helps a lot.
-// The buffer is a thread-shared scratch (see `lazy_read`), so an idle connection holds none of it.
-const BUF_READ_SIZE: usize = 64 * 1024;
-// Small write buf to match MSS. Too large write buf delays real time communication.
-// This buffering effectively implements something similar to Nagle's algorithm.
-// The benefit is that user space can control when to flush, where Nagle's can't be controlled.
-// And userspace buffering reduce both syscalls and small packets.
-const BUF_WRITE_SIZE: usize = 1460;
-// tokio rejects zero-capacity buffers. One byte keeps every read and write bypassing the buffer
-// until `set_buffer` installs the real sizes.
-const UNBUFFERED_CAPACITY: usize = 1;
+/// The default L4 read buffer size.
+///
+/// Large read buffering helps reducing syscalls with little trade-off. The SSL
+/// layer always does "small" reads in 16k chunks (TLS record size), so L4 read
+/// buffering helps a lot. The buffer is a thread-shared scratch (see `lazy_read`), so an idle
+/// connection holds none of it.
+pub const DEFAULT_L4_READ_BUFFER_SIZE: usize = 64 * 1024;
+
+/// The default L4 write buffer size.
+///
+/// Small write buffering matches a typical MSS. Too large a write buffer delays
+/// real-time communication. This buffering effectively implements something
+/// similar to Nagle's algorithm, but user space can control when to flush.
+pub const DEFAULT_L4_WRITE_BUFFER_SIZE: usize = 1460;
+
+/// L4 read and write buffer sizing.
+///
+/// Leaving either side as `None` preserves Pingora's default for that side.
+/// Setting either side to `Some(0)` disables buffering for that direction.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct L4BufferSettings {
+    /// Read buffer size in bytes. `None` uses [`DEFAULT_L4_READ_BUFFER_SIZE`].
+    pub read: Option<usize>,
+    /// Write buffer size in bytes. `None` uses [`DEFAULT_L4_WRITE_BUFFER_SIZE`].
+    pub write: Option<usize>,
+}
+
+impl L4BufferSettings {
+    /// Create settings with both read and write buffer sizes set explicitly.
+    pub fn new(read: usize, write: usize) -> Self {
+        Self {
+            read: Some(read),
+            write: Some(write),
+        }
+    }
+
+    /// Create settings that disable both read and write buffering.
+    pub fn unbuffered() -> Self {
+        Self::new(0, 0)
+    }
+
+    /// Set the read buffer size.
+    pub fn read(mut self, read: usize) -> Self {
+        self.read = Some(read);
+        self
+    }
+
+    /// Set the write buffer size.
+    pub fn write(mut self, write: usize) -> Self {
+        self.write = Some(write);
+        self
+    }
+
+    /// Resolved read buffer size after applying defaults.
+    pub fn read_capacity(&self) -> usize {
+        self.read.unwrap_or(DEFAULT_L4_READ_BUFFER_SIZE)
+    }
+
+    /// Resolved write buffer size after applying defaults.
+    pub fn write_capacity(&self) -> usize {
+        self.write.unwrap_or(DEFAULT_L4_WRITE_BUFFER_SIZE)
+    }
+}
 
 // NOTE: with writer buffering, users need to call flush() to make sure the data is actually
 // sent. Otherwise data could be stuck in the buffer forever or get lost when stream is closed.
@@ -386,6 +438,8 @@ pub struct Stream {
     socket_digest: Option<Arc<SocketDigest>>,
     /// When this connection is established
     pub established_ts: SystemTime,
+    establishment_duration: Option<Duration>,
+    offload_wait_duration: Option<Duration>,
     /// The distributed tracing object for this stream
     pub tracer: Option<Tracer>,
     /// Last rx timestamp associated with the last recvmsg call.
@@ -405,6 +459,16 @@ impl Stream {
 
     fn stream_mut(&mut self) -> &mut LazyReadStream<RawStreamWrapper> {
         self.stream.as_mut().expect("stream should always be set")
+    }
+
+    /// Record transport connection timing for this stream.
+    pub(crate) fn set_establishment_timing(
+        &mut self,
+        establishment_duration: Duration,
+        offload_wait_duration: Option<Duration>,
+    ) {
+        self.establishment_duration = Some(establishment_duration);
+        self.offload_wait_duration = offload_wait_duration;
     }
 
     /// set TCP nodelay for this connection if `self` is TCP
@@ -446,7 +510,7 @@ impl Stream {
         if let RawStream::Tcp(s) = &self.stream_mut().get_mut().stream {
             let timestamp_options = TimestampingFlag::SOF_TIMESTAMPING_RX_SOFTWARE
                 | TimestampingFlag::SOF_TIMESTAMPING_SOFTWARE;
-            setsockopt(s.as_raw_fd(), sockopt::Timestamping, &timestamp_options)
+            setsockopt(&s, sockopt::Timestamping, &timestamp_options)
                 .or_err(InternalError, "failed to set SOF_TIMESTAMPING_RX_SOFTWARE")?;
             self.stream_mut().get_mut().enable_rx_ts(true);
         }
@@ -459,22 +523,30 @@ impl Stream {
         Ok(())
     }
 
-    /// Put Some data back to the head of the stream to be read again
-    pub(crate) fn rewind(&mut self, data: &[u8]) {
+    /// Put some data back to the head of the stream to be read again.
+    ///
+    /// This is useful when you've read data to detect a protocol (e.g., PROXY protocol)
+    /// but the data wasn't what you expected, so you need to "unread" it.
+    pub fn rewind(&mut self, data: &[u8]) {
         if !data.is_empty() {
             self.rewind_read_buf.push(data.to_vec());
         }
     }
 
-    /// Set the buffer of the stream
+    /// Set the read and write buffer sizes
     /// It is only set later because of the malloc overhead in critical accept() path
-    pub(crate) fn set_buffer(&mut self) {
+    pub(crate) fn set_buffer(&mut self, buffer: L4BufferSettings) {
         use std::mem;
         // The buffer sizes are fixed at construction, so take the raw stream out of the
         // unbuffered stream and wrap it again with the sizes we want
         let stream = mem::take(&mut self.stream);
-        let stream =
-            stream.map(|s| LazyReadStream::new(BUF_READ_SIZE, BUF_WRITE_SIZE, s.into_inner()));
+        let stream = stream.map(|s| {
+            LazyReadStream::new(
+                buffer.read_capacity(),
+                buffer.write_capacity(),
+                s.into_inner(),
+            )
+        });
         let _ = mem::replace(&mut self.stream, stream);
     }
 }
@@ -484,13 +556,15 @@ impl From<TcpStream> for Stream {
         Stream {
             admission: None,
             stream: Some(LazyReadStream::new(
-                UNBUFFERED_CAPACITY,
-                UNBUFFERED_CAPACITY,
+                0,
+                0,
                 RawStreamWrapper::new(RawStream::Tcp(s)),
             )),
             rewind_read_buf: Vec::new(),
             buffer_write: true,
             established_ts: SystemTime::now(),
+            establishment_duration: None,
+            offload_wait_duration: None,
             proxy_digest: None,
             socket_digest: None,
             tracer: None,
@@ -504,13 +578,15 @@ impl From<virt::VirtualSocketStream> for Stream {
         Stream {
             admission: None,
             stream: Some(LazyReadStream::new(
-                UNBUFFERED_CAPACITY,
-                UNBUFFERED_CAPACITY,
+                0,
+                0,
                 RawStreamWrapper::new(RawStream::Virtual(s)),
             )),
             rewind_read_buf: Vec::new(),
             buffer_write: true,
             established_ts: SystemTime::now(),
+            establishment_duration: None,
+            offload_wait_duration: None,
             proxy_digest: None,
             socket_digest: None,
             tracer: None,
@@ -525,13 +601,15 @@ impl From<UnixStream> for Stream {
         Stream {
             admission: None,
             stream: Some(LazyReadStream::new(
-                UNBUFFERED_CAPACITY,
-                UNBUFFERED_CAPACITY,
+                0,
+                0,
                 RawStreamWrapper::new(RawStream::Unix(s)),
             )),
             rewind_read_buf: Vec::new(),
             buffer_write: true,
             established_ts: SystemTime::now(),
+            establishment_duration: None,
+            offload_wait_duration: None,
             proxy_digest: None,
             socket_digest: None,
             tracer: None,
@@ -607,6 +685,8 @@ impl GetTimingDigest for Stream {
         let mut digest = Vec::with_capacity(2); // expect to have both L4 stream and TLS layer
         digest.push(Some(TimingDigest {
             established_ts: self.established_ts,
+            establishment_duration: self.establishment_duration,
+            offload_wait_duration: self.offload_wait_duration,
         }));
         digest
     }
@@ -721,10 +801,6 @@ impl AsyncWrite for Stream {
         }
     }
 }
-
-pub mod async_write_vec;
-
-pub use async_write_vec::AsyncWriteVec;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]

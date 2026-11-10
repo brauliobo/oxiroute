@@ -122,7 +122,7 @@ where
             }
         };
         #[cfg(unix)]
-        let fds = Some(Arc::new(tokio::sync::Mutex::new(fds)));
+        let fds = Some(Arc::new(parking_lot::Mutex::new(fds)));
         let ready_metrics = self.metrics.clone();
         let ready_notifier = ready_notifier.with_ready_callback(move || {
             if let Some(metrics) = ready_metrics {

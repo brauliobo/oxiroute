@@ -1,13 +1,12 @@
 #![cfg(unix)]
 #![allow(dead_code, unused_imports, clippy::duplicate_mod)]
-//! TLS handshakes run on the handshake pool and the established streams are served by the listener's worker.
+//! TLS handshakes run on the offload threads and the established streams are served by the listener's worker.
 
 mod support;
 
 use std::sync::Arc;
 
 use oxiroute_config::{AlpnProtocol, HttpVersionPolicy};
-use oxiroute_server::tls::handshake_pool_stats;
 use tokio::time::timeout;
 
 use support::{
@@ -16,6 +15,14 @@ use support::{
 };
 
 const CONNECTIONS: u64 = 24;
+
+fn thread_names() -> Vec<String> {
+    std::fs::read_dir("/proc/self/task")
+        .expect("task list")
+        .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+        .map(|name| name.trim().to_owned())
+        .collect()
+}
 
 #[tokio::test]
 async fn concurrent_handshakes_are_offloaded_and_every_connection_is_served() {
@@ -31,7 +38,6 @@ async fn concurrent_handshakes_are_offloaded_and_every_connection_is_served() {
         );
         let proxy = ProxyHarness::start(&config.validate(), reserved);
         let client = tls_client_config(&fixture("ca-a.pem"), &[b"http/1.1"]).unwrap();
-        let before = handshake_pool_stats();
 
         let connections: Vec<_> = (0..CONNECTIONS)
             .map(|_| {
@@ -49,10 +55,12 @@ async fn concurrent_handshakes_are_offloaded_and_every_connection_is_served() {
             assert_eq!(connection.await.unwrap(), 200);
         }
 
-        let after = handshake_pool_stats();
-        assert_eq!(after.started_total - before.started_total, CONNECTIONS);
-        assert_eq!(after.queue_depth, 0);
-        assert_eq!(after.rejected_total, before.rejected_total);
+        assert!(
+            thread_names()
+                .iter()
+                .any(|name| name.starts_with("downstream TLS")),
+            "no offload thread ran the handshakes"
+        );
         proxy.finish().await;
         origin.finish().await;
     })

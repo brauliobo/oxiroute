@@ -239,7 +239,7 @@ pub(super) fn apply_request_header_mutations(
                 else {
                     continue;
                 };
-                request.set_header(name.clone(), value)?;
+                request.insert_header(name.clone(), value)?;
             }
         }
     }

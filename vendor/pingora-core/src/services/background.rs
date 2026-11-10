@@ -110,6 +110,10 @@ where
     fn threads(&self) -> Option<usize> {
         self.threads
     }
+
+    fn listen_addresses(&self) -> Option<Vec<String>> {
+        Some(Vec::new())
+    }
 }
 
 /// Helper function to create a background service with a human readable name

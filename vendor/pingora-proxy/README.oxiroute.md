@@ -1,22 +1,26 @@
 # Vendored pingora-proxy
 
-This directory contains the normalized, published `pingora-proxy 0.8.1` source from crates.io
-(registry checksum `8a92ee756ecf6ecb6419864da651cad6cecd933b6d420a26877031efa16bef57`)
+This directory contains the normalized, published `pingora-proxy 0.9.1` source from crates.io
+(registry checksum `8e3d5670490740405ecc8c6f75c3fcbce4d24f7adaffb355ca44550e7918e358`)
 under its upstream Apache-2.0 license. The crate archive's `.cargo_vcs_info.json` identifies upstream
-commit `719ef6cd54e40b530127751bab6c1afc5ae815a8`; the package does not identify a corresponding tag.
+commit `f86ffda5d3ae5c3baf5125682138b33b26c01b08`. The 0.8.1 to 0.9.1 rebase clears RUSTSEC-2026-0390 (client
+`Connection` nominations and hop-by-hop headers forwarded to HTTP/1 upstreams) for this crate: upstream's
+`HttpUpstreamRequestPolicy` is part of the crate. OxiRoute sets `preserve()` on its peers (see below) and owns
+request header sanitation in its own request policy, so the advisory is cleared in this crate by the version while
+the product's behaviour is decided by that policy, not by Pingora's.
 
 `LICENSE` remains a byte-for-byte copy from Cargo's normalized registry extraction. OxiRoute's
 delta is limited to isolated borrowed HTTP/1 upstream request preparation, inline-storage HTTP/1
 task handoffs and response batches, the cancellable upstream attempt, and compatibility with the adjacent patched core:
 
-- `Cargo.toml` resolves its direct `pingora-core 0.8.1` dependency through the adjacent
+- `Cargo.toml` resolves its direct `pingora-core 0.9.1` dependency through the adjacent
   `../pingora-core` path. The root workspace patches transitive crates.io references to the same
   path, so workspace builds contain one patched core. `pingora-proxy` is a standard workspace member
   while `pingora-core` remains an excluded path dependency. The adjacent core owns the shared
   `smallvec` task batch. The published dev dependencies are retained, with `reqwest 0.13` (without a bundled TLS
-  provider) and `tokio-tungstenite 0.30`, so the published examples remain buildable.
-- `examples/connection_filter.rs` accepts the patched core's optional peer address, and
-  `examples/virtual_l4.rs` initializes its optional connection-lifetime field to `None`, preserving
+  provider) and `tokio-tungstenite 0.30`, so the published examples remain buildable. There is no `rustls` feature
+  (`pingora-rustls` is no longer vendored) and no `shutdown_signal` bench (its source is not published).
+- `examples/virtual_l4.rs` initializes its optional connection-lifetime field to `None`, preserving
   the published examples' behavior while keeping all targets buildable.
 - `proxy_trait.rs` adds `PreparedUpstreamRequest` and the additive `prepare_upstream_request` hook.
   Its default clones the downstream request and invokes the existing mutable
@@ -29,6 +33,16 @@ task handoffs and response batches, the cancellable upstream attempt, and compat
   cancellation wins, the attempt is dropped (its upstream connection closes without returning to the
   pool) and its error goes through `error_while_proxy` like any attempt error. Inline tests cover the
   dropped connection and the unaffected default.
+- `proxy_h1.rs` applies upstream's request policy only when the peer's `http_upstream_request_policy` is not
+  `preserve()`: `preserve()` keeps the zero-clone borrowed write (OxiRoute sets it on every peer and sanitizes the
+  request itself); any other policy clones the request, sanitizes it, reconciles the authority and framing as
+  upstream's owned path does, and returns it owned. A request the preparation hook returned owned gets the policy
+  after the hook.
+- `proxy_h1.rs` and `proxy_h1_inline.rs` mirror upstream's 0.9 H1 correctness fixes by hand: the upstream connection
+  is reused only when the request write did not fail and the response was read to its end (`upstream_can_reuse`,
+  `pipe_state`); the pump and the inline relay run the `upstream_modules` hooks; request-target forms and the
+  cancel-safe header read live in core. `proxy_h2.rs` keeps the `spsc` queue under upstream's new pipe-state logic
+  (`spsc::Sender::closed` added).
 - `proxy_h1.rs` uses the preparation hook only for plain HTTP/1 requests with inactive caching.
   HTTP/2-to-HTTP/1 conversion and active cache mutation still clone and use the old mutable filter;
   H2 and custom upstream paths are unchanged. Borrowed headers use pingora-core's borrowed request
@@ -45,8 +59,11 @@ task handoffs and response batches, the cancellable upstream attempt, and compat
 - `lib.rs` `HttpProxy` implements `HttpServerApp::process_new_http_inline` (see `pingora-core`); `process_new_http`
   delegates to it.
 - `lib.rs` `handle_new_request` waits for one shutdown signal while it reads a request head: the watch its owner
-  shares for a connection that is between requests, the service `Notify` for the first request. It used to register
-  both for every request.
+  shares for a connection that is between requests (`Option<&ShutdownWatch>`), upstream's `await_shutdown()` for the
+  first request. `process_new_http_inline` also carries the keepalive-context handoff. `filter_response_tasks` loops
+  over upstream's per-task `downstream_response_task_filter`, so the 101 rules hold for batches.
+- `proxy_trait.rs` `adjust_upstream_modules` is declared `-> impl Future + Send`; upstream's other new hooks are
+  synchronous with default bodies and unchanged.
 - `proxy_h1_inline.rs` relays an HTTP/1 request in one loop (`HttpProxy::relays_inline`: an HTTP/1 or HTTP/2 client
   and no cache involvement): the loop waits for the next response task of the upstream session or the next request
   body chunk of the client. A chunk goes through the two request body filters and is written to the upstream where it
