@@ -2,6 +2,8 @@
 # Profile-guided optimisation of the release binary.
 #
 #   pgo.sh train        instrumented build, replay the R2 data-path lanes (no perf needed), merge into $PGO_PROFILE
+#   pgo.sh gen          the instrumented build alone, and pgo.sh lane NAME replays one lane of it (train = gen, every
+#                       lane of PGO_LANES, merge; the two steps let a long training be split and resumed)
 #   pgo.sh merge        merge the per-lane profiles of the last training into $PGO_PROFILE (lane weights, see below)
 #   pgo.sh build        release build that uses $PGO_PROFILE and fails if the compiler did not apply it
 #   pgo.sh plain        the same release build without a profile
@@ -17,8 +19,8 @@
 # Every lane keeps its own merged profile ($PGO_WORK/lane/NAME.profdata), so the mix can be changed without training
 # again: PGO_LANES entries are NAME or NAME:WEIGHT (llvm-profdata -weighted-input, default 1); `merge` combines them.
 #
-# Environment: PGO_WORK (scratch and default profile location), PGO_PROFILE, PGO_LANES, PGO_SCALE (request-count
-# multiplier of every lane), PGO_JOBS, PGO_TARGET, LLVM_PROFDATA, CARGO_TARGET_DIR (final build only),
+# Environment: PGO_WORK (scratch and default profile location), PGO_PROFILE, PGO_LANES, PGO_CARGO_PROFILE, PGO_SCALE
+# (request-count multiplier of every lane), PGO_JOBS, PGO_TARGET, LLVM_PROFDATA, CARGO_TARGET_DIR (final build only),
 # R2_PROXY_CPUS / R2_UPSTREAM_CPUS / R2_LOAD_CPUS (default: derived from nproc below 16 CPUs, harness defaults above).
 set -euo pipefail
 
@@ -34,12 +36,17 @@ wide_lanes=h2_b64k_c4s16,h2_post1k_c4s16,ws_echo_1k,l4_echo_1k,cache_hit_b1k,gzi
 lanes=${PGO_LANES:-${core_lanes},${wide_lanes}}
 scale=${PGO_SCALE:-0.5}
 jobs=${PGO_JOBS:-4}
+cargo_profile=${PGO_CARGO_PROFILE:-release}
+cargo_dir=${cargo_profile}
 max_missing_pct=${PGO_MAX_MISSING_PCT:-5}
 llvm_profdata=${LLVM_PROFDATA:-$(rustc --print sysroot)/lib/rustlib/${target}/bin/llvm-profdata}
 
-# The cargo command of packaging/arch/PKGBUILD; every build of this script uses exactly these arguments.
+# The cargo command of packaging/arch/PKGBUILD; every build of this script uses exactly these arguments. A profile other
+# than release (PGO_CARGO_PROFILE=release-abort) has its own profile data: unwinding changes the control-flow hashes.
 cargo_build() {
-  (cd "${repo}" && nice cargo build --release --locked --package oxiroute --package oxiroute-supervisor-process \
+  local select=(--release)
+  [[ ${cargo_profile} == release ]] || select=(--profile "${cargo_profile}")
+  (cd "${repo}" && nice cargo build "${select[@]}" --locked --package oxiroute --package oxiroute-supervisor-process \
     --target "${target}" --jobs "${jobs}")
 }
 
@@ -58,22 +65,29 @@ build_tool() {
     --locked --jobs 2)
 }
 
-train() {
+gen() {
   [[ -x ${llvm_profdata} ]] || { echo "llvm-profdata not found at ${llvm_profdata}; rustup component add llvm-tools" >&2; exit 1; }
   rm -rf "${work}/raw" "${work}/lane" "${work}/out" "${profile}"
   mkdir -p "${work}/lane" "$(dirname -- "${profile}")"
   RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-generate=${work}/unused" CARGO_TARGET_DIR="${work}/target-gen" cargo_build
   build_tool
+}
+
+lane() {
+  local lane=$1
+  mkdir -p "${work}/raw/${lane}"
+  rm -f "${work}/raw/${lane}"/*.profraw
   default_cpus
-  for entry in ${lanes//,/ }; do
-    local lane=${entry%%:*}
-    mkdir -p "${work}/raw/${lane}"
-    OXIROUTE_BIN="${work}/target-gen/${target}/release/oxiroute" R2TOOL_BIN="${work}/target-tool/release/r2tool" \
-      "${repo}/benchmarks/r2-data-path/run.sh" --train --lanes "${lane}" --scale "${scale}" --out "${work}/out/${lane}" \
-      --proxy-env "LLVM_PROFILE_FILE=${work}/raw/${lane}/%m_%p.profraw"
-    compgen -G "${work}/raw/${lane}/*.profraw" > /dev/null || { echo "lane ${lane} wrote no raw profiles" >&2; exit 1; }
-    "${llvm_profdata}" merge -o "${work}/lane/${lane}.profdata" "${work}/raw/${lane}"/*.profraw
-  done
+  OXIROUTE_BIN="${work}/target-gen/${target}/${cargo_dir}/oxiroute" R2TOOL_BIN="${work}/target-tool/release/r2tool" \
+    "${repo}/benchmarks/r2-data-path/run.sh" --train --lanes "${lane}" --scale "${scale}" --out "${work}/out/${lane}" \
+    --proxy-env "LLVM_PROFILE_FILE=${work}/raw/${lane}/%m_%p.profraw"
+  compgen -G "${work}/raw/${lane}/*.profraw" > /dev/null || { echo "lane ${lane} wrote no raw profiles" >&2; exit 1; }
+  "${llvm_profdata}" merge -o "${work}/lane/${lane}.profdata" "${work}/raw/${lane}"/*.profraw
+}
+
+train() {
+  gen
+  for entry in ${lanes//,/ }; do lane "${entry%%:*}"; done
   merge
 }
 
@@ -124,9 +138,11 @@ smoke() {
 
 case ${1:-} in
   train) train ;;
+  gen) gen ;;
+  lane) lane "${2:?usage: $0 lane NAME}" ;;
   merge) merge ;;
   build) build ;;
   plain) CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${work}/target-plain}" cargo_build ;;
   smoke) smoke "${2:-}" ;;
-  *) echo "usage: $0 train|merge|build|plain|smoke BIN" >&2; exit 2 ;;
+  *) echo "usage: $0 train|gen|lane NAME|merge|build|plain|smoke BIN" >&2; exit 2 ;;
 esac
