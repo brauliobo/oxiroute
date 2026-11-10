@@ -17,7 +17,7 @@
 set -euo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-work=${BOLT_WORK:-${HOME}/.cache/oxiroute-bolt}
+work=${BOLT_WORK:-${XDG_STATE_HOME:-${HOME}/.local/state}/oxiroute-bolt}
 export PATH=${BOLT_BIN_DIR:+${BOLT_BIN_DIR}:}${PATH}
 lanes=${BOLT_LANES:-h1_b1k h1_newconn_b1k tls_h1_keepalive static_f1k f_fixed h2_b1k_c4s16 tls_hs_full_tls13 h1_b64k h1_post4k f_access_log}
 scale=${BOLT_SCALE:-0.3}

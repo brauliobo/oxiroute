@@ -26,7 +26,7 @@ set -euo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 target=${PGO_TARGET:-x86_64-unknown-linux-gnu}
-work=${PGO_WORK:-/dev/shm/oxiroute-pgo}
+work=${PGO_WORK:-${XDG_STATE_HOME:-${HOME}/.local/state}/oxiroute-pgo}
 profile=${PGO_PROFILE:-${work}/oxiroute.profdata}
 # Core lanes (weight 4) keep the hot proxy path laid out as the 6.3 mix did; the weight-1 lanes add the features that
 # the core lanes never execute (HTTP/2 bodies, WebSocket, TCP relay, cache, gzip, large bodies, TLS 1.2, the 6.0
