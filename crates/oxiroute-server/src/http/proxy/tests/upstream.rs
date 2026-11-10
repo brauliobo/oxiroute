@@ -68,6 +68,7 @@ async fn http_falls_back_to_the_second_address_without_route_retry_budget() {
     assert_eq!(policy.max_retries, 0);
     let route = Arc::new(HttpRoutePlan {
         access: None,
+        lane: crate::http::proxy::lane::LaneRoute::Classic,
         action: HttpActionPlan::Proxy(crate::http::action::ProxyActionPlan {
             pool: Arc::clone(&plan),
             rescue_pool: None,
