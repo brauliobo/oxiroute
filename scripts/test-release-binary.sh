@@ -7,7 +7,8 @@
 #   test-release-binary.sh BIN [cargo test arguments]
 #
 # The tests are built without LTO (a test build does not need the shipped code generation, only the binary under test
-# does), then BIN replaces target/release/oxiroute, and the script fails if cargo replaced it again before the tests ran.
+# does). Cargo hard-links target/release/oxiroute to target/release/deps/oxiroute-HASH on every run, so BIN is written
+# into that file in place; the script fails if the binary the tests ran against is not BIN.
 # Environment: BOLT_TEST_TARGET_DIR (default: $CARGO_TARGET_DIR or the build scratch directory), PGO_JOBS (default 4).
 set -euo pipefail
 
@@ -24,7 +25,9 @@ installed=${CARGO_TARGET_DIR}/release/oxiroute
 
 cd "${repo}"
 nice cargo test --release --workspace --locked --jobs "${jobs}" --no-run
-install -Dm755 "${binary}" "${installed}"
+deps_file=$(find "${CARGO_TARGET_DIR}/release/deps" -samefile "${installed}")
+[[ $(wc -l <<< "${deps_file}") == 1 ]] || { echo "cannot find the cargo output behind ${installed}" >&2; exit 1; }
+cat -- "${binary}" > "${deps_file}"
 [[ $(sha256sum "${installed}" | cut -d' ' -f1) == "${expected}" ]]
 status=0
 nice cargo test --release --workspace --locked --jobs "${jobs}" --no-fail-fast "$@" || status=$?
