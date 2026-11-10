@@ -2,9 +2,19 @@
 //!
 //! Paths: `/b0 /b1k /b64k /b1m` fixed `application/octet-stream` bodies, `/html64k` compressible
 //! `text/html`, `/stream` chunked 64 KiB without delay, `/slow` chunked 64 KiB with a 2 ms gap between
-//! chunks, `/sink` (any method; drains the request body, answers `ok`), `/ws` (101 then byte echo).
+//! chunks, `/sink` (any method; drains the request body, answers `ok`), `/ws` (101 then byte echo),
+//! `/b1k-slow` like `/b1k` with one response in 500 delayed 200 ms.
 
-use std::{convert::Infallible, io, net::SocketAddr, sync::Arc, sync::OnceLock, time::Duration};
+use std::{
+    convert::Infallible,
+    io,
+    net::SocketAddr,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use bytes::Bytes;
 use futures_util::stream;
@@ -89,12 +99,23 @@ async fn echo_upgraded(upgraded: hyper::upgrade::Upgraded) {
     let _ = tokio::io::copy(&mut reader, &mut writer).await;
 }
 
+/// `/b1k-slow` answers like `/b1k`, but one request in `SLOW_EVERY` waits `SLOW_DELAY` first (slow-handler lanes).
+const SLOW_EVERY: u64 = 500;
+const SLOW_DELAY: Duration = Duration::from_millis(200);
+static SLOW_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 async fn handle(mut request: Request<Incoming>) -> Result<Response<Body>, Infallible> {
     let payloads = payloads();
     let path = request.uri().path().to_owned();
     Ok(match path.as_str() {
         "/b0" => full("application/octet-stream", Bytes::new()),
         "/b1k" => full("application/octet-stream", payloads.b1k.clone()),
+        "/b1k-slow" => {
+            if SLOW_COUNTER.fetch_add(1, Ordering::Relaxed) % SLOW_EVERY == 0 {
+                tokio::time::sleep(SLOW_DELAY).await;
+            }
+            full("application/octet-stream", payloads.b1k.clone())
+        }
         "/b64k" => full("application/octet-stream", payloads.b64k.clone()),
         "/b1m" => full("application/octet-stream", payloads.b1m.clone()),
         "/html64k" => full("text/html", payloads.html64k.clone()),
