@@ -1,5 +1,11 @@
 //! Deterministic robustness run: frame soup and mutated valid scripts must never panic the connection and the
 //! output must stay parseable (the same harness backs the `h2_frames` fuzz target).
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::similar_names
+)]
 mod harness;
 mod support;
 
@@ -128,7 +134,7 @@ fn structured(rng: &mut Rng) -> Vec<u8> {
 }
 
 fn mutate(rng: &mut Rng, mut s: Vec<u8>) -> Vec<u8> {
-    for _ in 0..1 + rng.below(6) {
+    for _ in 0..=rng.below(6) {
         let at = rng.below(s.len());
         match rng.below(4) {
             0 => s[at] ^= 1 << rng.below(8),
