@@ -2182,21 +2182,31 @@ mod tests_stream {
 
     #[test]
     fn a_final_head_rendered_for_a_caller_has_the_automatic_headers_last() {
-        let mut header = ResponseHeader::build(200, None).unwrap();
+        let mut header = ResponseHeader::build_no_case(200, None).unwrap();
         header.append_header("X-A", "1").unwrap();
         header.append_header("Connection", "upgrade").unwrap();
         let mut buf = BytesMut::new();
         render_final_response_head(&mut header, true, &mut buf).unwrap();
         let text = String::from_utf8(buf.to_vec()).unwrap();
-        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\nx-a: 1\r\nDate: "));
         assert_eq!(text.matches("Connection:").count(), 1);
-        assert!(text.contains("\r\nConnection: keep-alive\r\n\r\n"));
-        let (_, date) = text.split_once("Date: ").unwrap();
-        assert!(date.contains("\r\nConnection: keep-alive"));
-        let mut closing = ResponseHeader::build(204, None).unwrap();
+        assert!(text.ends_with("\r\nConnection: keep-alive\r\n\r\n"));
+        let mut closing = ResponseHeader::build_no_case(204, None).unwrap();
         let mut buf = BytesMut::new();
         render_final_response_head(&mut closing, false, &mut buf).unwrap();
-        assert!(String::from_utf8(buf.to_vec()).unwrap().contains("Connection: close\r\n\r\n"));
+        assert!(String::from_utf8(buf.to_vec()).unwrap().ends_with("Connection: close\r\n\r\n"));
+    }
+
+    #[test]
+    fn a_final_head_with_a_case_map_gets_the_automatic_headers_in_its_map() {
+        let mut header = ResponseHeader::build(200, None).unwrap();
+        header.append_header("X-A", "1").unwrap();
+        let mut buf = BytesMut::new();
+        render_final_response_head(&mut header, false, &mut buf).unwrap();
+        let text = String::from_utf8(buf.to_vec()).unwrap();
+        assert!(text.contains("X-A: 1\r\n"));
+        assert!(text.contains("Date: "));
+        assert!(text.contains("Connection: close\r\n"));
     }
 
     #[test]
@@ -2205,7 +2215,7 @@ mod tests_stream {
         header.append_header("X-I", "1").unwrap();
         let mut buf = BytesMut::new();
         render_informational_head(&header, &mut buf).unwrap();
-        assert_eq!(&buf[..], b"HTTP/1.1 100 Continue\r\nx-i: 1\r\n\r\n");
+        assert_eq!(&buf[..], b"HTTP/1.1 100 Continue\r\nX-I: 1\r\n\r\n");
     }
     use crate::protocols::http::v1::body::{BodyMode, ParseState};
     use crate::protocols::http::HttpTaskBatch;
