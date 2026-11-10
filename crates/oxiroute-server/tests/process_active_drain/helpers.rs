@@ -5,6 +5,7 @@ pub(super) fn management(address: SocketAddr) -> Management {
     Management {
         bind: address,
         ui_dir: None,
+        token_file: None,
     }
 }
 

@@ -723,6 +723,7 @@ fn complete_config() -> ConfigDraft {
         management: Some(Management {
             bind: socket("127.0.0.1:9080"),
             ui_dir: Some(PathBuf::from("./ui/dist")),
+            token_file: None,
         }),
         registry: None,
         stats: None,
@@ -735,6 +736,7 @@ fn complete_config() -> ConfigDraft {
         forward_proxy_services: Vec::new(),
         rtmp_services: test_rtmp_services(),
         l4_services: test_l4_services(),
+        audit: None,
     }
 }
 
@@ -756,6 +758,7 @@ fn minimal_config() -> ConfigDraft {
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
+        audit: None,
     }
 }
 
@@ -1493,6 +1496,7 @@ fn emits_defaults_empty_vectors_and_options_explicitly_as_data_only_lua() {
   max_connections = null,
   retirement = nil,
   management = nil,
+  audit = nil,
   registry = nil,
   stats = nil,
   certificates = {
@@ -1774,6 +1778,7 @@ fn rejects_non_utf8_paths_without_lossy_exposure() {
         ui_dir: Some(PathBuf::from(OsString::from_vec(
             b"/tmp/secret-\xff".to_vec(),
         ))),
+        token_file: None,
     });
 
     assert_render_error(

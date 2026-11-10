@@ -193,6 +193,7 @@ fn stage_two_configuration_accepts_stream_listeners_and_statistics() {
     config.management = Some(oxiroute_config::Management {
         bind: "127.0.0.1:9900".parse().expect("management address"),
         ui_dir: None,
+        token_file: None,
     });
     assert!(validate_stage_one_config(&config.clone().validate().expect("valid config")).is_ok());
     config.management = None;

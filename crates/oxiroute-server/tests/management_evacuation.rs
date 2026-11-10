@@ -249,6 +249,7 @@ impl Farm {
             management: Some(Management {
                 bind: self.management,
                 ui_dir: None,
+                token_file: None,
             }),
             listeners: vec![Listener {
                 name: "traffic".into(),

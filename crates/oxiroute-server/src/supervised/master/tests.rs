@@ -156,6 +156,7 @@ fn eligibility_accepts_authenticated_management_on_the_supervised_runtime() {
     config.management = Some(Management {
         bind: SocketAddr::from(([127, 0, 0, 1], 9900)),
         ui_dir: None,
+        token_file: None,
     });
     assert_eq!(
         supervised_eligibility(&validated(&config), CgroupV2ProbeStatus::Ready),
@@ -577,11 +578,13 @@ fn replacement_requires_the_same_listener_manifest() {
     active.management = Some(Management {
         bind: SocketAddr::from(([127, 0, 0, 1], 9900)),
         ui_dir: None,
+        token_file: None,
     });
     candidate = active.clone();
     candidate.management = Some(Management {
         bind: SocketAddr::from(([127, 0, 0, 1], 9901)),
         ui_dir: None,
+        token_file: None,
     });
     assert!(!ListenerReservations::same_supervised_listener_topology(
         &validated(&active),

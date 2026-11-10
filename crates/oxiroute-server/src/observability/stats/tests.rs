@@ -77,6 +77,7 @@ fn api() -> (
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
+        audit: None,
     };
     let config = config.validate().expect("valid config");
     fs::write(

@@ -56,6 +56,16 @@
       "required_tests": ["decode", "validate", "integration", "failure"]
     },
     {
+      "id": "canonical.management.token-file",
+      "kind": "field",
+      "path": "management.token_file",
+      "editability": "operator",
+      "normalization": ["absence reads OXIROUTE_MANAGEMENT_TOKEN_FILE"],
+      "validation": ["absolute normalized file path", "the token itself is never configuration"],
+      "runtime": { "target": "management.auth", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "render", "integration", "failure"]
+    },
+    {
       "id": "canonical.config.stats",
       "kind": "field",
       "path": "stats",
@@ -2204,6 +2214,13 @@
     },
     { "id": "canonical.config.max-connections", "kind": "field", "path": "max_connections", "editability": "operator", "normalization": ["null means unbounded"], "validation": ["positive safe integer when present"], "runtime": { "target": "listener.plan", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },
     { "id": "canonical.config.listener-workers", "kind": "field", "path": "listener_workers", "editability": "operator", "normalization": ["absence runs one worker per listener"], "validation": ["integer from 1 to 256"], "runtime": { "target": "listener.plan", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },
+    { "id": "canonical.config.audit", "kind": "field", "path": "audit", "editability": "operator", "normalization": ["absence keeps the defaults and the OXIROUTE_AUDIT_* environment fallback; an empty block normalizes away"], "validation": ["closed audit object"], "runtime": { "target": "management.audit", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },
+    { "id": "canonical.config.audit.dir", "kind": "field", "path": "audit.dir", "editability": "operator", "normalization": ["absence uses an audit directory next to the management token file, then OXIROUTE_AUDIT_DIR"], "validation": ["absolute normalized directory path"], "runtime": { "target": "management.audit", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },
+    { "id": "canonical.config.audit.max-records", "kind": "field", "path": "audit.max_records", "editability": "operator", "normalization": ["default 10000"], "validation": ["integer from 1 to 100000"], "runtime": { "target": "management.audit", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },
+    { "id": "canonical.config.audit.max-record-bytes", "kind": "field", "path": "audit.max_record_bytes", "editability": "operator", "normalization": ["default 16384"], "validation": ["integer from 1 to 65536, at most max_file_bytes"], "runtime": { "target": "management.audit", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },
+    { "id": "canonical.config.audit.max-file-bytes", "kind": "field", "path": "audit.max_file_bytes", "editability": "operator", "normalization": ["default 1048576"], "validation": ["integer from 1 to 16777216"], "runtime": { "target": "management.audit", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },
+    { "id": "canonical.config.audit.max-total-bytes", "kind": "field", "path": "audit.max_total_bytes", "editability": "operator", "normalization": ["default 8388608"], "validation": ["integer from 1 to 134217728, at least max_file_bytes"], "runtime": { "target": "management.audit", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },
+    { "id": "canonical.config.audit.max-rotated-files", "kind": "field", "path": "audit.max_rotated_files", "editability": "operator", "normalization": ["default 7"], "validation": ["integer from 1 to 7"], "runtime": { "target": "management.audit", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },
     { "id": "canonical.config.retirement", "kind": "field", "path": "retirement", "editability": "operator", "normalization": ["absence keeps the derived deadline and a cap of four"], "validation": ["closed retirement object"], "runtime": { "target": "listener.plan", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },
     { "id": "canonical.config.retirement.drain-deadline", "kind": "field", "path": "retirement.drain_deadline_ms", "editability": "operator", "normalization": ["null derives the deadline from the longest HTTP request deadline"], "validation": ["1000 to 86400000 milliseconds"], "runtime": { "target": "listener.plan", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },
     { "id": "canonical.config.retirement.max-retired-generations", "kind": "field", "path": "retirement.max_retired_generations", "editability": "operator", "normalization": ["default to four"], "validation": ["integer from 1 to 16"], "runtime": { "target": "listener.plan", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "observability"] },

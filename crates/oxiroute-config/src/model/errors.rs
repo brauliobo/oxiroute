@@ -440,6 +440,11 @@ pub enum ConfigError {
     InvalidStatsBinds,
     #[error("listener_workers {0} is invalid: it must be between 1 and 256")]
     InvalidListenerWorkers(u64),
+    #[error("audit setting `{pointer}` is invalid: {detail}")]
+    InvalidAudit {
+        pointer: &'static str,
+        detail: String,
+    },
     #[error("retirement setting `{pointer}` is invalid: {detail}")]
     InvalidRetirement {
         pointer: String,
