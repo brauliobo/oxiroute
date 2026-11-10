@@ -7,7 +7,9 @@ use serde_json::json;
 fn validated() -> ValidatedConfig {
     serde_json::from_value::<ConfigDraft>(
         json!({"version": 1, "listeners": [], "listener_workers": 3, "http_fast_lane": false,
-            "connection_scheduling": "aged_per_worker", "connection_age_ms": 25, "tls_handshake_threads": 2}),
+            "connection_scheduling": "aged_per_worker", "connection_age_ms": 25, "tls_handshake_threads": 2,
+            "worker_scaling": "dynamic", "min_active_workers": 2, "target_busy_percent": 65,
+            "scale_down_delay_ms": 1500}),
     )
     .expect("authored configuration")
     .validate()

@@ -18,6 +18,10 @@ impl Renderer {
             http_fast_lane,
             connection_scheduling,
             connection_age_ms,
+            worker_scaling,
+            min_active_workers,
+            target_busy_percent,
+            scale_down_delay_ms,
             tls_handshake_threads,
             retirement,
             management,
@@ -54,6 +58,18 @@ impl Renderer {
         }
         if let Some(age) = connection_age_ms {
             self.integer_field("connection_age_ms", age);
+        }
+        if let Some(scaling) = worker_scaling {
+            self.string_field("worker_scaling", scaling.as_str());
+        }
+        for (name, value) in [
+            ("min_active_workers", min_active_workers),
+            ("target_busy_percent", target_busy_percent),
+            ("scale_down_delay_ms", scale_down_delay_ms),
+        ] {
+            if let Some(value) = value {
+                self.integer_field(name, value);
+            }
         }
         if let Some(threads) = tls_handshake_threads {
             self.integer_field("tls_handshake_threads", threads);

@@ -446,6 +446,20 @@ pub enum ConfigError {
     InvalidConnectionAge(u64),
     #[error("connection_age_ms needs connection_scheduling = \"aged_per_worker\"")]
     ConnectionAgeWithoutAgedScheduling,
+    #[error("worker_scaling = \"dynamic\" needs connection_scheduling = \"aged_per_worker\"")]
+    DynamicWorkerScalingWithoutAgedScheduling,
+    #[error("{0} needs worker_scaling = \"dynamic\"")]
+    WorkerScalingTunableWithoutDynamic(&'static str),
+    #[error("min_active_workers {0} is invalid: it must be between 1 and 256")]
+    InvalidMinActiveWorkers(u64),
+    #[error("target_busy_percent {0} is invalid: it must be between 10 and 90")]
+    InvalidTargetBusyPercent(u64),
+    #[error("scale_down_delay_ms {0} is invalid: it must be between 100 and 3600000")]
+    InvalidScaleDownDelay(u64),
+    #[error(
+        "min_active_workers {min_active} is invalid: it must not exceed listener_workers {workers}"
+    )]
+    MinActiveWorkersAboveListenerWorkers { min_active: u64, workers: u64 },
     #[error("log_filter is invalid: {detail}")]
     InvalidLogFilter { detail: &'static str },
     #[error("audit setting `{pointer}` is invalid: {detail}")]
