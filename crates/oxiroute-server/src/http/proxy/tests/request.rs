@@ -337,7 +337,7 @@ async fn no_case_single_host_preparation_borrows_without_cloning() {
     let clones = Arc::new(AtomicUsize::new(0));
     session
         .req_header_mut()
-        .extensions
+        .extensions_mut()
         .insert(CloneProbe(Arc::clone(&clones)));
 
     for _ in 0..2 {
@@ -390,7 +390,7 @@ async fn mutating_retry_preparation_clones_once_and_starts_clean() {
     let clones = Arc::new(AtomicUsize::new(0));
     session
         .req_header_mut()
-        .extensions
+        .extensions_mut()
         .insert(CloneProbe(Arc::clone(&clones)));
 
     let PreparedUpstreamRequest::Owned(mut first) = proxy
@@ -447,7 +447,7 @@ async fn no_case_host_preparation_uses_semantic_value_and_duplicate_count() {
         let clones = Arc::new(AtomicUsize::new(0));
         session
             .req_header_mut()
-            .extensions
+            .extensions_mut()
             .insert(CloneProbe(Arc::clone(&clones)));
 
         let prepared = proxy
@@ -536,7 +536,7 @@ async fn connection_close_policy_promotes_once() {
     let clones = Arc::new(AtomicUsize::new(0));
     session
         .req_header_mut()
-        .extensions
+        .extensions_mut()
         .insert(CloneProbe(Arc::clone(&clones)));
 
     let PreparedUpstreamRequest::Owned(prepared) = proxy
