@@ -409,6 +409,15 @@ impl RequestFacts {
     /// The facts of headers that were not noted as they were appended.
     pub fn of(headers: &HMap) -> Self {
         Self {
+            hop_by_hop: headers.keys().any(is_hop_by_hop),
+            ..Self::of_framing(headers)
+        }
+    }
+
+    /// The facts a writer of the message reads. `hop_by_hop` is not looked for (it is `false`): it is a question
+    /// for whoever strips those fields, which asks [`Self::of`] or the facts noted at parse.
+    pub fn of_framing(headers: &HMap) -> Self {
+        Self {
             transfer_encoding: headers.contains_key(header::TRANSFER_ENCODING),
             content_lengths: headers
                 .get_all(header::CONTENT_LENGTH)
@@ -417,7 +426,7 @@ impl RequestFacts {
                 .count() as u8,
             connection: headers.contains_key(header::CONNECTION),
             upgrade: headers.contains_key(header::UPGRADE),
-            hop_by_hop: headers.keys().any(is_hop_by_hop),
+            hop_by_hop: false,
         }
     }
 

@@ -2039,6 +2039,15 @@ mod tests_stream {
                 session.request_facts(),
                 RequestFacts::of(&session.req_header().headers)
             );
+            let framing = RequestFacts::of_framing(&session.req_header().headers);
+            assert!(!framing.hop_by_hop);
+            assert_eq!(
+                RequestFacts {
+                    hop_by_hop: true,
+                    ..framing
+                },
+                session.request_facts()
+            );
         }
         let mut session = parsed(b"GET / HTTP/1.1\r\nProxy-Authorization: x\r\n\r\n").await;
         session
