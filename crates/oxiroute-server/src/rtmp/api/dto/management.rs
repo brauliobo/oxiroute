@@ -156,8 +156,14 @@ pub(crate) struct ListenerInventoryResponse {
 
 impl From<RuntimeSnapshot> for ListenerInventoryResponse {
     fn from(snapshot: RuntimeSnapshot) -> Self {
+        snapshot.listeners.into()
+    }
+}
+
+impl From<Vec<ListenerSnapshot>> for ListenerInventoryResponse {
+    fn from(listeners: Vec<ListenerSnapshot>) -> Self {
         Self {
-            listeners: snapshot.listeners.into_iter().map(Into::into).collect(),
+            listeners: listeners.into_iter().map(Into::into).collect(),
         }
     }
 }

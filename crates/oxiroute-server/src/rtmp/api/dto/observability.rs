@@ -9,7 +9,7 @@ use crate::{
     AccessRecord, AcmeManagedCertificateSnapshot, AdministrativeState, CertbotCertificateSnapshot,
     CertbotWatcherHealth, CertbotWatcherSnapshot, ComponentState, ComponentStatus,
     DirectFileCertificateSnapshot, DirectFileWatcherSnapshot, GenerationStatus, HostSnapshot,
-    ListenerRuntimeState, ListenerSnapshot, ObservedTransport, ProcessSnapshot, RuntimeMode,
+    ListenerSnapshot, ObservedTransport, ProcessSnapshot, RuntimeMode,
     RuntimeSnapshot, TopologyNodeKind, TopologySnapshot, TrafficSnapshot,
     TransportOperationCountSnapshot, TransportOperationSnapshot, TransportOutcome,
 };

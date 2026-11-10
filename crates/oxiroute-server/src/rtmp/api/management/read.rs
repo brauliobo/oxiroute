@@ -3,8 +3,8 @@ use super::*;
 
 impl ManagementState {
     pub(super) fn listeners(&self) -> ApiResponse {
-        match self.metrics.snapshot() {
-            Ok(snapshot) => ApiResponse::dto(200, &ListenerInventoryResponse::from(snapshot)),
+        match self.metrics.public_listener_snapshots() {
+            Ok(listeners) => ApiResponse::dto(200, &ListenerInventoryResponse::from(listeners)),
             Err(_) => ApiResponse::error(
                 503,
                 "listeners_unavailable",

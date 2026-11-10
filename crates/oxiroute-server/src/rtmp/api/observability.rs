@@ -146,10 +146,10 @@ fn readiness_response(
     metrics: &RuntimeMetrics,
     generations: Option<&GenerationManager>,
 ) -> ApiResponse {
-    let Ok(runtime) = metrics.snapshot() else {
+    let Ok(serving) = metrics.serving() else {
         return ApiResponse::error(503, "not_ready", "runtime metrics are unavailable");
     };
-    let response = ReadinessResponse::project(&runtime, generations.map(GenerationManager::status));
+    let response = ReadinessResponse::project(serving, generations.map(GenerationManager::status));
     serialized_response(
         if response.ready() { 200 } else { 503 },
         &response,
