@@ -30,7 +30,27 @@ const REQUEST: [(&str, &str); 10] = [
     ),
 ];
 
-const RESPONSE: [(&str, &str, Indexing); 5] = [
+type Field = (&'static str, &'static str, Indexing);
+
+/// Five headers where only `content-length` is a literal on repeat.
+const RESPONSE: [Field; 5] = [
+    (
+        "content-type",
+        "text/html; charset=utf-8",
+        Indexing::Incremental,
+    ),
+    ("content-length", "48213", Indexing::None),
+    ("server", "oxiroute", Indexing::Incremental),
+    (
+        "cache-control",
+        "public, max-age=3600",
+        Indexing::Incremental,
+    ),
+    ("vary", "accept-encoding", Indexing::Incremental),
+];
+
+/// The same plus a `date` that differs on every response.
+const RESPONSE_DATED: [Field; 6] = [
     (
         "content-type",
         "text/html; charset=utf-8",
@@ -44,6 +64,7 @@ const RESPONSE: [(&str, &str, Indexing); 5] = [
         "public, max-age=3600",
         Indexing::Incremental,
     ),
+    ("vary", "accept-encoding", Indexing::Incremental),
 ];
 
 fn request_block(enc: &mut Encoder) -> Vec<u8> {
@@ -61,9 +82,9 @@ fn decode(dec: &mut Decoder, block: &[u8]) {
     black_box(sum);
 }
 
-fn encode_response(enc: &mut Encoder, out: &mut Vec<u8>) {
+fn encode_response(enc: &mut Encoder, out: &mut Vec<u8>, fields: &[(&str, &str, Indexing)]) {
     out.clear();
-    for (n, v, i) in RESPONSE {
+    for &(n, v, i) in fields {
         enc.encode_field(out, n.as_bytes(), v.as_bytes(), i);
     }
     black_box(&out);
@@ -76,14 +97,16 @@ fn run(scenario: &str, iters: u64) {
     let mut dec = Decoder::new(4096);
     decode(&mut dec, &first);
     let mut out = Vec::new();
-    let mut resp_enc = Encoder::new(4096);
-    encode_response(&mut resp_enc, &mut out);
+    let (mut resp_enc, mut dated_enc) = (Encoder::new(4096), Encoder::new(4096));
+    encode_response(&mut resp_enc, &mut out, &RESPONSE);
+    encode_response(&mut dated_enc, &mut out, &RESPONSE_DATED);
     for _ in 0..iters {
         match scenario {
             "decode_first" => decode(&mut Decoder::new(4096), black_box(&first)),
             "decode_repeat" => decode(&mut dec, black_box(&repeat)),
-            "encode_first" => encode_response(&mut Encoder::new(4096), &mut out),
-            "encode_repeat" => encode_response(&mut resp_enc, &mut out),
+            "encode_first" => encode_response(&mut Encoder::new(4096), &mut out, &RESPONSE),
+            "encode_repeat" => encode_response(&mut resp_enc, &mut out, &RESPONSE),
+            "encode_repeat_dated" => encode_response(&mut dated_enc, &mut out, &RESPONSE_DATED),
             other => panic!("unknown scenario {other}"),
         }
     }
@@ -116,8 +139,9 @@ fn main() {
         "decode_repeat",
         "encode_first",
         "encode_repeat",
+        "encode_repeat_dated",
     ] {
         let per_op = (instructions(scenario, hi) - instructions(scenario, lo)) / (hi - lo);
-        println!("{scenario:<14} {per_op:>6} instructions");
+        println!("{scenario:<20} {per_op:>6} instructions");
     }
 }
