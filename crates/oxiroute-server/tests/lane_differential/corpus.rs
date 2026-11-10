@@ -812,6 +812,11 @@ pub fn replies() -> Vec<(&'static str, &'static [u8], bool)> {
 
 /// Requests of the static files route that carry what only a file response answers: ranges and validators.
 pub fn static_requests() -> Vec<Case> {
+    static_requests_for("example.test")
+}
+
+/// [`static_requests`] for a `Host` of `host`.
+pub fn static_requests_for(host: &str) -> Vec<Case> {
     let file = "/static/one-k.bin";
     let mut cases = Vec::new();
     for (name, header) in [
@@ -853,6 +858,10 @@ pub fn static_requests() -> Vec<Case> {
         "encoded traversal",
         get("/static/%2e%2e/secret", ""),
     );
+    for write in cases.iter_mut().flat_map(|case| &mut case.writes) {
+        let text = String::from_utf8_lossy(write).replace(HOST, &format!("Host: {host}\r\n"));
+        *write = text.into_bytes();
+    }
     cases
 }
 

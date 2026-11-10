@@ -264,6 +264,15 @@ pub struct RequestLine {
     fields_start: u32,
 }
 
+impl RequestLine {
+    /// The offset of the first header field: the bytes after the line and its CRLF.
+    #[inline]
+    #[must_use]
+    pub const fn fields_start(&self) -> usize {
+        self.fields_start as usize
+    }
+}
+
 fn line(buf: &[u8]) -> Result<RequestLine, Stop> {
     let method_end = method_end(buf)?;
     let target_start = method_end + 1;

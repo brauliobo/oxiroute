@@ -20,7 +20,7 @@ use std::fmt::Write as _;
 use std::{fs, os::unix::fs::PermissionsExt as _, path::Path, time::Duration};
 
 use oxiroute_config::{
-    ConfigDraft, HttpLiteralHeader, HttpPathSelector, HttpRoute, HttpRouteAction,
+    ConfigDraft, HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpRoute, HttpRouteAction,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -56,10 +56,12 @@ fn with_fixed_route(config: &mut ConfigDraft) {
 }
 
 /// A static files route in front of the others, as a service that mixes file serving with lane routes has.
-fn with_static_route(root: &Path) -> impl Fn(&mut ConfigDraft) + '_ {
+fn with_static_route<'a>(root: &'a Path, host: Option<&'a str>) -> impl Fn(&mut ConfigDraft) + 'a {
     move |config| {
         let route = HttpRoute {
-            host: None,
+            host: host.map(|value| HttpHostSelector::ExactAuthority {
+                value: value.into(),
+            }),
             path: HttpPathSelector::SegmentPrefix {
                 value: "/static".into(),
             },
@@ -86,16 +88,16 @@ impl Pair {
     }
 
     /// Both proxies serve the files of `root` under `/static`, next to the fixed and the proxied route.
-    async fn mixed(root: &Path) -> Self {
+    async fn mixed(root: &Path, host: Option<&str>) -> Self {
         let classic = Wire::over(Origin::start(OK).await, |config| {
             with_fixed_route(config);
-            with_static_route(root)(config);
+            with_static_route(root, host)(config);
             config.http_fast_lane = Some(false);
         })
         .await;
         let lane = Wire::over(Origin::start(OK).await, |config| {
             with_fixed_route(config);
-            with_static_route(root)(config);
+            with_static_route(root, host)(config);
         })
         .await;
         Self { classic, lane }
@@ -368,7 +370,7 @@ fn static_cases() -> Vec<corpus::Case> {
 #[tokio::test]
 async fn static_file_requests_are_identical_on_both_paths() {
     let directory = static_root();
-    let pair = Pair::mixed(&directory.path().join("public")).await;
+    let pair = Pair::mixed(&directory.path().join("public"), None).await;
     compare(&pair, &static_cases()).await;
     pair.finish();
 }
@@ -376,7 +378,20 @@ async fn static_file_requests_are_identical_on_both_paths() {
 #[tokio::test]
 async fn connections_that_alternate_between_static_files_and_the_lane_are_identical() {
     let directory = static_root();
-    let pair = Pair::mixed(&directory.path().join("public")).await;
+    let pair = Pair::mixed(&directory.path().join("public"), None).await;
     compare(&pair, &corpus::static_sequences()).await;
+    pair.finish();
+}
+
+/// A route bound to a host makes the lane read the `Host` field before it decides, and a request for another host
+/// reaches the proxied route.
+#[tokio::test]
+async fn static_file_requests_on_a_host_bound_route_are_identical_on_both_paths() {
+    let directory = static_root();
+    let pair = Pair::mixed(&directory.path().join("public"), Some("example.test")).await;
+    compare(&pair, &corpus::static_requests()).await;
+    compare(&pair, &corpus::static_sequences()).await;
+    let elsewhere = corpus::static_requests_for("other.test");
+    compare(&pair, &elsewhere).await;
     pair.finish();
 }
