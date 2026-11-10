@@ -471,9 +471,13 @@ where
                     }
                     ClientSession::H2(mut h2) => {
                         // Boxed: HTTP/2 and custom upstreams must not enlarge the request future of HTTP/1 ones.
-                        let (server_reused, mut error) = Box::pin(
-                            self.proxy_to_h2_upstream(session, &mut h2, client_reused, peer, ctx),
-                        )
+                        let (server_reused, mut error) = Box::pin(self.proxy_to_h2_upstream(
+                            session,
+                            &mut h2,
+                            client_reused,
+                            peer,
+                            ctx,
+                        ))
                         .await;
                         let session = ClientSession::H2(h2);
                         self.client_upstream
@@ -501,9 +505,13 @@ where
                         (server_reused, error)
                     }
                     ClientSession::Custom(mut c) => {
-                        let (server_reused, error) = Box::pin(
-                            self.proxy_to_custom_upstream(session, &mut c, client_reused, peer, ctx),
-                        )
+                        let (server_reused, error) = Box::pin(self.proxy_to_custom_upstream(
+                            session,
+                            &mut c,
+                            client_reused,
+                            peer,
+                            ctx,
+                        ))
                         .await;
                         let session = ClientSession::Custom(c);
                         self.client_upstream
@@ -1208,11 +1216,7 @@ where
         SV: ProxyHttp + Send + Sync + 'static,
         <SV as ProxyHttp>::CTX: Send + Sync,
     {
-        if let Err(e) = self
-            .inner
-            .early_request_filter(&mut session, ctx)
-            .await
-        {
+        if let Err(e) = self.inner.early_request_filter(&mut session, ctx).await {
             return self
                 .handle_error(session, ctx, e, "Fail to early filter request:")
                 .await;
@@ -1293,12 +1297,7 @@ where
                     Ok(None) => break,
                     Err(error) => {
                         return self
-                            .handle_error(
-                                session,
-                                ctx,
-                                error,
-                                "Failed to buffer request body:",
-                            )
+                            .handle_error(session, ctx, error, "Failed to buffer request body:")
                             .await;
                     }
                 }
@@ -1315,11 +1314,7 @@ where
         self.cleanup_sub_req(&mut session);
 
         // decide if the request is allowed to go to upstream
-        match self
-            .inner
-            .proxy_upstream_filter(&mut session, ctx)
-            .await
-        {
+        match self.inner.proxy_upstream_filter(&mut session, ctx).await {
             Ok(proxy_to_upstream) => {
                 if !proxy_to_upstream {
                     // The hook can choose to write its own response, but if it doesn't, we respond
@@ -1452,8 +1447,7 @@ where
         }
 
         // logging() will be called in finish()
-        self.finish(session, ctx, server_reuse, final_error)
-            .await
+        self.finish(session, ctx, server_reuse, final_error).await
     }
 
     /// Boxed: the future of this rarely taken path is 4 KiB and would otherwise be part of every request's state.
