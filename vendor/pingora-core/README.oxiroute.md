@@ -190,3 +190,12 @@ connector pool, BodyReader, H1 client, and H2 server suites, OxiRoute TLS and HT
   the executor and hands the established stream back, aborting the job when the caller gives up (the service's
   handshake timeout) and failing the connection when the executor refuses the job. `Acceptor` keeps its callbacks
   in an `Arc` for that, and `tls_handshake` requires `S: 'static`. Without an executor the path is unchanged.
+- `protocols/http/v2/server.rs` serves downstream HTTP/2 with the in-tree `oxiroute-h2` server (`crates/oxiroute-h2`) instead
+  of `h2::server`. `H2Options` is now `oxiroute_h2::server::Config` and `Reason` is `oxiroute_h2::Reason`; `handshake`,
+  `HttpSession` and its methods keep their signatures. The session holds an `oxiroute_h2::server::Stream` (no
+  `SendResponse`/`SendStream`/`RecvStream`); response bodies wait for send-window capacity with `poll_capacity` and
+  `send_data`; `poll_read_body_bytes` and `take_response_body_writer` (unused by OxiRoute) are removed. A request whose
+  stream the peer reset before it was accepted is not delivered, and an empty request DATA frame carrying
+  END_STREAM ends the body without yielding an empty chunk. `Cargo.toml` gains a path dependency on `oxiroute-h2`.
+  The `h2` crate stays for the upstream client and as the differential-test reference. `apps/mod.rs` is unchanged: the
+  connection loop (`graceful_shutdown`, `accept`) is the same, and `apps/h2_shutdown_tests.rs` passes.
