@@ -452,7 +452,7 @@ where
     Some(status.as_u16())
 }
 
-fn build_h3_upstream_request(
+pub(super) fn build_h3_upstream_request(
     request: &Request<()>,
     body_length: usize,
     selected_host: &HeaderValue,
@@ -478,18 +478,8 @@ fn build_h3_upstream_request(
         .build()
         .map_err(|_| ())?;
     let mut headers = request.headers().clone();
-    for name in [
-        HOST,
-        CONNECTION,
-        KEEP_ALIVE,
-        PROXY_CONNECTION,
-        TE,
-        TRAILER,
-        TRANSFER_ENCODING,
-        UPGRADE,
-    ] {
-        headers.remove(name);
-    }
+    strip_h3_hop_by_hop_headers(&mut headers)?;
+    headers.remove(HOST);
     headers.insert(
         CONTENT_LENGTH,
         HeaderValue::from_str(&body_length.to_string()).map_err(|_| ())?,

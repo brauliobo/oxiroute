@@ -2,6 +2,8 @@ use oxiroute_config::{
     HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
 };
 
+use http::header::{CONNECTION, TE};
+
 use super::*;
 use crate::{AdministrativeState, ListenerSnapshot};
 
@@ -129,6 +131,37 @@ fn rejects_duplicate_or_invalid_content_lengths() {
     let mut invalid = HeaderMap::new();
     invalid.insert(CONTENT_LENGTH, HeaderValue::from_static("not-a-number"));
     assert_eq!(request_content_length(&invalid), Err(()));
+}
+
+#[test]
+fn an_h3_upstream_request_loses_hop_by_hop_fields_and_nominated_headers() {
+    let request = http::Request::builder()
+        .uri("https://a.example.test/p")
+        .header(CONNECTION, "x-hop, , keep-alive")
+        .header("x-hop", "removed")
+        .header("proxy-authorization", "Basic eA==")
+        .header(TE, "trailers")
+        .header("x-keep", "1")
+        .body(())
+        .expect("request");
+    let host = HeaderValue::from_static("origin.example.test");
+    let policy = ProxyPolicyPlan::compile(&oxiroute_config::HttpProxyPolicy::default());
+    let output =
+        build_h3_upstream_request(&request, 0, &host, &policy, &[]).expect("upstream request");
+    let mut names = output
+        .headers()
+        .keys()
+        .map(HeaderName::as_str)
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    assert_eq!(names, ["content-length", "x-keep"]);
+
+    let nominating_framing = http::Request::builder()
+        .uri("https://a.example.test/p")
+        .header(CONNECTION, "content-length")
+        .body(())
+        .expect("request");
+    assert!(build_h3_upstream_request(&nominating_framing, 0, &host, &policy, &[]).is_err());
 }
 
 #[test]
