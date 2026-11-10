@@ -9,9 +9,10 @@ use http::{HeaderMap, Method, Request, Version};
 use crate::hpack::{DecodeError, Decoder};
 
 /// What a decoded header block turned out to be.
+#[allow(clippy::large_enum_variant)]
 pub enum Block {
     Request {
-        parts: Box<Parts>,
+        parts: Parts,
         content_length: u64,
     },
     Trailers(HeaderMap),
@@ -24,8 +25,22 @@ pub enum Block {
 /// Declared length, `u64::MAX` when absent.
 const UNDECLARED: u64 = u64::MAX;
 
+/// The previous request's fields by position: clients repeat most of their headers, so a hit clones the
+/// reference-counted name and value instead of validating and allocating them again.
 #[derive(Default)]
-struct Collector {
+pub struct FieldCache {
+    fields: Vec<(HeaderName, HeaderValue)>,
+    authority: Option<Authority>,
+    path: Option<PathAndQuery>,
+}
+
+const CACHE_FIELDS: usize = 32;
+const CACHE_VALUE: usize = 256;
+
+#[derive(Default)]
+struct Collector<'a> {
+    cache: Option<&'a mut FieldCache>,
+    position: usize,
     method: Option<Method>,
     scheme: Option<Scheme>,
     authority: Option<Authority>,
@@ -36,7 +51,7 @@ struct Collector {
     content_length: Option<u64>,
 }
 
-impl Collector {
+impl Collector<'_> {
     fn field(&mut self, name: &[u8], value: &[u8], trailers: bool) {
         if name.first() == Some(&b':') {
             if self.regular || trailers {
@@ -47,6 +62,10 @@ impl Collector {
             return;
         }
         self.regular = true;
+        if let Some((n, v)) = self.cached(name, value) {
+            self.bad |= self.headers.try_append(n, v).is_err();
+            return;
+        }
         let (Ok(name), Ok(value)) = (
             HeaderName::from_lowercase(name),
             HeaderValue::from_bytes(value),
@@ -57,7 +76,35 @@ impl Collector {
         let valid = !is_connection_specific(&name)
             && (name != header::TE || value == "trailers")
             && (name != header::CONTENT_LENGTH || self.content_length(&value));
+        if valid {
+            self.remember(&name, &value);
+        }
         self.bad |= !valid || self.headers.try_append(name, value).is_err();
+    }
+
+    /// The field at this position of the previous request when it is identical (and so already validated).
+    fn cached(&mut self, name: &[u8], value: &[u8]) -> Option<(HeaderName, HeaderValue)> {
+        let at = self.position;
+        self.position += 1;
+        let (n, v) = self.cache.as_ref()?.fields.get(at)?;
+        (n.as_str().as_bytes() == name && v.as_bytes() == value).then(|| (n.clone(), v.clone()))
+    }
+
+    fn remember(&mut self, name: &HeaderName, value: &HeaderValue) {
+        let at = self.position - 1;
+        let Some(cache) = self.cache.as_mut() else {
+            return;
+        };
+        // Not content-length: its value is checked per request.
+        if at >= CACHE_FIELDS || value.len() > CACHE_VALUE || name == header::CONTENT_LENGTH {
+            return;
+        }
+        let entry = (name.clone(), value.clone());
+        if let Some(slot) = cache.fields.get_mut(at) {
+            *slot = entry;
+        } else if cache.fields.len() == at {
+            cache.fields.push(entry);
+        }
     }
 
     fn content_length(&mut self, value: &HeaderValue) -> bool {
@@ -71,17 +118,8 @@ impl Collector {
         let ok = match name {
             b":method" => set(&mut self.method, Method::from_bytes(value).ok()),
             b":scheme" => set(&mut self.scheme, Scheme::try_from(value).ok()),
-            b":authority" => set(
-                &mut self.authority,
-                Authority::from_maybe_shared(Bytes::copy_from_slice(value)).ok(),
-            ),
-            b":path" => {
-                !value.is_empty()
-                    && set(
-                        &mut self.path,
-                        PathAndQuery::from_maybe_shared(Bytes::copy_from_slice(value)).ok(),
-                    )
-            }
+            b":authority" => self.authority(value),
+            b":path" => self.path(value),
             _ => false,
         };
         self.bad |= !ok;
@@ -114,9 +152,56 @@ impl Collector {
         parts.version = Version::HTTP_2;
         parts.headers = self.headers;
         Block::Request {
-            parts: Box::new(parts),
+            parts,
             content_length,
         }
+    }
+}
+
+impl Collector<'_> {
+    fn authority(&mut self, value: &[u8]) -> bool {
+        let hit = self
+            .cache
+            .as_ref()
+            .and_then(|c| c.authority.as_ref())
+            .filter(|a| a.as_str().as_bytes() == value);
+        let authority = match hit {
+            Some(a) => a.clone(),
+            None => match Authority::from_maybe_shared(Bytes::copy_from_slice(value)) {
+                Ok(a) => {
+                    if let Some(c) = self.cache.as_mut() {
+                        c.authority = Some(a.clone());
+                    }
+                    a
+                }
+                Err(_) => return false,
+            },
+        };
+        set(&mut self.authority, Some(authority))
+    }
+
+    fn path(&mut self, value: &[u8]) -> bool {
+        if value.is_empty() {
+            return false;
+        }
+        let hit = self
+            .cache
+            .as_ref()
+            .and_then(|c| c.path.as_ref())
+            .filter(|p| p.as_str().as_bytes() == value);
+        let path = match hit {
+            Some(p) => p.clone(),
+            None => match PathAndQuery::from_maybe_shared(Bytes::copy_from_slice(value)) {
+                Ok(p) => {
+                    if let Some(c) = self.cache.as_mut() {
+                        c.path = Some(p.clone());
+                    }
+                    p
+                }
+                Err(_) => return false,
+            },
+        };
+        set(&mut self.path, Some(path))
     }
 }
 
@@ -153,11 +238,16 @@ fn parse_u64(src: &[u8]) -> Option<u64> {
 /// The block is not valid HPACK (connection error `COMPRESSION_ERROR`).
 pub fn decode_request(
     dec: &mut Decoder,
+    cache: &mut FieldCache,
     block: &[u8],
     max_list: usize,
     end_stream: bool,
 ) -> Result<Block, DecodeError> {
-    let mut c = Collector::default();
+    let mut c = Collector {
+        cache: Some(cache),
+        headers: HeaderMap::with_capacity(12),
+        ..Collector::default()
+    };
     let decoded = dec.decode(block, max_list, |n, v| c.field(n, v, false))?;
     Ok(if decoded.list_too_large {
         Block::TooLarge

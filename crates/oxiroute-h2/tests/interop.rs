@@ -1,4 +1,9 @@
 //! Interop with the `h2` crate as client over in-memory pipes.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown,
+    clippy::too_many_lines
+)]
 mod support;
 use std::future::poll_fn;
 use std::pin::Pin;

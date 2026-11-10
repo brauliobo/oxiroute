@@ -10,6 +10,7 @@
 //! ```text
 //! cargo build --release --example instr && target/release/examples/instr            # table
 //! target/release/examples/instr profile ours                                        # perf record + report
+//! target/release/examples/instr gen 4000 /tmp/in.bin                                # client bytes for `run`/valgrind
 //! ```
 #![allow(
     clippy::cast_possible_truncation,
@@ -351,6 +352,7 @@ fn profile(which: &str) {
     std::fs::write(temp_file(n), client_bytes(n)).unwrap();
     let data = std::env::temp_dir().join(format!("oxiroute-h2-instr-{}.perf", std::process::id()));
     let exe = std::env::current_exe().unwrap();
+    let period = std::env::var("INSTR_PERIOD").unwrap_or_else(|_| "1000".into());
     let status = locked(&[
         "perf",
         "record",
@@ -358,7 +360,7 @@ fn profile(which: &str) {
         "-e",
         "instructions:u",
         "-c",
-        "1000",
+        &period,
         "-o",
         data.to_str().unwrap(),
         "--",
@@ -416,6 +418,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("run") => return run(&args[1..]),
+        Some("gen") => {
+            return std::fs::write(&args[2], client_bytes(args[1].parse().unwrap())).unwrap();
+        }
         Some("profile") => return profile(args.get(1).map_or("ours", String::as_str)),
         _ => {}
     }
