@@ -16,6 +16,8 @@
 
 pub mod http_app;
 mod idle_wait;
+mod relocate;
+pub use relocate::relocate_idle_connection;
 mod pooled_future;
 
 use self::pooled_future::PooledFuture;
@@ -1079,6 +1081,9 @@ where
                         .idle_keepalive_timeout()
                         .or_else(|| connection.idle_timeout());
                     let stop = self.closes_idle_on_shutdown().then_some(shutdown);
+                    if relocate_idle_connection(&mut stream).await.is_err() {
+                        return None;
+                    }
                     if !idle_wait::wait_for_next_request(&mut stream, idle, stop).await {
                         return None;
                     }

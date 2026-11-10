@@ -26,7 +26,7 @@ use oxiroute_acme::ChallengeStore;
 use oxiroute_config::is_unambiguous_http_path;
 use oxiroute_h1_head::RequestHead;
 use pingora::{
-    apps::{Http1Connection, Http1Front, Http1FrontOutcome},
+    apps::{Http1Connection, Http1Front, Http1FrontOutcome, relocate_idle_connection},
     connectors::http::v1::Connector,
     protocols::Stream,
     server::ShutdownWatch,
@@ -138,6 +138,10 @@ impl LaneFront {
         connection: &Http1Connection,
         shutdown: &ShutdownWatch,
     ) -> Option<BytesMut> {
+        // Between two requests nothing of the connection is parked: it may move to a lighter worker (worker_scaling).
+        if connection.is_reused() && relocate_idle_connection(stream).await.is_err() {
+            return None;
+        }
         let stopping = *shutdown.borrow();
         let read = async {
             poll_fn(|cx| stream.poll_read_ready(cx)).await.ok()?;

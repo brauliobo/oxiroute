@@ -6,17 +6,44 @@ const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
 const TEST_LISTENER_PANIC_ENV: &str = "OXIROUTE_INTERNAL_TEST_LISTENER_PANIC";
 
 const TEST_AGED_PER_WORKER_ENV: &str = "OXIROUTE_INTERNAL_TEST_AGED_PER_WORKER";
+const TEST_WORKER_SCALING_ENV: &str = "OXIROUTE_INTERNAL_TEST_WORKER_SCALING";
 
-/// Whether the workers of a listener serve per-worker queues. The test variable runs a whole process suite in that
+/// The worker count a whole process suite runs with dynamic scaling (a short release delay, aged scheduling) when a
+/// listener sets none: the test variable holds it.
+fn test_scaling_workers() -> Option<usize> {
+    std::env::var(TEST_WORKER_SCALING_ENV).ok()?.parse().ok()
+}
+
+/// Whether the workers of a listener serve per-worker queues. The test variables run a whole process suite in that
 /// mode.
 pub(super) fn aged_per_worker(config: &oxiroute_config::ConfigDraft) -> bool {
-    config.aged_per_worker() || std::env::var_os(TEST_AGED_PER_WORKER_ENV).is_some()
+    config.aged_per_worker()
+        || std::env::var_os(TEST_AGED_PER_WORKER_ENV).is_some()
+        || test_scaling_workers().is_some()
 }
 
 /// Worker threads for each HTTP, forward HTTP/1, forward HTTP/2 and TCP listener.
 pub(super) fn listener_workers(config: &oxiroute_config::ConfigDraft) -> usize {
-    config.listener_workers.map_or(1, |workers| {
-        usize::try_from(workers).expect("validated worker count fits usize")
+    config.listener_workers.map_or_else(
+        || test_scaling_workers().unwrap_or(1),
+        |workers| usize::try_from(workers).expect("validated worker count fits usize"),
+    )
+}
+
+/// How the workers of a listener are scaled with the load, `None` for all of them taking connections always.
+pub(super) fn worker_scaling(config: &oxiroute_config::ConfigDraft) -> Option<WorkerScalingConf> {
+    if config.dynamic_worker_scaling() {
+        return Some(WorkerScalingConf {
+            min_active: usize::try_from(config.effective_min_active_workers()).expect("validated"),
+            target_busy_percent: u32::try_from(config.effective_target_busy_percent())
+                .expect("validated"),
+            scale_down_delay_ms: config.effective_scale_down_delay_ms(),
+        });
+    }
+    test_scaling_workers().map(|_| WorkerScalingConf {
+        min_active: 1,
+        target_busy_percent: 50,
+        scale_down_delay_ms: 100,
     })
 }
 

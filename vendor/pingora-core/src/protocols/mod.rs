@@ -113,6 +113,19 @@ pub trait Peek {
     ) -> std::task::Poll<std::io::Result<()>> {
         std::task::Poll::Ready(Ok(()))
     }
+
+    /// Whether [`Self::move_to_current_runtime`] can move this transport: a plain TCP stream can, anything layered on
+    /// top of one (TLS) cannot.
+    fn can_move_to_current_runtime(&self) -> bool {
+        false
+    }
+
+    /// Registers the socket with the I/O driver of the runtime this is called on, in place of the one that serves it
+    /// now, so its readiness events arrive on the thread that is going to serve it. Only after
+    /// [`Self::can_move_to_current_runtime`] said yes.
+    fn move_to_current_runtime(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 use std::any::Any;
