@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::http::proxy::lane::LaneRoute;
 
 #[derive(Clone, Debug)]
 pub struct ServiceSpec {
@@ -280,6 +281,14 @@ impl HttpServicePlan {
     pub(crate) fn access_log(&self) -> Option<&Arc<AccessLog>> {
         self.access_log.as_ref()
     }
+
+    /// Whether any route can be served on the fast lane; a service without one never pays for the lane's look at a
+    /// request that the classic path serves.
+    pub(crate) fn has_lane_route(&self) -> bool {
+        self.route_plans
+            .values()
+            .any(|route| route.lane != LaneRoute::Classic)
+    }
 }
 
 /// Compiles validated listener definitions into runtime service specifications.
@@ -301,4 +310,41 @@ pub fn service_specs(config: &ValidatedConfig) -> Result<Vec<ServiceSpec>, Servi
     let mut acquired = acquire_runtime_services(&plan)?;
     prepare_rtmp_service_specs(acquired.services(), RtmpPrepareMode::Activation)?;
     Ok(acquired.commit().0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http::action::{FixedResponsePlan, RoutePolicyPlan};
+
+    fn route(lane: LaneRoute) -> Arc<HttpRoutePlan> {
+        Arc::new(HttpRoutePlan {
+            access: None,
+            lane,
+            action: HttpActionPlan::Fixed(FixedResponsePlan::compile(200, "ok", &[])),
+            policy: RoutePolicyPlan::compile(oxiroute_config::HttpRoutePolicy::default()),
+            route_id: "r".into(),
+        })
+    }
+
+    fn service(lanes: &[LaneRoute]) -> HttpServicePlan {
+        let routes = lanes
+            .iter()
+            .enumerate()
+            .map(|(index, lane)| (index.to_string(), route(*lane)))
+            .collect();
+        HttpServicePlan::new(None, routes, Duration::from_secs(1), RouteTable::default())
+    }
+
+    #[test]
+    fn a_service_of_classic_routes_has_no_lane_route() {
+        assert!(!service(&[LaneRoute::Classic, LaneRoute::Classic]).has_lane_route());
+        assert!(!service(&[]).has_lane_route());
+    }
+
+    #[test]
+    fn one_direct_or_proxied_route_is_a_lane_route() {
+        assert!(service(&[LaneRoute::Classic, LaneRoute::Direct]).has_lane_route());
+        assert!(service(&[LaneRoute::Proxy]).has_lane_route());
+    }
 }

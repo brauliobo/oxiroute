@@ -98,7 +98,8 @@ impl LaneFront {
         let eligible = enabled
             && service.gzip().is_none()
             && service.access_log().is_none()
-            && service.automatic_response_headers();
+            && service.automatic_response_headers()
+            && service.has_lane_route();
         let write_budget = [
             Some(service.upstream_io_timeout()),
             timeouts.request,
