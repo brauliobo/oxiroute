@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from gen_config import server_address  # noqa: E402
 LOCK_FILE = "/tmp/oxiroute-bench.lock"
 PERF_EXTRA = [event for event in os.environ.get("R2_PERF_EXTRA", "").split(",") if event]  # e.g. cache-misses:u
 LANE_TIMEOUT = 600  # seconds; a hung load run must never hold the shared bench lock
@@ -37,6 +39,8 @@ PROXY_CPUS = os.environ.get("R2_PROXY_CPUS", "8-11")
 UPSTREAM_CPUS = os.environ.get("R2_UPSTREAM_CPUS", "12-13")
 LOAD_CPUS = os.environ.get("R2_LOAD_CPUS", "14-15")
 STORM_CPUS = os.environ.get("R2_STORM_CPUS", "6-7")
+BEARER_TOKEN = "r2-bench-token-0123456789abcdef-0123456789abcdef"
+BASIC_CREDENTIAL = "YmVuY2g6YmVuY2hwYXNz"  # bench:benchpass
 FEATURES_6_0 = ["access_log", "timeouts", "retry", "queue", "capacity", "passive", "breaker", "outlier"]
 
 
@@ -179,10 +183,54 @@ def build_lanes():
                  requests=80000, warmup=4000, listeners=4))
     add(lane("fwd_h1_b1k", ["--path", "http://127.0.0.1:{UP}/b1k", "--expect-len", "1024"] + base, features=["forward"],
              target_offset=3))
+    add(lane("fwd_connect_1k", ["--proto", "connect", "--connect-to", "127.0.0.1:{ECHO}", "--conns", "16", "--msg-bytes", "1024"],
+             features=["forward", "l4"], target_offset=3))
+    add(lane("fwd_connect_newconn", ["--proto", "connect", "--connect-to", "127.0.0.1:{ECHO}", "--new-conn", "--conns", "16",
+                                     "--msg-bytes", "1024"], features=["forward", "l4"], target_offset=3, requests=10000,
+             warmup=500))
+    add(lane("l4_echo_newconn", ["--proto", "tcp", "--new-conn", "--conns", "16", "--msg-bytes", "1024"], features=["l4"],
+             requests=10000, warmup=500))
     add(lane("pool_s2", work, servers=2))
     add(lane("pool_s64", work, servers=64))
     add(lane("pool_s64_passive", work, features=["passive", "breaker", "outlier"], servers=64))
     add(lane("pool_s1_passive", work, features=["passive", "breaker", "outlier"]))
+    # Per-feature cost on top of the plain proxy route (6.5 feature cost study).
+    add(lane("f_stats", work, features=["stats"]))
+    bearer = ["--extra-header", f"authorization: Bearer {BEARER_TOKEN}"]
+    basic = ["--extra-header", f"authorization: Basic {BASIC_CREDENTIAL}"]
+    add(lane("f_auth_bearer", work + bearer, features=["auth_bearer"]))
+    # At most four password checks run at once: more concurrent clients are answered 401, so these lanes use one.
+    one = ["--path", "/b1k", "--expect-len", "1024", "--conns", "1"]
+    add(lane("f_auth_basic_apr1", one + basic, features=["auth_basic_apr1"], requests=2000, warmup=100))
+    for cost, requests in ((5, 400), (10, 60)):
+        add(lane(f"f_auth_basic_bcrypt{cost}", one + basic,
+                 features=["auth_basic_bcrypt", f"bcrypt_cost_{cost}"], requests=requests, warmup=10))
+    add(lane("f_redirect", ["--path", "/redirect", "--expect-status", "301"] + base, features=["redirect"]))
+    add(lane("f_path_rewrite", ["--path", "/app/b1k", "--expect-len", "1024"] + base, features=["path_rewrite"]))
+    add(lane("f_cookie_plain", ["--path", "/cookie1k", "--expect-len", "1024"] + base))
+    add(lane("f_cookie_rewrite", ["--path", "/cookie1k", "--expect-len", "1024"] + base, features=["cookie_rewrite"]))
+    add(lane("f_select", work + ["--extra-header", "x-size: 50"], features=["select"]))
+    for name, header in (("cookie", []), ("hash", []), ("header", ["--extra-header", "x-backend: origin-3"])):
+        add(lane(f"f_affinity_{name}_s20", work + header, features=[f"affinity_{name}"], servers=20))
+    add(lane("f_affinity_none_s20", work, servers=20))
+    for level in (1, 4, 6, 9):
+        add(lane(f"gzip_l{level}_html64k", ["--path", "/html64k", "--extra-header", "accept-encoding: gzip"] + base,
+                 features=[f"gzip_l{level}"], requests=2000, warmup=100))
+    add(lane("gzip_on_b1k", work, features=["gzip"]))  # gzip configured, response not compressible
+    add(lane("gzip_on_b1k_nogzip_client", work, features=["gzip_l1"]))
+    add(lane("cache_miss_b1k", ["--path", "/b1k", "--vary", "true", "--expect-len", "1024"] + base, features=["cache"]))
+    add(lane("cache_nocache_vary_b1k", ["--path", "/b1k", "--vary", "true", "--expect-len", "1024"] + base))
+    add(lane("cache_reval_b1k", ["--path", "/rv1k", "--expect-len", "1024"] + base, features=["cache_revalidate"]))
+    for algorithm_name, features in (("rr", []), ("p2c", ["p2c"]), ("first", ["first"]), ("lc", ["lc"]), ("wrr", ["wrr"])):
+        for servers in (2, 20, 200, 1000):
+            add(lane(f"alg_{algorithm_name}_s{servers}", work, features=features, servers=servers,
+                     requests=20000, warmup=max(2000, servers * 4)))
+    idle = ["--path", "/b0", "--expect-len", "0", "--conns", "1"]
+    for servers in (1, 20, 200, 1000):
+        for name, features in (("none", []), ("hc_tcp", ["hc_tcp"]), ("hc_http", ["hc_http"])):
+            add(lane(f"idle_{name}_s{servers}", idle, features=features, servers=servers, requests=50, warmup=10))
+    add(lane("idle_canary_s1", idle, features=["canary"], requests=50, warmup=10))
+    add(lane("idle_stats", idle, features=["stats"], requests=50, warmup=10))
     add(lane("dns_on_connect", work, features=["dns"]))
     add(lane("dns_startup", work, features=["dns_startup"]))
     return {item.name: item for item in lanes}
@@ -316,6 +364,15 @@ class Env:
         www.mkdir(parents=True)
         for name, size in (("f1k", 1024), ("f64k", 65536), ("f1m", 1048576)):
             (www / f"{name}.bin").write_bytes(b"x" * size)
+        token = self.work / "token"
+        token.write_text(BEARER_TOKEN + "\n")
+        token.chmod(0o600)
+        htpasswd = self.work / "htpasswd"
+        cost = ["-B", "-C", str(next((int(name[12:]) for name in self.lane.features if name.startswith("bcrypt_cost_")), 5))]
+        hashed = subprocess.run(["htpasswd", "-nb", *(cost if "auth_basic_bcrypt" in self.lane.features else ["-m"]), "bench", "benchpass"],
+                                check=True, capture_output=True, text=True).stdout
+        htpasswd.write_text(hashed)
+        htpasswd.chmod(0o600)
 
     def start(self, wrap=(), proxy_env=None):
         lane = self.lane
@@ -330,8 +387,8 @@ class Env:
             + [item for feature in lane.features for item in ("--feature", feature)],
             check=True, capture_output=True, text=True, timeout=LANE_TIMEOUT)
         self.generated = generated.stdout
-        if lane.servers > 2:  # many servers share one port on 127.0.0.1 .. 127.0.0.N
-            listen = ",".join(f"127.0.0.{index + 1}:{UPSTREAM_PORT}" for index in range(lane.servers))
+        if lane.servers > 2:  # many servers share one port on 127.0.A.B
+            listen = ",".join(server_address(index, UPSTREAM_PORT) for index in range(lane.servers))
         else:
             listen = ",".join(f"127.0.0.1:{UPSTREAM_PORT + index}" for index in range(lane.servers))
         tls = self.upstream_tls() if "upstream_h2" in lane.features else []
@@ -377,7 +434,7 @@ class Env:
         if lane.target_offset:
             targets = f"127.0.0.1:{PROXY_PORT + lane.target_offset}"
         command = [self.args.tool, "load", "--target", targets, "--requests", str(requests), "--warmup", str(warmup)]
-        command += [item.replace("{UP}", str(UPSTREAM_PORT)) for item in lane.load]
+        command += [item.replace("{UP}", str(UPSTREAM_PORT)).replace("{ECHO}", str(ECHO_PORT)) for item in lane.load]
         for name, value in hooks:
             command += [f"--{name}", value]
         return ["taskset", "-c", LOAD_CPUS] + command
@@ -491,6 +548,7 @@ def measure_perf(env, reps):
     status = proc_status(env.proxy.pid)
     column = lambda key: [sample[key] for sample in samples]
     return {
+        "idle_instr_per_s": round(idle["instructions"]),
         "instr_per_req": round(median(column("instr"))), "instr_spread_pct": round(spread(column("instr")), 2),
         "cycles_per_req": round(median(column("cycles"))), "cycles_spread_pct": round(spread(column("cycles")), 2),
         "vctxsw_per_req": round(median(column("ctxsw")), 3), "nvctxsw_per_req": round(median(column("nvctxsw")), 3),

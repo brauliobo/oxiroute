@@ -3,7 +3,9 @@
 //! Paths: `/b0 /b1k /b64k /b1m` fixed `application/octet-stream` bodies, `/html64k` compressible
 //! `text/html`, `/stream` chunked 64 KiB without delay, `/slow` chunked 64 KiB with a 2 ms gap between
 //! chunks, `/sink` (any method; drains the request body, answers `ok`), `/ws` (101 then byte echo),
-//! `/b1k-slow` like `/b1k` with one response in 500 delayed 200 ms.
+//! `/b1k-slow` like `/b1k` with one response in 500 delayed 200 ms, `/cookie1k` like `/b1k` with a `Set-Cookie`,
+//! `/cc1k` like `/b1k` with `Cache-Control: max-age=60`, `/rv1k` an always stale `ETag` entry that answers 304 to a
+//! matching `If-None-Match` (revalidation).
 
 use std::{
     convert::Infallible,
@@ -22,7 +24,7 @@ use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
 use hyper::{
     Request, Response, StatusCode,
     body::{Frame, Incoming},
-    header::{CONNECTION, CONTENT_TYPE, HeaderValue, UPGRADE},
+    header::{CACHE_CONTROL, CONNECTION, CONTENT_TYPE, ETAG, HeaderValue, IF_NONE_MATCH, SET_COOKIE, UPGRADE},
     service::service_fn,
 };
 use hyper_util::{
@@ -115,6 +117,38 @@ async fn handle(mut request: Request<Incoming>) -> Result<Response<Body>, Infall
                 tokio::time::sleep(SLOW_DELAY).await;
             }
             full("application/octet-stream", payloads.b1k.clone())
+        }
+        "/cookie1k" => {
+            let mut response = full("application/octet-stream", payloads.b1k.clone());
+            response.headers_mut().insert(
+                SET_COOKIE,
+                HeaderValue::from_static("sid=abc123; Path=/app; Domain=origin.example.com; HttpOnly"),
+            );
+            response
+        }
+        "/cc1k" => {
+            let mut response = full("application/octet-stream", payloads.b1k.clone());
+            response
+                .headers_mut()
+                .insert(CACHE_CONTROL, HeaderValue::from_static("max-age=60"));
+            response
+        }
+        "/rv1k" => {
+            let matches = request.headers().get(IF_NONE_MATCH).is_some_and(|value| value == "\"r1\"");
+            let mut response = if matches {
+                let mut response = Response::new(Full::new(Bytes::new()).boxed());
+                *response.status_mut() = StatusCode::NOT_MODIFIED;
+                response
+            } else {
+                full("application/octet-stream", payloads.b1k.clone())
+            };
+            response
+                .headers_mut()
+                .insert(CACHE_CONTROL, HeaderValue::from_static("max-age=0"));
+            response
+                .headers_mut()
+                .insert(ETAG, HeaderValue::from_static("\"r1\""));
+            response
         }
         "/b64k" => full("application/octet-stream", payloads.b64k.clone()),
         "/b1m" => full("application/octet-stream", payloads.b1m.clone()),
