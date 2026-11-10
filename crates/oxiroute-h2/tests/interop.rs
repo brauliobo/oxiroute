@@ -187,3 +187,252 @@ async fn large_header_blocks_use_continuation_in_both_directions() {
         format!("{}7", "r".repeat(800))
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn head_and_bodiless_responses() {
+    fn head(parts: http::request::Parts, mut stream: Stream) -> Fut {
+        Box::pin(async move {
+            let (status, headers) = response(200, &[("content-length", "1000")]);
+            assert_eq!(parts.method, http::Method::HEAD);
+            stream.send_response(status, headers, true).unwrap();
+        })
+    }
+    let (client, _server) = h2_client(Config::default(), head).await;
+    let mut client = client.ready().await.unwrap();
+    let (response, _) = client
+        .send_request(
+            Request::head("https://example.test/x").body(()).unwrap(),
+            true,
+        )
+        .unwrap();
+    let response = response.await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-length"], "1000");
+    assert!(response.into_body().is_end_stream());
+}
+
+#[tokio::test(start_paused = true)]
+async fn connect_tunnel_relays_both_directions() {
+    fn tunnel(parts: http::request::Parts, mut stream: Stream) -> Fut {
+        Box::pin(async move {
+            assert_eq!(parts.method, http::Method::CONNECT);
+            assert_eq!(parts.uri.authority().unwrap().as_str(), "target.test:443");
+            assert!(parts.uri.scheme().is_none() && parts.uri.path_and_query().is_none());
+            let (status, headers) = response(200, &[]);
+            stream.send_response(status, headers, false).unwrap();
+            while let Some(chunk) = poll_fn(|cx| stream.poll_data(cx)).await {
+                let chunk = chunk.unwrap();
+                stream.release_capacity(chunk.len());
+                let upper = chunk.to_ascii_uppercase();
+                write_body(&mut stream, Bytes::from(upper), false)
+                    .await
+                    .unwrap();
+            }
+            stream.send_data(Bytes::new(), true).unwrap();
+        })
+    }
+    let (client, _server) = h2_client(Config::default(), tunnel).await;
+    let mut client = client.ready().await.unwrap();
+    let request = Request::connect("target.test:443").body(()).unwrap();
+    let (response, mut send) = client.send_request(request, false).unwrap();
+    let (parts, mut body) = response.await.unwrap().into_parts();
+    assert_eq!(parts.status, 200);
+    send.send_data(Bytes::from_static(b"ping one"), false)
+        .unwrap();
+    assert_eq!(body.data().await.unwrap().unwrap(), "PING ONE");
+    send.send_data(Bytes::from_static(b"two"), true).unwrap();
+    assert_eq!(body.data().await.unwrap().unwrap(), "TWO");
+    while let Some(rest) = body.data().await {
+        assert!(rest.unwrap().is_empty());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn concurrent_streams_never_exceed_the_limit() {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+    static PEAK: AtomicUsize = AtomicUsize::new(0);
+    fn slow(_: http::request::Parts, mut stream: Stream) -> Fut {
+        Box::pin(async move {
+            let now = LIVE.fetch_add(1, SeqCst) + 1;
+            PEAK.fetch_max(now, SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let (status, headers) = response(200, &[]);
+            stream.send_response(status, headers, true).unwrap();
+            LIVE.fetch_sub(1, SeqCst);
+        })
+    }
+    let mut config = Config::default();
+    config.max_concurrent_streams(3);
+    let (client, _server) = h2_client(config, slow).await;
+    let mut tasks = Vec::new();
+    for _ in 0..12 {
+        let mut c = client.clone().ready().await.unwrap();
+        let (response, _) = c
+            .send_request(
+                Request::get("https://example.test/").body(()).unwrap(),
+                true,
+            )
+            .unwrap();
+        tasks.push(tokio::spawn(response));
+    }
+    for t in tasks {
+        assert_eq!(t.await.unwrap().unwrap().status(), 200);
+    }
+    assert!(PEAK.load(SeqCst) <= 3, "peak {}", PEAK.load(SeqCst));
+}
+
+#[tokio::test(start_paused = true)]
+async fn peer_reset_mid_body_fails_reads_and_completes_poll_reset() {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    fn watch(_: http::request::Parts, mut stream: Stream) -> Fut {
+        Box::pin(async move {
+            let first = poll_fn(|cx| stream.poll_data(cx)).await.unwrap().unwrap();
+            stream.release_capacity(first.len());
+            let next = poll_fn(|cx| stream.poll_data(cx)).await.unwrap();
+            let reset = poll_fn(|cx| stream.poll_reset(cx)).await.unwrap();
+            SEEN.lock()
+                .unwrap()
+                .push(format!("{} {} {}", first.len(), next.is_err(), reset));
+        })
+    }
+    let (client, server) = h2_client(Config::default(), watch).await;
+    let mut client = client.ready().await.unwrap();
+    let (_response, mut send) = client
+        .send_request(
+            Request::post("https://example.test/").body(()).unwrap(),
+            false,
+        )
+        .unwrap();
+    send.send_data(Bytes::from_static(b"part"), false).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    send.send_reset(h2::Reason::CANCEL);
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    assert_eq!(
+        SEEN.lock().unwrap().as_slice(),
+        ["4 true stream no longer needed"]
+    );
+    drop(client);
+    drop(server);
+}
+
+#[tokio::test(start_paused = true)]
+async fn server_reset_reaches_the_client() {
+    fn refuse(_: http::request::Parts, mut stream: Stream) -> Fut {
+        Box::pin(async move { stream.send_reset(oxiroute_h2::Reason::REFUSED_STREAM) })
+    }
+    let (client, _server) = h2_client(Config::default(), refuse).await;
+    let mut client = client.ready().await.unwrap();
+    let (response, _) = client
+        .send_request(
+            Request::get("https://example.test/").body(()).unwrap(),
+            true,
+        )
+        .unwrap();
+    let err = response.await.unwrap_err();
+    assert_eq!(err.reason(), Some(h2::Reason::REFUSED_STREAM));
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropped_streams_cancel_or_finish_like_h2() {
+    fn unfinished(_: http::request::Parts, mut stream: Stream) -> Fut {
+        Box::pin(async move {
+            let (status, headers) = response(200, &[]);
+            stream.send_response(status, headers, false).unwrap();
+        })
+    }
+    fn finished_early(_: http::request::Parts, mut stream: Stream) -> Fut {
+        Box::pin(async move {
+            let (status, headers) = response(200, &[]);
+            stream.send_response(status, headers, true).unwrap();
+        })
+    }
+    let (client, _server) = h2_client(Config::default(), unfinished).await;
+    let mut c = client.ready().await.unwrap();
+    let (response, _) = c
+        .send_request(
+            Request::get("https://example.test/").body(()).unwrap(),
+            true,
+        )
+        .unwrap();
+    let (_, mut body) = response.await.unwrap().into_parts();
+    let err = body.data().await.unwrap().unwrap_err();
+    assert_eq!(err.reason(), Some(h2::Reason::CANCEL));
+
+    let (client, _server) = h2_client(Config::default(), finished_early).await;
+    let mut c = client.ready().await.unwrap();
+    let (response, mut send) = c
+        .send_request(
+            Request::post("https://example.test/").body(()).unwrap(),
+            false,
+        )
+        .unwrap();
+    assert_eq!(response.await.unwrap().status(), 200);
+    let reset = poll_fn(|cx| send.poll_reset(cx)).await.unwrap();
+    assert_eq!(reset, h2::Reason::NO_ERROR);
+}
+
+#[tokio::test(start_paused = true)]
+async fn graceful_shutdown_answers_streams_opened_before_the_goaway() {
+    use oxiroute_h2::server::Server;
+    use tokio::sync::{Notify, oneshot};
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+    let release = std::sync::Arc::new(Notify::new());
+    let gate = release.clone();
+    let server = tokio::spawn(async move {
+        let mut server = Server::handshake(server_io, Config::default())
+            .await
+            .unwrap();
+        let mut draining = false;
+        loop {
+            tokio::select! {
+                _ = &mut stop_rx, if !draining => {
+                    server.graceful_shutdown();
+                    draining = true;
+                }
+                next = server.accept() => match next {
+                    None => break,
+                    Some(r) => {
+                        let (_, mut stream) = r.unwrap();
+                        let gate = gate.clone();
+                        tokio::spawn(async move {
+                            gate.notified().await;
+                            let (status, headers) = response(200, &[]);
+                            stream.send_response(status, headers, true).unwrap();
+                        });
+                    }
+                },
+            }
+        }
+    });
+    let (send, conn) = h2::client::handshake(client_io).await.unwrap();
+    let conn = tokio::spawn(conn);
+    let mut c = send.clone().ready().await.unwrap();
+    let (first, _) = c
+        .send_request(
+            Request::get("https://example.test/1").body(()).unwrap(),
+            true,
+        )
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    stop_tx.send(()).unwrap();
+    // This one is on the wire before the client has seen the GOAWAY: it is still answered.
+    let mut c2 = send.clone().ready().await.unwrap();
+    let second = c2.send_request(
+        Request::get("https://example.test/2").body(()).unwrap(),
+        true,
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    release.notify_waiters();
+    assert_eq!(first.await.unwrap().status(), 200);
+    if let Ok((second, _)) = second {
+        // Either the client had not seen the GOAWAY (answered) or it refused locally.
+        let _ = second.await;
+    }
+    release.notify_waiters();
+    server.await.unwrap();
+    drop((c, c2, send));
+    conn.await.unwrap().unwrap();
+}
