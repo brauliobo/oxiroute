@@ -1,0 +1,31 @@
+[package]
+name = "oxiroute-h1-head"
+description = "Allocation-free HTTP/1 head scanner and writer for the compiled fast lane"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+bytes.workspace = true
+http.workspace = true
+httparse = "1.10"
+pingora-http = "=0.8.1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Offsets are u32 spans into one read buffer; the scanner bounds the buffer and every field before it narrows.
+cast_possible_truncation = "allow"
+# The hot helpers are one-to-ten line scan steps that must not become calls.
+inline_always = "allow"
+# Differential tests and the oracle they replay are long straight-line comparisons.
+too_many_lines = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
