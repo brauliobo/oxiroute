@@ -137,10 +137,14 @@ impl H3UpstreamPlan {
         if roots.is_empty() {
             return Err(H3UpstreamBuildError::EmptyRoots { pool: owner });
         }
-        let mut crypto =
-            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-                .with_root_certificates(roots)
-                .with_no_client_auth();
+        let mut crypto = rustls::ClientConfig::builder_with_provider(crate::tls::provider::ring_provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|error| H3UpstreamBuildError::QuicTls {
+                pool: owner.clone(),
+                detail: error.to_string(),
+            })?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
         crypto.alpn_protocols = vec![b"h3".to_vec()];
         crypto.enable_early_data = false;
         let quic =

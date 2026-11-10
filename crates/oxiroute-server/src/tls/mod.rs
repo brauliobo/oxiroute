@@ -59,6 +59,7 @@ pub use upstream::{UpstreamTlsPlan, prepare_upstream_tls};
 mod error;
 mod files;
 mod prepare;
+pub(crate) mod provider;
 mod x509;
 
 pub use error::*;

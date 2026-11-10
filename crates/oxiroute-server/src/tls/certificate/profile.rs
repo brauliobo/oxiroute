@@ -1,6 +1,8 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+mod rustls_backend;
+
 #[derive(Clone)]
 pub(crate) struct CompiledTlsProfilePolicy {
     min_version: TlsVersion,
@@ -153,6 +155,7 @@ pub struct TlsProfilePlan {
     session_timeout: Option<i32>,
     session_tickets: bool,
     prefer_server_ciphers: bool,
+    backend: TlsBackend,
     tls_alpn_challenge_store: TlsAlpnChallengeStore,
     selector: Arc<CertificateSelector>,
 }
@@ -201,6 +204,7 @@ impl TlsProfilePlan {
             session_timeout: policy.session_timeout,
             session_tickets: policy.session_tickets,
             prefer_server_ciphers: policy.prefer_server_ciphers,
+            backend: policy.source_policy.backend,
             tls_alpn_challenge_store,
             selector,
         })
@@ -209,6 +213,11 @@ impl TlsProfilePlan {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    #[must_use]
+    pub const fn backend(&self) -> TlsBackend {
+        self.backend
     }
 
     #[must_use]
@@ -241,10 +250,10 @@ impl TlsProfilePlan {
         self.client_auth.allowed_dns_name_count()
     }
 
-    pub(crate) fn h3_client_cert_verifier(
+    pub(crate) fn rustls_client_cert_verifier(
         &self,
     ) -> Option<Arc<dyn rustls::server::danger::ClientCertVerifier>> {
-        self.client_auth.h3_client_verifier()
+        self.client_auth.rustls_verifier()
     }
 
     #[must_use]
@@ -268,6 +277,28 @@ impl TlsProfilePlan {
     #[must_use]
     pub fn is_h2_only(&self) -> bool {
         matches!(self.alpn, ALPN::H2)
+    }
+
+    /// Adds a TLS endpoint for this profile to `service`, served by the profile's backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend cannot be configured from the profile.
+    pub fn listen<A>(
+        &self,
+        service: &mut Service<A>,
+        address: &str,
+        handshake_threads: usize,
+    ) -> Result<(), TlsBuildError> {
+        match self.backend {
+            TlsBackend::Openssl => {
+                service.add_tls_with_settings(address, None, self.tls_settings(handshake_threads)?);
+            }
+            TlsBackend::Rustls => {
+                service.add_custom_tls(address, self.rustls_settings(handshake_threads)?);
+            }
+        }
+        Ok(())
     }
 
     /// Constructs callback-backed Pingora settings without reading any source path.

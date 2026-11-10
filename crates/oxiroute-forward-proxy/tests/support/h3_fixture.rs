@@ -24,7 +24,9 @@ pub fn endpoints_with_alpn(server_alpn: Vec<Vec<u8>>, client_alpn: Vec<Vec<u8>>)
     let certificate = cert.der().clone();
     let key = PrivatePkcs8KeyDer::from(signing_key.serialize_der());
 
-    let mut server_crypto = rustls::ServerConfig::builder()
+    let mut server_crypto = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .expect("server TLS versions")
         .with_no_client_auth()
         .with_single_cert(vec![certificate.clone()], key.into())
         .expect("server TLS config");
@@ -38,7 +40,9 @@ pub fn endpoints_with_alpn(server_alpn: Vec<Vec<u8>>, client_alpn: Vec<Vec<u8>>)
 
     let mut roots = rustls::RootCertStore::empty();
     roots.add(certificate).expect("test root certificate");
-    let mut client_crypto = rustls::ClientConfig::builder()
+    let mut client_crypto = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .expect("client TLS versions")
         .with_root_certificates(roots)
         .with_no_client_auth();
     client_crypto.alpn_protocols = client_alpn;

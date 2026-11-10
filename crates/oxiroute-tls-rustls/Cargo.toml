@@ -1,0 +1,25 @@
+[package]
+name = "oxiroute-tls-rustls"
+description = "rustls server-side handshake and record stream for connections accepted by Pingora listeners"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+log.workspace = true
+pingora.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+x509-parser.workspace = true
+
+[dev-dependencies]
+rcgen = "0.14.10"
+tokio-rustls.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
+
+[lints]
+workspace = true

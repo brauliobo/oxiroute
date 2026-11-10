@@ -171,7 +171,9 @@ pub(super) fn client_endpoint() -> std::io::Result<quinn::Endpoint> {
             .add(certificate.map_err(std::io::Error::other)?)
             .map_err(std::io::Error::other)?;
     }
-    let mut crypto = rustls::ClientConfig::builder()
+    let mut crypto = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .map_err(std::io::Error::other)?
         .with_root_certificates(roots)
         .with_no_client_auth();
     crypto.alpn_protocols = vec![H3_ALPN.to_vec()];
