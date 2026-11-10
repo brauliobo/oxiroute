@@ -20,7 +20,8 @@ use http::header::HeaderName;
 use http::uri::PathAndQuery;
 use http::{header, HeaderMap, Response, StatusCode};
 use log::{debug, warn};
-use oxiroute_h2::server::{Server, Stream as H2Stream};
+use oxiroute_h2::server::Server;
+pub use oxiroute_h2::server::Stream as H2Stream;
 pub use oxiroute_h2::{server::Config as H2Options, Reason};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_timeout::timeout;
@@ -29,6 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 
+use crate::apps::{ClaimedStream, Http2Claim, Http2Front};
 use crate::protocols::http::authority::{
     has_ambiguous_port_suffix, raw_target_authority, validate_request_authority_fields,
     RawTargetAuthority,
@@ -169,15 +171,51 @@ async fn reserve_and_send(stream: &mut H2Stream, data: &mut Bytes, end: bool) ->
 /// that bound during drain.
 // TODO: add a per-connection drain timeout to bound how long a single
 // misbehaving client can keep this task alive after GOAWAY.
+#[cfg(test)]
 pub(crate) async fn accept_downstream_sessions<F>(
-    mut conn: H2Connection<Stream>,
+    conn: H2Connection<Stream>,
     digest: Arc<Digest>,
-    mut shutdown: ShutdownWatch,
+    shutdown: ShutdownWatch,
     idle_timeout: Option<Duration>,
     mut on_session: F,
 ) where
     F: FnMut(HttpSession, StreamGuard),
 {
+    accept_downstream_dispatch(
+        conn,
+        digest,
+        shutdown,
+        idle_timeout,
+        None,
+        |dispatched, guard| {
+            if let Dispatch::Session(session) = dispatched {
+                on_session(session, guard);
+            }
+        },
+    )
+    .await;
+}
+
+/// What the accept loop hands to its spawner: a session of the application, or a stream its [`Http2Front`] claimed.
+pub(crate) enum Dispatch {
+    Session(HttpSession),
+    Claimed(ClaimedStream),
+}
+
+/// [`accept_downstream_sessions`] with the application's front: it is consulted for each request that passed the
+/// acceptance checks.
+pub(crate) async fn accept_downstream_dispatch<F>(
+    mut conn: H2Connection<Stream>,
+    digest: Arc<Digest>,
+    mut shutdown: ShutdownWatch,
+    idle_timeout: Option<Duration>,
+    front: Option<Arc<dyn Http2Front>>,
+    mut on_session: F,
+) where
+    F: FnMut(Dispatch, StreamGuard),
+{
+    // The front's claims hold a handle of their own: the loop waits on `shutdown` while it accepts.
+    let front_shutdown = shutdown.clone();
     let mut shutdown_initiated = false;
     // Per-connection budget for malformed streams (see MAX_MALFORMED_STREAMS_PER_CONN).
     let mut malformed_streams = 0usize;
@@ -185,10 +223,12 @@ pub(crate) async fn accept_downstream_sessions<F>(
     let active = Arc::new(ActiveSessions::new());
     loop {
         let h2_stream = if shutdown_initiated {
-            HttpSession::from_h2_conn_with_malformed_budget(
+            accept_checked(
                 &mut conn,
-                digest.clone(),
+                &digest,
                 &mut malformed_streams,
+                front.as_ref(),
+                &front_shutdown,
             )
             .await
         } else {
@@ -202,10 +242,12 @@ pub(crate) async fn accept_downstream_sessions<F>(
                     shutdown_initiated = true;
                     continue;
                 }
-                h2_stream = HttpSession::from_h2_conn_with_malformed_budget(
+                h2_stream = accept_checked(
                     &mut conn,
-                    digest.clone(),
+                    &digest,
                     &mut malformed_streams,
+                    front.as_ref(),
+                    &front_shutdown,
                 ) => h2_stream,
                 // Any accepted stream cancels this future. The next iteration
                 // waits for all active streams to finish before starting a fresh
@@ -229,9 +271,9 @@ pub(crate) async fn accept_downstream_sessions<F>(
             Ok(None) => return,
             // The offending stream was already answered or reset; keep the
             // connection alive and continue accepting sibling streams.
-            Ok(Some(H2Accept::Rejected)) => continue,
-            Ok(Some(H2Accept::Session(session))) => {
-                on_session(session, active.start_session());
+            Ok(Some(Accepted::Rejected)) => continue,
+            Ok(Some(Accepted::Dispatch(dispatched))) => {
+                on_session(dispatched, active.start_session());
             }
         }
     }
@@ -353,6 +395,113 @@ pub enum H2Accept {
     Rejected,
 }
 
+/// A request the acceptance checks looked at.
+enum Validated {
+    /// Answered or reset by the checks; the connection goes on.
+    Rejected,
+    Request(RequestHeader, H2Stream),
+}
+
+/// What the accept loop does with an accepted request: serve it, or hand it to the application.
+enum Accepted {
+    Rejected,
+    Dispatch(Dispatch),
+}
+
+/// The next request of the connection, after the acceptance checks of the session: request target bytes,
+/// `Content-Length` framing, authority. A request the checks reject is answered or reset and counted against the
+/// connection's budget of malformed streams.
+async fn accept_validated(
+    conn: &mut H2Connection<Stream>,
+    malformed_streams: &mut usize,
+) -> Result<Option<Validated>> {
+    // NOTE: conn.accept().await is what drives the entire connection.
+    let res = conn.accept().await.transpose().or_err(
+        ErrorType::H2Error,
+        "while accepting new downstream requests",
+    )?;
+
+    let Some((request_header, mut stream)) = res else {
+        return Ok(None);
+    };
+
+    let request_header: RequestHeader = request_header.into();
+
+    // Depending on how the request URI is parsed, control bytes
+    // (including CR and LF) may be accepted in the `:path`
+    // pseudo-header. Reject them here as defense-in-depth: these
+    // bytes are not permitted in a URI, and they would be dangerous
+    // if forwarded to an HTTP/1.1 upstream. Reset only the offending
+    // stream so sibling streams on the connection are unaffected.
+    if request_target_has_forbidden_byte(request_header.raw_path()) {
+        debug!("Rejecting H2 request: forbidden delimiter byte in request target");
+        stream.send_reset(Reason::PROTOCOL_ERROR);
+        account_malformed_stream(malformed_streams)?;
+        return Ok(Some(Validated::Rejected));
+    }
+
+    // Reject ambiguous Content-Length framing at the stream level.
+    // Identical duplicates and comma-combined identical values are
+    // reconciled (RFC 9110 section 8.6), but conflicting or unparseable
+    // values are an unrecoverable error and are treated as a stream
+    // error per RFC 9113 section 8.1.1. This keeps the request path
+    // consistent with HTTP/1 and prevents ambiguous framing from being
+    // forwarded (e.g. when downgraded to an HTTP/1 upstream).
+    if let Err(e) = validate_content_length_without_transfer_encoding(&request_header.headers) {
+        // debug, not warn: per-stream, client-influenced; avoids log
+        // floods. Connection-level abuse is surfaced via the error below.
+        debug!("rejecting downstream h2 request: {e}");
+        stream.send_reset(Reason::PROTOCOL_ERROR);
+
+        account_malformed_stream(malformed_streams)?;
+        return Ok(Some(Validated::Rejected));
+    }
+
+    // RFC 9113 section 8.1.1 forbids forwarding a malformed request:
+    // https://www.rfc-editor.org/rfc/rfc9113.html#section-8.1.1
+    if invalid_request_authority(&request_header) {
+        // An immediate PROTOCOL_ERROR reset would replace this observable 400 in h2. Dropping
+        // an unfinished request body can still reset the stream.
+        if let Err(e) = stream.send_response(StatusCode::BAD_REQUEST, HeaderMap::new(), true) {
+            // A client reset before the write is stream-local; siblings survive.
+            debug!("failed to send downstream h2 authority rejection: {e}");
+        }
+        account_malformed_stream(malformed_streams)?;
+        return Ok(Some(Validated::Rejected));
+    }
+
+    Ok(Some(Validated::Request(request_header, stream)))
+}
+
+/// [`accept_validated`], then the application's front: a request it claims is served by its future, any other
+/// becomes a session.
+async fn accept_checked(
+    conn: &mut H2Connection<Stream>,
+    digest: &Arc<Digest>,
+    malformed_streams: &mut usize,
+    front: Option<&Arc<dyn Http2Front>>,
+    shutdown: &ShutdownWatch,
+) -> Result<Option<Accepted>> {
+    let (mut request_header, mut stream) = match accept_validated(conn, malformed_streams).await? {
+        None => return Ok(None),
+        Some(Validated::Rejected) => return Ok(Some(Accepted::Rejected)),
+        Some(Validated::Request(request_header, stream)) => (request_header, stream),
+    };
+    if let Some(front) = front {
+        match Arc::clone(front).claim(request_header, stream, digest, shutdown) {
+            Http2Claim::Claimed(claimed) => {
+                return Ok(Some(Accepted::Dispatch(Dispatch::Claimed(claimed))));
+            }
+            Http2Claim::Declined {
+                request,
+                stream: declined,
+            } => (request_header, stream) = (request, declined),
+        }
+    }
+    let session = HttpSession::new_accepted(request_header, stream, digest.clone());
+    Ok(Some(Accepted::Dispatch(Dispatch::Session(session))))
+}
+
 /// Reject ambiguous H2 authority representations:
 ///
 /// - duplicate `Host` ([RFC 9112 section 3.2]);
@@ -468,62 +617,21 @@ impl HttpSession {
         digest: Arc<Digest>,
         malformed_streams: &mut usize,
     ) -> Result<Option<H2Accept>> {
-        // NOTE: conn.accept().await is what drives the entire connection.
-        let res = conn.accept().await.transpose().or_err(
-            ErrorType::H2Error,
-            "while accepting new downstream requests",
-        )?;
+        Ok(match accept_validated(conn, malformed_streams).await? {
+            None => None,
+            Some(Validated::Rejected) => Some(H2Accept::Rejected),
+            Some(Validated::Request(request_header, stream)) => Some(H2Accept::Session(
+                Self::new_accepted(request_header, stream, digest),
+            )),
+        })
+    }
 
-        let Some((request_header, mut stream)) = res else {
-            return Ok(None);
-        };
-
-        let request_header: RequestHeader = request_header.into();
-
-        // Depending on how the request URI is parsed, control bytes
-        // (including CR and LF) may be accepted in the `:path`
-        // pseudo-header. Reject them here as defense-in-depth: these
-        // bytes are not permitted in a URI, and they would be dangerous
-        // if forwarded to an HTTP/1.1 upstream. Reset only the offending
-        // stream so sibling streams on the connection are unaffected.
-        if request_target_has_forbidden_byte(request_header.raw_path()) {
-            debug!("Rejecting H2 request: forbidden delimiter byte in request target");
-            stream.send_reset(Reason::PROTOCOL_ERROR);
-            account_malformed_stream(malformed_streams)?;
-            return Ok(Some(H2Accept::Rejected));
-        }
-
-        // Reject ambiguous Content-Length framing at the stream level.
-        // Identical duplicates and comma-combined identical values are
-        // reconciled (RFC 9110 section 8.6), but conflicting or unparseable
-        // values are an unrecoverable error and are treated as a stream
-        // error per RFC 9113 section 8.1.1. This keeps the request path
-        // consistent with HTTP/1 and prevents ambiguous framing from being
-        // forwarded (e.g. when downgraded to an HTTP/1 upstream).
-        if let Err(e) = validate_content_length_without_transfer_encoding(&request_header.headers) {
-            // debug, not warn: per-stream, client-influenced; avoids log
-            // floods. Connection-level abuse is surfaced via the error below.
-            debug!("rejecting downstream h2 request: {e}");
-            stream.send_reset(Reason::PROTOCOL_ERROR);
-
-            account_malformed_stream(malformed_streams)?;
-            return Ok(Some(H2Accept::Rejected));
-        }
-
-        // RFC 9113 section 8.1.1 forbids forwarding a malformed request:
-        // https://www.rfc-editor.org/rfc/rfc9113.html#section-8.1.1
-        if invalid_request_authority(&request_header) {
-            // An immediate PROTOCOL_ERROR reset would replace this observable 400 in h2. Dropping
-            // an unfinished request body can still reset the stream.
-            if let Err(e) = stream.send_response(StatusCode::BAD_REQUEST, HeaderMap::new(), true) {
-                // A client reset before the write is stream-local; siblings survive.
-                debug!("failed to send downstream h2 authority rejection: {e}");
-            }
-            account_malformed_stream(malformed_streams)?;
-            return Ok(Some(H2Accept::Rejected));
-        }
-
-        Ok(Some(H2Accept::Session(HttpSession {
+    fn new_accepted(
+        request_header: RequestHeader,
+        stream: H2Stream,
+        digest: Arc<Digest>,
+    ) -> HttpSession {
+        HttpSession {
             request_header,
             stream,
             request_ended: AtomicBool::new(false),
@@ -537,7 +645,7 @@ impl HttpSession {
             write_timeout: None,
             total_drain_timeout: None,
             automatic_response_headers: true,
-        })))
+        }
     }
 
     /// The request sent from the client

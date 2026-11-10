@@ -19,10 +19,12 @@ mod idle_wait;
 mod pooled_future;
 
 use self::pooled_future::PooledFuture;
+pub use self::pooled_future::ErasedFuture as ClaimedStream;
 use crate::server::ShutdownWatch;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use log::{debug, error};
+use pingora_http::RequestHeader;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
@@ -880,6 +882,34 @@ pub enum Http1FrontOutcome {
     },
 }
 
+/// A front of the HTTP/2 accept loop: it sees each request of a connection after the loop's own acceptance checks
+/// (request target bytes, `Content-Length` framing, authority, the malformed-stream budget) passed, and before any
+/// session exists. It claims the requests it serves by itself and gives back the others untouched, for the
+/// application's session.
+pub trait Http2Front: Send + Sync {
+    /// Decides without waiting. A claimed stream is served by the returned future, which the loop spawns where it
+    /// would spawn a session and which owns the stream (and so a handle on the front: it outlives the call);
+    /// `shutdown` is the service's.
+    fn claim(
+        self: Arc<Self>,
+        request: RequestHeader,
+        stream: server::H2Stream,
+        digest: &Digest,
+        shutdown: &ShutdownWatch,
+    ) -> Http2Claim;
+}
+
+/// What an [`Http2Front`] did with a stream.
+pub enum Http2Claim {
+    /// The front serves the stream with this future.
+    Claimed(ClaimedStream),
+    /// Not the front's: the session takes it.
+    Declined {
+        request: RequestHeader,
+        stream: server::H2Stream,
+    },
+}
+
 /// This trait defines the interface of an HTTP application.
 #[async_trait]
 pub trait HttpServerApp {
@@ -931,6 +961,11 @@ pub trait HttpServerApp {
     /// A `None` means to use the built-in default options. See [`server::H2Options`] for more details.
     /// The connection-level front of HTTP/1 connections, if the application has one.
     fn http1_front(&self) -> Option<&dyn Http1Front> {
+        None
+    }
+
+    /// The front of the HTTP/2 connections of this application, if it has one.
+    fn http2_front(&self) -> Option<Arc<dyn Http2Front>> {
         None
     }
 
@@ -988,22 +1023,31 @@ where
     let app_for_session = app.clone();
     let shutdown_for_session = shutdown.clone();
     let h2_idle_timeout = app.server_options().and_then(|o| o.h2_idle_timeout);
-    server::accept_downstream_sessions(
+    server::accept_downstream_dispatch(
         h2_conn,
         digest,
         shutdown.clone(),
         h2_idle_timeout,
-        |h2_stream, guard| {
-            let app = app_for_session.clone();
-            let shutdown = shutdown_for_session.clone();
-            pingora_runtime::spawn_stream(async move {
-                // hold `guard` for the session's lifetime so the accept
-                // loop's idle timeout sees this connection as busy.
-                let _guard = guard;
-                // Note, `PersistentSettings` not currently relevant for h2
-                app.process_new_http(ServerSession::new_http2(h2_stream), &shutdown)
-                    .await;
-            });
+        app.http2_front(),
+        |dispatched, guard| match dispatched {
+            server::Dispatch::Session(h2_stream) => {
+                let app = app_for_session.clone();
+                let shutdown = shutdown_for_session.clone();
+                pingora_runtime::spawn_stream(async move {
+                    // hold `guard` for the session's lifetime so the accept
+                    // loop's idle timeout sees this connection as busy.
+                    let _guard = guard;
+                    // Note, `PersistentSettings` not currently relevant for h2
+                    app.process_new_http(ServerSession::new_http2(h2_stream), &shutdown)
+                        .await;
+                });
+            }
+            server::Dispatch::Claimed(claimed) => {
+                pingora_runtime::spawn_stream(async move {
+                    let _guard = guard;
+                    claimed.await;
+                });
+            }
         },
     )
     .await;
