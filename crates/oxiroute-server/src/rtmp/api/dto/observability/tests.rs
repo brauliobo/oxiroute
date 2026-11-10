@@ -40,6 +40,39 @@ fn monitoring_projection_preserves_the_runtime_v1_wire_object() {
 }
 
 #[test]
+fn monitoring_body_is_the_serialized_response_byte_for_byte() {
+    let control = empty_rtmp_runtime().control();
+    for pools in [0, 2] {
+        let mut runtime = RuntimeMetrics::new().snapshot().expect("runtime snapshot");
+        runtime.upstream_pools = (0..pools)
+            .map(|index| crate::PoolHealthSnapshot {
+                name: format!("pool-{index}"),
+                algorithm: "round_robin",
+                available_endpoints: 0,
+                total_endpoints: 0,
+                unavailable_selections: u64::MAX,
+                fail_open_selections: 1,
+                queued: 2,
+                queued_by_class: Vec::new(),
+                oldest_queue_wait_ms: 0,
+                queued_total: 3,
+                queue_timeouts: 4,
+                queue_cancellations: 5,
+                canary: None,
+                endpoints: Vec::new(),
+            })
+            .collect();
+        let response = MonitoringResponse::project(runtime, &control.catalog_snapshot(), false)
+            .expect("monitoring projection");
+
+        assert_eq!(
+            response.body().expect("direct body"),
+            serde_json::to_vec(&response).expect("serialized response")
+        );
+    }
+}
+
+#[test]
 fn monitoring_projection_owns_every_runtime_snapshot_field() {
     let runtime = RuntimeMetrics::new().snapshot().expect("runtime snapshot");
     let control = empty_rtmp_runtime().control();
