@@ -1,7 +1,9 @@
-# OxiRoute 6.3.1 (draft)
+# OxiRoute 6.3.1
 
 OxiRoute 6.3.1 is a security fix for the HTTP reverse proxy: hop-by-hop fields of a client request, and the fields a
-`Connection` header nominates, no longer reach the origin. Nothing else changes.
+`Connection` header nominates, no longer reach the origin. Release engineering also changes: profile-guided release
+binaries no longer embed the build machine's paths, the package recipes are checked for stale checksums, and an
+`oxiroute-bin` Arch recipe installs the release binaries. The proxy behaves as in 6.3.0 otherwise.
 
 ## Security
 
@@ -28,6 +30,32 @@ OxiRoute 6.3.1 is a security fix for the HTTP reverse proxy: hop-by-hop fields o
 - RUSTSEC-2026-0388 (an HTTP/2 `:authority` that differs from `Host`, userinfo in the authority) was already
   refused by the proxy with 400 for HTTP/1 and HTTP/2; two new tests pin it. The audit still lists it until the
   vendored Pingora is rebased.
+
+## Release engineering
+
+- **Release binaries no longer embed build-machine paths.** The profile-guided binaries of 6.3.0 carried the runner's
+  checkout, cargo home and scratch directory in panic locations and debug strings. Every build of
+  `benchmarks/scripts/pgo.sh` now remaps those prefixes, the profile still matches, and
+  `scripts/build-release-binaries.sh` runs `scripts/verify-binary-paths.sh`, which fails the build when a binary
+  contains a home, runner, checkout or cargo-home path. The workflow builds outside the runner home.
+- **Packaging checksum gate.** `packaging/arch/verify-checksums.sh` fails on a stale local-file checksum or on a
+  `PKGBUILD` and `.SRCINFO` that disagree. It runs in CI, in `scripts/verify-release-version.sh` and so in the release
+  workflow. The source recipe now pins the checksum of the `README.md` it ships, which 6.3.0 carried stale.
+- **Source archive time.** A commit that only touches `packaging/arch/` (the checksum pin after a release commit) no
+  longer moves the archive time, so the pin cannot invalidate itself.
+- **`oxiroute-bin` recipe.** `packaging/arch/bin/` installs the profile-guided release tarball instead of building,
+  with the same service, sysusers, tmpfiles, environment and configuration files as the source recipe (byte-identical,
+  enforced by the gate). It is pinned with `packaging/arch/pin-bin-release.sh` after the release workflow has
+  published the tarball.
+
+## Cost
+
+User-space instructions per request (`benchmarks/r2-data-path`, same host, 6.3.0 and the fix built the same way, three
+runs each, the spread of a run is 0.2% to 1.5%): HTTP/1.1 proxied 1 KiB over a keep-alive connection (the harness
+client sends `Connection: keep-alive`) 42,120 and 42,060 (no change: the origin no longer gets the header, which pays
+for the check); HTTP/2 over TLS 1 KiB 68,470 and 68,710 (no change within the noise); a new connection per request
+(`Connection: close`) 54,800 and 55,240 (+0.8%); WebSocket echo 12,044 and 12,052. A request without any hop-by-hop
+field costs one flag test; the HTTP/1 parser notes the fields while it appends the headers.
 
 ## Behaviour changes to know before upgrading
 

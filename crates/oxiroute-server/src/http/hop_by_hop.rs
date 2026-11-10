@@ -94,6 +94,9 @@ pub(crate) fn strip_request(
     facts: RequestFacts,
     http2: bool,
 ) -> Result<RequestFacts, InvalidNomination> {
+    if http2 {
+        return Ok(strip_http2_request(request, facts));
+    }
     if !(facts.hop_by_hop || facts.connection || facts.upgrade) {
         return Ok(facts);
     }
@@ -106,18 +109,11 @@ pub(crate) fn strip_request(
         nominated,
     } = ConnectionOptions::parse(&request.headers)?;
     let handshake = upgrade && facts.upgrade && request.version == Version::HTTP_11;
-    let fixed = facts
-        .hop_by_hop
-        .then(|| {
-            request
-                .headers
-                .keys()
-                .filter(|name| is_hop_by_hop(name) && !(http2 && **name == TE))
-        })
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect::<Vec<_>>();
+    let fixed = if facts.hop_by_hop {
+        hop_by_hop_names(request)
+    } else {
+        Vec::new()
+    };
     for name in nominated.iter().chain(&fixed) {
         request.remove_header(name);
     }
@@ -139,6 +135,25 @@ pub(crate) fn strip_request(
         hop_by_hop: false,
         ..facts
     })
+}
+
+fn hop_by_hop_names(request: &RequestHeader) -> Vec<HeaderName> {
+    request
+        .headers
+        .keys()
+        .filter(|name| is_hop_by_hop(name))
+        .cloned()
+        .collect()
+}
+
+/// HTTP/2 refuses `Connection`, `Keep-Alive`, `Proxy-Connection`, `Transfer-Encoding` and `Upgrade` before a request
+/// reaches the proxy (RFC 9113 section 8.2.2) and `TE` other than `trailers`, so one look at the names finds what
+/// is left; `TE: trailers` stays for an HTTP/2 upstream.
+fn strip_http2_request(request: &mut RequestHeader, facts: RequestFacts) -> RequestFacts {
+    for name in hop_by_hop_names(request).iter().filter(|name| **name != TE) {
+        request.remove_header(name);
+    }
+    facts
 }
 
 /// A request whose only hop-by-hop field is the `Connection` of an ordinary client (`keep-alive`, or `close`, which
