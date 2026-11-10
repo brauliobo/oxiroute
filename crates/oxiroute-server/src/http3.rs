@@ -14,7 +14,7 @@ use h3::{
 };
 use http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
-    header::{CONNECTION, CONTENT_LENGTH, HOST, TE, TRAILER, TRANSFER_ENCODING, UPGRADE},
+    header::{CONTENT_LENGTH, HOST},
     uri::Authority,
 };
 use log::{error, warn};
@@ -44,6 +44,7 @@ use crate::{
         CacheFailureClass, CacheRequest, CacheStart, CacheStartFailure, CacheTransaction,
         HttpCachePlan,
     },
+    http::hop_by_hop::hop_by_hop_removals,
     http::policy::{
         RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
         decide_request_header, expand_redirect_location, normalized_redirect_host,

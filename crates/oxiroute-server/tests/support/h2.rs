@@ -7,6 +7,7 @@ pub struct OriginObservations {
     request_body_bytes: AtomicUsize,
     http_bytes: AtomicUsize,
     request_heads: Mutex<Vec<Vec<u8>>>,
+    h2_request_headers: Mutex<Vec<HeaderMap>>,
     server_names: Mutex<Vec<String>>,
     alpn: Mutex<Vec<Vec<u8>>>,
     tls_versions: Mutex<Vec<String>>,
@@ -38,6 +39,15 @@ impl OriginObservations {
         self.request_heads
             .lock()
             .expect("origin request-head observations")
+            .clone()
+    }
+
+    /// The header maps of the requests an HTTP/2 origin received.
+    #[allow(dead_code)]
+    pub fn h2_request_headers(&self) -> Vec<HeaderMap> {
+        self.h2_request_headers
+            .lock()
+            .expect("origin HTTP/2 request-header observations")
             .clone()
     }
 
@@ -296,6 +306,11 @@ async fn serve_tls_h2(
         observations
             .http_bytes
             .fetch_add(request.uri().path().len(), Ordering::SeqCst);
+        observations
+            .h2_request_headers
+            .lock()
+            .expect("origin HTTP/2 request-header observations")
+            .push(request.headers().clone());
         let path = request.uri().path().to_owned();
         if path == "/grpc/upload" {
             let mut body = request.into_body();
@@ -479,6 +494,18 @@ impl H2Client {
         body: Vec<Bytes>,
     ) -> Result<H2Response, BoxError> {
         self.request_inner_with_headers(method, path, headers, Some(body))
+            .await
+    }
+
+    /// A request without a body and with `headers`.
+    #[allow(dead_code)]
+    pub async fn request_with_headers(
+        &mut self,
+        method: Method,
+        path: &str,
+        headers: HeaderMap,
+    ) -> Result<H2Response, BoxError> {
+        self.request_inner_with_headers(method, path, headers, None)
             .await
     }
 

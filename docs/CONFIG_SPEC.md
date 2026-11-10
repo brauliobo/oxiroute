@@ -711,7 +711,8 @@ HAProxy directives:
 - Dynamic request-header values are closed to appended X-Forwarded-For, downstream scheme, and one
   named incoming header. Values derived from request headers carry an explicit 1 through 8192 byte
   output bound. Hop-by-hop mutations remain forbidden except for the exact standard nginx WebSocket
-  pair, which is bounds-checked but left under Pingora's upgrade ownership. Proxy policies optionally
+  pair, which is bounds-checked but left under Pingora's upgrade ownership. The proxy removes the hop-by-hop fields of
+  every request and response itself (see the operations guide, hop-by-hop headers). Proxy policies optionally
   replace one canonical incoming path prefix with one canonical upstream path prefix while preserving
   the request query.
 - Basic access loads one bounded no-follow regular htpasswd file with mode `0400`, `0600`, `0440`,

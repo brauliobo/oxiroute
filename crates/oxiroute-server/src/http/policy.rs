@@ -1,19 +1,13 @@
 use std::{borrow::Cow, net::IpAddr};
 
-use http::{
-    HeaderMap, HeaderName, HeaderValue, StatusCode,
-    header::{
-        CONNECTION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, SET_COOKIE, TE, TRAILER,
-        TRANSFER_ENCODING, UPGRADE,
-    },
-    uri::Authority,
-};
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header::SET_COOKIE, uri::Authority};
 use oxiroute_config::HttpSameSite;
 
 use crate::http::action::{
     MAX_REDIRECT_LOCATION_BYTES, ProxyPolicyPlan, RedirectLocationPlan, RedirectTemplateSegment,
     RequestHeaderMutationPlan, RequestHeaderValuePlan, ResponseHeaderMutationPlan,
 };
+use crate::http::hop_by_hop::{has_hop_by_hop, hop_by_hop_removals};
 
 #[derive(Clone, Copy)]
 pub(crate) struct RequestPolicyContext<'a> {
@@ -291,20 +285,6 @@ pub(crate) enum ResponsePolicyError {
     InvalidCookie,
 }
 
-/// The headers a proxy never forwards (RFC 9110 section 7.6.1), apart from the ones `Connection` nominates.
-fn is_hop_by_hop(name: &HeaderName) -> bool {
-    matches!(
-        *name,
-        CONNECTION
-            | PROXY_AUTHENTICATE
-            | PROXY_AUTHORIZATION
-            | TE
-            | TRAILER
-            | TRANSFER_ENCODING
-            | UPGRADE
-    ) || matches!(name.as_str(), "keep-alive" | "proxy-connection")
-}
-
 pub(crate) fn decide_response_headers(
     status: StatusCode,
     headers: &HeaderMap,
@@ -317,36 +297,14 @@ pub(crate) fn decide_response_headers(
     let mut resulting = rewrites_cookies.then(|| headers.clone());
     let mut decisions = Vec::new();
     // `Connection` is one of them, so without any there are no nominations either.
-    if remove_hop_by_hop && headers.keys().any(is_hop_by_hop) {
-        let mut nominations = Vec::new();
-        for value in headers.get_all(CONNECTION) {
-            let value = value
-                .to_str()
-                .map_err(|_| ResponsePolicyError::InvalidConnectionNomination)?;
-            for token in value.split(',') {
-                nominations.push(
-                    HeaderName::from_bytes(token.trim().as_bytes())
-                        .map_err(|_| ResponsePolicyError::InvalidConnectionNomination)?,
-                );
+    if remove_hop_by_hop && has_hop_by_hop(headers) {
+        for name in hop_by_hop_removals(headers)
+            .map_err(|_| ResponsePolicyError::InvalidConnectionNomination)?
+        {
+            if let Some(resulting) = &mut resulting {
+                resulting.remove(&name);
             }
-        }
-        for name in nominations.into_iter().chain([
-            CONNECTION,
-            HeaderName::from_static("keep-alive"),
-            PROXY_AUTHENTICATE,
-            PROXY_AUTHORIZATION,
-            HeaderName::from_static("proxy-connection"),
-            TE,
-            TRAILER,
-            TRANSFER_ENCODING,
-            UPGRADE,
-        ]) {
-            if headers.contains_key(&name) {
-                if let Some(resulting) = &mut resulting {
-                    resulting.remove(&name);
-                }
-                decisions.push(ResponseHeaderDecision::Remove(name));
-            }
+            decisions.push(ResponseHeaderDecision::Remove(name));
         }
     }
     for mutation in &policy.response_headers {
