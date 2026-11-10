@@ -36,6 +36,12 @@ impl Header {
         &buf[self.name_start as usize..self.name_start as usize + usize::from(self.name_len)]
     }
 
+    /// The offset after this header's line when the line is [clean](LINE_IS_CLEAN).
+    #[inline]
+    pub(crate) fn clean_line_end(&self) -> usize {
+        (self.value_start + self.value_len + 2) as usize
+    }
+
     /// The value, without the whitespace around it.
     #[inline]
     #[must_use]
