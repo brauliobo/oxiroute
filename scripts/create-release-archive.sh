@@ -14,7 +14,8 @@ fi
 
 archive=$(realpath -m -- "${archive}")
 mkdir -p -- "$(dirname -- "${archive}")"
-source_date_epoch=${SOURCE_DATE_EPOCH:-$(git -C "${repo_dir}" log -1 --format=%ct HEAD)}
+# Commits to the excluded recipe directory (checksum pins) must not move the archive time.
+source_date_epoch=${SOURCE_DATE_EPOCH:-$(git -C "${repo_dir}" log -1 --format=%ct HEAD -- . "${RELEASE_ARCHIVE_EXCLUDES[0]}")}
 export SOURCE_DATE_EPOCH=${source_date_epoch}
 temporary_archive=$(mktemp "${archive}.XXXXXX")
 temporary_tree=$(mktemp -d "${archive}.tree.XXXXXX")
