@@ -8,8 +8,8 @@ use log::warn;
 use oxiroute_config::DownstreamTimeoutPolicy;
 use pingora::{
     apps::{
-        AcceptGate, ConnectionAdmission, HttpServerApp, HttpServerOptions, ReusedHttpStream,
-        ServerApp,
+        AcceptGate, ConnectionAdmission, Http1Front, HttpServerApp, HttpServerOptions,
+        ReusedHttpStream, ServerApp,
     },
     protocols::{
         ALPN, Stream,
@@ -19,8 +19,11 @@ use pingora::{
 };
 use tokio::sync::watch;
 
+use crate::HttpServicePlan;
+use crate::http::proxy::lane::{LaneFront, LaneTimeouts};
 use crate::listener::runtime::{AdmissionError, ListenerRuntime};
 use crate::{ListenerMetrics, RuntimeGeneration, RuntimeReferenceKind, TlsProfilePlan};
+use oxiroute_acme::ChallengeStore;
 
 pub struct MonitoredHttpApp<A> {
     generation: Arc<RuntimeGeneration>,
@@ -272,6 +275,7 @@ where
 }
 
 pub struct HttpDownstreamPolicyApp<A> {
+    front: Option<LaneFront>,
     inner: Arc<A>,
     request_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
@@ -283,6 +287,7 @@ impl<A> HttpDownstreamPolicyApp<A> {
     pub fn new(inner: A, policy: DownstreamTimeoutPolicy) -> Self {
         let client_timeout = policy.client_timeout_ms.map(Duration::from_millis);
         Self {
+            front: None,
             inner: Arc::new(inner),
             request_timeout: policy
                 .request_timeout_ms
@@ -291,6 +296,26 @@ impl<A> HttpDownstreamPolicyApp<A> {
             write_timeout: client_timeout,
             keepalive_timeout: policy.keepalive_timeout_ms.map(Duration::from_millis),
         }
+    }
+}
+
+impl<A> HttpDownstreamPolicyApp<A> {
+    /// Serves the requests the fast lane can on the connection before a session exists.
+    #[must_use]
+    pub fn with_lane(
+        mut self,
+        service: Arc<HttpServicePlan>,
+        metrics: ListenerMetrics,
+        generation: Arc<RuntimeGeneration>,
+        challenge: Option<ChallengeStore>,
+    ) -> Self {
+        let timeouts = LaneTimeouts {
+            request: self.request_timeout,
+            write: self.write_timeout,
+            keepalive: self.keepalive_timeout,
+        };
+        self.front = LaneFront::new(service, metrics, generation, challenge, timeouts);
+        self
     }
 }
 
@@ -329,6 +354,10 @@ where
             }
             self.inner.process_new_http_inline(session, shutdown).await
         }
+    }
+
+    fn http1_front(&self) -> Option<&dyn Http1Front> {
+        self.front.as_ref().map(|front| front as &dyn Http1Front)
     }
 
     fn h2_options(&self) -> Option<H2Options> {

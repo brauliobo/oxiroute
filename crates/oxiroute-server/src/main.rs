@@ -625,6 +625,7 @@ fn serve_generation(
                 );
             }
             ServiceKind::Http(http_service) => {
+                let lane_service = Arc::clone(&http_service);
                 let proxy = http_proxy(
                     &server.configuration,
                     HttpReverseProxy::new(http_service, metrics.clone())
@@ -633,7 +634,12 @@ fn serve_generation(
                 );
                 let app = MonitoredHttpApp::new(
                     HttpListenerApp::new(
-                        HttpDownstreamPolicyApp::new(proxy, downstream_timeouts),
+                        HttpDownstreamPolicyApp::new(proxy, downstream_timeouts).with_lane(
+                            lane_service,
+                            metrics.clone(),
+                            Arc::clone(generation),
+                            Some(challenge_store.clone()),
+                        ),
                         listener_tls.as_deref(),
                     )
                     .with_generation(Arc::clone(generation)),

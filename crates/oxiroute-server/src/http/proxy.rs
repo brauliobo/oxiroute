@@ -521,6 +521,7 @@ mod action;
 mod cache;
 mod compression;
 mod evacuation;
+pub(crate) mod lane;
 mod proxy_http;
 mod request;
 mod response;

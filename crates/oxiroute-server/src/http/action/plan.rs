@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::http::proxy::lane::LaneRoute;
 use crate::http::request_id::REQUEST_ID_HEADER;
 use crate::label::Label;
 use http::header::{CONNECTION, CONTENT_LENGTH, DATE, TRANSFER_ENCODING};
@@ -8,6 +9,7 @@ use http::header::{CONNECTION, CONTENT_LENGTH, DATE, TRANSFER_ENCODING};
 pub(crate) struct HttpRoutePlan {
     pub(crate) access: Option<RouteAccess>,
     pub(crate) action: HttpActionPlan,
+    pub(crate) lane: LaneRoute,
     pub(crate) policy: RoutePolicyPlan,
     pub(crate) route_id: Label,
 }
