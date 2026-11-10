@@ -195,3 +195,13 @@ the same recipe (`scripts/build-release-binaries.sh`, `docs/developer/RELEASING.
 trained the profile: the profile is keyed by symbol names that rustc hashes with its own version, and a mismatching
 build ignores it (the script then fails instead of producing a plain binary). The recipe does not set it up and its
 checksums, sources and `makepkg` behaviour are unchanged.
+
+## Binary package
+
+`bin/` holds the `oxiroute-bin` recipe. It installs the profile-guided release tarball
+`oxiroute-<version>-x86_64-unknown-linux-gnu.tar.gz` (checksum: its `.sha256` release asset) instead of building, and
+provides and conflicts with `oxiroute`. It ships the same launcher, service, sysusers, tmpfiles, environment, KDL, Lua,
+`.install` hook and documentation as the source package; the shared files in `bin/` are byte-identical copies and
+`verify-checksums.sh` rejects any drift. The release tarball cannot exist before the tag, so `bin/PKGBUILD` is pinned
+after the release workflow has published it (`pin-bin-release.sh <version>`), while the source recipe is pinned before.
+`verify-checksums.sh` checks the local-file checksums and `.SRCINFO` of both recipes.
