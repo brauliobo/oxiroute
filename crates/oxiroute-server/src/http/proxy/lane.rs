@@ -188,14 +188,13 @@ impl LaneFront {
         if self.challenge.is_some() && ChallengeStore::serves(path) {
             return None;
         }
-        let route = match early.route(buffer, request) {
-            Some(route) => route,
-            None => {
-                let method = Method::from_bytes(request.method(buffer)).ok()?;
-                self.service
-                    .select_route_path(Some(&authority), path, &method)
-                    .filter(|route| route.lane != LaneRoute::Classic)?
-            }
+        let route = if let Some(route) = early.route(buffer, request) {
+            route
+        } else {
+            let method = Method::from_bytes(request.method(buffer)).ok()?;
+            self.service
+                .select_route_path(Some(&authority), path, &method)
+                .filter(|route| route.lane != LaneRoute::Classic)?
         };
         Some((route, authority))
     }

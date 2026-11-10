@@ -905,7 +905,7 @@ pub fn static_sequences() -> Vec<Case> {
         ),
         Case::many(
             "pipelined static and lane",
-            &[format!("{}{}", file, lane).as_bytes()],
+            &[format!("{file}{lane}").as_bytes()],
         ),
         Case::many(
             "split static head",

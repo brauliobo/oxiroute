@@ -176,7 +176,7 @@ fn a_service_with_host_routes_leaves_an_unusable_host_to_the_scan() {
     }
 }
 
-fn scanned<'a>(bytes: &'a [u8], early: &Early<'_>, head: &mut RequestHead) -> head::Request {
+fn scanned(bytes: &[u8], early: &Early<'_>, head: &mut RequestHead) -> head::Request {
     head::scan(bytes, early.line, head).expect("a clean head")
 }
 
