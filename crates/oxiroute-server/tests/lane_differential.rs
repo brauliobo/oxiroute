@@ -20,7 +20,8 @@ use std::fmt::Write as _;
 use std::{fs, os::unix::fs::PermissionsExt as _, path::Path, time::Duration};
 
 use oxiroute_config::{
-    ConfigDraft, HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpRoute, HttpRouteAction,
+    ConfigDraft, HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpRedirectLocation, HttpRoute,
+    HttpRouteAction,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -53,6 +54,24 @@ fn with_fixed_route(config: &mut ConfigDraft) {
         },
     };
     config.http_services[0].routes.insert(0, route);
+    let moved = HttpRoute {
+        path: HttpPathSelector::SegmentPrefix {
+            value: "/moved".into(),
+        },
+        action: HttpRouteAction::Redirect {
+            status: 308,
+            location: HttpRedirectLocation::Literal {
+                value: "https://example.com/new".into(),
+            },
+            headers: vec![HttpLiteralHeader {
+                name: "x-moved".into(),
+                value: "yes".into(),
+                always: true,
+            }],
+        },
+        ..config.http_services[0].routes[0].clone()
+    };
+    config.http_services[0].routes.insert(1, moved);
 }
 
 /// A static files route in front of the others, as a service that mixes file serving with lane routes has.
@@ -273,6 +292,13 @@ async fn proxied_requests_are_identical_on_both_paths() {
 async fn fixed_responses_are_identical_on_both_paths() {
     let pair = Pair::start(OK).await;
     compare(&pair, &corpus::requests("/fixed")).await;
+    pair.finish();
+}
+
+#[tokio::test]
+async fn literal_redirects_are_identical_on_both_paths() {
+    let pair = Pair::start(OK).await;
+    compare(&pair, &corpus::requests("/moved")).await;
     pair.finish();
 }
 
