@@ -38,7 +38,6 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use futures::future::FutureExt;
 use http::{header, version::Version, Method};
 use log::{debug, error, trace, warn};
 use once_cell::sync::Lazy;
@@ -68,9 +67,9 @@ use pingora_core::protocols::http::custom::CustomMessageWrite;
 use pingora_core::protocols::http::subrequest::server::SubrequestHandle;
 use pingora_core::protocols::http::v1::client::HttpSession as HttpSessionV1;
 use pingora_core::protocols::http::v2::server::H2Options;
-use pingora_core::protocols::http::HttpTask;
 use pingora_core::protocols::http::ServerSession as HttpSession;
 use pingora_core::protocols::http::SERVER_NAME;
+use pingora_core::protocols::http::{HttpTask, HttpTaskBatch, HTTP_TASK_BATCH_CAPACITY};
 use pingora_core::protocols::Stream;
 use pingora_core::protocols::{Digest, UniqueID};
 use pingora_core::server::configuration::ServerConf;
@@ -78,7 +77,7 @@ use pingora_core::server::{RuntimeOpts, ShutdownWatch};
 use pingora_core::upstreams::peer::{HttpPeer, Peer};
 use pingora_error::{Error, ErrorSource, ErrorType::*, OrErr, Result};
 
-const TASK_BUFFER_SIZE: usize = 4;
+const TASK_BUFFER_SIZE: usize = HTTP_TASK_BATCH_CAPACITY;
 
 /// Caps per-proxy padding and one-time shutdown fan-out on very large hosts.
 const MAX_SHUTDOWN_NOTIFY_SHARDS: usize = 256;
@@ -90,16 +89,20 @@ mod proxy_cache;
 mod proxy_common;
 mod proxy_custom;
 mod proxy_h1;
+mod proxy_h1_inline;
 mod proxy_h2;
 mod proxy_purge;
 mod proxy_trait;
+mod spsc;
 pub mod subrequest;
 
 use subrequest::{BodyMode, Ctx as SubrequestCtx};
 
 pub use proxy_cache::range_filter::{range_header_filter, MultiRangeInfo, RangeType};
 pub use proxy_purge::PurgeStatus;
-pub use proxy_trait::{FailToProxy, ProxyHttp, ProxyWarnLogContext};
+pub use proxy_trait::{
+    FailToProxy, PreparedUpstreamRequest, ProxyHttp, ProxyWarnLogContext, UpstreamCancellation,
+};
 
 pub mod prelude {
     pub use crate::{http_proxy, http_proxy_service, ProxyHttp, ProxyWarnLogContext, Session};
@@ -322,6 +325,7 @@ where
     async fn handle_new_request(
         &self,
         mut downstream_session: Box<HttpSession>,
+        shutdown: Option<&ShutdownWatch>,
     ) -> Option<Box<HttpSession>>
     where
         SV: ProxyHttp + Send + Sync,
@@ -329,11 +333,22 @@ where
     {
         // phase 1 read request header
 
+        // A connection waiting between requests ends with the signal its owner shares (one waiter); the first request
+        // of a connection ends when the service stops. Registering for both made every request pay for two.
         let res = tokio::select! {
             biased; // biased select is cheaper, and we don't want to drop already buffered requests
             res = downstream_session.read_request() => { res }
-            _ = self.await_shutdown() => {
-                // service shutting down, dropping the connection to stop more req from coming in
+            _ = async {
+                match shutdown {
+                    Some(shutdown) => {
+                        let _ = shutdown.clone().wait_for(|stopping| *stopping).await;
+                    }
+                    None => self.await_shutdown().await,
+                }
+            } => {
+                // service shutting down, or the owner of this connection asked it to end, for example
+                // because the generation serving it was replaced. The watch is level triggered, so no signal can
+                // be missed between requests. Dropping the connection stops more requests from coming in.
                 return None;
             }
         };
@@ -412,29 +427,55 @@ where
             Err(e) => return (false, Some(e)),
         };
 
-        let client_session = self.client_upstream.get_http_session(&*peer).await;
+        // The attempt is dropped when the application abandons it, which closes its upstream
+        // connection without returning it to the pool.
+        let cancelled = self
+            .inner
+            .upstream_attempt_cancelled(session, ctx)
+            .unwrap_or_else(|| Box::pin(std::future::pending()));
+        tokio::select! {
+            biased;
+            error = cancelled => {
+                (false, Some(self.inner.error_while_proxy(&peer, session, error, ctx, false)))
+            }
+            attempt = self.proxy_attempt(session, ctx, &peer) => attempt,
+        }
+    }
+
+    // One attempt on the selected peer: connect, proxy and release the upstream session
+    async fn proxy_attempt(
+        &self,
+        session: &mut Session,
+        ctx: &mut SV::CTX,
+        peer: &HttpPeer,
+    ) -> (bool, Option<Box<Error>>)
+    where
+        SV: ProxyHttp + Send + Sync,
+        SV::CTX: Send + Sync,
+    {
+        let client_session = self.client_upstream.get_http_session(peer).await;
         match client_session {
             Ok((client_session, client_reused)) => {
                 let (server_reused, error) = match client_session {
                     ClientSession::H1(mut h1) => {
                         let (server_reused, client_reuse, error) = self
-                            .proxy_to_h1_upstream(session, &mut h1, client_reused, &peer, ctx)
+                            .proxy_to_h1_upstream(session, &mut h1, client_reused, peer, ctx)
                             .await;
                         if client_reuse {
                             let session = ClientSession::H1(h1);
                             self.client_upstream
-                                .release_http_session(session, &*peer, peer.idle_timeout())
+                                .release_http_session(session, peer, peer.idle_timeout())
                                 .await;
                         }
                         (server_reused, error)
                     }
                     ClientSession::H2(mut h2) => {
                         let (server_reused, mut error) = self
-                            .proxy_to_h2_upstream(session, &mut h2, client_reused, &peer, ctx)
+                            .proxy_to_h2_upstream(session, &mut h2, client_reused, peer, ctx)
                             .await;
                         let session = ClientSession::H2(h2);
                         self.client_upstream
-                            .release_http_session(session, &*peer, peer.idle_timeout())
+                            .release_http_session(session, peer, peer.idle_timeout())
                             .await;
 
                         if let Some(e) = error.as_mut() {
@@ -447,7 +488,7 @@ where
                                 {
                                     // Add the peer to prefer h1 so that all following requests
                                     // will use h1
-                                    self.client_upstream.prefer_h1(&*peer);
+                                    self.client_upstream.prefer_h1(peer);
                                 } else {
                                     // the peer doesn't allow downgrading to h1 (e.g. gRPC)
                                     e.retry = false.into();
@@ -459,11 +500,11 @@ where
                     }
                     ClientSession::Custom(mut c) => {
                         let (server_reused, error) = self
-                            .proxy_to_custom_upstream(session, &mut c, client_reused, &peer, ctx)
+                            .proxy_to_custom_upstream(session, &mut c, client_reused, peer, ctx)
                             .await;
                         let session = ClientSession::Custom(c);
                         self.client_upstream
-                            .release_http_session(session, &*peer, peer.idle_timeout())
+                            .release_http_session(session, peer, peer.idle_timeout())
                             .await;
                         (server_reused, error)
                     }
@@ -472,13 +513,13 @@ where
                     server_reused,
                     error.map(|e| {
                         self.inner
-                            .error_while_proxy(&peer, session, e, ctx, client_reused)
+                            .error_while_proxy(peer, session, e, ctx, client_reused)
                     }),
                 )
             }
             Err(mut e) => {
                 e.as_up();
-                let new_err = self.inner.fail_to_connect(session, &peer, ctx, e);
+                let new_err = self.inner.fail_to_connect(session, peer, ctx, e);
                 (false, Some(new_err.into_up()))
             }
         }
@@ -896,14 +937,24 @@ impl Session {
         }
     }
 
-    pub async fn write_response_tasks(&mut self, mut tasks: Vec<HttpTask>) -> Result<bool> {
+    async fn filter_response_tasks(&mut self, tasks: &mut [HttpTask]) -> Result<()> {
         let mut seen_upgraded = self.downstream_task_seen_upgraded || self.was_upgraded();
-        for task in tasks.iter_mut() {
+        for task in tasks {
             self.downstream_response_task_filter(task, &mut seen_upgraded)
                 .await?;
         }
         self.downstream_task_seen_upgraded = seen_upgraded;
+        Ok(())
+    }
+
+    pub async fn write_response_tasks(&mut self, mut tasks: Vec<HttpTask>) -> Result<bool> {
+        self.filter_response_tasks(&mut tasks).await?;
         self.downstream_session.response_duplex_vec(tasks).await
+    }
+
+    async fn write_response_task_batch(&mut self, mut tasks: HttpTaskBatch) -> Result<bool> {
+        self.filter_response_tasks(&mut tasks).await?;
+        self.downstream_session.response_duplex_batch(tasks).await
     }
 
     /// Mark the upstream headers as modified by caching. This should lead to range filters being
@@ -1168,7 +1219,12 @@ where
             session.subrequest_spawner = Some(SubrequestSpawner::new(self.clone()));
         }
 
-        let req = session.downstream_session.req_header_mut();
+        // Without a module nothing changes the request, so what it said about its framing still holds.
+        let req = if session.downstream_modules_ctx.is_empty() {
+            session.downstream_session.req_header_mut_keeping_facts()
+        } else {
+            session.downstream_session.req_header_mut()
+        };
 
         // Built-in downstream request filters go first
         if let Err(e) = session
@@ -1210,6 +1266,39 @@ where
                 return self
                     .handle_error(session, &mut ctx, e, "Fail to filter request:")
                     .await;
+            }
+        }
+
+        if let Some(capacity) = self.inner.request_body_buffer_limit(&ctx) {
+            session
+                .downstream_session
+                .enable_retry_buffering_with_capacity(capacity);
+            loop {
+                match session.downstream_session.read_request_body().await {
+                    Ok(Some(_)) => {
+                        if session.downstream_session.retry_buffer_truncated() {
+                            return self
+                                .handle_error(
+                                    session,
+                                    &mut ctx,
+                                    Error::new_down(HTTPStatus(413)),
+                                    "Buffered request body exceeds its configured limit:",
+                                )
+                                .await;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        return self
+                            .handle_error(
+                                session,
+                                &mut ctx,
+                                error,
+                                "Failed to buffer request body:",
+                            )
+                            .await;
+                    }
+                }
             }
         }
 
@@ -1439,7 +1528,7 @@ where
     ) {
         debug!("starting subrequest");
 
-        let mut session = match self.handle_new_request(session).await {
+        let mut session = match self.handle_new_request(session, None).await {
             Some(downstream_session) => Session::new(
                 downstream_session,
                 &self.downstream_modules,
@@ -1559,40 +1648,55 @@ where
 {
     async fn process_new_http(
         self: &Arc<Self>,
-        mut session: HttpSession,
+        session: HttpSession,
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream> {
-        // Extract user context from the previous request before the session is moved into the Box
-        let prev_user_ctx = session.take_connection_user_context();
+        self.process_new_http_inline(session, shutdown).await
+    }
 
-        let session = Box::new(session);
+    // Written out so the trait's `Send` bound is stated, which `async fn` cannot do for a trait method.
+    #[allow(clippy::manual_async_fn)]
+    fn process_new_http_inline(
+        self: &Arc<Self>,
+        mut session: HttpSession,
+        shutdown: &ShutdownWatch,
+    ) -> impl std::future::Future<Output = Option<ReusedHttpStream>> + Send {
+        async move {
+            // Extract user context from the previous request before the session is moved into the Box
+            let prev_user_ctx = session.take_connection_user_context();
 
-        // TODO: keepalive pool, use stack
-        let mut session = match self.handle_new_request(session).await {
-            Some(downstream_session) => Session::new(
-                downstream_session,
-                &self.downstream_modules,
-                #[cfg(feature = "upstream_modules")]
-                &self.upstream_modules,
-                self.shutdown_flag.clone(),
-            ),
-            None => return None, // bad request
-        };
+            let session = Box::new(session);
 
-        if *shutdown.borrow() {
-            // stop downstream from reusing if this service is shutting down soon
-            session.set_keepalive(None);
+            // A connection that has not served a request yet keeps its place in the queue, so only the
+            // wait between requests ends on shutdown.
+            let between_requests = session.is_reused_connection().then_some(shutdown);
+            // TODO: keepalive pool, use stack
+            let mut session = match self.handle_new_request(session, between_requests).await {
+                Some(downstream_session) => Session::new(
+                    downstream_session,
+                    &self.downstream_modules,
+                    #[cfg(feature = "upstream_modules")]
+                    &self.upstream_modules,
+                    self.shutdown_flag.clone(),
+                ),
+                None => return None, // bad request
+            };
+
+            if *shutdown.borrow() {
+                // stop downstream from reusing if this service is shutting down soon
+                session.set_keepalive(None);
+            }
+
+            let mut ctx = self.inner.new_ctx();
+
+            // Deliver user context from the previous request on this reused connection
+            if let Some(prev_ctx) = prev_user_ctx {
+                self.inner
+                    .on_connection_reuse(&mut session, &mut ctx, prev_ctx);
+            }
+
+            self.process_request(session, ctx).await
         }
-
-        let mut ctx = self.inner.new_ctx();
-
-        // Deliver user context from the previous request on this reused connection
-        if let Some(prev_ctx) = prev_user_ctx {
-            self.inner
-                .on_connection_reuse(&mut session, &mut ctx, prev_ctx);
-        }
-
-        self.process_request(session, ctx).await
     }
 
     async fn http_cleanup(&self) {
@@ -1962,7 +2066,6 @@ mod tests {
 
     struct DefaultRetryProxy;
 
-    #[async_trait]
     impl ProxyHttp for DefaultRetryProxy {
         type CTX = ();
 
@@ -2570,7 +2673,6 @@ mod tests {
 
     struct NoopProxy;
 
-    #[async_trait]
     impl ProxyHttp for NoopProxy {
         type CTX = ();
         fn new_ctx(&self) -> Self::CTX {}
@@ -2626,5 +2728,299 @@ mod tests {
         .await
         .expect("read_request parked after shutdown");
         assert!(session.is_none());
+    }
+}
+
+#[cfg(test)]
+mod response_task_tests {
+    use std::any::Any;
+
+    use pingora_core::modules::http::{HttpModule, HttpModuleBuilder, Module};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    struct ResponseModule;
+
+    #[async_trait]
+    impl HttpModule for ResponseModule {
+        async fn response_header_filter(
+            &mut self,
+            response: &mut ResponseHeader,
+            _end_of_stream: bool,
+        ) -> Result<()> {
+            response.insert_header("x-module", "yes")
+        }
+
+        fn response_body_filter(
+            &mut self,
+            body: &mut Option<Bytes>,
+            _end_of_stream: bool,
+        ) -> Result<()> {
+            if let Some(data) = body {
+                let mut filtered = Vec::with_capacity(data.len() + 1);
+                filtered.extend_from_slice(data);
+                filtered.push(b'b');
+                *data = Bytes::from(filtered);
+            }
+            Ok(())
+        }
+
+        fn response_trailer_filter(
+            &mut self,
+            _trailers: &mut Option<Box<http::HeaderMap>>,
+        ) -> Result<Option<Bytes>> {
+            Ok(Some(Bytes::from_static(b"t")))
+        }
+
+        fn response_done_filter(&mut self) -> Result<Option<Bytes>> {
+            Ok(Some(Bytes::from_static(b"d")))
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
+
+    struct ResponseModuleBuilder;
+
+    impl HttpModuleBuilder for ResponseModuleBuilder {
+        fn init(&self) -> Module {
+            Box::new(ResponseModule)
+        }
+    }
+
+    fn response_modules() -> HttpModules {
+        let mut modules = HttpModules::new();
+        modules.add_module(Box::new(ResponseModuleBuilder));
+        modules
+    }
+
+    fn response_header() -> Box<ResponseHeader> {
+        let mut response = ResponseHeader::build(200, None).unwrap();
+        response.insert_header(header::CONTENT_LENGTH, "2").unwrap();
+        response
+            .insert_header(header::DATE, "Thu, 01 Jan 1970 00:00:00 GMT")
+            .unwrap();
+        response.insert_header(header::SERVER, "test").unwrap();
+        Box::new(response)
+    }
+
+    #[tokio::test]
+    async fn response_task_slice_filter_preserves_replacements_and_upgrade() {
+        let modules = response_modules();
+        let mut session = Session::new_h1_with_modules(
+            Box::new(tokio_test::io::Builder::new().build()),
+            &modules,
+        );
+        let mut tasks = vec![
+            HttpTask::Header(response_header(), false),
+            HttpTask::Body(Some(Bytes::from_static(b"a")), false),
+            HttpTask::Trailer(Some(Box::default())),
+            HttpTask::Done,
+        ];
+
+        session.filter_response_tasks(&mut tasks).await.unwrap();
+
+        let HttpTask::Header(response, false) = &tasks[0] else {
+            panic!("header task changed type");
+        };
+        assert_eq!(response.headers.get("x-module").unwrap(), "yes");
+        assert!(matches!(
+            &tasks[1],
+            HttpTask::Body(Some(body), false) if body.as_ref() == b"ab"
+        ));
+        assert!(matches!(
+            &tasks[2],
+            HttpTask::Body(Some(body), true) if body.as_ref() == b"t"
+        ));
+        assert!(matches!(
+            &tasks[3],
+            HttpTask::Body(Some(body), true) if body.as_ref() == b"d"
+        ));
+
+        // as after a downstream 101: upgraded bodies are only accepted from then on
+        session.downstream_task_seen_upgraded = true;
+        let mut upgraded_tasks = vec![
+            HttpTask::UpgradedBody(Some(Bytes::from_static(b"u")), false),
+            HttpTask::Done,
+        ];
+        session
+            .filter_response_tasks(&mut upgraded_tasks)
+            .await
+            .unwrap();
+        assert!(matches!(
+            &upgraded_tasks[0],
+            HttpTask::UpgradedBody(Some(body), false) if body.as_ref() == b"ub"
+        ));
+        assert!(matches!(
+            &upgraded_tasks[1],
+            HttpTask::UpgradedBody(Some(body), true) if body.as_ref() == b"d"
+        ));
+    }
+
+    async fn filtered_h1_output(batch: bool) -> Vec<u8> {
+        let modules = response_modules();
+        let (mut client, server) = tokio::io::duplex(4096);
+        client.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
+        let mut session = Session::new_h1_with_modules(Box::new(server), &modules);
+        session.as_downstream_mut().read_request().await.unwrap();
+        let tasks = vec![
+            HttpTask::Header(response_header(), false),
+            HttpTask::Body(Some(Bytes::from_static(b"a")), true),
+        ];
+
+        let done = if batch {
+            let tasks: HttpTaskBatch = tasks.into_iter().collect();
+            session.write_response_task_batch(tasks).await.unwrap()
+        } else {
+            session.write_response_tasks(tasks).await.unwrap()
+        };
+        assert!(done);
+        drop(session);
+
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        output
+    }
+
+    #[tokio::test]
+    async fn vec_and_batch_module_filters_have_identical_h1_output() {
+        let vec_output = filtered_h1_output(false).await;
+        let batch_output = filtered_h1_output(true).await;
+
+        assert_eq!(vec_output, batch_output);
+        let output = String::from_utf8(vec_output).unwrap().to_ascii_lowercase();
+        assert!(output.contains("x-module: yes\r\n"));
+        assert!(output.ends_with("\r\n\r\nab"));
+    }
+}
+
+#[cfg(test)]
+mod upstream_cancellation_tests {
+    use std::sync::Mutex;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    struct Cancellable {
+        address: String,
+        cancel: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+
+    impl ProxyHttp for Cancellable {
+        type CTX = ();
+
+        fn new_ctx(&self) -> Self::CTX {}
+
+        async fn upstream_peer(
+            &self,
+            _session: &mut Session,
+            _ctx: &mut (),
+        ) -> Result<Box<HttpPeer>> {
+            Ok(Box::new(HttpPeer::new(
+                self.address.as_str(),
+                false,
+                String::new(),
+            )))
+        }
+
+        fn upstream_attempt_cancelled(
+            &self,
+            _session: &Session,
+            _ctx: &(),
+        ) -> Option<UpstreamCancellation> {
+            let cancel = self.cancel.lock().unwrap().take()?;
+            Some(Box::pin(async move {
+                let _ = cancel.await;
+                Error::explain(Custom("cancelled"), "attempt abandoned")
+            }))
+        }
+
+        fn error_while_proxy(
+            &self,
+            _peer: &HttpPeer,
+            _session: &mut Session,
+            mut error: Box<Error>,
+            _ctx: &mut (),
+            _client_reused: bool,
+        ) -> Box<Error> {
+            error.set_retry(true);
+            error
+        }
+    }
+
+    async fn request_session() -> (Session, tokio::io::DuplexStream) {
+        let (mut client, server) = tokio::io::duplex(4096);
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+            .await
+            .unwrap();
+        let mut session = Session::new_h1_with_modules(Box::new(server), &HttpModules::new());
+        session.as_downstream_mut().read_request().await.unwrap();
+        (session, client)
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_attempt_closes_its_upstream_connection_and_reports_the_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (cancel, cancelled) = oneshot::channel();
+        let app = Cancellable {
+            address: listener.local_addr().unwrap().to_string(),
+            cancel: Mutex::new(Some(cancelled)),
+        };
+        let proxy = HttpProxy::new(app, Arc::new(ServerConf::default()));
+        let (mut session, _client) = request_session().await;
+
+        let mut ctx = ();
+        let attempt = proxy.proxy_to_upstream(&mut session, &mut ctx);
+        let upstream = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut head = [0; 1];
+            stream.read_exact(&mut head).await.unwrap();
+            cancel.send(()).unwrap();
+            let mut rest = Vec::new();
+            stream.read_to_end(&mut rest).await.unwrap();
+        };
+        let ((reuse, error), ()) = tokio::join!(attempt, upstream);
+
+        let error = error.expect("the cancelled attempt fails");
+        assert!(!reuse);
+        assert_eq!(error.etype(), &Custom("cancelled"));
+        assert!(error.retry());
+    }
+
+    #[tokio::test]
+    async fn an_attempt_without_a_cancellation_is_not_affected() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let app = Cancellable {
+            address: listener.local_addr().unwrap().to_string(),
+            cancel: Mutex::new(None),
+        };
+        let proxy = HttpProxy::new(app, Arc::new(ServerConf::default()));
+        let (mut session, _client) = request_session().await;
+
+        let mut ctx = ();
+        let attempt = proxy.proxy_to_upstream(&mut session, &mut ctx);
+        let upstream = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 64];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(request[..read].starts_with(b"GET / HTTP/1.1"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        };
+        let ((_, error), ()) = tokio::join!(attempt, upstream);
+
+        assert!(error.is_none(), "{error:?}");
     }
 }
