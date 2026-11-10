@@ -1,7 +1,7 @@
 # Vendored pingora-timeout patch
 
-This directory contains the published `pingora-timeout 0.8.1` source from crates.io
-(registry checksum `8e3e321452eaa461e0b6c5aaa35b7e42527ee89df33710279f37fae7f066b68e`)
+This directory contains the published `pingora-timeout 0.9.1` source from crates.io
+(registry checksum `d58d029af71f7694815494c681f1bb93aa06d83b6fa6a6b42e7154ee0e8e43e4`)
 under its upstream Apache-2.0 license. The benchmark target and its dev-dependency are dropped.
 
 OxiRoute's delta is limited to the clock thread in `src/timer.rs`:
@@ -18,3 +18,5 @@ OxiRoute's delta is limited to the clock thread in `src/timer.rs`:
 - A pending timeout reads the clock once: `register_timer_at` and `should_i_start_clock_at` take the instant
   the caller already has, instead of reading it again for the timer bucket and for the start check.
 - A pending timeout boxes its timer future once: `timeout()` already returns a boxed future, which was boxed again.
+- `fast_timeout.rs` keeps upstream's 0.9 rule that a long timeout uses Tokio's timer (`FastOrTokioTimeout`); the clock
+  thread now starts when a fast timer is first registered, so a future that completes at once reads no clock.
