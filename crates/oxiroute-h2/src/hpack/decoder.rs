@@ -18,6 +18,8 @@ enum Text<'a> {
     Unstored,
 }
 
+/// Decoding half of a connection: owns the dynamic table the peer's encoder builds.
+#[derive(Debug)]
 pub struct Decoder {
     table: Table,
     /// Largest table size the peer may announce.
@@ -37,7 +39,9 @@ struct List {
 impl List {
     #[inline]
     fn push(&mut self, visit: &mut impl FnMut(&[u8], &[u8]), name: &[u8], value: &[u8]) {
-        self.size += name.len() + value.len() + OVERHEAD;
+        self.size = self
+            .size
+            .saturating_add(name.len() + value.len() + OVERHEAD);
         if self.size > self.max {
             self.too_large = true;
         } else {

@@ -39,9 +39,10 @@ const fn canonical_codes() -> [u32; 257] {
     codes
 }
 
-/// Entry: bits 0..8 symbol or next table, bits 8..12 code bits consumed at this level.
-pub(super) const POINTER: u16 = 1 << 12;
-pub(super) const EOS: u16 = 1 << 13;
+/// Entry: bits 12..16 code bits consumed at this level (1..=8; zero for a pointer), bits 0..8 symbol or next table,
+/// bit 8 EOS, bit 9 pointer.
+pub(super) const EOS: u16 = 1 << 8;
+pub(super) const POINTER: u16 = 1 << 9;
 const TABLES: usize = 15;
 
 pub(super) type Level = [u16; 256];
@@ -66,7 +67,7 @@ const fn build_decode() -> [Level; TABLES] {
             table = (tables[table][index] & 0xff) as usize;
             left -= 8;
         }
-        let leaf = (left as u16) << 8 | if sym == 256 { EOS } else { sym as u16 };
+        let leaf = (left as u16) << 12 | if sym == 256 { EOS } else { sym as u16 };
         let first = ((code & ((1 << left) - 1)) << (8 - left)) as usize;
         let mut slot = 0;
         while slot < 1 << (8 - left) {

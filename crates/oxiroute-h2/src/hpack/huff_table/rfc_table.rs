@@ -290,7 +290,7 @@ fn every_symbol_decodes_through_the_trie() {
             table = usize::from(entry & 0xff);
             left -= 8;
         };
-        assert_eq!(u32::from(leaf >> 8 & 15), left, "symbol {sym}");
+        assert_eq!(u32::from(leaf >> 12), left, "symbol {sym}");
         let expected = if sym == 256 { EOS } else { sym as u16 };
         assert_eq!(leaf & (EOS | 0xff), expected, "symbol {sym}");
     }

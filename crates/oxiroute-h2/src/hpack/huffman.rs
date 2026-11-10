@@ -1,6 +1,9 @@
 //! HPACK Huffman coding (RFC 7541 section 5.2).
 use super::huff_table::{CODES, DECODE, EOS, LENGTHS, POINTER};
 
+/// Longest code, in bits.
+const MAX_CODE_LEN: u32 = 30;
+
 /// Bytes the Huffman form of `src` takes.
 pub(super) fn encoded_len(src: &[u8]) -> usize {
     let bits: usize = src
@@ -65,35 +68,48 @@ pub(super) struct Invalid;
 pub(super) fn decode(src: &[u8], sink: &mut impl Sink) -> Result<(), Invalid> {
     let (mut acc, mut bits, mut rest) = (0u64, 0u32, src);
     loop {
-        if bits < 32 {
-            (acc, bits, rest) = refill(acc, bits, rest);
+        (acc, bits, rest) = refill(acc, bits, rest);
+        if bits < MAX_CODE_LEN {
+            return tail(acc, bits, sink);
         }
-        if bits == 0 {
-            return Ok(());
+        while bits >= MAX_CODE_LEN {
+            let entry = DECODE[0][(acc >> 56) as usize];
+            let (symbol, len) = match entry >> 12 {
+                0 => walk(acc).ok_or(Invalid)?,
+                len => (entry as u8, u32::from(len)),
+            };
+            sink.put(symbol);
+            acc <<= len;
+            bits -= len;
         }
-        let mut entry = DECODE[0][(acc >> 56) as usize];
-        let mut skipped = 0;
-        while entry & POINTER != 0 {
-            skipped += 8;
-            entry = DECODE[usize::from(entry & 0xff)][((acc << skipped) >> 56) as usize];
-        }
-        let len = u32::from(entry >> 8 & 15) + skipped;
-        if len > bits || entry & EOS != 0 {
-            return padding(acc, bits, entry & EOS == 0);
-        }
-        sink.put(entry as u8);
-        acc <<= len;
-        bits -= len;
     }
 }
 
-/// What is left must be fewer than eight bits, all ones.
-fn padding(acc: u64, bits: u32, truncated: bool) -> Result<(), Invalid> {
-    if truncated && bits < 8 && acc >> (64 - bits) == (1 << bits) - 1 {
-        Ok(())
-    } else {
-        Err(Invalid)
+/// With fewer than 30 bits left a code may run past the end: what remains must be a prefix of EOS.
+fn tail(mut acc: u64, mut bits: u32, sink: &mut impl Sink) -> Result<(), Invalid> {
+    while bits > 0 {
+        match walk(acc) {
+            Some((symbol, len)) if len <= bits => {
+                sink.put(symbol);
+                acc <<= len;
+                bits -= len;
+            }
+            Some(_) if bits < 8 && acc >> (64 - bits) == (1 << bits) - 1 => return Ok(()),
+            _ => return Err(Invalid),
+        }
     }
+    Ok(())
+}
+
+/// The symbol and length of the code at the top of `acc`, `None` for EOS. Bits past the input read as zero.
+fn walk(acc: u64) -> Option<(u8, u32)> {
+    let mut entry = DECODE[0][(acc >> 56) as usize];
+    let mut skipped = 0;
+    while entry & POINTER != 0 {
+        skipped += 8;
+        entry = DECODE[usize::from(entry & 0xff)][((acc << skipped) >> 56) as usize];
+    }
+    (entry & EOS == 0).then_some((entry as u8, u32::from(entry >> 12) + skipped))
 }
 
 #[inline]
