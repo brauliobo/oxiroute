@@ -23,7 +23,7 @@ use crate::listeners::tls::TlsSettings;
 #[cfg(feature = "connection_filter")]
 use crate::listeners::AcceptAllFilter;
 use crate::listeners::{
-    ConnectionFilter, ListenerConfig, Listeners, ServerAddress, TcpSocketOptions, TransportStack,
+    ConnectionFilter, CustomTlsSettings, ListenerConfig, Listeners, ServerAddress, TcpSocketOptions, TransportStack,
 };
 use crate::protocols::Stream;
 #[cfg(unix)]
@@ -168,6 +168,11 @@ impl<A> Service<A> {
     ) {
         self.listeners
             .add_tls_with_settings(addr, sock_opt, settings)
+    }
+
+    /// Add a TCP endpoint whose connections are secured by the given [`CustomTlsSettings`] acceptor.
+    pub fn add_custom_tls(&mut self, addr: &str, settings: CustomTlsSettings) {
+        self.listeners.add_custom_tls(addr, settings)
     }
 
     /// Add an endpoint according to the given [`ServerAddress`]
