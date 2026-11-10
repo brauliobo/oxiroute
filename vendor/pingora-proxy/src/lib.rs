@@ -1222,7 +1222,7 @@ where
                 .await;
         }
 
-        if self.inner.allow_spawning_subrequest(&session, &ctx) {
+        if self.inner.allow_spawning_subrequest(&session, ctx) {
             session.subrequest_spawner = Some(SubrequestSpawner::new(self.clone()));
         }
 
@@ -1256,7 +1256,7 @@ where
                     self.inner.logging(&mut session, None, ctx).await;
                     self.cleanup_sub_req(&mut session);
                     let mut persistent_settings = HttpPersistentSettings::for_session(&session);
-                    if let Some(uc) = self.inner.persist_connection_context(&session, &ctx) {
+                    if let Some(uc) = self.inner.persist_connection_context(&session, ctx) {
                         persistent_settings.set_user_context(uc);
                     }
                     return session
@@ -1276,7 +1276,7 @@ where
             }
         }
 
-        if let Some(capacity) = self.inner.request_body_buffer_limit(&ctx) {
+        if let Some(capacity) = self.inner.request_body_buffer_limit(ctx) {
             session
                 .downstream_session
                 .enable_retry_buffering_with_capacity(capacity);
@@ -1377,7 +1377,7 @@ where
                     if retry
                         && !self.inner.suppress_proxy_warn_log(
                             &session,
-                            &ctx,
+                            ctx,
                             &error,
                             ProxyWarnLogContext::UpstreamRetry,
                         )
@@ -1387,7 +1387,7 @@ where
                             error,
                             retries,
                             retry,
-                            self.inner.request_summary(&session, &ctx)
+                            self.inner.request_summary(&session, ctx)
                         );
                     }
                     proxy_error = Some(error);
@@ -1434,14 +1434,14 @@ where
             let res = self.inner.fail_to_proxy(&mut session, e, ctx).await;
 
             // final error will have > 0 status unless downstream connection is dead
-            if !self.inner.suppress_error_log(&session, &ctx, e) {
+            if !self.inner.suppress_error_log(&session, ctx, e) {
                 error!(
                     "Fail to proxy: {}, status: {}, tries: {}, retry: {}, {}",
                     e,
                     res.error_code,
                     retries,
                     false, // we never retry here
-                    self.inner.request_summary(&session, &ctx),
+                    self.inner.request_summary(&session, ctx),
                 );
             }
         }
