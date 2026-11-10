@@ -47,6 +47,7 @@ use tokio::time::{sleep, timeout};
 mod configs;
 mod h3_flows;
 mod lifecycle;
+mod panic;
 mod reload;
 mod replacement;
 mod udp;
@@ -64,6 +65,7 @@ fn render_config(format: ConfigFormat, config: &ValidatedConfig) -> String {
 }
 const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
     "OXIROUTE_INTERNAL_TEST_LISTENER_DUPLICATION_FAILURE";
+const TEST_LISTENER_PANIC_ENV: &str = "OXIROUTE_INTERNAL_TEST_LISTENER_PANIC";
 const TEST_LAUNCHER_ENV: &str = "OXIROUTE_TEST_SUPERVISOR_LAUNCHER";
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -90,20 +92,20 @@ impl Harness {
     }
 
     fn launch_at(config_path: &Path, revision: String, inject_runtime_failure: bool) -> Self {
-        Self::launch_at_with_failures(config_path, revision, inject_runtime_failure, false)
+        Self::launch_at_with_failures(config_path, revision, inject_runtime_failure, None)
     }
 
     fn launch_at_with_failures(
         config_path: &Path,
         revision: String,
         inject_runtime_failure: bool,
-        inject_listener_duplication_failure: bool,
+        listener_failure: Option<&str>,
     ) -> Self {
         Self::launch_with_drain(
             config_path,
             revision,
             inject_runtime_failure,
-            inject_listener_duplication_failure,
+            listener_failure,
             Duration::from_secs(10),
         )
     }
@@ -112,7 +114,7 @@ impl Harness {
         config_path: &Path,
         revision: String,
         inject_runtime_failure: bool,
-        inject_listener_duplication_failure: bool,
+        listener_failure: Option<&str>,
         drain: Duration,
     ) -> Self {
         let coordinator =
@@ -170,8 +172,8 @@ impl Harness {
         if inject_runtime_failure {
             command = command.env(TEST_RUNTIME_FAILURE_ENV, "1");
         }
-        if inject_listener_duplication_failure {
-            command = command.env(TEST_LISTENER_DUPLICATION_FAILURE_ENV, "1");
+        if let Some(variable) = listener_failure {
+            command = command.env(variable, "1");
         }
         let listeners = reservations
             .clone()

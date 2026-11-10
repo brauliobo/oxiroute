@@ -180,8 +180,12 @@ pub(super) fn listener_duplication_failure_never_acknowledges_adoption_or_reache
         ),
     )
     .expect("write supervised config");
-    let mut harness =
-        Harness::launch_at_with_failures(&path, canonical_revision(&path), false, true);
+    let mut harness = Harness::launch_at_with_failures(
+        &path,
+        canonical_revision(&path),
+        false,
+        Some(TEST_LISTENER_DUPLICATION_FAILURE_ENV),
+    );
     let started = Instant::now();
     while harness.master.state() != MasterState::Failed {
         let state = harness.master.state();
@@ -212,8 +216,12 @@ pub(super) fn supervised_listener_rejection_releases_ownership_and_allows_clean_
     )
     .expect("write retry config");
 
-    let mut rejected =
-        Harness::launch_at_with_failures(&path, canonical_revision(&path), false, true);
+    let mut rejected = Harness::launch_at_with_failures(
+        &path,
+        canonical_revision(&path),
+        false,
+        Some(TEST_LISTENER_DUPLICATION_FAILURE_ENV),
+    );
     rejected.poll_until(MasterState::Failed);
     rejected.verify_reaped();
     drop(rejected);

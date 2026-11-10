@@ -3,6 +3,7 @@ use super::*;
 
 const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
     "OXIROUTE_INTERNAL_TEST_LISTENER_DUPLICATION_FAILURE";
+const TEST_LISTENER_PANIC_ENV: &str = "OXIROUTE_INTERNAL_TEST_LISTENER_PANIC";
 
 /// Worker threads for each HTTP, forward HTTP/1, forward HTTP/2 and TCP listener.
 pub(super) fn listener_workers(config: &oxiroute_config::ConfigDraft) -> usize {
@@ -129,14 +130,19 @@ where
                 metrics.mark_listening();
             }
         });
-        let result = AssertUnwindSafe(PingoraService::start_service_with_ready_notifier(
-            &mut self.inner,
-            #[cfg(unix)]
-            fds,
-            shutdown,
-            listeners_per_fd,
-            ready_notifier,
-        ))
+        let inject_panic = std::env::var_os(TEST_LISTENER_PANIC_ENV).is_some();
+        let result = AssertUnwindSafe(async {
+            assert!(!inject_panic, "injected listener panic");
+            PingoraService::start_service_with_ready_notifier(
+                &mut self.inner,
+                #[cfg(unix)]
+                fds,
+                shutdown,
+                listeners_per_fd,
+                ready_notifier,
+            )
+            .await;
+        })
         .catch_unwind()
         .await;
         let unexpected = !*shutdown_status.borrow();
