@@ -1,5 +1,6 @@
 #!/usr/bin/bash
-# Pins bin/PKGBUILD to a published release and regenerates .SRCINFO.
+# Pins bin/PKGBUILD and bin/.SRCINFO to a published release; verify-checksums.sh then checks that they agree (and, where
+# makepkg is installed, that .SRCINFO is what makepkg generates).
 #
 #   pin-bin-release.sh VERSION
 #
@@ -23,8 +24,11 @@ tarball_sha256=${tarball_sha256%% *}
 doc_sha256=$(curl -fsSL "${raw_url}/MANAGEMENT_CLI.md" | sha256sum)
 doc_sha256=${doc_sha256%% *}
 
+old_version=$(sed -n 's/^pkgver=//p' "${dir}/PKGBUILD")
 first=$(grep -n '^sha256sums=' "${dir}/PKGBUILD" | cut -d: -f1)
 sed -i -e "s/^pkgver=.*/pkgver=${version}/" -e 's/^pkgrel=.*/pkgrel=1/' \
   -e "${first}s/[0-9a-f]\{64\}/${tarball_sha256}/" -e "$((first + 1))s/[0-9a-f]\{64\}/${doc_sha256}/" "${dir}/PKGBUILD"
-makepkg --printsrcinfo --dir "${dir}" >"${dir}/.SRCINFO"
+srcinfo_first=$(grep -n '^[[:space:]]*sha256sums = ' "${dir}/.SRCINFO" | head -n 1 | cut -d: -f1)
+sed -i -e "s/${old_version//./\\.}/${version}/g" -e 's/^\([[:space:]]*pkgrel = \).*/\11/' \
+  -e "${srcinfo_first}s/[0-9a-f]\{64\}/${tarball_sha256}/" -e "$((srcinfo_first + 1))s/[0-9a-f]\{64\}/${doc_sha256}/" "${dir}/.SRCINFO"
 "${dir}/../verify-checksums.sh" "${dir}"
