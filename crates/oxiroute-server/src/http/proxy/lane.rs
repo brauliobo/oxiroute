@@ -9,6 +9,7 @@
 mod buffers;
 mod direct;
 mod head;
+mod peek;
 mod plan;
 mod proxy;
 mod timing;
@@ -171,25 +172,36 @@ impl LaneFront {
         }
     }
 
-    /// The route the request is served by, when the lane may serve it, and the authority it was selected for.
+    /// The route the request is served by, when the lane may serve it, and the authority it was selected for. `early`
+    /// is the route chosen from the first line, which stands when the scanned head is the one it was chosen for.
     fn select_route(
         &self,
         buffer: &[u8],
         request: &head::Request,
+        early: peek::Early<'_>,
     ) -> Option<(Arc<HttpRoutePlan>, Authority)> {
         let path = request.path(buffer);
         let authority = request.host(buffer)?.parse::<Authority>().ok()?;
         if authority.as_str().contains('@') || !is_unambiguous_http_path(path) {
             return None;
         }
-        let method = Method::from_bytes(request.method(buffer)).ok()?;
         if self.challenge.is_some() && ChallengeStore::serves(path) {
             return None;
         }
-        let route = self
-            .service
-            .select_route_path(Some(&authority), path, &method)
-            .filter(|route| route.lane != LaneRoute::Classic)?;
+        let route = match early {
+            peek::Early::Lane(route, peek)
+                if peek.is_of(buffer, request, self.service.selects_on_host()) =>
+            {
+                route
+            }
+            peek::Early::Unknown | peek::Early::Lane(..) => {
+                let method = Method::from_bytes(request.method(buffer)).ok()?;
+                self.service
+                    .select_route_path(Some(&authority), path, &method)
+                    .filter(|route| route.lane != LaneRoute::Classic)?
+            }
+            peek::Early::Classic => return None,
+        };
         Some((route, authority))
     }
 
@@ -216,12 +228,16 @@ impl LaneFront {
         buffer: &[u8],
         scanned: &mut RequestHead,
     ) -> Served {
+        let early = peek::decide(&self.service, buffer);
+        if matches!(early, peek::Early::Classic) {
+            return Served::Handoff;
+        }
         let Some(request) =
             head::scan(buffer, scanned).filter(|request| request.head_len == buffer.len())
         else {
             return Served::Handoff;
         };
-        let Some((route, authority)) = self.select_route(buffer, &request) else {
+        let Some((route, authority)) = self.select_route(buffer, &request, early) else {
             return Served::Handoff;
         };
         let started = Instant::now();
