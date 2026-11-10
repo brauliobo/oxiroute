@@ -219,7 +219,7 @@ fn monitoring_response(metrics: &RuntimeMetrics, control: &RtmpControlHandle) ->
             "RTMP monitoring totals exceed the supported range",
         );
     };
-    match serde_json::to_vec(&response) {
+    match response.body() {
         Ok(body) => ApiResponse::bytes(200, body, "application/json"),
         Err(error) => ApiResponse::error(
             500,
