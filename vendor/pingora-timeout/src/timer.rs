@@ -30,14 +30,20 @@
 
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread::Thread;
 use std::time::{Duration, Instant};
 use thread_local::ThreadLocal;
 use tokio::sync::Notify;
 
 const RESOLUTION_MS: u64 = 10;
 const RESOLUTION_DURATION: Duration = Duration::from_millis(RESOLUTION_MS);
+// The longest the clock thread sleeps. It refreshes the watchdog at least this often, so it stays well
+// inside DELAYS_SEC while nothing is armed.
+const HEARTBEAT_MS: u128 = 1_000;
+// `TimerManager::wake_at` while the clock thread is running rather than sleeping.
+const AWAKE: u64 = 0;
 
 // round to the NEXT timestamp based on the resolution
 #[inline]
@@ -104,10 +110,16 @@ pub struct TimerManager {
     // Start a new clock thread if this is -1 or staled. The clock thread should keep updating this
     clock_watchdog: AtomicI64,
     paused: AtomicBool,
+    // The clock thread sleeps until the earliest armed timer instead of ticking every RESOLUTION_MS.
+    // `wake_at` is the time (ms since `zero`) it sleeps until, or AWAKE; a timer that is due earlier
+    // unparks it.
+    wake_at: AtomicU64,
+    clock: parking_lot::Mutex<Option<Thread>>,
+    ticks: AtomicU64,
 }
 
 // Consider the clock thread is dead after it fails to update the thread in DELAYS_SEC
-const DELAYS_SEC: i64 = 2; // TODO: make sure this value is larger than RESOLUTION_DURATION
+const DELAYS_SEC: i64 = 3; // TODO: make sure this value is larger than HEARTBEAT_MS
 
 impl Default for TimerManager {
     fn default() -> Self {
@@ -116,6 +128,9 @@ impl Default for TimerManager {
             zero: Instant::now(),
             clock_watchdog: AtomicI64::new(-DELAYS_SEC),
             paused: AtomicBool::new(false),
+            wake_at: AtomicU64::new(AWAKE),
+            clock: parking_lot::Mutex::new(None),
+            ticks: AtomicU64::new(0),
         }
     }
 }
@@ -126,50 +141,98 @@ impl TimerManager {
         Self::default()
     }
 
-    // This thread sleeps for a resolution time and then fires all the timers that are due to fire
+    // This thread fires all the timers that are due, then sleeps until the next one is due (at most
+    // HEARTBEAT_MS), so it does not wake while nothing is armed.
     pub(crate) fn clock_thread(&self) {
+        *self.clock.lock() = Some(std::thread::current());
         loop {
-            std::thread::sleep(RESOLUTION_DURATION);
+            self.ticks.fetch_add(1, Ordering::Relaxed);
             let now = Instant::now() - self.zero;
             self.clock_watchdog
                 .store(now.as_secs() as i64, Ordering::Relaxed);
             if self.is_paused_for_fork() {
                 // just stop acquiring the locks, waiting for fork to happen
+                std::thread::sleep(RESOLUTION_DURATION);
                 continue;
             }
             let now = now.as_millis();
-            // iterate through the timer tree for all threads
-            for thread_timer in self.timers.iter() {
-                let mut timers = thread_timer.write();
-                // Fire all timers until now
-                loop {
-                    let key_to_remove = timers.iter().next().and_then(|(k, _)| {
-                        if k.not_after(now) {
-                            Some(*k)
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some(k) = key_to_remove {
-                        let timer = timers.remove(&k);
-                        // safe to unwrap, the key is from iter().next()
-                        timer.unwrap().fire();
+            self.fire_due(now);
+            let wake = self.arm_wake(now);
+            std::thread::park_timeout(Duration::from_millis((wake - now) as u64));
+            self.wake_at.store(AWAKE, Ordering::SeqCst);
+        }
+    }
+
+    // iterate through the timer tree for all threads and fire all timers until now
+    fn fire_due(&self, now: u128) {
+        for thread_timer in self.timers.iter() {
+            let mut timers = thread_timer.write();
+            loop {
+                let key_to_remove = timers.iter().next().and_then(|(k, _)| {
+                    if k.not_after(now) {
+                        Some(*k)
                     } else {
-                        break;
+                        None
                     }
+                });
+                if let Some(k) = key_to_remove {
+                    let timer = timers.remove(&k);
+                    // safe to unwrap, the key is from iter().next()
+                    timer.unwrap().fire();
+                } else {
+                    break;
                 }
-                // write lock drops here
+            }
+            // write lock drops here
+        }
+    }
+
+    fn earliest(&self) -> Option<u128> {
+        self.timers
+            .iter()
+            .filter_map(|thread_timer| thread_timer.read().keys().next().map(|time| time.0))
+            .min()
+    }
+
+    // Publishes the time the clock thread will sleep until and returns it. A timer registered while
+    // the thread was not asleep sees AWAKE and does not unpark it, so the timers are read again after
+    // publishing; one registered later sees the published time.
+    fn arm_wake(&self, now: u128) -> u128 {
+        let mut wake = self
+            .earliest()
+            .map_or(now + HEARTBEAT_MS, |due| due.min(now + HEARTBEAT_MS));
+        self.wake_at.store(wake.max(1) as u64, Ordering::SeqCst);
+        fence(Ordering::SeqCst);
+        if let Some(due) = self.earliest().filter(|due| *due < wake) {
+            wake = due;
+            self.wake_at.store(wake.max(1) as u64, Ordering::SeqCst);
+        }
+        wake.max(now)
+    }
+
+    fn unpark_clock_if_due_before(&self, due: Time) {
+        fence(Ordering::SeqCst);
+        let wake = self.wake_at.load(Ordering::SeqCst);
+        if wake != AWAKE && due.0 < wake as u128 {
+            if let Some(clock) = self.clock.lock().as_ref() {
+                clock.unpark();
             }
         }
     }
 
     // False if the clock is already started
     // If true, the caller must start the clock thread next
+    #[cfg(test)]
     pub(crate) fn should_i_start_clock(&self) -> bool {
-        let Err(prev) = self.is_clock_running() else {
+        self.should_i_start_clock_at(Instant::now())
+    }
+
+    // Same, for a caller that already read the clock.
+    pub(crate) fn should_i_start_clock_at(&self, instant: Instant) -> bool {
+        let now = instant.duration_since(self.zero).as_secs() as i64;
+        let Err(prev) = self.clock_running_at(now) else {
             return false;
         };
-        let now = Instant::now().duration_since(self.zero).as_secs() as i64;
         let res =
             self.clock_watchdog
                 .compare_exchange(prev, now, Ordering::SeqCst, Ordering::SeqCst);
@@ -178,8 +241,12 @@ impl TimerManager {
 
     // Ok(()) if clock is running (watch dog is within DELAYS_SEC of now)
     // Err(time) if watch do stopped at `time`
+    #[cfg(test)]
     pub(crate) fn is_clock_running(&self) -> Result<(), i64> {
-        let now = Instant::now().duration_since(self.zero).as_secs() as i64;
+        self.clock_running_at(Instant::now().duration_since(self.zero).as_secs() as i64)
+    }
+
+    fn clock_running_at(&self, now: i64) -> Result<(), i64> {
         let prev = self.clock_watchdog.load(Ordering::SeqCst);
         if now < prev + DELAYS_SEC {
             Ok(())
@@ -192,6 +259,11 @@ impl TimerManager {
     ///
     /// When the timer expires, the [TimerStub] will be notified.
     pub fn register_timer(&self, duration: Duration) -> TimerStub {
+        self.register_timer_at(Instant::now(), duration)
+    }
+
+    /// [Self::register_timer()] for a caller that already read the clock.
+    pub fn register_timer_at(&self, instant: Instant, duration: Duration) -> TimerStub {
         if self.is_paused_for_fork() {
             // Return a dummy TimerStub that will trigger right away.
             // This is fine assuming pause_for_fork() is called right before fork().
@@ -202,7 +274,9 @@ impl TimerManager {
             timer.fire();
             return timer.subscribe();
         }
-        let now: Time = (Instant::now() + duration - self.zero).into();
+        // The clock thread now sleeps to the exact due time instead of ticking on a 10 ms grid, so
+        // round the sub-millisecond part up: a timer must never fire before its duration.
+        let now: Time = (instant + duration - self.zero + Duration::from_millis(1)).into();
         {
             let timers = self.timers.get_or(|| RwLock::new(BTreeMap::new())).read();
             if let Some(t) = timers.get(&now) {
@@ -218,6 +292,8 @@ impl TimerManager {
         // only removes timer from the tree
         let stub = timer.subscribe();
         timers.insert(now, timer);
+        drop(timers);
+        self.unpark_clock_if_due_before(now);
         stub
     }
 
@@ -264,6 +340,47 @@ mod tests {
         assert!(!t.not_after(129));
         assert!(t.not_after(130));
         assert!(t.not_after(131));
+    }
+
+    fn started_clock() -> Arc<TimerManager> {
+        let tm = Arc::new(TimerManager::new());
+        let clock = tm.clone();
+        std::thread::spawn(move || clock.clock_thread());
+        tm
+    }
+
+    #[test]
+    fn test_clock_sleeps_while_nothing_is_armed() {
+        let tm = started_clock();
+        std::thread::sleep(Duration::from_millis(1500));
+        // the start, one heartbeat and slack; the previous clock ticked 150 times
+        assert!(tm.ticks.load(Ordering::Relaxed) <= 4);
+        assert!(tm.is_clock_running().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_timer_registered_while_clock_sleeps_fires_on_time() {
+        let tm = started_clock();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let now = Instant::now();
+        tm.register_timer(Duration::from_millis(50)).poll().await;
+
+        let elapsed = now.elapsed();
+        assert!(elapsed >= Duration::from_millis(40), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(250), "{elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn test_earlier_timer_preempts_the_clock_sleep() {
+        let tm = started_clock();
+        let _later = tm.register_timer(Duration::from_secs(30));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let now = Instant::now();
+        tm.register_timer(Duration::from_millis(50)).poll().await;
+
+        assert!(now.elapsed() < Duration::from_millis(250), "{:?}", now.elapsed());
     }
 
     #[tokio::test]
