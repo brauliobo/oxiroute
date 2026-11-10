@@ -770,9 +770,13 @@ impl Http1Connection {
     }
 
     fn after(settings: Option<HttpPersistentSettings>) -> Self {
-        let (keepalive_timeout, reuses_remaining) = settings.as_ref().map_or((None, None), |settings| {
-            (settings.keepalive_timeout, settings.keepalive_reuses_remaining)
-        });
+        let (keepalive_timeout, reuses_remaining) =
+            settings.as_ref().map_or((None, None), |settings| {
+                (
+                    settings.keepalive_timeout,
+                    settings.keepalive_reuses_remaining,
+                )
+            });
         Self {
             keepalive_timeout,
             reuses_remaining,
@@ -870,7 +874,10 @@ pub trait Http1Front: Send + Sync {
 pub enum Http1FrontOutcome {
     Closed,
     /// The next request is the session's: `preloaded` holds the bytes of it the front already read.
-    Handoff { stream: Stream, preloaded: Bytes },
+    Handoff {
+        stream: Stream,
+        preloaded: Bytes,
+    },
 }
 
 /// This trait defines the interface of an HTTP application.
