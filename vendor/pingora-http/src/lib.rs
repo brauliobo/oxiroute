@@ -291,6 +291,16 @@ impl RequestHeader {
         &mut self.base.extensions
     }
 
+    /// The header map, mutably, when no original-case map has to follow its changes; `None` otherwise.
+    ///
+    /// A parsed request has no case map, so a caller holding a standard `HeaderName` edits the map directly instead of
+    /// going through [`Self::insert_header`], which turns the name into text and parses it again.
+    pub fn headers_mut_no_case(&mut self) -> Option<&mut HMap> {
+        self.header_name_map
+            .is_none()
+            .then_some(&mut self.base.headers)
+    }
+
     /// Set the request method
     pub fn set_method(&mut self, method: Method) {
         self.base.method = method;
@@ -643,6 +653,14 @@ impl ResponseHeader {
     /// Return mutable access to the response extensions.
     pub fn extensions_mut(&mut self) -> &mut http::Extensions {
         &mut self.base.extensions
+    }
+
+    /// The header map, mutably, when no original-case map has to follow its changes; `None` otherwise (see
+    /// [`RequestHeader::headers_mut_no_case`]).
+    pub fn headers_mut_no_case(&mut self) -> Option<&mut HMap> {
+        self.header_name_map
+            .is_none()
+            .then_some(&mut self.base.headers)
     }
 
     /// Set the status code
@@ -1921,5 +1939,25 @@ mod tests {
         // `HeaderValue`.
         let hv = header_value_from_raw(bytes::Bytes::from_static(b"foo\rbar\0baz"));
         assert_eq!(hv.as_bytes(), b"foo bar baz");
+    }
+
+    #[test]
+    fn the_header_map_is_handed_out_only_without_a_case_map() {
+        let mut plain = RequestHeader::build_no_case("GET", b"/", None).unwrap();
+        plain
+            .headers_mut_no_case()
+            .unwrap()
+            .insert("x-a", "1".parse().unwrap());
+        assert_eq!(plain.headers["x-a"], "1");
+        assert!(RequestHeader::build("GET", b"/", None)
+            .unwrap()
+            .headers_mut_no_case()
+            .is_none());
+        let mut response = ResponseHeader::build_no_case(200, None).unwrap();
+        assert!(response.headers_mut_no_case().is_some());
+        assert!(ResponseHeader::build(200, None)
+            .unwrap()
+            .headers_mut_no_case()
+            .is_none());
     }
 }
