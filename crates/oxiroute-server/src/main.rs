@@ -86,10 +86,10 @@ mod test_ports;
 mod tests;
 
 /// Per-thread allocation caches: with several workers per listener, glibc's shared arenas made every
-/// cross-thread free wait on a lock.
+/// cross-thread free wait on a lock. `oxiroute-allocator` also embeds the jemalloc configuration.
 #[cfg(target_os = "linux")]
 #[global_allocator]
-static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+static ALLOCATOR: oxiroute_allocator::Jemalloc = oxiroute_allocator::Jemalloc;
 
 const GENERATION_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 

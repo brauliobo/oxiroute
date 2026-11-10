@@ -598,7 +598,8 @@ def measure_profile(args, lane):
     """perf record sampled by user-space instructions (deterministic attribution), DWARF call graphs."""
     env = Env(args, lane, args.profile_bin)
     mode = args.profile_call_graph or ("fp" if args.profile_bin else "dwarf,16384")
-    call_graph = [] if args.flat else ["--user-callchains", "--call-graph", mode]
+    branches = mode == "branches"  # raw branch stacks for perf2bolt / function ordering, no report
+    call_graph = ["-j", "any,u"] if branches else [] if args.flat else ["--user-callchains", "--call-graph", mode]
     ctl, ack = env.work / "ctl", env.work / "ack"
     os.mkfifo(ctl)
     os.mkfifo(ack)
@@ -617,6 +618,8 @@ def measure_profile(args, lane):
         shutil.copy(env.work / "record.log", data.with_suffix(".log"))
     finally:
         env.close()
+    if branches:
+        return {"profile_requests": int(load.get("ok", 0))}
     views = [("self", ["--no-children", "-g", "none"])]
     if call_graph:
         views.append(("children", ["--children", "-g", "none"]))

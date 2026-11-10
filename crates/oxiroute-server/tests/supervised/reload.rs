@@ -95,7 +95,7 @@ pub(super) fn launch_reload_harness(
 ) -> Harness {
     write_reload_config(path, shape);
     let mut harness =
-        Harness::launch_with_drain(path, canonical_revision(path), false, false, drain);
+        Harness::launch_with_drain(path, canonical_revision(path), false, None, drain);
     harness.poll_until(MasterState::Running);
     harness
 }
