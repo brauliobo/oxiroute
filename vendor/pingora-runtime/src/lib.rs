@@ -25,6 +25,7 @@
 
 use once_cell::sync::OnceCell;
 use oxiroute_aged_executor::AgedExecutor;
+pub use oxiroute_aged_executor::Age;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -88,7 +89,7 @@ pub struct RuntimeOpts {
     pub enable_alt_timer: bool,
     /// OxiRoute: on a runtime without work stealing, the connection tasks started with [`spawn_connection`] run
     /// newest first and the oldest first once it has waited this long. `None` keeps Tokio's first-in first-out queue.
-    pub connection_age: Option<Duration>,
+    pub connection_age: Option<Age>,
     /// Options for dial9 Tokio telemetry.
     #[cfg(feature = "dial9")]
     pub dial9: Option<Dial9RuntimeOpts>,
@@ -883,7 +884,7 @@ mod connection_tests {
         RuntimeBuilder::new(threads, name)
             .work_steal(false)
             .runtime_opts(RuntimeOpts {
-                connection_age: Some(age),
+                connection_age: Some(Age::Fixed(age)),
                 ..RuntimeOpts::default()
             })
             .build()

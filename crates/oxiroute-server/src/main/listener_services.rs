@@ -4,16 +4,12 @@ use super::*;
 const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
     "OXIROUTE_INTERNAL_TEST_LISTENER_DUPLICATION_FAILURE";
 
-const TEST_CONNECTION_AGE_ENV: &str = "OXIROUTE_INTERNAL_TEST_CONNECTION_AGE_MS";
+const TEST_AGED_PER_WORKER_ENV: &str = "OXIROUTE_INTERNAL_TEST_AGED_PER_WORKER";
 
-/// The age bound of the per-worker connection queues, or `None` for work stealing. The test variable runs a whole
-/// process suite in the aged per-worker mode.
-pub(super) fn connection_age_ms(config: &oxiroute_config::ConfigDraft) -> Option<u64> {
-    config.effective_connection_age_ms().or_else(|| {
-        std::env::var(TEST_CONNECTION_AGE_ENV)
-            .ok()
-            .and_then(|age| age.parse().ok())
-    })
+/// Whether the workers of a listener serve per-worker queues. The test variable runs a whole process suite in that
+/// mode.
+pub(super) fn aged_per_worker(config: &oxiroute_config::ConfigDraft) -> bool {
+    config.aged_per_worker() || std::env::var_os(TEST_AGED_PER_WORKER_ENV).is_some()
 }
 
 /// Worker threads for each HTTP, forward HTTP/1, forward HTTP/2 and TCP listener.
