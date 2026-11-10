@@ -114,7 +114,10 @@ fn validate_connection_age(config: &ConfigDraft) -> Result<(), ConfigError> {
     let Some(age) = config.connection_age_ms else {
         return Ok(());
     };
-    if config.connection_scheduling != Some(ConnectionScheduling::AgedPerWorker) {
+    if !matches!(
+        config.connection_scheduling,
+        Some(ConnectionScheduling::AgedPerWorker | ConnectionScheduling::Auto)
+    ) {
         return Err(ConfigError::ConnectionAgeWithoutAgedScheduling);
     }
     if !(1..=ConfigDraft::MAX_CONNECTION_AGE_MS).contains(&age) {

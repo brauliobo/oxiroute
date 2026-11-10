@@ -1010,7 +1010,7 @@ export interface UdpPolicyConfig {
   max_queue_bytes: number
 }
 
-export type ConnectionScheduling = 'work_stealing' | 'aged_per_worker'
+export type ConnectionScheduling = 'work_stealing' | 'aged_per_worker' | 'auto'
 
 export interface RetirementConfig {
   drain_deadline_ms: number | null
