@@ -26,7 +26,7 @@ use hyper::{server::conn::http1, service::service_fn};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use log::{debug, error, info, warn};
 use oxiroute_acme::{AcmeOperation, Dns01Cancellation};
-use oxiroute_config::ListenerBind;
+use oxiroute_config::{Audit, ListenerBind};
 use oxiroute_rtmp::{
     MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RecorderErrorCode, RecorderPhase, RtmpClientSnapshot,
     RtmpControlHandle, RtmpRelayFailure, RtmpServiceHandle, RtmpSessionError, RtmpSessionRole,
@@ -105,6 +105,7 @@ fn build_management_api(
     coordinator: CanonicalConfigCoordinator,
     active_revision: EffectiveRevision,
     token_file: &Path,
+    audit: Option<&Audit>,
     ui_dir: Option<&Path>,
     mode: oxiroute_server::RuntimeMode,
 ) -> io::Result<RtmpManagementApi> {
@@ -113,7 +114,13 @@ fn build_management_api(
     } else {
         Ok(RtmpManagementApi::new(control, metrics, topology))
     }?;
-    api.with_config_coordinator_from_token_file(coordinator, active_revision, token_file, mode)
+    api.with_config_coordinator_from_token_file(
+        coordinator,
+        active_revision,
+        token_file,
+        audit,
+        mode,
+    )
 }
 
 fn main() -> ExitCode {
@@ -475,6 +482,7 @@ fn serve_generation(
             management_token_file
                 .as_deref()
                 .expect("management token path was required above"),
+            config.audit.as_ref(),
             management.ui_dir.as_deref(),
             runtime_metrics.supervision_mode(),
         )?
@@ -497,6 +505,8 @@ fn serve_generation(
             .with_generation(Arc::clone(generation)),
         );
         info!("configured management API on {}", management.bind);
+    } else {
+        oxiroute_server::configure_audit(config.audit.as_ref());
     }
     if let Some(stats) = &config.stats {
         for (index, bind) in stats.binds.iter().enumerate() {

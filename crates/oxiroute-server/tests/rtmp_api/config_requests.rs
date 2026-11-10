@@ -28,6 +28,7 @@ pub(super) fn management_token_files_are_bounded_regular_nofollow_and_owner_only
                 coordinator.clone(),
                 document.effective_revision.clone(),
                 &token_path,
+                None,
                 RuntimeMode::Direct,
             )
             .is_ok()
@@ -40,6 +41,7 @@ pub(super) fn management_token_files_are_bounded_regular_nofollow_and_owner_only
                 coordinator.clone(),
                 document.effective_revision.clone(),
                 &token_path,
+                None,
                 RuntimeMode::Direct,
             )
             .is_err()
@@ -54,6 +56,7 @@ pub(super) fn management_token_files_are_bounded_regular_nofollow_and_owner_only
                 coordinator.clone(),
                 document.effective_revision.clone(),
                 &token_link,
+                None,
                 RuntimeMode::Direct,
             )
             .is_err()
@@ -66,6 +69,7 @@ pub(super) fn management_token_files_are_bounded_regular_nofollow_and_owner_only
                 coordinator,
                 document.effective_revision,
                 &token_path,
+                None,
                 RuntimeMode::Direct,
             )
             .is_err()
