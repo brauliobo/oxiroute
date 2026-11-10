@@ -86,6 +86,94 @@ async fn mixed_htpasswd_schemes_authenticate_each_user() {
     assert!(!uppercase.authorizes(&headers).await);
 }
 
+fn htpasswd_access(
+    directory: &tempfile::TempDir,
+    user: &str,
+    password: &[u8],
+) -> BasicHtpasswdAccess {
+    let path = directory.path().join("cache.htpasswd");
+    let hash = bcrypt::hash_with_salt(password, 4, *b"OxiRouteTest1234")
+        .unwrap()
+        .to_string();
+    std::fs::write(&path, format!("{user}:{hash}\n")).expect("htpasswd file");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("htpasswd mode");
+    BasicHtpasswdAccess::load(&path, "private").expect("htpasswd")
+}
+
+fn basic(credentials: &str) -> Vec<u8> {
+    format!("Basic {}", STANDARD.encode(credentials.as_bytes())).into_bytes()
+}
+
+#[tokio::test]
+async fn a_verified_credential_is_not_hashed_again() {
+    let directory = tempfile::tempdir().expect("htpasswd directory");
+    let access = htpasswd_access(&directory, "alpha", b"alpha-pass");
+
+    for _ in 0..5 {
+        let user = access.authenticate(&basic("alpha:alpha-pass")).await;
+        assert_eq!(user.as_deref(), Some("alpha"));
+    }
+    assert_eq!(access.password_checks(), 1);
+}
+
+#[tokio::test]
+async fn failed_credentials_are_hashed_every_time_and_never_remembered() {
+    let directory = tempfile::tempdir().expect("htpasswd directory");
+    let access = htpasswd_access(&directory, "alpha", b"alpha-pass");
+
+    for _ in 0..3 {
+        assert!(access.authenticate(&basic("alpha:wrong")).await.is_none());
+        assert!(
+            access
+                .authenticate(&basic("missing:alpha-pass"))
+                .await
+                .is_none()
+        );
+    }
+    assert_eq!(access.password_checks(), 6);
+    assert_eq!(
+        access
+            .authenticate(&basic("alpha:alpha-pass"))
+            .await
+            .as_deref(),
+        Some("alpha")
+    );
+    assert!(
+        access
+            .authenticate(&basic("alpha:alpha-pasz"))
+            .await
+            .is_none()
+    );
+    assert_eq!(access.password_checks(), 8);
+}
+
+#[tokio::test]
+async fn remembered_credentials_do_not_cross_users_or_instances() {
+    let directory = tempfile::tempdir().expect("htpasswd directory");
+    let first = htpasswd_access(&directory, "alpha", b"shared-pass");
+    assert!(
+        first
+            .authenticate(&basic("alpha:shared-pass"))
+            .await
+            .is_some()
+    );
+
+    let other_directory = tempfile::tempdir().expect("htpasswd directory");
+    let second = htpasswd_access(&other_directory, "bravo", b"other-pass");
+    assert!(
+        second
+            .authenticate(&basic("alpha:shared-pass"))
+            .await
+            .is_none()
+    );
+    assert!(
+        first
+            .authenticate(&basic("bravo:shared-pass"))
+            .await
+            .is_none()
+    );
+}
+
 #[test]
 fn static_etags_use_nginx_mtime_and_size_format() {
     assert_eq!(nginx_static_etag(0x1234, 0xabcd), "\"1234-abcd\"");

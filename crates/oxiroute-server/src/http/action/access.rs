@@ -1,3 +1,4 @@
+use super::verified_credentials::VerifiedCredentials;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -60,6 +61,9 @@ pub(crate) struct BasicHtpasswdAccess {
     dummy_hashes: Box<[BasicPasswordHash]>,
     username_case_sensitive: bool,
     users: Box<[BasicUser]>,
+    verified: VerifiedCredentials,
+    #[cfg(test)]
+    password_checks: std::sync::atomic::AtomicU64,
 }
 
 type BasicUser = ([u8; 32], Arc<str>, BasicPasswordHash);
@@ -143,6 +147,9 @@ impl BasicHtpasswdAccess {
             dummy_hashes,
             username_case_sensitive,
             users: users.into_boxed_slice(),
+            verified: VerifiedCredentials::new(),
+            #[cfg(test)]
+            password_checks: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -173,6 +180,9 @@ impl BasicHtpasswdAccess {
         let decoded = Zeroizing::new(decoded);
         if decoded.len() > MAX_BASIC_CREDENTIAL_BYTES {
             return None;
+        }
+        if let Some(user) = self.verified.recall(&decoded) {
+            return Some(user);
         }
         let separator = decoded.iter().position(|byte| *byte == b':')?;
         if separator > MAX_BASIC_USERNAME_BYTES {
@@ -205,6 +215,9 @@ impl BasicHtpasswdAccess {
                     .clone()
             })
             .collect::<Box<[_]>>();
+        #[cfg(test)]
+        self.password_checks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let password = Zeroizing::new(password.to_owned());
         let semaphore = basic_auth_semaphore();
         let Ok(permit) = semaphore.try_acquire_owned() else {
@@ -216,7 +229,15 @@ impl BasicHtpasswdAccess {
         })
         .await
         .is_ok_and(|verified| known_user && verified);
-        verified.then(|| Arc::clone(&self.users[selected_index].1))
+        let user = verified.then(|| Arc::clone(&self.users[selected_index].1))?;
+        self.verified.remember(&decoded, &user);
+        Some(user)
+    }
+
+    #[cfg(test)]
+    pub(super) fn password_checks(&self) -> u64 {
+        self.password_checks
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
