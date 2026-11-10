@@ -209,6 +209,8 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   no `pingora-rustls` dependency and no `rustls` feature (the crate is no longer vendored; a lint table keeps
   `cfg(feature = "rustls")` code warning-free), and without the `h1_pipelining` bench (its source is not published).
   `sfv` stays at `0.10` because later releases change the parser and integer APIs used by compression.
+  The `nix` dependency also enables `zerocopy` (`sendfile`), and `protocols/l4/sendfile.rs` passes borrowed file
+  descriptors to it as nix 0.31 requires.
 - `services/listening.rs` spawns every accepted connection through `pingora_runtime::spawn_connection`, which on a
   non-stealing runtime picks the worker with the fewest open connections (the vendored `pingora-runtime`, see its
   README). `listeners/mod.rs` records the runtime that accepted a connection and, when the connection task starts on

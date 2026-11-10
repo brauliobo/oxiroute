@@ -16,7 +16,6 @@
 
 use std::fs::File;
 use std::io;
-use std::os::fd::AsRawFd;
 
 use tokio::io::Interest;
 use tokio::net::TcpStream;
@@ -36,13 +35,8 @@ pub async fn send_file(
     while sent < length {
         let count = socket
             .async_io(Interest::WRITABLE, || {
-                nix::sys::sendfile::sendfile(
-                    socket.as_raw_fd(),
-                    file.as_raw_fd(),
-                    Some(&mut position),
-                    length - sent,
-                )
-                .map_err(io::Error::from)
+                nix::sys::sendfile::sendfile(socket, file, Some(&mut position), length - sent)
+                    .map_err(io::Error::from)
             })
             .await?;
         if count == 0 {
