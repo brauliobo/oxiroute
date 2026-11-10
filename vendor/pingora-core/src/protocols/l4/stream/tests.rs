@@ -218,7 +218,9 @@ async fn test_buffer_state_of_a_tcp_stream_is_visible_for_kernel_offload() {
     });
 
     let mut stream: Stream = TcpStream::connect(addr).await.unwrap().into();
-    stream.set_buffer();
+    stream
+        .set_buffer(L4BufferSettings::default(), false)
+        .unwrap();
     assert!(stream.tcp_socket().is_some());
     assert!(!stream.has_read_ahead() && !stream.has_write_behind());
 
