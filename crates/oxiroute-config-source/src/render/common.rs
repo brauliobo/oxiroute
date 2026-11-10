@@ -407,6 +407,13 @@ impl Renderer {
         }
         self.boolean_field("session_tickets", policy.session_tickets);
         self.boolean_field("prefer_server_ciphers", policy.prefer_server_ciphers);
+        self.string_field(
+            "ktls",
+            match policy.ktls {
+                oxiroute_config::KtlsMode::Off => "off",
+                oxiroute_config::KtlsMode::Static => "static",
+            },
+        );
         self.begin_table_field("client_auth");
         self.string_field(
             "mode",
