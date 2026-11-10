@@ -127,8 +127,13 @@ build() {
 smoke() {
   local binary=${1:?usage: $0 smoke BIN}
   mkdir -p "${work}/smoke"
-  python3 "${repo}/benchmarks/r2-data-path/gen_config.py" "${work}/smoke/oxiroute.lua" --proxy-port 20300 \
-    --upstream-port 20310 --run-dir "${work}/smoke"
+  local ports
+  ports=$(python3 -c 'import socket
+sockets = [socket.socket() for _ in range(2)]
+for s in sockets: s.bind(("127.0.0.1", 0))
+print(*[s.getsockname()[1] for s in sockets])')
+  python3 "${repo}/benchmarks/r2-data-path/gen_config.py" "${work}/smoke/oxiroute.lua" --proxy-port "${ports% *}" \
+    --upstream-port "${ports#* }" --run-dir "${work}/smoke"
   "${binary}" config check "${work}/smoke/oxiroute.lua"
   default_cpus
   build_tool
