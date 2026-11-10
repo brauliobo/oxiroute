@@ -703,7 +703,9 @@ mod test {
                                 .send(h2::frame::Ping::pong(*ping.payload()).into())
                                 .await;
                         }
-                        Ok(h2::frame::Frame::GoAway(goaway)) if u32::from(goaway.last_stream_id()) == 1 => {
+                        Ok(h2::frame::Frame::GoAway(goaway))
+                            if u32::from(goaway.last_stream_id()) == 1 =>
+                        {
                             saw_final_goaway = true;
                         }
                         Ok(_) => {}

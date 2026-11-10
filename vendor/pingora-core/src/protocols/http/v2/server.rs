@@ -20,8 +20,8 @@ use http::header::HeaderName;
 use http::uri::PathAndQuery;
 use http::{header, HeaderMap, Response, StatusCode};
 use log::{debug, warn};
-pub use oxiroute_h2::{server::Config as H2Options, Reason};
 use oxiroute_h2::server::{Server, Stream as H2Stream};
+pub use oxiroute_h2::{server::Config as H2Options, Reason};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_timeout::timeout;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -47,7 +47,6 @@ use crate::{Error, ErrorType, OrErr, Result};
 const BODY_BUF_LIMIT: usize = 1024 * 64;
 
 type H2Connection<S> = Server<S>;
-
 
 // 64 KiB decoded header-list limit.
 const DEFAULT_MAX_HEADER_LIST_SIZE: u32 = 64 * 1024;
@@ -702,10 +701,12 @@ impl HttpSession {
         written.status = header.status;
         let resp = Response::from_parts(std::mem::replace(&mut *header, written.into()).into(), ());
         let (parts, ()) = resp.into_parts();
-        self.stream.send_response(parts.status, parts.headers, end).or_err(
-            ErrorType::WriteError,
-            "while writing h2 response to downstream",
-        )?;
+        self.stream
+            .send_response(parts.status, parts.headers, end)
+            .or_err(
+                ErrorType::WriteError,
+                "while writing h2 response to downstream",
+            )?;
 
         self.response_written = Some(header);
         self.ended = self.ended || end;
