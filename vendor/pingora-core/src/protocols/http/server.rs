@@ -47,6 +47,12 @@ impl Session {
         Self::H1(SessionV1::new(stream))
     }
 
+    /// [`Self::new_http1()`] for a connection whose next request head was already partly or wholly read
+    /// into `preloaded`; the session parses those bytes before it reads from the stream.
+    pub fn new_http1_preloaded(stream: Stream, preloaded: Bytes) -> Self {
+        Self::H1(SessionV1::new_with_preloaded(stream, preloaded))
+    }
+
     /// Create a new [`Session`] from an established HTTP/2 stream
     pub fn new_http2(session: SessionV2) -> Self {
         Self::H2(session)

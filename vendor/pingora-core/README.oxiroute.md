@@ -168,6 +168,18 @@ connection-pool experiments:
   and `set_request_facts` (`ServerSession`, `HttpSession`; a no-op for sessions that answer `UNKNOWN`) records the facts of
   a request whose headers the caller changed and whose resulting facts it knows, so the product strips the hop-by-hop
   fields of a request once at its head and the session does not look the headers up again.
+- `apps/mod.rs` lets an application put a connection-level front before the HTTP/1 session loop: `HttpServerApp::http1_front`
+  returns an `Http1Front`, which sees the stream of a connection first and serves the requests it can by itself
+  (`Http1Connection` carries the keepalive state and the request limit between its requests and the sessions'), then hands
+  the connection back as `Http1FrontOutcome::Handoff` with the bytes of the next request head it already read. The loop builds
+  the session with `protocols/http/server.rs` `new_http1_preloaded` and `protocols/http/v1/server.rs`
+  `new_with_preloaded`: `read_request` parses the preloaded bytes before it reads from the stream, so nothing is read twice.
+  Without a front the loop is the upstream one. `Http1Front::cleanup` runs with the application's cleanup.
+- `protocols/http/v1/client.rs` can read a response head raw: `read_raw_head` reads to the first empty line with the limits, timeouts
+  and errors of `read_response`, `accept_fast_head` takes the facts (`FastHead`, `FastFraming`) of a head the caller scanned
+  itself as the session's response (status, version, `Connection`, framing; no `ResponseHeader` is built), and
+  `reparse_raw_head` leaves the bytes to `read_response` for a head the caller does not take. Body reading, keepalive and reuse
+  then work as for a parsed response.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.

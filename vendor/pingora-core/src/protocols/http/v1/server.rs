@@ -105,6 +105,9 @@ pub struct HttpSession {
 
     /// Reused between responses written by `write_rendered_response()`
     rendered_response_buf: BytesMut,
+
+    /// Bytes of the next request head that the caller already read from the stream
+    preloaded: Bytes,
 }
 
 impl HttpSession {
@@ -150,7 +153,16 @@ impl HttpSession {
             close_on_response_before_downstream_finish: true,
             keepalive_reuses_remaining: None,
             rendered_response_buf: BytesMut::new(),
+            preloaded: Bytes::new(),
         }
+    }
+
+    /// Like [`Self::new()`] for a connection whose first request head was partly or wholly read by the
+    /// caller: [`Self::read_request()`] parses `preloaded` before it reads from the stream.
+    pub fn new_with_preloaded(underlying_stream: Stream, preloaded: Bytes) -> Self {
+        let mut session = Self::new(underlying_stream);
+        session.preloaded = preloaded;
+        session
     }
 
     /// Read the request header. Return `Ok(Some(n))` where the read and parsing are successful.
@@ -160,8 +172,11 @@ impl HttpSession {
         const MAX_ERR_BUF_LEN: usize = 2048;
 
         self.buf.clear();
-        let mut buf = BytesMut::with_capacity(INIT_HEADER_BUF_SIZE);
-        let mut already_read: usize = 0;
+        let preloaded = std::mem::take(&mut self.preloaded);
+        let mut buf = BytesMut::with_capacity(INIT_HEADER_BUF_SIZE.max(preloaded.len()));
+        buf.extend_from_slice(&preloaded);
+        let mut already_read: usize = preloaded.len();
+        let mut parse_first = !preloaded.is_empty();
         loop {
             if already_read > MAX_HEADER_SIZE {
                 /* NOTE: this check only blocks second read. The first large read is allowed
@@ -173,84 +188,88 @@ impl HttpSession {
                 );
             }
 
-            let read_result = {
-                let read_event = self.underlying_stream.read_buf(&mut buf);
-                let phase_timeout = if self.reused_connection && already_read == 0 {
-                    self.idle_keepalive_timeout
-                } else {
-                    self.request_header_timeout
-                };
-                match phase_timeout {
-                    Some(duration) => match timeout(duration, read_event).await {
-                        Ok(result) => result,
-                        Err(error) if self.reused_connection && already_read == 0 => {
-                            debug!("keepalive timeout {duration:?} reached, {error}");
-                            return Ok(None);
-                        }
-                        Err(_) => {
-                            return Error::e_explain(
-                                ReadTimedout,
-                                format!("reading request header, timeout: {duration:?}"),
-                            );
-                        }
-                    },
-                    None => match self.keepalive_timeout {
-                        KeepaliveStatus::Timeout(d) => match timeout(d, read_event).await {
-                            Ok(res) => res,
-                            Err(e) => {
-                                debug!("keepalive timeout {d:?} reached, {e}");
+            if parse_first {
+                parse_first = false;
+            } else {
+                let read_result = {
+                    let read_event = self.underlying_stream.read_buf(&mut buf);
+                    let phase_timeout = if self.reused_connection && already_read == 0 {
+                        self.idle_keepalive_timeout
+                    } else {
+                        self.request_header_timeout
+                    };
+                    match phase_timeout {
+                        Some(duration) => match timeout(duration, read_event).await {
+                            Ok(result) => result,
+                            Err(error) if self.reused_connection && already_read == 0 => {
+                                debug!("keepalive timeout {duration:?} reached, {error}");
                                 return Ok(None);
                             }
+                            Err(_) => {
+                                return Error::e_explain(
+                                    ReadTimedout,
+                                    format!("reading request header, timeout: {duration:?}"),
+                                );
+                            }
                         },
-                        KeepaliveStatus::Infinite => {
-                            // FIXME: this should only apply to reads between requests
-                            read_event.await
-                        }
-                        KeepaliveStatus::Off => match self.read_timeout {
-                            Some(t) => match timeout(t, read_event).await {
+                        None => match self.keepalive_timeout {
+                            KeepaliveStatus::Timeout(d) => match timeout(d, read_event).await {
                                 Ok(res) => res,
                                 Err(e) => {
-                                    debug!("read timeout {t:?} reached, {e}");
-                                    return Error::e_explain(
-                                        ReadTimedout,
-                                        format!("timeout: {t:?}"),
-                                    );
+                                    debug!("keepalive timeout {d:?} reached, {e}");
+                                    return Ok(None);
                                 }
                             },
-                            None => read_event.await,
+                            KeepaliveStatus::Infinite => {
+                                // FIXME: this should only apply to reads between requests
+                                read_event.await
+                            }
+                            KeepaliveStatus::Off => match self.read_timeout {
+                                Some(t) => match timeout(t, read_event).await {
+                                    Ok(res) => res,
+                                    Err(e) => {
+                                        debug!("read timeout {t:?} reached, {e}");
+                                        return Error::e_explain(
+                                            ReadTimedout,
+                                            format!("timeout: {t:?}"),
+                                        );
+                                    }
+                                },
+                                None => read_event.await,
+                            },
                         },
-                    },
-                }
-            };
-            let n = match read_result {
-                Ok(n_read) => {
-                    if n_read == 0 {
-                        if already_read > 0 {
-                            return Error::e_explain(
-                                ConnectionClosed,
-                                format!(
-                                    "while reading request headers, bytes already read: {}",
-                                    already_read
-                                ),
-                            );
-                        } else {
-                            /* common when client decides to close a keepalived session */
-                            debug!("Client prematurely closed connection with 0 byte sent");
-                            return Ok(None);
+                    }
+                };
+                let n = match read_result {
+                    Ok(n_read) => {
+                        if n_read == 0 {
+                            if already_read > 0 {
+                                return Error::e_explain(
+                                    ConnectionClosed,
+                                    format!(
+                                        "while reading request headers, bytes already read: {}",
+                                        already_read
+                                    ),
+                                );
+                            } else {
+                                /* common when client decides to close a keepalived session */
+                                debug!("Client prematurely closed connection with 0 byte sent");
+                                return Ok(None);
+                            }
                         }
+                        n_read
                     }
-                    n_read
-                }
 
-                Err(e) => {
-                    if already_read > 0 {
-                        return Error::e_because(ReadError, "while reading request headers", e);
+                    Err(e) => {
+                        if already_read > 0 {
+                            return Error::e_because(ReadError, "while reading request headers", e);
+                        }
+                        /* nothing harmful since we have not ready any thing yet */
+                        return Ok(None);
                     }
-                    /* nothing harmful since we have not ready any thing yet */
-                    return Ok(None);
-                }
-            };
-            already_read += n;
+                };
+                already_read += n;
+            }
 
             // Use loop as GOTO to retry escaped request buffer, not a real loop
             loop {
