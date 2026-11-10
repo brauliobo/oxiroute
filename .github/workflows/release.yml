@@ -158,7 +158,7 @@ jobs:
       - name: Build release binaries (profile-guided unless disabled)
         env:
           RELEASE_REF: ${{ inputs.tag || github.ref_name }}
-          PGO_WORK: ${{ runner.temp }}/pgo
+          PGO_WORK: /tmp/oxiroute-pgo
         run: ./scripts/build-release-binaries.sh "${RELEASE_REF#v}" release-binaries
 
       - name: Upload release binaries
