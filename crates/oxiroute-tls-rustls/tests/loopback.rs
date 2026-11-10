@@ -1,10 +1,4 @@
-use std::{
-    future::poll_fn,
-    net::Ipv4Addr,
-    sync::Arc,
-    task::Poll,
-    time::Duration,
-};
+use std::{future::poll_fn, net::Ipv4Addr, sync::Arc, task::Poll, time::Duration};
 
 use oxiroute_tls_rustls::{ConfigRouter, RustlsAcceptor};
 use pingora::{
@@ -41,13 +35,17 @@ struct Pair {
 }
 
 fn pair(alpn: &[&[u8]]) -> Pair {
-    let CertifiedKey { cert, signing_key } = generate_simple_self_signed(vec![NAME.into()]).unwrap();
+    let CertifiedKey { cert, signing_key } =
+        generate_simple_self_signed(vec![NAME.into()]).unwrap();
     let provider = Arc::new(ring::default_provider());
     let mut server = ServerConfig::builder_with_provider(Arc::clone(&provider))
         .with_safe_default_protocol_versions()
         .unwrap()
         .with_no_client_auth()
-        .with_single_cert(vec![cert.der().clone()], PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into())
+        .with_single_cert(
+            vec![cert.der().clone()],
+            PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+        )
         .unwrap();
     server.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
     let mut roots = RootCertStore::empty();
@@ -124,7 +122,10 @@ async fn large_and_vectored_writes_arrive_whole_and_in_order() {
     let sent = body.clone();
     let writer = tokio::spawn(async move {
         server.write_all(&sent[..100]).await.unwrap();
-        let vectored = [std::io::IoSlice::new(&sent[100..109]), std::io::IoSlice::new(&sent[109..4_000])];
+        let vectored = [
+            std::io::IoSlice::new(&sent[100..109]),
+            std::io::IoSlice::new(&sent[109..4_000]),
+        ];
         let taken = 100 + server.write_vectored(&vectored).await.unwrap();
         server.write_all(&sent[taken..]).await.unwrap();
         server.flush().await.unwrap();
@@ -145,7 +146,9 @@ async fn a_peer_that_closes_without_close_notify_ends_the_stream() {
     let (server, client) = connect(client, Fixed(Some(server))).await;
     let (mut server, mut client) = (server.unwrap(), client.unwrap());
 
-    AsyncWriteExt::shutdown(&mut client.get_mut().0).await.unwrap();
+    AsyncWriteExt::shutdown(&mut client.get_mut().0)
+        .await
+        .unwrap();
     let mut buffer = [0; 8];
     assert_eq!(server.read(&mut buffer).await.unwrap(), 0);
 }
@@ -161,10 +164,13 @@ async fn readiness_waits_for_the_peer_without_decrypting() {
 
     client.write_all(b"x").await.unwrap();
     client.flush().await.unwrap();
-    timeout(Duration::from_secs(5), poll_fn(|context| server.poll_read_ready(context)))
-        .await
-        .unwrap()
-        .unwrap();
+    timeout(
+        Duration::from_secs(5),
+        poll_fn(|context| server.poll_read_ready(context)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let mut byte = [0; 1];
     server.read_exact(&mut byte).await.unwrap();
     assert_eq!(&byte, b"x");

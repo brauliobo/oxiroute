@@ -48,10 +48,11 @@ fn origin_server_config(alpn: &[u8]) -> quinn::ServerConfig {
         .transpose()
         .expect("origin private key")
         .expect("origin private key block");
-    let mut crypto = rustls::ServerConfig::builder_with_provider(crate::tls::provider::ring_provider())
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .expect("TLS 1.3 protocol version")
-        .with_no_client_auth()
+    let mut crypto =
+        rustls::ServerConfig::builder_with_provider(crate::tls::provider::ring_provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("TLS 1.3 protocol version")
+            .with_no_client_auth()
             .with_single_cert(certificates, private_key)
             .expect("origin TLS identity");
     crypto.alpn_protocols = vec![alpn.to_vec()];

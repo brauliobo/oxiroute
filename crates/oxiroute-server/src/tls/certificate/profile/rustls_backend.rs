@@ -36,7 +36,10 @@ impl TlsProfilePlan {
     ///
     /// Returns an error if the profile asks for the OpenSSL backend, a certificate identity cannot be used by rustls,
     /// or rustls rejects the profile's protocol or session settings.
-    pub fn rustls_settings(&self, handshake_threads: usize) -> Result<CustomTlsSettings, TlsBuildError> {
+    pub fn rustls_settings(
+        &self,
+        handshake_threads: usize,
+    ) -> Result<CustomTlsSettings, TlsBuildError> {
         if self.backend != TlsBackend::Rustls {
             return Err(self.rustls_error("the profile selects the OpenSSL backend".into()));
         }

@@ -718,7 +718,11 @@ async fn downstream_refuses_tls_1_0_and_1_1_before_any_http_bytes() {
                 .unwrap_or_else(|error| panic!("{version:?} client attempt failed: {error}"));
             // rustls answers a client that offers nothing newer than TLS 1.1 with handshake_failure, OpenSSL with
             // protocol_version.
-            let alert = if rustls_backend() { "handshake failure" } else { "protocol version" };
+            let alert = if rustls_backend() {
+                "handshake failure"
+            } else {
+                "protocol version"
+            };
             assert!(
                 rejected.error.contains(alert),
                 "{version:?} failed for the wrong reason: {}",

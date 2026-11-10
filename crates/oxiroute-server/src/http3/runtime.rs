@@ -278,9 +278,10 @@ fn server_config(
     let resolver = Arc::new(QuicCertificateResolver {
         profile: Arc::clone(tls),
     });
-    let crypto_builder = rustls::ServerConfig::builder_with_provider(crate::tls::provider::ring_provider())
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(io::Error::other)?;
+    let crypto_builder =
+        rustls::ServerConfig::builder_with_provider(crate::tls::provider::ring_provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(io::Error::other)?;
     let mut crypto = match tls.rustls_client_cert_verifier() {
         Some(verifier) => crypto_builder
             .with_client_cert_verifier(verifier)

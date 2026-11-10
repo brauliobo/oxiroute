@@ -8,7 +8,8 @@ use rustls::{
 };
 
 use crate::tls::{
-    TLS_ALPN_PROTOCOL, TlsAlpnChallengeStore, certificate::rustls_certified_key, provider::aws_lc_provider,
+    TLS_ALPN_PROTOCOL, TlsAlpnChallengeStore, certificate::rustls_certified_key,
+    provider::aws_lc_provider,
 };
 
 /// Picks the configuration of a connection from its ClientHello: the TLS-ALPN-01 challenge when the client asks for
@@ -90,7 +91,9 @@ impl ConfigRouter for ProfileRouter {
 
 impl fmt::Debug for ProfileRouter {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("ProfileRouter").finish_non_exhaustive()
+        formatter
+            .debug_struct("ProfileRouter")
+            .finish_non_exhaustive()
     }
 }
 

@@ -9,8 +9,8 @@ use std::{
 
 use async_trait::async_trait;
 use pingora::protocols::{
-    GetProxyDigest, GetSocketDigest, GetTimingDigest, Peek, Shutdown, SocketDigest, Ssl, TimingDigest, UniqueID,
-    UniqueIDType,
+    GetProxyDigest, GetSocketDigest, GetTimingDigest, Peek, Shutdown, SocketDigest, Ssl,
+    TimingDigest, UniqueID, UniqueIDType,
     l4::stream::Stream as L4Stream,
     raw_connect::ProxyDigest,
     tls::{ALPN, SslDigest},
@@ -103,7 +103,11 @@ impl TlsStream {
 
     /// Encrypts `buffer` as records of its own. Whatever the socket does not take yet stays queued in rustls until the
     /// next write or flush.
-    fn poll_write_records(&mut self, context: &mut Context<'_>, buffer: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write_records(
+        &mut self,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
         let taken = loop {
             match self.pump.conn.writer().write(buffer)? {
                 0 if !buffer.is_empty() => ready!(self.pump.poll_drain(context))?,
@@ -141,7 +145,11 @@ impl TlsStream {
 }
 
 impl AsyncRead for TlsStream {
-    fn poll_read(self: Pin<&mut Self>, context: &mut Context<'_>, buffer: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         if buffer.remaining() == 0 {
             return Poll::Ready(Ok(()));
@@ -153,8 +161,12 @@ impl AsyncRead for TlsStream {
                     return Poll::Ready(Ok(()));
                 }
                 // The peer closed without a close_notify: the stream ends the way a closed connection does.
-                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Poll::Ready(Ok(())),
-                Err(error) if error.kind() != io::ErrorKind::WouldBlock => return Poll::Ready(Err(error)),
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                    return Poll::Ready(Ok(()));
+                }
+                Err(error) if error.kind() != io::ErrorKind::WouldBlock => {
+                    return Poll::Ready(Err(error));
+                }
                 Err(_) => {}
             }
             if !ready!(this.pump.poll_pull(context))? {
@@ -169,7 +181,11 @@ impl AsyncRead for TlsStream {
 }
 
 impl AsyncWrite for TlsStream {
-    fn poll_write(self: Pin<&mut Self>, context: &mut Context<'_>, buffer: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
         if this.pending.len() + buffer.len() > COALESCE_PLAIN_LIMIT {
             ready!(this.poll_encrypt_pending(context))?;
@@ -265,7 +281,9 @@ impl Peek for TlsStream {
     /// with nothing to read is not decrypted again to find that out.
     fn poll_read_ready(&mut self, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.pump.conn.reader().fill_buf() {
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.pump.io.poll_read_ready(context),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                self.pump.io.poll_read_ready(context)
+            }
             _ => Poll::Ready(Ok(())),
         }
     }
