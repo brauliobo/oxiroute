@@ -16,7 +16,7 @@ pub(super) async fn respond_error(
     // Pingora's error responder carries a placeholder Date that only the automatic headers replace.
     response.insert_header(DATE, httpdate::fmt_http_date(SystemTime::now()))?;
     if let Some((name, value)) = reason.map(ErrorReason::header) {
-        response.insert_header(name, value)?;
+        response.set_header(name, value)?;
     }
     let mut body = Bytes::new();
     if pool_unavailable {
@@ -298,7 +298,7 @@ pub(crate) fn apply_response_policy(
                 response.insert_header(name, value)?;
             }
             ResponseHeaderDecision::Add { name, value } => {
-                response.append_header(name, value)?;
+                response.add_header(name, value)?;
             }
         }
     }
