@@ -8,7 +8,7 @@ use pingora::{
     ErrorSource,
     listeners::ALPN,
     protocols::{Digest, tls::SslDigest},
-    upstreams::peer::Peer,
+    upstreams::peer::{HttpUpstreamRequestPolicy, Peer},
 };
 
 use super::*;
@@ -87,6 +87,10 @@ async fn compiled_upstream_peer_retains_tls_policy_timeouts_and_reuse_isolation(
     assert_eq!(peer.options.total_connection_timeout, Some(timeout));
     assert_eq!(peer.options.read_timeout, Some(timeout));
     assert_eq!(peer.options.write_timeout, Some(timeout));
+    assert_eq!(
+        peer.options.http_upstream_request_policy,
+        HttpUpstreamRequestPolicy::preserve()
+    );
     assert_eq!(
         peer.reuse_hash(),
         plan.peer(address, timeout, timeout).reuse_hash()
