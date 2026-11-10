@@ -21,6 +21,7 @@ use crate::protocols::http::client::HttpSession;
 use crate::protocols::http::v1::client::HttpSession as Http1Session;
 use crate::upstreams::peer::Peer;
 use pingora_error::Result;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub mod custom;
@@ -31,7 +32,7 @@ pub struct Connector<C = ()>
 where
     C: custom::Connector,
 {
-    h1: v1::Connector,
+    h1: Arc<v1::Connector>,
     h2: v2::Connector,
     custom: C,
 }
@@ -39,7 +40,7 @@ where
 impl Connector<()> {
     pub fn new(options: Option<ConnectorOptions>) -> Self {
         Connector {
-            h1: v1::Connector::new(options.clone()),
+            h1: Arc::new(v1::Connector::new(options.clone())),
             h2: v2::Connector::new(options.clone()),
             custom: Default::default(),
         }
@@ -50,9 +51,15 @@ impl<C> Connector<C>
 where
     C: custom::Connector,
 {
+    /// The HTTP/1 connector, with the pool of idle connections this connector reuses, for a caller that drives
+    /// HTTP/1 upstream sessions itself.
+    pub fn h1(&self) -> Arc<v1::Connector> {
+        Arc::clone(&self.h1)
+    }
+
     pub fn new_custom(options: Option<ConnectorOptions>, custom: C) -> Self {
         Connector {
-            h1: v1::Connector::new(options.clone()),
+            h1: Arc::new(v1::Connector::new(options.clone())),
             h2: v2::Connector::new(options.clone()),
             custom,
         }
@@ -382,7 +389,7 @@ mod tests {
         #[cfg(not(feature = "rustls"))]
         let custom_transport = TransportConnector::new(None);
         Connector {
-            h1: v1::Connector::new(None),
+            h1: Arc::new(v1::Connector::new(None)),
             h2: v2::Connector::new(None),
             custom: MockConnector {
                 transport: custom_transport,

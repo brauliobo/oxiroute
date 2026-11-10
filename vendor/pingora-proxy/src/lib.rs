@@ -191,6 +191,11 @@ where
         }
     }
 
+    /// The HTTP/1 upstream connector of this proxy, whose idle connections its requests reuse.
+    pub fn upstream_h1_connector(&self) -> Arc<pingora_core::connectors::http::v1::Connector> {
+        self.client_upstream.h1()
+    }
+
     /// Initialize the downstream modules for this proxy.
     ///
     /// This method must be called after creating an [`HttpProxy`] with [`HttpProxy::new()`]
