@@ -211,6 +211,8 @@ def build(args):
         config["listener_workers"] = args.workers
     if args.classic:
         config["http_fast_lane"] = False
+    if args.tls_handshake_threads >= 0:
+        config["tls_handshake_threads"] = args.tls_handshake_threads
     if on("l4"):
         config["upstream_pools"].append({
             "name": "echo",
@@ -248,6 +250,8 @@ def main():
     parser.add_argument("--listeners", type=int, default=1)
     parser.add_argument("--workers", type=int, default=0, help="listener_workers (0 leaves the setting out)")
     parser.add_argument("--classic", action="store_true", help="http_fast_lane = false (the classic request path)")
+    parser.add_argument("--tls-handshake-threads", type=int, default=-1,
+                        help="tls_handshake_threads (-1 leaves the setting out: automatic, 0: inline handshakes)")
     parser.add_argument("--run-dir", default="/tmp")
     parser.add_argument("--feature", action="append", default=[])
     args = parser.parse_args()

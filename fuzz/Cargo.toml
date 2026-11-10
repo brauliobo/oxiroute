@@ -11,11 +11,13 @@ cargo-fuzz = true
 [dependencies]
 bytes = "1.12"
 httparse = "1.10"
+http = "1.5"
 libfuzzer-sys = "0.4"
 oxiroute-config = { path = "../crates/oxiroute-config" }
 oxiroute-config-source = { path = "../crates/oxiroute-config-source" }
 oxiroute-forward-proxy = { path = "../crates/oxiroute-forward-proxy" }
 oxiroute-h1-head = { path = "../crates/oxiroute-h1-head" }
+oxiroute-h2 = { path = "../crates/oxiroute-h2" }
 oxiroute-import = { path = "../crates/oxiroute-import" }
 oxiroute-rtmp = { path = "../crates/oxiroute-rtmp", features = ["fuzzing"] }
 oxiroute-server = { package = "oxiroute", path = "../crates/oxiroute-server" }
@@ -33,6 +35,7 @@ pingora-http = { path = "../vendor/pingora-http" }
 pingora-load-balancing = { path = "../vendor/pingora-load-balancing" }
 pingora-proxy = { path = "../vendor/pingora-proxy" }
 pingora-timeout = { path = "../vendor/pingora-timeout" }
+pingora-runtime = { path = "../vendor/pingora-runtime" }
 rml_rtmp = { path = "../vendor/rml_rtmp" }
 
 [[bin]]
@@ -122,6 +125,20 @@ bench = false
 [[bin]]
 name = "h1_head"
 path = "fuzz_targets/h1_head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hpack"
+path = "fuzz_targets/hpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h2_frames"
+path = "fuzz_targets/h2_frames.rs"
 test = false
 doc = false
 bench = false

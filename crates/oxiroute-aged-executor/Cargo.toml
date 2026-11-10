@@ -1,0 +1,19 @@
+[package]
+name = "oxiroute-aged-executor"
+description = "Task executor that serves the newest ready task first and the oldest once it has waited a bounded time"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+atomic-waker.workspace = true
+slab.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[lints]
+workspace = true

@@ -9,6 +9,9 @@ async fn generation_runtime_marker_publishes_readiness_after_start_claim() {
     let config = ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -279,6 +282,9 @@ fn generation_join_detaches_at_the_absolute_process_deadline() {
     let config = ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         version: 1,
         max_connections: None,

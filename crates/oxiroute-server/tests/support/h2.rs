@@ -322,8 +322,18 @@ async fn serve_tls_h2(
                 body.flow_control().release_capacity(chunk.len())?;
             }
         }
-        if respond_h2(&path, respond).await.is_err() {
-            observations.h2_send_errors.fetch_add(1, Ordering::SeqCst);
+        let observations = Arc::clone(&observations);
+        let slow = path == "/grpc/slow";
+        let answer = async move {
+            if respond_h2(&path, respond).await.is_err() {
+                observations.h2_send_errors.fetch_add(1, Ordering::SeqCst);
+            }
+        };
+        if slow {
+            // The connection keeps being read while the answer waits, so a reset that arrives meanwhile is seen.
+            tokio::spawn(answer);
+        } else {
+            answer.await;
         }
     }
     Ok(())
@@ -509,13 +519,20 @@ impl H2Client {
             .await
     }
 
-    pub async fn cancel_request(&mut self, method: Method, path: &str) -> Result<(), BoxError> {
+    /// Starts a request and resets it once `in_flight` resolves (the proxy has taken the request on).
+    pub async fn cancel_request(
+        &mut self,
+        method: Method,
+        path: &str,
+        in_flight: impl std::future::Future<Output = ()>,
+    ) -> Result<(), BoxError> {
         let mut sender = self.sender.clone().ready().await?;
         let request = Request::builder()
             .method(method)
             .uri(format!("https://{PROXY_SERVER_NAME}{path}"))
             .body(())?;
         let (response, mut request_body) = sender.send_request(request, false)?;
+        in_flight.await;
         request_body.send_reset(h2::Reason::CANCEL);
         match timeout(IO_TIMEOUT, response).await {
             Ok(Ok(_)) => Err(io::Error::other("H2 request reset was not observed").into()),

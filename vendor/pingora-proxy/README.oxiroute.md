@@ -152,3 +152,4 @@ cargo clippy --workspace --all-targets --locked --offline -- -D warnings
 ```
 
 Then run formatting and diff checks.
+- `src/lib.rs` `HttpProxy::h2_options` returns the `Copy` `oxiroute_h2::server::Config` (the downstream HTTP/2 options of `pingora-core`) without a clone.

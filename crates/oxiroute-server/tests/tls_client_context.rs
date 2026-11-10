@@ -65,6 +65,9 @@ fn child_counts_ca_bundle_parses() {
     let draft = ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         upstream_pools: (0..POOLS).map(http_health_pool).collect(),
         ..empty_config()

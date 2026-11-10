@@ -4,11 +4,26 @@ use super::*;
 const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
     "OXIROUTE_INTERNAL_TEST_LISTENER_DUPLICATION_FAILURE";
 
+const TEST_AGED_PER_WORKER_ENV: &str = "OXIROUTE_INTERNAL_TEST_AGED_PER_WORKER";
+
+/// Whether the workers of a listener serve per-worker queues. The test variable runs a whole process suite in that
+/// mode.
+pub(super) fn aged_per_worker(config: &oxiroute_config::ConfigDraft) -> bool {
+    config.aged_per_worker() || std::env::var_os(TEST_AGED_PER_WORKER_ENV).is_some()
+}
+
 /// Worker threads for each HTTP, forward HTTP/1, forward HTTP/2 and TCP listener.
 pub(super) fn listener_workers(config: &oxiroute_config::ConfigDraft) -> usize {
     config.listener_workers.map_or(1, |workers| {
         usize::try_from(workers).expect("validated worker count fits usize")
     })
+}
+
+/// Threads that run the TLS handshakes of every TLS listener (0: on the listener workers).
+pub(super) fn tls_handshake_threads(config: &oxiroute_config::ConfigDraft) -> usize {
+    config.effective_tls_handshake_threads(
+        std::thread::available_parallelism().map_or(1, usize::from),
+    )
 }
 
 pub(super) fn add_plain_listener<A>(
@@ -215,10 +230,15 @@ pub(super) fn add_http_listener<A>(
     listener_name: &str,
     bind: &ListenerBind,
     tls: Option<&TlsProfilePlan>,
+    handshake_threads: usize,
 ) -> Result<(), Box<dyn Error>> {
     match (bind, tls) {
         (ListenerBind::Socket { address }, Some(tls)) => {
-            service.add_tls_with_settings(&address.to_string(), None, tls.tls_settings()?);
+            service.add_tls_with_settings(
+                &address.to_string(),
+                None,
+                tls.tls_settings(handshake_threads)?,
+            );
             Ok(())
         }
         (ListenerBind::Udp { .. }, Some(_)) => Err(io::Error::new(

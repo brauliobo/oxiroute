@@ -22,8 +22,6 @@ use pingora::{
     protocols::http::v1::common::{RequestFacts, is_hop_by_hop},
 };
 
-use crate::http::header_ops::HeaderOps as _;
-
 const KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
 const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
 
@@ -126,7 +124,7 @@ pub(crate) fn strip_request(
     let remaining = remaining_options(close, handshake);
     if let Some(value) = remaining {
         request
-            .set_header(CONNECTION, HeaderValue::from_static(value))
+            .insert_header(CONNECTION, HeaderValue::from_static(value))
             .map_err(|_| InvalidNomination)?;
     }
     Ok(RequestFacts {

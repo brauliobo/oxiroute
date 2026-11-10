@@ -196,10 +196,11 @@ fn decode_main_section(section: &UciSection) -> Result<Map<String, Value>, Confi
         };
         let value = match name.as_str() {
             "version" => Value::Number(parse_uci_integer::<u32>(section, name, value)?.into()),
-            "max_connections" | "listener_workers" => {
+            "max_connections" | "listener_workers" | "connection_age_ms" | "tls_handshake_threads" => {
                 Value::Number(parse_uci_integer::<u64>(section, name, value)?.into())
             }
             "http_fast_lane" => Value::Bool(parse_uci_bool(section, name, value)?),
+            "connection_scheduling" => Value::String(value.clone()),
             _ => {
                 return Err(ConfigSourceError::parse(
                     "UCI",

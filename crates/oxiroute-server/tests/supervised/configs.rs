@@ -103,6 +103,9 @@ pub(super) fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf)
     ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -148,6 +151,9 @@ pub(super) fn udp_only_config(
     ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -209,6 +215,9 @@ pub(super) fn h3_only_config(listener_address: SocketAddr, private_key_path: &Pa
     ConfigDraft {
         listener_workers: None,
         http_fast_lane: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
+        tls_handshake_threads: None,
         retirement: None,
         version: 1,
         max_connections: None,

@@ -788,6 +788,13 @@ fn render_prometheus_snapshot(
             1,
         )?;
     }
+    let active = generations.active();
+    render_connection_scheduling(
+        &mut output,
+        active
+            .as_ref()
+            .map(|generation| generation.config().as_draft()),
+    )?;
     render_retirement(&mut output, generations, &generation)?;
     labels(
         &mut output,

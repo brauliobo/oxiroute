@@ -1634,10 +1634,13 @@ async fn downstream_h2_cancellation_resets_the_h2_origin_stream() {
             .expect("cancellation H2 client");
 
         client
-            .cancel_request(Method::POST, "/grpc/slow")
+            .cancel_request(
+                Method::POST,
+                "/grpc/slow",
+                origin.observations.wait_for_http_requests(1),
+            )
             .await
             .expect("downstream cancellation reset");
-        origin.observations.wait_for_http_requests(1).await;
         timeout(TEST_TIMEOUT, async {
             while origin.observations.h2_send_errors() == 0 {
                 sleep(Duration::from_millis(5)).await;

@@ -18,9 +18,10 @@ use std::{
 };
 
 use oxiroute_config::{
-    ConfigDraft, DownstreamTimeoutPolicy, HttpPathSelector, HttpProxyPolicy, HttpRoute,
-    HttpRouteAction, HttpRoutePolicy, HttpService, HttpVersionPolicy, L4Service, Listener,
-    Management, Protocol, Retirement, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool,
+    ConfigDraft, ConnectionScheduling, DownstreamTimeoutPolicy, HttpPathSelector, HttpProxyPolicy,
+    HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService, HttpVersionPolicy, L4Service,
+    Listener, Management, Protocol, Retirement, UpstreamAlgorithm, UpstreamConnectionReuse,
+    UpstreamPool,
 };
 use serde_json::Value;
 use tokio::{
@@ -86,12 +87,30 @@ impl Instance {
         Self::start_http_mode(retirement, false).await
     }
 
+    async fn start_http_aged() -> Self {
+        Self::start_http_with(
+            Retirement::default(),
+            false,
+            Some(ConnectionScheduling::AgedPerWorker),
+        )
+        .await
+    }
+
     async fn start_http_mode(retirement: Retirement, supervised: bool) -> Self {
+        Self::start_http_with(retirement, supervised, None).await
+    }
+
+    async fn start_http_with(
+        retirement: Retirement,
+        supervised: bool,
+        scheduling: Option<ConnectionScheduling>,
+    ) -> Self {
         let release = Arc::new(Semaphore::new(0));
         let (upstream_address, upstream) = start_held_http_upstream(Arc::clone(&release)).await;
         let management = reserve_tcp_address();
         let listener = reserve_tcp_address();
-        let config = http_config(management, listener, upstream_address, retirement);
+        let mut config = http_config(management, listener, upstream_address, retirement);
+        config.connection_scheduling = scheduling;
         let mut server = start_server(&config, supervised);
         server.wait_for_tcp(management).await;
         server.wait_for_tcp(listener).await;
@@ -607,7 +626,18 @@ async fn assert_closed(stream: &mut TcpStream) {
 #[tokio::test]
 async fn an_idle_http_keepalive_connection_is_closed_at_retirement() {
     let _guard = process_test_guard().await;
-    let mut instance = Instance::start_http(Retirement::default()).await;
+    let instance = Instance::start_http(Retirement::default()).await;
+    idle_keepalive_is_closed_at_retirement(instance).await;
+}
+
+/// Replacing generations whose workers serve per-worker queues keeps starting new ones, and drains as before.
+#[tokio::test]
+async fn an_idle_http_keepalive_connection_is_closed_at_retirement_with_aged_per_worker_queues() {
+    let _guard = process_test_guard().await;
+    idle_keepalive_is_closed_at_retirement(Instance::start_http_aged().await).await;
+}
+
+async fn idle_keepalive_is_closed_at_retirement(mut instance: Instance) {
     let mut idle = TcpStream::connect(instance.listener)
         .await
         .expect("connection");

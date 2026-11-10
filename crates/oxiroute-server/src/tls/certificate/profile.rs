@@ -276,7 +276,7 @@ impl TlsProfilePlan {
     ///
     /// Returns an error if Pingora cannot create its acceptor or OpenSSL rejects the profile
     /// protocol settings.
-    pub fn tls_settings(&self) -> Result<TlsSettings, TlsBuildError> {
+    pub fn tls_settings(&self, handshake_threads: usize) -> Result<TlsSettings, TlsBuildError> {
         let callback = GenerationTlsAccept {
             profile: self.name.clone(),
             selector: Arc::clone(&self.selector),
@@ -362,6 +362,9 @@ impl TlsProfilePlan {
             )
         });
         self.client_auth.apply(&self.name, &mut settings)?;
+        if handshake_threads > 0 {
+            settings.set_offload_threadpool(handshake_threads, 1);
+        }
         Ok(settings)
     }
 }

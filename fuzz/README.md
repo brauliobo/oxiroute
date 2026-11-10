@@ -42,6 +42,8 @@ are unavailable, while detected but broken tooling or a crashing/failed target r
 | `tls_client_hello` | Public rustls `ServerConnection` ClientHello parsing and resolver normalization | 64 KiB |
 | `http1` | Public Pingora HTTP/1 request/response parsing, normalization, and body framing | 128 KiB |
 | `h1_head` | Fast-lane HTTP/1 head scanners and writers: `Head` agrees with httparse, prefixes stay partial, written heads scan again | 128 KiB |
+| `hpack` | HPACK header block decoding of arbitrary bytes and encoder-to-decoder round trips with table size changes | 64 KiB |
+| `h2_frames` | `oxiroute-h2` server connection: frame codec, HPACK, stream state, flow control, abuse limits, and the poll-style stream API | 64 KiB |
 
 Each parser receives a fresh state per input. The RTMP target limits are intentionally below the
 production protocol ceilings so a local smoke run remains bounded; the production parser limits
@@ -93,6 +95,9 @@ single review-friendly trailing line ending; this keeps binary protocol seeds re
   is not claimed.
 - `proxy_protocol` covers the public v1/v2 parser, encoder, and incremental stream acceptor. It
   does not claim daemon listener lifecycle, socket behavior, or source-address spoofing behavior.
+- `h2_frames` feeds arbitrary bytes, in fragments, into the sans-IO `oxiroute_h2::conn::Connection`, drives
+  accepted streams through its poll-style API with a no-op waker, and checks that the output parses as
+  frames. The async driver, TLS, and real sockets are not covered.
 - `http1` covers Pingora's public HTTP/1 request and response sessions, header normalization, and
   body/chunk framing over memory streams. It does not claim daemon application routing, connection
   lifecycle, or socket-level wire interoperability.

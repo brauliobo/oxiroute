@@ -173,7 +173,26 @@ struct RawStreamWrapper {
     reusable_cmsg_space: Vec<u8>,
 }
 
+impl RawStream {
+    /// Registers the socket with the I/O driver of the runtime this is called on, instead of the one that accepted it.
+    fn into_current_runtime(self) -> io::Result<Self> {
+        Ok(match self {
+            Self::Tcp(s) => Self::Tcp(TcpStream::from_std(s.into_std()?)?),
+            #[cfg(unix)]
+            Self::Unix(s) => Self::Unix(UnixStream::from_std(s.into_std()?)?),
+            Self::Virtual(s) => Self::Virtual(s),
+        })
+    }
+}
+
 impl RawStreamWrapper {
+    fn into_current_runtime(self) -> io::Result<Self> {
+        Ok(Self {
+            stream: self.stream.into_current_runtime()?,
+            ..self
+        })
+    }
+
     pub fn new(stream: RawStream) -> Self {
         RawStreamWrapper {
             stream,
@@ -535,19 +554,32 @@ impl Stream {
 
     /// Set the read and write buffer sizes
     /// It is only set later because of the malloc overhead in critical accept() path
-    pub(crate) fn set_buffer(&mut self, buffer: L4BufferSettings) {
-        use std::mem;
+    ///
+    /// With `own_driver` the socket also moves to the I/O driver of the calling runtime, for a connection that was
+    /// accepted by another runtime: its readiness events then arrive on the thread that serves it.
+    pub(crate) fn set_buffer(
+        &mut self,
+        buffer: L4BufferSettings,
+        own_driver: bool,
+    ) -> io::Result<()> {
         // The buffer sizes are fixed at construction, so take the raw stream out of the
         // unbuffered stream and wrap it again with the sizes we want
-        let stream = mem::take(&mut self.stream);
-        let stream = stream.map(|s| {
-            LazyReadStream::new(
-                buffer.read_capacity(),
-                buffer.write_capacity(),
-                s.into_inner(),
-            )
-        });
-        let _ = mem::replace(&mut self.stream, stream);
+        let raw = self
+            .stream
+            .take()
+            .expect("stream should always be set")
+            .into_inner();
+        let raw = if own_driver {
+            raw.into_current_runtime()?
+        } else {
+            raw
+        };
+        self.stream = Some(LazyReadStream::new(
+            buffer.read_capacity(),
+            buffer.write_capacity(),
+            raw,
+        ));
+        Ok(())
     }
 }
 

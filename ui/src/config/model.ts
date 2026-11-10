@@ -1009,6 +1009,8 @@ export interface UdpPolicyConfig {
   max_queue_bytes: number
 }
 
+export type ConnectionScheduling = 'work_stealing' | 'aged_per_worker'
+
 export interface RetirementConfig {
   drain_deadline_ms: number | null
   max_retired_generations: number
@@ -1019,6 +1021,9 @@ export interface CanonicalConfig {
   max_connections: number | null
   listener_workers?: number
   http_fast_lane?: boolean
+  connection_scheduling?: ConnectionScheduling
+  connection_age_ms?: number
+  tls_handshake_threads?: number
   retirement?: RetirementConfig
   management: ManagementConfig | null
   registry?: RegistryConfig | null

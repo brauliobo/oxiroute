@@ -123,6 +123,16 @@ certificate sampling happens when the management API or `/metrics` asks for it. 
 thread sleeps until its earliest armed timer (and wakes once a second at most while none is armed).
 `docs/developer/PERF_6_2_IDLE_AUDIT.md` has the measurements.
 
+## TLS handshake threads
+
+TLS handshakes cost 0.6M to 1.7M instructions each (an RSA-2048 certificate costs 15 times the signature of an ECDSA P-256 one),
+so they run on `tls_handshake_threads` threads (default one per 8 CPUs, 1 to 4) instead of on the listener workers; a
+burst of new connections then adds latency to the connections being served only by the CPU it takes, not by queueing them
+behind handshakes. A busy handshake thread shows in `top -H` as `downstream TLS offload`. Raise the value when
+a listener takes thousands of new TLS connections per second and those threads are saturated; set `0` to handshake on the
+workers. A change is an ordinary reload (the new generation starts its own threads, the replaced one finishes its handshakes
+on its own). Handshakes waiting for a thread count against `max_connections` and the handshake timeout.
+
 ## Shutdown
 
 Pingora is configured with a 3-second connection grace period followed by a 2-second runtime
@@ -231,6 +241,8 @@ of the events API reports it with the event name `unknown`; read it from `/api/v
 | `oxiroute_server_bytes_sent_total`, `oxiroute_server_bytes_received_total` | `pool`, `server` | bytes towards and from the backend |
 | `oxiroute_server_max_connections` | `pool`, `server` | effective connection limit |
 | `oxiroute_generation_info` | `generation`, `revision` | value 1 for the serving generation |
+| `oxiroute_connection_scheduling_info` | `mode`, `age_ms` (only with `aged_per_worker`) | value 1: how the listener workers order ready connections (`connection_scheduling`) |
+| `oxiroute_aged_queue_tasks`, `oxiroute_aged_queue_ready`, `oxiroute_aged_queue_oldest_ready_seconds`, `oxiroute_aged_queue_age_seconds`, `oxiroute_aged_queue_polls_total`, `oxiroute_aged_queue_aged_polls_total` | none | only with `aged_per_worker`: connections owned by the worker queues, connections ready now, how long the oldest has waited, the age in force (the largest over the workers), polls served, and polls that served the oldest because it had waited that age; `age_ms` is `adaptive` unless `connection_age_ms` is set |
 
 The per-server histograms are exported only while at most 256 servers are configured; above that
 only the counters are. Labels are limited to configured names, never a path, client or request id.
