@@ -446,6 +446,13 @@ pub enum ConfigError {
     InvalidConnectionAge(u64),
     #[error("connection_age_ms needs connection_scheduling = \"aged_per_worker\"")]
     ConnectionAgeWithoutAgedScheduling,
+    #[error("log_filter is invalid: {detail}")]
+    InvalidLogFilter { detail: &'static str },
+    #[error("audit setting `{pointer}` is invalid: {detail}")]
+    InvalidAudit {
+        pointer: &'static str,
+        detail: String,
+    },
     #[error("retirement setting `{pointer}` is invalid: {detail}")]
     InvalidRetirement {
         pointer: String,

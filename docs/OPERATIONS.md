@@ -446,3 +446,14 @@ One case still needs a process restart: a Unix socket that keeps its path and ch
 because the new socket would need the path the running one owns.
 The socket directory must be owned by the effective service user or be sticky, and no path ancestor
 may be group/world writable unless it has the sticky bit.
+
+## Environment variables
+
+Settings live in the configuration. The environment variables that remain are fallbacks that a
+configuration key overrides (`OXIROUTE_MANAGEMENT_TOKEN_FILE` for `management.token_file`,
+`OXIROUTE_AUDIT_DIR` and `OXIROUTE_AUDIT_MAX_*` for the `audit` block, `RUST_LOG` for `log_filter`,
+and the deprecated `OXIROUTE_RELOAD_DRAIN_SECONDS` for `retirement.drain_deadline_ms`), client-side
+settings (`OXIROUTE_ENDPOINT` and the CLI token path), and process plumbing. Supervised workers run
+with a cleared environment: the audit and token variables are forwarded to them, `RUST_LOG` is not, so
+use `log_filter` to set a worker's verbosity. `docs/developer/ENV_TO_CONFIG.md` lists every variable
+with its reason.

@@ -87,9 +87,8 @@ impl PreparedGeneration {
                 .as_ref()
                 .and_then(|stats| stats.admin_token_file.as_deref()),
         )?;
-        if draft.management.is_some() {
-            let token_file = std::env::var_os("OXIROUTE_MANAGEMENT_TOKEN_FILE")
-                .map(std::path::PathBuf::from)
+        if let Some(management) = &draft.management {
+            let token_file = crate::rtmp::api::management_token_file(management)
                 .ok_or(GenerationError::ManagementToken)?;
             crate::rtmp::api::preflight_management_token(&token_file)
                 .map_err(|_| GenerationError::ManagementToken)?;

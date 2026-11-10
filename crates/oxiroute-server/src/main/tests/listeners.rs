@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use std::path::PathBuf;
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -68,6 +69,8 @@ async fn tcp_handler_closes_connections_when_its_pool_is_unavailable() {
             proxy_protocol: None,
             udp: None,
         }],
+        audit: None,
+        log_filter: None,
     };
     let directory = tempfile::tempdir().expect("TCP generation directory");
     let mut generation_config = config.clone();

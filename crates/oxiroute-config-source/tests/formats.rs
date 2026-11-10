@@ -77,6 +77,8 @@ fn typed_configs_render_in_every_supported_format() {
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
+        audit: None,
+        log_filter: None,
     }
     .validate()
     .expect("valid typed config");

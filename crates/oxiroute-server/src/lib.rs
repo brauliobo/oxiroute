@@ -72,6 +72,7 @@ pub use l4::tcp::{
 pub use l4::udp::{UdpRelayStats, UdpRuntime};
 pub use listener::reservation::{ListenerReservation, ListenerReservations};
 pub use listener::runtime::{AdmissionError, ListenerRuntime, TrafficLease};
+pub use observability::log_filter::{apply_log_filter, init_logging};
 pub use observability::monitoring::{
     ACCESS_RECORD_CAPACITY, AccessRecord, AcmeManagedCertificateSnapshot, CacheSnapshot,
     CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot, ComponentState,
@@ -85,7 +86,7 @@ pub use observability::monitoring::{
     TransportOperationCountSnapshot, TransportOperationSnapshot, TransportOutcome, WorkerReport,
 };
 pub use observability::operational_event::{
-    WorkerEventPage, WorkerEventSnapshot, flush_audit, worker_event_page,
+    WorkerEventPage, WorkerEventSnapshot, configure_audit, flush_audit, worker_event_page,
 };
 pub use observability::operational_event::{emit_certificate, emit_rtmp_access};
 pub use observability::prometheus::PrometheusError;
@@ -97,7 +98,7 @@ pub use routing::{
     PoolHealthSnapshot, RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint,
     ServerAdminState, ServerOrigin,
 };
-pub use rtmp::api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
+pub use rtmp::api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp, management_token_file};
 pub use service_plan::{
     HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
     runtime_plan, runtime_plan_with_passive_failure_policy, service_specs, validate_runtime_plan,

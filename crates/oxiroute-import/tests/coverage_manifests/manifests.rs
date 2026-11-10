@@ -44,7 +44,7 @@ const TEST_CATEGORIES: [&str; 18] = [
     "validation",
 ];
 
-const TARGETS: [&str; 30] = [
+const TARGETS: [&str; 33] = [
     "config.loader",
     "deployment",
     "health.probe",
@@ -60,10 +60,13 @@ const TARGETS: [&str; 30] = [
     "listener.plan",
     "listener.http",
     "management.assets",
+    "management.audit",
+    "management.auth",
     "management.listener",
     "nginx.http_ir",
     "nginx.stream_ir",
     "nginx.source_graph",
+    "operations.logging",
     "operations.stats",
     "operations.stats-admin",
     "operations.stats-listener",

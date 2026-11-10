@@ -32,6 +32,8 @@ impl Renderer {
             forward_proxy_services,
             rtmp_services,
             l4_services,
+            audit,
+            log_filter,
         } = config;
 
         self.output.push_str("return {\n");
@@ -56,8 +58,12 @@ impl Renderer {
         if let Some(threads) = tls_handshake_threads {
             self.integer_field("tls_handshake_threads", threads);
         }
+        if let Some(filter) = log_filter {
+            self.string_field("log_filter", filter);
+        }
         self.optional_table_field("retirement", retirement.as_ref(), Self::retirement);
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;
+        self.fallible_optional_table_field("audit", audit.as_ref(), Self::audit)?;
         self.fallible_optional_table_field("registry", registry.as_ref(), Self::registry)?;
         self.fallible_optional_table_field("stats", stats.as_ref(), Self::stats)?;
         self.fallible_table_list_field("certificates", certificates, Self::certificate)?;
@@ -84,7 +90,7 @@ impl Renderer {
     }
 
     fn management(&mut self, management: &Management) -> Result<(), ConfigError> {
-        let Management { bind, ui_dir } = management;
+        let Management { bind, ui_dir, token_file } = management;
 
         self.string_field("bind", &bind.to_string());
         match ui_dir {
@@ -95,6 +101,36 @@ impl Renderer {
                 );
             }
             None => self.nil_field("ui_dir"),
+        }
+        if let Some(path) = token_file {
+            self.string_field("token_file", utf8_path(path, "management", "management", "token_file")?);
+        }
+        Ok(())
+    }
+
+    fn audit(&mut self, audit: &Audit) -> Result<(), ConfigError> {
+        let Audit {
+            dir,
+            max_records,
+            max_record_bytes,
+            max_file_bytes,
+            max_total_bytes,
+            max_rotated_files,
+        } = audit;
+
+        if let Some(dir) = dir {
+            self.string_field("dir", utf8_path(dir, "audit", "audit", "dir")?);
+        }
+        for (name, limit) in [
+            ("max_records", max_records),
+            ("max_record_bytes", max_record_bytes),
+            ("max_file_bytes", max_file_bytes),
+            ("max_total_bytes", max_total_bytes),
+            ("max_rotated_files", max_rotated_files),
+        ] {
+            if let Some(limit) = limit {
+                self.integer_field(name, limit);
+            }
         }
         Ok(())
     }

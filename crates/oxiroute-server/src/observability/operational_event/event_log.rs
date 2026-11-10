@@ -46,16 +46,13 @@ fn audit_registry() -> &'static RwLock<Option<Arc<AuditStore>>> {
     REGISTRY.get_or_init(|| RwLock::new(None))
 }
 
-pub(crate) fn configure_audit_store(token_file: Option<&Path>) -> Arc<AuditStore> {
-    let limits = AuditLimits::from_environment();
-    let path = std::env::var_os("OXIROUTE_AUDIT_DIR")
-        .map(Into::into)
-        .or_else(|| {
-            token_file
-                .and_then(Path::parent)
-                .map(|parent| parent.join("audit"))
-        });
-    let store = path.map_or_else(
+pub(crate) fn configure_audit_store(
+    token_file: Option<&Path>,
+    audit: Option<&Audit>,
+) -> Arc<AuditStore> {
+    let AuditSettings { dir, limits } =
+        AuditSettings::resolve(audit, token_file, |name| std::env::var_os(name));
+    let store = dir.map_or_else(
         || AuditStore::memory(limits),
         |path| match AuditStore::open(&path, limits) {
             Ok(store) => store,
@@ -69,6 +66,11 @@ pub(crate) fn configure_audit_store(token_file: Option<&Path>) -> Arc<AuditStore
     store
 }
 
+/// Opens the audit store of a generation that serves no management API, from its `audit` block.
+pub fn configure_audit(audit: Option<&Audit>) {
+    configure_audit_store(None, audit);
+}
+
 fn current_audit_store() -> Arc<AuditStore> {
     if let Some(store) = audit_registry()
         .read()
@@ -78,7 +80,7 @@ fn current_audit_store() -> Arc<AuditStore> {
     {
         return store;
     }
-    configure_audit_store(None)
+    configure_audit_store(None, None)
 }
 
 /// Commits the audit records that are still waiting for their group commit; a process calls it as it exits.
