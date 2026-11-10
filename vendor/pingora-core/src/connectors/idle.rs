@@ -39,12 +39,17 @@ use tokio::time::{sleep_until, Instant};
 
 use crate::protocols::Stream;
 
-const STRIPES: usize = 8;
+/// One stripe per CPU, and at least eight: the workers of a listener (up to as many as there are CPUs) do not share a
+/// stripe and its lock.
+fn stripe_count() -> usize {
+    static COUNT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *COUNT.get_or_init(|| std::thread::available_parallelism().map_or(8, usize::from).clamp(8, 256))
+}
 
 static NEXT_STRIPE: AtomicUsize = AtomicUsize::new(0);
 
 std::thread_local! {
-    static STRIPE: usize = NEXT_STRIPE.fetch_add(1, Ordering::Relaxed) % STRIPES;
+    static STRIPE: usize = NEXT_STRIPE.fetch_add(1, Ordering::Relaxed) % stripe_count();
 }
 
 /// Keys are already hashes.
@@ -143,7 +148,7 @@ impl Wake for IdleWake {
 
 /// Idle connections by reuse key.
 pub(crate) struct IdlePool {
-    stripes: [Padded<Mutex<Stripe>>; STRIPES],
+    stripes: Box<[Padded<Mutex<Stripe>>]>,
     capacity: usize,
     idle: AtomicUsize,
     /// Counts connections found sending data while idle, shared with the connector.
@@ -159,7 +164,7 @@ struct Padded<T>(T);
 impl IdlePool {
     pub(crate) fn new(capacity: usize, unexpected_data: Arc<AtomicU64>) -> Arc<Self> {
         Arc::new(Self {
-            stripes: std::array::from_fn(|_| Padded(Mutex::default())),
+            stripes: (0..stripe_count()).map(|_| Padded(Mutex::default())).collect(),
             capacity,
             idle: AtomicUsize::new(0),
             unexpected_data,
@@ -216,8 +221,8 @@ impl IdlePool {
     /// The connection released longest ago in the stripe of the caller, or in the next stripe that
     /// holds one.
     fn remove_oldest(&self, first: usize) -> Option<Idle> {
-        (0..STRIPES).find_map(|offset| {
-            self.stripes[(first + offset) % STRIPES]
+        (0..self.stripes.len()).find_map(|offset| {
+            self.stripes[(first + offset) % self.stripes.len()]
                 .0
                 .lock()
                 .remove_oldest()
@@ -235,8 +240,8 @@ impl IdlePool {
             return None;
         }
         let first = STRIPE.with(|stripe| *stripe);
-        for offset in 0..STRIPES {
-            let stripe = &self.stripes[(first + offset) % STRIPES].0;
+        for offset in 0..self.stripes.len() {
+            let stripe = &self.stripes[(first + offset) % self.stripes.len()].0;
             let mut expired = Vec::new();
             let found = loop {
                 let Some(idle) = stripe.lock().pop(key, |idle| idle.pop_back()) else {
@@ -346,5 +351,18 @@ async fn watcher(wakeups: Arc<Wakeups>, pool: Weak<IdlePool>) {
         }
         let Some(pool) = pool.upgrade() else { return };
         pool.maintain();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_pool_has_a_stripe_for_every_cpu_and_at_least_eight() {
+        let pool = IdlePool::new(1, Arc::default());
+        let cpus = std::thread::available_parallelism().map_or(8, usize::from);
+        assert_eq!(pool.stripes.len(), cpus.clamp(8, 256));
+        assert!(STRIPE.with(|stripe| *stripe) < pool.stripes.len());
     }
 }
