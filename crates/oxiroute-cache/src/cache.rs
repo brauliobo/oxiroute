@@ -22,11 +22,13 @@ const HEADER_ACCOUNTING_OVERHEAD: usize = 32;
 const TAG_ACCOUNTING_OVERHEAD: usize = 16;
 
 mod config;
+mod entries;
 mod flight;
 mod store;
 mod types;
 
 pub use config::*;
+use entries::Entries;
 #[allow(clippy::wildcard_imports)]
 use flight::*;
 pub use store::*;
