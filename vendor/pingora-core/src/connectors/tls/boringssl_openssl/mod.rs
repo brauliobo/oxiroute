@@ -14,7 +14,7 @@
 
 use log::debug;
 use pingora_error::{Error, ErrorType::*, OrErr, Result};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Once, OnceLock};
 
 use crate::connectors::tls::replace_leftmost_underscore;
 use crate::connectors::ConnectorOptions;
@@ -90,8 +90,32 @@ pub struct Connector {
     pub(crate) ctx: Arc<SslConnector>, // Arc to support clone
 }
 
+/// The client context for the system trust store, built once per process.
+///
+/// Building a context parses the whole system CA bundle, so connectors without a private CA, client
+/// certificate or key log share this one instead of each parsing the bundle again.
+static SYSTEM_TRUST_CONTEXT: OnceLock<Connector> = OnceLock::new();
+
+fn uses_system_trust(options: &ConnectorOptions) -> bool {
+    options.ca_file.is_none() && options.cert_key_file.is_none() && !options.debug_ssl_keylog
+}
+
 impl Connector {
     pub fn new(options: Option<ConnectorOptions>) -> Self {
+        if options.as_ref().is_none_or(uses_system_trust) {
+            SYSTEM_TRUST_CONTEXT
+                .get_or_init(|| Self::build(options))
+                .clone()
+        } else {
+            Self::build(options)
+        }
+    }
+
+    fn build(options: Option<ConnectorOptions>) -> Self {
+        if options.as_ref().is_none_or(|conf| conf.ca_file.is_none()) {
+            init_ssl_cert_env_vars();
+        }
+        // `SslConnector::builder` already loads the default system trust locations.
         let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
         // TODO: make these conf
         // Set supported ciphers.
@@ -109,10 +133,6 @@ impl Connector {
         if let Some(conf) = options.as_ref() {
             if let Some(ca_file_path) = conf.ca_file.as_ref() {
                 builder.set_ca_file(ca_file_path).unwrap();
-            } else {
-                init_ssl_cert_env_vars();
-                // load from default system wide trust location. (the name is misleading)
-                builder.set_default_verify_paths().unwrap();
             }
             if let Some((cert, key)) = conf.cert_key_file.as_ref() {
                 builder.set_certificate_chain_file(cert).unwrap();
@@ -134,9 +154,6 @@ impl Connector {
                     });
                 }
             }
-        } else {
-            init_ssl_cert_env_vars();
-            builder.set_default_verify_paths().unwrap();
         }
 
         Connector {
@@ -238,6 +255,10 @@ where
 
     if let Some(alpn) = alpn_override.as_ref().or(peer.get_alpn()) {
         ssl_conf.set_alpn_protos(alpn.to_wire_preference()).unwrap();
+    }
+
+    if let Some(hook) = peer.upstream_tls_configure_hook() {
+        hook(&mut ssl_conf).or_err(TLSHandshakeFailure, "upstream TLS configure hook failed")?;
     }
 
     clear_error_stack();

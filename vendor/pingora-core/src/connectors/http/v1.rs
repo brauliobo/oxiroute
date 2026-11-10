@@ -36,9 +36,24 @@ impl Connector {
         &self,
         peer: &P,
     ) -> Result<(HttpSession, bool)> {
-        let (stream, reused) = self.transport.get_stream(peer).await?;
-        let http = HttpSession::new_with_options(stream, peer);
-        Ok((http, reused))
+        let Some(lifetime) = peer.connection_lifetime() else {
+            let (stream, reused) = self.transport.get_stream(peer).await?;
+            return Ok((HttpSession::new_with_options(stream, peer), reused));
+        };
+        loop {
+            let generation = lifetime.capacity_generation();
+            if let Some(stream) = self.transport.reused_stream(peer).await {
+                return Ok((HttpSession::new_with_options(stream, peer), true));
+            }
+            if lifetime.try_acquire()? {
+                let stream = self
+                    .transport
+                    .new_stream_with_lifetime(peer, Some(lifetime))
+                    .await?;
+                return Ok((HttpSession::new_with_options(stream, peer), false));
+            }
+            lifetime.wait_for_capacity(generation).await?;
+        }
     }
 
     pub async fn reused_http_session<P: Peer + Send + Sync + 'static>(
@@ -78,6 +93,9 @@ impl Connector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectors::test_servers;
+    #[cfg(feature = "openssl")]
+    use crate::listeners::ALPN;
     use crate::protocols::l4::socket::SocketAddr;
     use crate::upstreams::peer::HttpPeer;
     use crate::upstreams::peer::Peer;
@@ -99,11 +117,12 @@ mod tests {
     #[tokio::test]
     async fn test_connect() {
         let connector = Connector::new(None);
-        let peer = HttpPeer::new(("1.1.1.1", 80), false, "".into());
-        // make a new connection to 1.1.1.1
+        let server = test_servers::redirect_server();
+        let peer = HttpPeer::new(server.addr, false, "".into());
+        // make a new connection to the server
         let (http, reused) = connector.get_http_session(&peer).await.unwrap();
         let server_addr = http.server_addr().unwrap();
-        assert_eq!(*server_addr, "1.1.1.1:80".parse::<SocketAddr>().unwrap());
+        assert_eq!(*server_addr, SocketAddr::Inet(server.addr));
         assert!(!reused);
 
         // this http is not even used, so not be able to reuse
@@ -195,7 +214,8 @@ ZZ\r\n",
         }
 
         let connector = Connector::new(None);
-        let peer = HttpPeer::new(("1.1.1.1", 80), false, "".into());
+        let server = test_servers::redirect_server();
+        let peer = HttpPeer::new(server.addr, false, "".into());
         let (mut http, reused) = connector.get_http_session(&peer).await.unwrap();
         assert!(!reused);
         get_http(&mut http, 301).await;
@@ -213,14 +233,17 @@ ZZ\r\n",
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_connect_tls() {
         let connector = Connector::new(None);
-        let peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
-        // make a new connection to https://1.1.1.1
+        let server = test_servers::tls_server(ALPN::H1).await;
+        let mut peer = HttpPeer::new(server.addr, true, "localhost".into());
+        peer.options.verify_cert = false;
+        peer.options.verify_hostname = false;
+        // make a new connection to the TLS server
         let (http, reused) = connector.get_http_session(&peer).await.unwrap();
         let server_addr = http.server_addr().unwrap();
-        assert_eq!(*server_addr, "1.1.1.1:443".parse::<SocketAddr>().unwrap());
+        assert_eq!(*server_addr, SocketAddr::Inet(server.addr));
         assert!(!reused);
 
         // this http is not even used, so not be able to reuse

@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use super::HttpSession;
-use crate::connectors::{ConnectorOptions, IdleConnection, PoolCallback, TransportConnector};
+use crate::connectors::{
+    cached_peer_addr_match, ConnectorOptions, IdleConnection, PoolCallback, TransportConnector,
+};
 use crate::protocols::http::custom::client::Session;
 use crate::protocols::http::v1::client::HttpSession as Http1Session;
 use crate::protocols::http::v2::client::{drive_connection, Http2Session};
@@ -347,6 +349,32 @@ impl Connector {
         peer: &P,
     ) -> Result<HttpSession<C>> {
         let stream = self.transport.new_stream(peer).await?;
+        self.new_http_session_from_stream(peer, stream).await
+    }
+
+    pub(crate) async fn new_http_session_with_lifetime<
+        P: Peer + Send + Sync + 'static,
+        C: Session,
+    >(
+        &self,
+        peer: &P,
+        lifetime: Arc<dyn crate::protocols::ConnectionLifetime>,
+    ) -> Result<HttpSession<C>> {
+        let stream = self
+            .transport
+            .new_stream_with_lifetime(peer, Some(lifetime))
+            .await?;
+        self.new_http_session_from_stream(peer, stream).await
+    }
+
+    async fn new_http_session_from_stream<P: Peer + Send + Sync + 'static, C: Session>(
+        &self,
+        peer: &P,
+        stream: Stream,
+    ) -> Result<HttpSession<C>> {
+        let lifetime = stream
+            .get_socket_digest()
+            .and_then(|digest| digest.connection_lifetime());
 
         // check alpn
         match stream.selected_alpn_proto() {
@@ -386,6 +414,9 @@ impl Connector {
         )?;
         if conn.more_streams_allowed() {
             self.in_use_pool.insert(peer.reuse_hash(), conn);
+            if let Some(lifetime) = lifetime {
+                lifetime.notify_reusable();
+            }
         }
         Ok(HttpSession::H2(h2_stream))
     }
@@ -421,7 +452,9 @@ impl Connector {
             .or_else(|| self.idle_pool.get(&reuse_hash));
         if let Some(conn) = maybe_conn {
             #[cfg(unix)]
-            if !peer.matches_fd(conn.id()) {
+            if !cached_peer_addr_match(peer, conn.digest().socket_digest.as_deref())
+                .unwrap_or_else(|| peer.matches_fd(conn.id()))
+            {
                 return Ok(None);
             }
             #[cfg(windows)]
@@ -433,7 +466,9 @@ impl Connector {
                         self.0
                     }
                 }
-                if !peer.matches_sock(WrappedRawSocket(conn.id() as RawSocket)) {
+                if !cached_peer_addr_match(peer, conn.digest().socket_digest.as_deref())
+                    .unwrap_or_else(|| peer.matches_sock(WrappedRawSocket(conn.id() as RawSocket)))
+                {
                     return Ok(None);
                 }
             }
@@ -459,6 +494,10 @@ impl Connector {
         peer: &P,
         idle_timeout: Option<Duration>,
     ) {
+        let lifetime = session
+            .digest()
+            .and_then(|digest| digest.socket_digest.as_ref())
+            .and_then(|digest| digest.connection_lifetime());
         let id = session.conn.id();
         let reuse_hash = peer.reuse_hash();
         // get a ref to the connection, which we might need below, before dropping the h2
@@ -509,6 +548,9 @@ impl Connector {
         } else {
             self.in_use_pool.insert(reuse_hash, conn);
             drop(locked);
+        }
+        if let Some(lifetime) = lifetime {
+            lifetime.notify_reusable();
         }
     }
 
@@ -671,16 +713,20 @@ pub async fn handshake(stream: Stream, settings: H2HandshakeSettings) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectors::test_servers;
+    #[cfg(feature = "openssl")]
+    use crate::listeners::ALPN;
     use crate::upstreams::peer::HttpPeer;
     use bytes::Bytes;
     use http::{Response, StatusCode};
     use pingora_http::RequestHeader;
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_connect_h2() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(2, 2);
         let h2 = connector
             .new_http_session::<HttpPeer, ()>(&peer)
@@ -694,10 +740,11 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_connect_h1() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         // a hack to force h1, new_http_session() in the future might validate this setting
         peer.options.set_http_version(1, 1);
         let h2 = connector
@@ -714,7 +761,8 @@ mod tests {
     #[tokio::test]
     async fn test_connect_h1_plaintext() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 80), false, "".into());
+        let server = test_servers::redirect_server();
+        let mut peer = HttpPeer::new(server.addr, false, "".into());
         peer.options.set_http_version(2, 1);
         let h2 = connector
             .new_http_session::<HttpPeer, ()>(&peer)
@@ -728,10 +776,11 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_h2_single_stream() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(2, 2);
         peer.options.max_h2_streams = 1;
         let h2 = connector
@@ -754,8 +803,12 @@ mod tests {
 
         connector.release_http_session(h2_1, &peer, None);
 
+        #[cfg(unix)]
+        crate::protocols::reset_peer_identity_syscalls();
         let h2_2 = connector.reused_http_session(&peer).await.unwrap().unwrap();
         assert_eq!(id, h2_2.conn.id());
+        #[cfg(unix)]
+        assert_eq!(crate::protocols::peer_identity_syscalls(), 0);
 
         connector.release_http_session(h2_2, &peer, None);
 
@@ -764,10 +817,11 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "any_tls")]
+    #[cfg(feature = "openssl")]
     async fn test_h2_multiple_stream() {
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(2, 2);
         peer.options.max_h2_streams = 3;
         let h2 = connector
@@ -893,7 +947,7 @@ mod tests {
         assert_eq!(conn.free_stream_slots(), 0);
     }
 
-    #[cfg(all(feature = "any_tls", unix))]
+    #[cfg(all(feature = "openssl", unix))]
     #[tokio::test]
     async fn test_h2_reuse_rejects_fd_mismatch() {
         use crate::protocols::l4::socket::SocketAddr;
@@ -936,7 +990,8 @@ mod tests {
         }
 
         let connector = Connector::new(None);
-        let mut peer = HttpPeer::new(("1.1.1.1", 443), true, "one.one.one.one".into());
+        let server = test_servers::tls_server(ALPN::H2H1).await;
+        let mut peer = test_servers::tls_peer(&server);
         peer.options.set_http_version(2, 2);
         peer.options.max_h2_streams = 1;
 
