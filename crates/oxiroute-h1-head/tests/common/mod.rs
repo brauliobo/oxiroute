@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 pub mod classic_request;
+pub mod classic_write;
 pub mod request_corpus;
 
 /// xorshift64*: deterministic, seedable, no dependency.
