@@ -10,6 +10,7 @@ cargo-fuzz = true
 
 [dependencies]
 bytes = "1.12"
+http = "1.5"
 libfuzzer-sys = "0.4"
 oxiroute-config = { path = "../crates/oxiroute-config" }
 oxiroute-config-source = { path = "../crates/oxiroute-config-source" }
@@ -120,6 +121,13 @@ bench = false
 [[bin]]
 name = "hpack"
 path = "fuzz_targets/hpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h2_frames"
+path = "fuzz_targets/h2_frames.rs"
 test = false
 doc = false
 bench = false
