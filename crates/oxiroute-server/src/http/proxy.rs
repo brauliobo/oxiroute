@@ -587,6 +587,7 @@ mod attempt;
 mod cache;
 mod compression;
 mod evacuation;
+mod h2lane;
 pub(crate) mod lane;
 mod proxy_http;
 mod request;

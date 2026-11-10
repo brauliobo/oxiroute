@@ -8,7 +8,7 @@ use log::warn;
 use oxiroute_config::DownstreamTimeoutPolicy;
 use pingora::{
     apps::{
-        AcceptGate, ConnectionAdmission, Http1Front, HttpServerApp, HttpServerOptions,
+        AcceptGate, ConnectionAdmission, Http1Front, Http2Front, HttpServerApp, HttpServerOptions,
         ReusedHttpStream, ServerApp,
     },
     connectors::http::v1::Connector,
@@ -276,7 +276,7 @@ where
 }
 
 pub struct HttpDownstreamPolicyApp<A> {
-    front: Option<LaneFront>,
+    front: Option<Arc<LaneFront>>,
     inner: Arc<A>,
     request_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
@@ -319,7 +319,8 @@ impl<A> HttpDownstreamPolicyApp<A> {
         };
         self.front = LaneFront::new(
             service, metrics, generation, challenge, timeouts, upstream, enabled,
-        );
+        )
+        .map(Arc::new);
         self
     }
 }
@@ -362,7 +363,11 @@ where
     }
 
     fn http1_front(&self) -> Option<&dyn Http1Front> {
-        self.front.as_ref().map(|front| front as &dyn Http1Front)
+        self.front.as_deref().map(|front| front as &dyn Http1Front)
+    }
+
+    fn http2_front(&self) -> Option<Arc<dyn Http2Front>> {
+        self.front.clone().map(|front| front as Arc<dyn Http2Front>)
     }
 
     fn idle_keepalive_timeout(&self) -> Option<Duration> {
