@@ -119,6 +119,11 @@ jobs:
       - name: Test the release archive policy
         run: ./scripts/test-release-archive.sh
 
+      - name: Test the release binary build gates
+        run: |
+          ./scripts/test-verify-binary-paths.sh
+          ./benchmarks/scripts/test-pgo.sh
+
       - name: Build and verify the source archive from the commit under test
         run: ./scripts/create-release-archive.sh "${RUNNER_TEMP}/oxiroute-ci.tar.gz" ci
 
