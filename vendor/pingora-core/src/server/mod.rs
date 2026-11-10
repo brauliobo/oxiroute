@@ -375,6 +375,7 @@ impl Server {
         shutdown: ShutdownWatch,
         threads: usize,
         work_stealing: bool,
+        connection_age: Option<Duration>,
         listeners_per_fd: usize,
         ready_notifier: ServiceReadyNotifier,
         dependency_watches: Vec<ServiceReadyWatch>,
@@ -382,7 +383,8 @@ impl Server {
 // NOTE: we need to keep the runtime outside async since
         // otherwise the runtime will be dropped.
     {
-        let service_runtime = Server::create_runtime(service.name(), threads, work_stealing);
+        let service_runtime =
+            Server::create_runtime(service.name(), threads, work_stealing, connection_age);
         let service_name = service.name().to_string();
         service_runtime.get_handle().spawn(async move {
             let mut ready_notifier = Some(ready_notifier);
@@ -756,6 +758,7 @@ impl Server {
                 self.shutdown_recv.clone(),
                 threads,
                 conf.work_stealing,
+                conf.connection_age_ms.map(Duration::from_millis),
                 self.configuration.listener_tasks_per_fd,
                 ready_notifier,
                 dependency_watches,
@@ -765,7 +768,7 @@ impl Server {
 
         // blocked on main loop so that it runs forever
         // Only work steal runtime can use block_on()
-        let server_runtime = Server::create_runtime("Server", 1, true);
+        let server_runtime = Server::create_runtime("Server", 1, true, None);
         #[cfg(unix)]
         let shutdown_type = server_runtime
             .get_handle()
@@ -834,11 +837,16 @@ impl Server {
             .ok();
     }
 
-    fn create_runtime(name: &str, threads: usize, work_steal: bool) -> Runtime {
-        if work_steal {
-            Runtime::new_steal(threads, name)
-        } else {
-            Runtime::new_no_steal(threads, name)
+    fn create_runtime(
+        name: &str,
+        threads: usize,
+        work_steal: bool,
+        connection_age: Option<Duration>,
+    ) -> Runtime {
+        match (work_steal, connection_age) {
+            (true, _) => Runtime::new_steal(threads, name),
+            (false, None) => Runtime::new_no_steal(threads, name),
+            (false, Some(age)) => Runtime::new_no_steal_aged(threads, name, age),
         }
     }
 }

@@ -2227,6 +2227,7 @@ dependencies = [
  "notify",
  "openssl",
  "oxiroute-acme",
+ "oxiroute-aged-executor",
  "oxiroute-cache",
  "oxiroute-config",
  "oxiroute-config-source",
@@ -2273,6 +2274,15 @@ dependencies = [
  "time",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "oxiroute-aged-executor"
+version = "6.3.0"
+dependencies = [
+ "atomic-waker",
+ "slab",
+ "tokio",
 ]
 
 [[package]]
@@ -2741,6 +2751,7 @@ name = "pingora-runtime"
 version = "0.8.1"
 dependencies = [
  "once_cell",
+ "oxiroute-aged-executor",
  "rand 0.8.8",
  "thread_local",
  "tokio",

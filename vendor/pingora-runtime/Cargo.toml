@@ -23,6 +23,9 @@ repository = "https://github.com/cloudflare/pingora"
 name = "pingora_runtime"
 path = "src/lib.rs"
 
+[dependencies.oxiroute-aged-executor]
+path = "../../crates/oxiroute-aged-executor"
+
 [dependencies.once_cell]
 version = "1"
 

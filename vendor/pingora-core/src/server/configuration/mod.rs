@@ -65,6 +65,10 @@ pub struct ServerConf {
     pub listener_tasks_per_fd: usize,
     /// Allow work stealing between threads of the same service. Default `true`.
     pub work_stealing: bool,
+    /// With `work_stealing` off: serve each worker's connections newest first, and the oldest first once it has
+    /// waited this many milliseconds. Absent keeps Tokio's first-in first-out order.
+    #[serde(default)]
+    pub connection_age_ms: Option<u64>,
     /// The path to CA file the SSL library should use. If empty, the default trust store location
     /// defined by the SSL library will be used.
     pub ca_file: Option<String>,
@@ -137,6 +141,7 @@ impl Default for ServerConf {
             threads: 1,
             listener_tasks_per_fd: 1,
             work_stealing: true,
+            connection_age_ms: None,
             upstream_keepalive_pool_size: 128,
             upstream_connect_offload_threadpools: None,
             upstream_connect_offload_thread_per_pool: None,
@@ -306,6 +311,7 @@ mod tests {
             threads: 1,
             listener_tasks_per_fd: 1,
             work_stealing: true,
+            connection_age_ms: None,
             upstream_keepalive_pool_size: 4,
             upstream_connect_offload_threadpools: None,
             upstream_connect_offload_thread_per_pool: None,

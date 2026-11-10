@@ -19,6 +19,7 @@
 //! to the least loaded worker of a non-stealing runtime.
 
 use once_cell::sync::{Lazy, OnceCell};
+use oxiroute_aged_executor::AgedExecutor;
 use rand::Rng;
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -47,7 +48,12 @@ impl Runtime {
     }
 
     pub fn new_no_steal(threads: usize, name: &str) -> Self {
-        Self::NoSteal(NoStealRuntime::new(threads, name))
+        Self::NoSteal(NoStealRuntime::new(threads, name, None))
+    }
+
+    /// A non-stealing runtime whose connection tasks run newest first, oldest first once they waited for `max_age`.
+    pub fn new_no_steal_aged(threads: usize, name: &str, max_age: Duration) -> Self {
+        Self::NoSteal(NoStealRuntime::new(threads, name, Some(max_age)))
     }
 
     pub fn get_handle(&self) -> &Handle {
@@ -68,6 +74,8 @@ impl Runtime {
 struct Pool {
     handle: Handle,
     load: AtomicUsize,
+    /// Runs the connection tasks of the worker in aged newest-first order instead of Tokio's first-in first-out.
+    executor: Option<AgedExecutor>,
 }
 
 struct Local {
@@ -122,10 +130,16 @@ where
         pools: local.pools.clone(),
         index,
     };
-    pools[index].handle.spawn(async move {
+    let task = async move {
         let _guard = guard;
         future.await
-    });
+    };
+    match &pools[index].executor {
+        Some(executor) => executor.spawn(task),
+        None => {
+            pools[index].handle.spawn(task);
+        }
+    }
 }
 
 type Control = (Sender<Duration>, JoinHandle<()>);
@@ -134,16 +148,18 @@ type Pools = Arc<OnceCell<Box<[Pool]>>>;
 pub struct NoStealRuntime {
     threads: usize,
     name: String,
+    max_age: Option<Duration>,
     pools: Pools,
     controls: OnceCell<Vec<Control>>,
 }
 
 impl NoStealRuntime {
-    pub fn new(threads: usize, name: &str) -> Self {
+    pub fn new(threads: usize, name: &str, max_age: Option<Duration>) -> Self {
         assert!(threads != 0);
         NoStealRuntime {
             threads,
             name: name.to_string(),
+            max_age,
             pools: Arc::new(OnceCell::new()),
             controls: OnceCell::new(),
         }
@@ -153,8 +169,19 @@ impl NoStealRuntime {
         let mut pools = Vec::with_capacity(self.threads);
         let mut controls = Vec::with_capacity(self.threads);
         for index in 0..self.threads {
-            let rt = Builder::new_current_thread().enable_all().build().unwrap();
+            let mut builder = Builder::new_current_thread();
+            builder.enable_all();
+            if self.max_age.is_some() {
+                // The aged executor polls a batch of connections per scheduler tick; poll the I/O driver after each one.
+                builder.event_interval(1);
+            }
+            let rt = builder.build().unwrap();
             let handle = rt.handle().clone();
+            let executor = self.max_age.map(|max_age| {
+                let (executor, runner) = AgedExecutor::new(max_age);
+                rt.spawn(runner);
+                executor
+            });
             let (tx, rx) = channel::<Duration>();
             let pools_ref = self.pools.clone();
             let join = std::thread::Builder::new()
@@ -172,6 +199,7 @@ impl NoStealRuntime {
             pools.push(Pool {
                 handle,
                 load: AtomicUsize::new(0),
+                executor,
             });
             controls.push((tx, join));
         }
@@ -309,6 +337,17 @@ mod tests {
             tx.send(()).unwrap();
         });
         rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        runtime.shutdown_timeout(Duration::from_secs(1));
+    }
+
+    #[test]
+    fn an_aged_runtime_runs_connections_on_its_executors_and_spreads_them_evenly() {
+        let runtime = Runtime::new_no_steal_aged(4, "aged", Duration::from_millis(40));
+        let (per_thread, release) = spread(&runtime, 64);
+        assert_eq!(per_thread.len(), 4);
+        assert!(per_thread.values().all(|count| *count == 16), "{per_thread:?}");
+        assert_eq!(oxiroute_aged_executor::AgedExecutor::process_stats().tasks, 64);
+        release.notify_waiters();
         runtime.shutdown_timeout(Duration::from_secs(1));
     }
 
