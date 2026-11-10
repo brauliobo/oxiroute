@@ -404,12 +404,14 @@ fn serve_generation(
         None
     };
 
+    let connection_age_ms = connection_age_ms(config);
     let server_config = ServerConf {
         max_retries: MAX_HTTP_ATTEMPTS,
         grace_period_seconds: Some(0),
         graceful_shutdown_timeout_seconds: Some(0),
         upstream_keepalive_pool_size: UPSTREAM_IDLE_CONNECTIONS,
-        work_stealing: false,
+        work_stealing: connection_age_ms.is_none(),
+        connection_age_ms,
         ..ServerConf::default()
     };
     let mut server = Server::new_with_opt_and_conf(None, server_config)?;

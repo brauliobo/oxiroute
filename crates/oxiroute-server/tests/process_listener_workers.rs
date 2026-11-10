@@ -17,19 +17,25 @@ use tokio::{
 };
 
 use oxiroute_config::{
-    ConfigDraft, DownstreamTimeoutPolicy, HttpPathSelector, HttpRoute, HttpRouteAction,
-    HttpRoutePolicy, HttpService, Listener, Protocol,
+    ConfigDraft, ConnectionScheduling, DownstreamTimeoutPolicy, HttpPathSelector, HttpRoute,
+    HttpRouteAction, HttpRoutePolicy, HttpService, Listener, Protocol,
 };
 
 use config_support::{empty_config, socket_bind};
 use http_support::raw_http_request;
 use process_support::{ServerProcess, reserve_tcp_address};
 
+const AGED: Option<ConnectionScheduling> = Some(ConnectionScheduling::AgedPerWorker);
 const REQUEST: &[u8] = b"GET /probe HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
 
-fn config(address: SocketAddr, workers: Option<u64>) -> ConfigDraft {
+fn config(
+    address: SocketAddr,
+    workers: Option<u64>,
+    scheduling: Option<ConnectionScheduling>,
+) -> ConfigDraft {
     ConfigDraft {
         listener_workers: workers,
+        connection_scheduling: scheduling,
         listeners: vec![Listener {
             name: "web".into(),
             bind: socket_bind(address),
@@ -118,6 +124,36 @@ fn service_threads(root: u32) -> usize {
     service_tasks(root).len()
 }
 
+async fn serve_and_count(workers: Option<u64>, scheduling: Option<ConnectionScheduling>) -> usize {
+    let address = reserve_tcp_address();
+    let config = config(address, workers, scheduling);
+    let mut server = ServerProcess::start(&config.validate().expect("valid"), None);
+    server.wait_for_tcp(address).await;
+    let responses =
+        futures_util::future::join_all((0..64).map(|_| raw_http_request(address, REQUEST))).await;
+    assert!(responses.iter().all(|response| response.status == 200));
+    let threads = service_threads(server.pid());
+    server.shutdown();
+    threads
+}
+
+#[tokio::test]
+async fn a_listener_runs_the_configured_number_of_workers() {
+    assert_eq!(serve_and_count(Some(3), None).await, 3);
+    assert_eq!(serve_and_count(Some(1), None).await, 1);
+}
+
+#[tokio::test]
+async fn a_listener_without_a_setting_runs_one_worker() {
+    assert_eq!(serve_and_count(None, None).await, 1);
+}
+
+#[tokio::test]
+async fn aged_per_worker_scheduling_runs_the_configured_number_of_workers_and_serves() {
+    assert_eq!(serve_and_count(Some(3), AGED).await, 3);
+    assert_eq!(serve_and_count(None, AGED).await, 1);
+}
+
 /// The inodes of the server-side sockets of the given client ports, from the kernel's TCP table.
 fn connection_inodes(server: SocketAddr, client_ports: &[u16]) -> Vec<String> {
     fs::read_to_string("/proc/net/tcp")
@@ -185,8 +221,10 @@ async fn open_keep_alive(address: SocketAddr) -> TcpStream {
 #[tokio::test]
 async fn workers_watch_their_own_connections() {
     let address = reserve_tcp_address();
-    let mut server =
-        ServerProcess::start(&config(address, Some(4)).validate().expect("valid"), None);
+    let mut server = ServerProcess::start(
+        &config(address, Some(4), AGED).validate().expect("valid"),
+        None,
+    );
     server.wait_for_tcp(address).await;
     let mut clients = Vec::new();
     for _ in 0..48 {

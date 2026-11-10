@@ -493,8 +493,16 @@ impl Stream {
     pub(crate) fn set_buffer(&mut self, own_driver: bool) -> io::Result<()> {
         // The buffer sizes are fixed at construction, so take the raw stream out of the
         // unbuffered stream and wrap it again with the sizes we want
-        let raw = self.stream.take().expect("stream should always be set").into_inner();
-        let raw = if own_driver { raw.into_current_runtime()? } else { raw };
+        let raw = self
+            .stream
+            .take()
+            .expect("stream should always be set")
+            .into_inner();
+        let raw = if own_driver {
+            raw.into_current_runtime()?
+        } else {
+            raw
+        };
         self.stream = Some(LazyReadStream::new(BUF_READ_SIZE, BUF_WRITE_SIZE, raw));
         Ok(())
     }
