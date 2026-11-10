@@ -160,6 +160,9 @@ connection-pool experiments:
   `HttpServerApp::idle_keepalive_timeout()` (new, default `None`) or else the keep-alive seconds of the last response
   (`HttpPersistentSettings::idle_timeout`). A stream that cannot tell if it is readable (TLS) is ready at once, and the
   request read that follows waits as before.
+- `protocols/l4/lazy_read.rs` `CoalescingWriter` takes its 1,460-byte buffer from a per-thread pool when the first
+  bytes are staged and gives it back once they are sent (flush, or a large write behind the staged head), instead of
+  one buffer per connection for its whole life.
 - `protocols/http/v1/common.rs` `RequestFacts` / `ResponseFacts`: while a head is parsed, the HTTP/1 server and client note
   whether it carries `Transfer-Encoding`, `Connection` and `Upgrade` and how many `Content-Length` headers it has, so the
   keepalive, framing, duplicate `Content-Length` and upgrade checks read flags instead of looking the headers up again. Header values are appended to
