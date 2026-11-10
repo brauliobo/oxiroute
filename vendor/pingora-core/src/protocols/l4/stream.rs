@@ -490,6 +490,27 @@ impl Stream {
         self.offload_wait_duration = offload_wait_duration;
     }
 
+    /// The TCP socket under the buffers of this stream, if it is one.
+    ///
+    /// Bytes moved on the socket directly (`splice(2)`, `sendfile(2)`) bypass the stream's buffers: use
+    /// [`Self::has_read_ahead`] and [`Self::has_write_behind`] to know whether they are empty.
+    pub fn tcp_socket(&self) -> Option<&TcpStream> {
+        match &self.stream().get_ref().stream {
+            RawStream::Tcp(socket) => Some(socket),
+            _ => None,
+        }
+    }
+
+    /// Whether bytes already read from the socket (or put back with `rewind`) wait for the reader.
+    pub fn has_read_ahead(&self) -> bool {
+        !self.rewind_read_buf.is_empty() || self.stream().has_buffered()
+    }
+
+    /// Whether bytes accepted by a write wait in the write buffer.
+    pub fn has_write_behind(&self) -> bool {
+        self.stream().has_write_buffered()
+    }
+
     /// set TCP nodelay for this connection if `self` is TCP
     pub fn set_nodelay(&mut self) -> Result<()> {
         match &self.stream_mut().get_mut().stream {

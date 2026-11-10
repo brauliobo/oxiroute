@@ -9,6 +9,8 @@ use rustix::io::ReadWriteFlags;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+pub(crate) use super::static_kernel::KernelSlice;
+
 /// Files up to this size are read whole once and served from memory.
 pub(crate) const MEMORY_FILE_BYTES: u64 = 128 * 1024;
 /// Chunks read per blocking-pool hop when the file system cannot answer a read from its cache without waiting.
@@ -42,6 +44,7 @@ impl StaticContent {
                 file: Arc::new(file),
                 ahead: VecDeque::new(),
                 blocking: false,
+                kernel: true,
             }),
         };
         StaticReader {
@@ -64,6 +67,9 @@ struct OpenFile {
     file: Arc<File>,
     ahead: VecDeque<Bytes>,
     blocking: bool,
+    /// Whether the rest of the file may still be sent by the kernel (cleared when the connection cannot or a page
+    /// is not cached).
+    kernel: bool,
 }
 
 impl OpenFile {
@@ -92,6 +98,37 @@ pub(crate) struct StaticReader {
 }
 
 impl StaticReader {
+    /// The next part of the file the kernel can send straight from the page cache, if there is one: a large enough
+    /// range of an open file that is cached and not yet read into chunks.
+    pub(crate) fn kernel_slice(&mut self) -> Option<KernelSlice> {
+        let Source::Open(open) = &mut self.source else {
+            return None;
+        };
+        if !open.kernel || open.blocking || !open.ahead.is_empty() {
+            return None;
+        }
+        let slice = KernelSlice::next(&open.file, self.offset, self.remaining);
+        open.kernel = slice.is_some();
+        slice
+    }
+
+    /// Stops using the kernel for the rest of the file (the connection cannot take it).
+    pub(crate) fn without_kernel(&mut self) {
+        if let Source::Open(open) = &mut self.source {
+            open.kernel = false;
+        }
+    }
+
+    /// Accounts for `sent` bytes the kernel sent from the start of the last slice.
+    pub(crate) fn advance(&mut self, sent: u64) {
+        self.offset += sent;
+        self.remaining -= sent;
+    }
+
+    pub(crate) const fn is_done(&self) -> bool {
+        self.remaining == 0
+    }
+
     pub(crate) async fn next_chunk(&mut self) -> io::Result<Option<Bytes>> {
         if self.remaining == 0 {
             return Ok(None);

@@ -314,6 +314,21 @@ impl Session {
         }
     }
 
+    /// Sends up to `length` bytes of `file` from `offset` as response body without copying them through user space.
+    /// `Ok(None)`: not possible on this session (HTTP/2, TLS, chunked body), nothing was sent; see
+    /// [`SessionV1::write_body_from_file`].
+    pub async fn write_response_body_from_file(
+        &mut self,
+        file: &std::fs::File,
+        offset: u64,
+        length: usize,
+    ) -> Result<Option<usize>> {
+        match self {
+            Self::H1(s) => s.write_body_from_file(file, offset, length).await,
+            _ => Ok(None),
+        }
+    }
+
     /// Write the response trailers to client
     pub async fn write_response_trailers(&mut self, trailers: HeaderMap) -> Result<()> {
         match self {

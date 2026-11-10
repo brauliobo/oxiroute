@@ -9,7 +9,7 @@ use log::warn;
 use oxiroute_config::ProxyProtocolPolicy;
 use pingora::{protocols::Stream, server::ShutdownWatch};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, split},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     time::{Instant, sleep_until, timeout},
 };
@@ -17,6 +17,10 @@ use tokio::{
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
+use super::relay::{
+    end::{RelayEnd, Shared},
+    splice::{self, Finish, Start},
+};
 use crate::{
     ConnectionGuard, EndpointLease, HealthFailure, L4ServicePlan, MetricsError, ProxyProtocolError,
     ProxyProtocolErrorKind, ProxyProtocolResult, ProxyProtocolTransport, RuntimeEndpoint,
@@ -225,7 +229,7 @@ impl TcpRelayCore {
         mut shutdown: ShutdownWatch,
     ) -> Result<RelayStats, RelayFailure>
     where
-        D: AsyncRead + AsyncWrite + Unpin,
+        D: RelayEnd,
     {
         let started_at = Instant::now();
         let upstream = tokio::select! {
@@ -415,6 +419,9 @@ async fn send_proxy_header(
 /// in that direction, providing bounded memory use and transport backpressure. EOF in one direction
 /// shuts down only the opposite write half; the reverse direction remains active.
 ///
+/// A direction that fills its buffer between two plain TCP sockets hands the rest of its payload to the kernel
+/// (`splice(2)`), see [`splice`]; the accounting, timers and half close are the same on both paths.
+///
 /// Both directions, the shutdown wait and the lifetime and idle timers are created once and polled for as long as
 /// the relay runs: a payload transfer does not set up a wait or a timer.
 ///
@@ -431,11 +438,10 @@ pub async fn relay_streams<D, U>(
     policy: RelayPolicy,
 ) -> Result<RelayStats, RelayFailure>
 where
-    D: AsyncRead + AsyncWrite + Unpin,
-    U: AsyncRead + AsyncWrite + Unpin,
+    D: RelayEnd,
+    U: RelayEnd,
 {
-    let (mut downstream_reader, mut downstream_writer) = split(downstream);
-    let (mut upstream_reader, mut upstream_writer) = split(upstream);
+    let (downstream, upstream) = (Shared::new(downstream), Shared::new(upstream));
     let mut client_buffer = vec![0; RELAY_BUFFER_SIZE];
     let mut upstream_buffer = vec![0; RELAY_BUFFER_SIZE];
     let started_at = Instant::now();
@@ -445,15 +451,15 @@ where
         tokio::try_join!(
             copy_direction(
                 RelayDirection::ClientToUpstream,
-                &mut downstream_reader,
-                &mut upstream_writer,
+                &downstream,
+                &upstream,
                 &mut client_buffer,
                 &accounting,
             ),
             copy_direction(
                 RelayDirection::UpstreamToClient,
-                &mut upstream_reader,
-                &mut downstream_writer,
+                &upstream,
+                &downstream,
                 &mut upstream_buffer,
                 &accounting,
             ),
@@ -494,7 +500,7 @@ where
 
 /// The traffic counters of one relay, shared by its two directions. Each counter has one writer (a direction), and
 /// everything runs in one task: the atomics are there for the `Send` bound only, and relaxed accesses are plain ones.
-struct RelayAccounting<'a> {
+pub(in crate::l4) struct RelayAccounting<'a> {
     connection: &'a ConnectionGuard,
     started_at: Instant,
     received: AtomicU64,
@@ -504,7 +510,7 @@ struct RelayAccounting<'a> {
 }
 
 impl<'a> RelayAccounting<'a> {
-    fn new(connection: &'a ConnectionGuard, started_at: Instant) -> Self {
+    pub(in crate::l4) fn new(connection: &'a ConnectionGuard, started_at: Instant) -> Self {
         Self {
             connection,
             started_at,
@@ -514,7 +520,7 @@ impl<'a> RelayAccounting<'a> {
         }
     }
 
-    fn stats(&self) -> RelayStats {
+    pub(in crate::l4) fn stats(&self) -> RelayStats {
         RelayStats {
             bytes_received: self.received.load(Ordering::Relaxed),
             bytes_sent: self.sent.load(Ordering::Relaxed),
@@ -531,7 +537,11 @@ impl<'a> RelayAccounting<'a> {
     }
 
     /// Bytes read from a side; the client's are the relay's received bytes.
-    fn read(&self, direction: RelayDirection, bytes: usize) -> Result<(), DirectionFailure> {
+    pub(in crate::l4) fn read(
+        &self,
+        direction: RelayDirection,
+        bytes: usize,
+    ) -> Result<(), DirectionFailure> {
         if direction == RelayDirection::ClientToUpstream {
             let bytes = bytes_to_u64(bytes);
             self.connection.record_bytes_received(bytes)?;
@@ -542,7 +552,11 @@ impl<'a> RelayAccounting<'a> {
     }
 
     /// Bytes written to a side; the client's are the relay's sent bytes.
-    fn written(&self, direction: RelayDirection, bytes: usize) -> Result<(), DirectionFailure> {
+    pub(in crate::l4) fn written(
+        &self,
+        direction: RelayDirection,
+        bytes: usize,
+    ) -> Result<(), DirectionFailure> {
         if direction == RelayDirection::UpstreamToClient {
             let bytes = bytes_to_u64(bytes);
             self.connection.record_bytes_sent(bytes)?;
@@ -561,7 +575,7 @@ fn add_traffic(total: &AtomicU64, bytes: u64) {
     total.store(sum, Ordering::Relaxed);
 }
 
-const fn bytes_to_u64(bytes: usize) -> u64 {
+pub(in crate::l4) const fn bytes_to_u64(bytes: usize) -> u64 {
     bytes as u64
 }
 
@@ -580,27 +594,24 @@ async fn wait_for_shutdown(shutdown: &mut ShutdownWatch) {
     }
 }
 
-/// Copies one direction until the reader reaches EOF, then shuts the writer down.
-async fn copy_direction<R, W>(
+/// Copies one direction until the reader reaches EOF, then shuts the writer down. A direction that fills its buffer
+/// twice over plain TCP sockets moves the rest through the kernel; returns the bytes the kernel moved.
+pub(in crate::l4) async fn copy_direction<S: RelayEnd, T: RelayEnd>(
     direction: RelayDirection,
-    reader: &mut R,
-    writer: &mut W,
+    source: &Shared<S>,
+    sink: &Shared<T>,
     buffer: &mut Vec<u8>,
     accounting: &RelayAccounting<'_>,
-) -> Result<(), DirectionFailure>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
+) -> Result<u64, DirectionFailure> {
+    let (mut reader, mut writer) = (source.handle(), sink.handle());
+    let mut kernel = true;
     loop {
         let read = reader
             .read(buffer)
             .await
             .map_err(|source| DirectionFailure::io(direction, RelayOperation::Read, source))?;
         if read == 0 {
-            return writer.shutdown().await.map_err(|source| {
-                DirectionFailure::io(direction, RelayOperation::Shutdown, source)
-            });
+            return shutdown(direction, &mut writer).await.map(|()| 0);
         }
         accounting.read(direction, read)?;
         let full = read == buffer.len();
@@ -628,13 +639,46 @@ where
             written += bytes;
             accounting.written(direction, bytes)?;
         }
-        if full && buffer.len() < RELAY_BULK_BUFFER_SIZE {
+        if !full {
+            continue;
+        }
+        if buffer.len() < RELAY_BULK_BUFFER_SIZE {
             buffer.resize(RELAY_BULK_BUFFER_SIZE, 0);
+        }
+        if !kernel {
+            continue;
+        }
+        match splice::start(source, sink) {
+            Start::Never => kernel = false,
+            Start::Later => {}
+            Start::Ready(pipe) => {
+                buffer.clear();
+                buffer.shrink_to_fit();
+                match splice::run(direction, source, sink, &pipe, accounting).await? {
+                    Finish::Eof(moved) => {
+                        return shutdown(direction, &mut writer).await.map(|()| moved);
+                    }
+                    Finish::Unsupported => {
+                        kernel = false;
+                        buffer.resize(RELAY_BULK_BUFFER_SIZE, 0);
+                    }
+                }
+            }
         }
     }
 }
 
-enum DirectionFailure {
+async fn shutdown<W: AsyncWriteExt + Unpin>(
+    direction: RelayDirection,
+    writer: &mut W,
+) -> Result<(), DirectionFailure> {
+    writer
+        .shutdown()
+        .await
+        .map_err(|source| DirectionFailure::io(direction, RelayOperation::Shutdown, source))
+}
+
+pub(in crate::l4) enum DirectionFailure {
     Io {
         direction: RelayDirection,
         operation: RelayOperation,
@@ -644,7 +688,11 @@ enum DirectionFailure {
 }
 
 impl DirectionFailure {
-    fn io(direction: RelayDirection, operation: RelayOperation, source: io::Error) -> Self {
+    pub(in crate::l4) fn io(
+        direction: RelayDirection,
+        operation: RelayOperation,
+        source: io::Error,
+    ) -> Self {
         Self::Io {
             direction,
             operation,

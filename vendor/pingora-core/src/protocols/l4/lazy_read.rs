@@ -208,6 +208,11 @@ impl<RW: AsyncWrite> LazyReadStream<RW> {
         self.pos < self.pending.len()
     }
 
+    /// Whether bytes written to the stream wait in the write buffer.
+    pub(crate) fn has_write_buffered(&self) -> bool {
+        !self.inner.buf.is_empty()
+    }
+
     pub(crate) fn get_ref(&self) -> &RW {
         self.inner.get_ref()
     }

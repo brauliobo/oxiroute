@@ -205,3 +205,48 @@ async fn read_ready_follows_the_socket_without_reading_it() {
     stream.read_exact(&mut buf).await.unwrap();
     assert_eq!(&buf, b"ready");
 }
+
+#[tokio::test]
+async fn test_buffer_state_of_a_tcp_stream_is_visible_for_kernel_offload() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut peer, _) = listener.accept().await.unwrap();
+        peer.write_all(b"abcdef").await.unwrap();
+        let mut sink = Vec::new();
+        peer.read_to_end(&mut sink).await.unwrap();
+    });
+
+    let mut stream: Stream = TcpStream::connect(addr).await.unwrap().into();
+    stream.set_buffer();
+    assert!(stream.tcp_socket().is_some());
+    assert!(!stream.has_read_ahead() && !stream.has_write_behind());
+
+    let mut head = [0u8; 2];
+    stream.read_exact(&mut head).await.unwrap();
+    assert!(
+        stream.has_read_ahead(),
+        "four bytes were read from the socket and not consumed"
+    );
+    let mut rest = [0u8; 4];
+    stream.read_exact(&mut rest).await.unwrap();
+    assert!(!stream.has_read_ahead());
+
+    stream.write_all(b"ab").await.unwrap();
+    assert!(
+        stream.has_write_behind(),
+        "a short write waits in the write buffer"
+    );
+    stream.flush().await.unwrap();
+    assert!(!stream.has_write_behind());
+
+    stream.rewind(b"x");
+    assert!(stream.has_read_ahead());
+}
+
+#[tokio::test]
+async fn test_a_unix_stream_has_no_tcp_socket() {
+    let (near, _far) = tokio::net::UnixStream::pair().unwrap();
+    let stream: Stream = near.into();
+    assert!(stream.tcp_socket().is_none());
+}

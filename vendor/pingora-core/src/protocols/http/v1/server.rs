@@ -47,7 +47,7 @@ use crate::protocols::http::{
     authority::validate_request_authority, body_buffer::FixedBuffer, date, HttpTask,
     ReusableHttpStream,
 };
-use crate::protocols::{Digest, SocketAddr, Stream};
+use crate::protocols::{Digest, SocketAddr, Stream, IO};
 use crate::utils::BufRef;
 
 // A response body chunk of at least this size is written on its own instead of being copied into the batch buffer.
@@ -1211,6 +1211,51 @@ impl HttpSession {
         self.body_reader.take_body_overread()
     }
 
+    /// Sends up to `length` bytes of `file` from `offset` as response body with `sendfile(2)`: the bytes go from the
+    /// page cache to the socket without entering user space.
+    ///
+    /// Returns `Ok(None)` without sending anything when that is not possible: the body is not framed by
+    /// `Content-Length`, has fewer than `length` bytes left, or the connection is not a plain TCP socket (TLS and
+    /// Unix sockets need the bytes in user space). Otherwise returns the bytes sent, which is `length` unless the
+    /// file ended early.
+    pub async fn write_body_from_file(
+        &mut self,
+        file: &std::fs::File,
+        offset: u64,
+        length: usize,
+    ) -> Result<Option<usize>> {
+        if self
+            .body_writer
+            .content_length_remaining()
+            .is_none_or(|left| left < length)
+        {
+            return Ok(None);
+        }
+        if plain_tcp_socket(&self.underlying_stream).is_none() {
+            return Ok(None);
+        }
+        // The response head waits in the write buffer; it must go out before the body.
+        self.underlying_stream
+            .flush()
+            .await
+            .or_err(WriteError, "flushing response header before sendfile")?;
+        let socket = plain_tcp_socket(&self.underlying_stream).expect("checked above");
+        let send = crate::protocols::l4::sendfile::send_file(socket, file, offset, length);
+        let sent = match self.write_timeout(length) {
+            Some(t) => match timeout(t, send).await {
+                Ok(res) => res,
+                Err(_) => {
+                    return Error::e_explain(WriteTimedout, format!("sendfile, timeout: {t:?}"))
+                }
+            },
+            None => send.await,
+        }
+        .or_err(WriteError, "while sending a file as body")?;
+        self.body_writer.record_content_length_sent(sent);
+        self.body_bytes_sent += sent;
+        Ok(Some(sent))
+    }
+
     async fn do_write_body_buf(&mut self) -> Result<Option<usize>> {
         // Don't flush empty chunks, they are considered end of body for chunks
         if self.body_write_buf.is_empty() {
@@ -2169,6 +2214,13 @@ fn validate_origin_form_authority(req: &RequestHeader) -> Result<()> {
         }
     }
     validate_request_authority(req)
+}
+
+/// The TCP socket of a stream that is a plain TCP connection: no TLS and no other transport in between.
+fn plain_tcp_socket(stream: &Stream) -> Option<&tokio::net::TcpStream> {
+    IO::as_any(&**stream)
+        .downcast_ref::<crate::protocols::l4::stream::Stream>()?
+        .tcp_socket()
 }
 
 #[cfg(test)]

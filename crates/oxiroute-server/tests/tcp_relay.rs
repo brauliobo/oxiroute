@@ -14,9 +14,9 @@ use std::{
 
 use oxiroute_config::{ProxyProtocolPolicy, ProxyProtocolVersion, UpstreamAlgorithm};
 use oxiroute_server::{
-    ConnectionGuard, ProxyProtocolTransport, RelayDirection, RelayFailureKind, RelayOperation,
-    RelayPolicy, RoundRobinPool, RuntimeEndpoint, RuntimeMetrics, TcpRelayCore, parse_header,
-    relay_streams,
+    ConnectionGuard, CopyOnly, ProxyProtocolTransport, RelayDirection, RelayFailureKind,
+    RelayOperation, RelayPolicy, RoundRobinPool, RuntimeEndpoint, RuntimeMetrics, TcpRelayCore,
+    parse_header, relay_streams,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, duplex},
@@ -231,8 +231,8 @@ async fn traffic_keeps_the_idle_deadline_away_until_it_stops() {
         let (shutdown_tx, shutdown) = watch::channel(false);
         let relay = tokio::spawn(async move {
             relay_streams(
-                downstream,
-                relay_upstream,
+                CopyOnly(downstream),
+                CopyOnly(relay_upstream),
                 &connection,
                 shutdown,
                 policy(Some(idle_timeout), None),
@@ -292,8 +292,8 @@ async fn bulk_data_in_both_directions_arrives_intact_and_is_accounted() {
         let (shutdown_tx, shutdown) = watch::channel(false);
         let relay = tokio::spawn(async move {
             relay_streams(
-                downstream,
-                relay_upstream,
+                CopyOnly(downstream),
+                CopyOnly(relay_upstream),
                 &connection,
                 shutdown,
                 policy(None, None),
@@ -683,8 +683,8 @@ async fn accounts_for_partial_downstream_writes_before_an_error() {
         let (shutdown_tx, shutdown) = watch::channel(false);
 
         let failure = relay_streams(
-            downstream,
-            relay_upstream,
+            CopyOnly(downstream),
+            CopyOnly(relay_upstream),
             &connection,
             shutdown,
             policy(None, None),

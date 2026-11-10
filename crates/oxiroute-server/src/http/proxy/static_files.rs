@@ -123,6 +123,12 @@ pub(super) async fn write_static_file_with_status(
 
     let mut reader = file.content.into_reader(start, length);
     let read_error = |error| Error::because(ErrorType::ReadError, "static file read failed", error);
+    if !body_may_change(session) {
+        send_in_kernel(session, &mut reader).await?;
+        if reader.is_done() {
+            return session.write_response_body(None, true).await;
+        }
+    }
     let mut chunk = reader.next_chunk().await.map_err(read_error)?;
     while let Some(current) = chunk {
         chunk = reader.next_chunk().await.map_err(read_error)?;
@@ -143,4 +149,29 @@ fn static_validator_headers(
     }
     headers.push((LAST_MODIFIED, file.last_modified.clone()));
     headers
+}
+
+/// Sends the parts of the file the page cache holds with `sendfile`, until the connection cannot take them or a part
+/// is not cached; the chunk reader sends the rest.
+async fn send_in_kernel(
+    session: &mut Session,
+    reader: &mut crate::http::action::StaticReader,
+) -> pingora::Result<()> {
+    while let Some(slice) = reader.kernel_slice() {
+        let sent = session
+            .downstream_session
+            .write_response_body_from_file(&slice.file, slice.offset, slice.length)
+            .await?;
+        match sent {
+            Some(sent) if sent == slice.length => reader.advance(sent as u64),
+            Some(_) => {
+                return Error::e_explain(
+                    ErrorType::ReadError,
+                    "static file ended before its length",
+                );
+            }
+            None => reader.without_kernel(),
+        }
+    }
+    Ok(())
 }

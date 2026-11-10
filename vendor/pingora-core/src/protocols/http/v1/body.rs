@@ -1467,6 +1467,21 @@ impl BodyWriter {
         }
     }
 
+    /// Bytes of a content-length body that can still be written, if the body is framed that way.
+    pub fn content_length_remaining(&self) -> Option<usize> {
+        match self.body_mode {
+            BM::ContentLength(total, written) => Some(total.saturating_sub(written)),
+            _ => None,
+        }
+    }
+
+    /// Accounts for `count` body bytes that were sent without passing through [`Self::write_body`].
+    pub fn record_content_length_sent(&mut self, count: usize) {
+        if let BM::ContentLength(total, written) = self.body_mode {
+            self.body_mode = BM::ContentLength(total, (written + count).min(total));
+        }
+    }
+
     pub fn finished(&self) -> bool {
         match self.body_mode {
             BM::Complete(_) => true,

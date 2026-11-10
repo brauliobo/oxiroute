@@ -529,6 +529,15 @@ impl<S> PrefixedStream<S> {
     pub fn into_inner(self) -> S {
         self.inner
     }
+
+    pub(crate) const fn inner(&self) -> &S {
+        &self.inner
+    }
+
+    /// Whether bytes read past the header wait to be handed out before the stream's own.
+    pub(crate) const fn has_prefix(&self) -> bool {
+        self.prefix_offset < self.prefix.len()
+    }
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for PrefixedStream<S> {

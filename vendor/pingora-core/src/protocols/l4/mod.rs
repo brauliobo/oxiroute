@@ -17,6 +17,7 @@
 pub mod ext;
 mod lazy_read;
 pub mod listener;
+pub mod sendfile;
 pub mod socket;
 pub mod stream;
 pub mod virt;
