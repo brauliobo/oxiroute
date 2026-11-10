@@ -293,8 +293,11 @@ Current constraints:
 - Root `http_fast_lane` is an optional boolean. Omitted (or `true`) serves the plain HTTP/1.1 requests of fixed-response
   routes and plain proxy routes on the compiled fast lane, which answers them on the connection itself without building a
   session, with the same bytes, headers, framing and connection handling as the classic path. `false` sends every
-  request through the classic path. A request the lane cannot prove equivalent (bodies, header rules, retries, cache,
-  affinity, TLS upstreams, gzip, access logs, pipelining, unusual heads) takes the classic path either way. Changing the
+  request through the classic path. The same option controls the HTTP/2 lane: an HTTP/2 request without a body for such
+  a route is answered on its stream before any session exists, with the same response and the same request to the origin
+  as the classic path. A request the lane cannot prove equivalent (bodies, trailers, header rules, retries, cache,
+  affinity, TLS upstreams, gzip, access logs, pipelining, unusual heads, a `Host`, `TE` or `Expect` field on HTTP/2)
+  takes the classic path either way. Changing the
   value is an ordinary reload: the lane belongs to the generation, new connections of the new generation use the new
   setting and connections of the replaced generation finish as they were accepted.
 - Root `tls_handshake_threads` is an optional integer (0 to 64) that sets how many threads run the TLS handshakes of
