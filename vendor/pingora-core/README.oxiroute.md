@@ -141,6 +141,21 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
 - `apps/mod.rs` `HttpServerApp::process_new_http_inline`: the HTTP/1 request loop awaits an application's request
   future where it stands instead of boxing it (`async_trait` copied 8 KiB and more of state machine to the heap for every
   request). The default calls `process_new_http`.
+- `apps/mod.rs` and `apps/idle_wait.rs`: after a reusable response the HTTP/1 loop of `process_new` waits for the next
+  request holding no `Session` and no request future (`wait_for_next_request`: `poll_read_ready` of the stream, the
+  shutdown watch, and the keep-alive timeout), then builds the session. The timeout is
+  `HttpServerApp::idle_keepalive_timeout()` (new, default `None`) or else the keep-alive seconds of the last response
+  (`HttpPersistentSettings::idle_timeout`). A stream that cannot tell if it is readable (TLS) is ready at once, and the
+  request read that follows waits as before.
+- `apps/mod.rs` `process_new`: the HTTP/1 request future lives on the heap per request (`apps/pooled_future.rs`:
+  the block is written in place and kept by the thread for the next request, 64 per thread at most) so the future of
+  the connection, which lives as long as the connection, no longer contains it, and the HTTP/2 loop is the boxed free
+  function `process_h2` (same code, `self` renamed to `app`).
+- `services/listening.rs` boxes the transport handshake future inside the per-connection task, so the task of a plain
+  connection does not hold the TLS handshake state.
+- `protocols/l4/lazy_read.rs` `CoalescingWriter` takes its 1,460-byte buffer from a per-thread pool when the first
+  bytes are staged and gives it back once they are sent (flush, or a large write behind the staged head), instead of
+  one buffer per connection for its whole life.
 - `protocols/http/v1/common.rs` `RequestFacts` / `ResponseFacts`: while a head is parsed, the HTTP/1 server and client note
   whether it carries `Transfer-Encoding`, `Connection` and `Upgrade` and how many `Content-Length` headers it has, so the
   keepalive, framing, duplicate `Content-Length` and upgrade checks read flags instead of looking the headers up again. Header values are appended to
@@ -150,6 +165,10 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   `request_facts()` (`RequestFacts::UNKNOWN` for HTTP/2 and HTTP/3, which makes the caller look the headers up) and
   `modules/http/mod.rs` `HttpModuleCtx::is_empty`. `protocols/http/v1/client.rs` `write_request_header_noted` writes a
   borrowed request with the facts the caller already has (`write_request_header_ref` computes them).
+  `validate_content_length_facts` gives upstream's Content-Length verdicts (identical duplicates are accepted and
+  reconciled, conflicting or invalid values refused) but skips the header lookup when the facts rule `Content-Length`
+  out. `RequestHeader` and `ResponseHeader` have no `DerefMut` in 0.9, so the parsers fill a plain `HeaderMap` (with the
+  name cache) and `request_header_with_headers` / `ResponseHeader::from(Parts)` build the head around it.
   The facts also note whether a hop-by-hop field (`is_hop_by_hop`: `Keep-Alive`, `Proxy-Connection`, `Proxy-Authenticate`,
   `Proxy-Authorization`, `TE`, `Trailer`) is present (`hop_by_hop`), decided once per header name in the header-name cache,
   and `set_request_facts` (`ServerSession`, `HttpSession`; a no-op for sessions that answer `UNKNOWN`) records the facts of
@@ -173,10 +192,6 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   `Date` and `Connection` last for a final response) for a caller that writes the response itself.
 - `connectors/http/mod.rs` keeps its HTTP/1 connector in an `Arc` and hands it out (`Connector::h1`; `HttpProxy::upstream_h1_connector` in
   `pingora-proxy`), so a caller that drives HTTP/1 upstream sessions itself reuses the idle connections of the proxy's pool.
-  `validate_content_length_facts` gives upstream's Content-Length verdicts (identical duplicates are accepted and
-  reconciled, conflicting or invalid values refused) but skips the header lookup when the facts rule `Content-Length`
-  out. `RequestHeader` and `ResponseHeader` have no `DerefMut` in 0.9, so the parsers fill a plain `HeaderMap` (with the
-  name cache) and `request_header_with_headers` / `ResponseHeader::from(Parts)` build the head around it.
 - `protocols/http/v1/server.rs` `prepare_response_header` returns the serialised buffer so the inline `Date` and
   `Connection` lines and the reusable buffer survive upstream's proxy-task writer; response head bytes no longer count
   in `body_bytes_sent`, and `write_rendered_response` counts only the body (upstream's accounting).
@@ -203,7 +218,7 @@ When upgrading Pingora, import the new published crate as its own commit, three-
 previous pristine release (`git merge-file ours base theirs`), and resolve by delta: the header slots, request and
 response facts, noted request write, inline request loop, zero-copy request body and retry buffer,
 `try_read_response_task`, connector hook, admission guard and handshake-timeout hook, rendered response write, inline
-Date and Connection lines, header map headroom, single-clock timeouts, owned-preread, borrowed-request-write,
+Date and Connection lines, header map headroom, single-clock timeouts, the parked idle wait (`apps/idle_wait.rs`), the pooled request future (`apps/pooled_future.rs`), the pooled coalescing write buffer, owned-preread, borrowed-request-write,
 parsed-header ownership, response-task batch, lazy read buffer and coalescing writer, pooled gzip state, header-name
 cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`.
 Every upstream H1 correctness fix whose code our forks replace (`idle.rs`, `proxy_h1_inline.rs` in `pingora-proxy`,
