@@ -1,7 +1,7 @@
 //! Shared robustness harness: feeds arbitrary bytes into the sans-IO connection, exercises accepted streams
 //! through the poll-style API and checks that whatever the connection writes parses as frames. Used by
 //! `tests/robustness.rs` and (through `#[path]`) by the `h2_frames` fuzz target.
-#![allow(dead_code)]
+#![allow(dead_code, clippy::cast_possible_truncation)]
 use std::task::{Context, Poll, Waker};
 
 use bytes::{Bytes, BytesMut};
