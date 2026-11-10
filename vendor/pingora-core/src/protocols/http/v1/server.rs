@@ -1578,6 +1578,30 @@ fn titled_name(name: &http::HeaderName) -> &str {
     }
 }
 
+/// Appends the head of a final response as a session writes it (the status line, the headers, a `Date` and a
+/// `Connection` word that is `keep-alive` or `close`, and the blank line), for a caller that writes the response
+/// itself and keeps the framing of its body.
+pub fn render_final_response_head(
+    header: &mut ResponseHeader,
+    keepalive: bool,
+    buf: &mut BytesMut,
+) -> Result<()> {
+    let connection = if keepalive { "keep-alive" } else { "close" };
+    let inline_automatic = (!header.has_case()).then_some(connection);
+    if inline_automatic.is_none() {
+        header.insert_header(header::DATE, date::get_cached_date())?;
+        header.insert_header(header::CONNECTION, connection)?;
+    }
+    http_resp_header_to_buf(header, buf, inline_automatic)
+        .map_err(|()| Error::explain(InternalError, "unsupported response version"))
+}
+
+/// Appends the head of an informational response as a session writes it: no `Date`, no `Connection`.
+pub fn render_informational_head(header: &ResponseHeader, buf: &mut BytesMut) -> Result<()> {
+    http_resp_header_to_buf(header, buf, None)
+        .map_err(|()| Error::explain(InternalError, "unsupported response version"))
+}
+
 /// `automatic` is the `Connection` value of a response that also gets a `Date`: both are written after
 /// the other headers, and a copy of either in `resp` is left out.
 fn http_resp_header_to_buf(
@@ -1639,6 +1663,34 @@ mod tests_stream {
     use std::task::{Context, Poll};
 
     use super::*;
+
+    #[test]
+    fn a_final_head_rendered_for_a_caller_has_the_automatic_headers_last() {
+        let mut header = ResponseHeader::build(200, None).unwrap();
+        header.append_header("X-A", "1").unwrap();
+        header.append_header("Connection", "upgrade").unwrap();
+        let mut buf = BytesMut::new();
+        render_final_response_head(&mut header, true, &mut buf).unwrap();
+        let text = String::from_utf8(buf.to_vec()).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert_eq!(text.matches("Connection:").count(), 1);
+        assert!(text.contains("\r\nConnection: keep-alive\r\n\r\n"));
+        let (_, date) = text.split_once("Date: ").unwrap();
+        assert!(date.contains("\r\nConnection: keep-alive"));
+        let mut closing = ResponseHeader::build(204, None).unwrap();
+        let mut buf = BytesMut::new();
+        render_final_response_head(&mut closing, false, &mut buf).unwrap();
+        assert!(String::from_utf8(buf.to_vec()).unwrap().contains("Connection: close\r\n\r\n"));
+    }
+
+    #[test]
+    fn an_informational_head_rendered_for_a_caller_has_no_automatic_headers() {
+        let mut header = ResponseHeader::build(100, None).unwrap();
+        header.append_header("X-I", "1").unwrap();
+        let mut buf = BytesMut::new();
+        render_informational_head(&header, &mut buf).unwrap();
+        assert_eq!(&buf[..], b"HTTP/1.1 100 Continue\r\nx-i: 1\r\n\r\n");
+    }
     use crate::protocols::http::v1::body::{BodyMode, ParseState};
     use crate::protocols::http::HttpTaskBatch;
     use crate::protocols::{

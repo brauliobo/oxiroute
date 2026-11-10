@@ -209,6 +209,36 @@ impl HttpSession {
         Ok(written)
     }
 
+    /// Writes a request head the caller rendered itself, for a request without a body that carries no `Connection`
+    /// field: what [`Self::write_request_header_noted()`] leaves behind for such a request.
+    pub async fn write_request_head_raw(&mut self, head: &[u8], is_head: bool) -> Result<usize> {
+        self.body_writer.init_content_length(0);
+        let write_fut = self.underlying_stream.write_all(head);
+        match self.write_timeout {
+            Some(t) => match timeout(t, write_fut).await {
+                Ok(res) => res,
+                Err(_) => Err(std::io::Error::from(ErrorKind::TimedOut)),
+            },
+            None => write_fut.await,
+        }
+        .map_err(|e| match e.kind() {
+            ErrorKind::TimedOut => {
+                Error::because(WriteTimedout, "while writing request headers (timeout)", e)
+            }
+            _ => Error::because(WriteError, "while writing request headers", e),
+        })?;
+        self.underlying_stream
+            .flush()
+            .await
+            .or_err(WriteError, "flushing request header")?;
+        self.request_written = Some(RequestMetadata {
+            is_head,
+            connection_keepalive: None,
+            is_upgrade: false,
+        });
+        Ok(head.len())
+    }
+
     /// Write a borrowed request header to the server.
     /// After the request header is sent, the caller can either start reading the response or
     /// sending request body if any.
@@ -1213,6 +1243,84 @@ mod tests_stream {
         fn drop(&mut self) {
             self.0.store(true, Ordering::Relaxed);
         }
+    }
+
+    fn fast(head: &[u8], framing: FastFraming, connection: Option<&'static str>) -> FastHead {
+        FastHead {
+            status: StatusCode::OK,
+            version: Version::HTTP_11,
+            head_len: head.len(),
+            connection: connection.map(HeaderValue::from_static),
+            transfer_encoding: framing.chunked,
+            framing,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scanned_head_leaves_the_body_to_the_session() {
+        let head = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n";
+        let input = [&head[..], b"hello"].concat();
+        let mut http_stream = HttpSession::new(Box::new(Builder::new().read(&input).build()));
+        let raw = http_stream.read_raw_head().await.unwrap();
+        assert_eq!(&raw[..head.len()], head);
+        let framing = FastFraming { chunked: false, content_length: Some(5) };
+        http_stream.accept_fast_head(fast(head, framing, None));
+        assert_eq!(http_stream.read_body_bytes().await.unwrap().unwrap(), "hello");
+        assert!(http_stream.is_body_done());
+        http_stream.respect_keepalive();
+        assert!(http_stream.will_keepalive());
+    }
+
+    #[tokio::test]
+    async fn a_scanned_chunked_head_is_read_as_chunked() {
+        let head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let input = [&head[..], b"3\r\nabc\r\n0\r\n\r\n"].concat();
+        let mut http_stream = HttpSession::new(Box::new(Builder::new().read(&input).build()));
+        http_stream.read_raw_head().await.unwrap();
+        let framing = FastFraming { chunked: true, content_length: None };
+        http_stream.accept_fast_head(fast(head, framing, None));
+        assert_eq!(http_stream.read_body_bytes().await.unwrap().unwrap(), "abc");
+        assert!(http_stream.read_body_bytes().await.unwrap().is_none());
+        assert!(http_stream.is_body_done());
+    }
+
+    #[tokio::test]
+    async fn a_scanned_connection_close_ends_keepalive() {
+        let head = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let mut http_stream = HttpSession::new(Box::new(Builder::new().read(head).build()));
+        http_stream.read_raw_head().await.unwrap();
+        let framing = FastFraming { chunked: false, content_length: Some(0) };
+        http_stream.accept_fast_head(fast(head, framing, Some("close")));
+        assert!(http_stream.read_body_bytes().await.unwrap().is_none());
+        http_stream.respect_keepalive();
+        assert!(!http_stream.will_keepalive());
+    }
+
+    #[tokio::test]
+    async fn a_raw_head_the_classic_parser_reads_gives_the_same_response() {
+        let input = b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nX-A: 1\r\n\r\nno";
+        let mut http_stream = HttpSession::new(Box::new(Builder::new().read(input).build()));
+        http_stream.read_raw_head().await.unwrap();
+        http_stream.reparse_raw_head();
+        let header = http_stream.read_resp_header_parts().await.unwrap();
+        assert_eq!(header.status, 404);
+        assert_eq!(header.headers["x-a"], "1");
+        assert_eq!(http_stream.read_body_bytes().await.unwrap().unwrap(), "no");
+    }
+
+    #[tokio::test]
+    async fn a_raw_request_head_is_written_as_given_and_a_head_request_has_no_body() {
+        let request = b"HEAD / HTTP/1.1\r\nhost: a\r\n\r\n";
+        let mock = Builder::new()
+            .write(request)
+            .read(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n")
+            .build();
+        let mut http_stream = HttpSession::new(Box::new(mock));
+        assert_eq!(http_stream.write_request_head_raw(request, true).await.unwrap(), request.len());
+        http_stream.read_response().await.unwrap();
+        http_stream.respect_keepalive();
+        assert!(http_stream.read_body_bytes().await.unwrap().is_none());
+        assert!(http_stream.is_body_done());
     }
 
     #[tokio::test]

@@ -180,6 +180,12 @@ connection-pool experiments:
   itself as the session's response (status, version, `Connection`, framing; no `ResponseHeader` is built), and
   `reparse_raw_head` leaves the bytes to `read_response` for a head the caller does not take. Body reading, keepalive and reuse
   then work as for a parsed response.
+- `protocols/http/v1/client.rs` `write_request_head_raw` writes a request head the caller rendered itself (a request without a body and
+  without a `Connection` field) and leaves the session as the noted write leaves it. `protocols/http/v1/server.rs`
+  `render_final_response_head` and `render_informational_head` render a response head as a session writes it (title-cased names,
+  `Date` and `Connection` last for a final response) for a caller that writes the response itself.
+- `connectors/http/mod.rs` keeps its HTTP/1 connector in an `Arc` and hands it out (`Connector::h1`; `HttpProxy::upstream_h1_connector` in
+  `pingora-proxy`), so a caller that drives HTTP/1 upstream sessions itself reuses the idle connections of the proxy's pool.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.
