@@ -653,6 +653,7 @@ fn runtime_config(
         management: Some(Management {
             bind: management_address,
             ui_dir: None,
+            token_file: None,
         }),
         registry: None,
         stats: None,
@@ -696,6 +697,7 @@ fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr)
         management: Some(Management {
             bind: management_address,
             ui_dir: None,
+            token_file: None,
         }),
         registry: None,
         stats: None,
@@ -770,6 +772,7 @@ fn handoff_runtime_config(
         management: Some(Management {
             bind: management_address,
             ui_dir: None,
+            token_file: None,
         }),
         stats: Some(Stats {
             binds: stats_addresses.to_vec(),

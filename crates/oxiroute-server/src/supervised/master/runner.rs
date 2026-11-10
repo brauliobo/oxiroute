@@ -52,6 +52,7 @@ impl MasterRunner {
         document: &ResolvedConfigDocument,
     ) -> Result<(), Box<dyn Error>> {
         let config = &document.validated_config;
+        oxiroute_server::apply_log_filter(config.as_draft().log_filter.as_deref());
         let reservations = ListenerReservations::prepare(config, None)?;
         let listeners = reservations.clone().into_stable_listeners(config)?;
         let mut book = ListenerBook::new(reservations, listeners.manifest().clone());
@@ -358,6 +359,7 @@ impl MasterRunner {
         book.begin(reservations, manifest, &changes, &revision);
         reports.candidate_file = Some(file.clone());
         reports.accept(master);
+        oxiroute_server::apply_log_filter(new_config.as_draft().log_filter.as_deref());
         begin_retirement(master, catalog, reports);
         if let Err(error) =
             master.replace_with_listeners(factory, candidate, listeners, Instant::now())

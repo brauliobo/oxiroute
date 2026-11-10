@@ -208,6 +208,10 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
                 span Prebuilt UI directory
                 input(type="text" :value="draft.management.ui_dir ?? ''" placeholder="/opt/oxiroute/ui/dist" @input="setManagementUiDir")
                 small Optional; empty writes null.
+              label.field(data-field="management.token_file")
+                span Management token file
+                input(type="text" :value="draft.management.token_file ?? ''" placeholder="/etc/oxiroute/management.token" @input="setManagementTokenFile")
+                small Optional; empty falls back to OXIROUTE_MANAGEMENT_TOKEN_FILE. The token itself is never stored here.
 
           template(v-else-if="selectedKey === 'stats'")
             header.form-heading
@@ -703,6 +707,14 @@ function toggleManagement(event: Event): void {
 
 function setManagementUiDir(event: Event): void {
   if (draft.value?.management) draft.value.management.ui_dir = nullableInput(event)
+}
+
+function setManagementTokenFile(event: Event): void {
+  const management = draft.value?.management
+  if (!management) return
+  const value = nullableInput(event)
+  if (value === null) delete management.token_file
+  else management.token_file = value
 }
 
 function toggleStats(event: Event): void {

@@ -30,6 +30,8 @@ fn inventory_core_is_platform_independent_and_unbounded() {
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
+        audit: None,
+        log_filter: None,
     }
     .validate()
     .expect("valid empty inventory config");
@@ -223,6 +225,7 @@ fn public_stats_page_display_name_rejects_traffic_collision_but_hidden_names_coe
     config.management = Some(Management {
         bind: ([127, 0, 0, 1], 9_899).into(),
         ui_dir: None,
+        token_file: None,
     });
     config.stats = Some(Stats {
         binds: vec![([127, 0, 0, 1], 9_900).into()],
@@ -279,6 +282,8 @@ fn inventory_config(
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
+        audit: None,
+        log_filter: None,
     };
     config.upstream_pools.push(oxiroute_config::UpstreamPool {
         name: "origin".into(),

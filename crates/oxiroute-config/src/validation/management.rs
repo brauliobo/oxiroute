@@ -17,6 +17,10 @@ pub(super) fn validate_management(management: Option<&Management>) -> Result<(),
         });
     }
 
+    if let Some(path) = &management.token_file {
+        validate_file_path("management", "management", "token_file", path)?;
+    }
+
     Ok(())
 }
 

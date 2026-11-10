@@ -57,7 +57,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
     let identity = parse_identity(&mut arguments)?;
     let mut control = WorkerControl::adopt_at_process_entry(identity)?;
 
-    env_logger::init();
+    oxiroute_server::init_logging();
     let metadata = RuntimeMetadata::parse(&mut arguments)?;
     let mut adoption = control.receive()?;
     if adoption.phase() != ControlPhase::AdoptListeners {
@@ -105,6 +105,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
             error.into(),
         ));
     }
+    oxiroute_server::apply_log_filter(document.validated_config.as_draft().log_filter.as_deref());
     let startup_deadline = Instant::now() + LIFECYCLE_PHASE_TIMEOUT;
     let manager = GenerationManager::new_supervised();
     let candidate =

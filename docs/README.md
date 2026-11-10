@@ -35,6 +35,8 @@ workflow are recorded in the [documentation plan](DOCUMENTATION_PLAN.md).
 - [Testing](developer/TESTING.md): test layers, focused commands, and release gates.
 - [Documentation maintenance](developer/DOCUMENTATION.md): status labels, examples, website content,
   and Remotion media.
+- [Environment variables](developer/ENV_TO_CONFIG.md): every variable the daemon reads and its
+  configuration option or reason to stay.
 - [Releasing](developer/RELEASING.md): versioning, packages, source archives, and Pages deployment.
 - [Security audit](developer/SECURITY_AUDIT.md): RustSec policy, lockfiles, dependency audits, and
   release-artifact secret checks.

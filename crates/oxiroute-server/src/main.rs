@@ -4,7 +4,7 @@ use std::{
     future::Future as _,
     io,
     panic::AssertUnwindSafe,
-    path::{Path, PathBuf},
+    path::Path,
     pin::Pin,
     process::ExitCode,
     sync::{
@@ -26,7 +26,7 @@ use hyper::{server::conn::http1, service::service_fn};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use log::{debug, error, info, warn};
 use oxiroute_acme::{AcmeOperation, Dns01Cancellation};
-use oxiroute_config::ListenerBind;
+use oxiroute_config::{Audit, ListenerBind};
 use oxiroute_rtmp::{
     MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RecorderErrorCode, RecorderPhase, RtmpClientSnapshot,
     RtmpControlHandle, RtmpRelayFailure, RtmpServiceHandle, RtmpSessionError, RtmpSessionRole,
@@ -105,6 +105,7 @@ fn build_management_api(
     coordinator: CanonicalConfigCoordinator,
     active_revision: EffectiveRevision,
     token_file: &Path,
+    audit: Option<&Audit>,
     ui_dir: Option<&Path>,
     mode: oxiroute_server::RuntimeMode,
 ) -> io::Result<RtmpManagementApi> {
@@ -113,7 +114,13 @@ fn build_management_api(
     } else {
         Ok(RtmpManagementApi::new(control, metrics, topology))
     }?;
-    api.with_config_coordinator_from_token_file(coordinator, active_revision, token_file, mode)
+    api.with_config_coordinator_from_token_file(
+        coordinator,
+        active_revision,
+        token_file,
+        audit,
+        mode,
+    )
 }
 
 fn main() -> ExitCode {
@@ -122,7 +129,7 @@ fn main() -> ExitCode {
         return exit_code;
     }
 
-    env_logger::init();
+    oxiroute_server::init_logging();
 
     let cli = Cli::parse_process();
     let result = match cli.command() {
@@ -391,18 +398,20 @@ fn serve_generation(
 ) -> Result<(), Box<dyn Error>> {
     let active_revision = generation.revision().candidate.clone();
     let config = generation.config().as_draft();
-    let management_token_file = if config.management.is_some() {
-        Some(PathBuf::from(
-            std::env::var_os("OXIROUTE_MANAGEMENT_TOKEN_FILE").ok_or_else(|| {
+    oxiroute_server::apply_log_filter(config.log_filter.as_deref());
+    let management_token_file = config
+        .management
+        .as_ref()
+        .map(|management| {
+            oxiroute_server::management_token_file(management).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    "authenticated configuration management requires OXIROUTE_MANAGEMENT_TOKEN_FILE",
+                    "authenticated configuration management requires management.token_file or \
+                     OXIROUTE_MANAGEMENT_TOKEN_FILE",
                 )
-            })?,
-        ))
-    } else {
-        None
-    };
+            })
+        })
+        .transpose()?;
 
     let aged_per_worker = aged_per_worker(config);
     let server_config = ServerConf {
@@ -479,6 +488,7 @@ fn serve_generation(
             management_token_file
                 .as_deref()
                 .expect("management token path was required above"),
+            config.audit.as_ref(),
             management.ui_dir.as_deref(),
             runtime_metrics.supervision_mode(),
         )?
@@ -501,6 +511,8 @@ fn serve_generation(
             .with_generation(Arc::clone(generation)),
         );
         info!("configured management API on {}", management.bind);
+    } else {
+        oxiroute_server::configure_audit(config.audit.as_ref());
     }
     if let Some(stats) = &config.stats {
         for (index, bind) in stats.binds.iter().enumerate() {

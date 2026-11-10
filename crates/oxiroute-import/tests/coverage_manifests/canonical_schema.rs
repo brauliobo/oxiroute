@@ -98,6 +98,8 @@ fn exclude_nonintegrated_component_controls(
         "upstream_pools[].registration",
         "upstream_pools[].canary",
         "retirement",
+        "audit",
+        "log_filter",
         "listener_workers",
         "http_fast_lane",
         "connection_scheduling",

@@ -61,6 +61,7 @@ pub(super) async fn reload_reverse_h3_while_a_request_is_in_flight(hold: Duratio
     config.management = Some(Management {
         bind: management_address,
         ui_dir: None,
+        token_file: None,
     });
     let active_config = config.clone().validate().expect("valid active H3 config");
     let mut server = process_support::ServerProcess::start(&active_config, Some(TEST_TOKEN));

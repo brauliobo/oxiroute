@@ -1,4 +1,5 @@
 pub(crate) mod access_record;
+pub(crate) mod log_filter;
 pub(crate) mod logging;
 pub(crate) mod monitoring;
 pub(crate) mod operational_event;

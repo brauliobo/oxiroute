@@ -275,6 +275,7 @@ fn characterization_config(
     config.management = Some(Management {
         bind: management_address,
         ui_dir: None,
+        token_file: None,
     });
     config.listeners = vec![Listener {
         name: "phase6-edge".into(),

@@ -408,6 +408,7 @@ fn tcp_config(
         management: Some(Management {
             bind: management_address,
             ui_dir: None,
+            token_file: None,
         }),
         listeners: vec![Listener {
             name: "tcp".into(),

@@ -32,9 +32,15 @@ return {
   version = 1,
   max_connections = 4096,
   listener_workers = 4,
+  log_filter = "info,oxiroute::audit=debug",
   management = {
     bind = "127.0.0.1:9080",
     ui_dir = "./ui/dist",
+    token_file = "/etc/oxiroute/management.token",
+  },
+  audit = {
+    dir = "/var/lib/oxiroute/audit",
+    max_records = 10000,
   },
   stats = {
     binds = { "127.0.0.1:8404", "[::1]:8404" },
@@ -318,10 +324,32 @@ Current constraints:
   `drain_deadline_ms` of an HTTP, forward proxy or L4 service only raises that deadline and never
   lowers it. The values are read from the generation being replaced when it retires; an apply
   that introduces the keys retires a generation that has none and uses the defaults.
+- Root `log_filter` is an optional log verbosity in `RUST_LOG` syntax without regex filters: comma-separated
+  directives, each a level (`off`, `error`, `warn`, `info`, `debug`, `trace`) or `module::path=level`, at most
+  1024 bytes. When it is set it replaces the `RUST_LOG` environment variable, which stays the fallback; when
+  neither is set only errors are logged. The supervised master applies it when it starts and on every accepted
+  reload; each supervised worker applies its own generation's value at start (workers do not inherit
+  `RUST_LOG`), and the direct runtime applies it with each generation, so a draining generation shares the
+  process-wide filter.
 - `management` is optional and MUST use a loopback IP with a nonzero port. The current
   configuration routes use bearer authentication, but the schema does not expose a remote
   management mode.
 - `management.ui_dir` optionally points to a prebuilt Vue distribution loaded into memory at daemon startup.
+- `management.token_file` optionally names the file that holds the management bearer token (an
+  absolute normalized path; the file must be a regular no-follow file of mode `0400` or `0600`, and
+  the token itself is never configuration). When it is omitted the daemon reads the path from the
+  `OXIROUTE_MANAGEMENT_TOKEN_FILE` environment variable, and a configured `management` listener
+  without either refuses to start. The configured value wins over the variable. The CLI client reads
+  its own token path from `--token-file` or the variable, never from the daemon configuration.
+- `audit` is optional and sets where the durable management audit log lives and how much of it is
+  retained: `dir` (absolute directory; default an `audit` directory next to the management token file,
+  or in-memory records when there is no token file), `max_records` (1 to 100000, default 10000),
+  `max_record_bytes` (1 to 65536, default 16384, at most `max_file_bytes`), `max_file_bytes` (1 to
+  16777216, default 1048576), `max_total_bytes` (1 to 134217728, default 8388608, at least
+  `max_file_bytes`) and `max_rotated_files` (1 to 7, default 7). An omitted key falls back to the
+  matching deprecated `OXIROUTE_AUDIT_DIR` / `OXIROUTE_AUDIT_MAX_*` environment variable (values above
+  the maximum are clamped, unparsable values are ignored), then to the default. The settings are
+  read when a generation starts, so a change applies with the next reload.
 - RTMP VOD sources are named local roots or HTTP/HTTPS origins. VOD paths are relative, no-follow,
   single-range objects with bounded file size, duration, and concurrent sessions. HTTP origins are
   resolved and checked against the RTMP service outbound policy before activation.

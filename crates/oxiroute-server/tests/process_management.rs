@@ -981,6 +981,7 @@ async fn built_process_replaces_generation_and_reuses_existing_listener_reservat
     config.management = Some(Management {
         bind: management_bind,
         ui_dir: None,
+        token_file: None,
     });
     config.stats = Some(Stats {
         binds: vec![original_bind],
@@ -1963,6 +1964,7 @@ async fn unix_listener_mode_change_is_saved_as_restart_required_without_mutating
     active.management = Some(Management {
         bind: management_address,
         ui_dir: None,
+        token_file: None,
     });
     let mut server = ServerProcess::start(
         &active.clone().validate().expect("valid active config"),
@@ -2125,6 +2127,7 @@ fn management_config(
         management: Some(Management {
             bind: management_address,
             ui_dir,
+            token_file: None,
         }),
         registry: None,
         stats: None,

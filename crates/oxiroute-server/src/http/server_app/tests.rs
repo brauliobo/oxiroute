@@ -182,6 +182,8 @@ fn generation() -> Arc<RuntimeGeneration> {
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
+        audit: None,
+        log_filter: None,
     }
     .validate()
     .expect("valid HTTP test config");

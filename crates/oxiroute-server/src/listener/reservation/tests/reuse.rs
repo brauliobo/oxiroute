@@ -143,6 +143,7 @@ fn traffic_name_cannot_collide_with_management_reservation() {
     config.management = Some(oxiroute_config::Management {
         bind: management,
         ui_dir: None,
+        token_file: None,
     });
 
     let reservations = prepare_reservations(&config, None).expect("reservations");

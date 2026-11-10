@@ -1,4 +1,10 @@
-use std::{io, path::Path};
+use std::{
+    ffi::OsString,
+    io,
+    path::{Path, PathBuf},
+};
+
+use oxiroute_config::Management;
 
 use http::header::AUTHORIZATION;
 use pingora::protocols::http::ServerSession;
@@ -32,6 +38,22 @@ impl ManagementAuth {
     }
 }
 
+const TOKEN_FILE_ENV: &str = "OXIROUTE_MANAGEMENT_TOKEN_FILE";
+
+/// The management token file: `management.token_file`, then the `OXIROUTE_MANAGEMENT_TOKEN_FILE`
+/// environment variable.
+#[must_use]
+pub fn management_token_file(management: &Management) -> Option<PathBuf> {
+    token_file_or(management, std::env::var_os(TOKEN_FILE_ENV))
+}
+
+fn token_file_or(management: &Management, environment: Option<OsString>) -> Option<PathBuf> {
+    management
+        .token_file
+        .clone()
+        .or_else(|| environment.map(PathBuf::from))
+}
+
 pub(crate) fn preflight_management_token(path: &Path) -> io::Result<()> {
     SecureBearerToken::load(path)
         .map(drop)
@@ -53,4 +75,35 @@ fn management_token_error(error: SecureBearerTokenError) -> io::Error {
         }
     };
     io::Error::new(io::ErrorKind::PermissionDenied, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn management(token_file: Option<&str>) -> Management {
+        Management {
+            bind: "127.0.0.1:9900".parse().unwrap(),
+            ui_dir: None,
+            token_file: token_file.map(PathBuf::from),
+        }
+    }
+
+    #[test]
+    fn configured_token_file_wins_over_the_environment() {
+        let environment = Some(OsString::from("/env/token"));
+        assert_eq!(
+            token_file_or(&management(Some("/etc/token")), environment),
+            Some(PathBuf::from("/etc/token"))
+        );
+    }
+
+    #[test]
+    fn environment_names_the_token_file_when_the_configuration_does_not() {
+        assert_eq!(
+            token_file_or(&management(None), Some(OsString::from("/env/token"))),
+            Some(PathBuf::from("/env/token"))
+        );
+        assert_eq!(token_file_or(&management(None), None), None);
+    }
 }
