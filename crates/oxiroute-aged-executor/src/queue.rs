@@ -4,7 +4,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::Wake,
     time::{Duration, Instant},
@@ -138,10 +138,13 @@ pub(crate) struct Shared {
     age: Age,
     state: Mutex<State>,
     runner: AtomicWaker,
+    /// Whether the runner adds the time it spends polling tasks to `busy_ns`.
+    measured: bool,
+    busy_ns: AtomicU64,
 }
 
 impl Shared {
-    pub(crate) fn new(age: Age) -> Self {
+    pub(crate) fn new(age: Age, measured: bool) -> Self {
         let state = State {
             age: match age {
                 Age::Fixed(age) => age,
@@ -153,7 +156,24 @@ impl Shared {
             age,
             state: Mutex::new(state),
             runner: AtomicWaker::new(),
+            measured,
+            busy_ns: AtomicU64::new(0),
         }
+    }
+
+    pub(crate) fn measured(&self) -> bool {
+        self.measured
+    }
+
+    /// Only the runner, one thread, adds to it.
+    pub(crate) fn add_busy(&self, spent: Duration) {
+        let spent = u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX);
+        self.busy_ns
+            .store(self.busy_nanos().saturating_add(spent), Ordering::Relaxed);
+    }
+
+    pub(crate) fn busy_nanos(&self) -> u64 {
+        self.busy_ns.load(Ordering::Relaxed)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
