@@ -32,9 +32,6 @@ version = "1"
 [dependencies.rand]
 version = "0.8"
 
-[dependencies.thread_local]
-version = "1"
-
 [dependencies.tokio]
 version = "1"
 features = [

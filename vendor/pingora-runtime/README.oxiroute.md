@@ -10,6 +10,11 @@ OxiRoute's delta is limited to `src/lib.rs` and a path dependency on `crates/oxi
   calling worker winning ties, and gives the slot back when the task ends. Upstream's `current_handle().spawn` picks a
   worker at random, which leaves a few connections unevenly spread for the whole life of long keep-alive clients. On a
   work-stealing runtime, or outside a pool thread, it is a plain `spawn` on the current runtime.
+- The worker table of the calling thread is a std `thread_local!`, not the `thread_local` crate (dependency dropped):
+  the crate hands the entry of an exited thread to any later thread with the same identifier, so after a generation
+  replacement a worker of the new runtime inherited the shut down runtime's table and its listener tasks were spawned
+  on a dead runtime (upstream never hit it: only non-stealing runtimes read the table). A test builds and shuts down
+  runtimes in a loop.
 - The worker table keeps one load counter per worker. Tests cover the even spread, the slot hand-back, the tie rule and
   the work-stealing fallback (`cargo test --manifest-path vendor/pingora-runtime/Cargo.toml --offline`).
 

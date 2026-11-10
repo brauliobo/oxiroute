@@ -18,7 +18,7 @@
 //! multi-threaded one which provides work stealing. OxiRoute delta: `spawn_connection` hands a new connection
 //! to the least loaded worker of a non-stealing runtime.
 
-use once_cell::sync::{Lazy, OnceCell};
+use once_cell::sync::OnceCell;
 use oxiroute_aged_executor::AgedExecutor;
 use rand::Rng;
 use std::future::Future;
@@ -26,7 +26,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use thread_local::ThreadLocal;
 use tokio::runtime::{Builder, Handle};
 use tokio::sync::oneshot::{channel, Sender};
 
@@ -83,11 +82,20 @@ struct Local {
     index: usize,
 }
 
-static CURRENT_HANDLE: Lazy<ThreadLocal<Local>> = Lazy::new(ThreadLocal::new);
+// A std thread local: the `thread_local` crate keeps an entry per thread identifier and hands it to any later thread
+// that reuses the identifier, which would give a worker of a new runtime the worker table of a shut down one.
+thread_local! {
+    static CURRENT_HANDLE: std::cell::OnceCell<Local> = const { std::cell::OnceCell::new() };
+}
+
+/// The worker table and index of the calling thread when it is a worker of a non-stealing runtime.
+fn current_worker() -> Option<(Pools, usize)> {
+    CURRENT_HANDLE.with(|local| local.get().map(|local| (local.pools.clone(), local.index)))
+}
 
 pub fn current_handle() -> Handle {
-    if let Some(local) = CURRENT_HANDLE.get() {
-        let pools = local.pools.get().unwrap();
+    if let Some((pools, _)) = current_worker() {
+        let pools = pools.get().unwrap();
         let mut rng = rand::thread_rng();
         let index = rng.gen_range(0..pools.len());
         pools[index].handle.clone()
@@ -115,19 +123,19 @@ pub fn spawn_connection<F>(future: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let Some(local) = CURRENT_HANDLE.get() else {
+    let Some((worker_pools, own)) = current_worker() else {
         Handle::current().spawn(future);
         return;
     };
-    let pools = local.pools.get().unwrap();
+    let pools = worker_pools.get().unwrap();
     let count = pools.len();
     let index = (0..count)
-        .map(|step| (local.index + step) % count)
+        .map(|step| (own + step) % count)
         .min_by_key(|index| pools[*index].load.load(Ordering::Relaxed))
         .unwrap();
     pools[index].load.fetch_add(1, Ordering::Relaxed);
     let guard = LoadGuard {
-        pools: local.pools.clone(),
+        pools: worker_pools.clone(),
         index,
     };
     let task = async move {
@@ -187,9 +195,11 @@ impl NoStealRuntime {
             let join = std::thread::Builder::new()
                 .name(self.name.clone())
                 .spawn(move || {
-                    CURRENT_HANDLE.get_or(|| Local {
-                        pools: pools_ref,
-                        index,
+                    CURRENT_HANDLE.with(|local| {
+                        let _ = local.set(Local {
+                            pools: pools_ref,
+                            index,
+                        });
                     });
                     if let Ok(timeout) = rt.block_on(rx) {
                         rt.shutdown_timeout(timeout);
@@ -349,6 +359,19 @@ mod tests {
         assert_eq!(oxiroute_aged_executor::AgedExecutor::process_stats().tasks, 64);
         release.notify_waiters();
         runtime.shutdown_timeout(Duration::from_secs(1));
+    }
+
+    /// A thread started after a runtime was shut down must not inherit that runtime's worker table, even when it
+    /// reuses the identifier of one of its threads.
+    #[test]
+    fn workers_of_a_new_runtime_do_not_inherit_a_shut_down_runtime() {
+        for round in 0..8 {
+            let runtime = Runtime::new_no_steal(2, "reuse");
+            let (per_thread, release) = spread(&runtime, 4);
+            assert_eq!(per_thread.len(), 2, "round {round}: {per_thread:?}");
+            release.notify_waiters();
+            runtime.shutdown_timeout(Duration::from_secs(1));
+        }
     }
 
     #[test]
