@@ -96,7 +96,7 @@ pub use routing::{
     PoolHealthSnapshot, RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint,
     ServerAdminState, ServerOrigin,
 };
-pub use rtmp::api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
+pub use rtmp::api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp, management_token_file};
 pub use service_plan::{
     HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
     runtime_plan, runtime_plan_with_passive_failure_policy, service_specs, validate_runtime_plan,
