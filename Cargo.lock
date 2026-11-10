@@ -2767,6 +2767,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxiroute-aged-executor"
+version = "6.3.0"
+dependencies = [
+ "atomic-waker",
+ "slab",
+ "tokio",
+]
+
+[[package]]
 name = "oxiroute-cache"
 version = "6.3.0"
 dependencies = [
