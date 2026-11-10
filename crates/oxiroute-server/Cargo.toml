@@ -56,7 +56,7 @@ serde_json.workspace = true
 signal-hook.workspace = true
 thiserror.workspace = true
 time.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 tokio-openssl.workspace = true
 x509-parser.workspace = true
 zeroize.workspace = true

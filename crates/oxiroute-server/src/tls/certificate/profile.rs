@@ -362,6 +362,9 @@ impl TlsProfilePlan {
             )
         });
         self.client_auth.apply(&self.name, &mut settings)?;
+        if let Some(pool) = super::super::handshake_pool::pool() {
+            settings.set_handshake_executor(Arc::clone(pool) as _);
+        }
         Ok(settings)
     }
 }

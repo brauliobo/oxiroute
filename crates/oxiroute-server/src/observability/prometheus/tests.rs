@@ -38,6 +38,9 @@ fn exposition_contains_operational_families_without_listener_binds() {
     assert!(output.contains("listener=\"public\\\"edge\""));
     assert!(output.contains("oxiroute_generation_activations_total"));
     assert!(output.contains("oxiroute_generation_retired 0"));
+    assert!(output.contains("oxiroute_tls_handshake_pool_queue_depth 0"));
+    assert!(output.contains("oxiroute_tls_handshake_pool_started_total "));
+    assert!(output.contains("oxiroute_tls_handshake_pool_rejected_total 0"));
     assert!(output.contains("oxiroute_generation_forced_close_total{reason=\"drain_deadline\"} 0"));
     assert!(output.contains("oxiroute_generation_forced_close_total{reason=\"shutdown\"} 0"));
     assert!(output.contains("oxiroute_generation_retired_cap_deferrals_total 0"));
