@@ -258,8 +258,8 @@ pub(super) async fn execute_route_action(
                 }
                 uri = internal_uri(&path, &uri)?;
                 let request = session.req_header_mut();
-                request.method = method.clone();
-                request.uri = uri.clone();
+                request.set_method(method.clone());
+                request.set_uri(uri.clone());
                 let Some(next) = service.select_route(ctx.authority.as_ref(), &uri, &method) else {
                     respond_status(session, 404).await?;
                     return Ok(true);

@@ -147,6 +147,20 @@ impl<T, const CAPACITY: usize> Sender<'_, T, CAPACITY> {
         !state.sender_open || !state.receiver_alive || !state.receiver_accepting
     }
 
+    /// Resolves when the receiver stops accepting values. Shares the sender waker with `reserve()`, so
+    /// it must not be polled while a reservation is pending.
+    pub(crate) async fn closed(&self) {
+        std::future::poll_fn(|cx| {
+            let state = self.channel.state();
+            if !state.receiver_alive || !state.receiver_accepting {
+                return Poll::Ready(());
+            }
+            self.channel.sender_waker.register(cx.waker());
+            Poll::Pending
+        })
+        .await
+    }
+
     pub(crate) fn close(&self) {
         let wake = {
             let mut state = self.channel.state();
@@ -465,6 +479,21 @@ mod tests {
             assert_eq!(receiver.recv().await, Some(value));
         }
         assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[tokio::test]
+    async fn closed_resolves_when_the_receiver_goes_away() {
+        let mut channel = Channel::<usize, 1>::new();
+        let (sender, receiver) = channel.split();
+        let wakes = Arc::new(WakeCounter::default());
+        let closed_waker = waker(Arc::clone(&wakes));
+        let mut context = Context::from_waker(&closed_waker);
+        let mut closed = Box::pin(sender.closed());
+
+        assert!(closed.as_mut().poll(&mut context).is_pending());
+        drop(receiver);
+        assert_eq!(wakes.count(), 1);
+        assert!(closed.as_mut().poll(&mut context).is_ready());
     }
 
     #[tokio::test]

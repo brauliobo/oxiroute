@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "pingora-core"
-version = "0.8.1"
+version = "0.9.1"
 authors = ["Yuchen Wu <yuchen@cloudflare.com>"]
 build = false
 exclude = ["tests/*"]
@@ -46,6 +46,15 @@ boringssl = [
 ]
 connection_filter = []
 default = []
+dial9 = ["pingora-runtime/dial9"]
+dial9-cpu-profiling = [
+    "dial9",
+    "pingora-runtime/dial9-cpu-profiling",
+]
+dial9-worker-s3 = [
+    "dial9",
+    "pingora-runtime/dial9-worker-s3",
+]
 openssl = [
     "dep:foreign-types",
     "pingora-openssl",
@@ -53,12 +62,6 @@ openssl = [
 ]
 openssl_derived = ["any_tls"]
 patched_http1 = ["pingora-http/patched_http1"]
-rustls = [
-    "pingora-rustls",
-    "any_tls",
-    "dep:x509-parser",
-    "ouroboros",
-]
 s2n = [
     "pingora-s2n",
     "any_tls",
@@ -67,6 +70,10 @@ s2n = [
     "lru",
 ]
 sentry = ["dep:sentry"]
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(feature, values("rustls"))']
 
 [lib]
 name = "pingora_core"
@@ -124,7 +131,7 @@ version = "0.3"
 optional = true
 
 [dependencies.h2]
-version = ">=0.4.11"
+version = ">=0.4.16"
 
 [dependencies.http]
 version = "1"
@@ -163,39 +170,31 @@ features = ["arc_lock"]
 version = "2.1"
 
 [dependencies.pingora-boringssl]
-version = "0.8.1"
+version = "0.9.1"
 optional = true
 
 [dependencies.pingora-error]
-version = "0.8.1"
+version = "0.9.1"
 
 [dependencies.pingora-http]
-version = "0.8.1"
+version = "0.9.1"
 
 [dependencies.pingora-openssl]
-version = "0.8.1"
+version = "0.9.1"
 optional = true
 
 [dependencies.pingora-pool]
-version = "0.8.1"
+version = "0.9.1"
 
 [dependencies.pingora-runtime]
-version = "0.8.1"
-
-[dependencies.pingora-rustls]
-version = "0.8.1"
-optional = true
+version = "0.9.1"
 
 [dependencies.pingora-s2n]
-version = "0.8.1"
+version = "0.9.1"
 optional = true
 
 [dependencies.pingora-timeout]
-version = "0.8.1"
-
-[dependencies.prometheus]
-version = "0.14"
-default-features = false
+version = "0.9.1"
 
 [dependencies.rand]
 version = "0.8"
@@ -260,13 +259,17 @@ version = "0.18.1"
 optional = true
 
 [dependencies.zstd]
-version = "0"
+version = "0.14.3"
+
+[dev-dependencies.criterion]
+version = "0.7"
+features = ["async_tokio"]
 
 [dev-dependencies.env_logger]
 version = "0.11"
 
 [dev-dependencies.h2]
-version = ">=0.4.11"
+version = ">=0.4.16"
 features = ["unstable"]
 
 [dev-dependencies.http-body-util]
@@ -304,6 +307,12 @@ version = "0.23.0"
 
 [dev-dependencies.rustls]
 version = "0.23"
+features = [
+    "logging",
+    "std",
+    "tls12",
+]
+default-features = false
 
 [dev-dependencies.tokio-stream]
 version = "0.1"
@@ -312,14 +321,24 @@ features = ["full"]
 [target."cfg(unix)".dependencies.daemonix]
 version = "0.1.0"
 
+[target."cfg(unix)".dependencies.flurry]
+version = "0.5"
+
 [target."cfg(unix)".dependencies.nix]
-version = "~0.24.3"
+version = "~0.31.1"
+features = [
+    "socket",
+    "net",
+    "fs",
+    "uio",
+]
 
 [target."cfg(unix)".dev-dependencies.hyperlocal]
 version = "0.9"
 
 [target."cfg(unix)".dev-dependencies.jemallocator]
-version = "0.5"
+version = "0.6"
+package = "tikv-jemallocator"
 
 [target."cfg(windows)".dependencies.windows-sys]
 version = "0.59.0"

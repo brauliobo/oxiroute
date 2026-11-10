@@ -34,6 +34,11 @@ struct Exchange {
     request_done: bool,
     /// The upstream response ended (or an upgraded connection ended on the client side).
     response_done: bool,
+    /// The upstream response was read to its end. A response the client finished first leaves bytes on the upstream
+    /// connection.
+    response_read: bool,
+    /// The request was written to the upstream in full. A failed write leaves a partial request on the connection.
+    request_written: bool,
     /// The first error of writing the request to the upstream; it explains a later failure to read the response.
     send_error: Option<Box<Error>>,
 }
@@ -64,7 +69,7 @@ where
     {
         session.as_mut().enable_retry_buffering();
         match self.relay_inline(session, client_session, ctx).await {
-            Ok(reuse_downstream) => (reuse_downstream, true, None),
+            Ok((reuse_downstream, reuse_upstream)) => (reuse_downstream, reuse_upstream, None),
             Err(error) => (false, false, Some(error)),
         }
     }
@@ -74,7 +79,7 @@ where
         session: &mut Session,
         client_session: &mut HttpSessionV1,
         ctx: &mut SV::CTX,
-    ) -> Result<bool>
+    ) -> Result<(bool, bool)>
     where
         SV: ProxyHttp + Send + Sync,
         SV::CTX: Send + Sync,
@@ -83,6 +88,8 @@ where
             reading_done: session.as_mut().is_body_done(),
             request_done: false,
             response_done: false,
+            response_read: false,
+            request_written: true,
             send_error: None,
         };
         // A retried request sends what the former attempt read, and a request without a body sends its end.
@@ -137,14 +144,15 @@ where
         if !exchange.request_done {
             send_body_to1(client_session, None).await?;
         }
+        let reuse_upstream = exchange.response_read && exchange.request_written;
         match session.as_mut().finish_body().await {
             Ok(_) => {
                 debug!("finished sending body to downstream");
-                Ok(true)
+                Ok((true, reuse_upstream))
             }
             Err(e) => {
                 error!("Error finish sending body to downstream: {}", e);
-                Ok(false)
+                Ok((false, reuse_upstream))
             }
         }
     }
@@ -222,6 +230,7 @@ where
                 // The upstream takes no more of the request: stop reading the client and wait for the answer.
                 exchange.request_done = true;
                 exchange.reading_done = true;
+                exchange.request_written = false;
                 exchange.send_error = Some(e);
             }
         }
@@ -274,6 +283,14 @@ where
 
         let mut filtered_tasks = HttpTaskBatch::new();
         for mut task in tasks {
+            #[cfg(feature = "upstream_modules")]
+            if let HttpTask::Header(header, end_of_stream) = &task {
+                self.inner
+                    .adjust_upstream_modules(session, header, *end_of_stream, ctx)
+                    .await?;
+            }
+            #[cfg(feature = "upstream_modules")]
+            session.upstream_modules_filter_task(&mut task).await?;
             session.upstream_compression.response_filter(&mut task);
             let task = self
                 .h1_response_filter(
@@ -299,10 +316,92 @@ where
         // An unsuccessful upgrade response, or the end of an upgraded connection, can complete the request body.
         exchange.reading_done |= session.is_body_done();
         exchange.response_done |= response_done || ended;
+        exchange.response_read |= ended;
         Ok(())
     }
 
     fn failed(exchange: &mut Exchange, e: Box<Error>) -> HttpTask {
         HttpTask::Failed(exchange.send_error.take().unwrap_or(e).into_up())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    struct Relay;
+
+    impl ProxyHttp for Relay {
+        type CTX = ();
+
+        fn new_ctx(&self) -> Self::CTX {}
+
+        async fn upstream_peer(
+            &self,
+            _session: &mut Session,
+            _ctx: &mut Self::CTX,
+        ) -> Result<Box<HttpPeer>> {
+            unreachable!("the relay tests do not select an upstream")
+        }
+    }
+
+    /// Relays one request to an origin that answers it in full and goes away before the client sends `body`.
+    async fn relay(
+        request: &'static [u8],
+        body: &'static [u8],
+    ) -> (bool, bool, Option<Box<Error>>) {
+        let (mut client, server) = tokio::io::duplex(8192);
+        client.write_all(request).await.unwrap();
+        let mut session = Session::new_h1_with_modules(Box::new(server), &HttpModules::new());
+        session.as_downstream_mut().read_request().await.unwrap();
+
+        let (proxy_io, mut origin_io) = tokio::io::duplex(8192);
+        let origin = tokio::spawn(async move {
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                head.push(origin_io.read_u8().await.unwrap());
+            }
+            origin_io
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let mut upstream = HttpSessionV1::new(Box::new(proxy_io));
+        upstream
+            .write_request_header_ref(session.req_header())
+            .await
+            .unwrap();
+        origin.await.unwrap();
+        client.write_all(body).await.unwrap();
+
+        let proxy = HttpProxy::new(Relay, Arc::new(ServerConf::default()));
+        proxy
+            .proxy_1to1_inline(&mut session, &mut upstream, &mut ())
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_complete_exchange_leaves_the_upstream_reusable() {
+        let (_, reuse_upstream, error) =
+            relay(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n", b"").await;
+
+        assert!(error.is_none(), "{error:?}");
+        assert!(reuse_upstream);
+    }
+
+    #[tokio::test]
+    async fn a_failed_request_write_leaves_the_upstream_unreusable() {
+        let (_, reuse_upstream, error) = relay(
+            b"POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 4\r\n\r\n",
+            b"abcd",
+        )
+        .await;
+
+        assert!(error.is_none(), "{error:?}");
+        assert!(!reuse_upstream);
     }
 }
