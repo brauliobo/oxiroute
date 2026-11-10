@@ -790,7 +790,7 @@ where
     async fn process_request(
         self: &Arc<Self>,
         mut session: Session,
-        mut ctx: <SV as ProxyHttp>::CTX,
+        ctx: &mut <SV as ProxyHttp>::CTX,
     ) -> Option<ReusedHttpStream>
     where
         SV: ProxyHttp + Send + Sync + 'static,
@@ -798,11 +798,11 @@ where
     {
         if let Err(e) = self
             .inner
-            .early_request_filter(&mut session, &mut ctx)
+            .early_request_filter(&mut session, ctx)
             .await
         {
             return self
-                .handle_error(session, &mut ctx, e, "Fail to early filter request:")
+                .handle_error(session, ctx, e, "Fail to early filter request:")
                 .await;
         }
 
@@ -826,18 +826,18 @@ where
             return self
                 .handle_error(
                     session,
-                    &mut ctx,
+                    ctx,
                     e,
                     "Failed in downstream modules request filter:",
                 )
                 .await;
         }
 
-        match self.inner.request_filter(&mut session, &mut ctx).await {
+        match self.inner.request_filter(&mut session, ctx).await {
             Ok(response_sent) => {
                 if response_sent {
                     // TODO: log error
-                    self.inner.logging(&mut session, None, &mut ctx).await;
+                    self.inner.logging(&mut session, None, ctx).await;
                     self.cleanup_sub_req(&mut session);
                     let persistent_settings = HttpPersistentSettings::for_session(&session);
                     return session
@@ -852,7 +852,7 @@ where
             }
             Err(e) => {
                 return self
-                    .handle_error(session, &mut ctx, e, "Fail to filter request:")
+                    .handle_error(session, ctx, e, "Fail to filter request:")
                     .await;
             }
         }
@@ -868,7 +868,7 @@ where
                             return self
                                 .handle_error(
                                     session,
-                                    &mut ctx,
+                                    ctx,
                                     Error::new_down(HTTPStatus(413)),
                                     "Buffered request body exceeds its configured limit:",
                                 )
@@ -880,7 +880,7 @@ where
                         return self
                             .handle_error(
                                 session,
-                                &mut ctx,
+                                ctx,
                                 error,
                                 "Failed to buffer request body:",
                             )
@@ -890,9 +890,9 @@ where
             }
         }
 
-        if let Some((reuse, err)) = self.proxy_cache(&mut session, &mut ctx).await {
+        if let Some((reuse, err)) = self.proxy_cache(&mut session, ctx).await {
             // cache hit
-            return self.finish(session, &mut ctx, reuse, err).await;
+            return self.finish(session, ctx, reuse, err).await;
         }
         // either uncacheable, or cache miss
 
@@ -902,7 +902,7 @@ where
         // decide if the request is allowed to go to upstream
         match self
             .inner
-            .proxy_upstream_filter(&mut session, &mut ctx)
+            .proxy_upstream_filter(&mut session, ctx)
             .await
         {
             Ok(proxy_to_upstream) => {
@@ -920,7 +920,7 @@ where
                                 return self
                                     .handle_error(
                                         session,
-                                        &mut ctx,
+                                        ctx,
                                         e,
                                         "Error responding with Bad Gateway:",
                                     )
@@ -929,7 +929,7 @@ where
                         }
                     }
 
-                    return self.finish(session, &mut ctx, true, None).await;
+                    return self.finish(session, ctx, true, None).await;
                 }
                 /* else continue */
             }
@@ -941,7 +941,7 @@ where
                 return self
                     .handle_error(
                         session,
-                        &mut ctx,
+                        ctx,
                         e,
                         "Error deciding if we should proxy to upstream:",
                     )
@@ -957,7 +957,7 @@ where
         while retries < self.max_retries {
             retries += 1;
 
-            let (reuse, e) = self.proxy_to_upstream(&mut session, &mut ctx).await;
+            let (reuse, e) = self.proxy_to_upstream(&mut session, ctx).await;
             server_reuse = reuse;
 
             match e {
@@ -988,7 +988,7 @@ where
         // allow unwrap until if let chains
         #[allow(clippy::unnecessary_unwrap)]
         let serve_stale_result = if proxy_error.is_some() && session.cache.can_serve_stale_error() {
-            self.handle_stale_if_error(&mut session, &mut ctx, proxy_error.as_ref().unwrap())
+            self.handle_stale_if_error(&mut session, ctx, proxy_error.as_ref().unwrap())
                 .await
         } else {
             None
@@ -1012,7 +1012,7 @@ where
                 };
                 session.cache.disable(reason);
             }
-            let res = self.inner.fail_to_proxy(&mut session, e, &mut ctx).await;
+            let res = self.inner.fail_to_proxy(&mut session, e, ctx).await;
 
             // final error will have > 0 status unless downstream connection is dead
             if !self.inner.suppress_error_log(&session, &ctx, e) {
@@ -1028,7 +1028,7 @@ where
         }
 
         // logging() will be called in finish()
-        self.finish(session, &mut ctx, server_reuse, final_error)
+        self.finish(session, ctx, server_reuse, final_error)
             .await
     }
 
@@ -1119,8 +1119,8 @@ where
 
         session.subrequest_ctx.replace(sub_req_ctx);
         trace!("processing subrequest");
-        let ctx = self.inner.new_ctx();
-        self.process_request(session, ctx).await;
+        let mut ctx = Box::new(self.inner.new_ctx());
+        self.process_request(session, &mut ctx).await;
         trace!("subrequest done");
     }
 }
@@ -1256,8 +1256,9 @@ where
                 session.set_keepalive(None);
             }
 
-            let ctx = self.inner.new_ctx();
-            self.process_request(session, ctx).await
+            // On the heap, the context (about 2 KiB for a proxy) is stored once in the request future instead of twice.
+            let mut ctx = Box::new(self.inner.new_ctx());
+            self.process_request(session, &mut ctx).await
         }
     }
 
