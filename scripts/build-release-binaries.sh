@@ -32,7 +32,7 @@ flavour=${FLAVOUR:-unwind}
 [[ ${flavour} == unwind || ${flavour} == abort ]] || { echo "FLAVOUR must be unwind or abort" >&2; exit 2; }
 pgo_script=${repo}/benchmarks/scripts/pgo.sh
 bolt_script=${repo}/benchmarks/scripts/bolt.sh
-work=${PGO_WORK:-${HOME}/.cache/oxiroute-pgo}
+work=${PGO_WORK:-${XDG_STATE_HOME:-${HOME}/.local/state}/oxiroute-pgo}
 cargo_profile=release
 suffix=
 if [[ ${flavour} == abort ]]; then
