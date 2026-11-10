@@ -1,6 +1,6 @@
 pkgbase = oxiroute-bin
 	pkgdesc = Pingora-based HTTP, TCP, and RTMP proxy runtime (prebuilt, profile-guided release binaries)
-	pkgver = 6.3.0
+	pkgver = 6.3.1
 	pkgrel = 1
 	url = https://github.com/brauliobo/oxiroute
 	install = oxiroute.install
@@ -11,14 +11,14 @@ pkgbase = oxiroute-bin
 	depends = glibc
 	depends = systemd>=257
 	optdepends = certbot: provide certificate lineages consumed by configured Certbot sources
-	provides = oxiroute=6.3.0
+	provides = oxiroute=6.3.1
 	conflicts = oxiroute
 	options = !debug
 	backup = etc/oxiroute/oxiroute.env
 	backup = etc/oxiroute/oxiroute.kdl
 	backup = etc/oxiroute/oxiroute.lua
-	source = oxiroute-6.3.0-x86_64-unknown-linux-gnu.tar.gz::https://github.com/brauliobo/oxiroute/releases/download/v6.3.0/oxiroute-6.3.0-x86_64-unknown-linux-gnu.tar.gz
-	source = management-cli-6.3.0.md::https://raw.githubusercontent.com/brauliobo/oxiroute/v6.3.0/docs/MANAGEMENT_CLI.md
+	source = oxiroute-6.3.1-x86_64-unknown-linux-gnu.tar.gz::https://github.com/brauliobo/oxiroute/releases/download/v6.3.1/oxiroute-6.3.1-x86_64-unknown-linux-gnu.tar.gz
+	source = management-cli-6.3.1.md::https://raw.githubusercontent.com/brauliobo/oxiroute/v6.3.1/docs/MANAGEMENT_CLI.md
 	source = oxiroute.service
 	source = oxiroute.sysusers
 	source = oxiroute.tmpfiles
@@ -26,7 +26,7 @@ pkgbase = oxiroute-bin
 	source = oxiroute.kdl
 	source = oxiroute.lua
 	source = README.md
-	sha256sums = b411a15fb77913c6709da93dcc820da39d411083ea4719afa6501eccaee34ac0
+	sha256sums = 2e1bdbd2beecbe326ab0ec62c46fb3d9c2840deedf98eabc37457d309e8ff0ba
 	sha256sums = ffb543ff6043239bd1ceb86395a5de51a6571438485ab3f3b027893baee5884b
 	sha256sums = 574eab59174656b0813499ed1c9bca8be5a6e2cf69a98e8327f376e1c0b83b1b
 	sha256sums = ece087105e74910e9d4a6c3551082828378ac5c62fc15e97a755a3bc93020e72
