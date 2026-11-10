@@ -23,23 +23,27 @@ pub(crate) type Task = Pin<Box<dyn Future<Output = ()> + Send>>;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Age {
     Fixed(Duration),
-    /// This many times the time one pass over the ready tasks takes (their number times the recent time per poll,
-    /// the driver and everything else on the worker included), between [`Age::MIN`] and [`Age::MAX`]. Newest-first
-    /// only pays when the ready tasks are more than the caches hold, and then a pass is long: a fixed age shorter
-    /// than a pass turns the queue into first-in first-out, a longer one lets the tail grow with the load.
+    /// Up to this many times the time one pass over the ready tasks takes (their number times the recent time per
+    /// poll, the driver and everything else on the worker included), between [`Age::MIN`] and [`Age::MAX`]. Newest
+    /// first only pays when the ready tasks are more than the caches hold, and then a pass is long: a fixed age
+    /// shorter than a pass turns the queue into first-in first-out, a longer one lets the tail grow with the load.
+    /// With few ready tasks the age is one pass, so the order stays close to first-in first-out; it grows to the
+    /// full multiple between [`Age::RAMP_FROM`] and [`Age::RAMP_TO`] ready tasks.
     Adaptive(f64),
 }
 
 impl Age {
     /// Passes over the ready tasks an adaptive age lasts by default.
-    pub const DEFAULT_PASSES: f64 = 4.0;
+    pub const DEFAULT_PASSES: f64 = 3.0;
 
     #[must_use]
     pub fn adaptive() -> Self {
         Self::Adaptive(Self::DEFAULT_PASSES)
     }
 
-    pub const MIN: Duration = Duration::from_millis(1);
+    pub const MIN: Duration = Duration::from_micros(200);
+    pub const RAMP_FROM: f64 = 64.0;
+    pub const RAMP_TO: f64 = 256.0;
     pub const MAX: Duration = Duration::from_secs(1);
 }
 
@@ -86,8 +90,10 @@ struct State {
     closed: bool,
     /// The age in force: the configured one, or the adaptive one as of the last batch.
     age: Duration,
-    /// Smoothed time per poll in nanoseconds, the start of the previous batch and the polls made until then.
+    /// Smoothed time per poll in nanoseconds, smoothed number of ready tasks, the start of the previous batch and the
+    /// polls made until then.
     poll_ns: f64,
+    ready_avg: f64,
     last_batch: Option<(Instant, u64)>,
     /// The previous batch ended because nothing was ready, so the gap since it says nothing about the poll rate.
     idle: bool,
@@ -98,7 +104,7 @@ impl State {
     /// ready now.
     #[allow(clippy::cast_precision_loss)]
     fn adapt(&mut self, multiple: f64, now: Instant) {
-        const SMOOTHING: f64 = 8.0;
+        const SMOOTHING: f64 = 16.0;
         if let Some((started, polls)) = self.last_batch.filter(|_| !self.idle) {
             let done = self.polls - polls;
             if done > 0 {
@@ -112,8 +118,18 @@ impl State {
         }
         self.idle = false;
         self.last_batch = Some((now, self.polls));
+        // The ready count swings from batch to batch (a batch can leave nothing ready); an age that followed it would
+        // fall to first-in first-out whenever it dips.
         let ready = (self.ready.len() + self.inbox.len()) as f64;
-        self.age = Duration::from_secs_f64(multiple * ready * self.poll_ns / 1e9)
+        self.ready_avg = if self.ready_avg == 0.0 {
+            ready
+        } else {
+            self.ready_avg + (ready - self.ready_avg) / SMOOTHING
+        };
+        let ramp =
+            ((self.ready_avg - Age::RAMP_FROM) / (Age::RAMP_TO - Age::RAMP_FROM)).clamp(0.0, 1.0);
+        let passes = 1.0 + (multiple - 1.0).max(0.0) * ramp;
+        self.age = Duration::from_secs_f64(passes * self.ready_avg * self.poll_ns / 1e9)
             .clamp(Age::MIN, Age::MAX);
     }
 }

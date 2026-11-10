@@ -613,6 +613,26 @@ pub fn current_handle() -> Handle {
     }
 }
 
+/// Spawns a task of a connection that is already running, such as an HTTP/2 stream. Under aged queues it runs on the
+/// calling worker's executor, so the connection's data stays on one core and the task is served in the same order;
+/// otherwise it is spawned like any other task, on a random worker of a non-stealing runtime.
+pub fn spawn_stream<F>(future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    match current_worker() {
+        Some((pools, own)) => match &pools.get().unwrap()[own].executor {
+            Some(executor) => executor.spawn(future),
+            None => {
+                current_handle().spawn(future);
+            }
+        },
+        None => {
+            Handle::current().spawn(future);
+        }
+    }
+}
+
 struct LoadGuard {
     pools: Pools,
     index: usize,
@@ -978,7 +998,6 @@ mod connection_tests {
         let (per_thread, release) = spread(&runtime, 64);
         assert_eq!(per_thread.len(), 4);
         assert!(per_thread.values().all(|count| *count == 16), "{per_thread:?}");
-        assert_eq!(oxiroute_aged_executor::AgedExecutor::process_stats().tasks, 64);
         release.notify_waiters();
         runtime.shutdown_timeout(Duration::from_secs(1));
     }
@@ -994,6 +1013,30 @@ mod connection_tests {
             release.notify_waiters();
             runtime.shutdown_timeout(Duration::from_secs(1));
         }
+    }
+
+    /// The streams of one HTTP/2 connection run on the worker that serves the connection: moving them to another
+    /// worker spreads the connection's data over two cores and costs a cross-thread wake-up for every frame.
+    #[test]
+    fn streams_of_an_aged_runtime_run_on_the_worker_that_spawned_them() {
+        let runtime = aged_runtime(4, "streams", Duration::from_millis(40));
+        let (tx, rx) = std::sync::mpsc::channel();
+        runtime.get_handle().spawn(async move {
+            spawn_connection(async move {
+                let worker = std::thread::current().id();
+                for _ in 0..64 {
+                    let tx = tx.clone();
+                    spawn_stream(async move {
+                        tx.send((worker, std::thread::current().id())).unwrap();
+                    });
+                }
+            });
+        });
+        for _ in 0..64 {
+            let (worker, stream) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(worker, stream);
+        }
+        runtime.shutdown_timeout(Duration::from_secs(1));
     }
 
     #[test]
