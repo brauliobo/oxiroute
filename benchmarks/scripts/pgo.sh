@@ -2,6 +2,7 @@
 # Profile-guided optimisation of the release binary.
 #
 #   pgo.sh train        instrumented build, replay the R2 data-path lanes (no perf needed), merge into $PGO_PROFILE
+#   pgo.sh merge        merge the per-lane profiles of the last training into $PGO_PROFILE (lane weights, see below)
 #   pgo.sh build        release build that uses $PGO_PROFILE and fails if the compiler did not apply it
 #   pgo.sh plain        the same release build without a profile
 #   pgo.sh smoke BIN    start BIN on a generated configuration and push proxied requests through it
@@ -12,6 +13,9 @@
 # the compiler could not match and fails above PGO_MAX_MISSING_PCT. Train with the toolchain that builds.
 # llvm-profdata must read the compiler's raw-profile format: use the rustup `llvm-tools` component
 # (`rustup component add llvm-tools`), or point LLVM_PROFDATA at a compatible one.
+#
+# Every lane keeps its own merged profile ($PGO_WORK/lane/NAME.profdata), so the mix can be changed without training
+# again: PGO_LANES entries are NAME or NAME:WEIGHT (llvm-profdata -weighted-input, default 1); `merge` combines them.
 #
 # Environment: PGO_WORK (scratch and default profile location), PGO_PROFILE, PGO_LANES, PGO_SCALE (request-count
 # multiplier of every lane), PGO_JOBS, PGO_TARGET, LLVM_PROFDATA, CARGO_TARGET_DIR (final build only),
@@ -51,18 +55,31 @@ build_tool() {
 
 train() {
   [[ -x ${llvm_profdata} ]] || { echo "llvm-profdata not found at ${llvm_profdata}; rustup component add llvm-tools" >&2; exit 1; }
-  rm -rf "${work}/raw" "${work}/out" "${profile}"
-  mkdir -p "${work}/raw" "$(dirname -- "${profile}")"
+  rm -rf "${work}/raw" "${work}/lane" "${work}/out" "${profile}"
+  mkdir -p "${work}/lane" "$(dirname -- "${profile}")"
   RUSTFLAGS="${RUSTFLAGS:-} -Cprofile-generate=${work}/unused" CARGO_TARGET_DIR="${work}/target-gen" cargo_build
   build_tool
   default_cpus
-  for lane in ${lanes//,/ }; do
+  for entry in ${lanes//,/ }; do
+    local lane=${entry%%:*}
+    mkdir -p "${work}/raw/${lane}"
     OXIROUTE_BIN="${work}/target-gen/${target}/release/oxiroute" R2TOOL_BIN="${work}/target-tool/release/r2tool" \
       "${repo}/benchmarks/r2-data-path/run.sh" --train --lanes "${lane}" --scale "${scale}" --out "${work}/out/${lane}" \
-      --proxy-env "LLVM_PROFILE_FILE=${work}/raw/%m_%p.profraw"
+      --proxy-env "LLVM_PROFILE_FILE=${work}/raw/${lane}/%m_%p.profraw"
+    compgen -G "${work}/raw/${lane}/*.profraw" > /dev/null || { echo "lane ${lane} wrote no raw profiles" >&2; exit 1; }
+    "${llvm_profdata}" merge -o "${work}/lane/${lane}.profdata" "${work}/raw/${lane}"/*.profraw
   done
-  compgen -G "${work}/raw/*.profraw" > /dev/null || { echo "training wrote no raw profiles" >&2; exit 1; }
-  "${llvm_profdata}" merge -o "${profile}" "${work}"/raw/*.profraw
+  merge
+}
+
+merge() {
+  local inputs=() entry weight
+  for entry in ${lanes//,/ }; do
+    weight=1
+    [[ ${entry} == *:* ]] && weight=${entry#*:}
+    inputs+=("-weighted-input=${weight},${work}/lane/${entry%%:*}.profdata")
+  done
+  "${llvm_profdata}" merge -o "${profile}" "${inputs[@]}"
   ls -l "${profile}"
 }
 
@@ -102,8 +119,9 @@ smoke() {
 
 case ${1:-} in
   train) train ;;
+  merge) merge ;;
   build) build ;;
   plain) CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${work}/target-plain}" cargo_build ;;
   smoke) smoke "${2:-}" ;;
-  *) echo "usage: $0 train|build|plain|smoke BIN" >&2; exit 2 ;;
+  *) echo "usage: $0 train|merge|build|plain|smoke BIN" >&2; exit 2 ;;
 esac
