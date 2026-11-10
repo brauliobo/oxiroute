@@ -407,6 +407,13 @@ impl Renderer {
         }
         self.boolean_field("session_tickets", policy.session_tickets);
         self.boolean_field("prefer_server_ciphers", policy.prefer_server_ciphers);
+        self.string_field(
+            "backend",
+            match policy.backend {
+                oxiroute_config::TlsBackend::Openssl => "openssl",
+                oxiroute_config::TlsBackend::Rustls => "rustls",
+            },
+        );
         self.begin_table_field("client_auth");
         self.string_field(
             "mode",

@@ -113,6 +113,8 @@ pub struct TlsPolicy {
     pub session_tickets: bool,
     #[serde(default = "default_true")]
     pub prefer_server_ciphers: bool,
+    #[serde(default)]
+    pub backend: TlsBackend,
 }
 
 impl Default for TlsPolicy {
@@ -125,8 +127,18 @@ impl Default for TlsPolicy {
             session_timeout_seconds: None,
             session_tickets: false,
             prefer_server_ciphers: true,
+            backend: TlsBackend::default(),
         }
     }
+}
+
+/// The TLS library that runs the handshakes and records of the listeners using a profile.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TlsBackend {
+    #[default]
+    Openssl,
+    Rustls,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
