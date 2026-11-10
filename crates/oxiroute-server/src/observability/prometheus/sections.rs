@@ -133,6 +133,41 @@ pub(super) fn render_connection_scheduling(
     Ok(())
 }
 
+/// The worker scaling mode and, with `dynamic`, how many workers each listener runtime keeps active.
+pub(super) fn render_worker_scaling(
+    output: &mut String,
+    config: Option<&oxiroute_config::ConfigDraft>,
+) -> Result<(), PrometheusError> {
+    let dynamic = config.is_some_and(oxiroute_config::ConfigDraft::dynamic_worker_scaling);
+    let mode = if dynamic { "dynamic" } else { "static" };
+    labels(output, "oxiroute_worker_scaling_info", &[("mode", mode)], 1)?;
+    if !dynamic {
+        return Ok(());
+    }
+    for (runtime, stats) in oxiroute_worker_scaling::process_stats() {
+        let identity = [("runtime", runtime.as_str())];
+        labels(
+            output,
+            "oxiroute_worker_scaling_workers",
+            &identity,
+            stats.workers,
+        )?;
+        labels(
+            output,
+            "oxiroute_worker_scaling_active_workers",
+            &identity,
+            stats.active,
+        )?;
+        labels(
+            output,
+            "oxiroute_worker_scaling_relocations_total",
+            &identity,
+            stats.relocations,
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn render_retirement(
     output: &mut String,
     generations: &crate::GenerationManager,
