@@ -32,6 +32,7 @@ const AUDIT_TEMP_FILE: &str = "audit.ndjson.tmp";
 const AUDIT_ROOT_MODE: u32 = 0o700;
 const AUDIT_FILE_MODE: u32 = 0o600;
 const MAX_AUDIT_FILE_BYTES: u64 = Audit::MAX_FILE_BYTES;
+#[allow(clippy::cast_possible_truncation)] // 16 MiB fits every target's usize
 const AUDIT_SCAN_LIMIT_BYTES: usize = MAX_AUDIT_FILE_BYTES as usize + 1;
 const CORRELATION_ID_MAX_BYTES: usize = 64;
 

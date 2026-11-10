@@ -216,6 +216,8 @@ pub(super) fn h3_only_config(listener_address: SocketAddr, private_key_path: &Pa
         management: None,
         registry: None,
         stats: None,
+        audit: None,
+        log_filter: None,
         certificates: vec![Certificate {
             name: "downstream".into(),
             dns_names: vec!["proxy.example.test".into()],

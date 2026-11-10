@@ -11,7 +11,7 @@ const FORMATS: [ConfigFormat; 4] = [
     ConfigFormat::Hocon,
 ];
 
-fn validated(extra: serde_json::Value) -> ValidatedConfig {
+fn validated(extra: &serde_json::Value) -> ValidatedConfig {
     let mut config = json!({"version": 1, "listeners": []});
     config
         .as_object_mut()
@@ -34,7 +34,7 @@ fn assert_round_trips(config: &ValidatedConfig) {
 
 #[test]
 fn management_token_file_round_trips_through_every_source_format() {
-    assert_round_trips(&validated(json!({"management": {
+    assert_round_trips(&validated(&json!({"management": {
         "bind": "127.0.0.1:9900",
         "token_file": "/etc/oxiroute/management.token",
     }})));
@@ -42,7 +42,7 @@ fn management_token_file_round_trips_through_every_source_format() {
 
 #[test]
 fn audit_settings_round_trip_through_every_source_format() {
-    assert_round_trips(&validated(json!({"audit": {
+    assert_round_trips(&validated(&json!({"audit": {
         "dir": "/var/lib/oxiroute/audit",
         "max_records": 5_000,
         "max_record_bytes": 8_192,
@@ -54,12 +54,12 @@ fn audit_settings_round_trip_through_every_source_format() {
 
 #[test]
 fn a_partial_audit_block_round_trips_through_every_source_format() {
-    assert_round_trips(&validated(json!({"audit": {"max_records": 500}})));
+    assert_round_trips(&validated(&json!({"audit": {"max_records": 500}})));
 }
 
 #[test]
 fn log_filter_round_trips_through_every_source_format() {
     assert_round_trips(&validated(
-        json!({"log_filter": "warn,oxiroute::audit=debug"}),
+        &json!({"log_filter": "warn,oxiroute::audit=debug"}),
     ));
 }
