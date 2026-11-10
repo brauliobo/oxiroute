@@ -287,6 +287,11 @@ pub(crate) struct TransportStack {
 }
 
 impl TransportStack {
+    #[cfg(test)]
+    pub(crate) fn tcp_addr(&self) -> std::net::SocketAddr {
+        self.l4.local_addr().unwrap()
+    }
+
     pub fn as_str(&self) -> &str {
         self.l4.as_str()
     }
