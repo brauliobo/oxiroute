@@ -754,8 +754,28 @@ pub fn probes(base: &str) -> Vec<Case> {
 /// Origin replies of every shape the response side has a rule for: framing, hop-by-hop fields, ids, informational
 /// heads, heads the codec leaves to the classic parser and replies that end badly. The flag says the origin
 /// closes the connection after the reply.
+/// A reply whose body is larger than the lane copies behind the head (a piece of 16 KiB or more is written as read).
+fn large(head: &str, framed: impl Fn(&[u8]) -> Vec<u8>) -> &'static [u8] {
+    let body = (0..40_000_u32)
+        .map(|at| b'a' + (at % 23) as u8)
+        .collect::<Vec<_>>();
+    let mut reply = head.as_bytes().to_vec();
+    reply.extend(framed(&body));
+    Box::leak(reply.into_boxed_slice())
+}
+
 pub fn replies() -> Vec<(&'static str, &'static [u8], bool)> {
+    let sized = large(
+        "HTTP/1.1 200 OK\r\nContent-Length: 40000\r\nX-A: 1\r\n\r\n",
+        <[u8]>::to_vec,
+    );
+    let chunked = large(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+        |body| [&b"9c40\r\n"[..], body, b"\r\n3\r\nabc\r\n0\r\n\r\n"].concat(),
+    );
     vec![
+        ("large body with a length", sized, false),
+        ("large chunked body", chunked, false),
         ("chunked", b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-A: 1\r\n\r\n5\r\nhello\r\n3\r\nabc\r\n0\r\n\r\n", false),
         ("chunked with a length", b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", false),
         ("close delimited", b"HTTP/1.1 200 OK\r\nX-A: 1\r\n\r\nbody until close", true),

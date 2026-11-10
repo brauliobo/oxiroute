@@ -53,6 +53,9 @@ use crate::{
     upstream_peer::POOL_UNAVAILABLE_HEADER,
 };
 
+/// A body piece of at least this size is written as it was read; smaller ones are copied behind the head.
+const DIRECT_BODY: usize = 16 * 1024;
+
 /// How the body of the response goes to the client.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Framing {
@@ -386,14 +389,24 @@ impl super::LaneFront {
                     Instant::now()
                 };
                 ctx.observe_bytes(0, *sent, now);
-                if framing == Framing::Chunked {
+                let chunked = framing == Framing::Chunked;
+                if chunked {
                     write!(frame, "{:x}\r\n", data.len()).expect("a buffer grows");
-                    frame.extend_from_slice(&data);
-                    frame.extend_from_slice(b"\r\n");
-                } else {
-                    frame.extend_from_slice(&data);
                 }
-                write(stream, &frame).await?;
+                if data.len() < DIRECT_BODY {
+                    frame.extend_from_slice(&data);
+                    if chunked {
+                        frame.extend_from_slice(b"\r\n");
+                    }
+                    write(stream, &frame).await?;
+                } else {
+                    // The staged head leaves with the piece in one vectored write, the piece is not copied.
+                    write(stream, &frame).await?;
+                    write(stream, &data).await?;
+                    if chunked {
+                        write(stream, b"\r\n").await?;
+                    }
+                }
                 flush(stream).await?;
                 frame.clear();
             }
