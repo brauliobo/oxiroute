@@ -278,9 +278,10 @@ fn server_config(
     let resolver = Arc::new(QuicCertificateResolver {
         profile: Arc::clone(tls),
     });
-    let crypto_builder =
-        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]);
-    let mut crypto = match tls.h3_client_cert_verifier() {
+    let crypto_builder = rustls::ServerConfig::builder_with_provider(crate::tls::provider::ring_provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(io::Error::other)?;
+    let mut crypto = match tls.rustls_client_cert_verifier() {
         Some(verifier) => crypto_builder
             .with_client_cert_verifier(verifier)
             .with_cert_resolver(resolver),
@@ -520,13 +521,13 @@ struct QuicCertificateResolver {
 
 impl ResolvesServerCert for QuicCertificateResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<rustls::sign::CertifiedKey>> {
-        self.profile
-            .selected_generation(client_hello.server_name())
-            .quic_certified_key()
-            .map(Arc::new)
-            .map_err(|error| {
+        let generation = self.profile.selected_generation(client_hello.server_name());
+        match generation.certified_key() {
+            Ok(key) => Some(Arc::clone(key)),
+            Err(error) => {
                 warn!("QUIC certificate selection failed: {error}");
-            })
-            .ok()
+                None
+            }
+        }
     }
 }

@@ -46,6 +46,9 @@ pub struct CertificateGeneration {
     leaf: X509,
     intermediates: Box<[X509]>,
     private_key: PKey<Private>,
+    /// The identity in rustls form, built once with the generation: every handshake of the rustls backend and of
+    /// HTTP/3 selects it without parsing anything.
+    certified_key: Result<Arc<rustls::sign::CertifiedKey>, String>,
     pub(super) metadata: CertificateMetadata,
 }
 
@@ -290,12 +293,7 @@ impl CertificateGeneration {
         preflight(&name, &leaf, &[], &private_key)?;
         let metadata = metadata(&name, &leaf, &[], dns_names)?;
 
-        Ok(Self {
-            leaf,
-            intermediates: Box::new([]),
-            private_key,
-            metadata,
-        })
+        Ok(Self::assemble(leaf, Box::new([]), private_key, metadata))
     }
 
     pub(crate) fn from_pem(
@@ -385,12 +383,23 @@ impl CertificateGeneration {
         preflight(&name, &leaf, &intermediates, &private_key)?;
         let metadata = metadata(&name, &leaf, &intermediates, dns_names)?;
 
-        Ok(Self {
+        Ok(Self::assemble(leaf, intermediates, private_key, metadata))
+    }
+
+    fn assemble(
+        leaf: X509,
+        intermediates: Box<[X509]>,
+        private_key: PKey<Private>,
+        metadata: CertificateMetadata,
+    ) -> Self {
+        let certified_key = rustls_certified_key(&leaf, &intermediates, &private_key).map(Arc::new);
+        Self {
             leaf,
             intermediates,
             private_key,
+            certified_key,
             metadata,
-        })
+        }
     }
 
     #[must_use]
@@ -407,30 +416,37 @@ impl CertificateGeneration {
         ssl_use_certificate(ssl, &self.leaf)
     }
 
-    pub(crate) fn quic_certified_key(&self) -> Result<rustls::sign::CertifiedKey, String> {
-        let certificates = std::iter::once(&self.leaf)
-            .chain(self.intermediates.iter())
-            .map(|certificate| {
-                certificate
-                    .to_der()
-                    .map(rustls::pki_types::CertificateDer::from)
-                    .map_err(|error| format!("certificate DER encoding failed: {error}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let private_key = self
-            .private_key
-            .private_key_to_pkcs8()
-            .map_err(|error| format!("private key DER encoding failed: {error}"))?;
-        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
-            rustls::pki_types::PrivatePkcs8KeyDer::from(private_key),
-        );
-        rustls::sign::CertifiedKey::from_der(
-            certificates,
-            private_key,
-            &rustls::crypto::ring::default_provider(),
-        )
-        .map_err(|error| format!("QUIC certificate and key are unusable: {error}"))
+    /// The identity for rustls handshakes, or why the key is unusable there (an RSA-PSS-only key, for example).
+    pub(crate) fn certified_key(&self) -> Result<&Arc<rustls::sign::CertifiedKey>, &str> {
+        self.certified_key.as_ref().map_err(String::as_str)
     }
+}
+
+pub(in crate::tls) fn rustls_certified_key(
+    leaf: &X509,
+    intermediates: &[X509],
+    private_key: &PKey<Private>,
+) -> Result<rustls::sign::CertifiedKey, String> {
+    let certificates = std::iter::once(leaf)
+        .chain(intermediates)
+        .map(|certificate| {
+            certificate
+                .to_der()
+                .map(rustls::pki_types::CertificateDer::from)
+                .map_err(|error| format!("certificate DER encoding failed: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let private_key = private_key
+        .private_key_to_pkcs8()
+        .map_err(|error| format!("private key DER encoding failed: {error}"))?;
+    let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(private_key));
+    // The key was matched to the leaf when the identity was loaded, and a challenge certificate carries a critical
+    // extension that rustls' own consistency check refuses to parse, so the pair is taken as it is.
+    let signing_key = crate::tls::provider::aws_lc_provider()
+        .key_provider
+        .load_private_key(private_key)
+        .map_err(|error| format!("private key is unusable for rustls: {error}"))?;
+    Ok(rustls::sign::CertifiedKey::new(certificates, signing_key))
 }
 
 fn generate_self_signed_key(

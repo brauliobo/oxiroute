@@ -5,7 +5,7 @@ pub(super) struct ClientAuthPlan {
     mode: TlsClientAuthMode,
     ca_certificates: Arc<[X509]>,
     allowed_dns_names: Arc<[CertificateIdentity]>,
-    h3_client_verifier: Option<Arc<dyn rustls::server::danger::ClientCertVerifier>>,
+    rustls_verifier: Option<Arc<dyn rustls::server::danger::ClientCertVerifier>>,
 }
 
 #[derive(Clone)]
@@ -33,10 +33,13 @@ impl ClientAuthPlan {
                     .expect("compiled client CA path"),
             )?,
         };
-        let h3_client_verifier = match policy.mode {
+        let rustls_verifier = match policy.mode {
             TlsClientAuthMode::Disabled => None,
             TlsClientAuthMode::Optional | TlsClientAuthMode::Required => {
-                let builder = rustls::server::WebPkiClientVerifier::builder(rustls_roots);
+                let builder = rustls::server::WebPkiClientVerifier::builder_with_provider(
+                    rustls_roots,
+                    crate::tls::provider::aws_lc_provider(),
+                );
                 let delegate = match policy.mode {
                     TlsClientAuthMode::Optional => builder.allow_unauthenticated().build(),
                     TlsClientAuthMode::Required => builder.build(),
@@ -58,7 +61,7 @@ impl ClientAuthPlan {
             mode: policy.mode,
             ca_certificates,
             allowed_dns_names: Arc::clone(&policy.allowed_dns_names),
-            h3_client_verifier,
+            rustls_verifier,
         })
     }
 
@@ -149,10 +152,10 @@ impl ClientAuthPlan {
         self.allowed_dns_names.len()
     }
 
-    pub(super) fn h3_client_verifier(
+    pub(super) fn rustls_verifier(
         &self,
     ) -> Option<Arc<dyn rustls::server::danger::ClientCertVerifier>> {
-        self.h3_client_verifier.clone()
+        self.rustls_verifier.clone()
     }
 }
 

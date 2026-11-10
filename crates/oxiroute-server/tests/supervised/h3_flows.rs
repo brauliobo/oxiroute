@@ -515,7 +515,9 @@ pub(super) fn h3_client_endpoint() -> io::Result<quinn::Endpoint> {
             .add(certificate.map_err(io::Error::other)?)
             .map_err(io::Error::other)?;
     }
-    let mut crypto = rustls::ClientConfig::builder()
+    let mut crypto = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .map_err(std::io::Error::other)?
         .with_root_certificates(roots)
         .with_no_client_auth();
     crypto.alpn_protocols = vec![b"h3".to_vec()];
@@ -640,9 +642,10 @@ pub(super) fn origin_server_config() -> quinn::ServerConfig {
         .transpose()
         .expect("origin private key")
         .expect("origin private key block");
-    let mut crypto =
-        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-            .with_no_client_auth()
+    let mut crypto = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .expect("origin TLS protocol versions")
+        .with_no_client_auth()
             .with_single_cert(certificates, private_key)
             .expect("origin TLS identity");
     crypto.alpn_protocols = vec![b"h3".to_vec()];
