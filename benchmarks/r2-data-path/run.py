@@ -184,9 +184,9 @@ def build_lanes():
     add(lane("fwd_h1_b1k", ["--path", "http://127.0.0.1:{UP}/b1k", "--expect-len", "1024"] + base, features=["forward"],
              target_offset=3))
     add(lane("fwd_connect_1k", ["--proto", "connect", "--connect-to", "127.0.0.1:{ECHO}", "--conns", "16", "--msg-bytes", "1024"],
-             features=["forward", "l4"], target_offset=3))
+             features=["forward", "forward_connect", "l4"], target_offset=3))
     add(lane("fwd_connect_newconn", ["--proto", "connect", "--connect-to", "127.0.0.1:{ECHO}", "--new-conn", "--conns", "16",
-                                     "--msg-bytes", "1024"], features=["forward", "l4"], target_offset=3, requests=10000,
+                                     "--msg-bytes", "1024"], features=["forward", "forward_connect", "l4"], target_offset=3, requests=10000,
              warmup=500))
     add(lane("l4_echo_newconn", ["--proto", "tcp", "--new-conn", "--conns", "16", "--msg-bytes", "1024"], features=["l4"],
              requests=10000, warmup=500))
@@ -222,11 +222,11 @@ def build_lanes():
     add(lane("cache_nocache_vary_b1k", ["--path", "/b1k", "--vary", "true", "--expect-len", "1024"] + base))
     add(lane("cache_reval_b1k", ["--path", "/rv1k", "--expect-len", "1024"] + base, features=["cache_revalidate"]))
     for algorithm_name, features in (("rr", []), ("p2c", ["p2c"]), ("first", ["first"]), ("lc", ["lc"]), ("wrr", ["wrr"])):
-        for servers in (2, 20, 200, 1000):
+        for servers in (2, 20, 250):
             add(lane(f"alg_{algorithm_name}_s{servers}", work, features=features, servers=servers,
                      requests=20000, warmup=max(2000, servers * 4)))
     idle = ["--path", "/b0", "--expect-len", "0", "--conns", "1"]
-    for servers in (1, 20, 200, 1000):
+    for servers in (1, 20, 250):
         for name, features in (("none", []), ("hc_tcp", ["hc_tcp"]), ("hc_http", ["hc_http"])):
             add(lane(f"idle_{name}_s{servers}", idle, features=features, servers=servers, requests=50, warmup=10))
     add(lane("idle_canary_s1", idle, features=["canary"], requests=50, warmup=10))
@@ -549,6 +549,7 @@ def measure_perf(env, reps):
     column = lambda key: [sample[key] for sample in samples]
     return {
         "idle_instr_per_s": round(idle["instructions"]),
+        "instr_samples": "/".join(str(round(value)) for value in column("instr")),
         "instr_per_req": round(median(column("instr"))), "instr_spread_pct": round(spread(column("instr")), 2),
         "cycles_per_req": round(median(column("cycles"))), "cycles_spread_pct": round(spread(column("cycles")), 2),
         "vctxsw_per_req": round(median(column("ctxsw")), 3), "nvctxsw_per_req": round(median(column("nvctxsw")), 3),

@@ -8,7 +8,7 @@ Every feature is an independent A/B switch on top of the minimal reverse-proxy c
   access_log timeouts retry queue capacity passive breaker outlier gzip cache reqbuf respbuf
   forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host lc wrr
   p2c first auth_bearer auth_basic_apr1 auth_basic_bcrypt redirect path_rewrite cookie_rewrite affinity_cookie
-  affinity_hash affinity_header select gzip_l<level> cache_revalidate hc_tcp hc_http hc_ms_<interval> canary
+  affinity_hash affinity_header select gzip_l<level> cache_revalidate forward_connect hc_tcp hc_http hc_ms_<interval> canary
 """
 
 import argparse
@@ -103,7 +103,7 @@ def build(args):
     if on("cache") or on("cache_revalidate"):
         proxy_policy["cache"] = {"store": "mem"}
     if on("path_rewrite"):
-        proxy_policy["upstream_path_rewrite"] = {"from": "/app", "to": "/"}
+        proxy_policy["upstream_path_rewrite"] = {"from": "/app/", "to": "/"}
     if on("cookie_rewrite"):
         proxy_policy["response_cookie_path_rewrites"] = [{"from": "/app", "to": "/"}]
         proxy_policy["response_cookie_attributes"] = [{"name": "sid", "secure": True, "same_site": "lax"}]
@@ -225,7 +225,7 @@ def build(args):
     config = {
         "version": 1,
         "listeners": [listener],
-        "cache_stores": [{"name": "mem", "type": "memory"}] if on("cache") else [],
+        "cache_stores": [{"name": "mem", "type": "memory"}] if on("cache") or on("cache_revalidate") else [],
         "upstream_pools": [pool],
         "http_services": [service],
         "forward_proxy_services": [],
@@ -275,6 +275,7 @@ def build(args):
     if on("forward"):
         config["forward_proxy_services"].append({
             "name": "fwd", "tls_required": False, "destination_policy": {"deny_private": False},
+            **({"connect": {"enabled": True, "allowed_ports": [args.echo_port]}} if on("forward_connect") else {}),
         })
         config["listeners"].append({
             "name": "fwd",
