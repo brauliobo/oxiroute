@@ -59,6 +59,7 @@ mod static_content;
 mod static_files;
 mod static_kernel;
 mod static_serve;
+mod verified_credentials;
 
 pub(crate) use access::*;
 pub(crate) use access_log::*;
