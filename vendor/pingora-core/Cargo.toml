@@ -53,12 +53,6 @@ openssl = [
 ]
 openssl_derived = ["any_tls"]
 patched_http1 = ["pingora-http/patched_http1"]
-rustls = [
-    "pingora-rustls",
-    "any_tls",
-    "dep:x509-parser",
-    "ouroboros",
-]
 s2n = [
     "pingora-s2n",
     "any_tls",
@@ -67,6 +61,10 @@ s2n = [
     "lru",
 ]
 sentry = ["dep:sentry"]
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(feature, values("rustls"))']
 
 [lib]
 name = "pingora_core"
@@ -181,10 +179,6 @@ version = "0.8.1"
 
 [dependencies.pingora-runtime]
 version = "0.8.1"
-
-[dependencies.pingora-rustls]
-version = "0.8.1"
-optional = true
 
 [dependencies.pingora-s2n]
 version = "0.8.1"

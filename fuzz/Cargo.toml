@@ -29,7 +29,6 @@ tokio-test = "0.4.6"
 pingora-core = { path = "../vendor/pingora-core" }
 pingora-load-balancing = { path = "../vendor/pingora-load-balancing" }
 pingora-proxy = { path = "../vendor/pingora-proxy" }
-pingora-rustls = { path = "../vendor/pingora-rustls" }
 rml_rtmp = { path = "../vendor/rml_rtmp" }
 
 [[bin]]
