@@ -7,30 +7,30 @@ use crate::observability::logging::valid_correlation_id;
 /// A request head the lane can serve: HTTP/1.1, origin-form, no body, no upgrade, no `Expect`, and a `Connection`
 /// that is absent, `keep-alive` or `close`. Small and `Copy`, so it can be held across an await.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Request {
-    pub(super) method: Span,
-    pub(super) path: Span,
-    pub(super) host: Span,
+pub(in crate::http::proxy) struct Request {
+    pub(in crate::http::proxy) method: Span,
+    pub(in crate::http::proxy) path: Span,
+    pub(in crate::http::proxy) host: Span,
     /// The first `X-Request-Id`, when it is a valid id: the one the request goes on with.
-    pub(super) client_id: Option<Span>,
+    pub(in crate::http::proxy) client_id: Option<Span>,
     /// The request carries that one id and no other, so nothing is stamped on it.
-    pub(super) id_stamped: bool,
-    pub(super) close: bool,
-    pub(super) head_len: usize,
-    pub(super) is_head: bool,
+    pub(in crate::http::proxy) id_stamped: bool,
+    pub(in crate::http::proxy) close: bool,
+    pub(in crate::http::proxy) head_len: usize,
+    pub(in crate::http::proxy) is_head: bool,
 }
 
 impl Request {
-    pub(super) fn method<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
+    pub(in crate::http::proxy) fn method<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
         self.method.of(buf)
     }
 
     /// The path of the target, which is ASCII (the scanner refuses the rest).
-    pub(super) fn path<'a>(&self, buf: &'a [u8]) -> &'a str {
+    pub(in crate::http::proxy) fn path<'a>(&self, buf: &'a [u8]) -> &'a str {
         std::str::from_utf8(self.path.of(buf)).unwrap_or_default()
     }
 
-    pub(super) fn host<'a>(&self, buf: &'a [u8]) -> Option<&'a str> {
+    pub(in crate::http::proxy) fn host<'a>(&self, buf: &'a [u8]) -> Option<&'a str> {
         std::str::from_utf8(self.host.of(buf))
             .ok()
             .filter(|host| host.is_ascii())
@@ -39,7 +39,7 @@ impl Request {
 
 /// `None` when the classic path must see the request: it is partial, refused or not of the lane's shape. `head`
 /// describes the headers of the request when it is the lane's.
-pub(super) fn scan(buf: &[u8], head: &mut RequestHead) -> Option<Request> {
+pub(in crate::http::proxy) fn scan(buf: &[u8], head: &mut RequestHead) -> Option<Request> {
     if scan_request(buf, head) != Scan::Head {
         return None;
     }

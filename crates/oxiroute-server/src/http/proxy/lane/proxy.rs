@@ -11,8 +11,8 @@ use http::{HeaderValue, Method, StatusCode, Version, uri::Authority};
 use log::{debug, warn};
 use oxiroute_config::HttpUpstreamHost;
 use oxiroute_h1_head::{
-    Automatic, Class, Connection, Edits, HOP_KEEP_ALIVE, RequestHead, ResponseHead, ScanResponse,
-    Value, names, scan_response, write_request, write_response,
+    Automatic, Class, Connection, Edits, HOP_KEEP_ALIVE, Name, RequestHead, ResponseHead,
+    ScanResponse, Value, names, scan_response, write_request, write_response,
 };
 use pingora::{
     Error, ErrorType,
@@ -40,7 +40,7 @@ use super::{
 use crate::{
     HealthFailure,
     http::{
-        action::{HttpActionPlan, HttpRoutePlan},
+        action::{HttpActionPlan, HttpRoutePlan, ProxyActionPlan},
         evacuation::LeftRunning,
         inflight::Phase,
         proxy::{
@@ -91,6 +91,27 @@ pub(super) struct Forward<'a> {
     pub(super) id: &'a HeaderValue,
     /// Whether the connection serves another request after this one, as far as the request knows.
     pub(super) keepalive: bool,
+}
+
+/// What a request context needs of the request that arrived, whatever protocol it arrived by.
+pub(in crate::http::proxy) struct Arrival<'a> {
+    pub(in crate::http::proxy) method: &'a Method,
+    pub(in crate::http::proxy) host: Option<&'a str>,
+    pub(in crate::http::proxy) path: &'a str,
+    pub(in crate::http::proxy) client_ip: Option<std::net::IpAddr>,
+    pub(in crate::http::proxy) route: &'a Arc<HttpRoutePlan>,
+    pub(in crate::http::proxy) id: &'a HeaderValue,
+    pub(in crate::http::proxy) authority: Authority,
+    /// Whether the request could be sent again: an operator's move of it needs that.
+    pub(in crate::http::proxy) replay_safe: bool,
+}
+
+/// The proxy action of a route the lane serves as a proxy.
+fn proxy_route_action(route: &HttpRoutePlan) -> &ProxyActionPlan {
+    let HttpActionPlan::Proxy(proxy) = &route.action else {
+        unreachable!("only proxied routes reach the proxied lane");
+    };
+    proxy
 }
 
 impl super::LaneFront {
@@ -144,17 +165,6 @@ impl super::LaneFront {
         authority: Authority,
     ) -> HttpRequestContext {
         let (buffer, request, route) = (forward.buffer, forward.request, forward.route);
-        let HttpActionPlan::Proxy(proxy) = &route.action else {
-            unreachable!("only proxied routes reach the proxied lane");
-        };
-        let mut ctx = HttpRequestContext::new(
-            self.metrics.clone(),
-            Some(Arc::clone(&self.generation)),
-            Instant::now(),
-            self.service.upstream_io_timeout(),
-        );
-        ctx.request_id = Some(forward.id.clone());
-        ctx.adopt_client_timeouts([self.timeouts.request, self.timeouts.session_write()]);
         let client_ip = stream.get_socket_digest().and_then(|digest| {
             digest
                 .peer_addr()
@@ -162,29 +172,56 @@ impl super::LaneFront {
         });
         let method = Method::from_bytes(request.method(buffer))
             .expect("the route was selected for this method");
-        ctx.register_arrival(
-            &method,
-            request.host(buffer),
-            request.path(buffer),
-            client_ip,
-            None,
-        );
-        ctx.authority = Some(authority);
-        if let Some(inflight) = &ctx.inflight {
-            inflight.place_route(route.route_id.shared());
-            inflight.place_pool(proxy.pool.label().shared());
-        }
-        ctx.route = Some(Arc::clone(route));
-        let policy = &proxy.policy;
-        let replay_safe = policy.request_is_replay_safe(
+        let replay_safe = proxy_route_action(route).policy.request_is_replay_safe(
             &method,
             &http::HeaderMap::new(),
             true,
             route.policy.request_buffering,
         );
+        self.begin_arrival(Arrival {
+            method: &method,
+            host: request.host(buffer),
+            path: request.path(buffer),
+            client_ip,
+            route,
+            id: forward.id,
+            authority,
+            replay_safe,
+        })
+    }
+
+    /// The request context of a request the lane serves, however it arrived.
+    pub(in crate::http::proxy) fn begin_arrival(&self, arrival: Arrival<'_>) -> HttpRequestContext {
+        let Arrival {
+            method,
+            host,
+            path,
+            client_ip,
+            route,
+            id,
+            authority,
+            replay_safe,
+        } = arrival;
+        let mut ctx = HttpRequestContext::new(
+            self.metrics.clone(),
+            Some(Arc::clone(&self.generation)),
+            Instant::now(),
+            self.service.upstream_io_timeout(),
+        );
+        ctx.request_id = Some(id.clone());
+        ctx.adopt_client_timeouts([self.timeouts.request, self.timeouts.session_write()]);
+        ctx.register_arrival(method, host, path, client_ip, None);
+        ctx.authority = Some(authority);
+        let proxy = proxy_route_action(route);
+        if let Some(inflight) = &ctx.inflight {
+            inflight.place_route(route.route_id.shared());
+            inflight.place_pool(proxy.pool.label().shared());
+        }
+        ctx.route = Some(Arc::clone(route));
         ctx.evacuation_pin = LeftRunning::unmovable(false, replay_safe);
         ctx.adopt_route_total(
-            policy
+            proxy
+                .policy
                 .timeouts
                 .total_ms
                 .map(std::time::Duration::from_millis),
@@ -440,19 +477,10 @@ impl super::LaneFront {
         sent: &mut usize,
         sent_status: Option<u16>,
     ) -> Option<u16> {
-        let started = sent_status.is_some();
-        ctx.trace.failure_reason = Some(failure_reason(error, ctx, started));
-        if started || ctx.client_deadline_expired() {
-            return sent_status;
-        }
-        let reason = error_reason(error, ctx, false);
-        let code = reason.map_or_else(|| proxy_error_status(error), ErrorReason::status);
-        if let Some(reason) = reason {
-            debug!("request ended by {}", reason.as_str());
-        }
-        if code == 0 {
-            return None;
-        }
+        let (code, reason) = match error_answer(ctx, error, sent_status) {
+            Ok(answer) => answer,
+            Err(sent) => return sent,
+        };
         let rendered = error_response(
             code,
             error,
@@ -486,7 +514,7 @@ impl super::LaneFront {
     }
 
     /// What the classic `logging` hook accounts for when a request ends.
-    fn finish(
+    pub(in crate::http::proxy) fn finish(
         &self,
         ctx: &mut HttpRequestContext,
         error: Option<&Error>,
@@ -505,6 +533,29 @@ impl super::LaneFront {
         ctx.account_attempt(0, sent, now);
         ctx.record_failed_evacuations(error);
     }
+}
+
+/// The error response a request that ended in `error` gets, the status and the reason it names. `Err` when none is
+/// sent: the status of the response that went out already, if there was one.
+pub(in crate::http::proxy) fn error_answer(
+    ctx: &mut HttpRequestContext,
+    error: &Error,
+    sent_status: Option<u16>,
+) -> Result<(u16, Option<ErrorReason>), Option<u16>> {
+    let started = sent_status.is_some();
+    ctx.trace.failure_reason = Some(failure_reason(error, ctx, started));
+    if started || ctx.client_deadline_expired() {
+        return Err(sent_status);
+    }
+    let reason = error_reason(error, ctx, false);
+    let code = reason.map_or_else(|| proxy_error_status(error), ErrorReason::status);
+    if let Some(reason) = reason {
+        debug!("request ended by {}", reason.as_str());
+    }
+    if code == 0 {
+        return Err(None);
+    }
+    Ok((code, reason))
 }
 
 /// The stream buffers its writes: what a client waits for must be flushed before the next wait on the origin.
@@ -533,7 +584,7 @@ fn host_edit(ctx: &mut HttpRequestContext) -> HostEdit {
 }
 
 /// Whether the response head is one the codec serves: final, no upgrade, a plain `Connection` and no `Keep-Alive`.
-fn is_plain(head: &ResponseHead) -> bool {
+pub(in crate::http::proxy) fn is_plain(head: &ResponseHead) -> bool {
     let facts = head.facts;
     !facts.informational
         && !facts.upgrade
@@ -542,7 +593,7 @@ fn is_plain(head: &ResponseHead) -> bool {
         && (!facts.transfer_encoding || facts.chunked_final)
 }
 
-fn refused_by_pool(buffer: &[u8], head: &ResponseHead) -> bool {
+pub(in crate::http::proxy) fn refused_by_pool(buffer: &[u8], head: &ResponseHead) -> bool {
     head.status == 503
         && head.headers().iter().any(|header| {
             header
@@ -615,52 +666,22 @@ fn serve_fast(
     served
 }
 
-/// The client's response head for a head the codec scanned, and the facts of it reported to the session.
-fn render_fast(
-    out: &mut Vec<u8>,
-    raw: &Bytes,
-    head: &ResponseHead,
-    session: &mut HttpSession,
-    forward: &Forward<'_>,
-    keepalive: bool,
-) -> Framing {
+/// The fields a response loses before it goes on, in the order the classic policy removes them.
+pub(in crate::http::proxy) const RESPONSE_HOP_BY_HOP: [(Class, Name<'static>); 9] = [
+    (Class::Connection, names::CONNECTION),
+    (Class::KeepAlive, names::KEEP_ALIVE),
+    (Class::ProxyAuthenticate, names::PROXY_AUTHENTICATE),
+    (Class::ProxyAuthorization, names::PROXY_AUTHORIZATION),
+    (Class::ProxyConnection, names::PROXY_CONNECTION),
+    (Class::Te, names::TE),
+    (Class::Trailer, names::TRAILER),
+    (Class::TransferEncoding, names::TRANSFER_ENCODING),
+    (Class::Upgrade, names::UPGRADE),
+];
+
+/// Tells the session the facts of a head the codec scanned, as its own parser would have noted them.
+pub(in crate::http::proxy) fn accept_head(session: &mut HttpSession, head: &ResponseHead) {
     let facts = head.facts;
-    let is_head = forward.request.is_head;
-    let mut edits = Edits::new();
-    let edit = |result: Result<(), oxiroute_h1_head::EditsFull>| {
-        result.expect("a response head needs few edits");
-    };
-    if facts.transfer_encoding && head.find(Class::ContentLength).is_some() {
-        edit(edits.remove(names::CONTENT_LENGTH));
-    }
-    for (class, name) in [
-        (Class::Connection, names::CONNECTION),
-        (Class::KeepAlive, names::KEEP_ALIVE),
-        (Class::ProxyAuthenticate, names::PROXY_AUTHENTICATE),
-        (Class::ProxyAuthorization, names::PROXY_AUTHORIZATION),
-        (Class::ProxyConnection, names::PROXY_CONNECTION),
-        (Class::Te, names::TE),
-        (Class::Trailer, names::TRAILER),
-        (Class::TransferEncoding, names::TRANSFER_ENCODING),
-        (Class::Upgrade, names::UPGRADE),
-    ] {
-        if facts.present & class.bit() != 0 {
-            edit(edits.remove(name));
-        }
-    }
-    let no_body = is_head || matches!(head.status, 204 | 304);
-    let chunked = !no_body && facts.content_length.is_none();
-    edit(edits.stamp_request_id(raw, head, Value::trusted(forward.id.as_bytes())));
-    if chunked {
-        edit(edits.set(names::TRANSFER_ENCODING, Value::trusted(b"chunked")));
-    }
-    let date = get_cached_date();
-    let automatic = Automatic {
-        date: date.as_bytes(),
-        connection: if keepalive { b"keep-alive" } else { b"close" },
-    };
-    let minor = if chunked { 1 } else { head.minor };
-    write_response(out, raw, head, &edits, minor, Some(automatic));
     session.accept_fast_head(FastHead {
         status: StatusCode::from_u16(head.status).expect("a scanned status"),
         version: if head.minor == 0 {
@@ -682,6 +703,45 @@ fn render_fast(
                 .map(|length| usize::try_from(length).expect("a scanned length")),
         },
     });
+}
+
+/// The client's response head for a head the codec scanned, and the facts of it reported to the session.
+fn render_fast(
+    out: &mut Vec<u8>,
+    raw: &Bytes,
+    head: &ResponseHead,
+    session: &mut HttpSession,
+    forward: &Forward<'_>,
+    keepalive: bool,
+) -> Framing {
+    let facts = head.facts;
+    let is_head = forward.request.is_head;
+    let mut edits = Edits::new();
+    let edit = |result: Result<(), oxiroute_h1_head::EditsFull>| {
+        result.expect("a response head needs few edits");
+    };
+    if facts.transfer_encoding && head.find(Class::ContentLength).is_some() {
+        edit(edits.remove(names::CONTENT_LENGTH));
+    }
+    for (class, name) in RESPONSE_HOP_BY_HOP {
+        if facts.present & class.bit() != 0 {
+            edit(edits.remove(name));
+        }
+    }
+    let no_body = is_head || matches!(head.status, 204 | 304);
+    let chunked = !no_body && facts.content_length.is_none();
+    edit(edits.stamp_request_id(raw, head, Value::trusted(forward.id.as_bytes())));
+    if chunked {
+        edit(edits.set(names::TRANSFER_ENCODING, Value::trusted(b"chunked")));
+    }
+    let date = get_cached_date();
+    let automatic = Automatic {
+        date: date.as_bytes(),
+        connection: if keepalive { b"keep-alive" } else { b"close" },
+    };
+    let minor = if chunked { 1 } else { head.minor };
+    write_response(out, raw, head, &edits, minor, Some(automatic));
+    accept_head(session, head);
     match (no_body, chunked) {
         (true, _) => Framing::Empty,
         (false, true) => Framing::Chunked,

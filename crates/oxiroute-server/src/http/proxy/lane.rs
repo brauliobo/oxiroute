@@ -6,12 +6,12 @@
 //! The lane exists for requests whose cost is the layers around them; it never grows the grammar, it refuses a
 //! superset of what the classic parser refuses.
 
-mod buffers;
+pub(in crate::http::proxy) mod buffers;
 mod direct;
-mod head;
+pub(in crate::http::proxy) mod head;
 mod plan;
-mod proxy;
-mod timing;
+pub(in crate::http::proxy) mod proxy;
+pub(in crate::http::proxy) mod timing;
 
 use std::{
     future::poll_fn,
@@ -56,7 +56,7 @@ pub(crate) struct LaneTimeouts {
 
 impl LaneTimeouts {
     /// The write timeout a session has: the request timeout caps it.
-    fn session_write(&self) -> Option<Duration> {
+    pub(in crate::http::proxy) fn session_write(&self) -> Option<Duration> {
         match (self.request, self.write) {
             (Some(request), Some(write)) => Some(request.min(write)),
             (request, None) => request,
@@ -66,17 +66,17 @@ impl LaneTimeouts {
 }
 
 pub(crate) struct LaneFront {
-    challenge: Option<ChallengeStore>,
+    pub(in crate::http::proxy) challenge: Option<ChallengeStore>,
     first_request: Notify,
-    generation: Arc<RuntimeGeneration>,
-    metrics: ListenerMetrics,
-    service: Arc<HttpServicePlan>,
-    timeouts: LaneTimeouts,
+    pub(in crate::http::proxy) generation: Arc<RuntimeGeneration>,
+    pub(in crate::http::proxy) metrics: ListenerMetrics,
+    pub(in crate::http::proxy) service: Arc<HttpServicePlan>,
+    pub(in crate::http::proxy) timeouts: LaneTimeouts,
     /// The upstream connector of the classic proxy, whose idle connections the proxied lane shares.
-    upstream: Arc<Connector>,
+    pub(in crate::http::proxy) upstream: Arc<Connector>,
     /// Time a response write may take before the connection is given up: the least of the service deadline and
     /// the downstream timeouts.
-    write_budget: Duration,
+    pub(in crate::http::proxy) write_budget: Duration,
 }
 
 enum Served {
