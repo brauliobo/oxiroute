@@ -10,7 +10,7 @@ use http::{
     header::{
         ACCEPT_RANGES, ALLOW, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
         CONTENT_TYPE, DATE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
-        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, RANGE, RETRY_AFTER, SERVER, TRAILER,
+        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, RANGE, RETRY_AFTER, SERVER, TE, TRAILER,
         TRANSFER_ENCODING, WWW_AUTHENTICATE,
     },
     uri::Authority,
@@ -49,6 +49,7 @@ use crate::{
         CacheFailureClass, CacheRequest, CacheStart, CacheStartFailure, CacheTransaction,
         HttpCachePlan,
     },
+    http::hop_by_hop::{InvalidNomination, strip_request},
     http::policy::{
         RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
         ResponseHeaderDecision, ResponsePolicyError, decide_request_header,

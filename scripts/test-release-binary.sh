@@ -16,7 +16,7 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 binary=${1:-}
 [[ -f ${binary} && ${binary} != -* ]] || { echo "usage: $0 BIN [cargo test arguments]" >&2; exit 2; }
 shift
-export CARGO_TARGET_DIR=${BOLT_TEST_TARGET_DIR:-${CARGO_TARGET_DIR:-${PGO_WORK:-${XDG_STATE_HOME:-${HOME}/.local/state}/oxiroute-pgo}/target-test}}
+export CARGO_TARGET_DIR=${BOLT_TEST_TARGET_DIR:-${CARGO_TARGET_DIR:-${PGO_WORK:-/var/tmp/oxiroute-pgo}/target-test}}
 export CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_PROFILE_RELEASE_DEBUG=0
 export CARGO_INCREMENTAL=0
 jobs=${PGO_JOBS:-4}

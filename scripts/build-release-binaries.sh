@@ -5,6 +5,8 @@
 # then the smoke lanes and the whole workspace test suite against the rewritten binary). PGO=0 builds without a
 # profile, BOLT=0 skips the layout stage. A training, profile, BOLT or test failure fails the script: there is no
 # silent fallback to the previous stage.
+# The binaries must not embed a home-directory, runner or checkout path (scripts/verify-binary-paths.sh). The vendored
+# OpenSSL records its own build directory, so PGO_WORK must lie outside /home (default: /var/tmp/oxiroute-pgo).
 #
 #   build-release-binaries.sh VERSION OUT_DIR
 #
@@ -32,7 +34,7 @@ flavour=${FLAVOUR:-unwind}
 [[ ${flavour} == unwind || ${flavour} == abort ]] || { echo "FLAVOUR must be unwind or abort" >&2; exit 2; }
 pgo_script=${repo}/benchmarks/scripts/pgo.sh
 bolt_script=${repo}/benchmarks/scripts/bolt.sh
-work=${PGO_WORK:-${XDG_STATE_HOME:-${HOME}/.local/state}/oxiroute-pgo}
+work=${PGO_WORK:-/var/tmp/oxiroute-pgo}
 cargo_profile=release
 suffix=
 if [[ ${flavour} == abort ]]; then
@@ -70,6 +72,9 @@ else
   note="a plain build without profile-guided optimization (the release workflow was started with PGO disabled)"
   profile_sha256=null
 fi
+for binary in oxiroute oxiroute-worker-launcher; do
+  "${repo}/scripts/verify-binary-paths.sh" "${release}/${binary}" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
+done
 "${pgo_script}" smoke "${release}/oxiroute"
 
 shipped=${release}/oxiroute
@@ -78,6 +83,7 @@ if [[ ${bolt} == 1 ]]; then
   shipped=${BOLT_WORK}/oxiroute
   mkdir -p "${BOLT_WORK}"
   "${bolt_script}" all "${release}/oxiroute" "${shipped}"
+  "${repo}/scripts/verify-binary-paths.sh" "${shipped}" "${repo}" "${CARGO_HOME:-${HOME}/.cargo}"
   "${pgo_script}" smoke "${shipped}"
   note="${note}, then relinked by BOLT for instruction layout"
 fi
