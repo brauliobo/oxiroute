@@ -3,6 +3,8 @@ use oxiroute_config::{
     HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpSameSite,
 };
 
+use http::header::{CONNECTION, UPGRADE};
+
 use super::*;
 use crate::http::action::ProxyPolicyPlan;
 
@@ -158,7 +160,7 @@ fn response_decision_tables_gate_status_and_validate_all_nominations_first() {
 
     let mut headers = HeaderMap::new();
     headers.append(CONNECTION, HeaderValue::from_static("x-first"));
-    headers.append(CONNECTION, HeaderValue::from_static("x-second, "));
+    headers.append(CONNECTION, HeaderValue::from_static("x-second, two words"));
     assert_eq!(
         decide_response_headers(StatusCode::OK, &headers, &policy, true),
         Err(ResponsePolicyError::InvalidConnectionNomination)
