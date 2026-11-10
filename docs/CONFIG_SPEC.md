@@ -868,6 +868,7 @@ tls_profiles = {
       session_timeout_seconds = nil,
       session_tickets = false,
       prefer_server_ciphers = true,
+      ktls = "off",
       client_auth = {
         mode = "disabled",
         ca_certificate_path = nil,
@@ -910,6 +911,14 @@ The current certificate and profile rules are:
   A shared `session_cache` cuts a TLS 1.2 resumption by about 79% and a TLS 1.3 resumption by about
   15%, because TLS 1.3 still runs a fresh key exchange; enable it for clients that reconnect often
   over TLS 1.2. See `docs/developer/CONNECTION_LAYER_PERFORMANCE.md`.
+- `ktls` is `"off"` (default) or `"static"`. `"static"` asks the server to send large static files
+  over TLS with the kernel's TLS transmit offload (kTLS) and `sendfile`. A TLS 1.3 connection with
+  an AES-GCM cipher that serves an HTTP/1.1 static file of 64 KiB or more is switched to kernel TLS
+  before the first large file with one TLS KeyUpdate, and the file is then sent with `sendfile`.
+  The host needs the `tls` kernel module loaded (`modprobe tls`, or a file in
+  `/etc/modules-load.d/` to load it at boot); otherwise the server logs once and keeps encrypting
+  in user space. The option has no effect on HTTP/2, HTTP/3, proxied bodies, or TLS 1.2, and
+  changes nothing else about the profile.
 - Downstream client authentication defaults to `disabled`. `optional` requests a client certificate
   but permits an absent certificate; `required` rejects the handshake when no certificate is sent.
   Enabled modes require one bounded absolute `ca_certificate_path`. The CA bundle is read twice for
