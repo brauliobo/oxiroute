@@ -205,6 +205,8 @@ fn udp_passive_failure_count(generation: &RuntimeGeneration) -> u64 {
 fn udp_config(listener: SocketAddr, upstream: SocketAddr) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         version: 1,
         max_connections: None,

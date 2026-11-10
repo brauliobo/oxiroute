@@ -284,6 +284,16 @@ Current constraints:
   cross-thread wake-ups per request. The management, statistics, RTMP, `udp`, `http3` and
   `forward_http3` listeners keep their dedicated single threads. Changing the value is an ordinary
   reload: the replaced generation drains on its own threads.
+- Root `connection_scheduling` is optional: `work_stealing` (the default) lets the workers of a listener
+  share their ready connections; `aged_per_worker` gives every worker its own queue and its own I/O driver, places
+  each new connection on the worker with the fewest open connections, and serves the newest ready connection first
+  and the oldest first once it has waited `connection_age_ms` (1 to 1000, default 40, only valid with
+  `aged_per_worker`). It keeps a connection's data hot in the core's caches, which lifts the request rate with
+  hundreds to thousands of busy keep-alive connections per worker, and no ready connection waits for more than about
+  the age plus the time to serve the connections already older than it. It changes only the order in which ready
+  connections are served: parsing, admission, limits, drain, retirement and evacuation are the same. A slow handler
+  delays every connection of its worker, which work stealing hides. HTTP/2 stream tasks keep Tokio's order.
+  Changing it is an ordinary reload. See `docs/developer/PERF_6_4_CORE_MODEL.md`.
 - `retirement` is optional and bounds how a replaced generation drains: `drain_deadline_ms`
   (1000 to 86400000) is how long its in-flight work may continue after its accept gate closes,
   and `max_retired_generations` (1 to 16, default 4) is how many replaced generations may drain at

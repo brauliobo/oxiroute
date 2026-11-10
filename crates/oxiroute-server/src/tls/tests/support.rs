@@ -4,6 +4,8 @@ use super::*;
 pub(super) fn config_with_identity(files: &IdentityFiles) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         version: 1,
         max_connections: None,

@@ -12,6 +12,14 @@ pub struct ConfigDraft {
     /// The workers share the listener's socket, pools and limits. Omitted means one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listener_workers: Option<u64>,
+    /// How each listener worker orders the connections that are ready: `work_stealing` (the default) shares them
+    /// between the workers of a listener; `aged_per_worker` gives every worker its own queue, served newest first
+    /// and oldest first once a connection has waited `connection_age_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_scheduling: Option<ConnectionScheduling>,
+    /// Longest a ready connection waits behind newer ones with `aged_per_worker`. Omitted means 40 ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_age_ms: Option<u64>,
     /// Bounds on how long and how many replaced generations keep serving their in-flight work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<Retirement>,
@@ -43,6 +51,35 @@ pub struct ConfigDraft {
 
 impl ConfigDraft {
     pub const MAX_LISTENER_WORKERS: u64 = 256;
+    pub const DEFAULT_CONNECTION_AGE_MS: u64 = 40;
+    pub const MAX_CONNECTION_AGE_MS: u64 = 1_000;
+
+    /// The age bound in milliseconds of the per-worker connection queues, or `None` when the workers share their
+    /// connections.
+    #[must_use]
+    pub fn effective_connection_age_ms(&self) -> Option<u64> {
+        (self.connection_scheduling == Some(ConnectionScheduling::AgedPerWorker)).then(|| {
+            self.connection_age_ms
+                .unwrap_or(Self::DEFAULT_CONNECTION_AGE_MS)
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionScheduling {
+    WorkStealing,
+    AgedPerWorker,
+}
+
+impl ConnectionScheduling {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkStealing => "work_stealing",
+            Self::AgedPerWorker => "aged_per_worker",
+        }
+    }
 }
 
 /// Lifetime of a replaced generation. Its accept gate closes at once; work already admitted

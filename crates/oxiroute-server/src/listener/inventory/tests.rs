@@ -11,6 +11,8 @@ use super::{
 fn inventory_core_is_platform_independent_and_unbounded() {
     let config = ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         version: 1,
         max_connections: None,
@@ -256,6 +258,8 @@ fn inventory_config(
 ) -> oxiroute_config::ValidatedConfig {
     let mut config = ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         version: 1,
         max_connections: None,
