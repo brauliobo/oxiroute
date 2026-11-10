@@ -16,8 +16,10 @@
 
 pub mod http_app;
 mod idle_wait;
+mod pooled_future;
 pub mod prometheus_http_app;
 
+use self::pooled_future::PooledFuture;
 use crate::server::ShutdownWatch;
 use async_trait::async_trait;
 use log::{debug, error};
@@ -846,8 +848,8 @@ where
                     .and_then(|opts| opts.keepalive_request_limit),
             );
 
-            // Boxed per request: the connection's own future stays small while it waits between requests.
-            let mut result = Box::pin(self.process_new_http_inline(session, shutdown)).await;
+            // On the heap per request: the connection's own future stays small while it waits between requests.
+            let mut result = PooledFuture::new(|| self.process_new_http_inline(session, shutdown)).await;
             while let Some((mut stream, persistent_settings)) = result.map(|r| r.consume()) {
                 // The connection waits for its next request holding no session and no request state.
                 let idle = self.idle_keepalive_timeout().or_else(|| {
@@ -863,7 +865,7 @@ where
                     persistent_settings.apply_to_session(&mut session);
                 }
 
-                result = Box::pin(self.process_new_http_inline(session, shutdown)).await;
+                result = PooledFuture::new(|| self.process_new_http_inline(session, shutdown)).await;
             }
         }
         None
