@@ -189,20 +189,11 @@ impl Wire {
 
     /// The proxy in front of `origin`, with `edit` applied to the configuration first.
     pub async fn over(origin: Origin, edit: impl FnOnce(&mut ConfigDraft)) -> Self {
-        Self::over_with_env(origin, edit, &[]).await
-    }
-
-    /// [`Self::over`] with environment variables for the server process.
-    pub async fn over_with_env(
-        origin: Origin,
-        edit: impl FnOnce(&mut ConfigDraft),
-        environment: &[(&str, &str)],
-    ) -> Self {
         let proxy = reserve_tcp_address();
         let mut config = config(proxy, origin.address);
         edit(&mut config);
         let config = config.validate().expect("valid wire config");
-        let mut server = ServerProcess::start_with_env(&config, None, environment);
+        let mut server = ServerProcess::start(&config, None);
         server.wait_for_tcp(proxy).await;
         Self {
             origin,

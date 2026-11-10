@@ -163,6 +163,7 @@ impl ServerApp for RejectingAdmissionApp {
 fn generation() -> Arc<RuntimeGeneration> {
     let config = ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         version: 1,
         max_connections: None,

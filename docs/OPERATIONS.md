@@ -186,6 +186,14 @@ sent to the origin. `Upgrade` and `Connection: Upgrade` pass only for a valid HT
 502. The proxy's own headers, such as `X-Forwarded-For`, are added after the removal, so a client cannot nominate them
 away.
 
+### HTTP/1.1 fast lane
+
+Plain HTTP/1.1 requests of fixed-response routes and of plain proxy routes (no header rules, retries, cache, affinity,
+TLS upstream, gzip or access log) are served on a compiled lane that answers them on the connection itself, with the
+same bytes, headers, framing and connection handling as the classic path. Anything else takes the classic path from the
+first byte. The root option `http_fast_lane = false` sends every request through the classic path (for a comparison
+or to rule the lane out); it is an ordinary reload, applied to the new connections of the new generation.
+
 ### Request tracing and in-flight requests
 
 `oxiroute requests list` (`GET /api/v1/requests`) shows every request currently inside the router

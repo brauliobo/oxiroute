@@ -289,6 +289,7 @@ async fn health_groups_schedule_independently() {
         let (slow_address, slow_server) = http_origin(200, true).await;
         let config = ConfigDraft {
             listener_workers: None,
+            http_fast_lane: None,
             retirement: None,
             upstream_pools: vec![
                 pool(
@@ -346,6 +347,7 @@ async fn endpoints_in_one_pool_schedule_from_their_own_completion() {
         let (slow_address, slow_server) = http_origin(200, true).await;
         let config = ConfigDraft {
             listener_workers: None,
+            http_fast_lane: None,
             retirement: None,
             upstream_pools: vec![UpstreamPool {
                 name: "mixed".into(),
@@ -428,6 +430,7 @@ async fn validation_enforces_programmatic_endpoint_cardinality() {
         .collect();
     let result = ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         upstream_pools: vec![UpstreamPool {
             name: "oversized".into(),
@@ -554,6 +557,7 @@ async fn dns_no_answer_is_a_bounded_connect_failure() {
 fn config(endpoint: UpstreamEndpoint, health_check: HealthCheck) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         upstream_pools: vec![pool("checked", endpoint, health_check)],
         ..empty_config()

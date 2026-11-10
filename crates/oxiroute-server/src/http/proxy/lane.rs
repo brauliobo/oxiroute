@@ -93,8 +93,10 @@ impl LaneFront {
         challenge: Option<ChallengeStore>,
         timeouts: LaneTimeouts,
         upstream: Arc<Connector>,
+        enabled: bool,
     ) -> Option<Self> {
-        let eligible = service.gzip().is_none()
+        let eligible = enabled
+            && service.gzip().is_none()
             && service.access_log().is_none()
             && service.automatic_response_headers();
         let write_budget = [
@@ -105,7 +107,7 @@ impl LaneFront {
         .into_iter()
         .flatten()
         .min()?;
-        (eligible && !lane_disabled()).then_some(Self {
+        eligible.then_some(Self {
             challenge,
             first_request: Notify::new(),
             generation,
@@ -123,7 +125,7 @@ impl LaneFront {
             return self.timeouts.keepalive;
         }
         self.timeouts.request.or_else(|| {
-            (self.timeouts.keepalive.is_none() && !stopping).then_some(Duration::from_secs(60))
+            (self.timeouts.keepalive.is_none() && !stopping).then_some(Duration::from_mins(1))
         })
     }
 
@@ -229,7 +231,7 @@ impl LaneFront {
         }
         let generated = generated_request_id_bytes();
         let id = request
-            .request_id
+            .client_id
             .map_or(&generated[..], |span| span.of(buffer));
         if route.lane == LaneRoute::Proxy {
             let id = HeaderValue::from_bytes(id).expect("request ids are visible ASCII");
@@ -315,8 +317,4 @@ impl Http1Front for LaneFront {
     fn cleanup(&self) {
         self.first_request.notify_waiters();
     }
-}
-
-fn lane_disabled() -> bool {
-    std::env::var_os("OXIROUTE_HTTP_LANE").is_some_and(|value| value == "off")
 }

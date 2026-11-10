@@ -12,7 +12,7 @@ pub(super) struct Request {
     pub(super) path: Span,
     pub(super) host: Span,
     /// The first `X-Request-Id`, when it is a valid id: the one the request goes on with.
-    pub(super) request_id: Option<Span>,
+    pub(super) client_id: Option<Span>,
     /// The request carries that one id and no other, so nothing is stamped on it.
     pub(super) id_stamped: bool,
     pub(super) close: bool,
@@ -45,7 +45,8 @@ pub(super) fn scan(buf: &[u8], head: &mut RequestHead) -> Option<Request> {
     }
     let facts = head.facts;
     let bodyless = facts.content_length.is_none_or(|length| length == 0);
-    let plain = !(facts.transfer_encoding || facts.upgrade || facts.expect);
+    let plain =
+        !(facts.transfer_encoding || facts.upgrade || facts.expect) && facts.hop_by_hop == 0;
     let close = match facts.connection {
         Connection::Absent | Connection::KeepAlive => false,
         Connection::Close => true,
@@ -60,7 +61,7 @@ pub(super) fn scan(buf: &[u8], head: &mut RequestHead) -> Option<Request> {
         start: target.start,
         len: query.map_or(target.len, |at| u32::try_from(at).unwrap_or(target.len)),
     };
-    let request_id = (facts.request_id_count >= 1)
+    let client_id = (facts.request_id_count >= 1)
         .then(|| head.headers()[usize::from(facts.request_id)])
         .filter(|header| header.class == Class::XRequestId)
         .map(|header| value_span(&header))
@@ -69,8 +70,8 @@ pub(super) fn scan(buf: &[u8], head: &mut RequestHead) -> Option<Request> {
         method: head.method,
         path,
         host: value_span(&head.headers()[usize::from(facts.host)]),
-        request_id,
-        id_stamped: request_id.is_some() && facts.request_id_count == 1,
+        client_id,
+        id_stamped: client_id.is_some() && facts.request_id_count == 1,
         close,
         head_len: head.head_len as usize,
         is_head: head.method(buf) == b"HEAD",

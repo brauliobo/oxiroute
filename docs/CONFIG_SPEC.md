@@ -284,6 +284,13 @@ Current constraints:
   cross-thread wake-ups per request. The management, statistics, RTMP, `udp`, `http3` and
   `forward_http3` listeners keep their dedicated single threads. Changing the value is an ordinary
   reload: the replaced generation drains on its own threads.
+- Root `http_fast_lane` is an optional boolean. Omitted (or `true`) serves the plain HTTP/1.1 requests of fixed-response
+  routes and plain proxy routes on the compiled fast lane, which answers them on the connection itself without building a
+  session, with the same bytes, headers, framing and connection handling as the classic path. `false` sends every
+  request through the classic path. A request the lane cannot prove equivalent (bodies, header rules, retries, cache,
+  affinity, TLS upstreams, gzip, access logs, pipelining, unusual heads) takes the classic path either way. Changing the
+  value is an ordinary reload: the lane belongs to the generation, new connections of the new generation use the new
+  setting and connections of the replaced generation finish as they were accepted.
 - `retirement` is optional and bounds how a replaced generation drains: `drain_deadline_ms`
   (1000 to 86400000) is how long its in-flight work may continue after its accept gate closes,
   and `max_retired_generations` (1 to 16, default 4) is how many replaced generations may drain at

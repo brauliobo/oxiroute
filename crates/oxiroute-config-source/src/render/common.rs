@@ -15,6 +15,7 @@ impl Renderer {
             version,
             max_connections,
             listener_workers,
+            http_fast_lane,
             retirement,
             management,
             registry,
@@ -39,6 +40,9 @@ impl Renderer {
         }
         if let Some(workers) = listener_workers {
             self.integer_field("listener_workers", workers);
+        }
+        if let Some(enabled) = http_fast_lane {
+            self.boolean_field("http_fast_lane", *enabled);
         }
         self.optional_table_field("retirement", retirement.as_ref(), Self::retirement);
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;

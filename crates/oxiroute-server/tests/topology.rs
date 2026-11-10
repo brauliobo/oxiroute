@@ -542,6 +542,7 @@ fn topology_config(temp: &TempDir) -> ConfigDraft {
         write_test_identity(temp.path(), "topology-private-key-do-not-expose.pem");
     let mut config = ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         certificates: vec![Certificate {
             name: "public".into(),

@@ -79,6 +79,7 @@ pub(super) fn editable_config() -> ConfigDraft {
 
     ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         certificates: vec![Certificate {
             name: "test-certificate".into(),

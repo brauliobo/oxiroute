@@ -199,6 +199,7 @@ fn decode_main_section(section: &UciSection) -> Result<Map<String, Value>, Confi
             "max_connections" | "listener_workers" => {
                 Value::Number(parse_uci_integer::<u64>(section, name, value)?.into())
             }
+            "http_fast_lane" => Value::Bool(parse_uci_bool(section, name, value)?),
             _ => {
                 return Err(ConfigSourceError::parse(
                     "UCI",

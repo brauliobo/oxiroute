@@ -151,6 +151,7 @@ fn udp_config(
 ) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         management: Some(Management {
             bind: management_address,

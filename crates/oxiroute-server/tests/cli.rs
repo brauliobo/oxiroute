@@ -757,6 +757,7 @@ fn generation_reload_cli_keeps_the_old_generation_and_surfaces_native_failure() 
 fn empty_config() -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         version: 1,
         max_connections: None,

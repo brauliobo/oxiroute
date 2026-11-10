@@ -307,6 +307,7 @@ class Env:
             [sys.executable, str(HERE / "gen_config.py"), str(config), "--proxy-port", str(PROXY_PORT),
              "--upstream-port", str(UPSTREAM_PORT), "--echo-port", str(ECHO_PORT), "--servers", str(lane.servers),
              "--listeners", str(lane.listeners), "--workers", str(lane.workers), "--run-dir", str(self.work)]
+            + (["--classic"] if self.args.classic else [])
             + [item for feature in lane.features for item in ("--feature", feature)],
             check=True, capture_output=True, text=True, timeout=LANE_TIMEOUT)
         self.generated = generated.stdout
@@ -678,6 +679,8 @@ def main():
     parser.add_argument("--alloc-requests", type=int, default=4000)
     parser.add_argument("--alloc-warmup", type=int, default=1000)
     parser.add_argument("--scale", type=float, default=1.0, help="multiply every lane's request counts (smoke runs)")
+    parser.add_argument("--classic", action="store_true",
+                        help="generate `http_fast_lane = false`: every request takes the classic path")
     parser.add_argument("--proxy-env", action="append", default=[], metavar="KEY=VALUE",
                         help="extra proxy environment, e.g. LD_PRELOAD=/usr/lib/libjemalloc.so.2 for allocator A/B")
     parser.add_argument("--lock-batch", type=int, default=1,

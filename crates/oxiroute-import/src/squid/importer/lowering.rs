@@ -136,6 +136,7 @@ pub(super) fn lower(
     };
     let draft = ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         listeners,
         forward_proxy_services: vec![service],

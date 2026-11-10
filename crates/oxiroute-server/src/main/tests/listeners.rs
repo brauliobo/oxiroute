@@ -10,6 +10,7 @@ async fn tcp_handler_closes_connections_when_its_pool_is_unavailable() {
     let ingress_address = ingress.local_addr().expect("ingress address");
     let config = ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         version: 1,
         max_connections: None,

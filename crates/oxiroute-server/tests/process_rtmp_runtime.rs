@@ -645,6 +645,7 @@ fn runtime_config(
 ) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         management: Some(Management {
             bind: management_address,
@@ -684,6 +685,7 @@ fn runtime_config(
 fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         management: Some(Management {
             bind: management_address,
@@ -754,6 +756,7 @@ fn handoff_runtime_config(
     };
     ConfigDraft {
         listener_workers: None,
+        http_fast_lane: None,
         retirement: None,
         management: Some(Management {
             bind: management_address,
