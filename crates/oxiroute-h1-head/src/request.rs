@@ -1,6 +1,6 @@
 //! The request scanner: one pass over a request head, refusing everything the classic parser might read differently.
 
-use crate::class::Class;
+use crate::class::{Class, HOP_BY_HOP_REQUEST};
 use crate::fields::{Header, MAX_HEADERS, Stop, scan_fields};
 use crate::miss::{MissReason, Scan};
 use crate::tables::{NAME, TARGET};
@@ -10,21 +10,6 @@ pub const MAX_METHOD_LEN: usize = 32;
 /// The longest target `http::Uri` stores.
 pub const MAX_TARGET_LEN: usize = 65_534;
 const MAX_CONTENT_LENGTH_DIGITS: usize = 18;
-
-/// Bit of [`RequestFacts::hop_by_hop`]: `Keep-Alive` is present.
-pub const HOP_KEEP_ALIVE: u8 = 1 << 0;
-/// Bit of [`RequestFacts::hop_by_hop`]: `Proxy-Connection` is present.
-pub const HOP_PROXY_CONNECTION: u8 = 1 << 1;
-/// Bit of [`RequestFacts::hop_by_hop`]: `Proxy-Authenticate` is present.
-pub const HOP_PROXY_AUTHENTICATE: u8 = 1 << 2;
-/// Bit of [`RequestFacts::hop_by_hop`]: `Proxy-Authorization` is present.
-pub const HOP_PROXY_AUTHORIZATION: u8 = 1 << 3;
-/// Bit of [`RequestFacts::hop_by_hop`]: `TE` is present.
-pub const HOP_TE: u8 = 1 << 4;
-/// Bit of [`RequestFacts::hop_by_hop`]: `Trailer` is present.
-pub const HOP_TRAILER: u8 = 1 << 5;
-/// All six fixed hop-by-hop fields of a request.
-pub const HOP_BY_HOP_REQUEST: u8 = 0x3f;
 
 /// A byte range of the scanned buffer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -65,8 +50,8 @@ pub struct RequestFacts {
     pub upgrade: bool,
     pub expect: bool,
     pub connection: Connection,
-    /// [`HOP_KEEP_ALIVE`] and the other `HOP_*` bits.
-    pub hop_by_hop: u8,
+    /// [`HOP_KEEP_ALIVE`](crate::HOP_KEEP_ALIVE) and the other `HOP_*` bits up to [`HOP_TRAILER`](crate::HOP_TRAILER).
+    pub hop_by_hop: u16,
     /// How many `X-Request-Id` headers there are, up to 255, and the index of the first.
     pub request_id_count: u8,
     pub request_id: u8,
@@ -153,6 +138,13 @@ impl RequestHead {
         self.target.of(buf)
     }
 
+    /// The first header of `class`.
+    #[inline]
+    #[must_use]
+    pub fn find(&self, class: Class) -> Option<&Header> {
+        self.headers().iter().find(|h| h.class == class)
+    }
+
     /// The value of the one `Host` header.
     #[inline]
     #[must_use]
@@ -230,7 +222,7 @@ fn version_end(buf: &[u8], start: usize) -> Result<usize, Stop> {
 }
 
 /// The digits of a `Content-Length` value, or `None` for anything that is not 1 to 18 digits.
-fn content_length(value: &[u8]) -> Option<u64> {
+pub(crate) fn content_length(value: &[u8]) -> Option<u64> {
     if value.is_empty() || value.len() > MAX_CONTENT_LENGTH_DIGITS {
         return None;
     }
@@ -240,7 +232,7 @@ fn content_length(value: &[u8]) -> Option<u64> {
 }
 
 /// Whether the last comma-separated coding of a `Transfer-Encoding` value is `chunked`, as the classic check reads it.
-fn chunked_final(value: &[u8]) -> bool {
+pub(crate) fn chunked_final(value: &[u8]) -> bool {
     let last = value
         .iter()
         .rposition(|&c| c == b',')
@@ -248,7 +240,7 @@ fn chunked_final(value: &[u8]) -> bool {
     last.trim_ascii().eq_ignore_ascii_case(b"chunked")
 }
 
-fn connection(buf: &[u8], h: &Header, dup: bool) -> Connection {
+pub(crate) fn connection(buf: &[u8], h: &Header, dup: bool) -> Connection {
     let value = h.value(buf);
     if dup {
         Connection::Other
@@ -300,7 +292,7 @@ fn scan(buf: &[u8], out: &mut RequestHead) -> Result<(), Stop> {
     }
     facts.upgrade = has(Class::Upgrade);
     facts.expect = has(Class::Expect);
-    facts.hop_by_hop = ((block.seen >> Class::KeepAlive as u32) as u8) & HOP_BY_HOP_REQUEST;
+    facts.hop_by_hop = ((block.seen >> Class::KeepAlive as u32) as u16) & HOP_BY_HOP_REQUEST;
     facts.request_id_count = 0;
     facts.request_id = block.first[Class::XRequestId as usize];
     if has(Class::XRequestId) {
