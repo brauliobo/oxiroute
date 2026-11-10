@@ -78,7 +78,7 @@ pub(super) fn pool_id(name: &str) -> String {
     stable_id("upstream_pool", &[name])
 }
 
-pub(super) fn endpoint_id(pool: &str, server: &str) -> String {
+pub(crate) fn endpoint_id(pool: &str, server: &str) -> String {
     stable_id("upstream_server", &[pool, server])
 }
 

@@ -240,13 +240,8 @@ fn topology_response(metrics: &RuntimeMetrics, topology: &TopologySnapshot) -> A
             );
         }
     };
-    match TopologyResponse::active(topology, &runtime) {
-        Ok(response) => serialized_response(
-            200,
-            &response,
-            "topology_serialization_failed",
-            "could not serialize active runtime topology",
-        ),
+    match TopologyResponse::active_body(topology, &runtime) {
+        Ok(body) => ApiResponse::bytes(200, body, "application/json"),
         Err(error) => ApiResponse::error(
             500,
             "topology_serialization_failed",

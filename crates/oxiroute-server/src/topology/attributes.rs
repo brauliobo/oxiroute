@@ -358,12 +358,3 @@ pub(super) const fn http_version(version: HttpVersion) -> &'static str {
         HttpVersion::Http3 => "3",
     }
 }
-
-pub(super) const fn endpoint_state(state: crate::EndpointHealthState) -> &'static str {
-    match state {
-        crate::EndpointHealthState::Unchecked => "unchecked",
-        crate::EndpointHealthState::Unknown => "unknown",
-        crate::EndpointHealthState::Healthy => "healthy",
-        crate::EndpointHealthState::Unhealthy => "unhealthy",
-    }
-}

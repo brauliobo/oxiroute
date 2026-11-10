@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Write as _};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write as _,
+    sync::OnceLock,
+};
 
 use oxiroute_config::{
     AlpnProtocol, CertificateSource, ConfigDraft, HealthCheck, HealthCheckType, HttpAccessPolicy,
@@ -9,15 +13,15 @@ use oxiroute_config::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::{ListenerRuntimeState, ServerOrigin, observability::monitoring::RuntimeHealthSnapshot};
+use crate::observability::monitoring::RuntimeHealthSnapshot;
 
 mod attributes;
 mod builder;
 mod ids;
 
-use attributes::endpoint_state;
 use builder::TopologyBuilder;
-use ids::{edge_kind_name, endpoint_id, stable_id};
+pub(crate) use ids::endpoint_id;
+use ids::{edge_kind_name, stable_id};
 
 pub const TOPOLOGY_SCHEMA_VERSION: u32 = 1;
 
@@ -29,7 +33,8 @@ pub struct TopologySnapshot {
     listener_nodes: HashMap<String, String>,
     pool_nodes: HashMap<String, String>,
     pool_paths: HashMap<String, String>,
-    endpoint_nodes: HashMap<(String, String), String>,
+    static_endpoints: HashMap<String, HashSet<String>>,
+    rendered: OnceLock<Result<RenderedStructure, String>>,
 }
 
 impl TopologySnapshot {
@@ -55,211 +60,94 @@ impl TopologySnapshot {
         &self.edges
     }
 
-    pub(crate) fn response_value(
+    /// The compiled nodes and edges as JSON array items, rendered by `render` the first time and kept for the life of
+    /// the snapshot, which is one generation: a topology only changes with a new one.
+    pub(crate) fn rendered_structure(
         &self,
-        runtime: &RuntimeHealthSnapshot,
-    ) -> Result<Value, TopologyResponseError> {
-        let mut overlays = Vec::with_capacity(
-            runtime.listeners.len()
-                + runtime.upstream_pools.len()
-                + runtime
-                    .upstream_pools
-                    .iter()
-                    .map(|pool| pool.endpoints.len())
-                    .sum::<usize>(),
-        );
-        self.add_listener_overlays(runtime, &mut overlays)?;
-        self.add_pool_overlays(runtime, &mut overlays)?;
-        let registered = self.registered_servers(runtime);
-
-        serde_json::to_value(TopologyResponse {
-            schema_version: TOPOLOGY_SCHEMA_VERSION,
-            state: TopologyState {
-                config: "active",
-                runtime: runtime_state(&runtime.listeners),
-                sampled_at_unix_ms: runtime.sampled_at_unix_ms,
-            },
-            nodes: self
-                .nodes
-                .iter()
-                .chain(registered.iter().map(|(node, _)| node))
-                .collect(),
-            edges: self
-                .edges
-                .iter()
-                .chain(registered.iter().map(|(_, edge)| edge))
-                .collect(),
-            overlays,
-        })
-        .map_err(TopologyResponseError::Serialize)
+        render: impl FnOnce(&Self) -> Result<RenderedStructure, String>,
+    ) -> Result<&RenderedStructure, &str> {
+        self.rendered
+            .get_or_init(|| render(self))
+            .as_ref()
+            .map_err(String::as_str)
     }
 
-    /// Servers that joined at runtime are not in the compiled graph; they hang off their pool.
-    fn registered_servers(
-        &self,
-        runtime: &RuntimeHealthSnapshot,
-    ) -> Vec<(TopologyNode, TopologyEdge)> {
-        runtime
-            .upstream_pools
-            .iter()
-            .filter_map(|pool| {
-                Some((
-                    pool,
-                    self.pool_nodes.get(&pool.name)?,
-                    self.pool_paths.get(&pool.name)?,
-                ))
-            })
-            .flat_map(|(pool, pool_node, pool_path)| {
-                pool.endpoints
-                    .iter()
-                    .filter(|endpoint| endpoint.origin == ServerOrigin::Dynamic)
-                    .map(move |endpoint| {
-                        let id = endpoint_id(&pool.name, &endpoint.name);
-                        let config_path = format!("{pool_path}/registration");
-                        let node = TopologyNode {
-                            id: id.clone(),
-                            kind: TopologyNodeKind::Endpoint,
-                            name: endpoint.name.clone(),
-                            config_path: config_path.clone(),
-                            attributes: json!({
-                                "type": "socket",
-                                "origin": "dynamic",
-                                "address": endpoint.address.to_string(),
-                                "maxConnections": endpoint.max_connections,
-                                "serverName": endpoint.name,
-                            }),
-                        };
-                        let edge = TopologyEdge::new(
-                            TopologyEdgeKind::PoolEndpoint,
-                            pool_node,
-                            &id,
-                            config_path,
-                        );
-                        (node, edge)
-                    })
-            })
-            .collect()
+    pub(crate) fn listener_node(&self, name: &str) -> Option<&str> {
+        self.listener_nodes.get(name).map(String::as_str)
     }
 
-    fn add_listener_overlays(
+    pub(crate) fn pool_node(&self, name: &str) -> Option<(&str, &str)> {
+        Some((self.pool_nodes.get(name)?, self.pool_paths.get(name)?))
+    }
+
+    pub(crate) fn has_static_endpoint(&self, pool: &str, server: &str) -> bool {
+        self.static_endpoints
+            .get(pool)
+            .is_some_and(|servers| servers.contains(server))
+    }
+
+    /// The first compiled listener, pool or server that `runtime` lacks.
+    pub(crate) fn missing_from(
         &self,
         runtime: &RuntimeHealthSnapshot,
-        overlays: &mut Vec<TopologyRuntimeOverlay>,
-    ) -> Result<(), TopologyResponseError> {
-        for listener in &runtime.listeners {
-            let node_id = self
-                .listener_nodes
-                .get(&listener.name)
-                .ok_or_else(|| TopologyResponseError::UnknownListener(listener.name.clone()))?;
-            overlays.push(TopologyRuntimeOverlay {
-                node_id: node_id.clone(),
-                state: listener_state(listener.state),
-                metrics: json!({
-                    "activeConnections": listener.active_connections,
-                    "acceptedConnections": listener.accepted_connections.to_string(),
-                    "rejectedConnections": listener.rejected_connections.to_string(),
-                    "bytesReceived": listener.bytes_received.to_string(),
-                    "bytesSent": listener.bytes_sent.to_string(),
-                }),
-            });
-        }
-        for listener in self.listener_nodes.keys() {
-            if !runtime
+    ) -> Option<TopologyResponseError> {
+        let listener = self.listener_nodes.keys().find(|name| {
+            runtime
                 .listeners
                 .iter()
-                .any(|snapshot| &snapshot.name == listener)
-            {
-                return Err(TopologyResponseError::MissingListener(listener.clone()));
-            }
-        }
-        Ok(())
-    }
-
-    fn add_pool_overlays(
-        &self,
-        runtime: &RuntimeHealthSnapshot,
-        overlays: &mut Vec<TopologyRuntimeOverlay>,
-    ) -> Result<(), TopologyResponseError> {
-        for pool in &runtime.upstream_pools {
-            let node_id = self
-                .pool_nodes
-                .get(&pool.name)
-                .ok_or_else(|| TopologyResponseError::UnknownPool(pool.name.clone()))?;
-            let state = if pool.available_endpoints == 0 {
-                "unavailable"
-            } else if pool.available_endpoints == pool.total_endpoints {
-                "available"
-            } else {
-                "degraded"
-            };
-            overlays.push(TopologyRuntimeOverlay {
-                node_id: node_id.clone(),
-                state,
-                metrics: json!({
-                    "availableEndpoints": pool.available_endpoints,
-                    "totalEndpoints": pool.total_endpoints,
-                    "unavailableSelections": pool.unavailable_selections.to_string(),
-                    "queued": pool.queued,
-                    "queuedTotal": pool.queued_total.to_string(),
-                    "queueTimeouts": pool.queue_timeouts.to_string(),
-                    "queueCancellations": pool.queue_cancellations.to_string(),
-                }),
-            });
-            for endpoint in &pool.endpoints {
-                let node_id = if endpoint.origin == ServerOrigin::Dynamic {
-                    endpoint_id(&pool.name, &endpoint.name)
-                } else {
-                    self.endpoint_nodes
-                        .get(&(pool.name.clone(), endpoint.name.clone()))
-                        .ok_or_else(|| TopologyResponseError::UnknownEndpoint {
-                            pool: pool.name.clone(),
-                            endpoint: endpoint.name.clone(),
-                        })?
-                        .clone()
-                };
-                overlays.push(TopologyRuntimeOverlay {
-                    node_id,
-                    state: endpoint_state(endpoint.state),
-                    metrics: json!({
-                        "activeConnections": endpoint.active_connections.to_string(),
-                        "maxConnections": endpoint.max_connections,
-                        "lastCheckedAtUnixMs": endpoint.last_checked_at_unix_ms,
-                        "lastTransitionAtUnixMs": endpoint.last_transition_at_unix_ms,
-                        "successfulChecks": endpoint.successful_checks.to_string(),
-                        "failedChecks": endpoint.failed_checks.to_string(),
-                        "consecutiveSuccesses": endpoint.consecutive_successes.to_string(),
-                        "consecutiveFailures": endpoint.consecutive_failures.to_string(),
-                        "lastFailure": endpoint.last_failure,
-                    }),
-                });
-            }
-        }
-        for pool in self.pool_nodes.keys() {
-            if !runtime
+                .all(|listener| &listener.name != *name)
+        });
+        let pool = self.pool_nodes.keys().find(|name| {
+            runtime
                 .upstream_pools
                 .iter()
-                .any(|snapshot| &snapshot.name == pool)
-            {
-                return Err(TopologyResponseError::MissingPool(pool.clone()));
-            }
-        }
-        for (pool, server) in self.endpoint_nodes.keys() {
-            let present = runtime.upstream_pools.iter().any(|snapshot| {
-                snapshot.name == *pool
-                    && snapshot
-                        .endpoints
-                        .iter()
-                        .any(|candidate| candidate.name == *server)
-            });
-            if !present {
-                return Err(TopologyResponseError::MissingEndpoint {
+                .all(|pool| &pool.name != *name)
+        });
+        let endpoint = self.static_endpoints.iter().find_map(|(pool, servers)| {
+            let live = runtime
+                .upstream_pools
+                .iter()
+                .find(|live| &live.name == pool);
+            servers
+                .iter()
+                .find(|server| {
+                    live.is_none_or(|live| {
+                        live.endpoints
+                            .iter()
+                            .all(|candidate| &candidate.name != *server)
+                    })
+                })
+                .map(|server| (pool, server))
+        });
+        listener
+            .map(|name| TopologyResponseError::MissingListener(name.clone()))
+            .or_else(|| pool.map(|name| TopologyResponseError::MissingPool(name.clone())))
+            .or_else(|| {
+                endpoint.map(|(pool, endpoint)| TopologyResponseError::MissingEndpoint {
                     pool: pool.clone(),
-                    endpoint: server.clone(),
-                });
-            }
-        }
-        Ok(())
+                    endpoint: endpoint.clone(),
+                })
+            })
     }
+
+    pub(crate) fn listener_count(&self) -> usize {
+        self.listener_nodes.len()
+    }
+
+    pub(crate) fn pool_count(&self) -> usize {
+        self.pool_nodes.len()
+    }
+
+    pub(crate) fn static_endpoint_count(&self) -> usize {
+        self.static_endpoints.values().map(HashSet::len).sum()
+    }
+}
+
+/// The nodes and edges of a topology as comma separated JSON objects, without the enclosing brackets.
+#[derive(Debug)]
+pub(crate) struct RenderedStructure {
+    pub(crate) nodes: Box<[u8]>,
+    pub(crate) edges: Box<[u8]>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -276,8 +164,6 @@ pub(crate) enum TopologyResponseError {
     UnknownEndpoint { pool: String, endpoint: String },
     #[error("compiled server `{endpoint}` in pool `{pool}` has no active runtime state")]
     MissingEndpoint { pool: String, endpoint: String },
-    #[error("active topology could not be serialized: {0}")]
-    Serialize(#[source] serde_json::Error),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -329,7 +215,12 @@ pub struct TopologyEdge {
 }
 
 impl TopologyEdge {
-    fn new(kind: TopologyEdgeKind, source: &str, target: &str, config_path: String) -> Self {
+    pub(crate) fn new(
+        kind: TopologyEdgeKind,
+        source: &str,
+        target: &str,
+        config_path: String,
+    ) -> Self {
         let kind_name = edge_kind_name(kind);
         Self {
             id: stable_id("edge", &[kind_name, source, target]),
@@ -338,58 +229,5 @@ impl TopologyEdge {
             target: target.into(),
             config_path,
         }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TopologyResponse<'a> {
-    schema_version: u32,
-    state: TopologyState,
-    nodes: Vec<&'a TopologyNode>,
-    edges: Vec<&'a TopologyEdge>,
-    overlays: Vec<TopologyRuntimeOverlay>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TopologyState {
-    config: &'static str,
-    runtime: &'static str,
-    sampled_at_unix_ms: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TopologyRuntimeOverlay {
-    node_id: String,
-    state: &'static str,
-    metrics: Value,
-}
-
-fn runtime_state(listeners: &[crate::ListenerSnapshot]) -> &'static str {
-    if listeners
-        .iter()
-        .all(|listener| listener.state == ListenerRuntimeState::Listening)
-    {
-        "active"
-    } else if listeners.iter().any(|listener| {
-        matches!(
-            listener.state,
-            ListenerRuntimeState::Stopped | ListenerRuntimeState::Failed
-        )
-    }) {
-        "degraded"
-    } else {
-        "starting"
-    }
-}
-
-const fn listener_state(state: ListenerRuntimeState) -> &'static str {
-    match state {
-        ListenerRuntimeState::Configured => "configured",
-        ListenerRuntimeState::Listening => "listening",
-        ListenerRuntimeState::Stopped => "stopped",
-        ListenerRuntimeState::Failed => "failed",
     }
 }
