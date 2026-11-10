@@ -234,7 +234,7 @@ impl ProxyHarness {
             .expect("wire listener reservation")
             .duplicate_fds()
             .expect("duplicate wire listener reservation");
-        let inherited = Arc::new(TokioMutex::new(inherited));
+        let inherited = Arc::new(parking_lot::Mutex::new(inherited));
         let (shutdown, shutdown_watch) = watch::channel(false);
         let task = tokio::spawn(async move {
             PingoraService::start_service(&mut service, Some(inherited), shutdown_watch, 1).await;

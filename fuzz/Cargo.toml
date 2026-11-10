@@ -30,7 +30,6 @@ pingora-core = { path = "../vendor/pingora-core" }
 pingora-load-balancing = { path = "../vendor/pingora-load-balancing" }
 pingora-proxy = { path = "../vendor/pingora-proxy" }
 pingora-runtime = { path = "../vendor/pingora-runtime" }
-pingora-rustls = { path = "../vendor/pingora-rustls" }
 rml_rtmp = { path = "../vendor/rml_rtmp" }
 
 [[bin]]

@@ -330,6 +330,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn zero_sizes_leave_the_stream_unbuffered() {
+        let (near, mut far) = duplex(1024);
+        let mut stream = LazyReadStream::new(0, 0, near);
+        far.write_all(b"hello").await.unwrap();
+        let mut first = [0; 2];
+        stream.read_exact(&mut first).await.unwrap();
+        assert_eq!(&first, b"he");
+        assert!(!stream.has_buffered());
+        stream.write_all(b"pong").await.unwrap();
+        let mut reply = [0; 4];
+        far.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply, b"pong");
+    }
+
+    #[tokio::test]
     async fn end_of_stream_reads_zero_bytes() {
         let (mut stream, far) = stream_over_duplex();
         drop(far);

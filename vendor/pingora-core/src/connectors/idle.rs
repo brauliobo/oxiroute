@@ -21,12 +21,13 @@
 //! pool-wide task that drops the connection promptly. A checkout only pops an entry.
 //!
 //! Entries live in per-thread stripes: a worker normally takes back what it released and never
-//! touches another worker's lock. Capacity is per stripe, evicting the least recently released
-//! connection first, as the per-thread LRU of the connection pool it replaces did.
+//! touches another worker's lock. Capacity is global (the keepalive size of the server configuration
+//! times its threads), as in the upstream pool; a release at capacity evicts the connection released
+//! longest ago in its own stripe, or in the next stripe that holds one.
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::{BuildHasherDefault, Hasher};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
@@ -69,6 +70,7 @@ impl Hasher for KeyHasher {
 struct Idle {
     id: i32,
     sequence: u64,
+    released: Instant,
     expires: Option<Instant>,
     stream: Stream,
 }
@@ -76,7 +78,6 @@ struct Idle {
 #[derive(Default)]
 struct Stripe {
     by_key: HashMap<u64, VecDeque<Idle>, BuildHasherDefault<KeyHasher>>,
-    len: usize,
     next_sequence: u64,
 }
 
@@ -96,9 +97,7 @@ impl Stripe {
         key: u64,
         take: impl FnOnce(&mut VecDeque<Idle>) -> Option<Idle>,
     ) -> Option<Idle> {
-        let idle = self.by_key.get_mut(&key).and_then(take)?;
-        self.len -= 1;
-        Some(idle)
+        self.by_key.get_mut(&key).and_then(take)
     }
 
     fn remove_where(&mut self, mut remove: impl FnMut(&mut Idle) -> bool, removed: &mut Vec<Idle>) {
@@ -107,7 +106,6 @@ impl Stripe {
             while index < idle.len() {
                 if remove(&mut idle[index]) {
                     removed.extend(idle.remove(index));
-                    self.len -= 1;
                 } else {
                     index += 1;
                 }
@@ -148,6 +146,8 @@ pub(crate) struct IdlePool {
     stripes: [Padded<Mutex<Stripe>>; STRIPES],
     capacity: usize,
     idle: AtomicUsize,
+    /// Counts connections found sending data while idle, shared with the connector.
+    unexpected_data: Arc<AtomicU64>,
     wakeups: Arc<Wakeups>,
     watcher_started: AtomicBool,
 }
@@ -157,58 +157,71 @@ pub(crate) struct IdlePool {
 struct Padded<T>(T);
 
 impl IdlePool {
-    pub(crate) fn new(capacity: usize) -> Arc<Self> {
+    pub(crate) fn new(capacity: usize, unexpected_data: Arc<AtomicU64>) -> Arc<Self> {
         Arc::new(Self {
             stripes: std::array::from_fn(|_| Padded(Mutex::default())),
             capacity,
             idle: AtomicUsize::new(0),
+            unexpected_data,
             wakeups: Arc::default(),
             watcher_started: AtomicBool::new(false),
         })
     }
 
     /// Keeps `stream` for reuse under `key`, unless the peer already closed it, sent data, or
-    /// `idle_timeout` is zero. Must be called inside a Tokio runtime.
+    /// `idle_timeout` is zero. Returns how long the connection that was evicted to make room had
+    /// been idle. Must be called inside a Tokio runtime.
     pub(crate) fn put(
         self: &Arc<Self>,
         key: u64,
         mut stream: Stream,
         idle_timeout: Option<Duration>,
-    ) {
+    ) -> Option<Duration> {
         if self.capacity == 0 || idle_timeout == Some(Duration::ZERO) {
-            return;
+            return None;
         }
         let stripe = STRIPE.with(|stripe| *stripe);
         let id = stream.id();
         if !self.watch(&mut stream, stripe, id) {
-            return;
+            return None;
         }
-        let expires = idle_timeout.map(|timeout| Instant::now() + timeout);
-        let evicted = {
+        let released = Instant::now();
+        let expires = idle_timeout.map(|timeout| released + timeout);
+        let evicted = (self.idle.load(Ordering::Relaxed) >= self.capacity)
+            .then(|| self.remove_oldest(stripe))
+            .flatten();
+        {
             let mut guard = self.stripes[stripe].0.lock();
-            let evicted = (guard.len >= self.capacity)
-                .then(|| guard.remove_oldest())
-                .flatten();
             let sequence = guard.next_sequence;
             guard.next_sequence += 1;
-            guard.len += 1;
             let idle = Idle {
                 id,
                 sequence,
+                released,
                 expires,
                 stream,
             };
             guard.by_key.entry(key).or_default().push_back(idle);
-            evicted
-        };
+        }
         if evicted.is_none() {
             self.idle.fetch_add(1, Ordering::Relaxed);
         }
-        drop(evicted);
         if let Some(expires) = expires {
             self.expire_by(expires);
         }
         self.start_watcher();
+        evicted.map(|idle| idle.released.elapsed())
+    }
+
+    /// The connection released longest ago in the stripe of the caller, or in the next stripe that
+    /// holds one.
+    fn remove_oldest(&self, first: usize) -> Option<Idle> {
+        (0..STRIPES).find_map(|offset| {
+            self.stripes[(first + offset) % STRIPES]
+                .0
+                .lock()
+                .remove_oldest()
+        })
     }
 
     #[cfg(all(test, feature = "any_tls"))]
@@ -258,10 +271,11 @@ impl IdlePool {
         let mut byte = [0; 1];
         let mut buffer = ReadBuf::new(&mut byte);
         let mut context = Context::from_waker(&waker);
-        matches!(
-            std::pin::Pin::new(stream).poll_read(&mut context, &mut buffer),
-            Poll::Pending
-        )
+        let polled = std::pin::Pin::new(stream).poll_read(&mut context, &mut buffer);
+        if matches!(polled, Poll::Ready(Ok(()))) && !buffer.filled().is_empty() {
+            self.unexpected_data.fetch_add(1, Ordering::Relaxed);
+        }
+        matches!(polled, Poll::Pending)
     }
 
     fn expire_by(&self, expires: Instant) {

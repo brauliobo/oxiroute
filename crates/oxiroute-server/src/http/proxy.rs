@@ -35,7 +35,6 @@ use pingora::{
 };
 
 use crate::clock::promptly;
-use crate::http::header_ops::HeaderOps as _;
 use crate::routing::{EndpointObservation, QueueTag};
 use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
