@@ -139,7 +139,7 @@ def build_lanes():
     add(lane("h1_post1k_h2up", ["--method", "POST", "--path", "/sink", "--body-bytes", "1024"] + base,
              features=["upstream_h2"]))
     # Data-path latency of established connections while new ones arrive (open-loop handshakes per second).
-    for rate in (3000, 8000):
+    for rate in (1000, 3000):
         add(lane(f"tls_storm{rate}_h2_c1s1", ["--proto", "h2tls", "--path", "/b1k", "--conns", "1", "--streams", "1",
                                               "--expect-len", "1024"], features=["tls"], requests=20000, storm=rate))
     add(lane("h2_b0_c1s1", ["--proto", "h2tls", "--path", "/b0", "--conns", "1", "--streams", "1",
@@ -387,11 +387,16 @@ def thread_usage(before, after, elapsed):
         rows = (line.rsplit(")", 1) for line in Path(path).read_text().splitlines())
         return {line[0].split()[0]: tuple(int(value) for value in line[1].split()[11:13]) for line in rows}
 
-    start, end = usage(before), usage(after)
+    def names(path):
+        rows = (line.rsplit(")", 1) for line in Path(path).read_text().splitlines())
+        return {line[0].split()[0]: line[0].split("(", 1)[1] for line in rows}
+
+    start, end, comm = usage(before), usage(after), names(after)
     spent = {tid: [now - was for now, was in zip(end[tid], start.get(tid, (0, 0)))] for tid in end}
-    shares = sorted(((user + kernel) * 100 / ticks / elapsed for user, kernel in spent.values()), reverse=True)
+    shares = sorted((((user + kernel) * 100 / ticks / elapsed, comm[tid]) for tid, (user, kernel) in spent.items()),
+                    reverse=True)
     user, kernel = (sum(times[index] for times in spent.values()) for index in (0, 1))
-    return [round(share) for share in shares[:4]], round(100 * kernel / max(user + kernel, 1))
+    return [f"{name}:{round(share)}" for share, name in shares[:4]], round(100 * kernel / max(user + kernel, 1))
 
 
 def parse_perf(path):
