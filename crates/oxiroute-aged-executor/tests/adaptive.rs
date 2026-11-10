@@ -1,6 +1,7 @@
 mod support;
 
 use std::{
+    future::Future,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -60,37 +61,74 @@ fn percentile(waits: &mut [Duration], per_mille: usize) -> Duration {
     waits[(waits.len() * per_mille / 1000).min(waits.len() - 1)]
 }
 
+/// Runs a timing check up to three times: a worker thread that the loaded host takes off its core for a few
+/// milliseconds distorts the poll rate that the age follows, and that is not what the checks look for.
+async fn eventually<F: Future<Output = Result<(), String>>>(check: impl Fn() -> F) {
+    let mut failure = String::new();
+    for _ in 0..3 {
+        match check().await {
+            Ok(()) => return,
+            Err(message) => failure = message,
+        }
+    }
+    panic!("{failure}");
+}
+
 /// By Little's law the mean wait of always-ready tasks is the time one pass over all of them takes, so an age that
 /// is a multiple of the pass follows the ready queue and the speed of the machine.
 #[tokio::test(flavor = "current_thread")]
 async fn the_adaptive_age_is_a_multiple_of_one_pass_over_the_ready_tasks() {
-    let run = flood(Age::Adaptive(MULTIPLE), 1024, Duration::from_millis(800)).await;
-    let expected = run.pass.mul_f64(MULTIPLE);
-    let age = run.age;
-    assert!(
-        age > expected / 4 && age < expected * 4,
-        "age {age:?}, {MULTIPLE} passes {expected:?}"
-    );
+    eventually(|| async {
+        let run = flood(Age::Adaptive(MULTIPLE), 1024, Duration::from_millis(800)).await;
+        let expected = run.pass.mul_f64(MULTIPLE);
+        let age = run.age;
+        (age > expected / 4 && age < expected * 4)
+            .then_some(())
+            .ok_or(format!("age {age:?}, {MULTIPLE} passes {expected:?}"))
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_short_ready_queue_gets_the_smallest_age() {
-    let age = flood(Age::Adaptive(MULTIPLE), 4, Duration::from_millis(300))
-        .await
-        .age;
-    assert!(age <= Duration::from_millis(2), "{age:?}");
+    eventually(|| async {
+        let age = flood(Age::Adaptive(MULTIPLE), 4, Duration::from_millis(300))
+            .await
+            .age;
+        (age <= Duration::from_millis(1))
+            .then_some(())
+            .ok_or(format!("{age:?}"))
+    })
+    .await;
+}
+
+/// Few ready tasks fit the caches, so newest-first has nothing to gain and the age stays at one pass.
+#[tokio::test(flavor = "current_thread")]
+async fn a_queue_below_the_ramp_has_an_age_of_about_one_pass() {
+    eventually(|| async {
+        let run = flood(Age::Adaptive(MULTIPLE), 32, Duration::from_millis(400)).await;
+        let bound = run.pass * 2 + Age::MIN * 2;
+        (run.age <= bound)
+            .then_some(())
+            .ok_or(format!("age {:?}, pass {:?}", run.age, run.pass))
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn the_p999_wait_stays_within_a_few_passes_under_a_flood_of_newer_connections() {
-    let mut run = flood(Age::Adaptive(MULTIPLE), 2048, Duration::from_millis(1500)).await;
-    assert!(run.waits.len() > 10_000, "{} polls", run.waits.len());
-    let pass = run.pass;
-    let p999 = percentile(&mut run.waits, 999);
-    // The age, plus the tasks that were already overdue when it ran out, plus a worker thread that the loaded host
-    // takes off its core now and then.
-    let bound = pass.mul_f64(3.0 * MULTIPLE) + Duration::from_millis(50);
-    assert!(p999 <= bound, "p99.9 {p999:?}, pass {pass:?}");
+    eventually(|| async {
+        let mut run = flood(Age::Adaptive(MULTIPLE), 2048, Duration::from_millis(1500)).await;
+        assert!(run.waits.len() > 10_000, "{} polls", run.waits.len());
+        let pass = run.pass;
+        let p999 = percentile(&mut run.waits, 999);
+        // The age, plus the tasks that were already overdue when it ran out.
+        let bound = pass.mul_f64(3.0 * MULTIPLE) + Duration::from_millis(10);
+        (p999 <= bound)
+            .then_some(())
+            .ok_or(format!("p99.9 {p999:?}, pass {pass:?}"))
+    })
+    .await;
 }
 
 /// A task that was ready before a flood of newer ones must not starve: pure newest-first never runs it.

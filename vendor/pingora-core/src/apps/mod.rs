@@ -996,7 +996,7 @@ where
         |h2_stream, guard| {
             let app = app_for_session.clone();
             let shutdown = shutdown_for_session.clone();
-            pingora_runtime::current_handle().spawn(async move {
+            pingora_runtime::spawn_stream(async move {
                 // hold `guard` for the session's lifetime so the accept
                 // loop's idle timeout sees this connection as busy.
                 let _guard = guard;

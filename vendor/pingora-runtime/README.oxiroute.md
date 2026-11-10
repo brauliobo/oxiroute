@@ -18,6 +18,10 @@ OxiRoute's delta is limited to `src/lib.rs`:
   Tokio's first-in first-out queue, so the worker serves the newest ready connection first and the oldest once it
   waited `age`. Tokio itself is not patched; tasks that are not connections (HTTP/2 streams, watchers) keep Tokio's
   queue.
+- `spawn_stream` (used for HTTP/2 stream tasks in place of `current_handle().spawn`) runs a stream on the calling
+  worker's aged executor when the runtime has one: upstream spawns it on a random worker, which moved the data of
+  every HTTP/2 connection between cores (512 requests in flight on two workers: p99 five times higher than work
+  stealing). Without aged queues it behaves as upstream does.
 - The worker table of the calling thread is a std `thread_local!`, not the `thread_local` crate: the crate hands the
   entry of an exited thread to any later thread with the same identifier, so after a generation replacement a worker
   of the new runtime inherited the shut down runtime's table and its listener tasks were spawned on a dead runtime

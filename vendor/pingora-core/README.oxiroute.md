@@ -217,7 +217,9 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   another runtime, `protocols/l4/stream.rs` `set_buffer(buffer, own_driver)` moves the socket to the I/O driver of the runtime
   that serves it (`into_std` then `from_std`: one `epoll_ctl` DELETE and one ADD), so its readiness events are
   delivered on the serving thread and not forwarded from the accepting one.
-- `server/configuration/mod.rs` adds `ServerConf::connection_age_ms`, passed to the runtime through
+- `apps/mod.rs` spawns HTTP/2 stream tasks with `pingora_runtime::spawn_stream` (the calling worker's executor under aged
+  queues, `current_handle().spawn` otherwise).
+- `server/configuration/mod.rs` adds `ServerConf::aged_connections` and `connection_age_ms`, passed to the runtime through
   `RuntimeOpts::connection_age`; with `work_stealing` off and the age set, the workers of the service runtime serve their
   connections newest first and the oldest after that age (the vendored `pingora-runtime`, see its README).
 

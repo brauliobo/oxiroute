@@ -309,7 +309,7 @@ Current constraints:
 - Root `connection_scheduling` is optional: `work_stealing` (the default) lets the workers of a listener
   share their ready connections; `aged_per_worker` gives every worker its own queue and its own I/O driver, places
   each new connection on the worker with the fewest open connections, and serves the newest ready connection first
-  and the oldest first once it has waited `connection_age_ms` (1 to 1000, default 40, only valid with
+  and the oldest first once it has waited `connection_age_ms` (1 to 1000, omitted means a few passes over the ready connections, only valid with
   `aged_per_worker`). It keeps a connection's data hot in the core's caches, which lifts the request rate with
   hundreds to thousands of busy keep-alive connections per worker, and no ready connection waits for more than about
   the age plus the time to serve the connections already older than it. It changes only the order in which ready
