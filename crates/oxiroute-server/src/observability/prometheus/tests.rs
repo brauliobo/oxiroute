@@ -649,3 +649,39 @@ fn scheduling_series_name_the_mode_and_the_age_and_only_the_aged_mode_reports_it
         assert!(aged.contains(series), "{series}");
     }
 }
+
+#[test]
+fn the_worker_scaling_mode_and_the_active_workers_are_exported() {
+    let mut off = String::new();
+    render_worker_scaling(&mut off, None).unwrap();
+    assert_eq!(off, "oxiroute_worker_scaling_info{mode=\"static\"} 1\n");
+
+    let config = serde_json::from_value::<oxiroute_config::ConfigDraft>(serde_json::json!({
+        "version": 1,
+        "listeners": [],
+        "listener_workers": 4,
+        "connection_scheduling": "aged_per_worker",
+        "worker_scaling": "dynamic",
+    }))
+    .unwrap();
+    let scaling = oxiroute_worker_scaling::Scaling::new(
+        "metrics-test",
+        oxiroute_worker_scaling::Policy {
+            min_active: 1,
+            target_busy_permille: 500,
+            release_delay: std::time::Duration::from_secs(5),
+        },
+        4,
+    );
+    scaling.set_active(2);
+    let mut on = String::new();
+    render_worker_scaling(&mut on, Some(&config)).unwrap();
+    for series in [
+        "oxiroute_worker_scaling_info{mode=\"dynamic\"} 1\n",
+        "oxiroute_worker_scaling_workers{runtime=\"metrics-test\"} 4\n",
+        "oxiroute_worker_scaling_active_workers{runtime=\"metrics-test\"} 2\n",
+        "oxiroute_worker_scaling_relocations_total{runtime=\"metrics-test\"} 0\n",
+    ] {
+        assert!(on.contains(series), "{series}\n{on}");
+    }
+}
