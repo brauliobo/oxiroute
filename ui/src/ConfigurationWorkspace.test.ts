@@ -51,7 +51,7 @@ function canonicalConfig(): CanonicalConfig {
         default_certificate: 'direct-public',
         min_version: '1.2',
         alpn: ['h2', 'http/1.1'],
-         policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
+         policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true, ktls: 'off' },
       },
       {
         name: 'internal-sni',
@@ -59,7 +59,7 @@ function canonicalConfig(): CanonicalConfig {
         default_certificate: 'direct-public',
         min_version: '1.3',
         alpn: ['http/1.1'],
-         policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
+         policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true, ktls: 'off' },
       },
     ],
     listeners: [
@@ -884,6 +884,7 @@ describe('ConfigurationWorkspace', () => {
     await wrapper.get('[data-field="tls_profiles[].policy.session_tickets"] input').setValue(true)
     await wrapper.get('[data-field="tls_profiles[].policy.session_tickets"] input').setValue(false)
     await wrapper.get('[data-field="tls_profiles[].policy.prefer_server_ciphers"] input').setValue(false)
+    await wrapper.get('[data-field="tls_profiles[].policy.ktls"] select').setValue('static')
     await wrapper.get('[data-field="tls_profiles[].policy.client_auth.mode"] select').setValue('optional')
     await wrapper.get('[data-field="tls_profiles[].policy.client_auth.ca_certificate_path"] input').setValue('/etc/oxiroute/client-ca.pem')
     const allowedClientSans = wrapper.get('[data-field="tls_profiles[].policy.client_auth.allowed_dns_names"]')
@@ -1063,6 +1064,7 @@ describe('ConfigurationWorkspace', () => {
         session_timeout_seconds: 86_400,
         session_tickets: false,
         prefer_server_ciphers: false,
+        ktls: 'static',
       },
     }))
     expect(submitted.upstream_pools[0]).toEqual(expect.objectContaining({
