@@ -54,13 +54,10 @@ impl Collector {
             self.bad = true;
             return;
         };
-        if is_connection_specific(&name) || (name == header::TE && value != "trailers") {
-            self.bad = true;
-        } else if name == header::CONTENT_LENGTH && !self.content_length(&value) {
-            self.bad = true;
-        } else if self.headers.try_append(name, value).is_err() {
-            self.bad = true;
-        }
+        let valid = !is_connection_specific(&name)
+            && (name != header::TE || value == "trailers")
+            && (name != header::CONTENT_LENGTH || self.content_length(&value));
+        self.bad |= !valid || self.headers.try_append(name, value).is_err();
     }
 
     fn content_length(&mut self, value: &HeaderValue) -> bool {

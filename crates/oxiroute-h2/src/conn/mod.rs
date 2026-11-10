@@ -77,6 +77,7 @@ struct Cont {
 }
 
 /// The HTTP/2 server connection state machine.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Connection {
     cfg: Config,
     out: Output,
