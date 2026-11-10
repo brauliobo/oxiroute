@@ -4,20 +4,23 @@
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-verify=${here}/verify-checksums.sh
 root=$(mktemp -d)
 trap 'rm -rf -- "${root}"' EXIT
 
 fresh_copy() {
   rm -rf -- "${root}/pkg"
   mkdir -- "${root}/pkg"
-  cp -- "${here}"/PKGBUILD "${here}"/.SRCINFO "${here}"/oxiroute.* "${here}"/README.md "${root}/pkg/"
+  cp -- "${here}"/PKGBUILD "${here}"/.SRCINFO "${here}"/oxiroute.* "${here}"/README.md "${here}"/verify-checksums.sh \
+    "${root}/pkg/"
+  mkdir -- "${root}/pkg/bin"
+  cp -- "${here}"/bin/PKGBUILD "${here}"/bin/.SRCINFO "${here}"/bin/oxiroute.* "${here}"/bin/README.md "${root}/pkg/bin/"
+  verify=${root}/pkg/verify-checksums.sh
 }
 
 expect_rejected() {
   local label=$1 mode
   for mode in 0 1; do
-    if VERIFY_CHECKSUMS_NO_MAKEPKG=${mode} "${verify}" "${root}/pkg" >/dev/null 2>&1; then
+    if VERIFY_CHECKSUMS_NO_MAKEPKG=${mode} "${verify}" >/dev/null 2>&1; then
       printf 'verify-checksums.sh accepted %s (no-makepkg=%s)\n' "${label}" "${mode}" >&2
       exit 1
     fi
@@ -25,8 +28,8 @@ expect_rejected() {
 }
 
 fresh_copy
-"${verify}" "${root}/pkg" >/dev/null
-VERIFY_CHECKSUMS_NO_MAKEPKG=1 "${verify}" "${root}/pkg" >/dev/null
+"${verify}" >/dev/null
+VERIFY_CHECKSUMS_NO_MAKEPKG=1 "${verify}" >/dev/null
 
 fresh_copy
 printf '\nedited after the checksum was recorded\n' >>"${root}/pkg/README.md"
@@ -53,5 +56,16 @@ expect_rejected 'a PKGBUILD edit not regenerated into .SRCINFO'
 fresh_copy
 rm -- "${root}/pkg/oxiroute.lua"
 expect_rejected 'a missing local source'
+
+fresh_copy
+old=$(sha256sum -- "${root}/pkg/bin/oxiroute.service")
+printf '\n# diverged\n' >>"${root}/pkg/bin/oxiroute.service"
+new=$(sha256sum -- "${root}/pkg/bin/oxiroute.service")
+sed -i "s/${old%% *}/${new%% *}/" "${root}/pkg/bin/PKGBUILD" "${root}/pkg/bin/.SRCINFO"
+expect_rejected 'a binary-recipe copy that drifted from the source recipe with a consistent hash'
+
+fresh_copy
+printf '\n' >>"${root}/pkg/bin/README.md"
+expect_rejected 'a stale hash in the binary recipe'
 
 printf 'verify-checksums tests passed\n'
