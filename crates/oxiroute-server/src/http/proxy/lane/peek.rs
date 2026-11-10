@@ -1,10 +1,10 @@
-//! The route of a request, decided from the bytes of its first line (and its `Host` line when the routes depend on the
-//! host) before the head is scanned. A request whose route the lane does not serve goes to the classic path at once:
-//! scanning it first would parse a head that the session parses again.
+//! The route of a request, decided from its request line (and its `Host` field when the routes depend on the host)
+//! before the header fields are scanned. A request whose route the lane does not serve goes to the classic path at
+//! once: scanning its fields first would parse a head that the session parses again. The line is read once; the scan
+//! of a request that may be the lane's continues after it, and keeps the route that was selected.
 //!
-//! The decision only ever shortcuts to the classic path, which is the reference, so a wrong guess about a head the
-//! scan would refuse costs nothing. A request that may be the lane's keeps its route, so the scan does not select it a
-//! second time.
+//! The decision only ever shortcuts to the classic path, which is the reference: whatever the line or the host say
+//! that the lane cannot use, the classic path reads the request.
 
 use std::sync::Arc;
 
@@ -13,79 +13,62 @@ use http::{Method, uri::Authority};
 use super::{LaneRoute, head};
 use crate::{HttpServicePlan, http::action::HttpRoutePlan};
 
-/// The first line of a request head and, when the routes select on the host, its first `Host` field.
-pub(super) struct Peek<'a> {
-    method: Method,
-    path: &'a str,
+/// A request the lane may serve, as far as its first lines say.
+pub(super) struct Early<'a> {
+    pub(super) line: head::Line,
+    /// The route selected for the request line and host, when the lines were enough to select it.
+    route: Option<Arc<HttpRoutePlan>>,
+    /// The host the route was selected for, when the host takes part in the selection.
     host: Option<&'a str>,
 }
 
-/// What the first bytes of a request say about how it is served.
-pub(super) enum Early<'a> {
-    /// The bytes do not tell (a partial or odd head): the scan decides.
-    Unknown,
-    /// No route of the lane serves it.
-    Classic,
-    /// The route that serves it if its head scans clean, and what the route was selected for.
-    Lane(Arc<HttpRoutePlan>, Peek<'a>),
-}
-
-pub(super) fn decide<'a>(service: &HttpServicePlan, buffer: &'a [u8]) -> Early<'a> {
-    let by_host = service.selects_on_host();
-    let Some(peek) = Peek::of(buffer, by_host) else {
-        return Early::Unknown;
-    };
-    let authority = if by_host {
-        match peek.host.and_then(|host| host.parse::<Authority>().ok()) {
+/// `None` when the classic path serves the request: its line is partial or not the lane's, or its route is.
+pub(super) fn decide<'a>(service: &HttpServicePlan, buffer: &'a [u8]) -> Option<Early<'a>> {
+    let line = head::line(buffer)?;
+    let host = service.selects_on_host().then(|| host_of(buffer, &line));
+    let authority = match host {
+        Some(host) => match host.and_then(|host| host.parse::<Authority>().ok()) {
             Some(authority) => Some(authority),
-            None => return Early::Unknown,
-        }
-    } else {
-        None
+            None => {
+                return Some(Early {
+                    line,
+                    route: None,
+                    host: None,
+                });
+            }
+        },
+        None => None,
     };
-    match service.select_route_path(authority.as_ref(), peek.path, &peek.method) {
-        Some(route) if route.lane != LaneRoute::Classic => Early::Lane(route, peek),
-        _ => Early::Classic,
+    let method = Method::from_bytes(line.method(buffer)).ok()?;
+    let route = service
+        .select_route_path(authority.as_ref(), line.path(buffer), &method)
+        .filter(|route| route.lane != LaneRoute::Classic)?;
+    Some(Early {
+        line,
+        route: Some(route),
+        host: host.flatten(),
+    })
+}
+
+impl Early<'_> {
+    /// The route selected from the first lines, when the scanned head has the host it was selected for.
+    pub(super) fn route(
+        self,
+        buffer: &[u8],
+        request: &head::Request,
+    ) -> Option<Arc<HttpRoutePlan>> {
+        let host = self.host;
+        self.route
+            .filter(|_| host.is_none_or(|host| Some(host) == request.host(buffer)))
     }
 }
 
-impl<'a> Peek<'a> {
-    fn of(buffer: &'a [u8], with_host: bool) -> Option<Self> {
-        let mut lines = buffer.split(|byte| *byte == b'\n');
-        let mut parts = lines
-            .next()?
-            .strip_suffix(b"\r")?
-            .splitn(3, |byte| *byte == b' ');
-        let (method, target, _version) = (parts.next()?, parts.next()?, parts.next()?);
-        if !target.starts_with(b"/") {
-            return None;
-        }
-        let path = target.split(|byte| *byte == b'?').next()?;
-        let host = if with_host { host_of(lines) } else { None };
-        Some(Self {
-            method: Method::from_bytes(method).ok()?,
-            path: std::str::from_utf8(path)
-                .ok()
-                .filter(|path| path.is_ascii())?,
-            host,
-        })
-    }
-
-    /// Whether the scanned head is the one the route was selected for.
-    pub(super) fn is_of(&self, buffer: &[u8], request: &head::Request, with_host: bool) -> bool {
-        self.method.as_str().as_bytes() == request.method(buffer)
-            && self.path == request.path(buffer)
-            && (!with_host || self.host == request.host(buffer))
-    }
-}
-
-fn host_of<'a>(lines: impl Iterator<Item = &'a [u8]>) -> Option<&'a str> {
-    for line in lines {
-        let line = line.strip_suffix(b"\r")?;
-        if line.is_empty() {
-            return None;
-        }
-        let (name, value) = line.split_at(line.iter().position(|byte| *byte == b':')?);
+/// The value of the first `Host` field after the request line, for a head whose fields are not scanned yet.
+fn host_of<'a>(buffer: &'a [u8], line: &head::Line) -> Option<&'a str> {
+    let fields = buffer.get(line.fields_start()..)?;
+    for field in fields.split(|byte| *byte == b'\n') {
+        let field = field.strip_suffix(b"\r")?;
+        let (name, value) = field.split_at(field.iter().position(|byte| *byte == b':')?);
         if name.eq_ignore_ascii_case(b"host") {
             return std::str::from_utf8(value[1..].trim_ascii())
                 .ok()

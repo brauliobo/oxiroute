@@ -66,24 +66,17 @@ fn request(target: &str) -> String {
     format!("GET {target} HTTP/1.1\r\nHost: example.test\r\n\r\n")
 }
 
-fn is_classic(early: &Early<'_>) -> bool {
-    matches!(early, Early::Classic)
-}
-
-fn lane_route(early: &Early<'_>) -> Option<LaneRoute> {
-    match early {
-        Early::Lane(route, _) => Some(route.lane),
-        Early::Unknown | Early::Classic => None,
-    }
+/// The route the first lines selected: `None` when the classic path serves the request or the lines did not select.
+fn lane_route(service: &HttpServicePlan, bytes: &[u8]) -> Option<LaneRoute> {
+    decide(service, bytes)?.route.map(|route| route.lane)
 }
 
 #[test]
 fn a_request_for_a_classic_route_is_decided_before_any_scan() {
     let service = mixed();
     for target in ["/static", "/static/a.bin", "/static/a.bin?x=1", "/static?"] {
-        let request = request(target);
         assert!(
-            is_classic(&decide(&service, request.as_bytes())),
+            decide(&service, request(target).as_bytes()).is_none(),
             "{target}"
         );
     }
@@ -95,11 +88,11 @@ fn a_request_for_a_lane_route_keeps_the_route_it_selected() {
     let proxied = request("/api/items?id=7");
     let direct = request("/fixed");
     assert_eq!(
-        lane_route(&decide(&service, proxied.as_bytes())),
+        lane_route(&service, proxied.as_bytes()),
         Some(LaneRoute::Proxy)
     );
     assert_eq!(
-        lane_route(&decide(&service, direct.as_bytes())),
+        lane_route(&service, direct.as_bytes()),
         Some(LaneRoute::Direct)
     );
 }
@@ -107,27 +100,25 @@ fn a_request_for_a_lane_route_keeps_the_route_it_selected() {
 #[test]
 fn a_request_no_route_serves_is_the_classic_paths() {
     let service = service(&[spec("/static", LaneRoute::Classic)]);
-    assert!(is_classic(&decide(&service, request("/other").as_bytes())));
+    assert!(decide(&service, request("/other").as_bytes()).is_none());
 }
 
 #[test]
-fn a_head_that_does_not_show_its_first_line_is_left_to_the_scan() {
+fn a_head_with_a_partial_or_refused_request_line_is_the_classic_paths() {
     let service = mixed();
     for bytes in [
-        &b"GET /static"[..],
-        b"GET /static HTTP/1.1",
-        b"GET /static HTTP/1.1\n\n",
-        b"GET /static\r\n\r\n",
-        b"GET http://example.test/static HTTP/1.1\r\n\r\n",
+        &b"GET /api"[..],
+        b"GET /api HTTP/1.1",
+        b"GET /api HTTP/1.1\n\n",
+        b"GET /api\r\n\r\n",
+        b"GET /api HTTP/1.0\r\n\r\n",
+        b"GET http://example.test/api HTTP/1.1\r\n\r\n",
         b"OPTIONS * HTTP/1.1\r\n\r\n",
-        b"GET /st\xffatic HTTP/1.1\r\n\r\n",
-        b"G@T /static HTTP/1.1\r\n\r\n",
+        b"GET /ap\xffi HTTP/1.1\r\n\r\n",
+        b"G@T /api HTTP/1.1\r\n\r\n",
         b"",
     ] {
-        assert!(
-            matches!(decide(&service, bytes), Early::Unknown),
-            "{bytes:?}"
-        );
+        assert!(decide(&service, bytes).is_none(), "{bytes:?}");
     }
 }
 
@@ -140,11 +131,12 @@ fn the_method_takes_part_in_the_decision() {
             ..spec("/api", LaneRoute::Classic)
         },
     ]);
-    let get_request = request("/api");
-    let get = decide(&service, get_request.as_bytes());
-    assert_eq!(lane_route(&get), Some(LaneRoute::Proxy));
+    assert_eq!(
+        lane_route(&service, request("/api").as_bytes()),
+        Some(LaneRoute::Proxy)
+    );
     let post = b"POST /api HTTP/1.1\r\nHost: example.test\r\n\r\n";
-    assert!(is_classic(&decide(&service, post)));
+    assert!(decide(&service, post).is_none());
 }
 
 fn by_host() -> HttpServicePlan {
@@ -158,22 +150,19 @@ fn by_host() -> HttpServicePlan {
 }
 
 #[test]
-fn a_service_with_host_routes_decides_by_the_host_line() {
+fn a_service_with_host_routes_decides_by_the_host_field() {
     let service = by_host();
     let on =
         |host: &str| format!("GET /a HTTP/1.1\r\nAccept: */*\r\nhOsT: {host}\r\nX-A: b\r\n\r\n");
-    assert!(is_classic(&decide(
-        &service,
-        on("static.example.test").as_bytes()
-    )));
+    assert!(decide(&service, on("static.example.test").as_bytes()).is_none());
     assert_eq!(
-        lane_route(&decide(&service, on("www.example.test").as_bytes())),
+        lane_route(&service, on("www.example.test").as_bytes()),
         Some(LaneRoute::Proxy)
     );
 }
 
 #[test]
-fn a_service_with_host_routes_waits_for_a_usable_host() {
+fn a_service_with_host_routes_leaves_an_unusable_host_to_the_scan() {
     let service = by_host();
     for bytes in [
         &b"GET /a HTTP/1.1\r\n\r\n"[..],
@@ -182,26 +171,31 @@ fn a_service_with_host_routes_waits_for_a_usable_host() {
         b"GET /a HTTP/1.1\r\nHost: \xff\r\n\r\n",
         b"GET /a HTTP/1.1\r\nHost\r\n\r\n",
     ] {
-        assert!(
-            matches!(decide(&service, bytes), Early::Unknown),
-            "{bytes:?}"
-        );
+        let early = decide(&service, bytes).expect("the scan decides");
+        assert!(early.route.is_none(), "{bytes:?}");
     }
 }
 
+fn scanned<'a>(bytes: &'a [u8], early: &Early<'_>, head: &mut RequestHead) -> head::Request {
+    head::scan(bytes, early.line, head).expect("a clean head")
+}
+
 #[test]
-fn the_selected_route_is_reused_only_for_the_head_it_was_selected_for() {
+fn the_selected_route_stands_for_the_scanned_head_of_the_same_host() {
     let service = by_host();
-    let text = "GET /a?q=1 HTTP/1.1\r\nHost: www.example.test\r\n\r\n";
-    let other = "GET /b?q=1 HTTP/1.1\r\nHost: www.example.test\r\n\r\n";
-    let early = decide(&service, text.as_bytes());
-    let Early::Lane(_, peek) = early else {
-        panic!("a lane route");
-    };
-    let mut head = RequestHead::new();
-    let own = head::scan(text.as_bytes(), &mut head).expect("a clean head");
-    assert!(peek.is_of(text.as_bytes(), &own, true));
-    let mut head = RequestHead::new();
-    let foreign = head::scan(other.as_bytes(), &mut head).expect("a clean head");
-    assert!(!peek.is_of(other.as_bytes(), &foreign, true));
+    let bytes = b"GET /a?q=1 HTTP/1.1\r\nHost: www.example.test\r\n\r\n";
+    let early = decide(&service, bytes).expect("a lane request");
+    let request = scanned(bytes, &early, &mut RequestHead::new());
+    assert_eq!(request.path(bytes), "/a");
+    assert!(early.route(bytes, &request).is_some());
+}
+
+#[test]
+fn the_selected_route_does_not_stand_for_another_host() {
+    let service = by_host();
+    let bytes = b"GET /a HTTP/1.1\r\nHost: www.example.test\r\n\r\n";
+    let early = decide(&service, bytes).expect("a lane request");
+    let other = b"GET /a HTTP/1.1\r\nHost: static.example.test\r\n\r\n";
+    let request = scanned(other, &early, &mut RequestHead::new());
+    assert!(early.route(other, &request).is_none());
 }

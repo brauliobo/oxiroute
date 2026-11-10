@@ -172,8 +172,8 @@ impl LaneFront {
         }
     }
 
-    /// The route the request is served by, when the lane may serve it, and the authority it was selected for. `early`
-    /// is the route chosen from the first line, which stands when the scanned head is the one it was chosen for.
+    /// The route the request is served by, when the lane may serve it, and the authority it was selected for. The
+    /// route chosen from the first lines stands when the scanned head has the host it was chosen for.
     fn select_route(
         &self,
         buffer: &[u8],
@@ -188,19 +188,14 @@ impl LaneFront {
         if self.challenge.is_some() && ChallengeStore::serves(path) {
             return None;
         }
-        let route = match early {
-            peek::Early::Lane(route, peek)
-                if peek.is_of(buffer, request, self.service.selects_on_host()) =>
-            {
-                route
-            }
-            peek::Early::Unknown | peek::Early::Lane(..) => {
+        let route = match early.route(buffer, request) {
+            Some(route) => route,
+            None => {
                 let method = Method::from_bytes(request.method(buffer)).ok()?;
                 self.service
                     .select_route_path(Some(&authority), path, &method)
                     .filter(|route| route.lane != LaneRoute::Classic)?
             }
-            peek::Early::Classic => return None,
         };
         Some((route, authority))
     }
@@ -228,12 +223,11 @@ impl LaneFront {
         buffer: &[u8],
         scanned: &mut RequestHead,
     ) -> Served {
-        let early = peek::decide(&self.service, buffer);
-        if matches!(early, peek::Early::Classic) {
+        let Some(early) = peek::decide(&self.service, buffer) else {
             return Served::Handoff;
-        }
-        let Some(request) =
-            head::scan(buffer, scanned).filter(|request| request.head_len == buffer.len())
+        };
+        let Some(request) = head::scan(buffer, early.line, scanned)
+            .filter(|request| request.head_len == buffer.len())
         else {
             return Served::Handoff;
         };
