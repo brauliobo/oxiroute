@@ -218,6 +218,11 @@ impl RouteIndex {
         best
     }
 
+    /// Whether any route is bound to a host, so that the request authority can change the selection.
+    pub(super) fn selects_on_host(&self) -> bool {
+        self.has_normalized_hosts() || !(self.exact.is_empty() && self.ascii_ci.is_empty())
+    }
+
     fn has_normalized_hosts(&self) -> bool {
         !(self.normalized.is_empty()
             && self.wildcard.is_empty()
