@@ -1195,7 +1195,6 @@ mod tests {
 
     struct TestProxy;
 
-    #[async_trait]
     impl ProxyHttp for TestProxy {
         type CTX = ();
 
