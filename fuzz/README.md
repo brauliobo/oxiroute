@@ -41,6 +41,7 @@ are unavailable, while detected but broken tooling or a crashing/failed target r
 | `udp_datagram` | Public PROXY v2 datagram-header parsing on bounded datagram inputs | 131,059 B |
 | `tls_client_hello` | Public rustls `ServerConnection` ClientHello parsing and resolver normalization | 64 KiB |
 | `http1` | Public Pingora HTTP/1 request/response parsing, normalization, and body framing | 128 KiB |
+| `h1_head` | Fast-lane HTTP/1 head scanners and writers: `Head` agrees with httparse, prefixes stay partial, written heads scan again | 128 KiB |
 
 Each parser receives a fresh state per input. The RTMP target limits are intentionally below the
 production protocol ceilings so a local smoke run remains bounded; the production parser limits
