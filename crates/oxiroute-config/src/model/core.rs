@@ -26,6 +26,22 @@ pub struct ConfigDraft {
     /// pass over the worker's ready connections takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_age_ms: Option<u64>,
+    /// With `dynamic` (and `aged_per_worker`) a listener keeps only as many of its `listener_workers` workers
+    /// active as the offered load needs, placing new connections on, and moving idle keep-alive HTTP/1 connections
+    /// to, the active ones, and activates more under pressure; `static` (the default) spreads connections over all
+    /// workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_scaling: Option<WorkerScaling>,
+    /// Fewest workers kept active with `dynamic` scaling, at most `listener_workers`. Omitted means one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_active_workers: Option<u64>,
+    /// Share of one worker's time the active workers are kept under, in percent, before another worker is
+    /// activated. Omitted means 50.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_busy_percent: Option<u64>,
+    /// How long the load must fit in fewer workers before one is released, in milliseconds. Omitted means 5000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_down_delay_ms: Option<u64>,
     /// Threads that run the TLS handshakes of every TLS listener, away from the workers that serve connections.
     /// Omitted means one thread per 8 CPUs (1 to 4); `0` handshakes on the workers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,6 +86,14 @@ pub struct ConfigDraft {
 impl ConfigDraft {
     pub const MAX_LISTENER_WORKERS: u64 = 256;
     pub const MAX_CONNECTION_AGE_MS: u64 = 1_000;
+    pub const MAX_MIN_ACTIVE_WORKERS: u64 = 256;
+    pub const MIN_TARGET_BUSY_PERCENT: u64 = 10;
+    pub const MAX_TARGET_BUSY_PERCENT: u64 = 90;
+    pub const MIN_SCALE_DOWN_DELAY_MS: u64 = 100;
+    pub const MAX_SCALE_DOWN_DELAY_MS: u64 = 3_600_000;
+    pub const DEFAULT_MIN_ACTIVE_WORKERS: u64 = 1;
+    pub const DEFAULT_TARGET_BUSY_PERCENT: u64 = 50;
+    pub const DEFAULT_SCALE_DOWN_DELAY_MS: u64 = 5_000;
     pub const MAX_TLS_HANDSHAKE_THREADS: u64 = 64;
     pub const MAX_LOG_FILTER_BYTES: usize = 1024;
 
@@ -93,6 +117,30 @@ impl ConfigDraft {
     pub fn aged_per_worker(&self) -> bool {
         self.connection_scheduling == Some(ConnectionScheduling::AgedPerWorker)
     }
+
+    /// Whether a listener keeps only the workers its load needs active.
+    #[must_use]
+    pub fn dynamic_worker_scaling(&self) -> bool {
+        self.worker_scaling == Some(WorkerScaling::Dynamic)
+    }
+
+    #[must_use]
+    pub fn effective_min_active_workers(&self) -> u64 {
+        self.min_active_workers
+            .unwrap_or(Self::DEFAULT_MIN_ACTIVE_WORKERS)
+    }
+
+    #[must_use]
+    pub fn effective_target_busy_percent(&self) -> u64 {
+        self.target_busy_percent
+            .unwrap_or(Self::DEFAULT_TARGET_BUSY_PERCENT)
+    }
+
+    #[must_use]
+    pub fn effective_scale_down_delay_ms(&self) -> u64 {
+        self.scale_down_delay_ms
+            .unwrap_or(Self::DEFAULT_SCALE_DOWN_DELAY_MS)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -108,6 +156,23 @@ impl ConnectionScheduling {
         match self {
             Self::WorkStealing => "work_stealing",
             Self::AgedPerWorker => "aged_per_worker",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerScaling {
+    Static,
+    Dynamic,
+}
+
+impl WorkerScaling {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Static => "static",
+            Self::Dynamic => "dynamic",
         }
     }
 }

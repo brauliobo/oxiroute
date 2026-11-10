@@ -1012,6 +1012,8 @@ export interface UdpPolicyConfig {
 
 export type ConnectionScheduling = 'work_stealing' | 'aged_per_worker'
 
+export type WorkerScaling = 'static' | 'dynamic'
+
 export interface RetirementConfig {
   drain_deadline_ms: number | null
   max_retired_generations: number
@@ -1033,6 +1035,10 @@ export interface CanonicalConfig {
   http_fast_lane?: boolean
   connection_scheduling?: ConnectionScheduling
   connection_age_ms?: number
+  worker_scaling?: WorkerScaling
+  min_active_workers?: number
+  target_busy_percent?: number
+  scale_down_delay_ms?: number
   tls_handshake_threads?: number
   retirement?: RetirementConfig
   management: ManagementConfig | null
