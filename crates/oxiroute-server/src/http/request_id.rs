@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use http::{HeaderName, HeaderValue};
+use http::{HeaderName, HeaderValue, header::Entry};
 
 use crate::observability::logging::valid_correlation_id;
 
@@ -89,7 +89,14 @@ pub(crate) fn stamp_request(
         return Ok(id.clone());
     }
     let id = resolve_request_id(first);
-    request.insert_header(REQUEST_ID_HEADER_NAME, id.clone())?;
+    match request.headers_mut_no_case() {
+        Some(headers) => headers.insert(REQUEST_ID_HEADER, id.clone()),
+        None => {
+            return request
+                .insert_header(REQUEST_ID_HEADER_NAME, id.clone())
+                .map(|()| id);
+        }
+    };
     Ok(id)
 }
 
@@ -102,6 +109,13 @@ pub(crate) fn stamp_response(
     // HTTP/2 encoder neither inserts it nor evicts the entries the other headers reuse.
     let mut id = id.clone();
     id.set_sensitive(true);
+    // The usual response has no id and no case map: one lookup, and no name to parse.
+    if let Some(headers) = response.headers_mut_no_case()
+        && let Entry::Vacant(slot) = headers.entry(REQUEST_ID_HEADER)
+    {
+        slot.insert(id);
+        return Ok(());
+    }
     if let Some(upstream) = response.remove_header(&REQUEST_ID_HEADER)
         && upstream != id
     {
