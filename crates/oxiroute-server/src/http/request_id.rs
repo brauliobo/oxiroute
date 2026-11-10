@@ -48,14 +48,19 @@ fn write_hex(out: &mut [u8], mut value: u64) {
 }
 
 /// `rq-`, boot tag and sequence: fixed width, so it renders without allocating.
-fn generated_request_id() -> HeaderValue {
+pub(crate) fn generated_request_id_bytes() -> [u8; 24] {
     static SEQUENCE: AtomicU64 = AtomicU64::new(1);
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed) & 0xffff_ffff_ffff;
     let mut id = *b"rq-00000000-000000000000";
     write_hex(&mut id[3..11], u64::from(boot_tag()));
     write_hex(&mut id[12..], sequence);
+    id
+}
+
+fn generated_request_id() -> HeaderValue {
     // One owner shared by every clone of the value: a copied value would allocate again at its first clone.
-    HeaderValue::from_maybe_shared(bytes::Bytes::from_owner(id)).expect("ASCII id")
+    HeaderValue::from_maybe_shared(bytes::Bytes::from_owner(generated_request_id_bytes()))
+        .expect("ASCII id")
 }
 
 /// Keeps a well formed incoming id; anything else is replaced, never rejected.
