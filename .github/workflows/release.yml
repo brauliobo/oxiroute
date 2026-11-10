@@ -14,6 +14,16 @@ on:
         required: false
         default: true
         type: boolean
+      bolt:
+        description: Lay out the release binaries with BOLT after profile-guided optimization (false skips the stage)
+        required: false
+        default: true
+        type: boolean
+      abort_flavour:
+        description: Also build and publish the fail-fast panic=abort flavour (a tag always publishes it)
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -129,13 +139,17 @@ jobs:
             release/SOURCE-PROVENANCE.json
 
   binaries:
-    name: Build ${{ matrix.target }} release binaries
+    name: Build ${{ matrix.target }} ${{ matrix.flavour }} release binaries
     needs: archive
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    timeout-minutes: 300
     strategy:
       fail-fast: false
+      # One flavour at a time: both append their line to the same release notes.
+      max-parallel: 1
       matrix:
+        target: [x86_64-unknown-linux-gnu]
+        flavour: ${{ fromJSON((github.event_name == 'workflow_dispatch' && !inputs.abort_flavour) && '["unwind"]' || '["unwind","abort"]') }}
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-24.04
@@ -143,6 +157,8 @@ jobs:
       CARGO_INCREMENTAL: 0
       PGO_TARGET: ${{ matrix.target }}
       PGO: ${{ (github.event_name == 'workflow_dispatch' && !inputs.pgo) && '0' || '1' }}
+      BOLT: ${{ (github.event_name == 'workflow_dispatch' && !inputs.bolt) && '0' || '1' }}
+      FLAVOUR: ${{ matrix.flavour }}
     steps:
       - name: Check out release ref
         uses: actions/checkout@v4
@@ -155,7 +171,13 @@ jobs:
           targets: ${{ matrix.target }}
           components: llvm-tools
 
-      - name: Build release binaries (profile-guided unless disabled)
+      - name: Install BOLT (pinned package, SHA-256 verified)
+        if: env.BOLT == '1'
+        run: |
+          bin="$(./scripts/install-bolt.sh "${RUNNER_TEMP}/bolt")"
+          printf 'BOLT_BIN_DIR=%s\n' "${bin}" >> "${GITHUB_ENV}"
+
+      - name: Build release binaries (profile-guided and BOLT-laid-out unless disabled)
         env:
           RELEASE_REF: ${{ inputs.tag || github.ref_name }}
           PGO_WORK: ${{ runner.temp }}/pgo
@@ -164,7 +186,7 @@ jobs:
       - name: Upload release binaries
         uses: actions/upload-artifact@v4
         with:
-          name: oxiroute-binaries-${{ matrix.target }}-${{ inputs.tag || github.ref_name }}
+          name: oxiroute-binaries-${{ matrix.target }}-${{ matrix.flavour }}-${{ inputs.tag || github.ref_name }}
           path: release-binaries
 
       - name: Attest release binary provenance
@@ -177,7 +199,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           append_body: true
-          body_path: release-binaries/pgo-note-${{ matrix.target }}.md
+          body_path: release-binaries/pgo-note-${{ matrix.target }}${{ matrix.flavour == 'abort' && '-abort' || '' }}.md
           files: |
             release-binaries/oxiroute-*.tar.gz
             release-binaries/oxiroute-*.tar.gz.sha256
