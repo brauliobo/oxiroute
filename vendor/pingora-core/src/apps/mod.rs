@@ -911,6 +911,13 @@ pub trait HttpServerApp {
         None
     }
 
+    /// Whether a stopping server closes the connections that wait between two requests at once. An application that
+    /// answers a request that arrives after the stop (as `ServeHttp` apps do) leaves it `false`; the proxy ends its
+    /// idle connections when the server stops.
+    fn closes_idle_on_shutdown(&self) -> bool {
+        false
+    }
+
     /// Provide options on how HTTP/2 connection should be established. This function will be called
     /// every time a new HTTP/2 **connection** needs to be established.
     ///
@@ -1064,7 +1071,8 @@ where
                     let idle = self
                         .idle_keepalive_timeout()
                         .or_else(|| connection.idle_timeout());
-                    if !idle_wait::wait_for_next_request(&mut stream, idle, shutdown).await {
+                    let stop = self.closes_idle_on_shutdown().then_some(shutdown);
+                    if !idle_wait::wait_for_next_request(&mut stream, idle, stop).await {
                         return None;
                     }
                 }

@@ -143,7 +143,8 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   request). The default calls `process_new_http`.
 - `apps/mod.rs` and `apps/idle_wait.rs`: after a reusable response the HTTP/1 loop of `process_new` waits for the next
   request holding no `Session` and no request future (`wait_for_next_request`: `poll_read_ready` of the stream, the
-  shutdown watch, and the keep-alive timeout), then builds the session. The timeout is
+  shutdown watch when `HttpServerApp::closes_idle_on_shutdown()` (new, default `false`; `HttpProxy` says `true`, the
+  `ServeHttp` apps keep answering after a stop), and the keep-alive timeout), then builds the session. The timeout is
   `HttpServerApp::idle_keepalive_timeout()` (new, default `None`) or else the keep-alive seconds of the last response
   (`HttpPersistentSettings::idle_timeout`). A stream that cannot tell if it is readable (TLS) is ready at once, and the
   request read that follows waits as before.
