@@ -109,10 +109,14 @@ where
     F: ToTimeout,
 {
     pub(crate) fn new_with_delay(value: T, d: Duration) -> Timeout<T, F> {
+        Self::new_with_callback(value, F::create(d))
+    }
+
+    pub(crate) fn new_with_callback(value: T, callback: F) -> Timeout<T, F> {
         Timeout {
             value,
             delay: None,
-            callback: F::create(d),
+            callback,
         }
     }
 }
@@ -132,8 +136,9 @@ where
             return Poll::Ready(Ok(v));
         }
 
-        // `timeout()` already returns the boxed future.
-        let delay = me.delay.get_or_insert_with(|| me.callback.timeout());
+        let delay = me
+            .delay
+            .get_or_insert_with(|| Box::pin(me.callback.timeout()));
 
         match delay.as_mut().poll(cx) {
             Poll::Pending => Poll::Pending,
