@@ -19,6 +19,7 @@ pub mod prometheus_http_app;
 
 use crate::server::ShutdownWatch;
 use async_trait::async_trait;
+use bytes::Bytes;
 use log::{debug, error};
 use std::any::Any;
 use std::collections::HashMap;
@@ -660,6 +661,105 @@ impl ReusedHttpStream {
     }
 }
 
+/// What an HTTP/1 connection carries from one request to the next, whichever side serves them: the keepalive
+/// setting, the number of requests it may still serve and whether it served one already.
+#[derive(Clone, Copy, Debug)]
+pub struct Http1Connection {
+    keepalive_timeout: Option<u64>,
+    reuses_remaining: Option<u32>,
+    reused: bool,
+}
+
+impl Http1Connection {
+    fn first(shutting_down: bool, request_limit: Option<u32>) -> Self {
+        Self {
+            keepalive_timeout: (!shutting_down).then_some(60),
+            reuses_remaining: request_limit,
+            reused: false,
+        }
+    }
+
+    fn after(settings: Option<HttpPersistentSettings>) -> Self {
+        let (keepalive_timeout, reuses_remaining) = settings.map_or((None, None), |settings| {
+            (settings.keepalive_timeout, settings.keepalive_reuses_remaining)
+        });
+        Self {
+            keepalive_timeout,
+            reuses_remaining,
+            reused: true,
+        }
+    }
+
+    /// Whether the connection served a request already.
+    pub fn is_reused(&self) -> bool {
+        self.reused
+    }
+
+    /// The setting of a session for the next request, as [`HttpPersistentSettings::apply_to_session`] gives it.
+    pub fn apply_to_session(&self, session: &mut ServerSession) {
+        session.set_keepalive(self.keepalive_timeout);
+        session.set_keepalive_reuses_remaining(self.reuses_remaining_for_request());
+        if self.reused {
+            session.mark_reused_connection();
+        }
+    }
+
+    fn reuses_remaining_for_request(&self) -> Option<u32> {
+        match self.reuses_remaining {
+            Some(reuses) if self.reused => Some(reuses.saturating_sub(1)),
+            other => other,
+        }
+    }
+
+    /// Starts a request the caller serves itself: the request counts against the connection's limit.
+    pub fn begin_request(&mut self) {
+        self.reuses_remaining = self.reuses_remaining_for_request();
+    }
+
+    /// What `respect_keepalive` does for an HTTP/1.1 request: keepalive stays on unless the client asked to close.
+    pub fn respect_request(&mut self, client_closes: bool) {
+        self.keepalive_timeout = (!client_closes).then_some(0);
+    }
+
+    /// Ends keepalive, as a shutting-down service does for the request it has just read.
+    pub fn disable_keepalive(&mut self) {
+        self.keepalive_timeout = None;
+    }
+
+    /// Whether the connection serves another request after the current one.
+    pub fn will_keepalive(&self) -> bool {
+        self.keepalive_timeout.is_some() && self.reuses_remaining != Some(0)
+    }
+
+    /// The caller finished a request it served itself.
+    pub fn end_request(&mut self) {
+        self.reused = true;
+    }
+}
+
+/// A connection-level front of the HTTP/1 loop: it sees the stream before any session exists and serves the
+/// requests it can by itself, handing the connection to the application's session for the rest.
+#[async_trait]
+pub trait Http1Front: Send + Sync {
+    /// Serves requests of `stream` until one needs the application's session or the connection ends.
+    async fn serve(
+        &self,
+        stream: Stream,
+        connection: &mut Http1Connection,
+        shutdown: &ShutdownWatch,
+    ) -> Http1FrontOutcome;
+
+    /// The service stops: ends the waits of connections that have not served a request.
+    fn cleanup(&self) {}
+}
+
+/// How a [`Http1Front`] left a connection.
+pub enum Http1FrontOutcome {
+    Closed,
+    /// The next request is the session's: `preloaded` holds the bytes of it the front already read.
+    Handoff { stream: Stream, preloaded: Bytes },
+}
+
 /// This trait defines the interface of an HTTP application.
 #[async_trait]
 pub trait HttpServerApp {
@@ -694,6 +794,11 @@ pub trait HttpServerApp {
     /// every time a new HTTP/2 **connection** needs to be established.
     ///
     /// A `None` means to use the built-in default options. See [`server::H2Options`] for more details.
+    /// The connection-level front of HTTP/1 connections, if the application has one.
+    fn http1_front(&self) -> Option<&dyn Http1Front> {
+        None
+    }
+
     fn h2_options(&self) -> Option<server::H2Options> {
         None
     }
@@ -810,33 +915,44 @@ where
             return self.clone().process_custom_session(stream, shutdown).await;
         } else {
             // No ALPN or ALPN::H1 and h2c was not configured, fallback to HTTP/1.1
-            let mut session = ServerSession::new_http1(stream);
-            if *shutdown.borrow() {
-                // stop downstream from reusing if this service is shutting down soon
-                session.set_keepalive(None);
-            } else {
-                // default 60s
-                session.set_keepalive(Some(60));
-            }
-            session.set_keepalive_reuses_remaining(
-                self.server_options()
-                    .and_then(|opts| opts.keepalive_request_limit),
-            );
-
-            let mut result = self.process_new_http_inline(session, shutdown).await;
-            while let Some((stream, persistent_settings)) = result.map(|r| r.consume()) {
-                let mut session = ServerSession::new_http1(stream);
-                if let Some(persistent_settings) = persistent_settings {
-                    persistent_settings.apply_to_session(&mut session);
+            let limit = self
+                .server_options()
+                .and_then(|opts| opts.keepalive_request_limit);
+            let mut connection = Http1Connection::first(*shutdown.borrow(), limit);
+            let front = self.http1_front();
+            loop {
+                let mut preloaded = Bytes::new();
+                if let Some(front) = front {
+                    match front.serve(stream, &mut connection, shutdown).await {
+                        Http1FrontOutcome::Closed => return None,
+                        Http1FrontOutcome::Handoff {
+                            stream: handed,
+                            preloaded: bytes,
+                        } => {
+                            stream = handed;
+                            preloaded = bytes;
+                        }
+                    }
                 }
-
-                result = self.process_new_http_inline(session, shutdown).await;
+                let mut session = ServerSession::new_http1_preloaded(stream, preloaded);
+                connection.apply_to_session(&mut session);
+                let Some((next, settings)) = self
+                    .process_new_http_inline(session, shutdown)
+                    .await
+                    .map(ReusedHttpStream::consume)
+                else {
+                    return None;
+                };
+                stream = next;
+                connection = Http1Connection::after(settings);
             }
         }
-        None
     }
 
     async fn cleanup(&self) {
+        if let Some(front) = self.http1_front() {
+            front.cleanup();
+        }
         self.http_cleanup().await;
     }
 }
