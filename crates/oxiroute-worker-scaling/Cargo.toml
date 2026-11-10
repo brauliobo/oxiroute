@@ -1,0 +1,11 @@
+[package]
+name = "oxiroute-worker-scaling"
+description = "Decides how many workers of a listener take connections: activates more under load, releases them when the load fits fewer"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
