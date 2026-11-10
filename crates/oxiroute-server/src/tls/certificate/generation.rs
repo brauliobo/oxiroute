@@ -439,7 +439,9 @@ pub(in crate::tls) fn rustls_certified_key(
     let private_key = private_key
         .private_key_to_pkcs8()
         .map_err(|error| format!("private key DER encoding failed: {error}"))?;
-    let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(private_key));
+    let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+        rustls::pki_types::PrivatePkcs8KeyDer::from(private_key),
+    );
     // The key was matched to the leaf when the identity was loaded, and a challenge certificate carries a critical
     // extension that rustls' own consistency check refuses to parse, so the pair is taken as it is.
     let signing_key = crate::tls::provider::aws_lc_provider()

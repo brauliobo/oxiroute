@@ -18,16 +18,23 @@ pub(crate) fn ssl_digest(conn: &ServerConnection) -> SslDigest {
     let Some(leaf) = conn.peer_certificates().and_then(<[_]>::first) else {
         return SslDigest::new(cipher, version, None, None, Vec::new());
     };
-    let (organization, serial) = parse_x509_certificate(leaf.as_ref()).map_or((None, None), |(_, certificate)| {
-        let organization = certificate
-            .subject()
-            .iter_organization()
-            .next()
-            .and_then(|attribute| attribute.as_str().ok())
-            .map(str::to_owned);
-        (organization, Some(hex(certificate.raw_serial())))
-    });
-    SslDigest::new(cipher, version, organization, serial, Sha256::digest(leaf.as_ref()).to_vec())
+    let (organization, serial) =
+        parse_x509_certificate(leaf.as_ref()).map_or((None, None), |(_, certificate)| {
+            let organization = certificate
+                .subject()
+                .iter_organization()
+                .next()
+                .and_then(|attribute| attribute.as_str().ok())
+                .map(str::to_owned);
+            (organization, Some(hex(certificate.raw_serial())))
+        });
+    SslDigest::new(
+        cipher,
+        version,
+        organization,
+        serial,
+        Sha256::digest(leaf.as_ref()).to_vec(),
+    )
 }
 
 /// TLS 1.3 suites carry the names OpenSSL reports; the TLS 1.2 suites keep their IANA names.

@@ -22,7 +22,9 @@ fn validate(policy: &Value) -> Result<oxiroute_config::ValidatedConfig, ConfigEr
 }
 
 fn backend(policy: &Value) -> TlsBackend {
-    validate(policy).unwrap().as_draft().tls_profiles[0].policy.backend
+    validate(policy).unwrap().as_draft().tls_profiles[0]
+        .policy
+        .backend
 }
 
 #[test]
@@ -35,7 +37,10 @@ fn openssl_is_the_default_backend() {
 fn rustls_is_taken_as_written_and_stays_in_the_canonical_form() {
     let config = validate(&json!({"backend": "rustls"})).unwrap();
 
-    assert_eq!(config.as_draft().tls_profiles[0].policy.backend, TlsBackend::Rustls);
+    assert_eq!(
+        config.as_draft().tls_profiles[0].policy.backend,
+        TlsBackend::Rustls
+    );
     let canonical = serde_json::to_value(&config).unwrap();
     assert_eq!(canonical["tls_profiles"][0]["policy"]["backend"], "rustls");
 }

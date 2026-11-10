@@ -95,7 +95,11 @@ impl SessionCache {
 impl StoresServerSessions for SessionCache {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
         let mut entries = self.entries();
-        if entries.sessions.insert(key.clone(), stamped(&value)).is_none() {
+        if entries
+            .sessions
+            .insert(key.clone(), stamped(&value))
+            .is_none()
+        {
             entries.oldest.push_back(key);
         }
         while entries.sessions.len() > self.capacity {

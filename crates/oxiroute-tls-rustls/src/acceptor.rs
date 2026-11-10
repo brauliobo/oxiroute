@@ -45,7 +45,9 @@ impl StreamTlsAcceptor for RustlsAcceptor {
         let started = Instant::now();
         let accepted = read_client_hello(&mut io)
             .await
-            .explain_err(TLSHandshakeFailure, |error| format!("TLS accept() failed: {error}"))?;
+            .explain_err(TLSHandshakeFailure, |error| {
+                format!("TLS accept() failed: {error}")
+            })?;
         let Some(config) = self.router.route(&accepted.client_hello()) else {
             // Best effort: the connection is refused either way.
             let _ = io.write_all(&NO_APPLICATION_PROTOCOL_ALERT).await;
@@ -68,7 +70,9 @@ impl StreamTlsAcceptor for RustlsAcceptor {
         let mut pump = Pump::new(io, conn);
         poll_fn(|context| pump.poll_handshake(context))
             .await
-            .explain_err(TLSHandshakeFailure, |error| format!("TLS accept() failed: {error}"))?;
+            .explain_err(TLSHandshakeFailure, |error| {
+                format!("TLS accept() failed: {error}")
+            })?;
         Ok(Box::new(TlsStream::established(pump, started)))
     }
 }
@@ -78,7 +82,10 @@ async fn read_client_hello(io: &mut L4Stream) -> io::Result<Accepted> {
     let mut acceptor = Acceptor::default();
     loop {
         let read = poll_fn(|context| {
-            let read = acceptor.read_tls(&mut Transport { io: &mut *io, context });
+            let read = acceptor.read_tls(&mut Transport {
+                io: &mut *io,
+                context,
+            });
             match read {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => Poll::Pending,
                 read => Poll::Ready(read),
@@ -103,7 +110,10 @@ async fn read_client_hello(io: &mut L4Stream) -> io::Result<Accepted> {
 async fn send_alert(io: &mut L4Stream, mut alert: AcceptedAlert) {
     let written = poll_fn(|context| {
         loop {
-            match alert.write(&mut Transport { io: &mut *io, context }) {
+            match alert.write(&mut Transport {
+                io: &mut *io,
+                context,
+            }) {
                 Ok(0) => return Poll::Ready(Ok(())),
                 Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Poll::Pending,

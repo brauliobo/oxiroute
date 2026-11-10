@@ -147,10 +147,7 @@ pub fn proxy_config(
         }],
         ..empty_config()
     };
-    ProxyConfig {
-        config,
-        directory,
-    }
+    ProxyConfig { config, directory }
 }
 
 pub fn verified_upstream(server_name: &str, ca_fixture: &str) -> UpstreamTls {
@@ -194,12 +191,7 @@ impl ProxyHarness {
                 .expect("downstream certificate generation"),
         );
         let spec = generation.services().first().expect("wire runtime service");
-        assert_eq!(
-            spec.bind,
-            ListenerBind::Socket {
-                address,
-            }
-        );
+        assert_eq!(spec.bind, ListenerBind::Socket { address });
         let bind = spec.bind.to_string();
         let metrics = RuntimeMetrics::new();
         metrics
