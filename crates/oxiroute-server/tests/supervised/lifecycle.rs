@@ -379,8 +379,12 @@ pub(super) fn supervised_control_listener_callback_failure_prevents_readiness() 
     )
     .expect("write control listener config");
 
-    let mut harness =
-        Harness::launch_at_with_failures(&path, canonical_revision(&path), false, true);
+    let mut harness = Harness::launch_at_with_failures(
+        &path,
+        canonical_revision(&path),
+        false,
+        Some(TEST_LISTENER_DUPLICATION_FAILURE_ENV),
+    );
     harness.poll_until(MasterState::Failed);
     assert!(harness.master.worker_status(WorkerRole::Active).is_none());
     harness.verify_reaped();
