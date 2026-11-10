@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use log::info;
 use prometheus::register_int_counter;
@@ -33,7 +32,6 @@ pub struct MyGateway {
     req_metric: prometheus::IntCounter,
 }
 
-#[async_trait]
 impl ProxyHttp for MyGateway {
     type CTX = ();
     fn new_ctx(&self) -> Self::CTX {}

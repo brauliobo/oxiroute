@@ -14,8 +14,6 @@
 
 use std::time::Duration;
 
-use async_trait::async_trait;
-
 use log::info;
 use pingora_core::connectors::l4::ConnectErrorExt;
 use pingora_core::server::Server;
@@ -33,7 +31,6 @@ struct RetryCtx {
 
 struct BackoffRetryProxy;
 
-#[async_trait]
 impl ProxyHttp for BackoffRetryProxy {
     type CTX = RetryCtx;
     fn new_ctx(&self) -> Self::CTX {

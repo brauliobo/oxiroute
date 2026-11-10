@@ -61,11 +61,6 @@ openssl = [
 ]
 openssl_derived = ["any_tls"]
 patched_http1 = ["pingora-core/patched_http1"]
-rustls = [
-    "pingora-core/rustls",
-    "pingora-cache/rustls",
-    "any_tls",
-]
 s2n = [
     "pingora-core/s2n",
     "pingora-cache/s2n",
@@ -128,11 +123,6 @@ path = "examples/use_module.rs"
 name = "virtual_l4"
 path = "examples/virtual_l4.rs"
 
-[[bench]]
-name = "shutdown_signal"
-path = "benches/shutdown_signal.rs"
-harness = false
-
 [dependencies.async-trait]
 version = "0.1.42"
 
@@ -164,6 +154,7 @@ default-features = false
 
 [dependencies.pingora-core]
 version = "0.9.1"
+path = "../pingora-core"
 default-features = false
 
 [dependencies.pingora-error]
@@ -225,12 +216,13 @@ version = "0.9.1"
 
 [dev-dependencies.prometheus]
 version = "0"
+default-features = false
 
 [dev-dependencies.reqwest]
-version = "0.12"
+version = "0.13"
 features = [
     "gzip",
-    "rustls-tls",
+    "rustls-no-provider",
     "http2",
 ]
 default-features = false
@@ -249,7 +241,7 @@ version = "0.9"
 version = "0.4"
 
 [dev-dependencies.tokio-tungstenite]
-version = "0.26"
+version = "0.30"
 
 [target."cfg(unix)".dev-dependencies.hyperlocal]
 version = "0.9"
