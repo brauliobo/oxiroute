@@ -116,9 +116,9 @@ where
     }
     let peer_addr = peer.address();
     let mut local_addr = None;
-    let mut stream: Stream =
+    let (mut stream, physical_peer_addr): (Stream, Option<SocketAddr>) =
         if let Some(custom_l4) = peer.get_peer_options().and_then(|o| o.custom_l4.as_ref()) {
-            custom_l4.connect(peer_addr).await?
+            (custom_l4.connect(peer_addr).await?, None)
         } else {
             match peer_addr {
                 SocketAddr::Inet(addr) => {
@@ -176,7 +176,8 @@ where
                         Ok(socket) => {
                             local_addr = connect_attempt.local_addr();
                             debug!("connected to new server: {}", peer.address());
-                            Ok(socket.into())
+                            let physical_peer_addr = socket.peer_addr().ok().map(SocketAddr::Inet);
+                            Ok((socket.into(), physical_peer_addr))
                         }
                         Err(e) => {
                             let c = format!("Fail to connect to {peer}");
@@ -204,7 +205,11 @@ where
                     match conn_res {
                         Ok(socket) => {
                             debug!("connected to new server: {}", peer.address());
-                            Ok(socket.into())
+                            let physical_peer_addr = socket
+                                .peer_addr()
+                                .ok()
+                                .and_then(|addr| addr.try_into().ok());
+                            Ok((socket.into(), physical_peer_addr))
                         }
                         Err(e) => {
                             let c = format!("Fail to connect to {peer}");
@@ -234,10 +239,12 @@ where
     let digest = SocketDigest::from_raw_fd(stream.as_raw_fd());
     #[cfg(windows)]
     let digest = SocketDigest::from_raw_socket(stream.as_raw_socket());
-    digest
-        .peer_addr
-        .set(Some(peer_addr.clone()))
-        .expect("newly created OnceCell must be empty");
+    if let Some(physical_peer_addr) = physical_peer_addr {
+        digest
+            .peer_addr
+            .set(Some(physical_peer_addr))
+            .expect("newly created OnceCell must be empty");
+    }
     if let Some(local_addr) = local_addr {
         digest
             .local_addr
@@ -309,14 +316,25 @@ async fn proxy_connect<P: Peer>(peer: &P) -> Result<Stream> {
         .chain(options.extra_proxy_headers.iter());
 
     // not likely to timeout during connect() to UDS
-    let stream: Box<Stream> = Box::new(
-        connect_uds(&proxy.next_hop)
-            .await
-            .or_err_with(ConnectError, || {
-                format!("CONNECT proxy connect() error to {:?}", proxy.next_hop)
-            })?
-            .into(),
-    );
+    let socket = connect_uds(&proxy.next_hop)
+        .await
+        .or_err_with(ConnectError, || {
+            format!("CONNECT proxy connect() error to {:?}", proxy.next_hop)
+        })?;
+    let physical_peer_addr = socket
+        .peer_addr()
+        .ok()
+        .and_then(|addr| addr.try_into().ok());
+    let mut stream = Stream::from(socket);
+    let digest = SocketDigest::from_raw_fd(stream.as_raw_fd());
+    if let Some(physical_peer_addr) = physical_peer_addr {
+        digest
+            .peer_addr
+            .set(Some(physical_peer_addr))
+            .expect("newly created OnceCell must be empty");
+    }
+    stream.set_socket_digest(digest);
+    let stream: Box<Stream> = Box::new(stream);
 
     let req_header = raw_connect::generate_connect_header(&proxy.host, proxy.port, &mut headers)?;
     let fut = raw_connect::connect(stream, &req_header, peer);
@@ -345,6 +363,7 @@ async fn proxy_connect<P: Peer>(peer: &P) -> Result<Stream> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectors::test_servers;
     use crate::upstreams::peer::{BasicPeer, HttpPeer, Proxy};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -379,7 +398,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_conn_error_refused() {
-        let peer = BasicPeer::new("127.0.0.1:79"); // hopefully port 79 is not used
+        let refused = test_servers::refused();
+        let peer = BasicPeer::new(&refused.addr.to_string());
         let new_session = connect(&peer, None).await;
         assert_eq!(new_session.unwrap_err().etype(), &ConnectRefused)
     }
@@ -414,11 +434,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_conn_error_addr_not_avail() {
-        let peer = HttpPeer::new("127.0.0.1:121".to_string(), false, "".to_string());
-        let addr = "192.0.2.2:0".parse().ok();
+    async fn test_conn_error_bind_failed() {
+        // the source address is taken, so bind() fails whatever the host's non-local bind policy is
+        let taken = test_servers::refused();
+        let peer = HttpPeer::new(taken.addr, false, "".to_string());
         let bind_to = BindTo {
-            addr,
+            addr: Some(taken.addr),
             ..Default::default()
         };
         let new_session = connect(&peer, Some(bind_to)).await;
@@ -441,30 +462,24 @@ mod tests {
             error.etype() == &ConnectError
                 || error.etype() == &ConnectTimedout
                 // The error seen on mac: https://github.com/cloudflare/pingora/pull/679
-                || (error.etype() == &InternalError),
+                || (error.etype() == &InternalError)
+                // The error seen on a host without a route to the destination
+                || (error.etype() == &ConnectNoRoute),
             "{error:?}"
         )
     }
 
     #[tokio::test]
     async fn test_conn_timeout() {
-        // 192.0.2.1 is TEST-NET-1 (RFC 5737) — SYN packets are silently
-        // dropped on Linux, producing ConnectTimedout. On macOS the kernel
-        // may instead return ENETUNREACH (ConnectNoRoute).
-        let mut peer = BasicPeer::new("192.0.2.1:79");
+        let blackhole = test_servers::blackhole();
+        let mut peer = BasicPeer::new(&blackhole.addr.to_string());
         peer.options.connection_timeout = Some(Duration::from_millis(1));
         let err = connect(&peer, None).await.unwrap_err();
-        assert!(
-            err.etype() == &ConnectTimedout || err.etype() == &ConnectNoRoute,
-            "unexpected error type: {:?}",
-            err.etype()
-        );
-        if err.etype() == &ConnectTimedout {
-            let local_addr = err
-                .connect_local_addr()
-                .expect("local address should be captured before the timeout");
-            assert_ne!(local_addr.port(), 0);
-        }
+        assert_eq!(err.etype(), &ConnectTimedout);
+        let local_addr = err
+            .connect_local_addr()
+            .expect("local address should be captured before the timeout");
+        assert_ne!(local_addr.port(), 0);
     }
 
     #[tokio::test]
@@ -473,7 +488,8 @@ mod tests {
 
         let flag = Arc::new(AtomicBool::new(INIT_FLAG));
 
-        let mut peer = BasicPeer::new("1.1.1.1:80");
+        let server = test_servers::redirect_server();
+        let mut peer = BasicPeer::new(&server.addr.to_string());
 
         let move_flag = Arc::clone(&flag);
 
@@ -490,24 +506,36 @@ mod tests {
     #[tokio::test]
     async fn test_custom_connect() {
         #[derive(Debug)]
-        struct MyL4;
+        struct MyL4(std::net::SocketAddr);
         #[async_trait]
         impl Connect for MyL4 {
             async fn connect(&self, _addr: &SocketAddr) -> Result<Stream> {
-                tokio::net::TcpStream::connect("1.1.1.1:80")
+                tokio::net::TcpStream::connect(self.0)
                     .await
                     .map(|s| s.into())
                     .or_fail()
             }
         }
-        // :79 shouldn't be able to be connected to
-        let mut peer = BasicPeer::new("1.1.1.1:79");
-        peer.options.custom_l4 = Some(std::sync::Arc::new(MyL4 {}));
+        // the configured address shouldn't be able to be connected to
+        let refused = test_servers::refused();
+        let server = test_servers::redirect_server();
+        let mut peer = BasicPeer::new(&refused.addr.to_string());
+        peer.options.custom_l4 = Some(std::sync::Arc::new(MyL4(server.addr)));
 
         let new_session = connect(&peer, None).await;
 
-        // but MyL4 connects to :80 instead
+        // but MyL4 connects to the server instead
         assert!(new_session.is_ok());
+        assert!(
+            new_session
+                .unwrap()
+                .get_socket_digest()
+                .unwrap()
+                .peer_addr
+                .get()
+                .is_none(),
+            "custom L4 destinations must not inherit the configured peer address"
+        );
     }
 
     #[cfg(unix)]
@@ -549,8 +577,21 @@ mod tests {
             port: 80,
             headers: BTreeMap::new(),
         });
-        let new_session = connect(&peer, None).await;
-        assert!(new_session.is_ok());
+        let new_session = connect(&peer, None).await.unwrap();
+        let connected_addr = new_session
+            .get_socket_digest()
+            .unwrap()
+            .peer_addr
+            .get()
+            .and_then(Option::as_ref)
+            .cloned();
+        assert_eq!(
+            connected_addr
+                .as_ref()
+                .and_then(SocketAddr::as_unix)
+                .and_then(std::os::unix::net::SocketAddr::as_pathname),
+            Some(peer.get_proxy().unwrap().next_hop.as_ref())
+        );
 
         // Clean up
         let _ = shutdown_tx.send(());

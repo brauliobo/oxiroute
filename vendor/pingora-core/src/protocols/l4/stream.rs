@@ -16,9 +16,10 @@
 
 use async_trait::async_trait;
 use futures::FutureExt;
-use log::{debug, error};
+use log::debug;
 
 use pingora_error::{ErrorType::*, OrErr, Result};
+use std::any::Any;
 #[cfg(target_os = "linux")]
 use std::io::IoSliceMut;
 #[cfg(unix)]
@@ -28,15 +29,16 @@ use std::os::windows::io::AsRawSocket;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 #[cfg(target_os = "linux")]
 use tokio::io::Interest;
-use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, ReadBuf};
+use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
 use crate::protocols::l4::ext::{set_tcp_keepalive, TcpKeepalive};
+use crate::protocols::l4::lazy_read::LazyReadStream;
 use crate::protocols::l4::virt;
 use crate::protocols::raw_connect::ProxyDigest;
 use crate::protocols::{
@@ -359,7 +361,8 @@ impl AsRawSocket for RawStreamWrapper {
 ///
 /// Large read buffering helps reducing syscalls with little trade-off. The SSL
 /// layer always does "small" reads in 16k chunks (TLS record size), so L4 read
-/// buffering helps a lot.
+/// buffering helps a lot. The buffer is a thread-shared scratch (see `lazy_read`), so an idle
+/// connection holds none of it.
 pub const DEFAULT_L4_READ_BUFFER_SIZE: usize = 64 * 1024;
 
 /// The default L4 write buffer size.
@@ -418,113 +421,16 @@ impl L4BufferSettings {
     }
 }
 
-/// The L4 buffers in front of a [`RawStreamWrapper`]: a read buffer over a write
-/// buffer, the same layering as tokio's [`BufStream`](tokio::io::BufStream).
-///
-/// A zero read capacity leaves the read buffer out, because [`BufReader`] panics on
-/// a zero capacity. Reads then go straight to the raw stream, as they did through
-/// an empty `BufReader`. [`BufWriter`] accepts a zero capacity and writes straight
-/// through.
-#[derive(Debug)]
-enum BufferedStream {
-    UnbufferedRead(BufWriter<RawStreamWrapper>),
-    BufferedRead(BufReader<BufWriter<RawStreamWrapper>>),
-}
-
-impl BufferedStream {
-    fn with_capacity(read: usize, write: usize, stream: RawStreamWrapper) -> Self {
-        let writer = BufWriter::with_capacity(write, stream);
-        if read == 0 {
-            BufferedStream::UnbufferedRead(writer)
-        } else {
-            BufferedStream::BufferedRead(BufReader::with_capacity(read, writer))
-        }
-    }
-
-    fn writer(&self) -> &BufWriter<RawStreamWrapper> {
-        match self {
-            BufferedStream::UnbufferedRead(writer) => writer,
-            BufferedStream::BufferedRead(reader) => reader.get_ref(),
-        }
-    }
-
-    fn writer_mut(&mut self) -> &mut BufWriter<RawStreamWrapper> {
-        match self {
-            BufferedStream::UnbufferedRead(writer) => writer,
-            BufferedStream::BufferedRead(reader) => reader.get_mut(),
-        }
-    }
-
-    fn get_ref(&self) -> &RawStreamWrapper {
-        self.writer().get_ref()
-    }
-
-    fn get_mut(&mut self) -> &mut RawStreamWrapper {
-        self.writer_mut().get_mut()
-    }
-
-    /// Return the raw stream. Anything left in either buffer is lost.
-    fn into_inner(self) -> RawStreamWrapper {
-        match self {
-            BufferedStream::UnbufferedRead(writer) => writer.into_inner(),
-            BufferedStream::BufferedRead(reader) => reader.into_inner().into_inner(),
-        }
-    }
-}
-
-impl AsyncRead for BufferedStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        match &mut *self {
-            BufferedStream::UnbufferedRead(writer) => Pin::new(writer).poll_read(cx, buf),
-            BufferedStream::BufferedRead(reader) => Pin::new(reader).poll_read(cx, buf),
-        }
-    }
-}
-
-// `BufReader` only forwards writes to the `BufWriter` under it, so write to the `BufWriter`
-// directly.
-impl AsyncWrite for BufferedStream {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(self.writer_mut()).poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
-        Pin::new(self.writer_mut()).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
-        Pin::new(self.writer_mut()).poll_shutdown(cx)
-    }
-
-    fn poll_write_vectored(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[std::io::IoSlice<'_>],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(self.writer_mut()).poll_write_vectored(cx, bufs)
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        self.writer().is_write_vectored()
-    }
-}
-
 // NOTE: with writer buffering, users need to call flush() to make sure the data is actually
 // sent. Otherwise data could be stuck in the buffer forever or get lost when stream is closed.
 
 /// A concrete type for transport layer connection + extra fields for logging
 #[derive(Debug)]
 pub struct Stream {
+    // Declared first so it drops before the socket: a closed connection never still holds its slot.
+    admission: Option<Box<dyn Any + Send + Sync>>,
     // Use `Option` to be able to swap to adjust the buffer size. Always safe to unwrap
-    stream: Option<BufferedStream>,
+    stream: Option<LazyReadStream<RawStreamWrapper>>,
     // the data put back at the front of the read buffer, in order to replay the read
     rewind_read_buf: Vec<Vec<u8>>,
     buffer_write: bool,
@@ -536,18 +442,22 @@ pub struct Stream {
     offload_wait_duration: Option<Duration>,
     /// The distributed tracing object for this stream
     pub tracer: Option<Tracer>,
-    read_pending_time: AccumulatedDuration,
-    write_pending_time: AccumulatedDuration,
     /// Last rx timestamp associated with the last recvmsg call.
     pub rx_ts: Option<SystemTime>,
 }
 
 impl Stream {
-    fn stream(&self) -> &BufferedStream {
+    /// Ties application admission state to this connection: it is released right before the
+    /// socket closes, so a client that reconnects on seeing the close is never rejected by it.
+    pub fn hold_admission(&mut self, admission: Box<dyn Any + Send + Sync>) {
+        self.admission = Some(admission);
+    }
+
+    fn stream(&self) -> &LazyReadStream<RawStreamWrapper> {
         self.stream.as_ref().expect("stream should always be set")
     }
 
-    fn stream_mut(&mut self) -> &mut BufferedStream {
+    fn stream_mut(&mut self) -> &mut LazyReadStream<RawStreamWrapper> {
         self.stream.as_mut().expect("stream should always be set")
     }
 
@@ -627,11 +537,11 @@ impl Stream {
     /// It is only set later because of the malloc overhead in critical accept() path
     pub(crate) fn set_buffer(&mut self, buffer: L4BufferSettings) {
         use std::mem;
-        // Since the buffers can't be resized in place,
-        // we take the raw stream out of them and put it in new buffers with the size we want
+        // The buffer sizes are fixed at construction, so take the raw stream out of the
+        // unbuffered stream and wrap it again with the sizes we want
         let stream = mem::take(&mut self.stream);
         let stream = stream.map(|s| {
-            BufferedStream::with_capacity(
+            LazyReadStream::new(
                 buffer.read_capacity(),
                 buffer.write_capacity(),
                 s.into_inner(),
@@ -644,7 +554,8 @@ impl Stream {
 impl From<TcpStream> for Stream {
     fn from(s: TcpStream) -> Self {
         Stream {
-            stream: Some(BufferedStream::with_capacity(
+            admission: None,
+            stream: Some(LazyReadStream::new(
                 0,
                 0,
                 RawStreamWrapper::new(RawStream::Tcp(s)),
@@ -657,8 +568,6 @@ impl From<TcpStream> for Stream {
             proxy_digest: None,
             socket_digest: None,
             tracer: None,
-            read_pending_time: AccumulatedDuration::new(),
-            write_pending_time: AccumulatedDuration::new(),
             rx_ts: None,
         }
     }
@@ -667,7 +576,8 @@ impl From<TcpStream> for Stream {
 impl From<virt::VirtualSocketStream> for Stream {
     fn from(s: virt::VirtualSocketStream) -> Self {
         Stream {
-            stream: Some(BufferedStream::with_capacity(
+            admission: None,
+            stream: Some(LazyReadStream::new(
                 0,
                 0,
                 RawStreamWrapper::new(RawStream::Virtual(s)),
@@ -680,8 +590,6 @@ impl From<virt::VirtualSocketStream> for Stream {
             proxy_digest: None,
             socket_digest: None,
             tracer: None,
-            read_pending_time: AccumulatedDuration::new(),
-            write_pending_time: AccumulatedDuration::new(),
             rx_ts: None,
         }
     }
@@ -691,7 +599,8 @@ impl From<virt::VirtualSocketStream> for Stream {
 impl From<UnixStream> for Stream {
     fn from(s: UnixStream) -> Self {
         Stream {
-            stream: Some(BufferedStream::with_capacity(
+            admission: None,
+            stream: Some(LazyReadStream::new(
                 0,
                 0,
                 RawStreamWrapper::new(RawStream::Unix(s)),
@@ -704,8 +613,6 @@ impl From<UnixStream> for Stream {
             proxy_digest: None,
             socket_digest: None,
             tracer: None,
-            read_pending_time: AccumulatedDuration::new(),
-            write_pending_time: AccumulatedDuration::new(),
             rx_ts: None,
         }
     }
@@ -750,6 +657,18 @@ impl Peek for Stream {
         self.rewind(buf);
         Ok(true)
     }
+
+    fn poll_read_ready(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if !self.rewind_read_buf.is_empty() || self.stream().has_buffered() {
+            return Poll::Ready(Ok(()));
+        }
+        match &self.stream().get_ref().stream {
+            RawStream::Tcp(s) => s.poll_read_ready(cx),
+            #[cfg(unix)]
+            RawStream::Unix(s) => s.poll_read_ready(cx),
+            RawStream::Virtual(_) => Poll::Ready(Ok(())),
+        }
+    }
 }
 
 #[async_trait]
@@ -773,11 +692,11 @@ impl GetTimingDigest for Stream {
     }
 
     fn get_read_pending_time(&self) -> Duration {
-        self.read_pending_time.total
+        Duration::ZERO
     }
 
     fn get_write_pending_time(&self) -> Duration {
-        self.write_pending_time.total
+        Duration::ZERO
     }
 }
 
@@ -806,35 +725,12 @@ impl Drop for Stream {
         if let Some(t) = self.tracer.as_ref() {
             t.0.on_disconnected();
         }
-        /* use nodelay/local_addr function to detect socket status */
-        let ret = match &self.stream().get_ref().stream {
-            RawStream::Tcp(s) => s.nodelay().err(),
-            #[cfg(unix)]
-            RawStream::Unix(s) => s.local_addr().err(),
-            RawStream::Virtual(_) => {
-                // TODO: should this do something?
-                None
-            }
-        };
-        if let Some(e) = ret {
-            match e.kind() {
-                tokio::io::ErrorKind::Other => {
-                    if let Some(ecode) = e.raw_os_error() {
-                        if ecode == 9 {
-                            // Or we could panic here
-                            error!("Crit: socket {:?} is being double closed", self.stream);
-                        }
-                    }
-                }
-                _ => {
-                    debug!("Socket is already broken {:?}", e);
-                }
-            }
-        } else {
-            // try flush the write buffer. We use now_or_never() because
-            // 1. Drop cannot be async
-            // 2. write should usually be ready, unless the buf is full.
-            let _ = self.flush().now_or_never();
+        // Try to flush the write buffer. We use now_or_never() because
+        // 1. Drop cannot be async
+        // 2. write should usually be ready, unless the buf is full.
+        // A broken socket fails the flush; probing it first would cost a syscall per connection.
+        if let Some(Err(e)) = self.flush().now_or_never() {
+            debug!("Socket is already broken {:?}", e);
         }
         debug!("Dropping socket {:?}", self.stream);
     }
@@ -859,7 +755,6 @@ impl AsyncRead for Stream {
         } else {
             Pin::new(&mut self.stream_mut()).poll_read(cx, buf)
         };
-        self.read_pending_time.poll_time(&result);
         self.rx_ts = self.stream().get_ref().rx_ts;
         result
     }
@@ -871,19 +766,15 @@ impl AsyncWrite for Stream {
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let result = if self.buffer_write {
+        if self.buffer_write {
             Pin::new(&mut self.stream_mut()).poll_write(cx, buf)
         } else {
             Pin::new(&mut self.stream_mut().get_mut()).poll_write(cx, buf)
-        };
-        self.write_pending_time.poll_write_time(&result, buf.len());
-        result
+        }
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
-        let result = Pin::new(&mut self.stream_mut()).poll_flush(cx);
-        self.write_pending_time.poll_time(&result);
-        result
+        Pin::new(&mut self.stream_mut()).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
@@ -895,16 +786,11 @@ impl AsyncWrite for Stream {
         cx: &mut Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        let total_size = bufs.iter().fold(0, |acc, s| acc + s.len());
-
-        let result = if self.buffer_write {
+        if self.buffer_write {
             Pin::new(&mut self.stream_mut()).poll_write_vectored(cx, bufs)
         } else {
             Pin::new(&mut self.stream_mut().get_mut()).poll_write_vectored(cx, bufs)
-        };
-
-        self.write_pending_time.poll_write_time(&result, total_size);
-        result
+        }
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -916,232 +802,6 @@ impl AsyncWrite for Stream {
     }
 }
 
-#[derive(Debug)]
-struct AccumulatedDuration {
-    total: Duration,
-    last_start: Option<Instant>,
-}
-
-impl AccumulatedDuration {
-    fn new() -> Self {
-        AccumulatedDuration {
-            total: Duration::ZERO,
-            last_start: None,
-        }
-    }
-
-    fn start(&mut self) {
-        if self.last_start.is_none() {
-            self.last_start = Some(Instant::now());
-        }
-    }
-
-    fn stop(&mut self) {
-        if let Some(start) = self.last_start.take() {
-            self.total += start.elapsed();
-        }
-    }
-
-    fn poll_write_time(&mut self, result: &Poll<io::Result<usize>>, buf_size: usize) {
-        match result {
-            Poll::Ready(Ok(n)) => {
-                if *n == buf_size {
-                    self.stop();
-                } else {
-                    // partial write
-                    self.start();
-                }
-            }
-            Poll::Ready(Err(_)) => {
-                self.stop();
-            }
-            _ => self.start(),
-        }
-    }
-
-    fn poll_time(&mut self, result: &Poll<io::Result<()>>) {
-        match result {
-            Poll::Ready(_) => {
-                self.stop();
-            }
-            _ => self.start(),
-        }
-    }
-}
-
 #[cfg(test)]
 #[cfg(target_os = "linux")]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-    use tokio::io::AsyncReadExt;
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpListener;
-    use tokio::sync::Notify;
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn test_rx_timestamp() {
-        let message = "hello world".as_bytes();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let notify = Arc::new(Notify::new());
-        let notify2 = notify.clone();
-
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            notify2.notified().await;
-            stream.write_all(message).await.unwrap();
-        });
-
-        let mut stream: Stream = TcpStream::connect(addr).await.unwrap().into();
-        stream.set_rx_timestamp().unwrap();
-        // Receive the message
-        // setsockopt for SO_TIMESTAMPING is asynchronous so sleep a little bit
-        // to let kernel do the work
-        std::thread::sleep(Duration::from_micros(100));
-        notify.notify_one();
-
-        let mut buffer = vec![0u8; message.len()];
-        let n = stream.read(buffer.as_mut_slice()).await.unwrap();
-        assert_eq!(n, message.len());
-        assert!(stream.rx_ts.is_some());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn test_rx_timestamp_standard_path() {
-        let message = "hello world".as_bytes();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let notify = Arc::new(Notify::new());
-        let notify2 = notify.clone();
-
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            notify2.notified().await;
-            stream.write_all(message).await.unwrap();
-        });
-
-        let mut stream: Stream = TcpStream::connect(addr).await.unwrap().into();
-        std::thread::sleep(Duration::from_micros(100));
-        notify.notify_one();
-
-        let mut buffer = vec![0u8; message.len()];
-        let n = stream.read(buffer.as_mut_slice()).await.unwrap();
-        assert_eq!(n, message.len());
-        assert!(stream.rx_ts.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_stream_rewind() {
-        let message = b"hello world";
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let notify = Arc::new(Notify::new());
-        let notify2 = notify.clone();
-
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            notify2.notified().await;
-            stream.write_all(message).await.unwrap();
-        });
-
-        let mut stream: Stream = TcpStream::connect(addr).await.unwrap().into();
-
-        let rewind_test = b"this is Sparta!";
-        stream.rewind(rewind_test);
-
-        // partially read rewind_test because of the buffer size limit
-        let mut buffer = vec![0u8; message.len()];
-        let n = stream.read(buffer.as_mut_slice()).await.unwrap();
-        assert_eq!(n, message.len());
-        assert_eq!(buffer, rewind_test[..message.len()]);
-
-        // read the rest of rewind_test
-        let n = stream.read(buffer.as_mut_slice()).await.unwrap();
-        assert_eq!(n, rewind_test.len() - message.len());
-        assert_eq!(buffer[..n], rewind_test[message.len()..]);
-
-        // read the actual data
-        notify.notify_one();
-        let n = stream.read(buffer.as_mut_slice()).await.unwrap();
-        assert_eq!(n, message.len());
-        assert_eq!(buffer, message);
-    }
-
-    #[tokio::test]
-    async fn test_stream_peek() {
-        let message = b"hello world";
-        dbg!("try peek");
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let notify = Arc::new(Notify::new());
-        let notify2 = notify.clone();
-
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            notify2.notified().await;
-            stream.write_all(message).await.unwrap();
-            drop(stream);
-        });
-
-        notify.notify_one();
-
-        let mut stream: Stream = TcpStream::connect(addr).await.unwrap().into();
-        let mut buffer = vec![0u8; 5];
-        assert!(stream.try_peek(&mut buffer).await.unwrap());
-        assert_eq!(buffer, message[0..5]);
-        let mut buffer = vec![];
-        stream.read_to_end(&mut buffer).await.unwrap();
-        assert_eq!(buffer, message);
-    }
-
-    #[tokio::test]
-    async fn test_stream_two_subsequent_peek_calls_before_read() {
-        let message = b"abcdefghijklmn";
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let notify = Arc::new(Notify::new());
-        let notify2 = notify.clone();
-
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            notify2.notified().await;
-            stream.write_all(message).await.unwrap();
-            drop(stream);
-        });
-
-        notify.notify_one();
-
-        let mut stream: Stream = TcpStream::connect(addr).await.unwrap().into();
-
-        // Peek 4 bytes
-        let mut buffer = vec![0u8; 4];
-        assert!(stream.try_peek(&mut buffer).await.unwrap());
-        assert_eq!(buffer, message[0..4]);
-
-        // Peek 2 bytes
-        let mut buffer = vec![0u8; 2];
-        assert!(stream.try_peek(&mut buffer).await.unwrap());
-        assert_eq!(buffer, message[0..2]);
-
-        // Read 1 byte: ['a']
-        let mut buffer = vec![0u8; 1];
-        stream.read_exact(&mut buffer).await.unwrap();
-        assert_eq!(buffer, message[0..1]);
-
-        // Read as many bytes as possible, return 1 byte ['b']
-        //  from the first retry buffer chunk
-        let mut buffer = vec![0u8; 100];
-        let n = stream.read(&mut buffer).await.unwrap();
-        assert_eq!(n, 1);
-        assert_eq!(buffer[..n], message[1..2]);
-
-        // Read the rest ['cdefghijklmn']
-        let mut buffer = vec![];
-        stream.read_to_end(&mut buffer).await.unwrap();
-        assert_eq!(buffer, message[2..]);
-    }
-}
+mod tests;
