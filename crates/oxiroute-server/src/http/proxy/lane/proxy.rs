@@ -368,15 +368,11 @@ impl super::LaneFront {
         } = opened;
         let deadline = tokio::time::Instant::from_std(ctx.deadline);
         let body = async {
-            // `frame` carries the head and then each piece of the body with its chunk framing; head bytes in it that
-            // are not written yet are `owed` to `sent`.
+            // `frame` carries the head and then each piece of the body with its chunk framing. `sent` counts the
+            // body, as a session does.
             let mut frame = head;
-            let mut owed = 0;
-            if buffered {
-                owed = frame.len();
-            } else {
+            if !buffered {
                 write(stream, &frame).await?;
-                *sent += frame.len();
                 frame.clear();
             }
             let mut first = true;
@@ -397,12 +393,10 @@ impl super::LaneFront {
                     frame.extend_from_slice(&data);
                 }
                 write(stream, &frame).await?;
-                *sent += std::mem::take(&mut owed);
                 frame.clear();
             }
-            if owed > 0 {
+            if !frame.is_empty() {
                 write(stream, &frame).await?;
-                *sent += owed;
                 frame.clear();
             }
             if framing == Framing::Chunked {
@@ -458,12 +452,12 @@ impl super::LaneFront {
             let mut head = BytesMut::new();
             render_final_response_head(&mut response, false, &mut head)?;
             head.put_slice(&body);
-            Ok(head)
+            Ok((head, body.len()))
         });
         match rendered {
-            Ok(response) => match write(stream, &response).await {
+            Ok((response, body)) => match write(stream, &response).await {
                 Ok(()) => {
-                    *sent += response.len();
+                    *sent += body;
                     Some(code)
                 }
                 Err(write_error) => {
