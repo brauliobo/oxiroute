@@ -113,7 +113,7 @@ fn public_ready_does_not_read_an_unusable_token_file() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "{\"ready\":true,\"schemaVersion\":1}\n"
+        "{\"schemaVersion\":1,\"ready\":true}\n"
     );
 }
 
