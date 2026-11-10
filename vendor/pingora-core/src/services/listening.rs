@@ -29,7 +29,7 @@ use crate::protocols::Stream;
 #[cfg(unix)]
 use crate::server::ListenFds;
 use crate::server::{RuntimeOpts, ShutdownWatch};
-use crate::services::Service as ServiceTrait;
+use crate::services::{Service as ServiceTrait, ServiceReadyNotifier};
 
 use async_trait::async_trait;
 use log::{debug, error, info};
@@ -38,7 +38,6 @@ use pingora_runtime::current_handle;
 use pingora_timeout::timeout;
 use std::fs::Permissions;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Override the runtime options used to run a listening service.
 pub type RuntimeOptsOverride = Arc<dyn Fn(&RuntimeOpts) -> Option<RuntimeOpts> + Send + Sync>;
@@ -204,34 +203,129 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
         mut stack: TransportStack,
         mut shutdown: ShutdownWatch,
     ) {
+        let mut gate = app_logic.accept_gate().map(|gate| gate.register());
         // the accept loop, until the system is shutting down
         loop {
-            let new_io = tokio::select! { // TODO: consider biased for perf reason?
-                new_io = stack.accept() => new_io,
-                shutdown_signal = shutdown.changed() => {
-                    match shutdown_signal {
-                        Ok(()) => {
-                            if !*shutdown.borrow() {
-                                // happen in the initial read
+            let new_io = if let Some(participant) = &mut gate {
+                let state = participant.state();
+                if !state.accepting {
+                    participant.acknowledge(state.epoch);
+                    tokio::select! {
+                        biased;
+                        shutdown_signal = shutdown.changed() => {
+                            if shutdown_signal.is_err() || *shutdown.borrow() {
+                                break;
+                            }
+                        }
+                        changed = participant.changed() => {
+                            if changed.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                let Some(ownership) = participant.claim() else {
+                    continue;
+                };
+                tokio::select! {
+                    biased;
+                    shutdown_signal = shutdown.changed() => {
+                        drop(ownership);
+                        match shutdown_signal {
+                            Ok(()) => {
+                                if !*shutdown.borrow() {
+                                    continue;
+                                }
+                                info!("Shutting down {}", stack.as_str());
+                                break;
+                            }
+                            Err(e) => {
+                                error!("shutdown_signal error {e}");
+                                break;
+                            }
+                        }
+                    }
+                    changed = participant.changed() => {
+                        drop(ownership);
+                        match changed {
+                            Ok(state) => {
+                                if !state.accepting {
+                                    participant.acknowledge(state.epoch);
+                                }
                                 continue;
                             }
-                            info!("Shutting down {}", stack.as_str());
-                            break;
+                            Err(error) => {
+                                error!("accept gate error {error}");
+                                break;
+                            }
                         }
-                        Err(e) => {
-                            error!("shutdown_signal error {e}");
-                            break;
+                    }
+                    new_io = stack.accept() => {
+                        let admission = app_logic.admit_owned_connection();
+                        drop(ownership);
+                        let Some(admission) = admission else {
+                            continue;
+                        };
+                        match new_io {
+                            Ok(mut io) => {
+                                io.hold_admission(admission);
+                                let app = app_logic.clone();
+                                let shutdown = shutdown.clone();
+                                current_handle().spawn(async move {
+                                    let peer_addr = io.peer_addr();
+                                    match timeout(app.handshake_timeout(), io.handshake()).await {
+                                        Ok(handshake) => match handshake {
+                                            Ok(io) => Self::handle_event(io, app, shutdown).await,
+                                            Err(e) => {
+                                                if let Some(addr) = peer_addr {
+                                                    error!("Downstream handshake error from {}: {e}", addr);
+                                                } else {
+                                                    error!("Downstream handshake error: {e}");
+                                                }
+                                            }
+                                        },
+                                        Err(_) => error!("Downstream handshake timeout"),
+                                    }
+                                });
+                                continue;
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                }
+            } else {
+                tokio::select! { // TODO: consider biased for perf reason?
+                    new_io = stack.accept() => new_io,
+                    shutdown_signal = shutdown.changed() => {
+                        match shutdown_signal {
+                            Ok(()) => {
+                                if !*shutdown.borrow() {
+                                    // happen in the initial read
+                                    continue;
+                                }
+                                info!("Shutting down {}", stack.as_str());
+                                break;
+                            }
+                            Err(e) => {
+                                error!("shutdown_signal error {e}");
+                                break;
+                            }
                         }
                     }
                 }
             };
             match new_io {
-                Ok(io) => {
+                Ok(mut io) => {
+                    let Some(admission) = app_logic.admit_connection() else {
+                        continue;
+                    };
+                    io.hold_admission(admission);
                     let app = app_logic.clone();
                     let shutdown = shutdown.clone();
                     current_handle().spawn(async move {
                         let peer_addr = io.peer_addr();
-                        match timeout(Duration::from_secs(60), io.handshake()).await {
+                        match timeout(app.handshake_timeout(), io.handshake()).await {
                             Ok(handshake) => {
                                 match handshake {
                                     Ok(io) => Self::handle_event(io, app, shutdown).await,
@@ -272,51 +366,112 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
 
         stack.cleanup();
     }
-}
 
-#[async_trait]
-impl<A: ServerApp + Send + Sync + 'static> ServiceTrait for Service<A> {
-    async fn start_service(
+    async fn start_listeners(
         &mut self,
         #[cfg(unix)] fds: Option<ListenFds>,
         shutdown: ShutdownWatch,
         listeners_per_fd: usize,
+        ready_notifier: Option<ServiceReadyNotifier>,
     ) {
+        if listeners_per_fd == 0 {
+            error!(
+                "Listening service '{}' requires at least one listener task per descriptor",
+                self.name
+            );
+            return;
+        }
         let runtime = current_handle();
-        let endpoints = self
+        let endpoints = match self
             .listeners
             .build(
                 #[cfg(unix)]
                 fds,
             )
             .await
-            .expect("Failed to build listeners");
+        {
+            Ok(endpoints) => endpoints,
+            Err(error) => {
+                error!("Failed to build listeners for '{}': {error}", self.name);
+                return;
+            }
+        };
+        if endpoints.is_empty() {
+            error!("Listening service '{}' has no endpoints", self.name);
+            return;
+        }
 
-        let app_logic = self
-            .app_logic
-            .take()
-            .expect("can only start_service() once");
+        let Some(app_logic) = self.app_logic.take() else {
+            error!(
+                "Listening service '{}' was started more than once",
+                self.name
+            );
+            return;
+        };
         let app_logic = Arc::new(app_logic);
 
         let mut handlers = Vec::new();
-
-        endpoints.into_iter().for_each(|endpoint| {
+        for endpoint in endpoints {
             for _ in 0..listeners_per_fd {
                 let shutdown = shutdown.clone();
                 let my_app_logic = app_logic.clone();
                 let endpoint = endpoint.clone();
 
-                let jh = runtime.spawn(async move {
+                handlers.push(runtime.spawn(async move {
                     Self::run_endpoint(my_app_logic, endpoint, shutdown).await;
-                });
-
-                handlers.push(jh);
+                }));
             }
-        });
+        }
+        if handlers.is_empty() {
+            error!(
+                "Listening service '{}' started no accept handlers",
+                self.name
+            );
+            return;
+        }
+        if let Some(ready_notifier) = ready_notifier {
+            ready_notifier.notify_ready();
+        }
 
         futures::future::join_all(handlers).await;
         self.listeners.cleanup();
         app_logic.cleanup().await;
+    }
+}
+
+#[async_trait]
+impl<A: ServerApp + Send + Sync + 'static> ServiceTrait for Service<A> {
+    async fn start_service_with_ready_notifier(
+        &mut self,
+        #[cfg(unix)] fds: Option<ListenFds>,
+        shutdown: ShutdownWatch,
+        listeners_per_fd: usize,
+        ready_notifier: ServiceReadyNotifier,
+    ) {
+        self.start_listeners(
+            #[cfg(unix)]
+            fds,
+            shutdown,
+            listeners_per_fd,
+            Some(ready_notifier),
+        )
+        .await;
+    }
+
+    async fn start_service(
+        &mut self,
+        #[cfg(unix)] fds: Option<ListenFds>,
+        shutdown: ShutdownWatch,
+        listeners_per_fd: usize,
+    ) {
+        self.start_listeners(
+            #[cfg(unix)]
+            fds,
+            shutdown,
+            listeners_per_fd,
+            None,
+        )
+        .await;
     }
 
     fn name(&self) -> &str {
@@ -335,5 +490,70 @@ impl<A: ServerApp + Send + Sync + 'static> ServiceTrait for Service<A> {
 
     fn listen_addresses(&self) -> Option<Vec<String>> {
         Some(self.listeners.addresses())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::apps::ServerApp;
+    use crate::protocols::Stream;
+
+    struct TestApp;
+
+    #[async_trait]
+    impl ServerApp for TestApp {
+        async fn process_new(
+            self: &Arc<Self>,
+            _session: Stream,
+            _shutdown: &ShutdownWatch,
+        ) -> Option<Stream> {
+            None
+        }
+    }
+
+    #[test]
+    fn zero_listener_tasks_never_publish_readiness() {
+        tokio_test::block_on(async {
+            let mut service = Service::new("zero listeners".into(), TestApp);
+            let (_shutdown_sender, shutdown) = tokio::sync::watch::channel(false);
+            let (ready_sender, ready_watch) = tokio::sync::watch::channel(false);
+
+            ServiceTrait::start_service_with_ready_notifier(
+                &mut service,
+                #[cfg(unix)]
+                None,
+                shutdown,
+                0,
+                ServiceReadyNotifier::new(ready_sender).require_explicit(),
+            )
+            .await;
+
+            assert!(!*ready_watch.borrow());
+            assert!(ready_watch.has_changed().is_err());
+        });
+    }
+
+    #[test]
+    fn empty_endpoints_never_publish_readiness_with_a_valid_multiplier() {
+        tokio_test::block_on(async {
+            let mut service = Service::new("empty endpoints".into(), TestApp);
+            let (_shutdown_sender, shutdown) = tokio::sync::watch::channel(false);
+            let (ready_sender, ready_watch) = tokio::sync::watch::channel(false);
+
+            ServiceTrait::start_service_with_ready_notifier(
+                &mut service,
+                #[cfg(unix)]
+                None,
+                shutdown,
+                1,
+                ServiceReadyNotifier::new(ready_sender).require_explicit(),
+            )
+            .await;
+
+            assert!(service.app_logic().is_some());
+            assert!(!*ready_watch.borrow());
+            assert!(ready_watch.has_changed().is_err());
+        });
     }
 }

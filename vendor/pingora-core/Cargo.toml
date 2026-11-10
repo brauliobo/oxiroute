@@ -56,17 +56,12 @@ dial9-worker-s3 = [
     "pingora-runtime/dial9-worker-s3",
 ]
 openssl = [
+    "dep:foreign-types",
     "pingora-openssl",
     "openssl_derived",
 ]
 openssl_derived = ["any_tls"]
 patched_http1 = ["pingora-http/patched_http1"]
-rustls = [
-    "pingora-rustls",
-    "any_tls",
-    "dep:x509-parser",
-    "ouroboros",
-]
 s2n = [
     "pingora-s2n",
     "any_tls",
@@ -75,6 +70,10 @@ s2n = [
     "lru",
 ]
 sentry = ["dep:sentry"]
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(feature, values("rustls"))']
 
 [lib]
 name = "pingora_core"
@@ -104,7 +103,7 @@ version = ">=0.8.9"
 version = "0.1.42"
 
 [dependencies.brotli]
-version = "3"
+version = "9"
 
 [dependencies.bstr]
 version = "1.12.0"
@@ -122,10 +121,7 @@ version = "4.5"
 features = ["derive"]
 
 [dependencies.daggy]
-version = "0.8"
-
-[dependencies.derivative]
-version = "2.2.0"
+version = "0.9"
 
 [dependencies.flate2]
 version = "1"
@@ -134,6 +130,10 @@ default-features = false
 
 [dependencies.futures]
 version = "0.3"
+
+[dependencies.foreign-types]
+version = "0.3"
+optional = true
 
 [dependencies.h2]
 version = ">=0.4.16"
@@ -154,7 +154,7 @@ version = "0.2.70"
 version = "0.4"
 
 [dependencies.lru]
-version = "0.18.2"
+version = "0.19"
 optional = true
 
 [dependencies.once_cell]
@@ -168,7 +168,7 @@ version = "0.18.4"
 optional = true
 
 [dependencies.parking_lot]
-version = "0.12"
+version = "0.13"
 features = ["arc_lock"]
 
 [dependencies.percent-encoding]
@@ -193,10 +193,6 @@ version = "0.9.1"
 
 [dependencies.pingora-runtime]
 version = "0.9.1"
-
-[dependencies.pingora-rustls]
-version = "0.9.1"
-optional = true
 
 [dependencies.pingora-s2n]
 version = "0.9.1"
@@ -237,11 +233,14 @@ version = "0.10.4"
 version = ">=0.4, <1.0.0"
 features = ["all"]
 
+[dependencies.smallvec]
+version = "1"
+
 [dependencies.strum]
-version = "0.26.2"
+version = "0.28"
 
 [dependencies.strum_macros]
-version = "0.26.2"
+version = "0.28"
 
 [dependencies.tokio]
 version = "1"
@@ -261,7 +260,7 @@ version = "0.4"
 version = "2"
 
 [dependencies.x509-parser]
-version = "0.16.0"
+version = "0.18.1"
 optional = true
 
 [dependencies.zstd]
@@ -296,6 +295,9 @@ features = [
     "http1",
     "http2",
 ]
+
+[dev-dependencies.openssl]
+version = "0.10"
 
 [dev-dependencies.reqwest]
 version = "0.12"

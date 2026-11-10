@@ -362,6 +362,9 @@ impl ServerConf {
     }
 
     pub fn validate(self) -> Result<Self> {
+        if self.listener_tasks_per_fd == 0 {
+            return Error::e_explain(ReadError, "listener_tasks_per_fd must be greater than zero");
+        }
         if self.max_blocking_threads == Some(0) {
             return Error::e_explain(ReadError, "max_blocking_threads must be greater than zero");
         }
@@ -744,5 +747,13 @@ runtime_metrics_poll_time_histogram_buckets: {}
             result.is_err(),
             "excessive runtime_metrics_poll_time_histogram_buckets should fail validation"
         );
+    }
+
+    #[test]
+    fn rejects_zero_listener_tasks_per_fd() {
+        let error = ServerConf::from_yaml("---\nlistener_tasks_per_fd: 0")
+            .expect_err("zero listener task count must be rejected");
+
+        assert!(error.to_string().contains("must be greater than zero"));
     }
 }
