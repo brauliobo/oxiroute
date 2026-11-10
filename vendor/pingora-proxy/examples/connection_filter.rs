@@ -26,6 +26,7 @@ use std::sync::Arc;
 /// This example demonstrates how to implement a connection filter
 pub struct MyProxy;
 
+#[async_trait]
 impl ProxyHttp for MyProxy {
     type CTX = ();
 
@@ -49,7 +50,10 @@ struct BlockAllFilter;
 #[async_trait]
 impl ConnectionFilter for BlockAllFilter {
     async fn should_accept(&self, addr: Option<&std::net::SocketAddr>) -> bool {
-        info!("BLOCKING connection from {addr:?} (BlockAllFilter active)");
+        info!(
+            "BLOCKING connection from {:?} (BlockAllFilter active)",
+            addr
+        );
         false
     }
 }

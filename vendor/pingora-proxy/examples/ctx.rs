@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use async_trait::async_trait;
 use log::info;
 use std::sync::Mutex;
 
@@ -38,6 +39,7 @@ fn check_beta_user(req: &pingora_http::RequestHeader) -> bool {
     req.headers.get("beta-flag").is_some()
 }
 
+#[async_trait]
 impl ProxyHttp for MyProxy {
     type CTX = MyCtx;
     fn new_ctx(&self) -> Self::CTX {

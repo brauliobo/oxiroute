@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use pingora_core::prelude::*;
 use pingora_http::{RequestHeader, ResponseHeader};
@@ -54,6 +55,7 @@ static RATE_LIMITER: Lazy<Rate> = Lazy::new(|| Rate::new(Duration::from_secs(1))
 // max request per second per client
 static MAX_REQ_PER_SEC: isize = 1;
 
+#[async_trait]
 impl ProxyHttp for LB {
     type CTX = ();
 
