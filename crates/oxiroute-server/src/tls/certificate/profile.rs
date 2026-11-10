@@ -362,8 +362,8 @@ impl TlsProfilePlan {
             )
         });
         self.client_auth.apply(&self.name, &mut settings)?;
-        if let Some(pool) = super::super::handshake_pool::pool() {
-            settings.set_handshake_executor(Arc::clone(pool) as _);
+        if let Some(threads) = super::super::handshake_pool::handshake_threads() {
+            settings.set_offload_threadpool(threads, 1);
         }
         Ok(settings)
     }

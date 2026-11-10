@@ -137,8 +137,7 @@ fn response_policy_adapters_match_mutation_status_and_cookie_ordering() {
         let mut map = initial.clone();
         apply_response_policy_map(status, &mut map, &policy).expect("HeaderMap policy");
 
-        let mut response = pingora::http::ResponseHeader::build(status, None).unwrap();
-        response.headers = initial;
+        let mut response = response_with_headers(status, initial);
         apply_response_policy(&mut response, &policy, true).expect("ResponseHeader policy");
 
         assert_eq!(response.headers, map);
@@ -190,8 +189,7 @@ fn hop_by_hop_adapters_remove_nominations_from_every_connection_field() {
     let mut map = initial.clone();
     apply_response_policy_map(StatusCode::OK, &mut map, &empty_proxy_policy()).unwrap();
 
-    let mut response = pingora::http::ResponseHeader::build(200, None).unwrap();
-    response.headers = initial;
+    let mut response = response_with_headers(200, initial);
     apply_response_policy(&mut response, &empty_proxy_policy(), true).unwrap();
 
     assert_eq!(response.headers, map);
@@ -217,8 +215,7 @@ fn hop_by_hop_adapters_reject_invalid_nominations_before_mutating() {
     assert!(apply_response_policy_map(StatusCode::OK, &mut map, &empty_proxy_policy()).is_err());
     assert_eq!(map, initial);
 
-    let mut response = pingora::http::ResponseHeader::build(200, None).unwrap();
-    response.headers = initial.clone();
+    let mut response = response_with_headers(200, initial.clone());
     assert!(apply_response_policy(&mut response, &empty_proxy_policy(), true).is_err());
     assert_eq!(response.headers, initial);
 }
@@ -349,4 +346,19 @@ fn failure_reasons_are_clean_text_the_access_log_writes_unchecked() {
     for reason in reasons {
         assert_eq!(crate::observability::logging::redact_text(reason), reason);
     }
+}
+
+fn response_with_headers<S>(status: S, headers: HeaderMap) -> pingora::http::ResponseHeader
+where
+    http::StatusCode: TryFrom<S>,
+    <http::StatusCode as TryFrom<S>>::Error: Into<http::Error>,
+{
+    let mut parts = http::Response::builder()
+        .status(status)
+        .body(())
+        .unwrap()
+        .into_parts()
+        .0;
+    parts.headers = headers;
+    parts.into()
 }

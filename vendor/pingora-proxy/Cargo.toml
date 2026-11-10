@@ -11,9 +11,9 @@
 
 [package]
 edition = "2021"
-rust-version = "1.97"
+rust-version = "1.85"
 name = "pingora-proxy"
-version = "0.8.1"
+version = "0.9.1"
 authors = ["Yuchen Wu <yuchen@cloudflare.com>"]
 build = false
 exclude = ["tests/*"]
@@ -61,17 +61,14 @@ openssl = [
 ]
 openssl_derived = ["any_tls"]
 patched_http1 = ["pingora-core/patched_http1"]
-rustls = [
-    "pingora-core/rustls",
-    "pingora-cache/rustls",
-    "any_tls",
-]
 s2n = [
     "pingora-core/s2n",
     "pingora-cache/s2n",
     "any_tls",
 ]
 sentry = ["pingora-core/sentry"]
+trace = ["pingora-cache/trace"]
+upstream_modules = []
 
 [lib]
 name = "pingora_proxy"
@@ -111,6 +108,10 @@ name = "multi_lb"
 path = "examples/multi_lb.rs"
 
 [[example]]
+name = "pipelining"
+path = "examples/pipelining.rs"
+
+[[example]]
 name = "rate_limiter"
 path = "examples/rate_limiter.rs"
 
@@ -136,7 +137,7 @@ features = ["derive"]
 version = "0.3"
 
 [dependencies.h2]
-version = ">=0.4.11"
+version = ">=0.4.16"
 
 [dependencies.http]
 version = "1"
@@ -148,19 +149,19 @@ version = "0.4"
 version = "1"
 
 [dependencies.pingora-cache]
-version = "0.8.1"
+version = "0.9.1"
 default-features = false
 
 [dependencies.pingora-core]
-version = "0.8.1"
+version = "0.9.1"
 path = "../pingora-core"
 default-features = false
 
 [dependencies.pingora-error]
-version = "0.8.1"
+version = "0.9.1"
 
 [dependencies.pingora-http]
-version = "0.8.1"
+version = "0.9.1"
 
 [dependencies.rand]
 version = "0.8"
@@ -204,11 +205,14 @@ features = [
 ]
 
 [dev-dependencies.pingora-limits]
-version = "0.8.1"
+version = "0.9.1"
 
 [dev-dependencies.pingora-load-balancing]
-version = "0.8.1"
+version = "0.9.1"
 default-features = false
+
+[dev-dependencies.pingora-prometheus]
+version = "0.9.1"
 
 [dev-dependencies.prometheus]
 version = "0"

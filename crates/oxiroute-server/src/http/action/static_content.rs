@@ -2,6 +2,7 @@
 
 use std::{collections::VecDeque, io, os::unix::fs::FileExt as _};
 
+use bytes::BytesMut;
 use pingora::utils::chunk_pool::{self, CHUNK_BYTES};
 use rustix::io::ReadWriteFlags;
 
@@ -113,11 +114,18 @@ fn chunk_length(remaining: u64) -> usize {
     usize::try_from(remaining).map_or(CHUNK_BYTES, |left| left.min(CHUNK_BYTES))
 }
 
+/// A pooled buffer of `length` readable bytes: pooled buffers come back empty.
+fn filled_chunk(length: usize) -> BytesMut {
+    let mut chunk = chunk_pool::take();
+    chunk.resize(length, 0);
+    chunk
+}
+
 /// The next chunk if the page cache holds all of it; `None` when the read would wait on the disk or the file system
 /// has no non-blocking reads.
 fn cached_chunk(file: &File, offset: u64, remaining: u64) -> io::Result<Option<Bytes>> {
     let length = chunk_length(remaining);
-    let mut chunk = chunk_pool::take();
+    let mut chunk = filled_chunk(length);
     let read = rustix::io::preadv2(
         file,
         &mut [io::IoSliceMut::new(&mut chunk[..length])],
@@ -142,7 +150,7 @@ async fn read_window(file: &Arc<File>, offset: u64, remaining: u64) -> io::Resul
     let mut left = remaining;
     while buffers.len() < WINDOW_CHUNKS && left > 0 {
         let length = chunk_length(left);
-        buffers.push((chunk_pool::take(), length));
+        buffers.push((filled_chunk(length), length));
         left -= length as u64;
     }
     let buffers = tokio::task::spawn_blocking(move || {

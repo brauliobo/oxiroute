@@ -102,22 +102,6 @@ fn render_prometheus_snapshot(
         "oxiroute_upstream_retry_attempts_total",
         runtime.process.retry_attempts,
     )?;
-    let handshakes = crate::tls::handshake_pool_stats();
-    sample(
-        &mut output,
-        "oxiroute_tls_handshake_pool_queue_depth",
-        handshakes.queue_depth,
-    )?;
-    sample(
-        &mut output,
-        "oxiroute_tls_handshake_pool_started_total",
-        handshakes.started_total,
-    )?;
-    sample(
-        &mut output,
-        "oxiroute_tls_handshake_pool_rejected_total",
-        handshakes.rejected_total,
-    )?;
     for rescue in &runtime.process.rescues {
         labels(
             &mut output,

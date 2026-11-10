@@ -1,18 +1,15 @@
 # Vendored pingora-core patch
 
-This directory contains the published `pingora-core 0.8.1` source from crates.io
-(registry checksum `6a7ffe2f5acf9f94fd255cfd1438866bc9124f8f0c7d42562bd3f853df2094b7`)
-under its upstream Apache-2.0 license.
+This directory contains the published `pingora-core 0.9.1` source from crates.io
+(registry checksum `a535f47f65fdcb003f9e1df04cd18e614c128dfe9388acce3f211ae38ac14d68`)
+under its upstream Apache-2.0 license. The 0.8.1 to 0.9.1 rebase (a three-way merge from the pristine 0.8.1 tree) clears
+RUSTSEC-2026-0388 (HTTP/2 `:authority`/`Host` mismatch, userinfo) for this crate; the repository history holds the pristine
+0.9.1 import as its own commit, so `git diff` against it shows exactly the OxiRoute delta listed below.
 
-OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS configure hook,
-pre-handshake application admission and per-application handshake timeout, a non-truncating certificate subject conversion, correct
-HTTP/1 HEAD informational-response framing, owned HTTP/1 response preread payloads, borrowed HTTP/1
-upstream request writes, parser-owned HTTP/1 header names, an inline HTTP response task batch, an
-HTTP/2 test lifecycle correction, a lazily allocated read buffer, pooled gzip deflate state, a per-thread
-header-name cache, an idle upstream connection pool without per-connection tasks, a listener-level
-`TCP_NODELAY`:
-header-name cache, pooled body buffers handed out without a copy, a coalescing write buffer, and stage-1
-connection-pool experiments:
+OxiRoute's delta over the pristine release is listed below. Changes the 0.9.x line took (the non-truncating certificate
+subject conversion, HEAD informational-response framing, the HTTP/2 shutdown accept loop, `daemonix`, the dependency
+bumps for `lru`/`parking_lot`/`brotli`/`daggy`/`strum`/`x509-parser`, and the tokio 1.54 zero-capacity stream buffers)
+were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes against upstream's loop.
 
 - `protocols/tls/mod.rs` declares the public `TlsConfigureHook` type.
 - `upstreams/peer.rs` stores the optional hook in `PeerOptions`, omits it from
@@ -24,15 +21,6 @@ connection-pool experiments:
   defaulting to 60 seconds, and
   `services/listening.rs` acquires it after TCP accept and retains it through the handshake and
   application connection lifetime while applying the owning app's timeout.
-- `apps/mod.rs` keeps accepting HTTP/2 streams after the service's shutdown signal sends GOAWAY (the connection
-  loop calls `graceful_shutdown` once and goes on, ending when `accept` reports the connection closed) instead of only
-  waiting for the close: a stream the client opened before it saw the GOAWAY was never accepted, so it was never
-  answered and kept the connection, and the generation that owned it, open until the client gave up.
-  `apps/h2_shutdown_tests.rs` covers it.
-- `utils/tls/boringssl_openssl.rs` uses OpenSSL's non-truncating subject string
-  conversion instead of the deprecated conversion that stops at interior NULs.
-- `protocols/http/v1/client.rs` classifies informational responses before applying HEAD no-body
-  framing, so a 100/103 response does not prevent the final response from being read.
 - `protocols/http/v1/body.rs` can retain immutable content-length and close-delimited preread bytes
   from the HTTP/1 response header allocation. The client moves those bytes into response tasks
   without copying them; chunked and socket-read payloads keep the upstream implementation's
@@ -55,8 +43,6 @@ connection-pool experiments:
   `ServerSession` and the HTTP/1 server expose additive batch response APIs; HTTP/1 shares one
   implementation with the existing `Vec` API, while HTTP/2, subrequest, and custom sessions retain
   their existing `Vec` behavior through a compatibility conversion.
-- `protocols/http/v2/server.rs` closes both stream halves in the empty request DATA/EOS test before
-  dropping client handles, matching `h2` 0.4.15 cancellation behavior without changing production.
 - `connectors/mod.rs` no longer performs a release-side readiness read before a protocol-approved
   reusable stream enters the pool. The existing pre-visibility mutex guard, checkout identity and
   readiness checks, idle watcher, LRU eviction, timeout handling, and connection-lifetime
@@ -66,14 +52,12 @@ connection-pool experiments:
   while custom L4 connections retain descriptor fallback. Transport and HTTP/2 checkout use that
   opt-in identity before the existing descriptor syscall without changing readiness, pool keys,
   release behavior, or retained connection objects.
-- `protocols/l4/stream.rs` constructs accepted TCP, Unix, and virtual streams with one-byte read and
-  write buffers instead of zero-capacity ones, which tokio 1.54 rejects. Both sizes stay below every
-  read and write, so the streams remain unbuffered until `set_buffer`.
 - `protocols/l4/lazy_read.rs` replaces `tokio::io::BufStream` as the accepted stream's buffer. Reads go
   through one 64 KiB scratch buffer per thread and only the bytes the caller did not ask for stay with the
   connection, in a buffer that is released as soon as the socket would block, so an idle keep-alive
   connection holds no read buffer (it held 64 KiB). Reads of 64 KiB or more still bypass the scratch;
-  the write buffer is the same `BufWriter`. The module's tests need only `tokio`.
+  the write buffer is the same `BufWriter`. Streams are created with zero-capacity buffers as upstream does (a read size
+  of 0 reads straight from the socket, which tokio 1.54 allows here). The module's tests need only `tokio`.
 - `protocols/l4/stream.rs` `Drop` no longer probes the socket with `getsockopt(TCP_NODELAY)` before the
   final flush: a broken socket fails the flush, which is logged at debug level.
 - `apps/mod.rs` `AcceptGate` counts the threads blocked in `AcceptGateClose::wait` and notifies the
@@ -107,18 +91,21 @@ connection-pool experiments:
   socket and a `oneshot`, `Notify`, LRU node and mutex handshake with the next checkout (two scheduler round trips
   per request). Now a release polls the socket once with a waker that queues the connection on a shared event list
   and wakes one pool-wide task, which drops connections that closed, sent data or passed `idle_timeout`; a checkout
-  pops an entry from a per-thread stripe, then runs the same identity and readiness checks. Capacity is per stripe
-  (as the per-thread LRU it replaces was) and evicts the connection released longest ago. `idle_timeout` of zero
+  pops an entry from a per-thread stripe, then runs the same identity and readiness checks. Capacity is the global
+  `keepalive_pool_size` (0.9 sizes it per worker times the thread count); a release at capacity evicts the oldest
+  connection of its own stripe, else of the next non-empty one, and reports how long it had been idle to
+  `keepalive_pool_callback`. Idle sockets that deliver data count in the 0.9 unexpected-data counter. `idle_timeout` of zero
   keeps nothing. The HTTP/2 pool still uses `pingora_pool`. The `connectors::tests` cases that count socket reads
   expect the extra read at release.
 - `listeners/l4.rs` sets `TCP_NODELAY` on the listening socket and no longer on every accepted stream: Linux copies
   it to the accepted socket. Keepalive and DSCP settings are still applied per accepted stream.
-- `utils/chunk_pool.rs` keeps up to eight 128 KiB buffers per thread. `protocols/http/v1/body.rs` takes its body
+- `utils/chunk_pool.rs` keeps up to eight 128 KiB buffers per thread; a taken buffer is empty with that capacity
+  (it is filled by `read_buf`, as 0.9's body reader does). `protocols/http/v1/body.rs` takes its body
   buffer from it and returns it when the next body starts or the reader drops. `read_body_bytes` hands a
   content-length or close-delimited read of 8 KiB or more out as the buffer it was read into (the buffer returns to
   the pool of the thread that drops the last clone) instead of copying it into a new `Bytes`; chunked and smaller
   reads are copied as before. `finish_body_buf` only splits the buffer when bytes were read past the body.
-  `oxiroute-server` also reads static file chunks into the same pool.
+  `oxiroute-server` also reads static file chunks into the same pool (it sizes the buffer first).
 - `protocols/http/v1/server.rs` writes a body task of 4 KiB or more from its own buffer after the bodies queued
   before it, instead of copying it into the batch buffer (`queue_body_data`).
 - `protocols/l4/lazy_read.rs` replaces `tokio::io::BufWriter` with `CoalescingWriter`: same buffering and
@@ -168,9 +155,21 @@ connection-pool experiments:
   and `set_request_facts` (`ServerSession`, `HttpSession`; a no-op for sessions that answer `UNKNOWN`) records the facts of
   a request whose headers the caller changed and whose resulting facts it knows, so the product strips the hop-by-hop
   fields of a request once at its head and the session does not look the headers up again.
-- `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
-  `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
-  stays at `0.10` because later releases change the parser and integer APIs used by compression.
+  `validate_content_length_facts` gives upstream's Content-Length verdicts (identical duplicates are accepted and
+  reconciled, conflicting or invalid values refused) but skips the header lookup when the facts rule `Content-Length`
+  out. `RequestHeader` and `ResponseHeader` have no `DerefMut` in 0.9, so the parsers fill a plain `HeaderMap` (with the
+  name cache) and `request_header_with_headers` / `ResponseHeader::from(Parts)` build the head around it.
+- `protocols/http/v1/server.rs` `prepare_response_header` returns the serialised buffer so the inline `Date` and
+  `Connection` lines and the reusable buffer survive upstream's proxy-task writer; response head bytes no longer count
+  in `body_bytes_sent`, and `write_rendered_response` counts only the body (upstream's accounting).
+- `apps/mod.rs` keeps `mark_reused_connection` / `is_reused_connection`; `services/mod.rs` `ServiceReadyNotifier` keeps
+  `require_explicit` and `with_ready_callback` (the callback is `Send + Sync`); `PeerOptions` keeps `body_read_timeout`
+  and the manual `Debug` that omits the TLS hook.
+- `Cargo.toml` is the published 0.9.1 manifest plus `foreign-types` (OpenSSL feature), `smallvec`, the `openssl`
+  dev-dependency, newer `lru`, `parking_lot`, `brotli`, `daggy`, `strum`, `x509-parser` where they compile unchanged,
+  no `pingora-rustls` dependency and no `rustls` feature (the crate is no longer vendored; a lint table keeps
+  `cfg(feature = "rustls")` code warning-free), and without the `h1_pipelining` bench (its source is not published).
+  `sfv` stays at `0.10` because later releases change the parser and integer APIs used by compression.
 
 - Tests: the unit tests no longer depend on the Internet, fixed ports, a stored key pair or host sysctls. `connectors/test_servers.rs`
   provides loopback servers that own a kernel-assigned port (HTTP redirect, TLS with HTTP/1.1 or HTTP/2, a refused address, a
@@ -182,19 +181,16 @@ connection-pool experiments:
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
-When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
-review the HTTP/2 shutdown accept loop, the header slots, request and response facts, the noted request write, inline request loop, the zero-copy request body and retry buffer, `try_read_response_task`, the connector hook, admission guard and handshake-timeout hook, rendered response write, inline Date and Connection lines, header map headroom, single-clock timeouts, subject conversion, HTTP/1 HEAD informational-response,
-owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, lazy read buffer, pooled
-gzip state, header-name cache, HTTP/2 test lifecycle, connection-pool changes, the idle pool and the listener `TCP_NODELAY`, then rerun the vendored
-gzip state, header-name cache, body buffer pool and hand-over, direct large body writes, coalescing write buffer,
-HTTP/2 test lifecycle, and connection-pool changes, then rerun the vendored
-connector pool, BodyReader, H1 client, and H2 server suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.
-- `listeners/tls/boringssl_openssl/mod.rs` adds `HandshakeExecutor` and `TlsSettings::set_handshake_executor`
-  (answering upstream's "TODO: be able to offload this handshake in a thread pool"). With an executor set, the
-  accepted `Acceptor` runs the whole server handshake (key exchange, certificate callback, signature) as a job on
-  the executor and hands the established stream back, aborting the job when the caller gives up (the service's
-  handshake timeout) and failing the connection when the executor refuses the job. `Acceptor` keeps its callbacks
-  in an `Arc` for that, and `tls_handshake` requires `S: 'static`. Without an executor the path is unchanged.
+When upgrading Pingora, import the new published crate as its own commit, three-way merge each file from the
+previous pristine release (`git merge-file ours base theirs`), and resolve by delta: the header slots, request and
+response facts, noted request write, inline request loop, zero-copy request body and retry buffer,
+`try_read_response_task`, connector hook, admission guard and handshake-timeout hook, rendered response write, inline
+Date and Connection lines, header map headroom, single-clock timeouts, owned-preread, borrowed-request-write,
+parsed-header ownership, response-task batch, lazy read buffer and coalescing writer, pooled gzip state, header-name
+cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`.
+Every upstream H1 correctness fix whose code our forks replace (`idle.rs`, `proxy_h1_inline.rs` in `pingora-proxy`,
+the inline relay) must be re-derived by hand. Then run `scripts/test-vendored.sh`, the OxiRoute TLS and HTTP wire
+tests and strict clippy.
 - `protocols/http/v2/server.rs` serves downstream HTTP/2 with the in-tree `oxiroute-h2` server (`crates/oxiroute-h2`) instead
   of `h2::server`. `H2Options` is now `oxiroute_h2::server::Config` and `Reason` is `oxiroute_h2::Reason`; `handshake`,
   `HttpSession` and its methods keep their signatures. The session holds an `oxiroute_h2::server::Stream` (no
@@ -203,4 +199,9 @@ connector pool, BodyReader, H1 client, and H2 server suites, OxiRoute TLS and HT
   stream the peer reset before it was accepted is not delivered, and an empty request DATA frame carrying
   END_STREAM ends the body without yielding an empty chunk. `Cargo.toml` gains a path dependency on `oxiroute-h2`.
   The `h2` crate stays for the upstream client and as the differential-test reference. `apps/mod.rs` is unchanged: the
-  connection loop (`graceful_shutdown`, `accept`) is the same, and `apps/h2_shutdown_tests.rs` passes.
+  connection loop (`graceful_shutdown`, `accept`) is the same, and `apps/h2_shutdown_tests.rs` passes. The 0.9.1 acceptance
+  checks (request target bytes, Content-Length framing, authority, the malformed-stream budget, idle timeout) stay in
+  `HttpSession` on top of the new session. `Session::shutdown_with_reason` takes `oxiroute_h2::Reason`. The two
+  graceful-shutdown/authority unit tests that relied on `h2` behaviour were adapted: the client answers the server's
+  PING before the closing GOAWAY is expected, and a request reset before it was handed out never reaches the
+  application.
