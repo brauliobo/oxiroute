@@ -95,6 +95,13 @@ impl<'a> Value<'a> {
         is_header_value(bytes).then_some(Self(bytes))
     }
 
+    /// A value the caller produced and knows to be valid, such as a hex id: not checked.
+    /// Bytes that [`is_header_value`] refuses make a malformed head, nothing worse.
+    #[must_use]
+    pub const fn trusted(bytes: &'a [u8]) -> Self {
+        Self(bytes)
+    }
+
     #[must_use]
     pub const fn as_bytes(&self) -> &'a [u8] {
         self.0
@@ -136,6 +143,7 @@ pub struct EditsFull;
 pub struct Edits<'a> {
     list: [Edit<'a>; MAX_EDITS],
     len: usize,
+    bytes: usize,
 }
 
 impl Default for Edits<'_> {
@@ -150,11 +158,13 @@ impl<'a> Edits<'a> {
         Self {
             list: [Edit::Remove(names::HOST); MAX_EDITS],
             len: 0,
+            bytes: 0,
         }
     }
 
     pub fn clear(&mut self) {
         self.len = 0;
+        self.bytes = 0;
     }
 
     #[must_use]
@@ -165,6 +175,12 @@ impl<'a> Edits<'a> {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Bytes the added lines take: their names, values and separators.
+    #[must_use]
+    pub const fn added_bytes(&self) -> usize {
+        self.bytes
     }
 
     #[must_use]
@@ -179,6 +195,9 @@ impl<'a> Edits<'a> {
     pub fn push(&mut self, edit: Edit<'a>) -> Result<(), EditsFull> {
         *self.list.get_mut(self.len).ok_or(EditsFull)? = edit;
         self.len += 1;
+        self.bytes += edit
+            .value()
+            .map_or(0, |v| edit.name().wire.len() + v.0.len() + 4);
         Ok(())
     }
 

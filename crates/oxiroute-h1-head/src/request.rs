@@ -1,7 +1,7 @@
 //! The request scanner: one pass over a request head, refusing everything the classic parser might read differently.
 
 use crate::class::{Class, HOP_BY_HOP_REQUEST};
-use crate::fields::{Header, MAX_HEADERS, Stop, scan_fields};
+use crate::fields::{Block, Header, MAX_HEADERS, Stop, scan_fields};
 use crate::miss::{MissReason, Scan};
 use crate::tables::{NAME, TARGET};
 
@@ -71,6 +71,8 @@ pub struct RequestHead {
     pub target: Span,
     /// Always 1.
     pub minor: u8,
+    /// Bytes of the request line, CRLF included.
+    pub line_len: u32,
     /// Bytes through the blank line. Bytes after it are not looked at.
     pub head_len: u32,
     pub count: u8,
@@ -91,6 +93,7 @@ impl RequestHead {
             method: Span { start: 0, len: 0 },
             target: Span { start: 0, len: 0 },
             minor: 1,
+            line_len: 0,
             head_len: 0,
             count: 0,
             facts: RequestFacts {
@@ -258,7 +261,8 @@ fn scan(buf: &[u8], out: &mut RequestHead) -> Result<(), Stop> {
     let target_start = method_end + 1;
     let target_end = target_end(buf, target_start)?;
     let fields_start = version_end(buf, target_end + 1)?;
-    let block = scan_fields(buf, fields_start, &mut out.headers)?;
+    let mut block = Block::new();
+    scan_fields(buf, fields_start, &mut out.headers, &mut block)?;
     let facts = &mut out.facts;
     let has = |class: Class| block.seen & class.bit() != 0;
     if !has(Class::Host) {
@@ -305,8 +309,8 @@ fn scan(buf: &[u8], out: &mut RequestHead) -> Result<(), Stop> {
             1
         };
     }
-    facts.has_underscore = block.underscore;
-    facts.has_uppercase = block.upper;
+    facts.has_underscore = block.underscore();
+    facts.has_uppercase = block.upper();
     facts.duplicate_names = block.duplicate_names;
     facts.present = block.seen;
     out.method = Span {
@@ -318,6 +322,7 @@ fn scan(buf: &[u8], out: &mut RequestHead) -> Result<(), Stop> {
         len: (target_end - target_start) as u32,
     };
     out.minor = 1;
+    out.line_len = fields_start as u32;
     out.head_len = block.head_len;
     out.count = block.count;
     Ok(())

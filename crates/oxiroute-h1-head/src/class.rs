@@ -115,14 +115,55 @@ impl Class {
     }
 }
 
-/// Case-insensitive equality of a token `name` with a lowercase letters-and-hyphens `lower` of the same length.
-/// `|0x20` folds exactly the ASCII capitals; a token byte can only collide with a hyphen through a CR, which is not one.
+/// Bit of the classes the classic writers spell in title case.
+pub(crate) const TITLED: u32 = Class::AcceptRanges.bit()
+    | Class::Age.bit()
+    | Class::CacheControl.bit()
+    | Class::Connection.bit()
+    | Class::ContentType.bit()
+    | Class::ContentEncoding.bit()
+    | Class::ContentLength.bit()
+    | Class::Date.bit()
+    | Class::TransferEncoding.bit()
+    | Class::Host.bit()
+    | Class::Server.bit()
+    | Class::SetCookie.bit();
+
 #[inline(always)]
-fn eq_lower(name: &[u8], lower: &[u8]) -> bool {
-    name.iter()
-        .zip(lower)
-        .fold(0, |diff, (a, b)| diff | ((a | 0x20) ^ b))
-        == 0
+fn word<const N: usize, const W: usize>(bytes: &[u8; N], at: usize) -> u64 {
+    let mut le = [0u8; 8];
+    le[..W].copy_from_slice(&bytes[at..at + W]);
+    u64::from_le_bytes(le)
+}
+
+/// Case-insensitive equality of a token `name` with a lowercase letters-and-hyphens `lit`. `|0x20` folds exactly the
+/// ASCII capitals; a token byte can only collide with a hyphen through a CR, which is not one. Whole words are
+/// compared, the last overlapping the one before when `N` is not a multiple of the word size.
+#[inline(always)]
+fn ieq<const N: usize>(name: &[u8], lit: &[u8; N]) -> bool {
+    let Ok(name) = <&[u8; N]>::try_from(name) else {
+        return false;
+    };
+    if N >= 8 {
+        let mut diff = 0;
+        let mut at = 0;
+        while at + 8 < N {
+            diff |= (word::<N, 8>(name, at) | 0x2020_2020_2020_2020) ^ word::<N, 8>(lit, at);
+            at += 8;
+        }
+        diff |= (word::<N, 8>(name, N - 8) | 0x2020_2020_2020_2020) ^ word::<N, 8>(lit, N - 8);
+        diff == 0
+    } else if N >= 4 {
+        let last = N - 4;
+        ((word::<N, 4>(name, 0) | 0x2020_2020) ^ word::<N, 4>(lit, 0))
+            | ((word::<N, 4>(name, last) | 0x2020_2020) ^ word::<N, 4>(lit, last))
+            == 0
+    } else {
+        name.iter()
+            .zip(lit)
+            .fold(0, |diff, (a, b)| diff | ((a | 0x20) ^ b))
+            == 0
+    }
 }
 
 /// The class of a header name made of token bytes, whatever its case.
@@ -132,36 +173,34 @@ pub fn classify(name: &[u8]) -> Class {
     let Some(&first) = name.first() else {
         return Class::Other;
     };
-    let candidate = match (name.len(), first | 0x20) {
-        (2, b't') => Class::Te,
-        (3, b'a') => Class::Age,
-        (4, b'd') => Class::Date,
-        (4, b'h') => Class::Host,
-        (6, b'e') => Class::Expect,
-        (6, b's') => Class::Server,
-        (7, b'u') => Class::Upgrade,
-        (7, b't') => Class::Trailer,
-        (10, b'c') => Class::Connection,
-        (10, b'k') => Class::KeepAlive,
-        (10, b's') => Class::SetCookie,
-        (12, b'c') => Class::ContentType,
-        (12, b'x') => Class::XRequestId,
-        (13, b'a') => Class::AcceptRanges,
-        (13, b'c') => Class::CacheControl,
-        (14, b'c') => Class::ContentLength,
-        (16, b'c') => Class::ContentEncoding,
-        (16, b'p') => Class::ProxyConnection,
-        (17, b't') => Class::TransferEncoding,
-        (18, b'p') => Class::ProxyAuthenticate,
-        (19, b'p') => Class::ProxyAuthorization,
-        (21, b'x') => Class::XUpstreamRequestId,
-        _ => return Class::Other,
+    let found = match (name.len(), first | 0x20) {
+        (2, b't') => ieq::<2>(name, b"te").then_some(Class::Te),
+        (3, b'a') => ieq::<3>(name, b"age").then_some(Class::Age),
+        (4, b'd') => ieq::<4>(name, b"date").then_some(Class::Date),
+        (4, b'h') => ieq::<4>(name, b"host").then_some(Class::Host),
+        (6, b'e') => ieq::<6>(name, b"expect").then_some(Class::Expect),
+        (6, b's') => ieq::<6>(name, b"server").then_some(Class::Server),
+        (7, b'u') => ieq::<7>(name, b"upgrade").then_some(Class::Upgrade),
+        (7, b't') => ieq::<7>(name, b"trailer").then_some(Class::Trailer),
+        (10, b'c') => ieq::<10>(name, b"connection").then_some(Class::Connection),
+        (10, b'k') => ieq::<10>(name, b"keep-alive").then_some(Class::KeepAlive),
+        (10, b's') => ieq::<10>(name, b"set-cookie").then_some(Class::SetCookie),
+        (12, b'c') => ieq::<12>(name, b"content-type").then_some(Class::ContentType),
+        (12, b'x') => ieq::<12>(name, b"x-request-id").then_some(Class::XRequestId),
+        (13, b'a') => ieq::<13>(name, b"accept-ranges").then_some(Class::AcceptRanges),
+        (13, b'c') => ieq::<13>(name, b"cache-control").then_some(Class::CacheControl),
+        (14, b'c') => ieq::<14>(name, b"content-length").then_some(Class::ContentLength),
+        (16, b'c') => ieq::<16>(name, b"content-encoding").then_some(Class::ContentEncoding),
+        (16, b'p') => ieq::<16>(name, b"proxy-connection").then_some(Class::ProxyConnection),
+        (17, b't') => ieq::<17>(name, b"transfer-encoding").then_some(Class::TransferEncoding),
+        (18, b'p') => ieq::<18>(name, b"proxy-authenticate").then_some(Class::ProxyAuthenticate),
+        (19, b'p') => ieq::<19>(name, b"proxy-authorization").then_some(Class::ProxyAuthorization),
+        (21, b'x') => {
+            ieq::<21>(name, b"x-upstream-request-id").then_some(Class::XUpstreamRequestId)
+        }
+        _ => None,
     };
-    if eq_lower(name, candidate.lower()) {
-        candidate
-    } else {
-        Class::Other
-    }
+    found.unwrap_or(Class::Other)
 }
 
 /// Whether two token names are the same header.

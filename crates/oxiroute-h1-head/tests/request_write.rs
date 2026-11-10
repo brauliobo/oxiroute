@@ -320,3 +320,24 @@ fn writing_appends_to_the_buffer_it_is_given() {
         "prefix|GET /a HTTP/1.1\r\nHost: h\r\nx-request-id: 1\r\n\r\n"
     );
 }
+
+#[test]
+fn names_of_any_length_and_case_are_lowercased_like_classic() {
+    const ALPHABET: &[u8] =
+        b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.^`|~!#$%&'*+@";
+    let mut rng = Rng(0x5EED_0FCA_5E00);
+    let mut head = RequestHead::new();
+    for _ in 0..50_000 {
+        let name: String = (0..=rng.below(40))
+            .map(|_| char::from(*rng.pick(&ALPHABET[..ALPHABET.len() - 1])))
+            .collect();
+        let separator = rng.pick(&SEPARATORS);
+        let tail = rng.pick(&TAILS);
+        let padding = if rng.chance(2) { "\r\nX: y" } else { "" };
+        let buf = format!("GET / HTTP/1.1\r\nHost: h\r\n{name}{separator}v{tail}{padding}\r\n\r\n")
+            .into_bytes();
+        if scan_request(&buf, &mut head) == Scan::Head {
+            assert_same(&buf, &[]);
+        }
+    }
+}
