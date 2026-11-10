@@ -192,7 +192,7 @@ def build(args):
             "dns_names": ["bench.example.com"],
             "source": {"type": "self_signed_development", "key_type": key_type},
         }]
-        tls_policy = {"session_tickets": on("tls_tickets")}
+        tls_policy = {"session_tickets": on("tls_tickets"), "backend": args.tls_backend}
         if on("tls_cache"):
             tls_policy["session_cache"] = {"name": "bench-sessions", "size_bytes": 4194304}
         config["tls_profiles"] = [{
@@ -252,6 +252,8 @@ def main():
     parser.add_argument("--classic", action="store_true", help="http_fast_lane = false (the classic request path)")
     parser.add_argument("--tls-handshake-threads", type=int, default=-1,
                         help="tls_handshake_threads (-1 leaves the setting out: automatic, 0: inline handshakes)")
+    parser.add_argument("--tls-backend", choices=["openssl", "rustls"], default="openssl",
+                        help="policy.backend of the TLS profile")
     parser.add_argument("--run-dir", default="/tmp")
     parser.add_argument("--feature", action="append", default=[])
     args = parser.parse_args()
