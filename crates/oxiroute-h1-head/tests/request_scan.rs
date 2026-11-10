@@ -94,7 +94,11 @@ fn assert_same_as_classic(buf: &[u8], head: &RequestHead, classic: &ClassicReque
     .iter()
     .enumerate()
     .fold(0u8, |mask, (bit, n)| mask | (u8::from(named(n) > 0) << bit));
-    assert_eq!(facts.hop_by_hop, hop, "hop-by-hop mask of {shown:?}");
+    assert_eq!(
+        facts.hop_by_hop,
+        u16::from(hop),
+        "hop-by-hop mask of {shown:?}"
+    );
     assert_eq!(classic.facts.hop_by_hop, hop != 0);
     assert_eq!(usize::from(facts.request_id_count), named("x-request-id"));
     if named("x-request-id") > 0 {

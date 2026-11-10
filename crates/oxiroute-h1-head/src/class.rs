@@ -1,5 +1,28 @@
 //! Header names the fast lane reasons about, recognised by length and first byte without hashing.
 
+/// Bit of a hop-by-hop mask: `Keep-Alive` is present.
+pub const HOP_KEEP_ALIVE: u16 = 1 << 0;
+/// Bit of a hop-by-hop mask: `Proxy-Connection` is present.
+pub const HOP_PROXY_CONNECTION: u16 = 1 << 1;
+/// Bit of a hop-by-hop mask: `Proxy-Authenticate` is present.
+pub const HOP_PROXY_AUTHENTICATE: u16 = 1 << 2;
+/// Bit of a hop-by-hop mask: `Proxy-Authorization` is present.
+pub const HOP_PROXY_AUTHORIZATION: u16 = 1 << 3;
+/// Bit of a hop-by-hop mask: `TE` is present.
+pub const HOP_TE: u16 = 1 << 4;
+/// Bit of a hop-by-hop mask: `Trailer` is present.
+pub const HOP_TRAILER: u16 = 1 << 5;
+/// Bit of a response hop-by-hop mask: `Connection` is present.
+pub const HOP_CONNECTION: u16 = 1 << 6;
+/// Bit of a response hop-by-hop mask: `Transfer-Encoding` is present.
+pub const HOP_TRANSFER_ENCODING: u16 = 1 << 7;
+/// Bit of a response hop-by-hop mask: `Upgrade` is present.
+pub const HOP_UPGRADE: u16 = 1 << 8;
+/// The six fixed hop-by-hop fields of a request.
+pub const HOP_BY_HOP_REQUEST: u16 = 0x3f;
+/// The six fixed fields, `Connection`, `Transfer-Encoding` and `Upgrade` of a response.
+pub const HOP_BY_HOP_RESPONSE: u16 = 0x1ff;
+
 /// A header name the lane knows. Everything else is [`Class::Other`].
 ///
 /// The six names of [`HOP_BY_HOP_REQUEST`](crate::HOP_BY_HOP_REQUEST) come first and are consecutive, then `Connection`,

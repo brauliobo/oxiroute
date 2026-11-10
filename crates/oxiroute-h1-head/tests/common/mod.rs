@@ -4,8 +4,10 @@
 #![allow(dead_code)]
 
 pub mod classic_request;
+pub mod classic_response;
 pub mod classic_write;
 pub mod request_corpus;
+pub mod response_corpus;
 
 /// xorshift64*: deterministic, seedable, no dependency.
 pub struct Rng(pub u64);
