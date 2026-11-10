@@ -13,7 +13,7 @@ const MIN_RECLAIM: usize = 512;
 
 use super::bytes_eq::eq;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Entry {
     start: u32,
     name_len: u32,
@@ -33,6 +33,7 @@ pub(super) struct Found {
     pub name: Option<usize>,
 }
 
+#[derive(Debug)]
 pub(super) struct Table {
     slots: Vec<Entry>,
     oldest: usize,
@@ -58,6 +59,11 @@ impl Table {
 
     pub(super) fn max(&self) -> usize {
         self.max
+    }
+
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.count
     }
 
     /// Sum of entry sizes (RFC 7541 section 4.1).
@@ -113,22 +119,30 @@ impl Table {
     /// Newest entry with this name and value, and newest with this name.
     pub(super) fn find(&self, name: &[u8], value: &[u8]) -> Found {
         let mut found = Found::default();
-        for n in 1..=self.count {
-            let entry = self.slots[self.slot(self.count - n)];
+        for (n, entry) in self.newest_first().enumerate() {
             if entry.name_len as usize != name.len() {
                 continue;
             }
-            let (entry_name, entry_value) = self.bytes(entry);
+            let (entry_name, entry_value) = self.bytes(*entry);
             if !eq(entry_name, name) {
                 continue;
             }
-            found.name.get_or_insert(n);
-            if eq(entry_value, value) {
-                found.full = Some(n);
+            found.name.get_or_insert(n + 1);
+            if entry.value_len as usize == value.len() && eq(entry_value, value) {
+                found.full = Some(n + 1);
                 break;
             }
         }
         found
+    }
+
+    fn newest_first(&self) -> impl Iterator<Item = &Entry> {
+        let end = self.oldest + self.count;
+        let (tail, head) = match end.checked_sub(self.slots.len()) {
+            Some(wrapped) => (&self.slots[self.oldest..], &self.slots[..wrapped]),
+            None => (&self.slots[self.oldest..end], &self.slots[..0]),
+        };
+        tail.iter().chain(head).rev()
     }
 
     #[inline]
@@ -177,3 +191,6 @@ impl Table {
         self.oldest = 0;
     }
 }
+
+#[cfg(test)]
+mod tests;

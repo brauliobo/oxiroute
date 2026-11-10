@@ -8,6 +8,8 @@ const TABLE_SIZE: usize = 4096;
 /// Strings up to this many octets have a one-octet length, so they are Huffman coded in place.
 const SHORT: usize = 126;
 
+/// Encoding half of a connection: mirrors the dynamic table of the peer's decoder.
+#[derive(Debug)]
 pub struct Encoder {
     table: Table,
     /// Smallest table size set since the last block, to be announced before the current one.
