@@ -4,6 +4,7 @@
 #   pgo.sh train        instrumented build, replay the R2 data-path lanes (no perf needed), merge into $PGO_PROFILE
 #   pgo.sh build        release build that uses $PGO_PROFILE and fails if the compiler did not apply it
 #   pgo.sh plain        the same release build without a profile
+#   pgo.sh rustflags    print the path-remapping rustc flags every build here appends to RUSTFLAGS
 #   pgo.sh smoke BIN    start BIN on a generated configuration and push proxied requests through it
 #
 # The profile is bound to the exact compiler: rustc mangles every symbol with a hash of its own version, and the
@@ -28,10 +29,18 @@ jobs=${PGO_JOBS:-4}
 max_missing_pct=${PGO_MAX_MISSING_PCT:-5}
 llvm_profdata=${LLVM_PROFDATA:-$(rustc --print sysroot)/lib/rustlib/${target}/bin/llvm-profdata}
 
+# Builder paths (checkout, cargo home, scratch) are remapped to fixed prefixes in every build of this script, the
+# instrumented one included, so the binary embeds no runner or home-directory path and the profile still matches.
+remap_rustflags() {
+  local prefix=/usr/src/debug/oxiroute
+  printf -- '--remap-path-prefix=%s=%s --remap-path-prefix=%s=%s --remap-path-prefix=%s=%s' \
+    "${repo}" "${prefix}" "${CARGO_HOME:-${HOME}/.cargo}" "${prefix}/cargo" "${work}" "${prefix}/build"
+}
+
 # The cargo command of packaging/arch/PKGBUILD; every build of this script uses exactly these arguments.
 cargo_build() {
-  (cd "${repo}" && nice cargo build --release --locked --package oxiroute --package oxiroute-supervisor-process \
-    --target "${target}" --jobs "${jobs}")
+  (cd "${repo}" && RUSTFLAGS="${RUSTFLAGS:-} $(remap_rustflags)" nice cargo build --release --locked \
+    --package oxiroute --package oxiroute-supervisor-process --target "${target}" --jobs "${jobs}")
 }
 
 # The training only needs the three roles on disjoint CPUs; small runners have 2 to 4.
@@ -104,6 +113,7 @@ case ${1:-} in
   train) train ;;
   build) build ;;
   plain) CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${work}/target-plain}" cargo_build ;;
+  rustflags) remap_rustflags; echo ;;
   smoke) smoke "${2:-}" ;;
-  *) echo "usage: $0 train|build|plain|smoke BIN" >&2; exit 2 ;;
+  *) echo "usage: $0 train|build|plain|rustflags|smoke BIN" >&2; exit 2 ;;
 esac
