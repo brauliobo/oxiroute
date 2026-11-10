@@ -49,12 +49,13 @@ impl Stream {
         self.shared.lock().poll_trailers(self.idx, self.id, cx)
     }
 
-    /// Queues the response HEADERS; `end` sets END_STREAM. Fields are written as given: the caller strips
+    /// Queues the response `HEADERS`; `end` sets `END_STREAM`. Fields are written as given: the caller strips
     /// connection-specific headers.
     ///
     /// # Errors
     ///
     /// The stream was reset, the connection closed or a response was already sent.
+    #[allow(clippy::needless_pass_by_value)] // by value is the adapter-facing contract
     pub fn send_response(
         &mut self,
         status: StatusCode,
@@ -79,8 +80,8 @@ impl Stream {
             .poll_capacity(self.idx, self.id, cx, want)
     }
 
-    /// Queues `data` (at most the last grant) as DATA frames of at most the peer's maximum frame size; payloads
-    /// above 4 KiB are queued without copying. `end` sets END_STREAM on the last frame.
+    /// Queues `data` (at most the last grant) as `DATA` frames of at most the peer's maximum frame size; payloads
+    /// above 4 KiB are queued without copying. `end` sets `END_STREAM` on the last frame.
     ///
     /// # Errors
     ///
@@ -94,6 +95,7 @@ impl Stream {
     /// # Errors
     ///
     /// The stream was reset, the connection closed or no response is in progress.
+    #[allow(clippy::needless_pass_by_value)] // by value is the adapter-facing contract
     pub fn send_trailers(&mut self, trailers: HeaderMap) -> Result<(), Error> {
         self.shared
             .lock()

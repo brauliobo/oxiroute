@@ -13,7 +13,7 @@ pub struct Config {
     pub max_header_list_size: u32,
     /// Initial per-stream receive window (`SETTINGS_INITIAL_WINDOW_SIZE`).
     pub initial_stream_window: u32,
-    /// Connection receive window; when above 65,535 a `WINDOW_UPDATE` on stream 0 follows the first SETTINGS.
+    /// Connection receive window; when above 65,535 a `WINDOW_UPDATE` on stream 0 follows the first `SETTINGS`.
     pub initial_connection_window: u32,
     /// `SETTINGS_MAX_FRAME_SIZE`: the largest frame payload accepted (`FRAME_SIZE_ERROR` above it).
     pub max_frame_size: u32,
@@ -36,16 +36,16 @@ pub struct Config {
     /// Total header block octets per request; `None` uses `max_header_list_size` (a compressed block is never
     /// larger than its decoded list, which counts 32 octets of overhead per field).
     pub max_header_block_bytes: Option<usize>,
-    /// Control frames (PING, SETTINGS ACK, RST_STREAM, WINDOW_UPDATE) queued for a peer that does not read them.
+    /// Control frames (`PING`, `SETTINGS ACK`, `RST_STREAM`, `WINDOW_UPDATE`) queued for a peer that does not read them.
     pub max_pending_control_frames: usize,
     /// PRIORITY and unknown frames tolerated; each completed request earns one back.
     pub max_ignored_frames: usize,
-    /// Empty non-final DATA frames over the connection's life.
+    /// Empty non-final `DATA` frames over the connection's life.
     pub max_empty_data_frames: usize,
-    /// Memory-overhead budget in octets for small DATA frames the application has not read (`h2`:
+    /// Memory-overhead budget in octets for small `DATA` frames the application has not read (`h2`:
     /// `data_frame_budget`; a frame below 256 octets costs `256 - len`, larger frames earn the excess back).
     pub data_frame_budget: usize,
-    /// The peer must acknowledge our SETTINGS within this time (`GOAWAY(SETTINGS_TIMEOUT)`); zero disables it.
+    /// The peer must acknowledge our `SETTINGS` within this time (`GOAWAY(SETTINGS_TIMEOUT)`); zero disables it.
     pub settings_ack_timeout: Duration,
 }
 

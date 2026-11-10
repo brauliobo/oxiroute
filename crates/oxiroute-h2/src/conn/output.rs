@@ -65,6 +65,13 @@ impl Output {
         }
     }
 
+    /// Releases the buffer when it is empty and larger than `limit`, so an idle connection keeps little.
+    pub fn shrink(&mut self, limit: usize) {
+        if self.is_empty() && self.tail.capacity() > limit {
+            self.tail = BytesMut::new();
+        }
+    }
+
     /// Octets queued.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -72,6 +79,7 @@ impl Output {
     }
 }
 
+#[must_use]
 pub fn empty_slices() -> [IoSlice<'static>; MAX_SLICES] {
     [IoSlice::new(&[]); MAX_SLICES]
 }

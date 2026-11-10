@@ -15,6 +15,9 @@ use crate::conn::{Connection, Output, empty_slices};
 use crate::error::{Error, Initiator, Reason};
 use crate::frame::{DEFAULT_MAX_FRAME_SIZE, MAX_MAX_FRAME_SIZE, MAX_WINDOW, PREFACE};
 
+/// Output buffers larger than this are released once written.
+const WRITE_BUFFER_KEEP: usize = 4096;
+
 /// An HTTP/2 server connection.
 pub struct Server<IO> {
     io: IO,
@@ -188,7 +191,10 @@ impl<IO: AsyncRead + AsyncWrite + Unpin + Send + 'static> Server<IO> {
         }
         if self.needs_flush {
             match Pin::new(&mut self.io).poll_flush(cx) {
-                Poll::Ready(Ok(())) => self.needs_flush = false,
+                Poll::Ready(Ok(())) => {
+                    self.needs_flush = false;
+                    self.writing.shrink(WRITE_BUFFER_KEEP);
+                }
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
             }

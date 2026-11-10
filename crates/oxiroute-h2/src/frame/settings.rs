@@ -25,7 +25,7 @@ impl Settings {
     /// `FRAME_SIZE_ERROR` when the length is not a multiple of six, `PROTOCOL_ERROR` for an out-of-range
     /// `ENABLE_PUSH` or `MAX_FRAME_SIZE`, `FLOW_CONTROL_ERROR` for an `INITIAL_WINDOW_SIZE` above 2^31-1.
     pub fn parse(payload: &[u8]) -> Result<Self, SettingsError> {
-        if payload.len() % 6 != 0 {
+        if !payload.len().is_multiple_of(6) {
             return Err(SettingsError(Reason::FRAME_SIZE_ERROR));
         }
         let mut s = Self::default();

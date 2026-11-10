@@ -280,6 +280,9 @@ impl Connection {
     }
 
     fn write_data(&mut self, id: u32, data: &mut Bytes, end: bool) {
+        if data.is_empty() && !end {
+            return;
+        }
         loop {
             let n = data.len().min(self.peer_max_frame);
             let last = n == data.len();

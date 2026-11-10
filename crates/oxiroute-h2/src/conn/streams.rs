@@ -10,23 +10,23 @@ use crate::error::{Initiator, Reason};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RecvState {
-    /// The peer may still send DATA or trailers.
+    /// The peer may still send `DATA` or trailers.
     Open,
-    /// END_STREAM received.
+    /// `END_STREAM` received.
     Ended,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SendState {
-    /// No response HEADERS sent yet.
+    /// No response `HEADERS` sent yet.
     Idle,
-    /// Response HEADERS sent, body may follow.
+    /// Response `HEADERS` sent, body may follow.
     Open,
-    /// END_STREAM sent.
+    /// `END_STREAM` sent.
     Ended,
 }
 
-/// A DATA payload waiting for the application; `budgeted` frames count against the small-frame budget.
+/// A `DATA` payload waiting for the application; `budgeted` frames count against the small-frame budget.
 pub struct Chunk {
     pub data: Bytes,
     pub budgeted: bool,
@@ -46,6 +46,7 @@ pub struct Wakers {
     pub reset: Option<Waker>,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct Slot {
     pub id: u32,
     pub recv: RecvState,
@@ -61,7 +62,7 @@ pub struct Slot {
     pub send_window: i32,
     pub reserved: u32,
     pub recv_window: i32,
-    /// Receive credit returned by the application and not yet sent as WINDOW_UPDATE.
+    /// Receive credit returned by the application and not yet sent as `WINDOW_UPDATE`.
     pub unreleased: u32,
     /// Octets of declared content-length still to receive; `u64::MAX` when undeclared.
     pub content_remaining: u64,
