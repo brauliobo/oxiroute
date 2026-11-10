@@ -178,6 +178,11 @@ connection-pool experiments:
   `request_facts()` (`RequestFacts::UNKNOWN` for HTTP/2 and HTTP/3, which makes the caller look the headers up) and
   `modules/http/mod.rs` `HttpModuleCtx::is_empty`. `protocols/http/v1/client.rs` `write_request_header_noted` writes a
   borrowed request with the facts the caller already has (`write_request_header_ref` computes them).
+  The facts also note whether a hop-by-hop field (`is_hop_by_hop`: `Keep-Alive`, `Proxy-Connection`, `Proxy-Authenticate`,
+  `Proxy-Authorization`, `TE`, `Trailer`) is present (`hop_by_hop`), decided once per header name in the header-name cache,
+  and `set_request_facts` (`ServerSession`, `HttpSession`; a no-op for sessions that answer `UNKNOWN`) records the facts of
+  a request whose headers the caller changed and whose resulting facts it knows, so the product strips the hop-by-hop
+  fields of a request once at its head and the session does not look the headers up again.
 - `Cargo.toml` declares `prometheus 0.14`, `x509-parser 0.18`, `lru 0.19`, `daggy 0.9`,
   `strum`/`strum_macros 0.28`, `brotli 9`, and `parking_lot 0.13`, which compile unchanged. `sfv`
   stays at `0.10` because later releases change the parser and integer APIs used by compression.

@@ -30,4 +30,6 @@ srcinfo_version=$(sed -n 's/^[[:space:]]*pkgver = //p' "${repo_dir}/packaging/ar
   exit 1
 }
 
-printf 'verified release version %s across workspace, package metadata, and release notes\n' "${version}"
+"${repo_dir}/packaging/arch/verify-checksums.sh" "${repo_dir}/packaging/arch"
+
+printf 'verified release version %s across workspace, package metadata, package checksums, and release notes\n' "${version}"
