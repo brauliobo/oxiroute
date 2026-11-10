@@ -79,9 +79,9 @@ examples, and documentation but does not enable or start systemd automatically.
 Before creating an archive, verify the version metadata and release notes:
 
 ```sh
-./scripts/verify-release-version.sh 6.3.0
-./scripts/create-release-archive.sh /tmp/oxiroute-6.3.0.tar.gz 6.3.0
-./scripts/verify-release-archive.sh /tmp/oxiroute-6.3.0.tar.gz 6.3.0 --compare-worktree
+./scripts/verify-release-version.sh 6.3.1
+./scripts/create-release-archive.sh /tmp/oxiroute-6.3.1.tar.gz 6.3.1
+./scripts/verify-release-archive.sh /tmp/oxiroute-6.3.1.tar.gz 6.3.1 --compare-worktree
 ```
 
 Read [packaging/arch/README.md](../../packaging/arch/README.md) before changing service permissions,
@@ -104,6 +104,11 @@ profile-guided optimization, which cuts user-space instructions per request by 1
 2. `pgo.sh build`: release build with `-Cprofile-use` and the same cargo command. It parses the compiler's
    `-pgo-warn-missing-function` diagnostics and fails when more than 5% of the profile's functions were not matched,
    so a profile the compiler ignored cannot be published as a PGO build.
+   Every build of the script (instrumented, profile-use, plain) appends the same `--remap-path-prefix` flags for the
+   checkout, the cargo home and `PGO_WORK`, so the binary embeds no runner or home-directory path and the profile still
+   matches. `scripts/build-release-binaries.sh` then runs `scripts/verify-binary-paths.sh` and fails when a binary
+   contains `/home/`, `/runner/work`, the checkout or the cargo home. The vendored OpenSSL records its own build
+   directory, which no rustc flag can remap, so `PGO_WORK` must lie outside `/home` (the workflow uses `/tmp`).
 3. `pgo.sh smoke`: `oxiroute config check` of a generated configuration and two lanes of proxied requests through the
    binary; any load error fails the job.
 4. `bolt.sh all` (skipped with `BOLT=0`): the PGO binary is linked with `-Wl,-q` (relocations kept; code generation is
@@ -157,17 +162,26 @@ To regenerate locally with the same compiler:
 
 ```sh
 export PATH=$HOME/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:$PATH   # rustup component add llvm-tools
-BOLT_BIN_DIR=$(scripts/install-bolt.sh ~/.local/state/oxiroute-bolt-tools) \
+BOLT_BIN_DIR=$(scripts/install-bolt.sh /var/tmp/oxiroute-bolt-tools) \
   ./scripts/build-release-binaries.sh 6.4.0 /path/to/oxiroute-release
 BOLT=0 ./scripts/build-release-binaries.sh 6.4.0 /path/to/oxiroute-pgo          # PGO only
 PGO=0 BOLT=0 ./scripts/build-release-binaries.sh 6.4.0 /path/to/oxiroute-plain  # plain build of the same command
 FLAVOUR=abort BOLT=0 ./scripts/build-release-binaries.sh 6.4.0 /path/to/oxiroute-abort
 ```
 
-`PGO_WORK` (default `$XDG_STATE_HOME/oxiroute-pgo`; use a real disk, the build directories are several GB) moves the
+`PGO_WORK` (default `/var/tmp/oxiroute-pgo`: a disk directory outside `/home`, because the vendored OpenSSL records its build directory; the build directories are several GB) moves the
 scratch data, `PGO_LANES` and `PGO_SCALE` shorten the training for a local check of the flow; a profile from a shortened
 or different workload still builds and passes the gate but gives less than the 14 to 27%. Release binaries are linked
 against the glibc of the runner image (Ubuntu 24.04); older distributions need the Arch-style source build.
+
+## Binary Package
+
+`packaging/arch/bin/` is the `oxiroute-bin` recipe: it installs the release tarball above and the same service,
+sysusers, tmpfiles, environment, KDL, Lua and `.install` files as the source recipe (byte-identical copies, enforced by
+`packaging/arch/verify-checksums.sh`). The tarball checksum exists only after the release workflow has run, so after the
+binaries job publishes, run `packaging/arch/pin-bin-release.sh VERSION` and commit the result. `verify-checksums.sh`
+runs in CI and in `scripts/verify-release-version.sh`; it fails on a stale local-file checksum or a PKGBUILD/`.SRCINFO`
+disagreement.
 
 ## GitHub Pages
 

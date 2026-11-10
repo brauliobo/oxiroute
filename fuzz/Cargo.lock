@@ -2202,7 +2202,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "aho-corasick",
  "arc-swap",
@@ -2257,7 +2257,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-acme"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "base64 0.23.1",
  "hickory-resolver",
@@ -2284,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-cache"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "chrono-tz",
  "http",
@@ -2308,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config-source"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "hocon-parser",
  "kdl",
@@ -2322,7 +2322,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-forward-proxy"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2353,7 +2353,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-import"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "http",
  "openssl",
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-rtmp"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "bytes",
  "chrono",
@@ -2386,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2394,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision-unix"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "oxiroute-supervision",
  "rustix",
@@ -2405,7 +2405,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-master"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "oxiroute-supervision",
  "oxiroute-supervision-unix",
@@ -2416,7 +2416,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-process"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "close_fds",
  "oxiroute-supervision",
@@ -2428,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-tls-client"
-version = "6.3.0"
+version = "6.3.1"
 dependencies = [
  "openssl",
 ]

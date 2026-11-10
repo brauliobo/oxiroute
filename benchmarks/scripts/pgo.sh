@@ -7,6 +7,7 @@
 #   pgo.sh merge        merge the per-lane profiles of the last training into $PGO_PROFILE (lane weights, see below)
 #   pgo.sh build        release build that uses $PGO_PROFILE and fails if the compiler did not apply it
 #   pgo.sh plain        the same release build without a profile
+#   pgo.sh rustflags    print the path-remapping rustc flags every build here appends to RUSTFLAGS
 #   pgo.sh smoke BIN    start BIN on a generated configuration and push proxied requests through it
 #
 # The profile is bound to the exact compiler: rustc mangles every symbol with a hash of its own version, and the
@@ -26,7 +27,7 @@ set -euo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 target=${PGO_TARGET:-x86_64-unknown-linux-gnu}
-work=${PGO_WORK:-${XDG_STATE_HOME:-${HOME}/.local/state}/oxiroute-pgo}
+work=${PGO_WORK:-/var/tmp/oxiroute-pgo}
 profile=${PGO_PROFILE:-${work}/oxiroute.profdata}
 # Core lanes (weight 4) keep the hot proxy path laid out as the 6.3 mix did; the weight-1 lanes add the features that
 # the core lanes never execute (HTTP/2 bodies, WebSocket, TCP relay, cache, gzip, large bodies, TLS 1.2, the 6.0
@@ -41,13 +42,21 @@ cargo_dir=${cargo_profile}
 max_missing_pct=${PGO_MAX_MISSING_PCT:-5}
 llvm_profdata=${LLVM_PROFDATA:-$(rustc --print sysroot)/lib/rustlib/${target}/bin/llvm-profdata}
 
+# Builder paths (checkout, cargo home, scratch) are remapped to fixed prefixes in every build of this script, the
+# instrumented one included, so the binary embeds no runner or home-directory path and the profile still matches.
+remap_rustflags() {
+  local prefix=/usr/src/debug/oxiroute
+  printf -- '--remap-path-prefix=%s=%s --remap-path-prefix=%s=%s --remap-path-prefix=%s=%s' \
+    "${repo}" "${prefix}" "${CARGO_HOME:-${HOME}/.cargo}" "${prefix}/cargo" "${work}" "${prefix}/build"
+}
+
 # The cargo command of packaging/arch/PKGBUILD; every build of this script uses exactly these arguments. A profile other
 # than release (PGO_CARGO_PROFILE=release-abort) has its own profile data: unwinding changes the control-flow hashes.
 cargo_build() {
   local select=(--release)
   [[ ${cargo_profile} == release ]] || select=(--profile "${cargo_profile}")
-  (cd "${repo}" && nice cargo build "${select[@]}" --locked --package oxiroute --package oxiroute-supervisor-process \
-    --target "${target}" --jobs "${jobs}")
+  (cd "${repo}" && RUSTFLAGS="${RUSTFLAGS:-} $(remap_rustflags)" nice cargo build "${select[@]}" --locked \
+    --package oxiroute --package oxiroute-supervisor-process --target "${target}" --jobs "${jobs}")
 }
 
 # The training only needs the three roles on disjoint CPUs; small runners have 2 to 4.
@@ -148,6 +157,7 @@ case ${1:-} in
   merge) merge ;;
   build) build ;;
   plain) CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${work}/target-plain}" cargo_build ;;
+  rustflags) remap_rustflags; echo ;;
   smoke) smoke "${2:-}" ;;
-  *) echo "usage: $0 train|gen|lane NAME|merge|build|plain|smoke BIN" >&2; exit 2 ;;
+  *) echo "usage: $0 train|gen|lane NAME|merge|build|plain|rustflags|smoke BIN" >&2; exit 2 ;;
 esac

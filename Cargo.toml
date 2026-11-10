@@ -29,7 +29,7 @@ edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/brauliobo/oxiroute"
 rust-version = "1.97"
-version = "6.3.0"
+version = "6.3.1"
 
 [workspace.dependencies]
 aho-corasick = "1.1.5"
