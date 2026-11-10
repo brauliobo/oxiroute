@@ -3,7 +3,7 @@ use super::*;
 use crate::http::proxy::lane::LaneRoute;
 use crate::http::request_id::REQUEST_ID_HEADER;
 use crate::label::Label;
-use http::header::{CONNECTION, CONTENT_LENGTH, DATE, TRANSFER_ENCODING};
+use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, DATE, LOCATION, TRANSFER_ENCODING};
 
 #[derive(Debug)]
 pub(crate) struct HttpRoutePlan {
@@ -88,6 +88,17 @@ pub(crate) enum HttpActionPlan {
     Static(StaticFilesPlan),
 }
 
+impl HttpActionPlan {
+    /// The response the action always writes, rendered once, for the fast lane.
+    pub(crate) fn direct_response(&self) -> Option<&FixedResponsePlan> {
+        match self {
+            Self::Fixed(response) => Some(response),
+            Self::Redirect(redirect) => redirect.direct.as_ref(),
+            Self::Proxy(_) | Self::Static(_) => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ProxyActionPlan {
     pub(crate) pool: Arc<UpstreamPlan>,
@@ -168,10 +179,14 @@ impl FixedResponsePlan {
                 )
             })
             .collect();
+        Self::from_headers(status, Bytes::copy_from_slice(body.as_bytes()), headers)
+    }
+
+    fn from_headers(status: u16, body: Bytes, headers: Box<[(HeaderName, HeaderValue)]>) -> Self {
         Self {
             rendered_head: render_head(status, &headers, body.len()),
             status,
-            body: Bytes::copy_from_slice(body.as_bytes()),
+            body,
             headers,
         }
     }
@@ -213,6 +228,10 @@ pub(crate) struct RedirectPlan {
     pub(crate) status: u16,
     pub(crate) location: RedirectLocationPlan,
     pub(crate) headers: Box<[(HeaderName, HeaderValue)]>,
+    /// The response of a redirect whose answer does not depend on the request: a literal location and no error
+    /// page body (a `Content-Type: text/html` header asks for the nginx error page). It is what the fixed-response
+    /// lane serves.
+    pub(crate) direct: Option<FixedResponsePlan>,
 }
 
 impl RedirectPlan {
@@ -221,22 +240,27 @@ impl RedirectPlan {
         location: &HttpRedirectLocation,
         headers: &[HttpLiteralHeader],
     ) -> Self {
+        let location =
+            RedirectLocationPlan::compile(location).expect("validated redirect location template");
+        let headers: Box<[(HeaderName, HeaderValue)]> = headers
+            .iter()
+            .filter(|header| header.always || nginx_add_header_status(status))
+            .map(|header| {
+                (
+                    HeaderName::from_bytes(header.name.as_bytes())
+                        .expect("validated redirect header name"),
+                    HeaderValue::from_str(&header.value).expect("validated redirect header value"),
+                )
+            })
+            .collect();
+        let direct = location.literal_header(&headers).map(|with_location| {
+            FixedResponsePlan::from_headers(status, Bytes::new(), with_location)
+        });
         Self {
             status,
-            location: RedirectLocationPlan::compile(location)
-                .expect("validated redirect location template"),
-            headers: headers
-                .iter()
-                .filter(|header| header.always || nginx_add_header_status(status))
-                .map(|header| {
-                    (
-                        HeaderName::from_bytes(header.name.as_bytes())
-                            .expect("validated redirect header name"),
-                        HeaderValue::from_str(&header.value)
-                            .expect("validated redirect header value"),
-                    )
-                })
-                .collect(),
+            location,
+            headers,
+            direct,
         }
     }
 }
@@ -251,6 +275,23 @@ pub(crate) enum RedirectLocationPlan {
 }
 
 impl RedirectLocationPlan {
+    /// `headers` followed by the `Location` of a literal redirect that has no error page body.
+    fn literal_header(
+        &self,
+        headers: &[(HeaderName, HeaderValue)],
+    ) -> Option<Box<[(HeaderName, HeaderValue)]>> {
+        let Self::Literal(location) = self else {
+            return None;
+        };
+        let error_page = headers.iter().any(|(name, value)| {
+            name == CONTENT_TYPE && value.as_bytes().eq_ignore_ascii_case(b"text/html")
+        });
+        (!error_page).then(|| {
+            let location = (LOCATION, location.clone());
+            headers.iter().cloned().chain([location]).collect()
+        })
+    }
+
     pub(crate) fn compile(location: &HttpRedirectLocation) -> Option<Self> {
         match location {
             HttpRedirectLocation::Literal { value } => (value.len() <= MAX_REDIRECT_LOCATION_BYTES)
