@@ -50,16 +50,13 @@ declare their variables in the configuration already.
 | `packaging/arch/pin-bin-release.sh` | `OXIROUTE_RELEASE_URL`, `OXIROUTE_RAW_URL` | Maintainer tooling (b). |
 | `scripts/` | `OXIROUTE_ACME_STAGING_*`, `OXIROUTE_API_TARGET`, `OXIROUTE_API_TOOLCHAIN`, `OXIROUTE_GENERATION_BASELINE_*`, `OXIROUTE_BIN` | Test and release tooling, never read by the daemon (b). |
 
-## Variables introduced by the 6.4 branches (not touched here)
+## Variables of the 6.4 performance work
 
-| Variable | Branch | Note |
-| --- | --- | --- |
-| `OXIROUTE_TLS_HANDSHAKE_THREADS`, `OXIROUTE_INTERNAL_TEST_AGED_PER_WORKER` | `perf64/impl-proto` | Owned by that branch (`tls_handshake_threads`). |
-| `OXIROUTE_INTERNAL_TEST_AGED_PER_WORKER` | `perf64/impl-sched` | Test hook; owned with `connection_scheduling` and `connection_age_ms`. |
-| `OXIROUTE_HTTP_LANE`, `OXIROUTE_TEST_BIN` | `perf64/impl-lane` | Behaviour switch and test binary path; owned by that branch, which should give the switch a configuration option. |
-| `OXIROUTE_PROTO_SPLICE` | `perf64/a` (research prototype) | Prototype switch; owned by the splice work. |
-| `_RJEM_MALLOC_CONF`, `OXIROUTE_INTERNAL_TEST_LISTENER_PANIC` | `perf64/impl-binary` | Allocator environment convention and a test hook; owned by that branch. |
-| `INSTR_PERIOD`, `DIFF_PRINT`, `ROBUSTNESS_SCALE` | `perf64/impl-proto` | Benchmark harness knobs, not product reads. |
+| Variable | Decision |
+| --- | --- |
+| `OXIROUTE_TLS_HANDSHAKE_THREADS`, `OXIROUTE_HTTP_LANE`, `OXIROUTE_TEST_BIN`, `OXIROUTE_PROTO_SPLICE` | Research and branch switches that no longer exist: the settings are the root options `tls_handshake_threads` and `http_fast_lane`; the splice and sendfile paths have no switch. |
+| `OXIROUTE_INTERNAL_TEST_AGED_PER_WORKER` | Test-only hook of the scheduler tests; the setting is the root option `connection_scheduling`. Stays (b). |
+| `INSTR_PERIOD`, `DIFF_PRINT`, `ROBUSTNESS_SCALE` | Benchmark and test knobs of `oxiroute-h2`, not product reads. |
 
 ## New options
 
