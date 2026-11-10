@@ -271,6 +271,40 @@ fn run_reverse(
     })
 }
 
+/// The ring provider with the profile's key-exchange groups in the profile's order; the provider has no hybrid group.
+pub(super) fn h3_crypto_provider(
+    groups: Option<&[TlsKeyExchangeGroup]>,
+) -> io::Result<Arc<rustls::crypto::CryptoProvider>> {
+    let mut provider = rustls::crypto::ring::default_provider();
+    if let Some(groups) = groups {
+        let available = std::mem::take(&mut provider.kx_groups);
+        provider.kx_groups = groups
+            .iter()
+            .filter_map(|&group| {
+                available
+                    .iter()
+                    .copied()
+                    .find(|kx| kx.name() == named_group(group))
+            })
+            .collect();
+        if provider.kx_groups.is_empty() {
+            return Err(io::Error::other(
+                "no key_exchange_groups entry is available to HTTP/3",
+            ));
+        }
+    }
+    Ok(Arc::new(provider))
+}
+
+const fn named_group(group: TlsKeyExchangeGroup) -> rustls::NamedGroup {
+    match group {
+        TlsKeyExchangeGroup::X25519 => rustls::NamedGroup::X25519,
+        TlsKeyExchangeGroup::Secp256r1 => rustls::NamedGroup::secp256r1,
+        TlsKeyExchangeGroup::Secp384r1 => rustls::NamedGroup::secp384r1,
+        TlsKeyExchangeGroup::X25519Mlkem768 => rustls::NamedGroup::X25519MLKEM768,
+    }
+}
+
 fn server_config(
     tls: &Arc<TlsProfilePlan>,
     idle_timeout: Option<Duration>,
@@ -278,8 +312,11 @@ fn server_config(
     let resolver = Arc::new(QuicCertificateResolver {
         profile: Arc::clone(tls),
     });
-    let crypto_builder =
-        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]);
+    let crypto_builder = rustls::ServerConfig::builder_with_provider(h3_crypto_provider(
+        tls.policy().key_exchange_groups.as_deref(),
+    )?)
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .map_err(io::Error::other)?;
     let mut crypto = match tls.h3_client_cert_verifier() {
         Some(verifier) => crypto_builder
             .with_client_cert_verifier(verifier)
