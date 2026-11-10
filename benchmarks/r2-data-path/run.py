@@ -132,6 +132,8 @@ def build_lanes():
         ("tls_hs_resume_cache_tls13", ["tls", "tls_cache"], ["--tls-version", "1.3", "--resume"]),
         ("tls_hs_resume_tickets_tls13", ["tls", "tls_tickets"], ["--tls-version", "1.3", "--resume"]),
         ("tls_hs_resume_client_only", ["tls"], ["--tls-version", "1.3", "--resume"]),
+        ("tls_hs_browser_tls13", ["tls"], ["--tls-version", "1.3", "--tls-groups", "browser"]),
+        ("tls_hs_browser_kx_tls13", ["tls", "tls_kx"], ["--tls-version", "1.3", "--tls-groups", "browser"]),
     ):
         add(lane(name, tls + ["--new-conn", "--conns", "16"] + extra, features=features, requests=3000, warmup=200))
     add(lane("tls_h1_b1m", ["--proto", "h1tls", "--path", "/b1m", "--expect-len", str(SIZES["b1m"])] + base,
