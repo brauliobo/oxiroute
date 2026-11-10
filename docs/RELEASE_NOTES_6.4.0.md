@@ -119,6 +119,25 @@ Details: [TLS handshake offload and the HTTP/2 session](developer/PERF_6_4_TLS_H
 Details: [kernel offload](developer/PERF_6_4_KERNEL_OFFLOAD.md). `splice` and `sendfile` are Linux-only; nothing is
 configured.
 
+## Release binaries
+
+Details: [binary-level work](developer/PERF_6_4_BINARY_LEVEL.md), [releasing](developer/RELEASING.md).
+
+- **Wider profile-guided training.** The default training mix is the ten 6.3 lanes (weight 4) plus fourteen feature lanes
+  (HTTP/2 64 KiB and POST, WebSocket, TCP relay, cache hit, gzip, 1 MiB, TLS 1 MiB and 1.2, all 6.0 features,
+  least-connections pool, large headers, forward proxy). Core lanes stay within 3%; lanes absent from the old mix gain
+  12% to 17%.
+- **Allocator configuration in the binary.** The jemalloc thread-cache sizes are embedded
+  (`tcache_nslots_small_min:400,tcache_nslots_small_max:2000,tcache_nslots_large:400,tcache_max:131072`): 2% to 6% fewer
+  instructions on HTTP/2 and 64 KiB uploads. `_RJEM_MALLOC_CONF` still overrides every key at run time.
+- **BOLT stage (optional).** The release script can rewrite the binary with BOLT (`BOLT=0` skips it) and runs the whole
+  workspace tests against the rewritten bytes. On the measuring host it gave no cycle gain that survives the noise; it is
+  a release decision whether to publish BOLT output.
+- **Abort flavour.** A separate artefact (`oxiroute-VERSION-TARGET-abort.tar.gz`) is built with `panic = "abort"` (3% to
+  7% fewer instructions): the first panic ends the worker process, the supervisor fails the generation as for a killed
+  worker, and recorder panics are no longer reported as `worker_panicked`. Arch, the source archive and the default
+  artefact keep unwinding.
+
 ## Pingora 0.9.1
 
 Details: [rebase](developer/PERF_6_4_PINGORA_REBASE.md). The vendored `pingora-core`, `pingora-proxy`, `pingora-timeout`

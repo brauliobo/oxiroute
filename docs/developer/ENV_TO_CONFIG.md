@@ -56,6 +56,8 @@ declare their variables in the configuration already.
 | --- | --- |
 | `OXIROUTE_TLS_HANDSHAKE_THREADS`, `OXIROUTE_HTTP_LANE`, `OXIROUTE_TEST_BIN`, `OXIROUTE_PROTO_SPLICE` | Research and branch switches that no longer exist: the settings are the root options `tls_handshake_threads` and `http_fast_lane`; the splice and sendfile paths have no switch. |
 | `OXIROUTE_INTERNAL_TEST_AGED_PER_WORKER` | Test-only hook of the scheduler tests; the setting is the root option `connection_scheduling`. Stays (b). |
+| `_RJEM_MALLOC_CONF` | jemalloc's run-time convention; overrides the allocator configuration embedded in the binary (`crates/oxiroute-allocator`). Stays (b). |
+| `OXIROUTE_INTERNAL_TEST_LISTENER_PANIC` | Test-only hook that makes a listener service panic inside a real worker. Stays (b). |
 | `INSTR_PERIOD`, `DIFF_PRINT`, `ROBUSTNESS_SCALE` | Benchmark and test knobs of `oxiroute-h2`, not product reads. |
 
 ## New options
