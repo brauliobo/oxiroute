@@ -809,3 +809,98 @@ pub fn replies() -> Vec<(&'static str, &'static [u8], bool)> {
         ("redirect", b"HTTP/1.1 302 Found\r\nLocation: /elsewhere\r\nContent-Length: 0\r\n\r\n", false),
     ]
 }
+
+/// Requests of the static files route that carry what only a file response answers: ranges and validators.
+pub fn static_requests() -> Vec<Case> {
+    let file = "/static/one-k.bin";
+    let mut cases = Vec::new();
+    for (name, header) in [
+        ("range", "Range: bytes=10-19\r\n"),
+        ("open range", "Range: bytes=1000-\r\n"),
+        ("suffix range", "Range: bytes=-24\r\n"),
+        ("unsatisfiable range", "Range: bytes=5000-\r\n"),
+        (
+            "not modified",
+            "If-Modified-Since: Fri, 01 Jan 2100 00:00:00 GMT\r\n",
+        ),
+        ("precondition failed", "If-Match: \"nothing\"\r\n"),
+        ("accept encoding", "Accept-Encoding: gzip, br\r\n"),
+        ("hop by hop", "Keep-Alive: timeout=5\r\n"),
+    ] {
+        add(&mut cases, name, get(file, header));
+    }
+    add(
+        &mut cases,
+        "head",
+        format!("HEAD {file} HTTP/1.1\r\n{HOST}\r\n"),
+    );
+    add(
+        &mut cases,
+        "post",
+        format!("POST {file} HTTP/1.1\r\n{HOST}Content-Length: 1\r\n\r\nx"),
+    );
+    add(&mut cases, "large", get("/static/large.bin", ""));
+    add(
+        &mut cases,
+        "large range",
+        get("/static/large.bin", "Range: bytes=1000000-1048000\r\n"),
+    );
+    add(&mut cases, "missing", get("/static/missing.txt", ""));
+    add(&mut cases, "directory", get("/static/", ""));
+    add(&mut cases, "traversal", get("/static/../secret", ""));
+    add(
+        &mut cases,
+        "encoded traversal",
+        get("/static/%2e%2e/secret", ""),
+    );
+    cases
+}
+
+/// Static files, proxied and fixed requests that follow each other on one connection.
+pub fn static_sequences() -> Vec<Case> {
+    let file = get("/static/one-k.bin", "");
+    let large = get("/static/large.bin", "");
+    let lane = get("/r", "");
+    let fixed = get("/fixed", "");
+    let close = get("/static/one-k.bin", "Connection: close\r\n");
+    vec![
+        Case::many(
+            "static static static",
+            &[file.as_bytes(), file.as_bytes(), file.as_bytes()],
+        ),
+        Case::many(
+            "static lane static lane",
+            &[
+                file.as_bytes(),
+                lane.as_bytes(),
+                file.as_bytes(),
+                lane.as_bytes(),
+            ],
+        ),
+        Case::many(
+            "lane static lane",
+            &[lane.as_bytes(), file.as_bytes(), lane.as_bytes()],
+        ),
+        Case::many(
+            "fixed static large lane",
+            &[
+                fixed.as_bytes(),
+                file.as_bytes(),
+                large.as_bytes(),
+                lane.as_bytes(),
+            ],
+        ),
+        Case::many(
+            "static then close",
+            &[file.as_bytes(), close.as_bytes(), file.as_bytes()],
+        ),
+        Case::many(
+            "pipelined static and lane",
+            &[format!("{}{}", file, lane).as_bytes()],
+        ),
+        Case::many(
+            "split static head",
+            &[&file.as_bytes()[..20], &file.as_bytes()[20..]],
+        ),
+    ]
+}
