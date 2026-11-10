@@ -23,7 +23,6 @@ use super::l4::ext::{get_original_dest, get_recv_buf, get_snd_buf, get_tcp_info,
 use super::l4::socket::SocketAddr;
 use super::raw_connect::ProxyDigest;
 use super::tls::digest::SslDigest;
-use super::ConnectionLifetime;
 
 /// The information can be extracted from a connection
 #[derive(Clone, Debug, Default)]
@@ -45,17 +44,33 @@ pub trait ProtoDigest {
     }
 }
 
-/// The timing information of the connection
+/// Timing information for one layer of a connection.
 #[derive(Clone, Debug)]
 pub struct TimingDigest {
-    /// When this connection was established
+    /// When this connection layer was established.
     pub established_ts: SystemTime,
+    /// Monotonic duration of this layer's establishment operation.
+    ///
+    /// This avoids estimating elapsed time by subtracting wall-clock [`Self::established_ts`]
+    /// values. On the lowest transport-layer entry, it measures L4 connection establishment. On
+    /// a TLS entry, it measures the actual TLS handshake and excludes TLS configuration setup.
+    /// `None` means that the producer did not measure this operation.
+    pub establishment_duration: Option<Duration>,
+    /// Monotonic duration between submitting connection work to an offload runtime and that work
+    /// beginning execution.
+    ///
+    /// This allows consumers to distinguish runtime scheduling delay from network connection
+    /// latency. It is only set on the lowest transport-layer entry when connection establishment
+    /// was offloaded. `None` means that no offload wait occurred or was measured.
+    pub offload_wait_duration: Option<Duration>,
 }
 
 impl Default for TimingDigest {
     fn default() -> Self {
         TimingDigest {
             established_ts: SystemTime::UNIX_EPOCH,
+            establishment_duration: None,
+            offload_wait_duration: None,
         }
     }
 }
@@ -73,7 +88,6 @@ pub struct SocketDigest {
     pub local_addr: OnceCell<Option<SocketAddr>>,
     /// Original destination address
     pub original_dst: OnceCell<Option<SocketAddr>>,
-    connection_lifetime: OnceCell<Arc<dyn ConnectionLifetime>>,
 }
 
 impl SocketDigest {
@@ -84,7 +98,6 @@ impl SocketDigest {
             peer_addr: OnceCell::new(),
             local_addr: OnceCell::new(),
             original_dst: OnceCell::new(),
-            connection_lifetime: OnceCell::new(),
         }
     }
 
@@ -95,19 +108,16 @@ impl SocketDigest {
             peer_addr: OnceCell::new(),
             local_addr: OnceCell::new(),
             original_dst: OnceCell::new(),
-            connection_lifetime: OnceCell::new(),
         }
     }
 
-    pub(crate) fn attach_connection_lifetime(
-        &self,
-        lifetime: Arc<dyn ConnectionLifetime>,
-    ) -> Result<(), Arc<dyn ConnectionLifetime>> {
-        self.connection_lifetime.set(lifetime)
-    }
-
-    pub(crate) fn connection_lifetime(&self) -> Option<Arc<dyn ConnectionLifetime>> {
-        self.connection_lifetime.get().cloned()
+    /// Return the kernel socket cookie for this connection.
+    ///
+    /// This is backed by Linux's `SO_COOKIE` socket option. On other Unix
+    /// platforms this returns `Ok(0)`.
+    #[cfg(unix)]
+    pub fn socket_cookie(&self) -> std::io::Result<u64> {
+        super::l4::ext::get_socket_cookie(self.raw_fd)
     }
 
     #[cfg(unix)]
@@ -243,4 +253,34 @@ pub trait GetProxyDigest {
 pub trait GetSocketDigest {
     fn get_socket_digest(&self) -> Option<Arc<SocketDigest>>;
     fn set_socket_digest(&mut self, _socket_digest: SocketDigest) {}
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::SocketDigest;
+    use std::os::unix::io::AsRawFd;
+
+    #[test]
+    fn socket_cookie_returns_cookie_for_tcp_socket() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+
+        let client_digest = SocketDigest::from_raw_fd(client.as_raw_fd());
+        let server_digest = SocketDigest::from_raw_fd(server.as_raw_fd());
+
+        assert_ne!(client_digest.socket_cookie().unwrap(), 0);
+        assert_ne!(server_digest.socket_cookie().unwrap(), 0);
+    }
+
+    #[test]
+    fn socket_cookie_returns_cookie_for_unix_socket() {
+        let (client, server) = std::os::unix::net::UnixStream::pair().unwrap();
+
+        let client_digest = SocketDigest::from_raw_fd(client.as_raw_fd());
+        let server_digest = SocketDigest::from_raw_fd(server.as_raw_fd());
+
+        assert_ne!(client_digest.socket_cookie().unwrap(), 0);
+        assert_ne!(server_digest.socket_cookie().unwrap(), 0);
+    }
 }

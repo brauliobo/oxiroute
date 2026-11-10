@@ -14,7 +14,7 @@
 
 use log::debug;
 use pingora_error::{Error, ErrorType::*, OrErr, Result};
-use std::sync::{Arc, Once, OnceLock};
+use std::sync::{Arc, Once};
 
 use crate::connectors::tls::replace_leftmost_underscore;
 use crate::connectors::ConnectorOptions;
@@ -26,8 +26,6 @@ use crate::tls::ext::{
     ssl_set_renegotiate_mode_freely, ssl_set_verify_cert_store, ssl_use_certificate,
     ssl_use_private_key, ssl_use_second_key_share,
 };
-#[cfg(feature = "boringssl")]
-use crate::tls::ssl::SslCurve;
 use crate::tls::ssl::{SslConnector, SslFiletype, SslMethod, SslVerifyMode, SslVersion};
 use crate::tls::x509::store::X509StoreBuilder;
 use crate::upstreams::peer::{Peer, ALPN};
@@ -52,17 +50,21 @@ const CIPHER_LIST: &str = "AES-128-GCM-SHA256\
 /**
  * Enabled signature algorithms for signing/verification (ECDSA).
  * As of 4/10/2023, the only addition to boringssl's defaults is ECDSA_SECP521R1_SHA512.
+ *
+ * N.B. BoringSSL 5.x uses case-sensitive parsing for signature algorithm names,
+ * so these must be in lowercase wire format.
  */
-const SIGALG_LIST: &str = "ECDSA_SECP256R1_SHA256\
-    :RSA_PSS_RSAE_SHA256\
-    :RSA_PKCS1_SHA256\
-    :ECDSA_SECP384R1_SHA384\
-    :RSA_PSS_RSAE_SHA384\
-    :RSA_PKCS1_SHA384\
-    :RSA_PSS_RSAE_SHA512\
-    :RSA_PKCS1_SHA512\
-    :RSA_PKCS1_SHA1\
-    :ECDSA_SECP521R1_SHA512";
+const SIGALG_LIST: &str = "ecdsa_secp256r1_sha256\
+    :rsa_pss_rsae_sha256\
+    :rsa_pkcs1_sha256\
+    :ecdsa_secp384r1_sha384\
+    :rsa_pss_rsae_sha384\
+    :rsa_pkcs1_sha384\
+    :rsa_pss_rsae_sha512\
+    :rsa_pkcs1_sha512\
+    :rsa_pkcs1_sha1\
+    :ecdsa_secp521r1_sha512";
+
 /**
  * Enabled curves for ECDHE (signature key exchange).
  * As of 4/10/2023, the only addition to boringssl's defaults is SECP521R1.
@@ -72,12 +74,7 @@ const SIGALG_LIST: &str = "ECDSA_SECP256R1_SHA256\
  * that are both computationally cheaper and more supported.
  */
 #[cfg(feature = "boringssl")]
-const BORINGSSL_CURVE_LIST: &[SslCurve] = &[
-    SslCurve::X25519,
-    SslCurve::SECP256R1,
-    SslCurve::SECP384R1,
-    SslCurve::SECP521R1,
-];
+const BORINGSSL_CURVES_LIST: &str = "X25519:P-256:P-384:P-521";
 
 static INIT_CA_ENV: Once = Once::new();
 fn init_ssl_cert_env_vars() {
@@ -93,42 +90,16 @@ pub struct Connector {
     pub(crate) ctx: Arc<SslConnector>, // Arc to support clone
 }
 
-/// The client context for the system trust store, built once per process.
-///
-/// Building a context parses the whole system CA bundle, so connectors without a private CA, client
-/// certificate or key log share this one instead of each parsing the bundle again.
-static SYSTEM_TRUST_CONTEXT: OnceLock<Connector> = OnceLock::new();
-
-fn uses_system_trust(options: &ConnectorOptions) -> bool {
-    options.ca_file.is_none() && options.cert_key_file.is_none() && !options.debug_ssl_keylog
-}
-
 impl Connector {
     pub fn new(options: Option<ConnectorOptions>) -> Self {
-        if options.as_ref().is_none_or(uses_system_trust) {
-            SYSTEM_TRUST_CONTEXT
-                .get_or_init(|| Self::build(options))
-                .clone()
-        } else {
-            Self::build(options)
-        }
-    }
-
-    fn build(options: Option<ConnectorOptions>) -> Self {
-        if options.as_ref().is_none_or(|conf| conf.ca_file.is_none()) {
-            init_ssl_cert_env_vars();
-        }
-        // `SslConnector::builder` already loads the default system trust locations.
         let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
         // TODO: make these conf
         // Set supported ciphers.
         builder.set_cipher_list(CIPHER_LIST).unwrap();
         // Set supported signature algorithms and ECDH (key exchange) curves.
-        builder
-            .set_sigalgs_list(&SIGALG_LIST.to_lowercase())
-            .unwrap();
+        builder.set_sigalgs_list(SIGALG_LIST).unwrap();
         #[cfg(feature = "boringssl")]
-        builder.set_curves(BORINGSSL_CURVE_LIST).unwrap();
+        builder.set_curves_list(BORINGSSL_CURVES_LIST).unwrap();
         builder
             .set_max_proto_version(Some(SslVersion::TLS1_3))
             .unwrap();
@@ -138,6 +109,10 @@ impl Connector {
         if let Some(conf) = options.as_ref() {
             if let Some(ca_file_path) = conf.ca_file.as_ref() {
                 builder.set_ca_file(ca_file_path).unwrap();
+            } else {
+                init_ssl_cert_env_vars();
+                // load from default system wide trust location. (the name is misleading)
+                builder.set_default_verify_paths().unwrap();
             }
             if let Some((cert, key)) = conf.cert_key_file.as_ref() {
                 builder.set_certificate_chain_file(cert).unwrap();
@@ -159,6 +134,9 @@ impl Connector {
                     });
                 }
             }
+        } else {
+            init_ssl_cert_env_vars();
+            builder.set_default_verify_paths().unwrap();
         }
 
         Connector {
@@ -210,7 +188,7 @@ where
         }
     }
 
-    if let Some(curve) = peer.get_peer_options().and_then(|o| o.curves) {
+    if let Some(curve) = peer.get_peer_options().and_then(|o| o.curves.as_deref()) {
         ssl_set_groups_list(&mut ssl_conf, curve).or_err(InternalError, "invalid curves")?;
     }
 
@@ -260,10 +238,6 @@ where
 
     if let Some(alpn) = alpn_override.as_ref().or(peer.get_alpn()) {
         ssl_conf.set_alpn_protos(alpn.to_wire_preference()).unwrap();
-    }
-
-    if let Some(hook) = peer.upstream_tls_configure_hook() {
-        hook(&mut ssl_conf).or_err(TLSHandshakeFailure, "upstream TLS configure hook failed")?;
     }
 
     clear_error_stack();

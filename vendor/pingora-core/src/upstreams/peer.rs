@@ -17,23 +17,25 @@
 use crate::connectors::{l4::BindTo, L4Connect};
 use crate::protocols::l4::socket::SocketAddr;
 use crate::protocols::tls::CaType;
+#[cfg(feature = "openssl_derived")]
+use crate::protocols::tls::HandshakeCompleteHook;
 #[cfg(feature = "s2n")]
 use crate::protocols::tls::PskType;
-#[cfg(feature = "openssl_derived")]
-use crate::protocols::tls::{HandshakeCompleteHook, TlsConfigureHook};
 #[cfg(unix)]
 use crate::protocols::ConnFdReusable;
 use crate::protocols::TcpKeepalive;
 use crate::utils::tls::{get_organization_unit, CertKey};
 use ahash::AHasher;
+use derivative::Derivative;
 use pingora_error::{
     ErrorType::{InternalError, SocketError},
     OrErr, Result,
 };
 #[cfg(feature = "s2n")]
 use pingora_s2n::S2NPolicy;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
+use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, SocketAddr as InetSocketAddr, ToSocketAddrs as ToInetSocketAddrs};
 #[cfg(unix)]
@@ -41,7 +43,7 @@ use std::os::unix::{net::SocketAddr as UnixSocketAddr, prelude::AsRawFd};
 #[cfg(windows)]
 use std::os::windows::io::AsRawSocket;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpSocket;
 
@@ -98,10 +100,6 @@ pub trait Peer: Display + Clone {
     /// The connections to two peers are considered reusable to each other if their reuse hashes are
     /// the same
     fn reuse_hash(&self) -> u64;
-    /// Returns state retained only when the connector establishes a new physical connection.
-    fn connection_lifetime(&self) -> Option<Arc<dyn crate::protocols::ConnectionLifetime>> {
-        None
-    }
     /// Get the proxy setting to connect to the remote server
     fn get_proxy(&self) -> Option<&Proxy> {
         None
@@ -269,14 +267,6 @@ pub trait Peer: Display + Clone {
         self.address().check_sock_match(sock)
     }
 
-    /// Compare this peer with a physical peer address cached when the connection was established.
-    ///
-    /// Returning `None` preserves the descriptor-based identity check. Implementations should only
-    /// opt in when they can identify the physical next hop from the cached address.
-    fn matches_cached_addr(&self, _addr: &SocketAddr) -> Option<bool> {
-        None
-    }
-
     fn get_tracer(&self) -> Option<Tracer> {
         None
     }
@@ -297,14 +287,6 @@ pub trait Peer: Display + Clone {
     fn proxy_digest_user_data_hook(&self) -> Option<&ProxyDigestUserDataHook> {
         self.get_peer_options()?
             .proxy_digest_user_data_hook
-            .as_ref()
-    }
-
-    /// Returns a hook that configures the OpenSSL-derived TLS object before the handshake.
-    #[cfg(feature = "openssl_derived")]
-    fn upstream_tls_configure_hook(&self) -> Option<&TlsConfigureHook> {
-        self.get_peer_options()?
-            .upstream_tls_configure_hook
             .as_ref()
     }
 
@@ -388,10 +370,6 @@ impl Peer for BasicPeer {
         hasher.finish()
     }
 
-    fn matches_cached_addr(&self, addr: &SocketAddr) -> Option<bool> {
-        Some(socket_addrs_match(&self._address, addr))
-    }
-
     fn get_peer_options(&self) -> Option<&PeerOptions> {
         Some(&self.options)
     }
@@ -423,18 +401,106 @@ impl Scheme {
     }
 }
 
+/// Policy for forwarding request headers to HTTP upstreams.
+///
+/// This policy applies to automatically forwarded downstream request headers. Application code
+/// may deliberately alter the resulting request in its upstream request filter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HttpUpstreamRequestPolicy {
+    /// Strip standard hop-by-hop request fields inherited from the downstream request.
+    ///
+    /// Standard hop-by-hop framing fields are removed. If a non-empty request body is unframed
+    /// after application upstream request filtering, Pingora sends it chunked to an HTTP/1
+    /// upstream.
+    pub strip_hop_by_hop: bool,
+    /// Strip extension fields identified by tokens in the downstream `Connection` header field.
+    ///
+    /// Requests nominating `Host`, forwarding-origin fields, or pseudo-header-shaped fields are
+    /// rejected rather than forwarded with protected metadata removed when this behavior is
+    /// enabled.
+    pub strip_connection_nominated: bool,
+    /// Reject `Connection` nominations that are not a valid HTTP `token` (RFC 9110 §5.6.2), such
+    /// as `Connection: "X-Forwarded-For"`, instead of tolerating them as distinct literal fields.
+    ///
+    /// Defaults to `true`. Exact nominations of protected fields and pseudo-headers are rejected
+    /// either way. Only has an effect when
+    /// [`strip_connection_nominated`](Self::strip_connection_nominated) is enabled.
+    pub reject_malformed_connection_nominations: bool,
+    /// Controls forwarding of HTTP/1 protocol upgrade request fields.
+    pub h1_upgrade: H1UpgradePolicy,
+}
+
+impl HttpUpstreamRequestPolicy {
+    /// Use standards-oriented forwarding with normalized WebSocket upgrade support.
+    pub fn standard() -> Self {
+        Self::default()
+    }
+
+    /// Preserve the previous HTTP/1 upstream request-header passthrough behavior.
+    ///
+    /// This mode is RFC-non-compliant and is provided only for legacy compatibility. Use it at
+    /// your own risk: the application's upstream request filter is solely responsible for
+    /// ensuring valid hop-by-hop header handling.
+    pub fn preserve() -> Self {
+        Self {
+            strip_hop_by_hop: false,
+            strip_connection_nominated: false,
+            reject_malformed_connection_nominations: false,
+            h1_upgrade: H1UpgradePolicy::Preserve,
+        }
+    }
+
+    /// Strip hop-by-hop fields and do not forward any HTTP/1 upgrade handshake.
+    pub fn deny_upgrades() -> Self {
+        Self {
+            h1_upgrade: H1UpgradePolicy::Deny,
+            ..Self::default()
+        }
+    }
+}
+
+impl Default for HttpUpstreamRequestPolicy {
+    fn default() -> Self {
+        Self {
+            strip_hop_by_hop: true,
+            strip_connection_nominated: true,
+            reject_malformed_connection_nominations: true,
+            h1_upgrade: H1UpgradePolicy::WebSocketOnly,
+        }
+    }
+}
+
+/// Policy for forwarding HTTP/1 protocol upgrade request fields.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum H1UpgradePolicy {
+    /// Forward normalized upgrade fields only for a valid WebSocket upgrade request.
+    WebSocketOnly,
+    /// Preserve complete request metadata for HTTP/1 requests containing an upgrade field.
+    ///
+    /// This is RFC-non-compliant and is provided only for legacy compatibility. Use it at your
+    /// own risk: the application's upstream request filter is solely responsible for ensuring
+    /// valid hop-by-hop metadata for upgraded requests.
+    ///
+    /// When this is selected, automatic hop-by-hop normalization is skipped for upgrade requests
+    /// because protocol-specific handshakes can depend on any connection-nominated field.
+    /// Protected nomination validation applies only when
+    /// [`HttpUpstreamRequestPolicy::strip_connection_nominated`] is enabled.
+    Preserve,
+    /// Do not forward HTTP/1 upgrade request fields.
+    Deny,
+}
+
 /// The preferences to connect to a remote server
 ///
 /// See [`Peer`] for the meaning of the fields
 #[non_exhaustive]
-#[derive(Clone)]
+#[derive(Clone, Derivative)]
+#[derivative(Debug)]
 pub struct PeerOptions {
     pub bind_to: Option<BindTo>,
     pub connection_timeout: Option<Duration>,
     pub total_connection_timeout: Option<Duration>,
     pub read_timeout: Option<Duration>,
-    /// Replaces `read_timeout` once the final response header arrived (time between body reads).
-    pub body_read_timeout: Option<Duration>,
     pub idle_timeout: Option<Duration>,
     pub write_timeout: Option<Duration>,
     pub verify_cert: bool,
@@ -455,83 +521,52 @@ pub struct PeerOptions {
     pub s2n_security_policy: Option<S2NPolicy>,
     #[cfg(feature = "s2n")]
     pub max_blinding_delay: Option<u32>,
-    // how many concurrent h2 stream are allowed in the same connection
+    /// How many concurrent h2 streams are allowed in the same connection.
     pub max_h2_streams: usize,
-    /// Allow invalid Content-Length in HTTP/1 responses (non-RFC compliant).
+    /// Initial per-stream H2 receive window size in bytes.
+    /// If `None`, the default of 8MB is used.
+    pub h2_stream_window_size: Option<u32>,
+    /// Initial connection-level H2 receive window size in bytes.
+    /// If `None`, the default of 8MB is used.
+    pub h2_connection_window_size: Option<u32>,
+    /// Allow a single invalid Content-Length in HTTP/1 responses (non-RFC compliant).
     ///
-    /// When enabled, invalid Content-Length responses are treated as close-delimited responses.
+    /// When enabled, a response carrying a single, otherwise-unparseable
+    /// Content-Length value is treated as a close-delimited response instead of
+    /// being rejected. Conflicting or duplicate Content-Length values (multiple
+    /// header lines, or a comma-separated list with differing values) are an
+    /// unrecoverable framing error and are always rejected, even when this is
+    /// enabled.
     ///
     /// **Note:** This field is unstable and may be removed or changed in future versions.
     /// It exists primarily for compatibility with legacy servers that send malformed headers.
     pub allow_h1_response_invalid_content_length: bool,
+    /// Controls automatically forwarded request headers sent to HTTP upstreams.
+    pub http_upstream_request_policy: HttpUpstreamRequestPolicy,
     pub extra_proxy_headers: BTreeMap<String, Vec<u8>>,
-    // The list of curve the tls connection should advertise
-    // if `None`, the default curves will be used
-    pub curves: Option<&'static str>,
-    // see ssl_use_second_key_share
+    /// The list of curves the tls connection should advertise
+    /// if `None`, the default curves will be used
+    pub curves: Option<Cow<'static, str>>,
+    /// see ssl_use_second_key_share
     pub second_keyshare: bool,
-    // whether to enable TCP fast open
+    /// whether to enable TCP fast open
     pub tcp_fast_open: bool,
-    // use Arc because Clone is required but not allowed in trait object
+    /// use Arc because Clone is required but not allowed in trait object
     pub tracer: Option<Tracer>,
-    // A custom L4 connector to use to establish new L4 connections
+    /// A custom L4 connector to use to establish new L4 connections
     pub custom_l4: Option<Arc<dyn L4Connect + Send + Sync>>,
+    #[derivative(Debug = "ignore")]
     pub upstream_tcp_sock_tweak_hook:
         Option<Arc<dyn Fn(&TcpSocket) -> Result<()> + Send + Sync + 'static>>,
+    #[derivative(Debug = "ignore")]
     pub proxy_digest_user_data_hook: Option<ProxyDigestUserDataHook>,
-    /// Hook that configures this peer's OpenSSL-derived TLS object before its handshake.
-    #[cfg(feature = "openssl_derived")]
-    pub upstream_tls_configure_hook: Option<TlsConfigureHook>,
     /// Hook that allows returning an optional `SslDigestExtension`.
     /// Any returned value will be saved into the `SslDigest`.
     ///
     /// Currently only enabled for openssl variants with meaningful `TlsRef`s.
     #[cfg(feature = "openssl_derived")]
+    #[derivative(Debug = "ignore")]
     pub upstream_tls_handshake_complete_hook: Option<HandshakeCompleteHook>,
-}
-
-impl Debug for PeerOptions {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut debug = f.debug_struct("PeerOptions");
-        debug
-            .field("bind_to", &self.bind_to)
-            .field("connection_timeout", &self.connection_timeout)
-            .field("total_connection_timeout", &self.total_connection_timeout)
-            .field("read_timeout", &self.read_timeout)
-            .field("body_read_timeout", &self.body_read_timeout)
-            .field("idle_timeout", &self.idle_timeout)
-            .field("write_timeout", &self.write_timeout)
-            .field("verify_cert", &self.verify_cert)
-            .field("verify_hostname", &self.verify_hostname);
-        #[cfg(feature = "s2n")]
-        debug.field("use_system_certs", &self.use_system_certs);
-        debug
-            .field("alternative_cn", &self.alternative_cn)
-            .field("alpn", &self.alpn)
-            .field("ca", &self.ca)
-            .field("tcp_keepalive", &self.tcp_keepalive)
-            .field("tcp_recv_buf", &self.tcp_recv_buf)
-            .field("dscp", &self.dscp)
-            .field("h2_ping_interval", &self.h2_ping_interval);
-        #[cfg(feature = "s2n")]
-        debug
-            .field("psk", &self.psk)
-            .field("s2n_security_policy", &self.s2n_security_policy)
-            .field("max_blinding_delay", &self.max_blinding_delay);
-        debug
-            .field("max_h2_streams", &self.max_h2_streams)
-            .field(
-                "allow_h1_response_invalid_content_length",
-                &self.allow_h1_response_invalid_content_length,
-            )
-            .field("extra_proxy_headers", &self.extra_proxy_headers)
-            .field("curves", &self.curves)
-            .field("second_keyshare", &self.second_keyshare)
-            .field("tcp_fast_open", &self.tcp_fast_open)
-            .field("tracer", &self.tracer)
-            .field("custom_l4", &self.custom_l4)
-            .finish()
-    }
 }
 
 impl PeerOptions {
@@ -542,7 +577,6 @@ impl PeerOptions {
             connection_timeout: None,
             total_connection_timeout: None,
             read_timeout: None,
-            body_read_timeout: None,
             idle_timeout: None,
             write_timeout: None,
             verify_cert: true,
@@ -563,7 +597,10 @@ impl PeerOptions {
             #[cfg(feature = "s2n")]
             max_blinding_delay: None,
             max_h2_streams: 1,
+            h2_stream_window_size: None,
+            h2_connection_window_size: None,
             allow_h1_response_invalid_content_length: false,
+            http_upstream_request_policy: HttpUpstreamRequestPolicy::default(),
             extra_proxy_headers: BTreeMap::new(),
             curves: None,
             second_keyshare: true, // default true and noop when not using PQ curves
@@ -572,8 +609,6 @@ impl PeerOptions {
             custom_l4: None,
             upstream_tcp_sock_tweak_hook: None,
             proxy_digest_user_data_hook: None,
-            #[cfg(feature = "openssl_derived")]
-            upstream_tls_configure_hook: None,
             #[cfg(feature = "openssl_derived")]
             upstream_tls_handshake_complete_hook: None,
         }
@@ -656,7 +691,6 @@ pub struct HttpPeer {
     /// cannot share connections with each other.
     pub group_key: u64,
     pub options: PeerOptions,
-    pub connection_lifetime: Option<Weak<dyn crate::protocols::ConnectionLifetime>>,
 }
 
 impl HttpPeer {
@@ -677,7 +711,6 @@ impl HttpPeer {
             client_cert_key: None,
             group_key: 0,
             options: PeerOptions::new(),
-            connection_lifetime: None,
         }
     }
 
@@ -720,7 +753,6 @@ impl HttpPeer {
             client_cert_key: None,
             group_key: 0,
             options: PeerOptions::new(),
-            connection_lifetime: None,
         }
     }
 
@@ -759,6 +791,12 @@ impl Hash for HttpPeer {
         self.group_key.hash(state);
         // max h2 stream settings
         self.options.max_h2_streams.hash(state);
+        // h2_stream_window_size and h2_connection_window_size are intentionally excluded
+        // from the reuse hash for now. These are per-connection settings applied at handshake
+        // time and may be revisited alongside other h2 settings that could be dynamically
+        // adjusted over the lifetime of a connection.
+        self.options.curves.hash(state);
+        self.options.second_keyshare.hash(state);
     }
 }
 
@@ -796,10 +834,6 @@ impl Peer for HttpPeer {
         self.peer_hash()
     }
 
-    fn connection_lifetime(&self) -> Option<Arc<dyn crate::protocols::ConnectionLifetime>> {
-        self.connection_lifetime.as_ref().and_then(Weak::upgrade)
-    }
-
     fn get_peer_options(&self) -> Option<&PeerOptions> {
         Some(&self.options)
     }
@@ -810,21 +844,6 @@ impl Peer for HttpPeer {
 
     fn get_proxy(&self) -> Option<&Proxy> {
         self.proxy.as_ref()
-    }
-
-    fn matches_cached_addr(&self, addr: &SocketAddr) -> Option<bool> {
-        if let Some(proxy) = self.get_proxy() {
-            #[cfg(unix)]
-            return Some(
-                addr.as_unix().and_then(UnixSocketAddr::as_pathname)
-                    == Some(proxy.next_hop.as_ref()),
-            );
-
-            #[cfg(windows)]
-            panic!("windows do not support peers with proxy")
-        }
-
-        Some(socket_addrs_match(&self._address, addr))
     }
 
     #[cfg(unix)]
@@ -856,12 +875,6 @@ impl Peer for HttpPeer {
     }
 }
 
-fn socket_addrs_match(expected: &SocketAddr, connected: &SocketAddr) -> bool {
-    const ZERO: IpAddr = IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
-
-    expected.as_inet().is_some_and(|addr| addr.ip() == ZERO) || expected == connected
-}
-
 /// The proxy settings to connect to the remote server, CONNECT only for now
 #[derive(Debug, Hash, Clone)]
 pub struct Proxy {
@@ -888,68 +901,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn standard_peers_match_cached_ipv4_and_ipv6_addresses_exactly() {
-        let ipv4 = BasicPeer::new("192.0.2.1:8080");
-        assert_eq!(
-            ipv4.matches_cached_addr(&SocketAddr::Inet("192.0.2.1:8080".parse().unwrap())),
-            Some(true)
-        );
-        assert_eq!(
-            ipv4.matches_cached_addr(&SocketAddr::Inet("192.0.2.2:8080".parse().unwrap())),
-            Some(false)
-        );
-
-        let ipv6 = HttpPeer::new("[2001:db8::1]:8443", false, String::new());
-        assert_eq!(
-            ipv6.matches_cached_addr(&SocketAddr::Inet("[2001:db8::1]:8443".parse().unwrap())),
-            Some(true)
-        );
-        assert_eq!(
-            ipv6.matches_cached_addr(&SocketAddr::Inet("[2001:db8::1]:443".parse().unwrap())),
-            Some(false)
-        );
+    fn default_http_upstream_request_policy_is_standards_oriented() {
+        let policy = PeerOptions::new().http_upstream_request_policy;
+        assert!(policy.strip_hop_by_hop);
+        assert!(policy.strip_connection_nominated);
+        assert!(policy.reject_malformed_connection_nominations);
+        assert_eq!(policy.h1_upgrade, H1UpgradePolicy::WebSocketOnly);
     }
 
     #[test]
-    fn zero_ipv4_destination_preserves_descriptor_match_behavior() {
-        let peer = BasicPeer::new("0.0.0.0:8080");
-
-        assert_eq!(
-            peer.matches_cached_addr(&SocketAddr::Inet("127.0.0.1:8080".parse().unwrap())),
-            Some(true)
-        );
-        assert_eq!(
-            peer.matches_cached_addr(&SocketAddr::Inet("[::1]:8080".parse().unwrap())),
-            Some(true)
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn standard_and_proxy_peers_match_cached_unix_pathnames() {
-        let direct = BasicPeer::new_uds("/tmp/direct.sock").unwrap();
-        let direct_addr =
-            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/direct.sock").unwrap());
-        let other_addr =
-            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/other.sock").unwrap());
-        assert_eq!(direct.matches_cached_addr(&direct_addr), Some(true));
-        assert_eq!(direct.matches_cached_addr(&other_addr), Some(false));
-
-        let proxy = HttpPeer::new_proxy(
-            "/tmp/proxy.sock",
-            "192.0.2.1".parse().unwrap(),
-            443,
-            true,
-            "example.test",
-            BTreeMap::new(),
-        );
-        let proxy_addr =
-            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/proxy.sock").unwrap());
-        assert_eq!(proxy.matches_cached_addr(&proxy_addr), Some(true));
-        assert_eq!(proxy.matches_cached_addr(&direct_addr), Some(false));
-        assert_eq!(
-            proxy.matches_cached_addr(&SocketAddr::Inet("192.0.2.1:443".parse().unwrap())),
-            Some(false)
-        );
+    fn preserve_http_upstream_request_policy_is_a_legacy_preset() {
+        let policy = HttpUpstreamRequestPolicy::preserve();
+        assert!(!policy.strip_hop_by_hop);
+        assert!(!policy.strip_connection_nominated);
+        assert!(!policy.reject_malformed_connection_nominations);
+        assert_eq!(policy.h1_upgrade, H1UpgradePolicy::Preserve);
     }
 }
