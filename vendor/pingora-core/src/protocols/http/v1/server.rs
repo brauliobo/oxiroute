@@ -539,7 +539,7 @@ impl HttpSession {
         let req_header = self.req_header();
 
         // Reject an ambiguous authority before anything routes on it.
-        validate_request_authority(req_header)?;
+        validate_origin_form_authority(req_header)?;
 
         // Validate/reconcile Content-Length per RFC 9110 section 8.6 (hyper
         // parity): identical duplicates and comma-combined identical values are
@@ -2115,6 +2115,20 @@ fn http_resp_header_to_buf(
 
     buf.put_slice(CRLF);
     Ok(())
+}
+
+/// [`validate_request_authority`] for the usual request: an origin-form target has no authority of its own, so one
+/// `Host` field without userinfo (or none) is the whole check. Anything else gets the full validation, which also
+/// produces the error.
+fn validate_origin_form_authority(req: &RequestHeader) -> Result<()> {
+    if req.method != http::Method::CONNECT && req.raw_path().first() == Some(&b'/') {
+        let mut hosts = req.headers.get_all(http::header::HOST).iter();
+        let host = hosts.next();
+        if hosts.next().is_none() && host.is_none_or(|host| !host.as_bytes().contains(&b'@')) {
+            return Ok(());
+        }
+    }
+    validate_request_authority(req)
 }
 
 #[cfg(test)]
@@ -5340,5 +5354,36 @@ mod test_pipelining {
         }
 
         assert!(prefix.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod authority_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn the_origin_form_check_gives_the_verdicts_of_the_full_validation() {
+        let cases: [(&str, &[(&str, &str)]); 8] = [
+            ("GET", &[]),
+            ("GET", &[("host", "a.test")]),
+            ("GET", &[("host", "a.test"), ("host", "a.test")]),
+            ("GET", &[("host", "u@a.test")]),
+            ("CONNECT", &[("host", "a.test")]),
+            ("GET", &[("host", "a.test:8080")]),
+            ("POST", &[("host", "")]),
+            ("GET", &[("host", "a.test"), ("host", "b.test")]),
+        ];
+        for (method, headers) in cases {
+            let mut req = RequestHeader::build_no_case(method, b"/p", None).unwrap();
+            for (name, value) in headers {
+                req.append_header(http::HeaderName::from_static(name), *value)
+                    .unwrap();
+            }
+            assert_eq!(
+                validate_origin_form_authority(&req).is_ok(),
+                validate_request_authority(&req).is_ok(),
+                "{method} {headers:?}"
+            );
+        }
     }
 }
