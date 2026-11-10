@@ -86,6 +86,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'tls_profiles[].policy.session_timeout_seconds', kind: 'integer' },
   { path: 'tls_profiles[].policy.session_tickets', kind: 'boolean' },
   { path: 'tls_profiles[].policy.prefer_server_ciphers', kind: 'boolean' },
+  { path: 'tls_profiles[].policy.key_exchange_groups', kind: 'string_list' },
   { path: 'listeners', kind: 'collection' },
   { path: 'listeners[].name', kind: 'string' },
   { path: 'listeners[].bind', kind: 'object' },
