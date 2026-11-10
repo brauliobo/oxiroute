@@ -1,0 +1,23 @@
+[package]
+name = "oxiroute-allocator"
+description = "Global allocator of the oxiroute binary with its embedded jemalloc configuration"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tikv-jemalloc-sys = "0.6"
+
+# The only crate of the workspace that cannot forbid unsafe code: jemalloc reads its configuration from an exported
+# C symbol, which Rust 2024 only accepts as `#[unsafe(export_name)]`. Everything else stays denied.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

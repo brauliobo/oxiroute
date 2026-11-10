@@ -62,10 +62,10 @@ x509-parser.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+oxiroute-allocator = { path = "../oxiroute-allocator" }
 oxiroute-supervision-unix = { path = "../oxiroute-supervision-unix" }
 oxiroute-supervisor-master = { path = "../oxiroute-supervisor-master" }
 oxiroute-supervisor-process = { path = "../oxiroute-supervisor-process" }
-tikv-jemallocator.workspace = true
 
 [dev-dependencies]
 rml_rtmp.workspace = true
