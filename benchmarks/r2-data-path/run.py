@@ -36,6 +36,7 @@ UPSTREAM_PORT = ECHO_PORT = PROXY_PORT = 0
 PROXY_CPUS = os.environ.get("R2_PROXY_CPUS", "8-11")
 UPSTREAM_CPUS = os.environ.get("R2_UPSTREAM_CPUS", "12-13")
 LOAD_CPUS = os.environ.get("R2_LOAD_CPUS", "14-15")
+STORM_CPUS = os.environ.get("R2_STORM_CPUS", "6-7")
 FEATURES_6_0 = ["access_log", "timeouts", "retry", "queue", "capacity", "passive", "breaker", "outlier"]
 
 
@@ -49,6 +50,7 @@ class Lane:
     listeners: int = 1
     workers: int = 0  # `listener_workers` of the generated configuration; 0 leaves the setting out
     servers: int = 1
+    storm: int = 0  # TLS handshakes per second that new connections add during the measured window (`r2tool storm`)
     target_offset: int = 0  # proxy port offset the load goes to (forward listener: 3, TCP listener: 1)
     note: str = ""
 
@@ -136,6 +138,10 @@ def build_lanes():
              requests=5000, warmup=200))
     add(lane("h1_post1k_h2up", ["--method", "POST", "--path", "/sink", "--body-bytes", "1024"] + base,
              features=["upstream_h2"]))
+    # Data-path latency of established connections while new ones arrive (open-loop handshakes per second).
+    for rate in (3000, 8000):
+        add(lane(f"tls_storm{rate}_h2_c1s1", ["--proto", "h2tls", "--path", "/b1k", "--conns", "1", "--streams", "1",
+                                              "--expect-len", "1024"], features=["tls"], requests=20000, storm=rate))
     add(lane("h2_b0_c1s1", ["--proto", "h2tls", "--path", "/b0", "--conns", "1", "--streams", "1",
                             "--expect-len", "0"], features=["tls"], requests=10000))
     # Scaling over listeners (each listener is one Pingora service with one worker thread).
@@ -342,6 +348,12 @@ class Env:
         self.stop()
         shutil.rmtree(self.work, ignore_errors=True)
 
+    def start_storm(self):
+        storm = spawn([self.args.tool, "storm", "--target", f"127.0.0.1:{PROXY_PORT}", "--rate", str(self.lane.storm)],
+                      STORM_CPUS, self.work / "storm.log")
+        time.sleep(1.0)  # let the handshake rate settle before the measured window opens
+        return storm
+
     def load_command(self, requests, warmup, hooks=()):
         lane = self.lane
         targets = ",".join(f"127.0.0.1:{port}" for port in self.http_ports())
@@ -412,7 +424,13 @@ def measured_rep(env, rep, idle):
     hooks = [("hook-start", f"{switches('a')}; echo enable > {ctl}; read _ < {ack}"),
              ("hook-stop", f"echo disable > {ctl}; read _ < {ack}; {switches('b')}")]
     lane = env.lane
-    result = subprocess.run(env.load_command(lane.requests, lane.warmup, hooks), capture_output=True, text=True, timeout=LANE_TIMEOUT)
+    storm = env.start_storm() if lane.storm else None
+    try:
+        result = subprocess.run(env.load_command(lane.requests, lane.warmup, hooks), capture_output=True, text=True,
+                                timeout=LANE_TIMEOUT)
+    finally:
+        if storm is not None:
+            stop(storm)
     perf.send_signal(signal.SIGINT)
     perf.wait()
     load = parse_kv(result.stdout)

@@ -230,7 +230,7 @@ impl ServerCertVerifier for NoVerify {
     }
 }
 
-fn tls_connector(alpn: &[u8], version: &str, resume: bool) -> TlsConnector {
+pub fn tls_connector(alpn: &[u8], version: &str, resume: bool) -> TlsConnector {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let versions: &[&rustls::SupportedProtocolVersion] = match version {
         "1.2" => &[&rustls::version::TLS12],
