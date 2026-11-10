@@ -269,6 +269,7 @@ where
         }
 
         client_session.read_timeout = peer.options.read_timeout;
+        client_session.body_read_timeout = peer.options.body_read_timeout;
 
         let mut downstream_custom_message_writer = session
             .downstream_session
@@ -292,7 +293,8 @@ where
         // directly to bidirection_down_to_up
         let write_timeout = peer.options.write_timeout;
 
-        let (tx, rx) = mpsc::channel::<HttpTask>(TASK_BUFFER_SIZE);
+        let mut upstream_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let (tx, rx) = upstream_pipe.split();
 
         session.as_mut().enable_retry_buffering();
 
@@ -405,7 +407,7 @@ where
         session: &mut Session,
         ctx: &mut SV::CTX,
         initial_task: HttpTask,
-        rx: &mut mpsc::Receiver<HttpTask>,
+        rx: &mut spsc::Receiver<'_, HttpTask, TASK_BUFFER_SIZE>,
         serve_from_cache: &mut ServeFromCache,
         range_body_filter: &mut proxy_cache::range_filter::RangeBodyFilter,
         response_state: &mut ResponseStateMachine,
@@ -424,13 +426,8 @@ where
         // Batch: pull as many tasks as we can from rx
         let mut tasks = Vec::with_capacity(TASK_BUFFER_SIZE);
         tasks.push(initial_task);
-        // tokio::task::unconstrained because now_or_never may yield None when the future is ready
-        while let Some(maybe_task) = tokio::task::unconstrained(rx.recv()).now_or_never() {
-            if let Some(t) = maybe_task {
-                tasks.push(t);
-            } else {
-                break; // upstream closed
-            }
+        while let Ok(t) = rx.try_recv() {
+            tasks.push(t);
         }
 
         /* run filters before sending to downstream */
@@ -490,7 +487,7 @@ where
         &self,
         session: &mut Session,
         client_body: &mut h2::SendStream<bytes::Bytes>,
-        mut rx: mpsc::Receiver<HttpTask>,
+        mut rx: spsc::Receiver<'_, HttpTask, TASK_BUFFER_SIZE>,
         ctx: &mut SV::CTX,
         write_timeout: Option<Duration>,
         downstream_custom_message_writer: &mut Option<Box<dyn CustomMessageWrite>>,
@@ -1113,7 +1110,7 @@ where
 /* Read response header, body and trailer from h2 upstream and send them to tx */
 pub(crate) async fn pipe_up_to_down_response(
     client: &mut Http2Session,
-    tx: mpsc::Sender<HttpTask>,
+    tx: spsc::Sender<'_, HttpTask, TASK_BUFFER_SIZE>,
     pipe_state: Arc<AtomicU8>,
 ) -> Result<()> {
     client
@@ -1122,29 +1119,43 @@ pub(crate) async fn pipe_up_to_down_response(
         .map_err(|e| e.into_up())?; // should we send the error as an HttpTask?
 
     let resp_header = Box::new(client.response_header().expect("just read").clone());
+    let req_header = client.request_header().expect("must have sent req");
+    let expected_body_length = if req_header.method == Method::HEAD
+        || matches!(
+            resp_header.status,
+            StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
+        ) {
+        None
+    } else {
+        let mut lengths = resp_header.headers.get_all(CONTENT_LENGTH).iter();
+        lengths
+            .next()
+            .map(|value| {
+                let length = value
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .ok_or_else(|| {
+                        Error::explain(InvalidHTTPHeader, "invalid H2 content-length")
+                    })?;
+                if lengths.next().is_some() {
+                    return Error::e_explain(
+                        InvalidHTTPHeader,
+                        "duplicate H2 content-length headers",
+                    );
+                }
+                Ok(length)
+            })
+            .transpose()?
+    };
+    let mut body_length = 0usize;
 
     match client.check_response_end_or_error() {
         Ok(eos) => {
-            // XXX: the h2 crate won't check for content-length underflow
-            // if a header frame with END_STREAM is sent without data frames
-            // As stated by RFC, "204 or 304 responses contain no content,
-            // as does the response to a HEAD request"
-            // https://datatracker.ietf.org/doc/html/rfc9113#section-8.1.1
-            let req_header = client.request_header().expect("must have sent req");
-            if eos
-                && req_header.method != Method::HEAD
-                && resp_header.status != StatusCode::NO_CONTENT
-                && resp_header.status != StatusCode::NOT_MODIFIED
-                // RFC technically allows for leading zeroes
-                // https://datatracker.ietf.org/doc/html/rfc9110#name-content-length
-                && resp_header
-                    .headers
-                    .get(CONTENT_LENGTH)
-                    .is_some_and(|cl| cl.as_bytes().iter().any(|b| *b != b'0'))
-            {
+            if eos && expected_body_length.is_some_and(|length| length != 0) {
                 let _ = tx
                     .send(HttpTask::Failed(
-                        Error::explain(H2Error, "non-zero content-length on EOS headers frame")
+                        Error::explain(H2Error, "H2 response ended before content-length")
                             .into_up(),
                     ))
                     .await;
@@ -1195,6 +1206,26 @@ pub(crate) async fn pipe_up_to_down_response(
         match client.check_response_end_or_error() {
             Ok(eos) => {
                 let empty = data.is_empty();
+                let Some(new_body_length) = body_length.checked_add(data.len()) else {
+                    let _ = tx
+                        .send(HttpTask::Failed(
+                            Error::explain(H2Error, "H2 response body length overflow").into_up(),
+                        ))
+                        .await;
+                    return Ok(());
+                };
+                if expected_body_length.is_some_and(|expected| {
+                    new_body_length > expected || eos && new_body_length != expected
+                }) {
+                    let _ = tx
+                        .send(HttpTask::Failed(
+                            Error::explain(H2Error, "H2 response body violates content-length")
+                                .into_up(),
+                        ))
+                        .await;
+                    return Ok(());
+                }
+                body_length = new_body_length;
                 if empty && !eos {
                     /* it is normal to get 0 bytes because of multi-chunk
                      * don't write 0 bytes to downstream since it will be
@@ -1233,6 +1264,15 @@ pub(crate) async fn pipe_up_to_down_response(
             InternalError,
             "h2 task pipe closed unexpectedly before trailers",
         );
+    }
+
+    if expected_body_length.is_some_and(|expected| expected != body_length) {
+        let _ = tx
+            .send(HttpTask::Failed(
+                Error::explain(H2Error, "H2 response ended before content-length").into_up(),
+            ))
+            .await;
+        return Ok(());
     }
 
     // attempt to get trailers, racing against channel close
