@@ -72,6 +72,8 @@ return {{
 fn document_with_max_connections(max_connections: Option<u64>) -> ResolvedConfigDocument {
     document_for(&ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         version: 1,
         max_connections,

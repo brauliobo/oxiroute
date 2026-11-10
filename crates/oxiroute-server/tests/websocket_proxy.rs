@@ -201,6 +201,8 @@ async fn upgrade_preserves_request_body_before_101_and_tunnel_bytes_after_101() 
 fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         listeners: vec![Listener {
             name: "websocket".into(),

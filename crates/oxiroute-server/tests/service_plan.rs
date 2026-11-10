@@ -223,6 +223,8 @@ fn host-b_host-a_and_host-c_pool_shapes_compile_with_named_policy() {
     };
     let config = ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         max_connections: Some(4_096),
         upstream_pools: vec![
@@ -1611,6 +1613,8 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
 fn canonical_config() -> ConfigDraft {
     ConfigDraft {
         listener_workers: None,
+        connection_scheduling: None,
+        connection_age_ms: None,
         retirement: None,
         listeners: vec![
             Listener {
