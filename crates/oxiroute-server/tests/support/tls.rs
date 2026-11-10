@@ -35,6 +35,30 @@ pub fn tls_client_config_with_versions(
     Ok(Arc::new(config))
 }
 
+/// A TLS 1.3 client that offers exactly `groups` (in order) and sends a key share for the first.
+pub fn tls_client_config_with_groups(
+    ca_certificate_path: &Path,
+    alpn: &[&[u8]],
+    groups: &[rustls::NamedGroup],
+) -> Result<Arc<ClientConfig>, BoxError> {
+    let mut roots = RootCertStore::empty();
+    for certificate in load_certificates(ca_certificate_path)? {
+        roots.add(certificate)?;
+    }
+    let mut provider = rustls::crypto::ring::default_provider();
+    let available = std::mem::take(&mut provider.kx_groups);
+    provider.kx_groups = groups
+        .iter()
+        .map(|group| *available.iter().find(|kx| kx.name() == *group).expect("provider group"))
+        .collect();
+    let mut config = ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
+    Ok(Arc::new(config))
+}
+
 pub fn tls_client_config_with_identity(
     ca_certificate_path: &Path,
     client_chain_path: &Path,
