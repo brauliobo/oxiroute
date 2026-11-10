@@ -181,7 +181,7 @@ where
                 session.downstream_session.req_header(),
                 session.downstream_session.request_facts(),
             ),
-            PreparedUpstreamRequest::Owned(req) => (&**req, RequestFacts::of(&req.headers)),
+            PreparedUpstreamRequest::Owned(req) => (&**req, RequestFacts::of_framing(&req.headers)),
         };
         session.upstream_compression.request_filter(req);
 

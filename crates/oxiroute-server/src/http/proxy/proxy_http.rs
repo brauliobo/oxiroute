@@ -64,6 +64,7 @@ impl ProxyHttp for HttpReverseProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
+        let hop_by_hop = strip_hop_by_hop(session);
         ctx.request_id = Some(stamp_request(session.req_header_mut_keeping_facts())?);
         ctx.request_facts = session.request_facts();
         ctx.adopt_downstream_deadline(session);
@@ -128,7 +129,7 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.websocket_reference = Some(reference);
         }
 
-        let Ok(authority) = authority else {
+        let (Ok(authority), Ok(())) = (authority, hop_by_hop) else {
             respond_status(session, 400).await?;
             return Ok(true);
         };
@@ -573,7 +574,7 @@ impl ProxyHttp for HttpReverseProxy {
 
     async fn upstream_request_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         upstream_request: &mut pingora::http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
@@ -619,6 +620,9 @@ impl ProxyHttp for HttpReverseProxy {
             upstream_request.remove_header(&HOST);
         }
         remove_downstream_close(upstream_request)?;
+        if session.is_http2() && upstream_request.version != http::Version::HTTP_2 {
+            upstream_request.remove_header(&TE);
+        }
         if ctx.pool.as_ref().is_some_and(|pool| {
             pool.connection_reuse() == oxiroute_config::UpstreamConnectionReuse::Never
         }) {

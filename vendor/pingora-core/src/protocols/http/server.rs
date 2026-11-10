@@ -164,6 +164,14 @@ impl Session {
         }
     }
 
+    /// Records the facts of the request after the caller changed its headers and knows what they say now. Only an
+    /// HTTP/1 session keeps them; any other answers [`RequestFacts::UNKNOWN`] regardless.
+    pub fn set_request_facts(&mut self, facts: super::v1::common::RequestFacts) {
+        if let Self::H1(s) = self {
+            s.set_request_facts(facts);
+        }
+    }
+
     /// What the request says about its framing: noted while an HTTP/1 request was parsed. Any other session
     /// answers [`RequestFacts::UNKNOWN`], so that the caller looks the header up.
     pub fn request_facts(&self) -> super::v1::common::RequestFacts {

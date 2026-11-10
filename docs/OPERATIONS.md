@@ -173,6 +173,19 @@ A pool with no available server is critical; a pool with a server missing, or wh
 request has waited over five seconds, is a warning; an overdue request makes the whole status
 critical.
 
+### Hop-by-hop headers
+
+The HTTP reverse proxy removes the hop-by-hop fields of RFC 9110 section 7.6.1 from every client request before it
+is routed or any header rule runs, so the origin sees only end-to-end fields and the ones the proxy adds: `Keep-Alive`,
+`Proxy-Connection`, `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, every header named by a
+`Connection` header, and the `Connection` header itself. `Connection: close` ends the client's connection and is not
+sent to the origin. `Upgrade` and `Connection: Upgrade` pass only for a valid HTTP/1.1 upgrade handshake (WebSocket);
+`TE: trailers` of an HTTP/2 request passes to an HTTP/2 origin. The same fields are removed from origin responses
+(except a `101` response, which keeps its handshake). A request whose `Connection` header names `Content-Length`,
+`Transfer-Encoding` or `Host`, or holds an option that is not a token, is answered 400; such an origin response is a
+502. The proxy's own headers, such as `X-Forwarded-For`, are added after the removal, so a client cannot nominate them
+away.
+
 ### Request tracing and in-flight requests
 
 `oxiroute requests list` (`GET /api/v1/requests`) shows every request currently inside the router

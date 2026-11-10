@@ -593,6 +593,12 @@ impl HttpSession {
             .expect("Request header is not read yet")
     }
 
+    /// Records the facts of the request after a caller changed its headers and knows what they say now, so that
+    /// they are not looked up again.
+    pub fn set_request_facts(&mut self, facts: RequestFacts) {
+        self.request_facts = Some(facts);
+    }
+
     /// What the request head says about its framing, as parsed unless a header was changed since.
     pub fn request_facts(&self) -> RequestFacts {
         self.request_facts
@@ -2554,6 +2560,49 @@ mod tests_stream {
             .insert_header("x-other", "1")
             .unwrap();
         assert!(session.is_upgrade_req());
+    }
+
+    #[tokio::test]
+    async fn request_facts_note_the_hop_by_hop_fields_and_can_be_set() {
+        let plain =
+            parsed(b"GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\nX-A: 1\r\n\r\n").await;
+        assert!(!plain.request_facts().hop_by_hop);
+        for input in [
+            &b"GET / HTTP/1.1\r\nKeep-Alive: 1\r\n\r\n"[..],
+            b"GET / HTTP/1.1\r\nProxy-Connection: 1\r\n\r\n",
+            b"GET / HTTP/1.1\r\nTE: trailers\r\n\r\n",
+            b"GET / HTTP/1.1\r\nTrailer: x\r\n\r\n",
+            b"GET / HTTP/1.1\r\nProxy-Authenticate: x\r\n\r\n",
+            b"GET / HTTP/1.1\r\nProxy-Authorization: x\r\n\r\n",
+        ] {
+            let session = parsed(input).await;
+            assert!(session.request_facts().hop_by_hop);
+            assert_eq!(
+                session.request_facts(),
+                RequestFacts::of(&session.req_header().headers)
+            );
+            let framing = RequestFacts::of_framing(&session.req_header().headers);
+            assert!(!framing.hop_by_hop);
+            assert_eq!(
+                RequestFacts {
+                    hop_by_hop: true,
+                    ..framing
+                },
+                session.request_facts()
+            );
+        }
+        let mut session = parsed(b"GET / HTTP/1.1\r\nProxy-Authorization: x\r\n\r\n").await;
+        session
+            .req_header_mut_keeping_facts()
+            .remove_header("proxy-authorization");
+        session.set_request_facts(RequestFacts {
+            hop_by_hop: false,
+            ..session.request_facts()
+        });
+        assert_eq!(
+            session.request_facts(),
+            RequestFacts::of(&session.req_header().headers)
+        );
     }
 
     #[cfg(feature = "patched_http1")]
