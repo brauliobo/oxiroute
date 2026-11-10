@@ -2753,7 +2753,6 @@ dependencies = [
  "once_cell",
  "oxiroute-aged-executor",
  "rand 0.8.8",
- "thread_local",
  "tokio",
 ]
 
