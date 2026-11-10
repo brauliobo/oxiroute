@@ -6,10 +6,24 @@
 //! * HPACK failures are `COMPRESSION_ERROR` (RFC 9113 4.3); `h2` sends `PROTOCOL_ERROR`.
 //! * Unknown pseudo-headers and pseudo-headers in trailers are a stream error (RFC 8.3); `h2` closes the
 //!   connection.
-//! * The first frame after the preface must be SETTINGS (RFC 3.4); `h2` does not check.
+//! * The first frame after the preface must be `SETTINGS` (RFC 3.4); `h2` does not check.
 //! * Frames of a locally reset stream are ignored for as long as its id is among the last `reset_stream_max`
 //!   resets (no timers), where `h2` also expires them after a second.
-//! * Our advertised SETTINGS apply from the moment they are sent, `h2` applies them when acknowledged.
+//! * Wrong frame sizes (`SETTINGS`, `PING`, `RST_STREAM`, `WINDOW_UPDATE`) are `FRAME_SIZE_ERROR`, an
+//!   `INITIAL_WINDOW_SIZE` above 2^31-1 is `FLOW_CONTROL_ERROR` (RFC 6.5.2); `h2` sends `PROTOCOL_ERROR`.
+//! * A `PRIORITY` of the wrong size and a zero `WINDOW_UPDATE` on a stream are stream errors (RFC 6.3, 6.9);
+//!   `h2` closes the connection. `PRIORITY` frames are counted (`max_ignored_frames`), `h2` ignores them.
+//! * An uppercase field name is a stream error (RFC 8.2.1) and `CONNECT` without `:authority` is malformed (RFC
+//!   8.5); `h2` closes the connection for the first and accepts the second.
+//! * `HEADERS` or `DATA` on a half-closed (remote) stream are a stream error `STREAM_CLOSED` (RFC 5.1); `h2`
+//!   closes the connection.
+//! * No 4x "way too large" abuse multiplier on the decoded header list: every request over the limit is
+//!   answered 431 and counted against `max_local_error_reset_streams`.
+//! * Peer resets of accepted streams are limited (`max_peer_reset_streams`), `h2` limits only resets of
+//!   streams not yet accepted.
+//! * The `RST_STREAM`s queued before a connection error are still flushed ahead of the `GOAWAY`, and no
+//!   `GOAWAY` answers the peer's own.
+//! * Our advertised `SETTINGS` apply from the moment they are sent, `h2` applies them when acknowledged.
 use std::collections::VecDeque;
 use std::task::Waker;
 
@@ -351,6 +365,11 @@ impl Connection {
             Some(idx) => self.reset_stream(idx, reason, Initiator::Library),
             None => self.remember_reset(id),
         }
+        self.count_local_error();
+    }
+
+    /// Counts an error answer sent for a peer protocol violation against `max_local_error_reset_streams`.
+    fn count_local_error(&mut self) {
         self.local_error_resets += 1;
         if self.local_error_resets > self.cfg.max_local_error_reset_streams {
             self.conn_error(Reason::ENHANCE_YOUR_CALM);

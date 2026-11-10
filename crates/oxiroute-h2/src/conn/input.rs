@@ -312,7 +312,7 @@ impl Connection {
                         Ok(())
                     }
                     Block::TooLarge => {
-                        self.respond_too_large(id);
+                        self.respond_too_large(id, end_stream);
                         Ok(())
                     }
                     _ => Err(Fail::Stream(id, Reason::PROTOCOL_ERROR)),
@@ -356,15 +356,20 @@ impl Connection {
         });
     }
 
-    /// A request over `max_header_list_size`: answered with 431 and reset like `h2` does, never delivered.
-    fn respond_too_large(&mut self, id: u32) {
+    /// A request over `max_header_list_size`: answered with 431, never delivered. Like `h2`, the stream is
+    /// reset only when the request is still streaming; a finished request is simply closed by the response.
+    fn respond_too_large(&mut self, id: u32, end_stream: bool) {
         self.write_response(
             id,
             http::StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
             &HeaderMap::new(),
             true,
         );
-        self.stream_error(id, Reason::PROTOCOL_ERROR);
+        if end_stream {
+            self.count_local_error();
+        } else {
+            self.stream_error(id, Reason::PROTOCOL_ERROR);
+        }
     }
 
     fn on_trailers(&mut self, idx: u32, trailers: HeaderMap) -> Res {
