@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_aged_executor::AgedExecutor;
+use oxiroute_aged_executor::{Age, AgedExecutor};
 
 const AGE: Duration = Duration::from_millis(25);
 
@@ -42,7 +42,7 @@ fn percentile(waits: &mut [Duration], per_mille: usize) -> Duration {
 
 /// A task that was ready before the flood started: when did it run for the second time, if during the flood?
 async fn victim_wait(max_age: Duration, window: Duration) -> Option<Duration> {
-    let (executor, runner) = AgedExecutor::new(max_age);
+    let (executor, runner) = AgedExecutor::new(Age::Fixed(max_age));
     let stop = Arc::new(AtomicBool::new(false));
     let ran_at = Arc::new(Mutex::new(None));
     let started = Instant::now();
@@ -81,7 +81,7 @@ async fn with_an_age_the_oldest_task_runs_within_the_age_under_a_flood_of_newer_
 /// bound by construction; newest-first alone has none (the first test shows a task that never runs).
 #[tokio::test(flavor = "current_thread")]
 async fn the_p999_wait_stays_within_twice_the_age_under_a_flood_of_newer_connections() {
-    let (executor, runner) = AgedExecutor::new(AGE);
+    let (executor, runner) = AgedExecutor::new(Age::Fixed(AGE));
     let stop = Arc::new(AtomicBool::new(false));
     let waits = spawn_flood(&executor, 2048, &stop);
     let runner = tokio::spawn(runner);

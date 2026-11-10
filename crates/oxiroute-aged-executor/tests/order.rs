@@ -8,14 +8,14 @@ use std::{
     time::Duration,
 };
 
-use oxiroute_aged_executor::AgedExecutor;
+use oxiroute_aged_executor::{Age, AgedExecutor};
 use tokio::sync::mpsc;
 
 const HOUR: Duration = Duration::from_hours(1);
 
 /// Spawns one task per name before the runner starts and returns the order in which they ran.
 async fn order_of(max_age: Duration, names: &[&'static str]) -> Vec<&'static str> {
-    let (executor, runner) = AgedExecutor::new(max_age);
+    let (executor, runner) = AgedExecutor::new(Age::Fixed(max_age));
     let ran = Arc::new(Mutex::new(Vec::new()));
     let (done, mut finished) = mpsc::unbounded_channel();
     for &name in names {
@@ -48,7 +48,7 @@ async fn a_zero_age_is_first_in_first_out() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_task_woken_from_another_thread_runs() {
-    let (executor, runner) = AgedExecutor::new(HOUR);
+    let (executor, runner) = AgedExecutor::new(Age::Fixed(HOUR));
     let runner = tokio::spawn(runner);
     let (wake, woken) = tokio::sync::oneshot::channel();
     let (done, finished) = tokio::sync::oneshot::channel();
@@ -66,7 +66,7 @@ async fn a_task_woken_from_another_thread_runs() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_panicking_task_does_not_stop_the_others() {
-    let (executor, runner) = AgedExecutor::new(HOUR);
+    let (executor, runner) = AgedExecutor::new(Age::Fixed(HOUR));
     let runner = tokio::spawn(runner);
     let (done, mut finished) = mpsc::unbounded_channel();
     executor.spawn(async { panic!("expected by the test") });
@@ -94,7 +94,7 @@ impl Drop for CountDrops {
 
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_the_runner_drops_every_task_and_refuses_new_ones() {
-    let (executor, runner) = AgedExecutor::new(HOUR);
+    let (executor, runner) = AgedExecutor::new(Age::Fixed(HOUR));
     let drops = Arc::new(AtomicUsize::new(0));
     let runner = tokio::spawn(runner);
     for _ in 0..3 {
@@ -120,7 +120,7 @@ async fn dropping_the_runner_drops_every_task_and_refuses_new_ones() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn statistics_count_tasks_polls_and_aged_polls() {
-    let (executor, runner) = AgedExecutor::new(Duration::ZERO);
+    let (executor, runner) = AgedExecutor::new(Age::Fixed(Duration::ZERO));
     let (done, mut finished) = mpsc::unbounded_channel();
     for _ in 0..4 {
         let done = done.clone();
