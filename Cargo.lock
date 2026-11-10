@@ -2713,6 +2713,7 @@ dependencies = [
  "notify",
  "openssl",
  "oxiroute-acme",
+ "oxiroute-allocator",
  "oxiroute-cache",
  "oxiroute-config",
  "oxiroute-config-source",
@@ -2735,7 +2736,6 @@ dependencies = [
  "signal-hook",
  "tempfile",
  "thiserror 2.0.21",
- "tikv-jemallocator",
  "time",
  "tokio",
  "tokio-openssl",
@@ -2764,6 +2764,14 @@ dependencies = [
  "time",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "oxiroute-allocator"
+version = "6.3.0"
+dependencies = [
+ "tikv-jemalloc-sys",
+ "tikv-jemallocator",
 ]
 
 [[package]]
