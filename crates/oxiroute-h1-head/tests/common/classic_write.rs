@@ -52,7 +52,13 @@ pub fn apply(map: &mut http::HeaderMap, edits: &[OwnedEdit]) {
 }
 
 pub fn wire(mut request: ClassicRequest, edits: &[OwnedEdit]) -> Vec<u8> {
-    apply(&mut request.header.headers, edits);
+    apply(
+        request
+            .header
+            .headers_mut_no_case()
+            .expect("built without a case map"),
+        edits,
+    );
     let mut out = Vec::new();
     out.extend_from_slice(request.header.method.as_str().as_bytes());
     out.push(b' ');
@@ -126,7 +132,11 @@ pub fn serialize_response(
 pub fn stamp_response(response: &mut pingora_http::ResponseHeader, id: &HeaderValue) {
     use http::header::Entry;
     let request_id = HeaderName::from_static("x-request-id");
-    if let Entry::Vacant(slot) = response.headers.entry(request_id.clone()) {
+    if let Entry::Vacant(slot) = response
+        .headers_mut_no_case()
+        .expect("built without a case map")
+        .entry(request_id.clone())
+    {
         slot.insert(id.clone());
         return;
     }
