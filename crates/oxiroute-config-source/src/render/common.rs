@@ -29,6 +29,7 @@ impl Renderer {
             rtmp_services,
             l4_services,
             audit,
+            log_filter,
         } = config;
 
         self.output.push_str("return {\n");
@@ -40,6 +41,9 @@ impl Renderer {
         }
         if let Some(workers) = listener_workers {
             self.integer_field("listener_workers", workers);
+        }
+        if let Some(filter) = log_filter {
+            self.string_field("log_filter", filter);
         }
         self.optional_table_field("retirement", retirement.as_ref(), Self::retirement);
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;

@@ -737,6 +737,7 @@ fn complete_config() -> ConfigDraft {
         rtmp_services: test_rtmp_services(),
         l4_services: test_l4_services(),
         audit: None,
+        log_filter: None,
     }
 }
 
@@ -759,6 +760,7 @@ fn minimal_config() -> ConfigDraft {
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     }
 }
 

@@ -21,6 +21,7 @@ fn generation() -> std::sync::Arc<crate::RuntimeGeneration> {
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     };
     let manager = crate::GenerationManager::new();
     let candidate = manager

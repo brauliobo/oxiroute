@@ -138,6 +138,7 @@ pub(super) fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf)
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     }
 }
 
@@ -202,6 +203,7 @@ pub(super) fn udp_only_config(
             udp: Some(oxiroute_config::UdpPolicy::default()),
         }],
         audit: None,
+        log_filter: None,
     }
 }
 

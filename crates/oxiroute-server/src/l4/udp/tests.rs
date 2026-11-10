@@ -256,6 +256,7 @@ fn udp_config(listener: SocketAddr, upstream: SocketAddr) -> ConfigDraft {
             udp: Some(policy()),
         }],
         audit: None,
+        log_filter: None,
     }
 }
 

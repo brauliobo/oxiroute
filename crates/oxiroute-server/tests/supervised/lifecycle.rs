@@ -268,6 +268,7 @@ pub(super) fn supervised_control_listeners_report_real_lifecycle_and_connection_
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     };
     let path = directory.path().join("control-listeners.kdl");
     fs::write(
@@ -372,6 +373,7 @@ pub(super) fn supervised_control_listener_callback_failure_prevents_readiness() 
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
         audit: None,
+        log_filter: None,
     };
     let path = directory.path().join("control-listener-failure.kdl");
     fs::write(

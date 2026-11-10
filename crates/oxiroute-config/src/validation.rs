@@ -75,6 +75,7 @@ use crate::{
 };
 
 mod audit;
+mod log_filter;
 mod management;
 mod registry;
 mod retirement;
@@ -83,6 +84,7 @@ mod tls;
 mod upstream;
 
 use audit::validate_audit;
+use log_filter::validate_log_filter;
 use management::{
     endpoint_exposes_management, validate_bind_conflicts, validate_h3_upstream_usage,
     validate_listeners, validate_management, validate_stats,
@@ -122,6 +124,7 @@ pub(crate) fn validate_config_in_place(config: &mut ConfigDraft) -> Result<(), C
     retirement::validate_retirement(config)?;
     validate_management(config.management.as_ref())?;
     validate_audit(&mut config.audit)?;
+    validate_log_filter(config.log_filter.as_mut())?;
     validate_stats(config.stats.as_ref())?;
     validate_registry(config)?;
     validate_certificates(&mut config.certificates)?;

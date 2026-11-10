@@ -17,6 +17,11 @@ pub struct ConfigDraft {
     pub retirement: Option<Retirement>,
     #[serde(default)]
     pub management: Option<Management>,
+    /// Log verbosity in `RUST_LOG` syntax without regex filters: a level (`off`, `error`, `warn`,
+    /// `info`, `debug`, `trace`) and `module::path=level` directives separated by commas. Omitted
+    /// means the `RUST_LOG` environment variable, then errors only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_filter: Option<String>,
     /// Durable audit log of management operations: location and retention bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit: Option<Audit>,
@@ -46,6 +51,7 @@ pub struct ConfigDraft {
 
 impl ConfigDraft {
     pub const MAX_LISTENER_WORKERS: u64 = 256;
+    pub const MAX_LOG_FILTER_BYTES: usize = 1024;
 }
 
 /// Lifetime of a replaced generation. Its accept gate closes at once; work already admitted

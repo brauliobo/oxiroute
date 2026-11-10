@@ -99,6 +99,7 @@ fn exclude_nonintegrated_component_controls(
         "upstream_pools[].canary",
         "retirement",
         "audit",
+        "log_filter",
         "listener_workers",
         "http_services[].drain_deadline_ms",
         "forward_proxy_services[].drain_deadline_ms",
