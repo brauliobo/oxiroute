@@ -2700,7 +2700,7 @@ mod tests {
         let handles: Vec<_> = (0..8)
             .map(|_| {
                 let proxy = proxy.clone();
-                tokio::spawn(async move { proxy.handle_new_request(pending_session()).await })
+                tokio::spawn(async move { proxy.handle_new_request(pending_session(), None).await })
             })
             .collect();
         // let the tasks park in read_request()
@@ -2723,7 +2723,7 @@ mod tests {
         // wait for a notification that will never come
         let session = time::timeout(
             Duration::from_secs(5),
-            proxy.handle_new_request(pending_session()),
+            proxy.handle_new_request(pending_session(), None),
         )
         .await
         .expect("read_request parked after shutdown");

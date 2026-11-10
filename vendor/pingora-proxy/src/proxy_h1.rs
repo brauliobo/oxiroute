@@ -1594,9 +1594,8 @@ mod request_preparation_tests {
     };
 
     use pingora_cache::{
-        key::CompactCacheKey,
         meta::CacheMeta,
-        storage::{HitHandler, MissHandler, PurgeType, Storage},
+        storage::{HitHandler, MissHandler, PurgeOutcome, PurgeTarget, PurgeType, Storage},
         trace::SpanHandle,
         CacheKey,
     };
@@ -1653,10 +1652,10 @@ mod request_preparation_tests {
 
         async fn purge(
             &'static self,
-            _key: &CompactCacheKey,
+            _target: PurgeTarget<'_>,
             _purge_type: PurgeType,
             _trace: &SpanHandle,
-        ) -> Result<bool> {
+        ) -> Result<PurgeOutcome> {
             unreachable!("request preparation does not access cache storage")
         }
 
@@ -1716,7 +1715,7 @@ mod request_preparation_tests {
         let clones = Arc::new(AtomicUsize::new(0));
         session
             .req_header_mut()
-            .extensions
+            .extensions_mut()
             .insert(CloneProbe(Arc::clone(&clones)));
         (session, clones)
     }
@@ -1826,9 +1825,7 @@ mod request_preparation_tests {
         let (mut session, clones) = session_with_probe().await;
         assert!(!session.req_header().has_case());
         session.cache.enable(&TEST_STORAGE, None, None, None, None);
-        session
-            .cache
-            .set_cache_key(CacheKey::new("test", "request", ""));
+        session.cache.set_cache_key(CacheKey::new("request", ""));
         session.cache.cache_miss();
 
         let prepared =
