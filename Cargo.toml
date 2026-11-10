@@ -17,6 +17,7 @@ members = [
 ]
 exclude = [
     "vendor/pingora-core",
+    "vendor/pingora-http",
     "vendor/pingora-load-balancing",
     "vendor/pingora-timeout",
 ]
@@ -84,6 +85,7 @@ zeroize = "1.9.1"
 [patch.crates-io]
 h3 = { git = "https://github.com/hyperium/h3", rev = "43745ad87e95b0c035ac9c547aad467303213425" }
 pingora-core = { path = "vendor/pingora-core" }
+pingora-http = { path = "vendor/pingora-http" }
 pingora-load-balancing = { path = "vendor/pingora-load-balancing" }
 pingora-proxy = { path = "vendor/pingora-proxy" }
 pingora-timeout = { path = "vendor/pingora-timeout" }
