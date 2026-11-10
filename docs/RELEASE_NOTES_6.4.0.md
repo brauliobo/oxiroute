@@ -119,6 +119,21 @@ Details: [TLS handshake offload and the HTTP/2 session](developer/PERF_6_4_TLS_H
 Details: [kernel offload](developer/PERF_6_4_KERNEL_OFFLOAD.md). `splice` and `sendfile` are Linux-only; nothing is
 configured.
 
+## Connection scheduling
+
+Details: [connection scheduling](developer/PERF_6_4_CONNECTION_SCHEDULING.md).
+
+- `connection_scheduling = "aged_per_worker"` gives every listener worker its own runtime, queue and I/O driver, places
+  each new connection on the worker with the fewest open connections, and serves the newest ready connection first and
+  the oldest once it has waited the age. The age is adaptive unless `connection_age_ms` fixes it: a multiple of the time
+  of one pass over the worker's ready queue, from one pass at 64 or fewer ready connections to three at 256 or more.
+- **The default stays `work_stealing`.** Measured on a shared host, per-worker mode raises the request rate 4% to 58% and
+  lowers p99 for most lanes with two or more workers, but loses rate with one worker (0.6x to 0.8x at 512 and 2,048
+  busy connections). Use it with `listener_workers` of two or more and many busy keep-alive connections.
+- **HTTP/2 streams stay on their connection's worker** in per-worker mode (they used to run on Tokio's shared queue).
+- A slow handler delays the other connections of its worker (p99.9 is the delay itself, 203 to 211 ms in the slow-handler
+  lane); work stealing hides that.
+
 ## Release binaries
 
 Details: [binary-level work](developer/PERF_6_4_BINARY_LEVEL.md), [releasing](developer/RELEASING.md).
@@ -166,7 +181,7 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
 | `tls_handshake_threads` | one per 8 CPUs, 1 to 4 | 0 to 64 (`0`: handshakes on the workers) | new generation |
 | `http_fast_lane` | `true` | boolean | new connections of the new generation |
 | `connection_scheduling` | `work_stealing` | `work_stealing`, `aged_per_worker` | new generation |
-| `connection_age_ms` | a multiple of the time one pass over the worker's ready connections takes | 1 to 1000, only with `aged_per_worker` | new generation |
+| `connection_age_ms` | adaptive: a multiple of the time of one pass over the ready queue, 1 to 3 passes (200 us to 1 s) | 1 to 1000 fixes it, only with `aged_per_worker` | new generation |
 | `log_filter` | `RUST_LOG`, then errors only | `RUST_LOG` syntax without regex filters, at most 1024 bytes | every accepted reload |
 | `management.token_file` | `OXIROUTE_MANAGEMENT_TOKEN_FILE` | absolute normalized path of a regular `0400` or `0600` file | read when a generation starts |
 | `audit.dir` | `audit` next to the token file, else `OXIROUTE_AUDIT_DIR`, else in memory | absolute directory path | read when a generation starts |
@@ -185,8 +200,9 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
 
 ## Fixes
 
-- With per-worker (non-stealing) runtimes, a replaced generation could leave the next generation's listener tasks on a
-  dead runtime; reachable only with `connection_scheduling = aged_per_worker`.
+- With per-worker (non-stealing) runtimes, a replaced generation's workers left their runtime in thread-local state, so the
+  next generation's listener tasks could land on a dead runtime; reachable only with
+  `connection_scheduling = aged_per_worker`.
 
 ## Upgrade notes
 
