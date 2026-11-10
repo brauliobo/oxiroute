@@ -19,6 +19,22 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 pub(crate) type Task = Pin<Box<dyn Future<Output = ()> + Send>>;
 
+/// How long a ready task may wait behind newer ones before it is served first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Age {
+    Fixed(Duration),
+    /// This many times the time one pass over the ready tasks takes (their number times the recent time per poll,
+    /// the driver and everything else on the worker included), between [`Age::MIN`] and [`Age::MAX`]. Newest-first
+    /// only pays when the ready tasks are more than the caches hold, and then a pass is long: a fixed age shorter
+    /// than a pass turns the queue into first-in first-out, a longer one lets the tail grow with the load.
+    Adaptive(f64),
+}
+
+impl Age {
+    pub const MIN: Duration = Duration::from_millis(1);
+    pub const MAX: Duration = Duration::from_secs(1);
+}
+
 /// Counters and gauges of one executor (or of all of them, see `AgedExecutor::process_stats`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -32,6 +48,8 @@ pub struct Stats {
     pub aged_polls: u64,
     /// How long the oldest ready task has been waiting.
     pub oldest_ready: Duration,
+    /// The age after which the oldest ready task is served first.
+    pub age: Duration,
 }
 
 impl Stats {
@@ -42,6 +60,7 @@ impl Stats {
             polls: self.polls + other.polls,
             aged_polls: self.aged_polls + other.aged_polls,
             oldest_ready: self.oldest_ready.max(other.oldest_ready),
+            age: self.age.max(other.age),
         }
     }
 }
@@ -57,19 +76,58 @@ struct State {
     polls: u64,
     aged_polls: u64,
     closed: bool,
+    /// The age in force: the configured one, or the adaptive one as of the last batch.
+    age: Duration,
+    /// Smoothed time per poll in nanoseconds, the start of the previous batch and the polls made until then.
+    poll_ns: f64,
+    last_batch: Option<(Instant, u64)>,
+    /// The previous batch ended because nothing was ready, so the gap since it says nothing about the poll rate.
+    idle: bool,
+}
+
+impl State {
+    /// Smooths the time per poll over the batches that ran back to back and sets the age from the tasks that are
+    /// ready now.
+    #[allow(clippy::cast_precision_loss)]
+    fn adapt(&mut self, multiple: f64, now: Instant) {
+        const SMOOTHING: f64 = 8.0;
+        if let Some((started, polls)) = self.last_batch.filter(|_| !self.idle) {
+            let done = self.polls - polls;
+            if done > 0 {
+                let sample = now.saturating_duration_since(started).as_nanos() as f64 / done as f64;
+                self.poll_ns = if self.poll_ns == 0.0 {
+                    sample
+                } else {
+                    self.poll_ns + (sample - self.poll_ns) / SMOOTHING
+                };
+            }
+        }
+        self.idle = false;
+        self.last_batch = Some((now, self.polls));
+        let ready = (self.ready.len() + self.inbox.len()) as f64;
+        self.age = Duration::from_secs_f64(multiple * ready * self.poll_ns / 1e9)
+            .clamp(Age::MIN, Age::MAX);
+    }
 }
 
 pub(crate) struct Shared {
-    max_age: Duration,
+    age: Age,
     state: Mutex<State>,
     runner: AtomicWaker,
 }
 
 impl Shared {
-    pub(crate) fn new(max_age: Duration) -> Self {
+    pub(crate) fn new(age: Age) -> Self {
+        let state = State {
+            age: match age {
+                Age::Fixed(age) => age,
+                Age::Adaptive(_) => Age::MIN,
+            },
+            ..State::default()
+        };
         Self {
-            max_age,
-            state: Mutex::new(State::default()),
+            age,
+            state: Mutex::new(state),
             runner: AtomicWaker::new(),
         }
     }
@@ -97,6 +155,9 @@ impl Shared {
     pub(crate) fn begin_batch(&self, now: Instant) -> Vec<Task> {
         let mut state = self.state();
         state.clock = Some(now);
+        if let Age::Adaptive(multiple) = self.age {
+            state.adapt(multiple, now);
+        }
         std::mem::take(&mut state.inbox)
     }
 
@@ -120,12 +181,15 @@ impl Shared {
         let aged = state
             .ready
             .front()
-            .is_some_and(|(_, at)| now.saturating_duration_since(*at) >= self.max_age);
-        let (task, _) = if aged {
+            .is_some_and(|(_, at)| now.saturating_duration_since(*at) >= state.age);
+        let Some((task, _)) = (if aged {
             state.ready.pop_front()
         } else {
             state.ready.pop_back()
-        }?;
+        }) else {
+            state.idle = true;
+            return None;
+        };
         state.polls += 1;
         state.aged_polls += u64::from(aged);
         Some(task)
@@ -161,6 +225,7 @@ impl Shared {
                 .ready
                 .front()
                 .map_or(Duration::ZERO, |(_, at)| at.elapsed()),
+            age: state.age,
         }
     }
 }
