@@ -40,10 +40,7 @@ pub(crate) use plan::LaneRoute;
 
 use crate::{
     HttpOperationResult, HttpServicePlan, ListenerMetrics, RuntimeGeneration,
-    http::{
-        action::{HttpActionPlan, HttpRoutePlan},
-        request_id::generated_request_id_bytes,
-    },
+    http::{action::HttpRoutePlan, request_id::generated_request_id_bytes},
 };
 
 /// The downstream timeouts of the listener, as the classic path applies them to a session.
@@ -253,7 +250,7 @@ impl LaneFront {
         } else {
             "close"
         };
-        let HttpActionPlan::Fixed(response) = &route.action else {
+        let Some(response) = route.action.direct_response() else {
             unreachable!("only direct routes reach the lane");
         };
         let mut out = BytesMut::new();
