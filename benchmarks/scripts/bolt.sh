@@ -15,6 +15,7 @@
 # Environment: BOLT_WORK (scratch), BOLT_LANES (replayed lanes), BOLT_SCALE (training request multiplier),
 # BOLT_MIN_PROFILED (functions that must have a profile, default 1000), BOLT_MAX_GROWTH_PCT (default 50).
 set -euo pipefail
+export LC_ALL=C
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 work=${BOLT_WORK:-${XDG_STATE_HOME:-${HOME}/.local/state}/oxiroute-bolt}
