@@ -4,7 +4,7 @@ use std::{
     future::Future as _,
     io,
     panic::AssertUnwindSafe,
-    path::{Path, PathBuf},
+    path::Path,
     pin::Pin,
     process::ExitCode,
     sync::{
@@ -391,18 +391,19 @@ fn serve_generation(
 ) -> Result<(), Box<dyn Error>> {
     let active_revision = generation.revision().candidate.clone();
     let config = generation.config().as_draft();
-    let management_token_file = if config.management.is_some() {
-        Some(PathBuf::from(
-            std::env::var_os("OXIROUTE_MANAGEMENT_TOKEN_FILE").ok_or_else(|| {
+    let management_token_file = config
+        .management
+        .as_ref()
+        .map(|management| {
+            oxiroute_server::management_token_file(management).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    "authenticated configuration management requires OXIROUTE_MANAGEMENT_TOKEN_FILE",
+                    "authenticated configuration management requires management.token_file or \
+                     OXIROUTE_MANAGEMENT_TOKEN_FILE",
                 )
-            })?,
-        ))
-    } else {
-        None
-    };
+            })
+        })
+        .transpose()?;
 
     let server_config = ServerConf {
         max_retries: MAX_HTTP_ATTEMPTS,

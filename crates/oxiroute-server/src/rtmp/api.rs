@@ -19,10 +19,11 @@ mod ui;
 mod vod;
 mod wire;
 
-pub(crate) use self::{auth::preflight_management_token, ui::UiAssets};
 pub use self::{
+    auth::management_token_file,
     response::ApiResponse,
     service::{RtmpManagementApi, RtmpManagementHttpApp},
 };
+pub(crate) use self::{auth::preflight_management_token, ui::UiAssets};
 
 pub const MAX_CONFIG_REQUEST_BYTES: usize = crate::config::coordinator::MAX_CANONICAL_CONFIG_BYTES;
