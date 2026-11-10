@@ -1,6 +1,6 @@
 # Compatibility matrix
 
-This matrix describes the OxiRoute 6.3.0 pre-alpha release line. It records narrow tested
+This matrix describes the OxiRoute 6.3.1 pre-alpha release line. It records narrow tested
 capabilities, not complete parity with the native products or protocols named below.
 
 ## Status meanings

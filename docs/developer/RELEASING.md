@@ -79,9 +79,9 @@ examples, and documentation but does not enable or start systemd automatically.
 Before creating an archive, verify the version metadata and release notes:
 
 ```sh
-./scripts/verify-release-version.sh 6.3.0
-./scripts/create-release-archive.sh /tmp/oxiroute-6.3.0.tar.gz 6.3.0
-./scripts/verify-release-archive.sh /tmp/oxiroute-6.3.0.tar.gz 6.3.0 --compare-worktree
+./scripts/verify-release-version.sh 6.3.1
+./scripts/create-release-archive.sh /tmp/oxiroute-6.3.1.tar.gz 6.3.1
+./scripts/verify-release-archive.sh /tmp/oxiroute-6.3.1.tar.gz 6.3.1 --compare-worktree
 ```
 
 Read [packaging/arch/README.md](../../packaging/arch/README.md) before changing service permissions,
@@ -127,8 +127,8 @@ To regenerate locally with the same compiler:
 
 ```sh
 export PATH=$HOME/.rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:$PATH   # rustup component add llvm-tools
-PGO_WORK=/dev/shm/oxiroute-pgo ./scripts/build-release-binaries.sh 6.3.0 /tmp/oxiroute-release
-PGO=0 ./scripts/build-release-binaries.sh 6.3.0 /tmp/oxiroute-plain               # plain build of the same command
+PGO_WORK=/dev/shm/oxiroute-pgo ./scripts/build-release-binaries.sh 6.3.1 /tmp/oxiroute-release
+PGO=0 ./scripts/build-release-binaries.sh 6.3.1 /tmp/oxiroute-plain               # plain build of the same command
 ```
 
 `PGO_LANES` and `PGO_SCALE` shorten the training for a local check of the flow; a profile from a shortened or different
