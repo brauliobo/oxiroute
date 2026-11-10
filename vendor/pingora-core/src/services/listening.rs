@@ -256,7 +256,7 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                                 let shutdown = shutdown.clone();
                                 current_handle().spawn(async move {
                                     let peer_addr = io.peer_addr();
-                                    match timeout(app.handshake_timeout(), io.handshake()).await {
+                                    match timeout(app.handshake_timeout(), Box::pin(io.handshake())).await {
                                         Ok(handshake) => match handshake {
                                             Ok(io) => Self::handle_event(io, app, shutdown).await,
                                             Err(e) => {
@@ -307,7 +307,7 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                     let shutdown = shutdown.clone();
                     current_handle().spawn(async move {
                         let peer_addr = io.peer_addr();
-                        match timeout(app.handshake_timeout(), io.handshake()).await {
+                        match timeout(app.handshake_timeout(), Box::pin(io.handshake())).await {
                             Ok(handshake) => {
                                 match handshake {
                                     Ok(io) => Self::handle_event(io, app, shutdown).await,
