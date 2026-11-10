@@ -261,7 +261,12 @@ impl LaneFront {
         })
         .await;
         let sent = written.is_ok_and(|result| result.is_ok());
-        let _ = self.metrics.record_bytes_sent(out.len() as u64);
+        let body = if request.is_head {
+            0
+        } else {
+            response.body.len() as u64
+        };
+        let _ = self.metrics.record_bytes_sent(body);
         let status = sent.then_some(response.status);
         let _ = self
             .metrics
