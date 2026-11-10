@@ -11,7 +11,8 @@ pub(crate) struct MonitoringResponse {
     host: HostDto,
     traffic: TrafficDto,
     listeners: Vec<ListenerDto>,
-    upstream_pools: Vec<PoolDto>,
+    #[schemars(with = "Vec<PoolDto>")]
+    upstream_pools: PoolsJson,
     transport_operations: Vec<TransportOperationDto>,
     access_records: Vec<AccessRecordDto>,
     certbot_certificates: Vec<CertbotCertificateDto>,
@@ -36,7 +37,7 @@ impl MonitoringResponse {
             host: runtime.host.into(),
             traffic: runtime.traffic.into(),
             listeners: runtime.listeners.into_iter().map(Into::into).collect(),
-            upstream_pools: runtime.upstream_pools.into_iter().map(Into::into).collect(),
+            upstream_pools: PoolsJson::of(&runtime.upstream_pools),
             transport_operations: runtime
                 .transport_operations
                 .into_iter()
@@ -62,6 +63,25 @@ impl MonitoringResponse {
             direct_file_watcher: runtime.direct_file_watcher.map(Into::into),
             rtmp: RtmpMonitoringDto::project(snapshot, recording_supported)?,
         })
+    }
+}
+
+/// The pool inventory, written directly: at a thousand servers it is nearly all of the response.
+struct PoolsJson(Box<serde_json::value::RawValue>);
+
+impl PoolsJson {
+    fn of(pools: &[PoolHealthSnapshot]) -> Self {
+        let json = String::from_utf8(pools_json(pools)).expect("the inventory writer emits UTF-8");
+        Self(
+            serde_json::value::RawValue::from_string(json)
+                .expect("the inventory writer emits JSON"),
+        )
+    }
+}
+
+impl Serialize for PoolsJson {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
     }
 }
 

@@ -23,6 +23,7 @@ pub(crate) use event::{
 pub(crate) use import::{ImportReportResponse, RedactedImportReport};
 pub(crate) use management::{
     GenerationResponse, ListenerInventoryResponse, PoolInventoryResponse, ServerInventoryResponse,
+    pools_body, servers_body,
 };
 pub(crate) use mutation::{
     ConfigRejectedResponse, DnsRefreshResponse, DnsRefreshServer, DrainRequest, DrainResponse,

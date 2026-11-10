@@ -23,7 +23,7 @@ impl ManagementState {
             .iter()
             .map(|pool| pool.health_snapshot())
             .collect::<Vec<_>>();
-        ApiResponse::dto(200, &PoolInventoryResponse::from(pools))
+        ApiResponse::bytes(200, pools_body(&pools), "application/json")
     }
 
     pub(super) fn servers(&self) -> ApiResponse {
@@ -36,7 +36,7 @@ impl ManagementState {
             .iter()
             .map(|pool| pool.health_snapshot())
             .collect::<Vec<_>>();
-        ApiResponse::dto(200, &ServerInventoryResponse::from(pools))
+        ApiResponse::bytes(200, servers_body(&pools), "application/json")
     }
 
     pub(super) fn audit_status(&self) -> ApiResponse {
