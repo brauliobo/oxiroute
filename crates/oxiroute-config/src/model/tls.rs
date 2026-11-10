@@ -113,6 +113,8 @@ pub struct TlsPolicy {
     pub session_tickets: bool,
     #[serde(default = "default_true")]
     pub prefer_server_ciphers: bool,
+    #[serde(default)]
+    pub ktls: KtlsMode,
 }
 
 impl Default for TlsPolicy {
@@ -125,8 +127,17 @@ impl Default for TlsPolicy {
             session_timeout_seconds: None,
             session_tickets: false,
             prefer_server_ciphers: true,
+            ktls: KtlsMode::Off,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KtlsMode {
+    #[default]
+    Off,
+    Static,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
