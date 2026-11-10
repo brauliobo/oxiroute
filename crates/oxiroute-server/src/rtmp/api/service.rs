@@ -35,6 +35,7 @@ use http::{
     Response,
     header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, HeaderName, TRANSFER_ENCODING},
 };
+use oxiroute_config::Audit;
 use oxiroute_rtmp::{MediaStoreError, RtmpControlHandle, VodError, VodRange};
 use pingora::{
     apps::{HttpPersistentSettings, HttpServerApp, ReusedHttpStream, http_app::ServeHttp},
@@ -178,7 +179,7 @@ impl RtmpManagementApi {
         token: &str,
         mode: crate::RuntimeMode,
     ) -> io::Result<Self> {
-        self.audit = operational_event::configure_audit_store(None);
+        self.audit = operational_event::configure_audit_store(None, None);
         let auth = ManagementAuth::new(token)?;
         let config = ConfigApiState::new(coordinator.clone(), active_revision, mode);
         self.auth = Some(auth);
@@ -198,9 +199,10 @@ impl RtmpManagementApi {
         coordinator: CanonicalConfigCoordinator,
         active_revision: EffectiveRevision,
         token_file: &Path,
+        audit: Option<&Audit>,
         mode: crate::RuntimeMode,
     ) -> io::Result<Self> {
-        self.audit = operational_event::configure_audit_store(Some(token_file));
+        self.audit = operational_event::configure_audit_store(Some(token_file), audit);
         let auth = ManagementAuth::from_token_file(token_file)?;
         let config = ConfigApiState::new(coordinator.clone(), active_revision, mode);
         self.auth = Some(auth);

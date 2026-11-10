@@ -222,45 +222,93 @@ pub(crate) struct AuditLimits {
 impl Default for AuditLimits {
     fn default() -> Self {
         Self {
-            max_records: DEFAULT_AUDIT_MAX_RECORDS,
-            max_record_bytes: DEFAULT_AUDIT_MAX_RECORD_BYTES,
-            max_file_bytes: DEFAULT_AUDIT_MAX_FILE_BYTES,
-            max_total_bytes: DEFAULT_AUDIT_MAX_TOTAL_BYTES,
-            max_rotated_files: DEFAULT_AUDIT_MAX_ROTATED_FILES,
+            max_records: to_usize(Audit::DEFAULT_MAX_RECORDS),
+            max_record_bytes: to_usize(Audit::DEFAULT_MAX_RECORD_BYTES),
+            max_file_bytes: Audit::DEFAULT_MAX_FILE_BYTES,
+            max_total_bytes: Audit::DEFAULT_MAX_TOTAL_BYTES,
+            max_rotated_files: to_usize(Audit::DEFAULT_MAX_ROTATED_FILES),
         }
     }
 }
 
-impl AuditLimits {
-    pub(super) fn from_environment() -> Self {
-        let defaults = Self::default();
-        let limits = Self {
-            max_records: environment_usize("OXIROUTE_AUDIT_MAX_RECORDS", defaults.max_records)
-                .min(MAX_AUDIT_RECORDS),
-            max_record_bytes: environment_usize(
-                "OXIROUTE_AUDIT_MAX_RECORD_BYTES",
-                defaults.max_record_bytes,
-            )
-            .min(MAX_AUDIT_RECORD_BYTES),
-            max_file_bytes: environment_u64(
-                "OXIROUTE_AUDIT_MAX_FILE_BYTES",
-                defaults.max_file_bytes,
-            )
-            .min(MAX_AUDIT_FILE_BYTES),
-            max_total_bytes: environment_u64(
-                "OXIROUTE_AUDIT_MAX_TOTAL_BYTES",
-                defaults.max_total_bytes,
-            )
-            .min(MAX_AUDIT_TOTAL_BYTES),
-            max_rotated_files: environment_usize(
-                "OXIROUTE_AUDIT_MAX_ROTATED_FILES",
-                defaults.max_rotated_files,
-            )
-            .min(MAX_AUDIT_ROTATED_FILES),
-        };
-        if limits.valid() { limits } else { defaults }
-    }
+/// Where the audit log lives and how much of it is kept.
+#[derive(Debug)]
+pub(super) struct AuditSettings {
+    pub(super) dir: Option<PathBuf>,
+    pub(super) limits: AuditLimits,
+}
 
+impl AuditSettings {
+    /// Each setting is the configured one, else the `OXIROUTE_AUDIT_*` variable that predates the
+    /// `audit` block, else the default; the directory last falls back to a sibling of the token file.
+    pub(super) fn resolve(
+        audit: Option<&Audit>,
+        token_file: Option<&Path>,
+        environment: impl Fn(&str) -> Option<OsString>,
+    ) -> Self {
+        let number = |configured: Option<u64>, name: &str, default: u64, maximum: u64| {
+            configured
+                .or_else(|| environment(name)?.to_str()?.parse().ok())
+                .unwrap_or(default)
+                .min(maximum)
+        };
+        let audit = audit.cloned().unwrap_or_default();
+        let limits = AuditLimits {
+            max_records: to_usize(number(
+                audit.max_records,
+                "OXIROUTE_AUDIT_MAX_RECORDS",
+                Audit::DEFAULT_MAX_RECORDS,
+                Audit::MAX_RECORDS,
+            )),
+            max_record_bytes: to_usize(number(
+                audit.max_record_bytes,
+                "OXIROUTE_AUDIT_MAX_RECORD_BYTES",
+                Audit::DEFAULT_MAX_RECORD_BYTES,
+                Audit::MAX_RECORD_BYTES,
+            )),
+            max_file_bytes: number(
+                audit.max_file_bytes,
+                "OXIROUTE_AUDIT_MAX_FILE_BYTES",
+                Audit::DEFAULT_MAX_FILE_BYTES,
+                Audit::MAX_FILE_BYTES,
+            ),
+            max_total_bytes: number(
+                audit.max_total_bytes,
+                "OXIROUTE_AUDIT_MAX_TOTAL_BYTES",
+                Audit::DEFAULT_MAX_TOTAL_BYTES,
+                Audit::MAX_TOTAL_BYTES,
+            ),
+            max_rotated_files: to_usize(number(
+                audit.max_rotated_files,
+                "OXIROUTE_AUDIT_MAX_ROTATED_FILES",
+                Audit::DEFAULT_MAX_ROTATED_FILES,
+                Audit::MAX_ROTATED_FILES,
+            )),
+        };
+        let dir = audit
+            .dir
+            .or_else(|| environment("OXIROUTE_AUDIT_DIR").map(Into::into))
+            .or_else(|| {
+                token_file
+                    .and_then(Path::parent)
+                    .map(|parent| parent.join("audit"))
+            });
+        Self {
+            dir,
+            limits: if limits.valid() {
+                limits
+            } else {
+                AuditLimits::default()
+            },
+        }
+    }
+}
+
+fn to_usize(value: u64) -> usize {
+    usize::try_from(value).expect("audit bound fits usize")
+}
+
+impl AuditLimits {
     pub(super) fn valid(self) -> bool {
         self.max_records > 0
             && self.max_record_bytes > 0

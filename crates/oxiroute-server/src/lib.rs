@@ -84,7 +84,7 @@ pub use observability::monitoring::{
     TransportOperationCountSnapshot, TransportOperationSnapshot, TransportOutcome, WorkerReport,
 };
 pub use observability::operational_event::{
-    WorkerEventPage, WorkerEventSnapshot, flush_audit, worker_event_page,
+    WorkerEventPage, WorkerEventSnapshot, configure_audit, flush_audit, worker_event_page,
 };
 pub use observability::operational_event::{emit_certificate, emit_rtmp_access};
 pub use observability::prometheus::PrometheusError;

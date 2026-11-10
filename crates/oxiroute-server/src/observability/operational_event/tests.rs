@@ -485,3 +485,100 @@ fn an_emitted_evacuation_is_one_event_in_the_log() {
 
     assert_eq!(thread_events::count("server_evacuation"), 1);
 }
+
+fn environment<'a>(
+    pairs: &'a [(&'a str, &'a str)],
+) -> impl Fn(&str) -> Option<std::ffi::OsString> + 'a {
+    move |name| {
+        pairs
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| (*value).into())
+    }
+}
+
+fn audit_config(json: serde_json::Value) -> oxiroute_config::Audit {
+    serde_json::from_value(json).expect("authored audit settings")
+}
+
+#[test]
+fn audit_settings_default_without_configuration_or_environment() {
+    let settings = AuditSettings::resolve(None, None, environment(&[]));
+
+    assert_eq!(settings.limits, AuditLimits::default());
+    assert_eq!(settings.dir, None);
+}
+
+#[test]
+fn configured_audit_settings_win_over_the_environment() {
+    let audit = audit_config(serde_json::json!({
+        "dir": "/configured/audit",
+        "max_records": 500,
+        "max_rotated_files": 3,
+    }));
+    let environment = environment(&[
+        ("OXIROUTE_AUDIT_DIR", "/env/audit"),
+        ("OXIROUTE_AUDIT_MAX_RECORDS", "9000"),
+        ("OXIROUTE_AUDIT_MAX_ROTATED_FILES", "5"),
+        ("OXIROUTE_AUDIT_MAX_FILE_BYTES", "524288"),
+    ]);
+
+    let settings = AuditSettings::resolve(Some(&audit), None, environment);
+
+    assert_eq!(
+        settings.dir.as_deref(),
+        Some(Path::new("/configured/audit"))
+    );
+    assert_eq!(settings.limits.max_records, 500);
+    assert_eq!(settings.limits.max_rotated_files, 3);
+    assert_eq!(settings.limits.max_file_bytes, 524_288);
+    assert_eq!(
+        settings.limits.max_record_bytes,
+        AuditLimits::default().max_record_bytes
+    );
+}
+
+#[test]
+fn the_environment_fills_settings_the_configuration_omits() {
+    let environment = environment(&[
+        ("OXIROUTE_AUDIT_DIR", "/env/audit"),
+        ("OXIROUTE_AUDIT_MAX_RECORDS", "9000"),
+        ("OXIROUTE_AUDIT_MAX_TOTAL_BYTES", "not a number"),
+    ]);
+
+    let settings = AuditSettings::resolve(None, Some(Path::new("/etc/token")), environment);
+
+    assert_eq!(settings.dir.as_deref(), Some(Path::new("/env/audit")));
+    assert_eq!(settings.limits.max_records, 9_000);
+    assert_eq!(
+        settings.limits.max_total_bytes,
+        AuditLimits::default().max_total_bytes
+    );
+}
+
+#[test]
+fn the_audit_directory_defaults_next_to_the_token_file() {
+    let settings = AuditSettings::resolve(
+        None,
+        Some(Path::new("/etc/oxiroute/token")),
+        environment(&[]),
+    );
+
+    assert_eq!(
+        settings.dir.as_deref(),
+        Some(Path::new("/etc/oxiroute/audit"))
+    );
+}
+
+#[test]
+fn contradictory_environment_limits_fall_back_to_the_defaults() {
+    let environment = environment(&[
+        ("OXIROUTE_AUDIT_MAX_FILE_BYTES", "4096"),
+        ("OXIROUTE_AUDIT_MAX_RECORD_BYTES", "8192"),
+    ]);
+
+    assert_eq!(
+        AuditSettings::resolve(None, None, environment).limits,
+        AuditLimits::default()
+    );
+}

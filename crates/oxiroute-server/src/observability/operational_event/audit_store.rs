@@ -406,20 +406,6 @@ impl Drop for AuditStore {
     }
 }
 
-pub(super) fn environment_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
-pub(super) fn environment_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
 fn increment_operation_count(
     counts: &mut [[u64; 7]; 4],
     category: AuditCategory,
