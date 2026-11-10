@@ -99,6 +99,7 @@ def build_lanes():
         add(lane(f"f_{feature}", work, features=[feature]))
     add(lane("f_forwarded", work, features=["forwarded"]))
     add(lane("f_all_6_0", work, features=FEATURES_6_0))
+    add(lane("f_prod", work, features=["forwarded", "access_log", "timeouts", "passive", "breaker", "outlier", "capacity"]))
     add(lane("gzip_html64k", ["--path", "/html64k", "--extra-header", "accept-encoding: gzip"] + base,
              features=["gzip"], requests=3000, warmup=100))
     add(lane("nogzip_html64k", ["--path", "/html64k"] + base, features=["gzip"], requests=3000, warmup=100))
