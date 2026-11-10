@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use async_trait::async_trait;
-
 use pingora_core::server::configuration::Opt;
 use pingora_core::server::Server;
 use pingora_core::upstreams::peer::HttpPeer;
@@ -22,7 +20,6 @@ use pingora_proxy::{ProxyHttp, Session};
 
 pub struct PipelinedGateway;
 
-#[async_trait]
 impl ProxyHttp for PipelinedGateway {
     type CTX = ();
     fn new_ctx(&self) -> Self::CTX {}

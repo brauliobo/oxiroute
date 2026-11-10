@@ -26,7 +26,6 @@ use std::sync::Arc;
 /// This example demonstrates how to implement a connection filter
 pub struct MyProxy;
 
-#[async_trait]
 impl ProxyHttp for MyProxy {
     type CTX = ();
 
