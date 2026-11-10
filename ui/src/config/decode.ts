@@ -219,7 +219,8 @@ function isTlsProfile(value: unknown): value is TlsProfileConfig {
     (value.policy.session_cache === null || (isRecord(value.policy.session_cache) &&
       typeof value.policy.session_cache.name === 'string' && safeInteger(value.policy.session_cache.size_bytes))) &&
     nullableSafeInteger(value.policy.session_timeout_seconds) &&
-    typeof value.policy.session_tickets === 'boolean' && typeof value.policy.prefer_server_ciphers === 'boolean'
+    typeof value.policy.session_tickets === 'boolean' && typeof value.policy.prefer_server_ciphers === 'boolean' &&
+    (value.policy.key_exchange_groups == null || arrayOf(value.policy.key_exchange_groups, isString))
 }
 
 function isListener(value: unknown): value is ListenerConfig {
