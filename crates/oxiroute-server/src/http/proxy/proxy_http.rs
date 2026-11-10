@@ -426,17 +426,23 @@ impl ProxyHttp for HttpReverseProxy {
             upstream_request.set_version(http::Version::HTTP_11);
         }
         if let Some(rewrite) = &proxy_policy(ctx).upstream_path_rewrite {
-            rewrite_upstream_path(&mut upstream_request.uri, rewrite)?;
+            let mut uri = upstream_request.uri.clone();
+            rewrite_upstream_path(&mut uri, rewrite)?;
+            upstream_request.set_uri(uri);
         }
         if ctx
             .cache_transaction
             .as_ref()
             .is_some_and(|transaction| transaction.request().method == Method::HEAD)
         {
-            upstream_request.method = Method::GET;
+            upstream_request.set_method(Method::GET);
         }
         if let Some(transaction) = ctx.cache_transaction.as_ref() {
-            transaction.apply_validators(&mut upstream_request.headers);
+            let mut validators = http::HeaderMap::new();
+            transaction.apply_validators(&mut validators);
+            for (name, value) in &validators {
+                upstream_request.set_header(name.clone(), value.clone())?;
+            }
         }
         if let Some(host) = &ctx.selected_upstream_host {
             upstream_request.set_header(HOST, host.clone())?;

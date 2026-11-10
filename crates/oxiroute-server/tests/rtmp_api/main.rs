@@ -57,7 +57,7 @@ use rtmp_support::RtmpSessionClient;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpStream,
-    sync::{Mutex as TokioMutex, watch},
+    sync::watch,
     task::JoinHandle,
 };
 
@@ -205,7 +205,7 @@ impl ManagementHarness {
         service.add_tcp(&address.to_string());
         let mut inherited = Fds::new();
         inherited.add(address.to_string(), listener.into_raw_fd());
-        let inherited = Arc::new(TokioMutex::new(inherited));
+        let inherited = Arc::new(parking_lot::Mutex::new(inherited));
         let (shutdown, shutdown_watch) = watch::channel(false);
         let task = tokio::spawn(async move {
             PingoraService::start_service(&mut service, Some(inherited), shutdown_watch, 1).await;

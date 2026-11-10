@@ -46,6 +46,7 @@ oxiroute-import = { path = "../oxiroute-import" }
 oxiroute-forward-proxy = { path = "../oxiroute-forward-proxy" }
 oxiroute-rtmp = { path = "../oxiroute-rtmp" }
 oxiroute-supervision = { path = "../oxiroute-supervision" }
+parking_lot.workspace = true
 pingora.workspace = true
 quinn.workspace = true
 rustix.workspace = true

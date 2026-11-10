@@ -11,8 +11,9 @@
 
 [package]
 edition = "2021"
-name = "pingora-rustls"
-version = "0.8.1"
+name = "pingora-http"
+version = "0.9.1"
+authors = ["Yuchen Wu <yuchen@cloudflare.com>"]
 build = false
 autolib = false
 autobins = false
@@ -20,47 +21,30 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = """
-RusTLS async APIs for Pingora.
+HTTP request and response header types for Pingora.
 """
 readme = false
 keywords = [
-    "async",
-    "tls",
-    "ssl",
+    "http",
     "pingora",
 ]
-categories = [
-    "asynchronous",
-    "network-programming",
-]
+categories = ["web-programming"]
 license = "Apache-2.0"
 repository = "https://github.com/cloudflare/pingora"
 
+[features]
+default = []
+patched_http1 = []
+
 [lib]
-name = "pingora_rustls"
+name = "pingora_http"
 path = "src/lib.rs"
 
-[dependencies.log]
-version = "0.4.21"
+[dependencies.bytes]
+version = "1.0"
 
-[dependencies.no_debug]
-version = "3.1.0"
+[dependencies.http]
+version = "1"
 
 [dependencies.pingora-error]
-version = "0.8.1"
-
-[dependencies.ring]
-version = "0.17.12"
-
-[dependencies.rustls]
-version = "0.23.12"
-features = ["ring"]
-
-[dependencies.rustls-native-certs]
-version = "0.8.4"
-
-[dependencies.rustls-pki-types]
-version = "1.7.0"
-
-[dependencies.tokio-rustls]
-version = "0.26.0"
+version = "0.9.1"

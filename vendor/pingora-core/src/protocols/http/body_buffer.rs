@@ -124,6 +124,7 @@ mod tests {
         buffer.write_to_buffer(&Bytes::from_static(b"abc"));
         buffer.write_to_buffer(&Bytes::from_static(b"de"));
         assert!(buffer.is_truncated() && buffer.is_empty());
+        assert_eq!(buffer.tail.capacity(), 0);
         buffer.write_to_buffer(&Bytes::from_static(b"a"));
         assert!(buffer.is_truncated());
         buffer.clear();

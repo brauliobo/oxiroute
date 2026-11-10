@@ -6896,18 +6896,17 @@ async fn structured_access_log_omits_authorization_cookies_and_query_tokens() {
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("access event"))
             .collect::<Vec<_>>();
-        assert_eq!(events.len(), 4);
+        // The duplicate Host head is refused while it is parsed, before a request exists to log.
+        assert_eq!(events.len(), 3);
         assert_eq!(events[0]["route"], serde_json::Value::Null);
-        assert_eq!(events[0]["status"], 400);
-        assert_eq!(events[1]["route"], serde_json::Value::Null);
-        assert_eq!(events[1]["status"], 404);
+        assert_eq!(events[0]["status"], 404);
+        assert_eq!(events[1]["route"], "0");
+        assert_eq!(events[1]["status"], 401);
+        assert_eq!(events[2]["service"], "routing");
         assert_eq!(events[2]["route"], "0");
-        assert_eq!(events[2]["status"], 401);
-        assert_eq!(events[3]["service"], "routing");
-        assert_eq!(events[3]["route"], "0");
-        assert_eq!(events[3]["host"], "log.test");
-        assert_eq!(events[3]["method"], "GET");
-        assert_eq!(events[3]["status"], 204);
+        assert_eq!(events[2]["host"], "log.test");
+        assert_eq!(events[2]["method"], "GET");
+        assert_eq!(events[2]["status"], 204);
         for secret in ["query-secret", token, "cookie-secret", "Authorization", "Cookie"] {
             assert!(!contents.contains(secret), "access log exposed {secret}");
         }
