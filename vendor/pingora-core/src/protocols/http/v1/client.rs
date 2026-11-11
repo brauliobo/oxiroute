@@ -242,6 +242,18 @@ impl HttpSession {
         Ok(head.len())
     }
 
+    /// Frames the body of the request whose head [`Self::write_request_head_raw()`] wrote: that head is the caller's
+    /// own, so the caller says what it announces. The body goes out with [`Self::write_body()`] and
+    /// [`Self::finish_body()`].
+    pub fn init_request_body(&mut self, framing: FastFraming) {
+        if framing.chunked {
+            self.body_writer.init_chunked();
+        } else {
+            self.body_writer
+                .init_content_length(framing.content_length.unwrap_or(0));
+        }
+    }
+
     /// Write a borrowed request header to the server.
     /// After the request header is sent, the caller can either start reading the response or
     /// sending request body if any.

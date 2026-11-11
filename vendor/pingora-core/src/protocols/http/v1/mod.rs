@@ -14,7 +14,7 @@
 
 //! HTTP/1.x implementation
 
-pub(crate) mod body;
+pub mod body;
 pub mod client;
 pub mod common;
 pub(crate) mod header;
