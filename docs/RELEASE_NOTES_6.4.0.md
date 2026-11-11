@@ -21,10 +21,13 @@ conservative compatibility claims.
   purpose-built session (`oxiroute-h2`) instead of the `h2` crate: 10% to 23% fewer instructions per request.
 - **Kernel offload.** Bulk data of a TCP relay between plain sockets is moved with `splice`, and static files of 64 KiB or
   more over plain HTTP/1.1 are sent with `sendfile`.
+- **Kernel TLS (opt-in).** A TLS profile with `ktls = "static"` sends static files of 64 KiB or more over TLS 1.3 with
+  `sendfile` and the kernel's TLS offload: 46% to 51% fewer CPU cycles per 1 MiB response, 94% fewer user-space
+  instructions. Off by default; it needs the `tls` kernel module (`modprobe tls`) and kernel 6.5 or newer.
 - **Pingora 0.9.1.** The vendored Pingora crates are rebased; the advisories RUSTSEC-2026-0388, RUSTSEC-2026-0390 and
   RUSTSEC-2026-0253 are no longer reported against the build.
 - **Configuration.** New options: `tls_handshake_threads`, `http_fast_lane`, `connection_scheduling`,
-  `connection_age_ms`, `log_filter`, `management.token_file` and the `audit` block.
+  `connection_age_ms`, `log_filter`, `management.token_file`, the `audit` block and `tls_profiles[].policy.ktls`.
 
 ## Behaviour changes to know before upgrading
 
@@ -58,6 +61,13 @@ conservative compatibility claims.
   the body are two writes instead of one `writev`; TLS, HTTP/2, HTTP/3 and gzip-compressed responses are unchanged, as are
   file systems without `RWF_NOWAIT` other than tmpfs and ramfs. One more system call (`preadv2` probe) per large static
   request.
+- **Kernel TLS** (`tls_profiles[].policy.ktls`, `"off"` default or `"static"`): with `"static"`, a TLS 1.3 AES-GCM
+  HTTP/1.1 connection that sends its first static file of 64 KiB or more is converted once to kernel TLS (one extra
+  `KeyUpdate` record, then `sendfile`); every later response on that connection is encrypted by the kernel too. TLS 1.2,
+  ChaCha20, HTTP/2, HTTP/3 and proxied bodies are unchanged. The profile checks the kernel when a generation starts and
+  logs once whether kernel TLS is active or why TLS stays in user space (the `tls` module is not loaded: add `tls` to
+  `/etc/modules-load.d/`; kernel older than 6.5; unsupported cipher). The vendored OpenSSL is now built with kernel TLS
+  support. Details: [kernel TLS](developer/PERF_6_4_KTLS.md).
 - **Timeouts** beyond a threshold use Tokio's timer instead of the clock thread (Pingora 0.9).
 - **Environment variables** that now have a configuration option keep working as fallbacks that the configuration
   overrides: `OXIROUTE_MANAGEMENT_TOKEN_FILE` (`management.token_file`), `OXIROUTE_AUDIT_DIR` and `OXIROUTE_AUDIT_MAX_*`
@@ -117,7 +127,9 @@ Details: [TLS handshake offload and the HTTP/2 session](developer/PERF_6_4_TLS_H
 ## Kernel offload
 
 Details: [kernel offload](developer/PERF_6_4_KERNEL_OFFLOAD.md). `splice` and `sendfile` are Linux-only; nothing is
-configured.
+configured. Static files over TLS use `sendfile` too when a TLS profile sets `ktls = "static"`:
+[kernel TLS](developer/PERF_6_4_KTLS.md) (1 MiB over TLS 1.3: 1.78M / 1.50M cycles per request in user space against
+0.87M / 0.81M, user-space instructions 1,064k against 66k; 256 KiB: -30% to -32% cycles).
 
 ## Connection scheduling
 
