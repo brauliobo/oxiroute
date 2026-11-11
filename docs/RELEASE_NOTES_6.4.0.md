@@ -427,6 +427,15 @@ output is unchanged.
 - Operators who set `RUST_LOG`, `OXIROUTE_AUDIT_*` or `OXIROUTE_MANAGEMENT_TOKEN_FILE` keep working; set the options when
   convenient. Supervised workers do not inherit `RUST_LOG`: use `log_filter`.
 
+## Benchmark tooling
+
+`scripts/bench-vs-proxies.sh` is the one entry point of the nginx and HAProxy comparison (`--scenarios`, `--budget`,
+`--classic`, `--binary`; scratch and results on disk under `~/.local/state/oxiroute-bench`, it refuses to start when
+`MemAvailable` is low). `benchmarks/r2-data-path/compare.sh` and `table.py --markdown` produce the release comparison
+table of instructions per request. CI runs the offline harness checks (`benchmarks/scripts/test_vs_offline.py`); the
+`Benchmark smoke` workflow runs a short comparison and is started by hand only. See
+[the benchmark note](developer/BENCHMARK_VS_NGINX_HAPROXY.md).
+
 ## Vendored Pingora
 
 `pingora-core`: the HTTP/1 connection-level front (`Http1Front`, the fast lane's hook), the parked idle wait and pooled
