@@ -99,6 +99,13 @@ impl HttpActionPlan {
             Self::Proxy(_) | Self::Static(_) => None,
         }
     }
+
+    pub(crate) const fn static_files(&self) -> Option<&StaticFilesPlan> {
+        match self {
+            Self::Static(files) => Some(files),
+            Self::Proxy(_) | Self::Fixed(_) | Self::Redirect(_) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -226,14 +233,20 @@ fn render_head(
     response
         .insert_header(CONTENT_LENGTH, body_length.to_string())
         .ok()?;
+    Some(h1_head(&response))
+}
+
+/// The status line and header block of `response` as the HTTP/1 writers put them on the wire, without the blank
+/// line: the writer of the response adds what it owns (`Date`, `Connection`, the request id).
+pub(crate) fn h1_head(response: &pingora::http::ResponseHeader) -> Bytes {
     let mut head = bytes::BytesMut::new();
     let reason = response.get_reason_phrase().unwrap_or_default();
     bytes::BufMut::put_slice(
         &mut head,
-        format!("HTTP/1.1 {status} {reason}\r\n").as_bytes(),
+        format!("HTTP/1.1 {} {reason}\r\n", response.status.as_u16()).as_bytes(),
     );
     response.header_to_h1_wire(&mut head);
-    Some(head.freeze())
+    head.freeze()
 }
 
 #[derive(Clone, Debug)]
