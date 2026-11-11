@@ -12,7 +12,7 @@ use crate::tls::{
     provider::aws_lc_provider,
 };
 
-/// Picks the configuration of a connection from its ClientHello: the TLS-ALPN-01 challenge when the client asks for
+/// Picks the configuration of a connection from its `ClientHello`: the TLS-ALPN-01 challenge when the client asks for
 /// it and a challenge is provisioned for its name, the profile's configuration otherwise.
 pub(super) struct ProfileRouter {
     strict: Arc<ServerConfig>,
