@@ -55,6 +55,26 @@ impl Request {
     }
 }
 
+/// Whether the request carries a header that makes the response of a file depend on more than the file: a range or one
+/// of the conditions of RFC 9110. The classic path decides those.
+pub(in crate::http::proxy) fn is_conditional(head: &RequestHead, buf: &[u8]) -> bool {
+    head.headers()
+        .iter()
+        .any(|header| header.class == Class::Other && is_condition(header.name(buf)))
+}
+
+fn is_condition(name: &[u8]) -> bool {
+    let names: &[&[u8]] = match name.len() {
+        5 => &[b"range"],
+        8 => &[b"if-match", b"if-range"],
+        13 => &[b"if-none-match"],
+        17 => &[b"if-modified-since"],
+        19 => &[b"if-unmodified-since"],
+        _ => &[],
+    };
+    names.iter().any(|known| name.eq_ignore_ascii_case(known))
+}
+
 /// The request line of a head: what routes a request, read before the header fields.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::http::proxy) struct Line {
@@ -151,6 +171,32 @@ mod tests {
     }
 
     const HEAD: &str = "POST /r HTTP/1.1\r\nHost: a.test\r\n";
+
+    fn conditional(request: &str) -> bool {
+        let buffer = request.as_bytes();
+        let mut head = RequestHead::new();
+        scan(buffer, line(buffer).expect("line"), &mut head).expect("a head the lane scans");
+        is_conditional(&head, buffer)
+    }
+
+    #[test]
+    fn a_range_or_a_condition_makes_a_request_conditional_whatever_its_case() {
+        for name in [
+            "Range",
+            "RANGE",
+            "If-Match",
+            "if-range",
+            "If-None-Match",
+            "if-modified-since",
+            "IF-UNMODIFIED-SINCE",
+        ] {
+            assert!(conditional(&format!("{HEAD}{name}: x\r\n\r\n")), "{name}");
+        }
+        for name in ["Ranges", "If", "If-Matches", "X-Range", "Accept", "If-None"] {
+            assert!(!conditional(&format!("{HEAD}{name}: x\r\n\r\n")), "{name}");
+        }
+        assert!(!conditional(&format!("{HEAD}\r\n")));
+    }
 
     #[test]
     fn a_request_names_the_length_of_its_body() {

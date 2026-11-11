@@ -122,7 +122,7 @@ impl RouteEdits {
                 log: RouteLog::new(Some(proxy.pool.label()), route_id),
                 ..Self::of(&proxy.policy)
             },
-            (LaneRoute::Direct, _) => Self {
+            (LaneRoute::Direct | LaneRoute::Static, _) => Self {
                 log: RouteLog::new(None, route_id),
                 ..Self::default()
             },
