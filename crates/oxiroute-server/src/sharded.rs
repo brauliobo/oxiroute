@@ -3,21 +3,57 @@
 //! One shared atomic is a cache line the cores pass back and forth, and a request pays for it in
 //! proportion to the number of workers. A [`Sharded`] value keeps one copy per slot instead: each
 //! thread writes the slot it was given on first use, readers add the slots up. Slots sit on their
-//! own cache lines, and threads beyond [`SHARDS`] share slots round robin.
+//! own cache lines.
+//!
+//! The first [`OWNED`] threads own their slot: nobody else writes it, so they add with a plain load
+//! and store instead of a locked read-modify-write (readers only ever load). The threads after them
+//! share the last [`SHARED`] slots round robin and add atomically.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-pub(crate) const SHARDS: usize = 8;
+/// Threads that own a slot.
+const OWNED: usize = 16;
+/// Slots shared by the threads that come after the owners.
+const SHARED: usize = 8;
+pub(crate) const SHARDS: usize = OWNED + SHARED;
 
 static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
 
 std::thread_local! {
-    static SLOT: usize = NEXT_SLOT.fetch_add(1, Ordering::Relaxed) % SHARDS;
+    static SLOT: usize = match NEXT_SLOT.fetch_add(1, Ordering::Relaxed) {
+        thread if thread < OWNED => thread,
+        thread => OWNED + (thread - OWNED) % SHARED,
+    };
 }
 
 /// The slot number of the calling thread, below [`SHARDS`].
 pub(crate) fn local_index() -> usize {
     SLOT.with(|slot| *slot)
+}
+
+/// Adds `value` to `counter`, a cell of the calling thread's slot.
+#[inline]
+pub(crate) fn add(counter: &AtomicU64, value: u64) {
+    if local_index() < OWNED {
+        counter.store(
+            counter.load(Ordering::Relaxed).wrapping_add(value),
+            Ordering::Relaxed,
+        );
+    } else {
+        counter.fetch_add(value, Ordering::Relaxed);
+    }
+}
+
+/// Adds one to `counter`, a cell of the calling thread's slot, and returns the new value.
+#[inline]
+pub(crate) fn next(counter: &AtomicU64) -> u64 {
+    if local_index() < OWNED {
+        let number = counter.load(Ordering::Relaxed).wrapping_add(1);
+        counter.store(number, Ordering::Relaxed);
+        number
+    } else {
+        counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
+    }
 }
 
 /// A value alone on its cache lines; two lines wide so the adjacent-line prefetcher does not
@@ -64,7 +100,7 @@ impl<const N: usize> ShardedCounters<N> {
     }
 
     pub(crate) fn add(&self, index: usize, value: u64) {
-        self.0.local()[index].fetch_add(value, Ordering::Relaxed);
+        add(&self.0.local()[index], value);
     }
 
     pub(crate) fn get(&self, index: usize) -> u64 {
@@ -111,6 +147,42 @@ mod tests {
         });
         assert_eq!(counters.get(0), 0);
         assert_eq!(counters.get(1), 2000 * SHARDS as u64 * 2);
+    }
+
+    #[test]
+    fn owners_and_sharers_add_up_across_threads() {
+        let counters = Sharded::new(|| AtomicU64::new(0));
+        let numbers = Sharded::new(|| AtomicU64::new(0));
+        let threads = SHARDS * 3;
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(|| {
+                    for _ in 0..1000 {
+                        add(counters.local(), 3);
+                        next(numbers.local());
+                    }
+                });
+            }
+        });
+        let total = |sharded: &Sharded<AtomicU64>| -> u64 {
+            sharded
+                .iter()
+                .map(|slot| slot.load(Ordering::Relaxed))
+                .sum()
+        };
+        assert_eq!(total(&counters), 3000 * threads as u64);
+        assert_eq!(total(&numbers), 1000 * threads as u64);
+    }
+
+    #[test]
+    fn a_thread_that_owns_its_slot_numbers_in_sequence() {
+        std::thread::spawn(|| {
+            let numbers = Sharded::new(|| AtomicU64::new(0));
+            let first = next(numbers.local());
+            assert_eq!(next(numbers.local()), first + 1);
+        })
+        .join()
+        .expect("thread");
     }
 
     #[test]
