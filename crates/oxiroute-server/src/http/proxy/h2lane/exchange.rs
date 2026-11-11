@@ -3,7 +3,7 @@
 //! request goes to a plain HTTP/1.1 server of the pool and its answer comes back on the stream; the client leaving
 //! ends the exchange and the origin connection with it.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use http::StatusCode;
@@ -55,6 +55,8 @@ struct Opened {
     head: Head,
     /// The head ends the response: no body follows.
     end: bool,
+    /// The whole body arrived with the head, so the head and the body can leave together.
+    buffered: bool,
 }
 
 pub(super) async fn serve(front: &LaneFront, mut stream: H2Stream, plan: Plan) {
@@ -217,12 +219,14 @@ async fn open(
     let raw = session.read_raw_head().await.map_err(Error::into_up)?;
     let now = ctx.refresh_clock();
     let queue = ctx.queue_stamp().map(QueueValues::new);
-    let (head, refused) = if let Some(fast) = scanned(&raw, &mut session, plan, queue.as_ref()) {
-        fast
-    } else {
-        session.reparse_raw_head();
-        classic(ctx, &mut session, plan).await?
-    };
+    let (head, refused, whole) =
+        if let Some(fast) = scanned(&raw, &mut session, plan, queue.as_ref()) {
+            fast
+        } else {
+            session.reparse_raw_head();
+            let (head, refused) = classic(ctx, &mut session, plan).await?;
+            (head, refused, false)
+        };
     let status = head.status();
     let end = plan.is_head() || matches!(status.as_u16(), 204 | 304) || session.is_body_done();
     ctx.remaining_at(now, true)?;
@@ -253,26 +257,34 @@ async fn open(
         release,
         head,
         end,
+        buffered: whole && !end,
     })
 }
 
-/// The response head for a head the codec scans and knows, and whether the origin refused the request as a pool
-/// without servers. `None` leaves the head to the classic parser.
+/// The response head for a head the codec scans and knows, whether the origin refused the request as a pool
+/// without servers and whether the whole body arrived with the head. `None` leaves the head to the classic parser.
 fn scanned(
     raw: &Bytes,
     session: &mut HttpSession,
     plan: &Plan,
     queue: Option<&QueueValues>,
-) -> Option<(Head, bool)> {
+) -> Option<(Head, bool, bool)> {
     let mut head = buffers::take_response_head();
     let served =
         (scan_response(raw, &mut head) == ScanResponse::Head && is_plain(&head)).then(|| {
             accept_head(session, &head);
             let policy = &proxy_route(&plan.route).policy;
             let fields = fast::fields(raw, &head, (&plan.route.edits, policy), queue, &plan.id);
+            let body = (raw.len() - head.head_len as usize) as u64;
+            let whole = !head.facts.transfer_encoding
+                && head
+                    .facts
+                    .content_length
+                    .is_some_and(|length| body >= length);
             (
                 Head::Fields(fast::status(&head), fields),
                 refused_by_pool(raw, &head),
+                whole,
             )
         });
     buffers::give_response_head(head);
@@ -323,10 +335,14 @@ async fn relay_response(
         release,
         head,
         end,
+        buffered,
     } = opened;
     let deadline = tokio::time::Instant::from_std(ctx.deadline);
     let write_timeout = front.timeouts.session_write();
     let body = async {
+        if buffered {
+            return send_whole(stream, ctx, &mut session, head, (progress, write_timeout)).await;
+        }
         head.send(stream, end)?;
         let mut first = true;
         // `done`: the origin's body is over; `closed`: `END_STREAM` is on the wire.
@@ -364,6 +380,28 @@ async fn relay_response(
     upstream
         .release_boxed_http_session(session, &release, release.idle_timeout())
         .await;
+    Ok(())
+}
+
+/// A response whose body arrived with its head: head and body go to the stream in one step.
+async fn send_whole(
+    stream: &mut H2Stream,
+    ctx: &mut HttpRequestContext,
+    session: &mut HttpSession,
+    head: Head,
+    (progress, write_timeout): (&mut Progress, Option<Duration>),
+) -> Result<(), Box<Error>> {
+    let body = session
+        .read_body_bytes()
+        .await
+        .map_err(Error::into_up)?
+        .expect("the body arrived with the head");
+    progress.sent += body.len();
+    ctx.observe_bytes(0, progress.sent, ctx.now);
+    let rest = head.send_with_body(stream, body.clone())?;
+    if rest > 0 {
+        relay::send_body(stream, body.slice(body.len() - rest..), true, write_timeout).await?;
+    }
     Ok(())
 }
 

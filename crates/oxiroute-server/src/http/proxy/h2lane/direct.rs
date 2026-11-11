@@ -1,15 +1,19 @@
-//! The direct lane: a fixed response built as `write_local_response` builds it for the classic session, without a
-//! request context. The id is stamped on it, then `response::send_local` writes it as the classic path does.
+//! The direct lane: a fixed response with the fields `write_local_response` gives it in the classic session (the
+//! configured ones, `Content-Length`, the request id, `Date`), written without a request context or a header map.
+//! A response without a body ends on its head's frame.
 
 use std::time::Instant;
 
+use bytes::Bytes;
 use http::header::CONTENT_LENGTH;
-use pingora::{http::ResponseHeader, protocols::http::v2::server::H2Stream};
+use pingora::{
+    Error, ErrorType,
+    protocols::http::{date::get_cached_date, v2::server::H2Stream},
+};
 
-use super::{claim::Plan, response};
+use super::{claim::Plan, relay};
 use crate::{
     HttpOperationResult,
-    http::request_id::stamp_response,
     http::{action::FixedResponsePlan, proxy::lane::LaneFront},
 };
 
@@ -38,18 +42,65 @@ async fn send(
     stream: &mut H2Stream,
     response: &FixedResponsePlan,
     plan: &Plan,
-) -> Result<(), Box<pingora::Error>> {
-    let mut head =
-        ResponseHeader::build_no_case(response.status, Some(response.headers.len() + 1))?;
-    for (name, value) in &response.headers {
-        head.append_header(name.clone(), value.clone())?;
-    }
-    head.insert_header(CONTENT_LENGTH, response.body.len().to_string())?;
-    stamp_response(&mut head, &plan.id)?;
+) -> Result<(), Box<Error>> {
+    let mut digits = [0_u8; 20];
+    let length = decimal(&mut digits, response.body.len());
+    let date = get_cached_date();
+    let id = plan.id.as_bytes();
+    // The classic head sets `Content-Length` where a configured one is, or appends it; then the id and the date.
+    let has_length = response
+        .headers
+        .iter()
+        .any(|(name, _)| name == CONTENT_LENGTH);
+    let own = response.headers.iter().map(|(name, value)| {
+        let value = if name == CONTENT_LENGTH {
+            length
+        } else {
+            value.as_bytes()
+        };
+        (name.as_str().as_bytes(), value)
+    });
+    let appended = (!has_length).then_some((b"content-length".as_slice(), length));
+    let fields = own.chain(appended).chain([
+        (b"x-request-id".as_slice(), id),
+        (b"date".as_slice(), date.as_bytes()),
+    ]);
     let body = if plan.is_head() {
-        bytes::Bytes::new()
+        Bytes::new()
     } else {
         response.body.clone()
     };
-    response::send_local(stream, head, body, front.timeouts.session_write()).await
+    let rest = stream
+        .send_response_with_data(response.status, fields, body.clone())
+        .map_err(|error| {
+            Error::because(
+                ErrorType::WriteError,
+                "while writing h2 response to downstream",
+                error,
+            )
+            .into_down()
+        })?;
+    if rest > 0 {
+        relay::send_body(
+            stream,
+            body.slice(body.len() - rest..),
+            true,
+            front.timeouts.session_write(),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// The decimal digits of `value`, written at the end of `digits`.
+fn decimal(digits: &mut [u8; 20], mut value: usize) -> &[u8] {
+    let mut start = digits.len();
+    loop {
+        start -= 1;
+        digits[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            return &digits[start..];
+        }
+    }
 }
