@@ -162,6 +162,10 @@ impl Balancer {
             http_fast_lane: None,
             connection_scheduling: None,
             connection_age_ms: None,
+            worker_scaling: None,
+            min_active_workers: None,
+            target_busy_percent: None,
+            scale_down_delay_ms: None,
             tls_handshake_threads: None,
             retirement: None,
             listeners: vec![Listener {

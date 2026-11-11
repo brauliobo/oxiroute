@@ -285,6 +285,8 @@ of the events API reports it with the event name `unknown`; read it from `/api/v
 | `oxiroute_generation_info` | `generation`, `revision` | value 1 for the serving generation |
 | `oxiroute_connection_scheduling_info` | `mode`, `age_ms` (only with `aged_per_worker`) | value 1: how the listener workers order ready connections (`connection_scheduling`; `mode` is the one in force, so `auto` reports `aged_per_worker` or `work_stealing`) |
 | `oxiroute_aged_queue_tasks`, `oxiroute_aged_queue_ready`, `oxiroute_aged_queue_oldest_ready_seconds`, `oxiroute_aged_queue_age_seconds`, `oxiroute_aged_queue_polls_total`, `oxiroute_aged_queue_aged_polls_total` | none | only with `aged_per_worker`: connections owned by the worker queues, connections ready now, how long the oldest has waited, the age in force (the largest over the workers), polls served, and polls that served the oldest because it had waited that age; `age_ms` is `adaptive` unless `connection_age_ms` is set |
+| `oxiroute_worker_scaling_info` | `mode` (`static` or `dynamic`) | value 1: `worker_scaling` of the serving generation |
+| `oxiroute_worker_scaling_workers`, `oxiroute_worker_scaling_active_workers`, `oxiroute_worker_scaling_relocations_total` | `runtime` (the listener's service name) | only with `worker_scaling = dynamic`: the workers of the listener runtime, how many take new connections now, and how many idle keep-alive connections moved between workers since the runtime started |
 
 The per-server histograms are exported only while at most 256 servers are configured; above that
 only the counters are. Labels are limited to configured names, never a path, client or request id.

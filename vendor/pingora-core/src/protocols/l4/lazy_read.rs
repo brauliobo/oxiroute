@@ -224,6 +224,13 @@ impl<RW: AsyncWrite> LazyReadStream<RW> {
     pub(crate) fn into_inner(self) -> RW {
         self.inner.into_inner()
     }
+
+    /// The same stream, with the same buffer sizes, over what `f` makes of the transport. Both buffers must be empty.
+    pub(crate) fn try_map_inner(self, f: impl FnOnce(RW) -> io::Result<RW>) -> io::Result<Self> {
+        debug_assert!(!self.has_buffered() && !self.has_write_buffered());
+        let (read_size, capacity) = (self.read_size, self.inner.capacity);
+        Ok(Self::new(read_size, capacity, f(self.inner.into_inner())?))
+    }
 }
 
 impl<RW: AsyncRead + AsyncWrite + Unpin> LazyReadStream<RW> {

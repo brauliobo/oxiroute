@@ -34,17 +34,23 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use tokio::io::{AsyncRead, ReadBuf};
+use tokio::runtime;
 use tokio::sync::Notify;
 use tokio::time::{sleep_until, Instant};
 
 use crate::protocols::Stream;
 
-const STRIPES: usize = 8;
+/// One stripe per CPU, and at least eight: the workers of a listener (up to as many as there are CPUs) do not share a
+/// stripe and its lock.
+fn stripe_count() -> usize {
+    static COUNT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *COUNT.get_or_init(|| std::thread::available_parallelism().map_or(8, usize::from).clamp(8, 256))
+}
 
 static NEXT_STRIPE: AtomicUsize = AtomicUsize::new(0);
 
 std::thread_local! {
-    static STRIPE: usize = NEXT_STRIPE.fetch_add(1, Ordering::Relaxed) % STRIPES;
+    static STRIPE: usize = NEXT_STRIPE.fetch_add(1, Ordering::Relaxed) % stripe_count();
 }
 
 /// Keys are already hashes.
@@ -72,7 +78,22 @@ struct Idle {
     sequence: u64,
     released: Instant,
     expires: Option<Instant>,
+    /// The runtime whose I/O driver the socket is registered with.
+    runtime: runtime::Id,
     stream: Stream,
+}
+
+impl Idle {
+    /// The stream, registered with the I/O driver of the runtime that takes it, so that its readiness events arrive on
+    /// the thread that uses it and do not wake the one that released it (a runtime per worker: the connections of a
+    /// released worker would keep waking it). `None` when the socket could not be registered again.
+    fn into_current_runtime(self) -> Option<Stream> {
+        let mut stream = self.stream;
+        if self.runtime != runtime::Handle::current().id() && stream.can_move_to_current_runtime() {
+            stream.move_to_current_runtime().ok()?;
+        }
+        Some(stream)
+    }
 }
 
 #[derive(Default)]
@@ -143,7 +164,7 @@ impl Wake for IdleWake {
 
 /// Idle connections by reuse key.
 pub(crate) struct IdlePool {
-    stripes: [Padded<Mutex<Stripe>>; STRIPES],
+    stripes: Box<[Padded<Mutex<Stripe>>]>,
     capacity: usize,
     idle: AtomicUsize,
     /// Counts connections found sending data while idle, shared with the connector.
@@ -159,7 +180,7 @@ struct Padded<T>(T);
 impl IdlePool {
     pub(crate) fn new(capacity: usize, unexpected_data: Arc<AtomicU64>) -> Arc<Self> {
         Arc::new(Self {
-            stripes: std::array::from_fn(|_| Padded(Mutex::default())),
+            stripes: (0..stripe_count()).map(|_| Padded(Mutex::default())).collect(),
             capacity,
             idle: AtomicUsize::new(0),
             unexpected_data,
@@ -199,6 +220,7 @@ impl IdlePool {
                 sequence,
                 released,
                 expires,
+                runtime: runtime::Handle::current().id(),
                 stream,
             };
             guard.by_key.entry(key).or_default().push_back(idle);
@@ -216,8 +238,8 @@ impl IdlePool {
     /// The connection released longest ago in the stripe of the caller, or in the next stripe that
     /// holds one.
     fn remove_oldest(&self, first: usize) -> Option<Idle> {
-        (0..STRIPES).find_map(|offset| {
-            self.stripes[(first + offset) % STRIPES]
+        (0..self.stripes.len()).find_map(|offset| {
+            self.stripes[(first + offset) % self.stripes.len()]
                 .0
                 .lock()
                 .remove_oldest()
@@ -235,8 +257,8 @@ impl IdlePool {
             return None;
         }
         let first = STRIPE.with(|stripe| *stripe);
-        for offset in 0..STRIPES {
-            let stripe = &self.stripes[(first + offset) % STRIPES].0;
+        for offset in 0..self.stripes.len() {
+            let stripe = &self.stripes[(first + offset) % self.stripes.len()].0;
             let mut expired = Vec::new();
             let found = loop {
                 let Some(idle) = stripe.lock().pop(key, |idle| idle.pop_back()) else {
@@ -248,8 +270,8 @@ impl IdlePool {
                     .is_some_and(|expires| expires <= Instant::now())
                 {
                     expired.push(idle);
-                } else {
-                    break Some(idle.stream);
+                } else if let Some(stream) = idle.into_current_runtime() {
+                    break Some(stream);
                 }
             };
             drop(expired);
@@ -348,5 +370,43 @@ async fn watcher(wakeups: Arc<Wakeups>, pool: Weak<IdlePool>) {
         }
         let Some(pool) = pool.upgrade() else { return };
         pool.maintain();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_connection_taken_by_another_runtime_is_registered_with_its_driver() {
+        use tokio::io::AsyncReadExt;
+        use std::io::Write;
+        let build = || tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (first, second) = (build(), build());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let pool = IdlePool::new(4, Arc::default());
+        first.block_on(async {
+            let client = tokio::net::TcpStream::connect(address).await.unwrap();
+            let stream: Stream = Box::new(crate::protocols::l4::stream::Stream::from(client));
+            pool.put(1, stream, None);
+        });
+        let (mut server, _) = listener.accept().unwrap();
+        // The first runtime is never polled again: the byte reaches the second only if the socket moved to its driver.
+        let received = second.block_on(async {
+            let mut stream = pool.take(1).expect("pooled");
+            server.write_all(b"x").unwrap();
+            let mut byte = [0; 1];
+            tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut byte)).await.is_ok()
+        });
+        assert!(received);
+    }
+
+    #[test]
+    fn the_pool_has_a_stripe_for_every_cpu_and_at_least_eight() {
+        let pool = IdlePool::new(1, Arc::default());
+        let cpus = std::thread::available_parallelism().map_or(8, usize::from);
+        assert_eq!(pool.stripes.len(), cpus.clamp(8, 256));
+        assert!(STRIPE.with(|stripe| *stripe) < pool.stripes.len());
     }
 }
