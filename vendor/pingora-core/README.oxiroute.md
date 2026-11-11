@@ -261,6 +261,12 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   `ServerConf::worker_scaling` (`WorkerScalingConf`, only with `aged_connections`) becomes `RuntimeOpts::worker_scaling`.
 - `apps/mod.rs` spawns HTTP/2 stream tasks with `pingora_runtime::spawn_stream` (the calling worker's executor under aged
   queues, `current_handle().spawn` otherwise).
+- `server/configuration/mod.rs` drops the YAML configuration file: `ServerConf::from_yaml`, `to_yaml`, `load_from_yaml`,
+  `load_yaml_with_opt_override`, the `--conf` option of `Opt` and the `serde_yaml` dependency (whose `unsafe-libyaml` is
+  unmaintained, RUSTSEC-2024-0449; OxiRoute builds `ServerConf` from its own configuration and never read the file).
+  `ServerConf::from_json` replaces `from_yaml` for the defaults and the tests (`serde_json` is a dependency instead);
+  `Server::new` builds the configuration from the defaults and the command-line options only. `pingora-proxy` loses its
+  `serde_yaml` dev-dependency (the `modify_response` example prints pretty JSON) and the unused `examples/conf.yaml`.
 - `server/configuration/mod.rs` adds `ServerConf::aged_connections` and `connection_age_ms`, passed to the runtime through
   `RuntimeOpts::connection_age`; with `work_stealing` off and the age set, the workers of the service runtime serve their
   connections newest first and the oldest after that age (the vendored `pingora-runtime`, see its README).

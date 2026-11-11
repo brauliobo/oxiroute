@@ -227,8 +227,8 @@ default-features = false
 version = "1.0"
 features = ["derive"]
 
-[dependencies.serde_yaml]
-version = "0.9"
+[dependencies.serde_json]
+version = "1.0"
 
 [dependencies.sfv]
 version = "0.10.4"

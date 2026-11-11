@@ -73,7 +73,7 @@ impl ProxyHttp for BackoffRetryProxy {
     }
 }
 
-// RUST_LOG=INFO cargo run --example backoff_retry -- --conf examples/conf.yaml
+// RUST_LOG=INFO cargo run --example backoff_retry
 
 fn main() {
     env_logger::init();
