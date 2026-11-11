@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::upstream_peer::ReusePeer;
 
 const LOAD_SCALE: u64 = 1000;
 
@@ -151,10 +152,14 @@ pub(super) struct PoolEndpoint {
     pub(super) stats: Arc<ServerStats>,
     /// Names this server in a sticky-session cookie; hashed on first use.
     pub(super) cookie_id: std::sync::OnceLock<u64>,
+    /// The idle-pool peer of a server whose address never changes: built on first use.
+    reuse_peer: std::sync::OnceLock<Option<ReusePeer>>,
     /// Zero means unlimited; registered servers may change it while they are members.
     pub(super) configured_max_connections: AtomicU64,
     pub(super) max_connections_override: AtomicU64,
     pub(super) name: String,
+    /// The name as the access log writes it, redacted once.
+    pub(super) label: crate::label::Label,
     pinned_addresses: Option<RwLock<Arc<[SocketAddr]>>>,
     protected_addresses: Arc<[SocketAddr]>,
     /// The shared lookup of a DNS endpoint that resolves on connect.
@@ -215,8 +220,10 @@ impl PoolEndpoint {
             endpoint: server.endpoint,
             stats: upstream_stats().server(pool, &server.name),
             cookie_id: std::sync::OnceLock::new(),
+            reuse_peer: std::sync::OnceLock::new(),
             configured_max_connections: AtomicU64::new(server.max_connections.unwrap_or(0)),
             max_connections_override: AtomicU64::new(0),
+            label: crate::label::Label::new(&server.name),
             name: server.name,
             pinned_addresses: server.pinned_addresses.map(RwLock::new),
             protected_addresses: server.protected_addresses,
@@ -534,6 +541,22 @@ impl PoolEndpoint {
         let addresses = self.endpoint.resolve_addresses().await?;
         self.reject_protected_addresses(&addresses)?;
         Ok(addresses)
+    }
+
+    /// The peer that keys this server's idle connections, when a request always connects to one fixed address: a
+    /// socket endpoint that no registration pinned elsewhere and that is not a protected listener.
+    pub(super) fn reuse_peer(&self) -> Option<&ReusePeer> {
+        self.reuse_peer
+            .get_or_init(|| match &self.endpoint {
+                RuntimeEndpoint::Socket { address }
+                    if self.pinned_addresses.is_none()
+                        && self.reject_protected_addresses(&[*address]).is_ok() =>
+                {
+                    Some(ReusePeer::plain(*address))
+                }
+                _ => None,
+            })
+            .as_ref()
     }
 
     /// Like [`Self::resolve_addresses`], but a DNS endpoint is looked up again and the shared

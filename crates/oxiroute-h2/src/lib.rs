@@ -2,7 +2,8 @@
 //!
 //! * [`hpack`]: header compression, independent of the rest.
 //! * [`frame`] and [`conn`]: frame codec, connection/stream state machine, flow control, abuse limits.
-//! * [`server`]: the async driver and the stream handles an application (the Pingora adapter) uses.
+//! * [`server`]: the async driver and the stream handles an application (the Pingora adapter) uses, with the
+//!   `http`-free borrowed request view and raw-slice response calls of the HTTP/2 fast lane.
 
 // Sizes and windows are bounded by the protocol (frames below 2^24, windows below 2^31), so the casts between
 // the integer widths used for them cannot lose information.

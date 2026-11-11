@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     net::SocketAddr,
     sync::{
         Arc,
@@ -12,8 +13,8 @@ use http::{HeaderName, HeaderValue, Version};
 use oxiroute_config::{HttpVersion, PoolResilience, UpstreamConnectionReuse};
 use pingora::{
     Error, ErrorType,
-    protocols::Digest,
-    upstreams::peer::{HttpPeer, HttpUpstreamRequestPolicy},
+    protocols::{Digest, l4::socket::SocketAddr as PeerAddress},
+    upstreams::peer::{HttpPeer, HttpUpstreamRequestPolicy, Peer},
 };
 use tokio::time::Instant;
 
@@ -137,13 +138,14 @@ impl UpstreamPlan {
         &self.unavailable
     }
 
-    /// Whether requests reach the pool's servers as plain HTTP/1.1 over a stream the lane can drive itself, with
-    /// nothing queued by class.
-    pub(crate) fn is_plain_http1(&self) -> bool {
-        self.tls.is_none()
+    /// Whether requests reach the pool's servers as HTTP/1.1, over TLS or not, on a stream the lane can drive
+    /// itself. A TLS pool that may negotiate HTTP/2 is not: the lane speaks no frames.
+    pub(crate) fn is_http1_only(&self) -> bool {
+        self.tls
+            .as_ref()
+            .is_none_or(|tls| tls.max_http_version() == HttpVersion::Http11)
             && self.h3.is_none()
             && self.http_version == HttpVersion::Http11
-            && !self.selector.schedules_queue()
     }
 
     pub(crate) fn label(&self) -> &Label {
@@ -167,13 +169,24 @@ impl UpstreamPlan {
         excluded: &[String],
         tag: QueueTag,
     ) -> pingora::Result<SelectedEndpoint> {
+        self.select_endpoint_at(excluded, tag, crate::routing::now_unix_ms())
+            .await
+    }
+
+    /// [`Self::select_endpoint`] for a caller that has the wall-clock time already.
+    pub(crate) async fn select_endpoint_at(
+        &self,
+        excluded: &[String],
+        tag: QueueTag,
+        now_unix_ms: u64,
+    ) -> pingora::Result<SelectedEndpoint> {
         let lease = if self.http_version == HttpVersion::Http3
             || self.connection_reuse == UpstreamConnectionReuse::Never
         {
             self.selector.select_wait_excluding(excluded, tag).await
         } else {
             self.selector
-                .select_connection_target_waiting(excluded, tag)
+                .select_connection_target_waiting_at(excluded, tag, now_unix_ms)
                 .await
         };
         lease
@@ -279,6 +292,67 @@ impl UpstreamPlan {
     }
 }
 
+/// What the idle connection pool needs of a peer to give a connection out or take it back: the address and the reuse
+/// key a full `HttpPeer` of a plain HTTP/1 pool has for it. A request that reuses a connection never builds the
+/// peer, whose options only matter when connecting.
+#[derive(Clone, Debug)]
+pub(crate) struct ReusePeer {
+    address: PeerAddress,
+    key: u64,
+    idle_timeout: Option<Duration>,
+}
+
+impl ReusePeer {
+    /// The peer of a plain-HTTP origin at `address`, as `UpstreamPlan::peer_with_timeouts` builds it.
+    pub(crate) fn plain(address: SocketAddr) -> Self {
+        Self::of(&HttpPeer::new(address, false, String::new()))
+    }
+
+    pub(crate) fn of(peer: &HttpPeer) -> Self {
+        Self {
+            address: peer.address().clone(),
+            key: peer.reuse_hash(),
+            idle_timeout: peer.idle_timeout(),
+        }
+    }
+}
+
+impl fmt::Display for ReusePeer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "addr: {}", self.address)
+    }
+}
+
+impl Peer for ReusePeer {
+    fn address(&self) -> &PeerAddress {
+        &self.address
+    }
+
+    fn tls(&self) -> bool {
+        false
+    }
+
+    fn sni(&self) -> &'static str {
+        ""
+    }
+
+    fn reuse_hash(&self) -> u64 {
+        self.key
+    }
+
+    fn idle_timeout(&self) -> Option<Duration> {
+        self.idle_timeout
+    }
+
+    /// A pooled connection serves this peer if it was made to its address, as for an `HttpPeer` without a proxy.
+    fn matches_cached_addr(&self, connected: &PeerAddress) -> Option<bool> {
+        let any = self.address.as_inet().is_some_and(|address| {
+            address.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+        });
+        Some(any || self.address == *connected)
+    }
+}
+
 pub(crate) struct SelectedEndpoint {
     addresses: Option<std::vec::IntoIter<SocketAddr>>,
     deadline: Option<Instant>,
@@ -309,6 +383,10 @@ impl SelectedEndpoint {
         self.lease.server_name()
     }
 
+    pub(crate) fn server_label(&self) -> &crate::label::Label {
+        self.lease.server_label()
+    }
+
     pub(crate) fn observation(&self) -> EndpointObservation {
         self.observation.clone()
     }
@@ -329,13 +407,18 @@ impl SelectedEndpoint {
 
     pub(crate) fn observe_queue_position(
         &self,
-        cell: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        cell: &std::sync::Arc<std::sync::atomic::AtomicU64>,
     ) {
         self.lease.observe_queue_position(cell);
     }
 
     pub(crate) fn queue_position(&self) -> u64 {
         self.lease.queue_position()
+    }
+
+    /// The idle-pool peer of the selected server when it is a plain socket address.
+    pub(crate) fn reuse_peer(&self) -> Option<ReusePeer> {
+        self.lease.reuse_peer().cloned()
     }
 
     #[cfg(test)]

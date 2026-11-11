@@ -10,11 +10,14 @@ use tokio::time::{Instant, Sleep, sleep_until};
 
 /// The work did not finish by its deadline.
 #[derive(Debug)]
-pub(super) struct Expired;
+pub(in crate::http::proxy) struct Expired;
 
 /// Runs `work` and gives up at `deadline`. The timer is registered the first time `work` cannot go on, so work that
 /// completes on its first poll (a response that fits the socket buffers) never touches the timer wheel.
-pub(super) async fn within<F: Future>(deadline: Instant, work: F) -> Result<F::Output, Expired> {
+pub(in crate::http::proxy) async fn within<F: Future>(
+    deadline: Instant,
+    work: F,
+) -> Result<F::Output, Expired> {
     let mut work = pin!(work);
     let mut timer: Option<Pin<Box<Sleep>>> = None;
     poll_fn(|cx| {

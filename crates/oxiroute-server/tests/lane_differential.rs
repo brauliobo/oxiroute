@@ -15,13 +15,17 @@ mod process_support;
 
 #[path = "lane_differential/corpus.rs"]
 mod corpus;
+#[path = "lane_differential/features.rs"]
+mod features;
+#[path = "lane_differential/retries.rs"]
+mod retries;
 
 use std::fmt::Write as _;
 use std::{fs, os::unix::fs::PermissionsExt as _, path::Path, time::Duration};
 
 use oxiroute_config::{
-    ConfigDraft, HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpRedirectLocation, HttpRoute,
-    HttpRouteAction,
+    ConfigDraft, HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpRedirectLocation,
+    HttpRoute, HttpRouteAction,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -123,20 +127,46 @@ impl Pair {
     }
 
     async fn serving(reply: &'static [u8], closes: bool) -> Self {
-        let origin = |closes| async move {
-            if closes {
-                Origin::start_closing(reply).await
-            } else {
-                Origin::start(reply).await
+        Self::configured(reply, closes, false, |_| {}).await
+    }
+
+    /// Both proxies in front of an origin of their own that replies the same, with `edit` applied to both
+    /// configurations; `tls` puts the origins behind TLS.
+    async fn configured(
+        reply: &'static [u8],
+        closes: bool,
+        tls: bool,
+        edit: impl Fn(&mut ConfigDraft),
+    ) -> Self {
+        let origin = || async move {
+            match (tls, closes) {
+                (true, closes) => Origin::start_tls(reply, closes).await,
+                (false, true) => Origin::start_closing(reply).await,
+                (false, false) => Origin::start(reply).await,
             }
         };
-        let classic = Wire::over(origin(closes).await, |config| {
+        let classic = Wire::over(origin().await, |config| {
             with_fixed_route(config);
+            edit(config);
             config.http_fast_lane = Some(false);
         })
         .await;
-        let lane = Wire::over(origin(closes).await, with_fixed_route).await;
-        Self { classic, lane }
+        let lane = Wire::over(origin().await, |config| {
+            with_fixed_route(config);
+            edit(config);
+        })
+        .await;
+        Self { classic, lane }.warmed().await
+    }
+
+    /// The first request of a process pays for what it sets up (connections, tables); the comparison waits a short
+    /// moment for a response, so it starts after one request has been served.
+    async fn warmed(self) -> Self {
+        for wire in [&self.classic, &self.lane] {
+            wire.exchange(b"GET /r HTTP/1.1\r\nHost: warm.test\r\n\r\n")
+                .await;
+        }
+        self
     }
 
     fn finish(self) {
@@ -175,10 +205,15 @@ async fn play(wire: &Wire, script: &[&[u8]]) -> Outcome {
             break;
         }
     }
+    // The origin notes a request when it has all of it or the connection closed: give it a moment to see either.
+    sleep(Duration::from_millis(100)).await;
     let origin = wire.origin.requests().split_off(before);
     Outcome {
         response: merge_chunks(&normalize(&String::from_utf8_lossy(&bytes))),
-        origin: origin.iter().map(|request| normalize(request)).collect(),
+        origin: origin
+            .iter()
+            .map(|request| merge_chunks(&normalize(request)))
+            .collect(),
         closed,
     }
 }

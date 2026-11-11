@@ -2,10 +2,12 @@
 use bytes::{Buf, BytesMut};
 use http::HeaderMap;
 
-use super::request::{self, Block, NO_CONTENT_LENGTH};
+use super::request::{self, Block};
 use super::streams::{Chunk, RecvState};
+use super::validate::UNDECLARED as NO_CONTENT_LENGTH;
 use super::{
-    Connection, Cont, Fail, OVERHEAD_THRESHOLD, Pending, Res, SHUTDOWN_PING, Shutdown, Target,
+    Connection, Cont, Fail, OVERHEAD_THRESHOLD, Pending, RequestView, Res, SHUTDOWN_PING, Shutdown,
+    Target,
 };
 use crate::error::{Initiator, Reason};
 use crate::frame::{self, HEAD_LEN, Head, MAX_WINDOW, Settings};
@@ -303,18 +305,15 @@ impl Connection {
             Target::New => {
                 match request::decode_request(
                     &mut self.dec,
-                    &mut self.fields,
+                    &mut self.authority,
                     block,
                     max_list,
                     end_stream,
                 )
                 .map_err(compression)?
                 {
-                    Block::Request {
-                        parts,
-                        content_length,
-                    } => {
-                        self.open_stream(id, parts, content_length, end_stream);
+                    Block::Request(view) => {
+                        self.open_stream(id, view);
                         Ok(())
                     }
                     Block::TooLarge => {
@@ -335,21 +334,15 @@ impl Connection {
         }
     }
 
-    fn open_stream(
-        &mut self,
-        id: u32,
-        parts: http::request::Parts,
-        content_length: u64,
-        end_stream: bool,
-    ) {
+    fn open_stream(&mut self, id: u32, view: RequestView) {
         let (send, recv) = (
             self.peer_initial_window as i32,
             self.cfg.initial_stream_window as i32,
         );
         let idx = self.streams.insert(id, send, recv);
         let s = self.streams.slot(idx);
-        s.content_remaining = content_length;
-        if end_stream {
+        s.content_remaining = view.content_length;
+        if view.is_end_stream() {
             s.recv = RecvState::Ended;
         }
         self.open_streams += 1;
@@ -357,7 +350,7 @@ impl Connection {
         self.accept.push_back(Pending {
             id,
             idx,
-            parts: Some(parts),
+            view: Some(view),
             counted: false,
         });
     }
@@ -365,12 +358,7 @@ impl Connection {
     /// A request over `max_header_list_size`: answered with 431, never delivered. Like `h2`, the stream is
     /// reset only when the request is still streaming; a finished request is simply closed by the response.
     fn respond_too_large(&mut self, id: u32, end_stream: bool) {
-        self.write_response(
-            id,
-            http::StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-            &HeaderMap::new(),
-            true,
-        );
+        self.write_response(id, 431, [], true);
         if end_stream {
             self.count_local_error();
         } else {
