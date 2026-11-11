@@ -3,6 +3,11 @@
 
 use std::fmt::Write as _;
 
+#[path = "corpus_features.rs"]
+mod features;
+
+pub use features::{bodies, chunked_over_the_limit, forwarded};
+
 pub struct Case {
     pub name: String,
     writes: Vec<Vec<u8>>,
@@ -20,6 +25,13 @@ impl Case {
         Self {
             name: name.into(),
             writes: writes.iter().map(|write| write.to_vec()).collect(),
+        }
+    }
+
+    fn writes(name: impl Into<String>, writes: Vec<Vec<u8>>) -> Self {
+        Self {
+            name: name.into(),
+            writes,
         }
     }
 
