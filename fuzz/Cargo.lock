@@ -2643,6 +2643,7 @@ dependencies = [
  "nix",
  "once_cell",
  "openssl-probe 0.1.6",
+ "openssl-src",
  "oxiroute-h2",
  "parking_lot 0.13.0",
  "percent-encoding",
