@@ -359,7 +359,8 @@ Date and Connection lines, header map headroom, single-clock timeouts, the parke
 parsed-header ownership, response-task batch, lazy read buffer and coalescing writer, pooled gzip state, header-name
 cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, `Peek::try_read_now`, the plain-connection `ready` path and the accept-loop fast path, the lazy `recvmsg` control buffer, the per-worker connection placement (`set_buffer(own_driver)`) and
 `ServerConf::connection_age_ms`, the custom TLS acceptor (`listeners/custom_tls.rs`), the stream buffer accessors (`tcp_socket`, `has_read_ahead`, `has_write_behind`), the
-sendfile body write (`write_body_from_file`) and the kernel TLS offload (`ktls` modules, `Ssl::poll_kernel_tx`, `build.rs`).
+sendfile body write (`write_body_from_file`), the kernel TLS offload (`ktls` modules, `Ssl::poll_kernel_tx`, `build.rs`), the owned header values and compact raw head of an upgraded connection
+(`own_header_values` in `protocols/http/v1/common.rs`, used by the server and client sessions).
 Every upstream H1 correctness fix whose code our forks replace (`idle.rs`, `proxy_h1_inline.rs` in `pingora-proxy`,
 the inline relay) must be re-derived by hand. Then run `scripts/test-vendored.sh`, the OxiRoute TLS and HTTP wire
 tests and strict clippy.
