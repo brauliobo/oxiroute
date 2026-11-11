@@ -369,8 +369,8 @@ async fn malformed_requests(c: &mut Context) {
         raw::base(&host(id), "/fixed/ok"),
         &[("host", "elsewhere.test")],
     );
-    let reason = "differing :authority and host fields are unspecified (RFC 9114 4.3.1): the request is served or reset";
-    let tolerance = Tolerance::new(reason)
+    let differing = "differing :authority and host fields are unspecified (RFC 9114 4.3.1): the request is served or reset";
+    let tolerance = Tolerance::new(differing)
         .ignore("steps[0].outcome")
         .ignore("steps[0].origin");
     request_case(
