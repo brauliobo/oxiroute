@@ -12,11 +12,17 @@ conservative compatibility claims.
 ## Summary
 
 - **HTTP/1.1 fast lane.** A request of a fixed-response or redirect route or of a proxy route (header rules, forwarded
-  headers, retries of `GET` and `HEAD`, queue classes, a TLS HTTP/1.1 origin, a service access log, a body that arrives
-  with its head) is answered on the connection itself, without a session, with the same bytes, headers, framing and
+  headers, retries of `GET` and `HEAD`, queue classes, a TLS HTTP/1.1 origin, a service access log, a request body of
+  announced length) is answered on the connection itself, without a session, with the same bytes, headers, framing and
   connection handling as before. Header rules and access lines cost about a third of what they did on the classic
-  path. Rescue pools, cache, affinity, rewrites, gzip, streamed bodies and `Expect` take the classic path.
+  path. Rescue pools, cache, affinity, rewrites, gzip, chunked bodies and `Expect` take the classic path.
   `http_fast_lane = false` turns it off.
+- **Request bodies on the lanes.** Both lanes stream a body of announced length to the origin as it arrives, with
+  bounded buffering, and watch the origin's answer and the client while it does. A request body no longer sends the
+  request to the classic path: an HTTP/1.1 POST of 64 KiB costs 52% fewer instructions (96.8k to 46.2k) and an HTTP/2
+  POST of 1 KiB 30% fewer (85.6k to 59.8k), without LTO. An answer that comes before the upload ends is relayed and
+  the client connection is closed (HTTP/1.1) or the stream is reset with `NO_ERROR` (HTTP/2) rather than kept for
+  another request. Details: [request bodies](developer/PERF_6_4_REQUEST_BODIES.md).
 - **Idle connections.** A keep-alive connection that waits for its next request holds no session, no header buffer and
   no request future (10,000 idle connections: 17.5 kB to 2.2 kB of resident memory each with the allocator decay set to
   zero; 2,048 busy connections: 140 MB to 86 MB).
@@ -37,6 +43,11 @@ conservative compatibility claims.
   authority fields are reset.
 - **Content-Length.** Several identical `Content-Length` fields (or `5, 5`) are accepted and treated as one; conflicting
   or invalid values are refused, as before.
+- **Early answers to an upload.** On the HTTP/1.1 lane an origin that answers before the whole body arrived has its
+  answer relayed, the client connection is closed after it and the origin connection is not reused, as the classic path
+  does. A request pipelined after a body that arrived in several writes is served by the lane, where the classic path
+  answers `400` and drops the first answer. The debug log of the target `oxiroute::lane` names each request the
+  HTTP/1.1 lane serves.
 - **`bytes_sent`** of access records counts body bytes only (the response head was counted before).
 - **Origin responses.** Obsolete line folding in an origin response head becomes one space; an upstream connection is no
   longer reused after a failed request write or an origin response that was not read to its end.
@@ -95,9 +106,9 @@ CPU columns of the kernel-offload lanes, the handshake storm and the method are 
 
 Details: [fast lane](developer/PERF_6_4_REQUEST_PIPELINE_IMPL.md), [fast lane coverage](developer/PERF_6_4_LANE_COVERAGE_2.md), [footprint](developer/PERF_6_4_FOOTPRINT.md).
 
-- The fast lane scans the head with `oxiroute-h1-head`, forwards a request (with its body when that arrived with the
-  head) to an HTTP/1.1 server of a pool and relays the response; whatever it cannot prove equivalent (streamed or
-  chunked bodies, `Expect`, rescue pools, cache, affinity, rewrites, buffering, HTTP/2 upstreams, gzip, pipelining,
+- The fast lane scans the head with `oxiroute-h1-head`, forwards a request (with its body, streamed to the origin as it
+  arrives) to an HTTP/1.1 server of a pool and relays the response; whatever it cannot prove equivalent (chunked
+  bodies, `Expect`, rescue pools, cache, affinity, rewrites, buffering, HTTP/2 upstreams, gzip, pipelining,
   unusual heads) is handed to the classic session with the bytes already read, so nothing is read twice. Both data
   paths are compared on the same bytes by `tests/lane_differential`. A reload applies `http_fast_lane` to the new
   connections of the new generation.
