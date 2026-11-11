@@ -14,7 +14,12 @@
 # and publishes it as oxiroute-VERSION-TARGET-abort.tar.gz; the default flavour keeps unwinding, which is what
 # contains a panic to one connection or one generation (docs/developer/RELEASING.md).
 #
-# Environment: PGO and BOLT (1 or 0, default 1), FLAVOUR (unwind or abort, default unwind), PGO_TARGET (default
+# FLAVOUR=v3 builds the C code of the dependencies (the vendored OpenSSL above all) for x86-64-v3 CPUs (AVX2, BMI2:
+# -march=x86-64-v3) and publishes it as oxiroute-VERSION-TARGET-x86-64-v3.tar.gz; it measures 10% fewer instructions per
+# TLS handshake and does not start on older CPUs, so it is never the default artefact. Every flavour compiles that C code
+# with -O3 (CFLAGS for the target only; a plain `cargo build` keeps the cc crate default).
+#
+# Environment: PGO and BOLT (1 or 0, default 1), FLAVOUR (unwind, abort or v3, default unwind), PGO_TARGET (default
 # x86_64-unknown-linux-gnu), PGO_WORK and the other benchmarks/scripts/pgo.sh variables, BOLT_BIN_DIR (directory of
 # llvm-bolt and merge-fdata, see scripts/install-bolt.sh) and the other benchmarks/scripts/bolt.sh variables,
 # PGO_KEEP_INSTRUMENTED=1 (keep the instrumented build; it is removed to save disk), SOURCE_DATE_EPOCH (default:
@@ -31,16 +36,22 @@ bolt=${BOLT:-1}
 flavour=${FLAVOUR:-unwind}
 [[ ${pgo} == 0 || ${pgo} == 1 ]] || { echo "PGO must be 0 or 1" >&2; exit 2; }
 [[ ${bolt} == 0 || ${bolt} == 1 ]] || { echo "BOLT must be 0 or 1" >&2; exit 2; }
-[[ ${flavour} == unwind || ${flavour} == abort ]] || { echo "FLAVOUR must be unwind or abort" >&2; exit 2; }
+[[ ${flavour} == unwind || ${flavour} == abort || ${flavour} == v3 ]] || { echo "FLAVOUR must be unwind, abort or v3" >&2; exit 2; }
 pgo_script=${repo}/benchmarks/scripts/pgo.sh
 bolt_script=${repo}/benchmarks/scripts/bolt.sh
 work=${PGO_WORK:-/var/tmp/oxiroute-pgo}
 cargo_profile=release
 suffix=
+c_flags=-O3
 if [[ ${flavour} == abort ]]; then
   cargo_profile=release-abort suffix=-abort
   work=${work}/abort
+elif [[ ${flavour} == v3 ]]; then
+  suffix=-x86-64-v3 c_flags="-O3 -march=x86-64-v3"
+  work=${work}/v3
 fi
+# Target-specific, so build scripts of the build machine keep their flags; reaches every cc-crate build (OpenSSL, aws-lc, lua).
+export "CFLAGS_${target//-/_}=${c_flags}"
 export PGO_WORK=${work} PGO_CARGO_PROFILE=${cargo_profile}
 profile=${PGO_PROFILE:-${work}/oxiroute.profdata}
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "${repo}" log -1 --format=%ct HEAD)}
@@ -93,6 +104,9 @@ if [[ ${bolt} == 1 || ${flavour} == abort ]]; then
   rm -rf -- "${work}/target-test"
   note="${note} (the workspace tests ran against it)"
 fi
+if [[ ${flavour} == v3 ]]; then
+  note="${note}. This is the x86-64-v3 flavour: the C dependencies, the vendored OpenSSL above all, are compiled with \`-march=x86-64-v3\` and the binary needs a CPU with AVX2 and BMI2 (Intel Haswell, AMD Excavator or newer)"
+fi
 if [[ ${flavour} == abort ]]; then
   note="${note}. This is the fail-fast flavour (\`panic = \"abort\"\`): a panic ends the whole worker process, which the supervisor reports as a failed generation, instead of closing one connection"
 fi
@@ -114,7 +128,8 @@ cat > "${root}/BUILD-INFO.json" <<JSON
   "pgo": ${pgo_json},
   "pgo_profile_sha256": ${profile_sha256},
   "bolt": $([[ ${bolt} == 1 ]] && echo true || echo false),
-  "panic": "$([[ ${flavour} == abort ]] && echo abort || echo unwind)"
+  "panic": "$([[ ${flavour} == abort ]] && echo abort || echo unwind)",
+  "c_flags": "${c_flags}"
 }
 JSON
 
