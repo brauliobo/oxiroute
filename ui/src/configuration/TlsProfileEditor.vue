@@ -59,7 +59,7 @@ header.form-heading
     span Kernel TLS
     select(v-model="profile.policy.ktls")
       option(value="off") Off
-      option(value="static") Large static files
+      option(value="auto") Automatic (kernel TLS when available)
 StringListField(
   v-model="profile.policy.client_auth.allowed_dns_names"
   label="Allowed client SANs"

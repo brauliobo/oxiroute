@@ -58,32 +58,32 @@ fn ktls_defaults_to_off_and_renders_explicitly() {
 }
 
 #[test]
-fn ktls_static_round_trips_in_every_format() {
-    let config = load_lua(&config_source(r#"{ ktls = "static" }"#)).expect("static ktls policy");
-    assert_eq!(config.tls_profiles[0].policy.ktls, KtlsMode::Static);
-    let validated = config.validate().expect("valid static ktls policy");
+fn ktls_auto_round_trips_in_every_format() {
+    let config = load_lua(&config_source(r#"{ ktls = "auto" }"#)).expect("auto ktls policy");
+    assert_eq!(config.tls_profiles[0].policy.ktls, KtlsMode::Auto);
+    let validated = config.validate().expect("valid auto ktls policy");
     for format in FORMATS {
-        let rendered = render_config(format, &validated).expect("static ktls render");
-        assert!(rendered.contains("static"), "{format:?}: {rendered}");
+        let rendered = render_config(format, &validated).expect("auto ktls render");
+        assert!(rendered.contains("auto"), "{format:?}: {rendered}");
         let resolved = resolve_source_with_format(Path::new("config"), rendered.as_bytes(), format)
-            .expect("rendered static ktls source resolves");
+            .expect("rendered auto ktls source resolves");
         assert_eq!(resolved.config, validated, "{format:?}");
     }
 }
 
 #[test]
 fn ktls_rejects_unknown_values_in_every_format() {
-    let error = load_lua_error(&config_source(r#"{ ktls = "auto" }"#)).to_string();
+    let error = load_lua_error(&config_source(r#"{ ktls = "static" }"#)).to_string();
     assert!(error.contains("unknown variant"), "{error}");
 
-    let validated = load_lua(&config_source(r#"{ ktls = "static" }"#))
-        .expect("static ktls policy")
+    let validated = load_lua(&config_source(r#"{ ktls = "auto" }"#))
+        .expect("auto ktls policy")
         .validate()
-        .expect("valid static ktls policy");
+        .expect("valid auto ktls policy");
     for format in [ConfigFormat::Kdl, ConfigFormat::Uci, ConfigFormat::Hocon] {
-        let rendered = render_config(format, &validated).expect("static ktls render");
+        let rendered = render_config(format, &validated).expect("auto ktls render");
         let error =
-            resolve(format, &rendered.replace("static", "auto")).expect_err("unknown ktls mode");
+            resolve(format, &rendered.replace("auto", "static")).expect_err("unknown ktls mode");
         assert!(
             error.to_string().contains("unknown variant"),
             "{format:?}: {error}"
