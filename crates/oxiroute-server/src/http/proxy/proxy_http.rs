@@ -270,6 +270,11 @@ impl ProxyHttp for HttpReverseProxy {
         error
     }
 
+    /// A cached response that was written in full ends the request through an error; it is not a failure.
+    fn suppress_error_log(&self, _session: &Session, ctx: &Self::CTX, _error: &Error) -> bool {
+        ctx.cache_response_written
+    }
+
     async fn fail_to_proxy(
         &self,
         session: &mut Session,
@@ -288,7 +293,7 @@ impl ProxyHttp for HttpReverseProxy {
                 error_code: session
                     .response_written()
                     .map_or(0, |response| response.status.as_u16()),
-                can_reuse_downstream: false,
+                can_reuse_downstream: ctx.cache_response_written,
             };
         }
         if error.esource() == &pingora::ErrorSource::Upstream {
@@ -307,9 +312,10 @@ impl ProxyHttp for HttpReverseProxy {
                     transaction.record_hit();
                 }
                 ctx.cache_response_handled = true;
+                ctx.cache_response_written = true;
                 return FailToProxy {
                     error_code: stale.status.as_u16(),
-                    can_reuse_downstream: false,
+                    can_reuse_downstream: true,
                 };
             }
         }
@@ -757,7 +763,7 @@ impl ProxyHttp for HttpReverseProxy {
         let response_status = session
             .response_written()
             .map(|response| response.status.as_u16());
-        if let Some(error) = error {
+        if let Some(error) = error.filter(|_| !ctx.cache_response_written) {
             warn!(
                 "HTTP request failed with {:?} from {:?}",
                 error.etype(),

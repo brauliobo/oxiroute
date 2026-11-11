@@ -44,6 +44,7 @@ async fn finish_cache_response(
         .expect("cached response has a transaction")
         .record_hit();
     write_cached_response_conditionally(session, &response).await?;
+    ctx.cache_response_written = true;
     Err(Error::new_in(ErrorType::InternalError))
 }
 

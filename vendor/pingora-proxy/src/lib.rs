@@ -1437,6 +1437,8 @@ where
                 session.cache.disable(reason);
             }
             let res = self.inner.fail_to_proxy(&mut session, e, ctx).await;
+            // A response the hook wrote in full leaves the downstream connection reusable.
+            server_reuse = server_reuse || res.can_reuse_downstream;
 
             // final error will have > 0 status unless downstream connection is dead
             if !self.inner.suppress_error_log(&session, ctx, e) {
