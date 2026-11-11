@@ -930,20 +930,33 @@ impl HttpSession {
     /// If the connection cannot be reused, the underlying stream will be closed and `None` will be
     /// returned.
     pub async fn reuse(mut self) -> Option<Stream> {
+        if self.keeps_connection() {
+            return Some(self.underlying_stream);
+        }
+        self.shutdown().await;
+        None
+    }
+
+    /// [`Self::reuse()`] for a session in a box: the 640-byte session is not moved into the future.
+    pub async fn reuse_boxed(mut self: Box<Self>) -> Option<Stream> {
+        if self.keeps_connection() {
+            return Some(self.underlying_stream);
+        }
+        self.shutdown().await;
+        None
+    }
+
+    /// Whether the connection can serve another request: the response body was read to its end and the
+    /// keepalive state allows it.
+    fn keeps_connection(&mut self) -> bool {
         if !self.body_reader.body_complete() || self.body_reader.has_bytes_overread() {
             self.set_keepalive(None);
         }
-
-        // TODO: this function is unnecessarily slow for keepalive case
-        // because that case does not need async
-        match self.keepalive_timeout {
-            KeepaliveStatus::Off => {
-                debug!("HTTP shutdown connection");
-                self.shutdown().await;
-                None
-            }
-            _ => Some(self.underlying_stream),
+        let keeps = !matches!(self.keepalive_timeout, KeepaliveStatus::Off);
+        if !keeps {
+            debug!("HTTP shutdown connection");
         }
+        keeps
     }
 
     fn init_body_reader(&mut self) {
