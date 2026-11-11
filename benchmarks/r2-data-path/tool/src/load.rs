@@ -112,6 +112,7 @@ struct Spec {
     h2_uri: Uri,
     h2_headers: HeaderMap,
     body: Bytes,
+    checks: Checks,
 }
 
 #[derive(Default)]
@@ -166,6 +167,41 @@ struct Outcome {
     status: u16,
     body_len: usize,
     close: bool,
+    head_end: usize,
+    /// The response met the `--expect-fill`, `--expect-header` and `--expect-no-header` checks.
+    checks: bool,
+}
+
+impl Outcome {
+    fn new(status: u16, body_len: usize, close: bool, head_end: usize) -> Self {
+        Self { status, body_len, close, head_end, checks: true }
+    }
+}
+
+/// Content checks beyond status and length: every body byte equals `fill`, a header has an exact value, a header is
+/// absent. A proxy that answers with the right size but the wrong content, or ignores a header rule, counts as errors.
+#[derive(Default)]
+struct Checks {
+    fill: Option<u8>,
+    header: Option<(String, String)>,
+    absent: Option<String>,
+}
+
+impl Checks {
+    fn h1(&self, buf: &[u8], head_end: usize) -> bool {
+        let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+        self.fill.is_none_or(|byte| buf[head_end..].iter().all(|&found| found == byte))
+            && self.header.as_ref().is_none_or(|(name, value)| header_value(&head, &format!("{name}:")) == Some(value))
+            && self.absent.as_ref().is_none_or(|name| header_value(&head, &format!("{name}:")).is_none())
+    }
+
+    fn h2(&self, headers: &HeaderMap, body: &[u8]) -> bool {
+        self.fill.is_none_or(|byte| body.iter().all(|&found| found == byte))
+            && self.header.as_ref().is_none_or(|(name, value)| {
+                headers.get(name.as_str()).and_then(|found| found.to_str().ok()) == Some(value)
+            })
+            && self.absent.as_ref().is_none_or(|name| !headers.contains_key(name.as_str()))
+    }
 }
 
 fn pad_headers(bytes: usize) -> Vec<(String, String)> {
@@ -324,6 +360,15 @@ fn spec_from(flags: &Flags) -> Spec {
             HeaderValue::from_str(value).expect("header value"),
         );
     }
+    let lower = |name: &str| flags.get(name).map(|value| value.to_ascii_lowercase());
+    let checks = Checks {
+        fill: flags.get("expect-fill").map(|value| value.bytes().next().expect("--expect-fill CHAR")),
+        header: lower("expect-header").map(|header| {
+            let (name, value) = header.split_once(':').expect("--expect-header 'name: value'");
+            (name.trim().to_owned(), value.trim().to_owned())
+        }),
+        absent: lower("expect-no-header"),
+    };
     let scheme = if matches!(proto, Proto::H2Tls | Proto::H3) { "https" } else { "http" };
     Spec {
         proto,
@@ -363,6 +408,7 @@ fn spec_from(flags: &Flags) -> Spec {
         h2_headers,
         host,
         body,
+        checks,
     }
 }
 
@@ -464,7 +510,7 @@ async fn read_response(io: &mut Io, buf: &mut Vec<u8>) -> io::Result<Outcome> {
         .ok_or_else(|| io::Error::other("malformed status line"))?;
     let mut close = header_value(&head, "connection:").is_some_and(|value| value.contains("close"));
     if status < 200 || status == 204 || status == 304 {
-        return Ok(Outcome { status, body_len: 0, close });
+        return Ok(Outcome::new(status, 0, close, head_end));
     }
     if header_value(&head, "transfer-encoding:").is_some_and(|value| value.contains("chunked")) {
         while !buf[head_end..].ends_with(b"0\r\n\r\n") {
@@ -472,7 +518,7 @@ async fn read_response(io: &mut Io, buf: &mut Vec<u8>) -> io::Result<Outcome> {
                 return Err(io::ErrorKind::UnexpectedEof.into());
             }
         }
-        return Ok(Outcome { status, body_len: buf.len() - head_end, close });
+        return Ok(Outcome::new(status, buf.len() - head_end, close, head_end));
     }
     if let Some(length) = header_value(&head, "content-length:").and_then(|value| value.parse::<usize>().ok()) {
         while buf.len() < head_end + length {
@@ -480,11 +526,11 @@ async fn read_response(io: &mut Io, buf: &mut Vec<u8>) -> io::Result<Outcome> {
                 return Err(io::ErrorKind::UnexpectedEof.into());
             }
         }
-        return Ok(Outcome { status, body_len: length, close });
+        return Ok(Outcome::new(status, length, close, head_end));
     }
     close = true;
     while io.read_buf(buf).await? != 0 {}
-    Ok(Outcome { status, body_len: buf.len() - head_end, close })
+    Ok(Outcome::new(status, buf.len() - head_end, close, head_end))
 }
 
 fn request_for<B>(spec: &Spec, body: B) -> Request<B> {
@@ -509,26 +555,30 @@ async fn exchange(client: &mut Client, spec: &Spec, scratch: &mut Vec<u8>, reque
                 }
                 _ => io.write_all(request).await?,
             }
-            read_response(io, scratch).await
+            let mut outcome = read_response(io, scratch).await?;
+            outcome.checks = spec.checks.h1(scratch, outcome.head_end);
+            Ok(outcome)
         }
         Client::H2(sender) => {
             let request = request_for(spec, Full::new(spec.body.clone()));
             sender.ready().await.map_err(io::Error::other)?;
             let response = sender.send_request(request).await.map_err(io::Error::other)?;
-            let status = response.status().as_u16();
-            let body = response.into_body().collect().await.map_err(io::Error::other)?;
-            Ok(Outcome { status, body_len: body.to_bytes().len(), close: false })
+            let (parts, body) = response.into_parts();
+            let body = body.collect().await.map_err(io::Error::other)?.to_bytes();
+            let mut outcome = Outcome::new(parts.status.as_u16(), body.len(), false, 0);
+            outcome.checks = spec.checks.h2(&parts.headers, &body);
+            Ok(outcome)
         }
         Client::H3(link) => {
             let (status, body_len) = link.request(request_for(spec, ()), &spec.body).await?;
-            Ok(Outcome { status, body_len, close: false })
+            Ok(Outcome::new(status, body_len, false, 0))
         }
         Client::Raw(io) => {
             scratch.clear();
             scratch.resize(spec.msg_bytes, b'm');
             io.write_all(scratch).await?;
             io.read_exact(scratch).await?;
-            Ok(Outcome { status: 200, body_len: spec.msg_bytes, close: false })
+            Ok(Outcome::new(200, spec.msg_bytes, false, 0))
         }
     }
 }
@@ -600,7 +650,9 @@ async fn worker(
         let outcome = exchange(client.as_mut().expect("connected"), &spec, &mut scratch, request).await;
         match outcome {
             Ok(outcome) => {
-                let valid = outcome.status == spec.expect_status && expected.is_none_or(|length| length == outcome.body_len);
+                let valid = outcome.status == spec.expect_status
+                    && outcome.checks
+                    && expected.is_none_or(|length| length == outcome.body_len);
                 if valid {
                     stats.ok += 1;
                     stats.bytes += outcome.body_len as u64;
@@ -751,4 +803,39 @@ pub fn run(flags: &Flags) -> ExitCode {
         }
         drive(Arc::new(spec), flags).await
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nX-Served-By: bench\r\ncontent-length: 4\r\n\r\nxxxx";
+    const HEAD_END: usize = RESPONSE.len() - 4;
+
+    fn checks(fill: Option<u8>, header: Option<(&str, &str)>, absent: Option<&str>) -> Checks {
+        Checks {
+            fill,
+            header: header.map(|(name, value)| (name.to_owned(), value.to_owned())),
+            absent: absent.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn h1_checks_pass_and_fail() {
+        assert!(checks(Some(b'x'), Some(("x-served-by", "bench")), Some("content-type")).h1(RESPONSE, HEAD_END));
+        assert!(!checks(Some(b'y'), None, None).h1(RESPONSE, HEAD_END));
+        assert!(!checks(None, Some(("x-served-by", "other")), None).h1(RESPONSE, HEAD_END));
+        assert!(!checks(None, Some(("x-missing", "bench")), None).h1(RESPONSE, HEAD_END));
+        assert!(!checks(None, None, Some("content-length")).h1(RESPONSE, HEAD_END));
+    }
+
+    #[test]
+    fn h2_checks_pass_and_fail() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-served-by", HeaderValue::from_static("bench"));
+        assert!(checks(Some(b'x'), Some(("x-served-by", "bench")), Some("content-type")).h2(&headers, b"xxxx"));
+        assert!(!checks(Some(b'x'), None, None).h2(&headers, b"xxyx"));
+        assert!(!checks(None, Some(("x-served-by", "other")), None).h2(&headers, b""));
+        assert!(!checks(None, None, Some("x-served-by")).h2(&headers, b""));
+    }
 }

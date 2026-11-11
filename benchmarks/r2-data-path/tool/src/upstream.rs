@@ -3,7 +3,7 @@
 //! Paths: `/b0 /b1k /b64k /b1m` fixed `application/octet-stream` bodies, `/html64k` compressible
 //! `text/html`, `/stream` chunked 64 KiB without delay, `/slow` chunked 64 KiB with a 2 ms gap between
 //! chunks, `/sink` (any method; drains the request body, answers `ok`), `/ws` (101 then byte echo),
-//! `/b1k-slow` like `/b1k` with one response in 500 delayed 200 ms, `/cookie1k` like `/b1k` with a `Set-Cookie`,
+//! `/echo-headers` (the request headers as text, one per line), `/b1k-slow` like `/b1k` with one response in 500 delayed 200 ms, `/cookie1k` like `/b1k` with a `Set-Cookie`,
 //! `/cc1k` like `/b1k` with `Cache-Control: max-age=60`, `/rv1k` an always stale `ETag` entry that answers 304 to a
 //! matching `If-None-Match` (revalidation).
 
@@ -155,6 +155,13 @@ async fn handle(mut request: Request<Incoming>) -> Result<Response<Body>, Infall
         "/html64k" => full("text/html", payloads.html64k.clone()),
         "/stream" => chunked(None),
         "/slow" => chunked(Some(Duration::from_millis(2))),
+        "/echo-headers" => {
+            let mut text = String::new();
+            for (name, value) in request.headers() {
+                text.push_str(&format!("{name}: {}\n", value.to_str().unwrap_or("?")));
+            }
+            full("text/plain", Bytes::from(text))
+        }
         "/sink" => {
             let _ = request.into_body().collect().await;
             full("text/plain", Bytes::from_static(b"ok"))
@@ -174,6 +181,11 @@ async fn handle(mut request: Request<Incoming>) -> Result<Response<Body>, Infall
             response
                 .headers_mut()
                 .insert(UPGRADE, HeaderValue::from_static("websocket"));
+            // The accept value of the fixed key `r2tool load` sends (RFC 6455 section 1.3); HAProxy rejects a 101 without it.
+            response.headers_mut().insert(
+                "sec-websocket-accept",
+                HeaderValue::from_static("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+            );
             response
         }
         _ => {
