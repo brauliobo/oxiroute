@@ -27,6 +27,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 LOCK_FILE = "/tmp/oxiroute-bench.lock"
+PERF_SUDO = ["sudo", "-n"] if os.environ.get("R2_PERF_SUDO") else []  # kernel-side events (e.g. instructions:k) need root here
 PERF_EXTRA = [event for event in os.environ.get("R2_PERF_EXTRA", "").split(",") if event]  # e.g. cache-misses:u
 LANE_TIMEOUT = 600  # seconds; a hung load run must never hold the shared bench lock
 SIZES = {"b0": 0, "b1k": 1024, "b64k": 65536, "b1m": 1048576}
@@ -107,6 +108,12 @@ def build_lanes():
     for name, size in (("static_f1k", 1024), ("static_f64k", 65536), ("static_f1m", 1048576)):
         add(lane(name, ["--path", f"/static/{name[7:]}.bin", "--expect-len", str(size)] + base, features=["static"],
                  requests=20000 if size < 65536 else 5000 if size == 65536 else 1000))
+    # Static files over TLS: user-space records against kernel TLS (`ktls = "static"`, needs `modprobe tls`).
+    for name, features in (("tls_static", ["tls", "static"]), ("tls_static_ktls", ["tls", "static", "ktls"])):
+        for size, label in ((262144, "f256k"), (1048576, "f1m")):
+            add(lane(f"{name}_{label}", ["--proto", "h1tls", "--path", f"/static/{label}.bin",
+                                         "--expect-len", str(size)] + base,
+                     features=features, requests=2000 if size < 1048576 else 1000, warmup=100))
     add(lane("ws_echo_64", ["--proto", "ws", "--conns", "16", "--msg-bytes", "64"]))
     add(lane("ws_echo_16k", ["--proto", "ws", "--conns", "16", "--msg-bytes", "16384"], requests=10000))
     add(lane("ws_echo_1k", ["--proto", "ws", "--conns", "16", "--msg-bytes", "1024"]))
@@ -313,7 +320,7 @@ class Env:
         (self.work / "logs").mkdir()
         www = self.work / "www" / "static"
         www.mkdir(parents=True)
-        for name, size in (("f1k", 1024), ("f64k", 65536), ("f1m", 1048576)):
+        for name, size in (("f1k", 1024), ("f64k", 65536), ("f256k", 262144), ("f1m", 1048576)):
             (www / f"{name}.bin").write_bytes(b"x" * size)
 
     def start(self, wrap=(), proxy_env=None):
@@ -436,7 +443,7 @@ def measured_rep(env, rep, idle):
     os.mkfifo(ctl)
     os.mkfifo(ack)
     perf = subprocess.Popen(
-        ["env", "LC_ALL=C", "perf", "stat", "-D", "-1", "-x,", "-e", ",".join(["instructions:u", "cycles:u", *PERF_EXTRA]), "-p", str(env.proxy.pid),
+        [*PERF_SUDO, "env", "LC_ALL=C", "perf", "stat", "-D", "-1", "-x,", "-e", ",".join(["instructions:u", "cycles:u", *PERF_EXTRA]), "-p", str(env.proxy.pid),
          "--control", f"fifo:{ctl},{ack}", "-o", str(csv)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     pid = env.proxy.pid
     switches = lambda tag: (f"cat /proc/{pid}/task/*/status > {env.work}/sw{rep}.{tag}; "
