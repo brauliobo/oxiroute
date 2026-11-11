@@ -13,7 +13,8 @@ of each per-request feature. Wall-clock numbers on a shared host are unreliable,
 | `run.py` | Lane table, process orchestration, `perf stat` / strace / allocator-shim / `perf record` measurements. |
 | `gen_config.py` | Renders the Lua configuration of a lane from independent feature switches. |
 | `tool/` | `r2tool`: in-tree upstream (0 B, 1 KiB, 64 KiB, 1 MiB, chunked, slow, sink, upgrade echo, TCP echo) and a fixed-count load generator (h1, h1+TLS, h2c, h2+TLS, HTTP/3, WebSocket-style upgrade, TCP echo; keep-alive or new connection per request; header padding; request bodies; p50/p99/p99.9). `alloc_count.c` is an `LD_PRELOAD` shim counting allocator and `clock_gettime` calls. |
-| `table.py` | Compact table of a `results.json`, optionally with instruction deltas against a previous run. |
+| `table.py` | Compact table of a `results.json`, optionally with instruction deltas against a previous run; `table.py --markdown DIR LANE...` prints the release comparison table of `compare.sh`. |
+| `compare.sh` | Instructions per request of an older release (`--base`, run with `--baseline` so no option it does not know is generated), the new binary with the fast lane off and the new binary, one lane after the other; scratch on disk under `~/.local/state/oxiroute-bench`. |
 | `profile_summary.py` | Component and symbol summary of a `--profile` `perf.data`. |
 | `soak.py` | Mixed-traffic soak of one process (keep-alive, new connection, POST, 1 MiB upload, slow response, WebSocket-style upgrade over plain and TLS, TLS HTTP/1.1, HTTP/2, TCP echo, paced) with RSS, descriptor and thread samples, a configuration reload through the management API in the middle, an origin stop and a SIGTERM at the end. |
 | `memcpy_profile.py` | Copies of 48 bytes or more per request, by caller (`tool/memcpy_profile.c` preloaded): shows async state machines moved to the heap or into another future. |
