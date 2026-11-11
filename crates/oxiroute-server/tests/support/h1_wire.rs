@@ -68,7 +68,10 @@ impl Origin {
             .expect("origin certificate chain");
         let key = private_key_fixture("origin-key.pem");
         let key = PrivateKeyDer::from_pem_file(key.path()).expect("origin key");
-        let mut config = ServerConfig::builder()
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("origin protocol versions")
             .with_no_client_auth()
             .with_single_cert(certificates, key)
             .expect("origin identity");
