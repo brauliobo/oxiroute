@@ -196,7 +196,9 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   `new_with_preloaded`, which sets the session's pipelined prefix: `read_request` parses the preloaded bytes before it reads from the stream, so nothing is read twice.
   Without a front the loop is the upstream one. `Http1Front::cleanup` runs with the application's cleanup.
 - `protocols/http/v1/client.rs` can read a response head raw: `read_raw_head` reads to the first empty line with the limits, timeouts
-  and errors of `read_response`, `accept_fast_head` takes the facts (`FastHead`, `FastFraming`) of a head the caller scanned
+  and errors of `read_response`, and is cancel safe (the bytes read so far stay in the session's `response_header_read_buf`, as
+  `read_response` keeps them, so a read that lost a `select!` to the upload of a request body resumes where it stopped),
+  `accept_fast_head` takes the facts (`FastHead`, `FastFraming`) of a head the caller scanned
   itself as the session's response (status, version, `Connection`, framing; no `ResponseHeader` is built), and
   `reparse_raw_head` leaves the bytes to `read_response` for a head the caller does not take. Body reading, keepalive and reuse
   then work as for a parsed response.
