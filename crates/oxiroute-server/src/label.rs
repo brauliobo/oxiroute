@@ -28,6 +28,11 @@ impl Label {
         Arc::clone(&self.text)
     }
 
+    /// Whether `text` is this label's own shared text.
+    pub(crate) fn is_shared(&self, text: &Arc<str>) -> bool {
+        Arc::ptr_eq(&self.text, text)
+    }
+
     /// The text as the access log writes it.
     pub(crate) fn logged(&self) -> &str {
         self.redacted.as_deref().unwrap_or(&self.text)

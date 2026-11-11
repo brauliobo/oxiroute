@@ -25,6 +25,7 @@ use crate::{
         action::AccessLog,
         evacuation::{Evacuation, EvacuationReport, Fate},
     },
+    label::Label,
     observability::access_record::{Correlation, Count, Safe, SafeId, StuckAccess},
     sharded::{self, SHARDS, Sharded},
 };
@@ -195,6 +196,12 @@ impl InflightEntry {
             Phase::Connecting if self.queue_position.load(Ordering::Relaxed) > 0 => Phase::Queued,
             phase => phase,
         }
+    }
+
+    /// Only the task that serves the request counts its attempts, one after the other.
+    fn count_attempt(&self) {
+        self.attempts
+            .store(self.attempts.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     }
 
     fn place(&self) -> std::sync::MutexGuard<'_, Place> {
@@ -463,13 +470,28 @@ impl InflightRegistry {
     }
 
     pub(crate) fn register(&'static self, arrival: InflightArrival<'_>) -> InflightGuard {
+        self.insert(arrival, Place::default())
+    }
+
+    /// Like [`Self::register`] for a request whose route and pool are known on arrival, so placing them takes no
+    /// lock.
+    pub(crate) fn register_placed(
+        &'static self,
+        arrival: InflightArrival<'_>,
+        route: Arc<str>,
+        pool: Arc<str>,
+    ) -> InflightGuard {
+        let place = Place {
+            route: Some(route),
+            pool: Some(pool),
+            server: None,
+        };
+        self.insert(arrival, place)
+    }
+
+    fn insert(&'static self, arrival: InflightArrival<'_>, place: Place) -> InflightGuard {
         let index = sharded::local_index();
-        let number = self
-            .shards
-            .get(index)
-            .registered
-            .fetch_add(1, Ordering::Relaxed)
-            + 1;
+        let number = sharded::next(&self.shards.get(index).registered);
         let key = number * SHARDS as u64 + index as u64;
         let entry = Arc::new(InflightEntry {
             key,
@@ -485,7 +507,7 @@ impl InflightRegistry {
             deadline_ms: AtomicU64::new(duration_ms(arrival.deadline)),
             queue_position: Arc::new(AtomicU64::new(0)),
             stuck_reported: AtomicBool::new(false),
-            place: Mutex::new(Place::default()),
+            place: Mutex::new(place),
             evacuation: Arc::new(Evacuation::new()),
             access_log: arrival.access_log,
         });
@@ -620,7 +642,8 @@ impl InflightGuard {
 
     #[cfg(test)]
     pub(crate) fn set_server(&self, server: &str) {
-        self.place_server(server.into());
+        self.entry.count_attempt();
+        self.entry.place().server = Some(server.into());
     }
 
     pub(crate) fn place_route(&self, route: Arc<str>) {
@@ -631,9 +654,19 @@ impl InflightGuard {
         self.entry.place().pool = Some(pool);
     }
 
-    pub(crate) fn place_server(&self, server: Arc<str>) {
-        self.entry.attempts.fetch_add(1, Ordering::Relaxed);
-        self.entry.place().server = Some(server);
+    /// An attempt starts on `server` of `pool`, in one step: the pool is left alone when the request is placed on it
+    /// already.
+    pub(crate) fn place_attempt(&self, pool: &Label, server: Arc<str>) {
+        self.entry.count_attempt();
+        let mut place = self.entry.place();
+        if !place
+            .pool
+            .as_ref()
+            .is_some_and(|placed| pool.is_shared(placed))
+        {
+            place.pool = Some(pool.shared());
+        }
+        place.server = Some(server);
     }
 
     pub(crate) fn set_deadline(&self, deadline: Duration) {
@@ -643,8 +676,8 @@ impl InflightGuard {
     }
 
     /// Where a lease reports its place in the pool queue, 0 when it is not waiting.
-    pub(crate) fn queue_cell(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.entry.queue_position)
+    pub(crate) fn queue_cell(&self) -> &Arc<AtomicU64> {
+        &self.entry.queue_position
     }
 
     pub(crate) fn stuck(&self) -> bool {
@@ -750,6 +783,34 @@ mod tests {
         guard.set_server("gpu-2");
         let view = registry.find("p").expect("entry");
         assert_eq!((view.server.as_deref(), view.attempts), (Some("gpu-2"), 2));
+    }
+
+    #[test]
+    fn a_request_registered_with_its_route_and_pool_is_placed_on_arrival() {
+        let registry = registry_for_test();
+        let pool = Label::new("farm");
+        let guard = registry.register_placed(
+            arrival("placed", Duration::from_secs(30)),
+            "route-1".into(),
+            pool.shared(),
+        );
+        let view = registry.find("placed").expect("entry");
+        assert_eq!(
+            (
+                view.route.as_deref(),
+                view.pool.as_deref(),
+                view.server,
+                view.attempts
+            ),
+            (Some("route-1"), Some("farm"), None, 0)
+        );
+        guard.place_attempt(&pool, "gpu-1".into());
+        guard.place_attempt(&Label::new("other"), "gpu-2".into());
+        let view = registry.find("placed").expect("entry");
+        assert_eq!(
+            (view.pool.as_deref(), view.server.as_deref(), view.attempts),
+            (Some("other"), Some("gpu-2"), 2)
+        );
     }
 
     #[test]
