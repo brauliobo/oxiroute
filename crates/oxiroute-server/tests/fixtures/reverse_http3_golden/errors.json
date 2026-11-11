@@ -1,18 +1,19 @@
 {
   "cases": [
     {
-      "accept": [{"outcome":{"body":"","headers":[],"status":431},"step":0}],
-      "access_log": [],
+      "access_log": ["h3 web GET 200"],
       "id": "header-section/h3-client-20000-byte-field",
-      "ignore": ["steps[0].outcome.body","steps[0].outcome.headers"],
       "steps": [
+        {
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://h3-client-20000-byte-field.header-section.test/fixed/ok"
+        },
         {
           "connection_after": "open",
           "outcome": {"send_request":{"header_too_big":true}},
           "request": "GET https://h3-client-20000-byte-field.header-section.test/fixed/ok"
         }
-      ],
-      "tolerance": "the client refuses locally once it has seen the advertised SETTINGS_MAX_FIELD_SECTION_SIZE; otherwise the server answers 431"
+      ]
     },
     {
       "access_log": ["h3 web GET 200","h3 web GET 200"],
@@ -31,55 +32,59 @@
       ]
     },
     {
-      "accept": [],
       "access_log": ["h3 web GET 200"],
+      "deviation": "RFC 9114 4.2.2: a field section over the advertised size may be answered 431 (RFC 6585); the h3 crate answered 431 itself with an empty body, the application now answers it with its normal error body",
       "id": "header-section/size-17000",
-      "ignore": ["steps[0].outcome.body","steps[0].outcome.headers"],
       "steps": [
-        {"connection_after":"open","outcome":{"body":"","headers":[],"status":431},"request":"field section of 17000 bytes"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request headers exceed the HTTP/3 limit\n","headers":[["content-length","40"]],"status":431},
+          "request": "field section of 17000 bytes"
+        },
         {
           "connection_after": "open",
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "the body and headers of a 431 answer are the server's own"
+      ]
     },
     {
-      "accept": [],
       "access_log": ["h3 web GET 200"],
+      "deviation": "RFC 9114 4.2.2: a field section over the advertised size may be answered 431 (RFC 6585); the h3 crate answered 431 itself with an empty body, the application now answers it with its normal error body",
       "id": "header-section/size-20000",
-      "ignore": ["steps[0].outcome.body","steps[0].outcome.headers"],
       "steps": [
-        {"connection_after":"open","outcome":{"body":"","headers":[],"status":431},"request":"field section of 20000 bytes"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request headers exceed the HTTP/3 limit\n","headers":[["content-length","40"]],"status":431},
+          "request": "field section of 20000 bytes"
+        },
         {
           "connection_after": "open",
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "the body and headers of a 431 answer are the server's own"
+      ]
     },
     {
-      "accept": [],
       "access_log": ["h3 web GET 200"],
+      "deviation": "RFC 9114 4.2.2: a field section over the advertised size may be answered 431 (RFC 6585); the h3 crate answered 431 itself with an empty body, the application now answers it with its normal error body",
       "id": "header-section/size-70000",
-      "ignore": ["steps[0].outcome.body","steps[0].outcome.headers"],
       "steps": [
-        {"connection_after":"open","outcome":{"body":"","headers":[],"status":431},"request":"field section of 70000 bytes"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request headers exceed the HTTP/3 limit\n","headers":[["content-length","40"]],"status":431},
+          "request": "field section of 70000 bytes"
+        },
         {
           "connection_after": "open",
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "the body and headers of a 431 answer are the server's own"
+      ]
     },
     {
-      "accept": [{"outcome":{"body":"","headers":[],"status":431},"step":0}],
       "access_log": ["h3 web GET 200","h3 web GET 200"],
       "id": "header-section/boundary-16384",
-      "ignore": ["steps[0].outcome.body","steps[0].outcome.headers"],
       "steps": [
         {
           "connection_after": "open",
@@ -91,41 +96,43 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "a field section up to the advertised size is accepted and a larger one may be answered 431 (RFC 9114 4.2.2)"
+      ]
     },
     {
-      "accept": [{"outcome":{"body":"","headers":[],"status":200},"step":0}],
       "access_log": ["h3 web GET 200"],
+      "deviation": "RFC 9114 4.2.2: a field section over the advertised size may be answered 431 (RFC 6585); the h3 crate answered 431 itself with an empty body, the application now answers it with its normal error body",
       "id": "header-section/boundary-16385",
-      "ignore": ["steps[0].outcome.body","steps[0].outcome.headers"],
       "steps": [
-        {"connection_after":"open","outcome":{"body":"","headers":[],"status":431},"request":"field section of 16385 bytes"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request headers exceed the HTTP/3 limit\n","headers":[["content-length","40"]],"status":431},
+          "request": "field section of 16385 bytes"
+        },
         {
           "connection_after": "open",
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "a field section up to the advertised size is accepted and a larger one may be answered 431 (RFC 9114 4.2.2)"
+      ]
     },
     {
-      "accept": [],
       "access_log": ["h3 web GET 200"],
+      "deviation": "RFC 9114 4.2.2: a field section over the advertised size may be answered 431 (RFC 6585); the h3 crate answered 431 itself with an empty body, the application now answers it with its normal error body; each field counts 32 bytes towards the size (RFC 9114 4.2.2)",
       "id": "header-section/many-small-fields",
-      "ignore": ["steps[0].outcome.body","steps[0].outcome.headers"],
       "steps": [
-        {"connection_after":"open","outcome":{"body":"","headers":[],"status":431},"request":"500 small fields"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request headers exceed the HTTP/3 limit\n","headers":[["content-length","40"]],"status":431},
+          "request": "500 small fields"
+        },
         {
           "connection_after": "open",
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "the body and headers of a 431 answer are the server's own"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
       "access_log": ["h3 web GET 200"],
       "id": "malformed/missing-authority",
       "steps": [
@@ -135,11 +142,9 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
       "access_log": ["h3 web GET 200"],
       "id": "malformed/missing-method",
       "steps": [
@@ -149,11 +154,9 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
       "access_log": ["h3 web GET 200"],
       "id": "malformed/missing-scheme",
       "steps": [
@@ -163,11 +166,9 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
       "access_log": ["h3 web GET 200"],
       "id": "malformed/missing-path",
       "steps": [
@@ -177,11 +178,9 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
       "access_log": ["h3 web GET 200"],
       "id": "malformed/empty-path",
       "steps": [
@@ -191,11 +190,9 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
       "access_log": ["h3 web GET 200"],
       "id": "malformed/path-without-a-slash",
       "steps": [
@@ -205,29 +202,22 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
-      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "access_log": ["h3 web GET 200"],
+      "deviation": "RFC 9114 4.3.1: a repeated pseudo-header field makes the request malformed (4.1.2, stream error H3_MESSAGE_ERROR); the h3 crate path served it",
       "id": "malformed/duplicate-method",
       "steps": [
-        {
-          "connection_after": "open",
-          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
-          "request": "duplicate-method"
-        },
+        {"connection_after":"open","outcome":{"stream_reset":270},"request":"duplicate-method"},
         {
           "connection_after": "open",
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
       "access_log": ["h3 web GET 200"],
       "id": "malformed/pseudo-after-regular",
       "steps": [
@@ -237,11 +227,9 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
       "access_log": ["h3 web GET 200"],
       "id": "malformed/unknown-pseudo-field",
       "steps": [
@@ -251,29 +239,22 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
-      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "access_log": ["h3 web GET 200"],
+      "deviation": "RFC 9114 4.3.1: a response pseudo-header field in a request makes it malformed (4.1.2, stream error H3_MESSAGE_ERROR); the h3 crate path served it",
       "id": "malformed/response-pseudo-field",
       "steps": [
-        {
-          "connection_after": "open",
-          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
-          "request": "response-pseudo-field"
-        },
+        {"connection_after":"open","outcome":{"stream_reset":270},"request":"response-pseudo-field"},
         {
           "connection_after": "open",
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
       "access_log": ["h3 web GET 200"],
       "id": "malformed/uppercase-field-name",
       "steps": [
@@ -283,26 +264,20 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
-      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "access_log": ["h3 web GET 200"],
+      "deviation": "RFC 9114 4.2: a message with connection-specific fields is malformed and malformed requests are stream errors of H3_MESSAGE_ERROR (4.1.2); the h3 crate path forwarded or served the request",
       "id": "malformed/connection-field",
       "steps": [
-        {
-          "connection_after": "open",
-          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
-          "request": "connection-field"
-        },
+        {"connection_after":"open","outcome":{"stream_reset":270},"request":"connection-field"},
         {
           "connection_after": "open",
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
       "access_log": ["h3 web GET 200","h3 web GET 200"],
@@ -321,10 +296,8 @@
       ]
     },
     {
-      "accept": [],
       "access_log": ["h3 web GET 200"],
       "id": "malformed/authority-differs-from-host",
-      "ignore": ["steps[0].outcome","steps[0].origin"],
       "steps": [
         {"connection_after":"open","outcome":{"stream_reset":270},"request":":authority and host disagree"},
         {
@@ -332,11 +305,9 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "differing :authority and host fields are unspecified (RFC 9114 4.3.1): the request is served or reset"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
       "access_log": ["h3 web OPTIONS 404","h3 web GET 200"],
       "id": "malformed/options-asterisk",
       "steps": [
@@ -350,11 +321,9 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     },
     {
-      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
       "access_log": ["h3 web CONNECT 404","h3 web GET 200"],
       "id": "malformed/connect-request",
       "steps": [
@@ -368,8 +337,7 @@
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
+      ]
     }
   ]
 }

@@ -429,18 +429,17 @@
       ]
     },
     {
-      "accept": [{"outcome":{"stream_reset":258},"step":0},{"outcome":{"stream_reset":256},"step":0}],
       "access_log": ["h3 web GET -","h3 web GET 200"],
+      "deviation": "RFC 9114 4.1: a stream that ends without any response is an incomplete exchange; a response that cannot be sent now aborts the stream with H3_REQUEST_CANCELLED instead of finishing it empty",
       "id": "fixed/oversized-response-header",
       "steps": [
-        {"connection_after":"open","outcome":{"finished_without_response":true},"request":"GET /fixed/oversized-header"},
+        {"connection_after":"open","outcome":{"stream_reset":268},"request":"GET /fixed/oversized-header"},
         {
           "connection_after": "open",
           "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
           "request": "follow-up GET /fixed/ok"
         }
-      ],
-      "tolerance": "a response that cannot be sent: which error code the stream is reset with is not mandated"
+      ]
     }
   ]
 }

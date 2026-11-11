@@ -99,7 +99,9 @@ limits, protocol violations) against one daemon and compares the normalised obse
 `crates/oxiroute-server/tests/fixtures/reverse_http3_golden/`, printing a per-case diff on any difference.
 `OXIROUTE_INTERNAL_TEST_RECORD_GOLDEN=1 cargo test -p oxiroute --test reverse_http3_golden` re-records every area
 file; `OXIROUTE_INTERNAL_TEST_RECORD_CASES=id1,id2,stats` re-records only the listed cases (and the counters), so a
-behaviour change is a deliberate fixture change. Cases marked `tolerance` accept the alternatives listed beside them.
+behaviour change is a deliberate fixture change. Cases marked `tolerance` are compared without their access log
+lines (their content depends on timing); cases marked `deviation` record a difference from the original `h3` crate
+path with its RFC reason.
 
 Use the nearest focused test while iterating. Run the workspace gates before describing the change as
 complete.

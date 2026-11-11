@@ -5,7 +5,6 @@ use serde_json::json;
 use crate::{
     client::{Body, Req},
     context::Context,
-    golden::Tolerance,
 };
 
 pub async fn run(c: &mut Context) {
@@ -101,14 +100,8 @@ async fn requests(c: &mut Context) {
     .await;
 }
 
-fn malformed_request(reason: &str) -> Tolerance {
-    Tolerance::new(reason).accept(json!({ "step": 0, "outcome": { "stream_reset": 270 }, "origin": null, "connection_after": "open" }))
-}
-
-/// Connection-specific fields make a request malformed (RFC 9114 4.2); the server may forward the request
-/// without them, reset the stream with `H3_MESSAGE_ERROR`, or answer 4xx.
+/// Connection-specific fields make a request malformed (RFC 9114 4.2).
 async fn hop_by_hop_requests(c: &mut Context) {
-    let reason = "connection-specific request fields: forwarding without them, a reset with H3_MESSAGE_ERROR or a 4xx all conform";
     for (name, value) in [
         ("connection", "x-hop"),
         ("keep-alive", "timeout=5"),
@@ -120,12 +113,8 @@ async fn hop_by_hop_requests(c: &mut Context) {
         let request = Req::get("/p/echo")
             .header(name, value)
             .header("x-hop", "marker");
-        c.run_tolerant(
-            &format!("proxy/request-field-{name}"),
-            vec![request],
-            malformed_request(reason),
-        )
-        .await;
+        c.run(&format!("proxy/request-field-{name}"), vec![request])
+            .await;
     }
 }
 

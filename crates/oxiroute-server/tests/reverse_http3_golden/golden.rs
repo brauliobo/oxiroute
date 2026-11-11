@@ -74,69 +74,17 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, mix)
 }
 
-/// A case whose outcome the RFCs leave open (or that the recorded implementation handled leniently).
-///
-/// On replay the recorded steps, every `accept` alternative and every step value outside `ignore` pass; the
-/// access log lines of a tolerant case are not compared.
+/// A case whose access log lines are not compared: whether and how an abandoned stream is logged depends on
+/// when the server notices the reset.
 pub struct Tolerance {
     pub reason: String,
-    /// `{ "step": index, <key>: <replacement> ... }` replaces keys of one recorded step (null removes one);
-    /// `{ "steps": [...] }` replaces all steps.
-    pub accept: Vec<Value>,
-    /// Paths such as `steps[0].outcome.body` that are not compared.
-    pub ignore: Vec<String>,
-    /// A connection error code that RFC 9114 mandates for the case: accepted as the connection closing instead.
-    pub mandated: Option<u64>,
 }
 
 impl Tolerance {
     pub fn new(reason: &str) -> Self {
         Self {
             reason: reason.into(),
-            accept: Vec::new(),
-            ignore: Vec::new(),
-            mandated: None,
         }
-    }
-
-    /// The RFC-mandated connection error is accepted where the recorded implementation did not apply it.
-    pub fn mandated(reason: &str, code: u64) -> Self {
-        Self {
-            mandated: Some(code),
-            ..Self::new(reason)
-        }
-    }
-
-    pub fn accept(mut self, entry: Value) -> Self {
-        self.accept.push(entry);
-        self
-    }
-
-    /// Accepts `outcome` in place of the recorded outcome of `step`.
-    pub fn outcome(self, step: usize, outcome: Value) -> Self {
-        self.accept(json!({ "step": step, "outcome": outcome }))
-    }
-
-    pub fn ignore(mut self, path: &str) -> Self {
-        self.ignore.push(path.into());
-        self
-    }
-
-    /// The alternatives that the mandated close implies for these recorded steps.
-    pub fn with_steps(mut self, steps: &[Value]) -> Self {
-        let Some(code) = self.mandated else {
-            return self;
-        };
-        let closed = json!({ "closed": code });
-        let first = &steps[0];
-        let only_the_close = json!({ "request": first["request"], "outcome": { "connection_closed": code }, "connection_after": closed });
-        self.accept.push(json!({ "steps": [only_the_close] }));
-        if first["outcome"].get("status").is_some() {
-            let mut answered = first.clone();
-            answered["connection_after"] = closed;
-            self.accept.push(json!({ "steps": [answered] }));
-        }
-        self
     }
 }
 
@@ -152,10 +100,6 @@ impl Case {
         let mut case = json!({ "id": self.id, "steps": self.steps, "access_log": access_log });
         if let Some(tolerance) = &self.tolerance {
             case["tolerance"] = json!(tolerance.reason);
-            case["accept"] = Value::Array(tolerance.accept.clone());
-            if !tolerance.ignore.is_empty() {
-                case["ignore"] = json!(tolerance.ignore);
-            }
         }
         case
     }
@@ -252,7 +196,7 @@ fn compare(expected: &Value, observed: &Value) -> Vec<String> {
 }
 
 fn case_diff(expected: &Value, observed: &Value) -> Vec<String> {
-    let mut lines = steps_diff(expected, observed);
+    let mut lines = diff("steps", &expected["steps"], &observed["steps"]);
     if expected.get("tolerance").is_none() {
         lines.extend(diff(
             "access_log",
@@ -261,81 +205,6 @@ fn case_diff(expected: &Value, observed: &Value) -> Vec<String> {
         ));
     }
     lines
-}
-
-fn steps_diff(expected: &Value, observed: &Value) -> Vec<String> {
-    let (recorded, seen) = (steps(expected), steps(observed));
-    let accepted = || expected["accept"].as_array().into_iter().flatten();
-    if accepted().any(|entry| entry["steps"].as_array().is_some_and(|steps| steps == seen)) {
-        return Vec::new();
-    }
-    let mut lines = Vec::new();
-    if recorded.len() != seen.len() {
-        lines.push(format!(
-            "  step count: expected {}, observed {}",
-            recorded.len(),
-            seen.len()
-        ));
-    }
-    let ignored = |path: &str| {
-        let prefixes = expected["ignore"].as_array().into_iter().flatten();
-        prefixes
-            .filter_map(Value::as_str)
-            .any(|prefix| path.starts_with(prefix))
-    };
-    for (index, (step, seen)) in recorded.iter().zip(seen).enumerate() {
-        let path = format!("steps[{index}]");
-        let unexplained = |candidate: &Value| {
-            diff(&path, candidate, seen)
-                .into_iter()
-                .filter(|line| !ignored(line.trim_start()))
-                .collect::<Vec<_>>()
-        };
-        let differences = unexplained(step);
-        if differences.is_empty()
-            || alternatives(accepted(), index, step)
-                .iter()
-                .any(|candidate| unexplained(candidate).is_empty())
-        {
-            continue;
-        }
-        lines.extend(differences);
-        if let Some(reason) = expected["tolerance"].as_str() {
-            lines.push(format!(
-                "  (tolerated: {reason}; no accepted alternative matches)"
-            ));
-        }
-    }
-    lines
-}
-
-fn steps(case: &Value) -> &[Value] {
-    case["steps"].as_array().map_or(&[], Vec::as_slice)
-}
-
-fn alternatives<'a>(
-    accepted: impl Iterator<Item = &'a Value>,
-    index: usize,
-    recorded: &Value,
-) -> Vec<Value> {
-    accepted
-        .filter(|entry| entry["step"].as_u64() == Some(index as u64))
-        .map(|entry| {
-            let mut step = recorded.clone();
-            for (key, value) in entry
-                .as_object()
-                .into_iter()
-                .flatten()
-                .filter(|(key, _)| *key != "step")
-            {
-                match value {
-                    Value::Null => drop(step.as_object_mut().expect("step object").remove(key)),
-                    value => step[key] = value.clone(),
-                }
-            }
-            step
-        })
-        .collect()
 }
 
 fn flatten(path: &str, value: &Value, out: &mut BTreeMap<String, String>) {
