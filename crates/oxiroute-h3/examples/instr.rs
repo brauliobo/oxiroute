@@ -10,7 +10,8 @@
 //! ```text
 //! cargo build --release --example instr
 //! target/release/examples/instr            # all lanes, 3 runs each
-//! target/release/examples/instr h3         # h3 | thin-task | thin-inline | head
+//! target/release/examples/instr h3         # h3 | thin-task | thin-inline | prep-task | prep-inline | head
+//! target/release/examples/instr profile thin-task   # hottest symbols of the server thread
 //! ```
 //!
 //! Every measured run holds `flock /tmp/oxiroute-bench.lock`.
@@ -19,6 +20,7 @@
     clippy::cast_possible_truncation,
     clippy::similar_names
 )]
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
 use std::process::{Command, Stdio};
@@ -26,7 +28,7 @@ use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
 use http::{HeaderValue, Response, header};
-use oxiroute_h3::server::{Config, Connection, RequestStream};
+use oxiroute_h3::server::{Config, Connection, PreparedHead, RequestStream};
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
@@ -36,14 +38,19 @@ const STREAMS: usize = 4;
 const SIZES: [usize; 2] = [8000, 16000];
 const HEAD_SIZES: [usize; 2] = [100_000, 200_000];
 const RUNS: usize = 3;
-const LANES: [(&str, &str); 3] = [
+const LANES: [(&str, &str); 5] = [
     ("h3", "h3 crate server (as shipped), task per request"),
     ("thin-task", "oxiroute-h3, task per request"),
     ("thin-inline", "oxiroute-h3, requests handled inline"),
+    ("prep-task", "oxiroute-h3, prepared head, task per request"),
+    ("prep-inline", "oxiroute-h3, prepared head, inline"),
 ];
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    bytes.iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 
 fn unhex(text: &str) -> Vec<u8> {
@@ -73,24 +80,36 @@ fn response() -> Response<()> {
     response
 }
 
-async fn thin_request(mut stream: RequestStream, body: Bytes) {
+async fn thin_request(mut stream: RequestStream, body: Bytes, head: Option<PreparedHead>) {
     let request = stream.read_head().await.unwrap();
     std::hint::black_box(&request);
-    stream
-        .send_full_response(response(), body, false)
-        .await
-        .unwrap();
+    match head {
+        Some(head) => stream.send_prepared(&head, body, false).await.unwrap(),
+        None => stream
+            .send_full_response(response(), body, false)
+            .await
+            .unwrap(),
+    }
 }
 
-async fn serve_thin(conn: quinn::Connection, body: Bytes, inline: bool) -> u64 {
+async fn serve_thin(conn: quinn::Connection, body: Bytes, inline: bool, prepared: bool) -> u64 {
     let mut connection = Connection::new(conn, Config::default()).await.unwrap();
+    let head = prepared.then(|| PreparedHead::new(&response()));
     let mut served = 0;
-    while let Ok(Some(stream)) = connection.accept().await {
+    loop {
+        let stream = match connection.accept().await {
+            Ok(Some(stream)) => stream,
+            Ok(None) => break,
+            Err(error) => {
+                eprintln!("accept failed: {error}");
+                break;
+            }
+        };
         served += 1;
         if inline {
-            thin_request(stream, body.clone()).await;
+            thin_request(stream, body.clone(), head.clone()).await;
         } else {
-            tokio::spawn(thin_request(stream, body.clone()));
+            tokio::spawn(thin_request(stream, body.clone(), head.clone()));
         }
     }
     served
@@ -151,8 +170,10 @@ fn serve(args: &[String]) {
             let body = body.clone();
             tasks.push(match lane {
                 "h3" => tokio::spawn(serve_h3(conn, body)),
-                "thin-task" => tokio::spawn(serve_thin(conn, body, false)),
-                _ => tokio::spawn(serve_thin(conn, body, true)),
+                "thin-task" => tokio::spawn(serve_thin(conn, body, false, false)),
+                "thin-inline" => tokio::spawn(serve_thin(conn, body, true, false)),
+                "prep-task" => tokio::spawn(serve_thin(conn, body, false, true)),
+                _ => tokio::spawn(serve_thin(conn, body, true, true)),
             });
         }
         let mut served = 0;
@@ -235,13 +256,31 @@ fn parse_instructions(perf: &str) -> u64 {
         .unwrap_or_else(|_| panic!("counter not supported: {line}"))
 }
 
-/// `instr run <lane> <requests>`: one measured run; prints `instructions=N served=M`.
+/// `instr run <lane> <requests> [profile]`: one measured run; prints `instructions=N served=M`, or with `profile`
+/// the hottest symbols of the server thread instead.
 fn run(args: &[String]) {
     let (lane, total): (&str, usize) = (&args[0], args[1].parse().unwrap());
+    let profile = args.get(2).is_some_and(|mode| mode == "profile");
+    let data = std::env::temp_dir().join(format!("oxiroute-h3-instr-{}.perf", std::process::id()));
     let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert = certified.cert.der().clone();
-    let mut server = Command::new("perf")
-        .args(["stat", "-e", "instructions:u", "-x,", "--"])
+    let mut perf = Command::new("perf");
+    if profile {
+        perf.args([
+            "record",
+            "-q",
+            "-e",
+            "instructions:u",
+            "-c",
+            "1000",
+            "-o",
+            data.to_str().unwrap(),
+            "--",
+        ]);
+    } else {
+        perf.args(["stat", "-e", "instructions:u", "-x,", "--"]);
+    }
+    let mut server = perf
         .arg(std::env::current_exe().unwrap())
         .args([
             "serve",
@@ -253,7 +292,7 @@ fn run(args: &[String]) {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("perf stat");
+        .expect("perf");
     let mut stdout = BufReader::new(server.stdout.take().unwrap());
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
@@ -266,17 +305,30 @@ fn run(args: &[String]) {
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(client(addr, cert, total));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runtime.block_on(client(addr, cert, total));
+    }));
+    if let Err(panic) = outcome {
+        let _ = server.kill();
+        let mut diagnostics = String::new();
+        let _ = server
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut diagnostics);
+        eprintln!("client failed; server output:\n{diagnostics}");
+        std::panic::resume_unwind(panic);
+    }
     let mut rest = String::new();
     stdout.read_to_string(&mut rest).unwrap();
-    let mut perf = String::new();
+    let mut stderr = String::new();
     server
         .stderr
         .take()
         .unwrap()
-        .read_to_string(&mut perf)
+        .read_to_string(&mut stderr)
         .unwrap();
-    assert!(server.wait().unwrap().success(), "{perf}");
+    assert!(server.wait().unwrap().success(), "{stderr}");
     let served: usize = rest
         .trim()
         .strip_prefix("served=")
@@ -284,7 +336,38 @@ fn run(args: &[String]) {
         .parse()
         .unwrap();
     assert_eq!(served, total);
-    println!("instructions={} served={served}", parse_instructions(&perf));
+    if profile {
+        print_profile(&data);
+    } else {
+        println!(
+            "instructions={} served={served}",
+            parse_instructions(&stderr)
+        );
+    }
+}
+
+fn print_profile(data: &std::path::Path) {
+    let report = Command::new("perf")
+        .args([
+            "report",
+            "-i",
+            data.to_str().unwrap(),
+            "--stdio",
+            "--no-children",
+            "--sort",
+            "symbol",
+        ])
+        .output()
+        .expect("perf report");
+    let text = String::from_utf8_lossy(&report.stdout);
+    for line in text
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .take(45)
+    {
+        println!("{line}");
+    }
+    let _ = std::fs::remove_file(data);
 }
 
 /// `instr head-run <iterations>`: decodes a typical request section that many times.
@@ -359,6 +442,18 @@ fn head_count(args: &[String]) {
     );
 }
 
+fn profile(lane: &str) {
+    let out = locked(&["run", lane, "16000", "profile"])
+        .output()
+        .expect("flock");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    print!("{}", String::from_utf8_lossy(&out.stdout));
+}
+
 fn report_head() {
     let counts = HEAD_SIZES.map(|n| measured(&["head-count", &n.to_string()]).0);
     let slope = (counts[1] - counts[0]) as f64 / (HEAD_SIZES[1] - HEAD_SIZES[0]) as f64;
@@ -373,7 +468,7 @@ fn report_lane(lane: &str, label: &str) {
     for run in 0..RUNS {
         let counts = SIZES.map(|n| measured(&["run", lane, &n.to_string()]).0);
         let slope = (counts[1] - counts[0]) as f64 / (SIZES[1] - SIZES[0]) as f64;
-        line.push_str(&format!(" {slope:>8.0}"));
+        let _ = write!(line, " {slope:>8.0}");
         eprintln!("  run {run}: total {} for {} requests", counts[1], SIZES[1]);
     }
     println!("{label:<48}{line}   (instr/request, slope, {RUNS} runs)");
@@ -386,6 +481,7 @@ fn main() {
         Some("run") => return run(&args[1..]),
         Some("head-run") => return head_run(&args[1..]),
         Some("head-count") => return head_count(&args[1..]),
+        Some("profile") => return profile(args.get(1).map_or("thin-task", String::as_str)),
         _ => {}
     }
     let only = args.first().map(String::as_str);

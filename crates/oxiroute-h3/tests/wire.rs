@@ -1,4 +1,10 @@
 //! Protocol violations and abuse limits, driven by a raw quinn client.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    clippy::duration_suboptimal_units
+)]
 mod common;
 
 use std::time::Duration;
@@ -109,7 +115,7 @@ async fn a_huge_unknown_frame_is_skipped_without_buffering() {
     frame::write_header(&mut header, 0x1f * 5 + 0x21, 3_000_000);
     let (mut send, mut recv) = raw.request(&header).await;
     for _ in 0..30 {
-        send.write_all(&[0u8; 100_000]).await.unwrap();
+        send.write_all(&vec![0u8; 100_000]).await.unwrap();
     }
     send.write_all(&request_bytes(&[])).await.unwrap();
     send.finish().unwrap();

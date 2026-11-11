@@ -1,4 +1,9 @@
 //! The server layer against the `h3` crate as client over loopback QUIC.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::similar_names,
+    clippy::too_many_lines
+)]
 mod common;
 
 use bytes::{Buf, Bytes};
@@ -150,7 +155,7 @@ async fn multi_megabyte_bodies_flow_both_ways() {
         }
         stream.finish().await.unwrap();
         stream.recv_response().await.unwrap();
-        assert!(read_all(&mut stream).await == body);
+        assert_eq!(read_all(&mut stream).await, body);
     })
     .await;
 }
@@ -267,6 +272,51 @@ async fn response_status_codes_and_fields_decode_in_the_h3_client() {
             assert_eq!(response.headers()["server"], "");
             assert_eq!(response.headers()["cache-control"], "no-store");
             read_all(&mut stream).await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn prepared_heads_are_sent_for_get_and_head() {
+    let fx = fixture();
+    let head = oxiroute_h3::server::PreparedHead::new(
+        &Response::builder()
+            .status(404)
+            .header("content-type", "text/plain")
+            .header("x-fixed", "1")
+            .body(())
+            .unwrap(),
+    );
+    fx.serve(Config::default(), move |mut stream: RequestStream| {
+        let head = head.clone();
+        async move {
+            let request = stream.read_head().await.unwrap();
+            let head_only = request.method() == Method::HEAD;
+            stream
+                .send_prepared(&head, Bytes::from_static(b"missing"), head_only)
+                .await
+                .unwrap();
+        }
+    });
+    let (mut client, _conn) = fx.h3_client().await;
+    within(async {
+        for (method, body) in [(Method::GET, &b"missing"[..]), (Method::HEAD, &b""[..])] {
+            let mut stream = client
+                .send_request(
+                    Request::builder()
+                        .method(method)
+                        .uri("https://example.com/")
+                        .body(())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            stream.finish().await.unwrap();
+            let response = stream.recv_response().await.unwrap();
+            assert_eq!(response.status(), 404);
+            assert_eq!(response.headers()["x-fixed"], "1");
+            assert_eq!(read_all(&mut stream).await, body);
         }
     })
     .await;
