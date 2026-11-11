@@ -1,5 +1,5 @@
-//! The HTTP/2 fast lane, the sibling of the HTTP/1 lane (`lane`): an HTTP/2 request of the common shape (no body, a
-//! fixed response or a plain proxy route, see `LaneRoute`) is served on the stream itself, before any Pingora
+//! The HTTP/2 fast lane, the sibling of the HTTP/1 lane (`lane`): an HTTP/2 request of the common shape (a fixed response,
+//! or a plain proxy route with a body of announced length, see `LaneRoute`) is served on the stream itself, before any Pingora
 //! session, `RequestHeader` of the proxy or hook exists. The accept loop of the vendored core asks the lane
 //! (`Http2Front`) for each request that plainly passes its own acceptance checks, as the decoded head of the connection; the lane claims it or hands it back for
 //! the classic session, which stays the semantic reference.
@@ -8,7 +8,7 @@
 //!   stored);
 //! * `head` writes the HTTP/1 request head the origin gets, `response` turns the origin's answer into the HTTP/2
 //!   response, `direct` serves fixed responses, `exchange` runs the proxied exchange with the classic request
-//!   context's steps, `relay` moves the body with flow control and watches the client.
+//!   context's steps, `relay` moves the response body with flow control, `upload` the request body.
 
 mod claim;
 mod direct;
@@ -20,6 +20,7 @@ mod request;
 mod response;
 #[cfg(test)]
 mod tests;
+mod upload;
 
 use std::sync::Arc;
 
