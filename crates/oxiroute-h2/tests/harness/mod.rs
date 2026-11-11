@@ -7,10 +7,57 @@ use std::task::{Context, Poll, Waker};
 use bytes::{Bytes, BytesMut};
 use http::{HeaderMap, StatusCode};
 use oxiroute_h2::Reason;
-use oxiroute_h2::conn::{Connection, Output, empty_slices};
+use oxiroute_h2::conn::{Connection, Output, RequestView, empty_slices};
 use oxiroute_h2::server::Config;
 
 const MAX_SEGMENT: usize = 1 << 16;
+
+/// The view's fields and pseudo-headers are what `into_parts` builds.
+fn check_view(view: RequestView) {
+    let mut headers = HeaderMap::new();
+    for (name, value) in view.fields() {
+        headers.append(
+            http::HeaderName::from_lowercase(name).unwrap(),
+            http::HeaderValue::from_bytes(value).unwrap(),
+        );
+    }
+    let (method, path) = (view.method().to_vec(), view.path().to_vec());
+    let (scheme, authority) = (
+        view.scheme().map(<[u8]>::to_vec),
+        view.authority().map(<[u8]>::to_vec),
+    );
+    let (length, end) = (view.content_length(), view.is_end_stream());
+    assert_eq!(view.fields().len(), view.fields().count());
+    let parts = view.into_parts();
+    assert_eq!(parts.version, http::Version::HTTP_2);
+    assert_eq!(parts.method.as_str().as_bytes(), method);
+    assert_eq!(
+        parts
+            .uri
+            .path_and_query()
+            .map(|p| p.as_str().as_bytes())
+            .unwrap_or_default(),
+        path
+    );
+    assert_eq!(
+        parts
+            .uri
+            .authority()
+            .map(|a| a.as_str().as_bytes().to_vec()),
+        authority
+    );
+    assert_eq!(
+        parts.uri.scheme_str().map(|s| s.as_bytes().to_vec()),
+        scheme.filter(|_| authority.is_some())
+    );
+    assert_eq!(parts.headers, headers);
+    let declared = parts
+        .headers
+        .get("content-length")
+        .map(|v| v.to_str().unwrap().parse::<u64>().unwrap());
+    assert_eq!(declared, length);
+    assert!(!end || length.is_none_or(|n| n == 0));
+}
 
 fn config(variant: u8) -> Config {
     let mut c = Config::default();
@@ -63,7 +110,7 @@ fn exercise(conn: &mut Connection, idx: u32, id: u32, mode: u8, cx: &Context<'_>
     }
     let _ = conn.poll_trailers(idx, id, cx);
     let _ = conn.poll_reset(idx, id, cx);
-    match mode % 5 {
+    match mode % 7 {
         0 => {
             let _ = conn.send_response(idx, id, StatusCode::OK, &HeaderMap::new(), true);
         }
@@ -85,6 +132,21 @@ fn exercise(conn: &mut Connection, idx: u32, id: u32, mode: u8, cx: &Context<'_>
         3 => {
             let _ = conn.send_response(idx, id, StatusCode::NOT_FOUND, &HeaderMap::new(), false);
             let _ = conn.poll_capacity(idx, id, cx, 0);
+            let _ = conn.send_data(idx, id, Bytes::new(), true);
+        }
+        4 => {
+            let fields: [(&[u8], &[u8]); 2] = [(b"x-request-id", b"1"), (b"accept", b"*/*")];
+            let _ = conn.send_response_fields(idx, id, 204, fields, mode & 8 == 0);
+        }
+        5 => {
+            let body = Bytes::from(vec![9; usize::from(mode) * 700]);
+            let _ = conn.send_response_with_data(
+                idx,
+                id,
+                200,
+                [(&b"set-cookie"[..], &b"a=b"[..])],
+                body,
+            );
             let _ = conn.send_data(idx, id, Bytes::new(), true);
         }
         _ => {}
@@ -116,8 +178,8 @@ pub fn run(data: &[u8]) -> usize {
     for (i, part) in script.chunks(size.min(MAX_SEGMENT)).enumerate() {
         input.extend_from_slice(part);
         conn.feed(&mut input);
-        while let Some((idx, id, parts)) = conn.pop_accept() {
-            assert_eq!(parts.version, http::Version::HTTP_2);
+        while let Some((idx, id, view)) = conn.pop_accept() {
+            check_view(view);
             accepted += 1;
             held.push((idx, id));
             if held.len() > 4 {
