@@ -26,6 +26,8 @@ pub struct Server<IO> {
     /// Frames taken from the connection and being written.
     writing: Output,
     needs_flush: bool,
+    /// The writer let the tasks that were ready go first, so that one write carries what they queue.
+    yielded: bool,
     timer: Option<Pin<Box<Sleep>>>,
     done: bool,
     /// Equal fields of consecutive requests, reused by [`Server::accept`] when it builds the `http` request head.
@@ -74,6 +76,7 @@ impl<IO: AsyncRead + AsyncWrite + Unpin + Send + 'static> Server<IO> {
             input,
             writing: Output::default(),
             needs_flush: false,
+            yielded: false,
             timer: None,
             done: false,
             fields: FieldCache::default(),
@@ -188,6 +191,14 @@ impl<IO: AsyncRead + AsyncWrite + Unpin + Send + 'static> Server<IO> {
                 if !c.has_output() {
                     break;
                 }
+                if !self.yielded {
+                    // The scheduler runs the tasks that are ready before this one: the responses they queue leave
+                    // in the same write (and so in the same TLS record).
+                    self.yielded = true;
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                self.yielded = false;
                 c.take_output(&mut self.writing);
             }
             let mut slices = empty_slices();
