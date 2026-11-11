@@ -33,6 +33,15 @@ fn kernel_offers_ktls() -> bool {
     }
 }
 
+/// A counter of the kernel's TLS statistics for this network namespace (`/proc/net/tls_stat`).
+fn tls_stat(name: &str) -> u64 {
+    std::fs::read_to_string("/proc/net/tls_stat")
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix(name)?.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no {name} in /proc/net/tls_stat"))
+}
+
 fn pattern(length: usize) -> Vec<u8> {
     (0..length)
         .map(|i| ((i * 7 + i / 251) % 251) as u8)
@@ -91,7 +100,9 @@ async fn convert(server: &mut SslStream<Stream>) -> bool {
     poll_fn(|cx| server.poll_kernel_tx(cx)).await
 }
 
-async fn send(server: &SslStream<Stream>, file: &File, offset: u64, length: usize) {
+/// What the HTTP session does for a file: let the stream settle its keys, then `sendfile`.
+async fn send(server: &mut SslStream<Stream>, file: &File, offset: u64, length: usize) {
+    assert!(convert(server).await);
     let socket = server
         .kernel_tx_socket()
         .expect("the kernel encrypts this connection");
@@ -126,6 +137,7 @@ async fn a_converted_connection_sends_records_and_files_the_client_decrypts() {
     }
     let data = pattern(3_000_000);
     let expected = data.clone();
+    let before = tls_stat("TlsTxSw");
     let (mut server, client) = connected(
         true,
         |_| {},
@@ -138,9 +150,13 @@ async fn a_converted_connection_sends_records_and_files_the_client_decrypts() {
     .await;
     assert!(convert(&mut server).await);
     assert!(server.kernel_tx_socket().is_some());
+    assert!(
+        tls_stat("TlsTxSw") > before,
+        "the kernel does not count a software TLS socket"
+    );
     server.write_all(b"hello").await.unwrap();
     server.flush().await.unwrap();
-    send(&server, &file_with(&data), 0, data.len()).await;
+    send(&mut server, &file_with(&data), 0, data.len()).await;
     server.write_all(b"tail").await.unwrap();
     server.flush().await.unwrap();
     client.join().unwrap();
@@ -155,7 +171,7 @@ async fn bytes_waiting_in_the_coalescing_buffer_leave_before_the_keys_change() {
         true,
         |_| {},
         |mut client| {
-            assert_eq!(read_exact(&mut client, 9), b"head-body!");
+            assert_eq!(read_exact(&mut client, 10), b"head-body!");
         },
     )
     .await;
@@ -173,6 +189,7 @@ async fn a_key_update_requested_by_the_client_is_answered_with_new_kernel_keys()
     }
     let data = pattern(2_000_000);
     let expected = data.clone();
+    let rekeys = tls_stat("TlsTxRekeyOk");
     let (mut server, client) = connected(
         true,
         |_| {},
@@ -188,11 +205,15 @@ async fn a_key_update_requested_by_the_client_is_answered_with_new_kernel_keys()
     .await;
     assert!(convert(&mut server).await);
     let file = file_with(&data);
-    send(&server, &file, 0, 1_000_000).await;
+    send(&mut server, &file, 0, 1_000_000).await;
     let mut byte = [0_u8; 1];
     server.read_exact(&mut byte).await.unwrap();
     assert_eq!(&byte, b"k");
-    send(&server, &file, 1_000_000, 1_000_000).await;
+    send(&mut server, &file, 1_000_000, 1_000_000).await;
+    assert!(
+        tls_stat("TlsTxRekeyOk") > rekeys,
+        "the kernel did not rekey the transmit direction"
+    );
     let mut again = [0_u8; 5];
     server.read_exact(&mut again).await.unwrap();
     assert_eq!(&again, b"again");
@@ -303,7 +324,7 @@ async fn a_client_that_closed_its_side_still_receives_the_rest_of_the_file() {
     server.read_exact(&mut request).await.unwrap();
     let mut end = Vec::new();
     assert_eq!(server.read_to_end(&mut end).await.unwrap(), 0);
-    send(&server, &file_with(&data), 0, data.len()).await;
+    send(&mut server, &file_with(&data), 0, data.len()).await;
     client.join().unwrap();
 }
 
@@ -327,6 +348,6 @@ async fn a_client_that_reads_late_gets_every_byte_of_writes_and_files() {
     assert!(convert(&mut server).await);
     server.write_all(&data).await.unwrap();
     server.flush().await.unwrap();
-    send(&server, &file_with(&data), 0, data.len()).await;
+    send(&mut server, &file_with(&data), 0, data.len()).await;
     client.join().unwrap();
 }

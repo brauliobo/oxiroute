@@ -41,12 +41,15 @@ mod imp {
         fn SSL_set_options(ssl: *mut SSL, options: u64) -> u64;
         fn SSL_key_update(ssl: *mut SSL, update_type: c_int) -> c_int;
         fn SSL_want(ssl: *const SSL) -> c_int;
+        fn SSL_in_init(ssl: *const SSL) -> c_int;
+        fn SSL_get_key_update_type(ssl: *const SSL) -> c_int;
     }
 
     const BIO_NOCLOSE: c_int = 0;
     const BIO_CTRL_GET_KTLS_SEND: c_int = 73;
     const SSL_OP_ENABLE_KTLS: u64 = 1 << 3;
     const SSL_KEY_UPDATE_NOT_REQUESTED: c_int = 0;
+    const SSL_KEY_UPDATE_NONE: c_int = -1;
     const SSL_WRITING: c_int = 2;
 
     /// Whether the kernel sends this connection's records: `SSL_write` then hands plaintext to the socket.
@@ -59,6 +62,18 @@ mod imp {
                 0,
                 std::ptr::null_mut(),
             ) > 0
+        }
+    }
+
+    /// Whether a `KeyUpdate` waits to be written: one that `begin_tx` scheduled, or the answer to the peer's request,
+    /// which OpenSSL otherwise sends only with the next `SSL_write`. The answer is made schedulable here, so that
+    /// `SSL_do_handshake` writes it.
+    pub(crate) fn key_update_pending(ssl: &SslRef) -> bool {
+        // SAFETY: the SSL is alive for the borrow.
+        unsafe {
+            SSL_in_init(ssl.as_ptr()) != 0
+                || (SSL_get_key_update_type(ssl.as_ptr()) != SSL_KEY_UPDATE_NONE
+                    && SSL_key_update(ssl.as_ptr(), SSL_KEY_UPDATE_NOT_REQUESTED) == 1)
         }
     }
 
@@ -111,6 +126,10 @@ mod imp {
     }
 
     pub(crate) fn wants_write(_: &SslRef) -> bool {
+        false
+    }
+
+    pub(crate) fn key_update_pending(_: &SslRef) -> bool {
         false
     }
 
