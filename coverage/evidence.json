@@ -33,10 +33,10 @@
         "crates/oxiroute-config-source/tests/http_routes.rs#canonicalizes_ascii_case_insensitive_exact_authority_without_dropping_ports",
         "crates/oxiroute-config-source/tests/http_routes.rs#renders_every_proxy_policy_variant_and_field",
         "crates/oxiroute-config-source/tests/http_routes.rs#validates_secret_backed_bearer_access_without_inline_tokens",
-        "crates/oxiroute-config-source/tests/http_routes.rs#validates_explicit_retry_triggers_and_safety_rules",
-        "crates/oxiroute-config-source/tests/http_routes.rs#validates_proxy_timeouts_and_roundtrips_them",
-        "crates/oxiroute-config-source/tests/http_routes.rs#validates_rescue_and_any_retry_status",
-        "crates/oxiroute-config-source/tests/http_routes.rs#validates_retry_budget_jitter_and_idempotency_header",
+        "crates/oxiroute-config-source/tests/http_route_policies.rs#validates_explicit_retry_triggers_and_safety_rules",
+        "crates/oxiroute-config-source/tests/http_route_policies.rs#validates_proxy_timeouts_and_roundtrips_them",
+        "crates/oxiroute-config-source/tests/http_route_policies.rs#validates_rescue_and_any_retry_status",
+        "crates/oxiroute-config-source/tests/http_route_policies.rs#validates_retry_budget_jitter_and_idempotency_header",
         "crates/oxiroute-server/tests/http_proxy_routing.rs#rescue_replays_a_rescued_status_on_the_other_server",
         "crates/oxiroute-server/tests/http_proxy_routing.rs#idempotency_key_gates_the_replay_of_a_post_after_a_response_timeout",
         "crates/oxiroute-server/tests/http_proxy_routing.rs#retry_budget_per_second_stops_retries_until_the_next_second",
@@ -121,7 +121,7 @@
         "crates/oxiroute-import/tests/haproxy_lower.rs#positive_host_and_path_acl_conjunction_lowers_with_both_matchers_and_provenance",
         "crates/oxiroute-import/tests/haproxy_lower.rs#non_equivalent_acl_conjunctions_fail_closed_without_fallback_routes",
         "crates/oxiroute-import/tests/import_report.rs#haproxy_report_identifies_strict_capability_and_retains_ordinary_source_provenance",
-        "crates/oxiroute-server/tests/cli.rs#haproxy_acl_conjunction_report_retains_capability_source_table_provenance_and_blockers"
+        "crates/oxiroute-server/tests/cli_import.rs#haproxy_acl_conjunction_report_retains_capability_source_table_provenance_and_blockers"
       ]
     },
     {
@@ -142,7 +142,7 @@
         "crates/oxiroute-import/tests/import_report.rs#apache_report_distinguishes_missing_optional_includes_and_retains_include_stacks",
         "crates/oxiroute-config-source/tests/resolver.rs#native_apache_imports_from_kdl_hocon_and_uci",
         "crates/oxiroute-config-source/tests/resolver.rs#native_apache_reference_retains_include_provenance_in_its_report",
-        "crates/oxiroute-server/tests/cli.rs#apache_cli_report_exposes_deterministic_include_provenance"
+        "crates/oxiroute-server/tests/cli_import.rs#apache_cli_report_exposes_deterministic_include_provenance"
       ]
     },
     {
@@ -216,7 +216,7 @@
         "crates/oxiroute-config-source/tests/resolver.rs#native_squid_references_resolve_the_same_candidate_shape",
         "crates/oxiroute-import/tests/squid.rs#cache_peer_credentials_become_typed_secret_facts",
         "crates/oxiroute-import/tests/squid.rs#cache_policy_and_storage_are_classified_without_placeholders",
-        "crates/oxiroute-server/tests/cli.rs#import_previews_default_to_kdl_and_round_trip_every_format",
+        "crates/oxiroute-server/tests/cli_import.rs#import_previews_default_to_kdl_and_round_trip_every_format",
         "crates/oxiroute-server/tests/forward_proxy_h1.rs#imported_squid_candidate_serves_authenticated_http_over_daemon",
         "crates/oxiroute-server/tests/forward_proxy_h1.rs#imported_squid_authentication_rejects_missing_credentials"
       ]
@@ -288,7 +288,7 @@
         "crates/oxiroute-import/tests/varnish_foundation.rs#exact_file_storage_lowers_to_a_disk_cache_store",
         "crates/oxiroute-config-source/tests/resolver.rs#native_varnish_reference_resolves_exact_cache_subset_and_retains_evidence",
         "crates/oxiroute-config-source/tests/resolver.rs#native_varnish_reference_rejects_missing_invocation_semantics",
-        "crates/oxiroute-server/tests/cli.rs#varnish_import_report_and_preview_use_exact_invocation_arguments"
+        "crates/oxiroute-server/tests/cli_import.rs#varnish_import_report_and_preview_use_exact_invocation_arguments"
       ]
     },
     {
