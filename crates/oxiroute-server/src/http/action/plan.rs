@@ -152,6 +152,8 @@ pub(crate) struct FixedResponsePlan {
     /// Status line and header lines as an HTTP/1 response writes them, for the statuses and headers a
     /// response can be written from in one piece; `None` sends it through the generic response path.
     pub(crate) rendered_head: Option<Bytes>,
+    /// The HTTP/3 `HEADERS` frame, encoded once; `None` when the response cannot be represented in HTTP/3.
+    pub(crate) h3_head: Option<oxiroute_h3::server::PreparedHead>,
 }
 
 impl FixedResponsePlan {
@@ -170,6 +172,7 @@ impl FixedResponsePlan {
             .collect();
         Self {
             rendered_head: render_head(status, &headers, body.len()),
+            h3_head: crate::http3::fixed_response_head(status, &headers, body.len()),
             status,
             body: Bytes::copy_from_slice(body.as_bytes()),
             headers,
