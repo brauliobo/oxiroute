@@ -2,6 +2,7 @@
 //! HTTP/1.1 origin.
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use std::fmt::Write as _;
 use tokio::io::AsyncReadExt as _;
 
 type Table = [(
@@ -95,10 +96,10 @@ async fn classic(
     let mut head =
         format!("{method} {path} HTTP/1.1\r\nHost: {AUTHORITY}\r\nConnection: close\r\n");
     for (name, value) in headers {
-        head.push_str(&format!("{name}: {value}\r\n"));
+        let _ = write!(head, "{name}: {value}\r\n");
     }
     if !body.is_empty() {
-        head.push_str(&format!("content-length: {}\r\n", body.len()));
+        let _ = write!(head, "content-length: {}\r\n", body.len());
     }
     head.push_str("\r\n");
     stream

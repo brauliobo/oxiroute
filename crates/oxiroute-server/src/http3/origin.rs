@@ -178,10 +178,7 @@ impl Origin<'_> {
     ) -> Result<H3UpstreamResponse, H3UpstreamError> {
         let peer = self.peer(selected, remaining).await?;
         let connector = &self.client.connector;
-        let (mut session, _reused) = connector
-            .get_http_session(&peer)
-            .await
-            .map_err(origin_error)?;
+        let (mut session, _reused) = connector.get_http_session(&peer).await?;
         // The connection is the lease's from here: a reused one never took capacity, so the wait ends now.
         selected.end_queue_wait();
         self.admit(&session)?;
@@ -219,8 +216,7 @@ impl Origin<'_> {
                     .server_timeout(self.route.write_timeout)
                     .min(remaining),
             )
-            .await
-            .map_err(origin_error)?;
+            .await?;
         peer.options.body_read_timeout = Some(attempt(timeouts.idle_ms, response));
         Ok(peer)
     }
@@ -261,21 +257,15 @@ async fn exchange(
     body: &Bytes,
 ) -> Result<H3UpstreamResponse, H3UpstreamError> {
     let head = origin_request_header(request, matches!(session, HttpSession::H2(_)))?;
-    session
-        .write_request_header(head)
-        .await
-        .map_err(origin_error)?;
+    session.write_request_header(head).await?;
     if !body.is_empty() {
-        session
-            .write_request_body(body.clone(), true)
-            .await
-            .map_err(origin_error)?;
+        session.write_request_body(body.clone(), true).await?;
     }
-    session.finish_request_body().await.map_err(origin_error)?;
+    session.finish_request_body().await?;
     let (status, headers) = read_head(session).await?;
     let body = read_body(session, &headers).await?;
     let trailers = match session {
-        HttpSession::H2(h2) => h2.read_trailers().await.map_err(origin_error)?,
+        HttpSession::H2(h2) => h2.read_trailers().await?,
         HttpSession::H1(_) | HttpSession::Custom(()) => None,
     };
     Ok(H3UpstreamResponse {
@@ -298,14 +288,12 @@ fn origin_request_header(
         request.method().clone(),
         path.as_bytes(),
         Some(request.headers().len()),
-    )
-    .map_err(origin_error)?;
+    )?;
     for (name, value) in request.headers() {
         if h2 && name == CONNECTION {
             continue;
         }
-        head.append_header(name, value.clone())
-            .map_err(origin_error)?;
+        head.append_header(name, value.clone())?;
     }
     Ok(Box::new(head))
 }
@@ -313,7 +301,7 @@ fn origin_request_header(
 /// The final response head; informational ones before it are the origin's own business, an upgrade is refused.
 async fn read_head(session: &mut HttpSession) -> Result<(StatusCode, HeaderMap), H3UpstreamError> {
     loop {
-        session.read_response_header().await.map_err(origin_error)?;
+        session.read_response_header().await?;
         let head = session
             .response_header()
             .ok_or(H3UpstreamError::JunkResponse)?;
@@ -335,7 +323,7 @@ async fn read_body(
         return Err(H3UpstreamError::ResponseBodyTooLarge);
     }
     let mut body = Vec::new();
-    while let Some(chunk) = session.read_response_body().await.map_err(origin_error)? {
+    while let Some(chunk) = session.read_response_body().await? {
         let length = u64::try_from(body.len().saturating_add(chunk.len())).unwrap_or(u64::MAX);
         if length > H3_MAX_RESPONSE_BODY_BYTES {
             return Err(H3UpstreamError::ResponseBodyTooLarge);
@@ -346,31 +334,33 @@ async fn read_body(
 }
 
 /// The classic path's classification of a failure of the connection or the exchange.
-fn origin_error(error: Box<pingora::Error>) -> H3UpstreamError {
-    log::debug!("reverse HTTP/3 origin exchange failed: {error}");
-    let refused = error
-        .root_cause()
-        .downcast_ref::<h2::Error>()
-        .and_then(h2::Error::reason);
-    if refused == Some(h2::Reason::REFUSED_STREAM) {
-        return H3UpstreamError::RefusedStream;
-    }
-    match error.etype() {
-        ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout => H3UpstreamError::Timeout,
-        ErrorType::ReadTimedout | ErrorType::WriteTimedout => H3UpstreamError::ResponseTimeout,
-        ErrorType::ConnectRefused
-        | ErrorType::ConnectNoRoute
-        | ErrorType::ConnectError
-        | ErrorType::ConnectProxyFailure
-        | ErrorType::TLSHandshakeFailure
-        | ErrorType::HandshakeError
-        | ErrorType::InvalidCert => H3UpstreamError::Connect,
-        ErrorType::HTTPStatus(_) => H3UpstreamError::QueueTimeout,
-        ErrorType::ConnectionClosed | ErrorType::ReadError => H3UpstreamError::EmptyResponse,
-        ErrorType::InvalidHTTPHeader
-        | ErrorType::H1Error
-        | ErrorType::H2Error
-        | ErrorType::InvalidH2 => H3UpstreamError::JunkResponse,
-        _ => H3UpstreamError::Failed,
+impl From<Box<pingora::Error>> for H3UpstreamError {
+    fn from(error: Box<pingora::Error>) -> Self {
+        log::debug!("reverse HTTP/3 origin exchange failed: {error}");
+        let refused = error
+            .root_cause()
+            .downcast_ref::<h2::Error>()
+            .and_then(h2::Error::reason);
+        if refused == Some(h2::Reason::REFUSED_STREAM) {
+            return Self::RefusedStream;
+        }
+        match error.etype() {
+            ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout => Self::Timeout,
+            ErrorType::ReadTimedout | ErrorType::WriteTimedout => Self::ResponseTimeout,
+            ErrorType::ConnectRefused
+            | ErrorType::ConnectNoRoute
+            | ErrorType::ConnectError
+            | ErrorType::ConnectProxyFailure
+            | ErrorType::TLSHandshakeFailure
+            | ErrorType::HandshakeError
+            | ErrorType::InvalidCert => Self::Connect,
+            ErrorType::HTTPStatus(_) => Self::QueueTimeout,
+            ErrorType::ConnectionClosed | ErrorType::ReadError => Self::EmptyResponse,
+            ErrorType::InvalidHTTPHeader
+            | ErrorType::H1Error
+            | ErrorType::H2Error
+            | ErrorType::InvalidH2 => Self::JunkResponse,
+            _ => Self::Failed,
+        }
     }
 }
