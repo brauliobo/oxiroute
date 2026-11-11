@@ -2,6 +2,7 @@ use schemars::generate::SchemaSettings;
 use serde_json::{Value, json};
 
 use super::*;
+use crate::{EndpointHealthSnapshot, EndpointHealthState, PoolHealthSnapshot};
 
 fn empty_topology() -> TopologySnapshot {
     TopologySnapshot::compile(&oxiroute_config::ConfigDraft {
@@ -44,8 +45,8 @@ fn active_and_candidate_projections_preserve_the_v1_golden_objects() {
         listeners: Vec::new(),
         upstream_pools: Vec::new(),
     };
-    let active = serde_json::to_value(
-        TopologyResponse::active(&topology, &runtime).expect("active topology projection"),
+    let active: Value = serde_json::from_slice(
+        &TopologyResponse::active_body(&topology, &runtime).expect("active topology body"),
     )
     .expect("active topology JSON");
     let candidate = serde_json::to_value(
@@ -80,12 +81,6 @@ fn active_and_candidate_projections_preserve_the_v1_golden_objects() {
             "edges": [],
             "overlays": [],
         })
-    );
-    assert_eq!(
-        active,
-        topology
-            .response_value(&runtime)
-            .expect("legacy active topology JSON")
     );
 }
 
@@ -169,4 +164,171 @@ fn topology_schema_excludes_secret_bearing_source_fields() {
     ] {
         assert!(!schema.contains(forbidden), "schema exposed {forbidden}");
     }
+}
+
+fn pool_topology() -> TopologySnapshot {
+    let config = serde_json::from_value::<oxiroute_config::ConfigDraft>(json!({
+        "version": 1,
+        "listeners": [],
+        "upstream_pools": [{
+            "name": "api",
+            "servers": [
+                { "name": "a", "endpoint": { "type": "socket", "address": "127.0.0.1:9001" } },
+                { "name": "b", "endpoint": { "type": "socket", "address": "127.0.0.1:9002" } },
+            ],
+        }],
+    }))
+    .expect("pool configuration");
+    TopologySnapshot::compile(&config)
+}
+
+fn endpoint_snapshot(
+    name: &str,
+    origin: crate::ServerOrigin,
+    active: u64,
+) -> EndpointHealthSnapshot {
+    EndpointHealthSnapshot {
+        active_connections: active,
+        administrative_state: crate::AdministrativeState::Ready,
+        address: crate::RuntimeEndpoint::Socket {
+            address: "127.0.0.1:9003".parse().expect("address"),
+        },
+        checks_enabled: false,
+        checks_running: false,
+        configured_max_connections: None,
+        health_override: crate::HealthOverride::Auto,
+        max_connections: Some(7),
+        name: name.into(),
+        state: EndpointHealthState::Healthy,
+        configured_weight: 1,
+        weight: 1,
+        origin,
+        last_checked_at_unix_ms: None,
+        last_transition_at_unix_ms: Some(5),
+        successful_checks: 3,
+        failed_checks: 1,
+        consecutive_successes: 2,
+        consecutive_failures: 0,
+        last_failure: Some(crate::HealthFailure::Slow),
+        passive_ejected: false,
+        passive_failure_count: 0,
+        passive_consecutive_failures: 0,
+        passive_ejection_count: 0,
+        passive_ejection_reason: None,
+        passive_ejected_at_unix_ms: None,
+        passive_ejection_until_unix_ms: None,
+        passive_recovery_count: 0,
+        passive_last_recovery_at_unix_ms: None,
+    }
+}
+
+fn pool_snapshot(endpoints: Vec<EndpointHealthSnapshot>) -> PoolHealthSnapshot {
+    PoolHealthSnapshot {
+        name: "api".into(),
+        algorithm: "round_robin",
+        available_endpoints: endpoints.len(),
+        total_endpoints: endpoints.len(),
+        unavailable_selections: 4,
+        fail_open_selections: 0,
+        queued: 1,
+        queued_by_class: Vec::new(),
+        oldest_queue_wait_ms: 0,
+        queued_total: 9,
+        queue_timeouts: 2,
+        queue_cancellations: 1,
+        canary: None,
+        endpoints,
+    }
+}
+
+#[test]
+fn active_body_is_the_compiled_graph_plus_live_overlays_and_registered_servers() {
+    let topology = pool_topology();
+    let runtime = |active| RuntimeHealthSnapshot {
+        sampled_at_unix_ms: 42,
+        listeners: Vec::new(),
+        upstream_pools: vec![pool_snapshot(vec![
+            endpoint_snapshot("a", crate::ServerOrigin::Static, active),
+            endpoint_snapshot("b", crate::ServerOrigin::Static, 0),
+            endpoint_snapshot("c", crate::ServerOrigin::Dynamic, 0),
+        ])],
+    };
+    let first: Value =
+        serde_json::from_slice(&TopologyResponse::active_body(&topology, &runtime(1)).unwrap())
+            .unwrap();
+    let second: Value =
+        serde_json::from_slice(&TopologyResponse::active_body(&topology, &runtime(2)).unwrap())
+            .unwrap();
+
+    let nodes = first["nodes"].as_array().unwrap();
+    let compiled = topology.nodes().len();
+    assert_eq!(nodes.len(), compiled + 1);
+    assert_eq!(
+        Value::Array(nodes[..compiled].to_vec()),
+        serde_json::to_value(topology.nodes()).unwrap()
+    );
+    let registered = &nodes[compiled];
+    assert_eq!(registered["name"], "c");
+    assert_eq!(registered["attributes"]["origin"], "dynamic");
+    assert_eq!(registered["attributes"]["address"], "127.0.0.1:9003");
+    assert_eq!(registered["attributes"]["maxConnections"], 7);
+    assert_eq!(
+        first["edges"].as_array().unwrap().len(),
+        topology.edges().len() + 1
+    );
+    let overlays = first["overlays"].as_array().unwrap();
+    assert_eq!(overlays.len(), 4);
+    assert_eq!(overlays[0]["state"], "available");
+    assert_eq!(overlays[0]["metrics"]["queuedTotal"], "9");
+    assert_eq!(overlays[1]["metrics"]["activeConnections"], "1");
+    assert_eq!(overlays[1]["metrics"]["lastFailure"], "slow");
+    assert_eq!(overlays[3]["nodeId"], registered["id"]);
+    // Only the overlays move between two calls on the same generation; the compiled part is the cached bytes.
+    assert_eq!(second["nodes"], first["nodes"]);
+    assert_eq!(second["edges"], first["edges"]);
+    assert_eq!(second["overlays"][1]["metrics"]["activeConnections"], "2");
+    assert!(serde_json::from_value::<TopologyResponse>(first).is_ok());
+}
+
+#[test]
+fn active_body_names_what_the_runtime_lacks_or_does_not_know() {
+    let topology = pool_topology();
+    let body = |endpoints: Vec<EndpointHealthSnapshot>| {
+        TopologyResponse::active_body(
+            &topology,
+            &RuntimeHealthSnapshot {
+                sampled_at_unix_ms: 1,
+                listeners: Vec::new(),
+                upstream_pools: vec![pool_snapshot(endpoints)],
+            },
+        )
+    };
+    let missing = body(vec![endpoint_snapshot("a", crate::ServerOrigin::Static, 0)]).unwrap_err();
+    assert!(
+        missing.contains("compiled server `b` in pool `api`"),
+        "{missing}"
+    );
+    let unknown = body(vec![
+        endpoint_snapshot("a", crate::ServerOrigin::Static, 0),
+        endpoint_snapshot("b", crate::ServerOrigin::Static, 0),
+        endpoint_snapshot("z", crate::ServerOrigin::Static, 0),
+    ])
+    .unwrap_err();
+    assert!(
+        unknown.contains("active server `z` in pool `api`"),
+        "{unknown}"
+    );
+    let no_pool = TopologyResponse::active_body(
+        &topology,
+        &RuntimeHealthSnapshot {
+            sampled_at_unix_ms: 1,
+            listeners: Vec::new(),
+            upstream_pools: Vec::new(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        no_pool.contains("compiled upstream pool `api`"),
+        "{no_pool}"
+    );
 }

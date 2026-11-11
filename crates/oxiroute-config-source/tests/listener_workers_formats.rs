@@ -4,10 +4,10 @@ use oxiroute_config::{ConfigDraft, ValidatedConfig};
 use oxiroute_config_source::{ConfigFormat, render_config, resolve_source_with_format};
 use serde_json::json;
 
-fn validated() -> ValidatedConfig {
+fn validated(scheduling: &str) -> ValidatedConfig {
     serde_json::from_value::<ConfigDraft>(
         json!({"version": 1, "listeners": [], "listener_workers": 3, "http_fast_lane": false,
-            "connection_scheduling": "aged_per_worker", "connection_age_ms": 25, "tls_handshake_threads": 2}),
+            "connection_scheduling": scheduling, "connection_age_ms": 25, "tls_handshake_threads": 2}),
     )
     .expect("authored configuration")
     .validate()
@@ -16,16 +16,19 @@ fn validated() -> ValidatedConfig {
 
 #[test]
 fn listener_workers_round_trip_through_every_source_format() {
-    let config = validated();
-    for format in [
-        ConfigFormat::Kdl,
-        ConfigFormat::Lua,
-        ConfigFormat::Uci,
-        ConfigFormat::Hocon,
-    ] {
-        let rendered = render_config(format, &config).expect("render");
-        let resolved = resolve_source_with_format(Path::new("config"), rendered.as_bytes(), format)
-            .unwrap_or_else(|error| panic!("{format:?}: {error}"));
-        assert_eq!(resolved.config, config, "{format:?}");
+    for scheduling in ["aged_per_worker", "auto"] {
+        let config = validated(scheduling);
+        for format in [
+            ConfigFormat::Kdl,
+            ConfigFormat::Lua,
+            ConfigFormat::Uci,
+            ConfigFormat::Hocon,
+        ] {
+            let rendered = render_config(format, &config).expect("render");
+            let resolved =
+                resolve_source_with_format(Path::new("config"), rendered.as_bytes(), format)
+                    .unwrap_or_else(|error| panic!("{scheduling} {format:?}: {error}"));
+            assert_eq!(resolved.config, config, "{scheduling} {format:?}");
+        }
     }
 }

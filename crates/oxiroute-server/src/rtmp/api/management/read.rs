@@ -3,8 +3,8 @@ use super::*;
 
 impl ManagementState {
     pub(super) fn listeners(&self) -> ApiResponse {
-        match self.metrics.snapshot() {
-            Ok(snapshot) => ApiResponse::dto(200, &ListenerInventoryResponse::from(snapshot)),
+        match self.metrics.public_listener_snapshots() {
+            Ok(listeners) => ApiResponse::dto(200, &ListenerInventoryResponse::from(listeners)),
             Err(_) => ApiResponse::error(
                 503,
                 "listeners_unavailable",
@@ -23,7 +23,7 @@ impl ManagementState {
             .iter()
             .map(|pool| pool.health_snapshot())
             .collect::<Vec<_>>();
-        ApiResponse::dto(200, &PoolInventoryResponse::from(pools))
+        ApiResponse::bytes(200, pools_body(&pools), "application/json")
     }
 
     pub(super) fn servers(&self) -> ApiResponse {
@@ -36,7 +36,7 @@ impl ManagementState {
             .iter()
             .map(|pool| pool.health_snapshot())
             .collect::<Vec<_>>();
-        ApiResponse::dto(200, &ServerInventoryResponse::from(pools))
+        ApiResponse::bytes(200, servers_body(&pools), "application/json")
     }
 
     pub(super) fn audit_status(&self) -> ApiResponse {

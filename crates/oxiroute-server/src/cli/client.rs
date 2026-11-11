@@ -504,8 +504,19 @@ impl Response {
             .map_err(|_| CliError::Remote("endpoint returned invalid JSON".into()))
     }
 
+    pub(super) fn is_json(&self) -> bool {
+        self.content_type.starts_with("application/json")
+    }
+
+    /// The body as the server wrote it when it is one JSON document; the check builds nothing.
+    pub(super) fn checked_json_body(&self) -> Result<&[u8], CliError> {
+        serde_json::from_slice::<serde::de::IgnoredAny>(&self.body)
+            .map_err(|_| CliError::Remote("endpoint returned invalid JSON".into()))?;
+        Ok(self.body.trim_ascii_end())
+    }
+
     pub(super) fn output_value(&self) -> Result<Value, CliError> {
-        if self.content_type.starts_with("application/json") {
+        if self.is_json() {
             self.json()
         } else {
             let text = std::str::from_utf8(&self.body)

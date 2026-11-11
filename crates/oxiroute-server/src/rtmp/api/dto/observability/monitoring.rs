@@ -1,9 +1,10 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+/// The fields of the response before the pool inventory.
 #[derive(JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct MonitoringResponse {
+struct MonitoringHead {
     sampled_at_unix_ms: u64,
     uptime_ms: u64,
     generation_age_ms: u64,
@@ -11,7 +12,12 @@ pub(crate) struct MonitoringResponse {
     host: HostDto,
     traffic: TrafficDto,
     listeners: Vec<ListenerDto>,
-    upstream_pools: Vec<PoolDto>,
+}
+
+/// The fields of the response after the pool inventory.
+#[derive(JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MonitoringTail {
     transport_operations: Vec<TransportOperationDto>,
     access_records: Vec<AccessRecordDto>,
     certbot_certificates: Vec<CertbotCertificateDto>,
@@ -22,6 +28,26 @@ pub(crate) struct MonitoringResponse {
     rtmp: RtmpMonitoringDto,
 }
 
+/// The monitoring document. Serializing it is the reference encoding; [`MonitoringResponse::body`] writes the same
+/// bytes with the pool inventory, nearly all of the response at a thousand servers, written directly.
+#[derive(JsonSchema, Serialize)]
+pub(crate) struct MonitoringResponse {
+    #[serde(flatten)]
+    head: MonitoringHead,
+    #[schemars(with = "Vec<PoolDto>")]
+    #[serde(rename = "upstreamPools", serialize_with = "serialize_pools")]
+    upstream_pools: Vec<PoolHealthSnapshot>,
+    #[serde(flatten)]
+    tail: MonitoringTail,
+}
+
+fn serialize_pools<S: serde::Serializer>(
+    pools: &[PoolHealthSnapshot],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(pools.iter().cloned().map(PoolDto::from))
+}
+
 impl MonitoringResponse {
     pub(crate) fn project(
         runtime: RuntimeSnapshot,
@@ -29,39 +55,55 @@ impl MonitoringResponse {
         recording_supported: bool,
     ) -> Option<Self> {
         Some(Self {
-            sampled_at_unix_ms: runtime.sampled_at_unix_ms,
-            uptime_ms: runtime.uptime_ms,
-            generation_age_ms: runtime.generation_age_ms,
-            process: runtime.process.into(),
-            host: runtime.host.into(),
-            traffic: runtime.traffic.into(),
-            listeners: runtime.listeners.into_iter().map(Into::into).collect(),
-            upstream_pools: runtime.upstream_pools.into_iter().map(Into::into).collect(),
-            transport_operations: runtime
-                .transport_operations
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            access_records: runtime.access_records.into_iter().map(Into::into).collect(),
-            certbot_certificates: runtime
-                .certbot_certificates
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            certbot_watcher: runtime.certbot_watcher.map(Into::into),
-            acme_managed_certificates: runtime
-                .acme_managed_certificates
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            direct_file_certificates: runtime
-                .direct_file_certificates
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            direct_file_watcher: runtime.direct_file_watcher.map(Into::into),
-            rtmp: RtmpMonitoringDto::project(snapshot, recording_supported)?,
+            head: MonitoringHead {
+                sampled_at_unix_ms: runtime.sampled_at_unix_ms,
+                uptime_ms: runtime.uptime_ms,
+                generation_age_ms: runtime.generation_age_ms,
+                process: runtime.process.into(),
+                host: runtime.host.into(),
+                traffic: runtime.traffic.into(),
+                listeners: runtime.listeners.into_iter().map(Into::into).collect(),
+            },
+            upstream_pools: runtime.upstream_pools,
+            tail: MonitoringTail {
+                transport_operations: runtime
+                    .transport_operations
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                access_records: runtime.access_records.into_iter().map(Into::into).collect(),
+                certbot_certificates: runtime
+                    .certbot_certificates
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                certbot_watcher: runtime.certbot_watcher.map(Into::into),
+                acme_managed_certificates: runtime
+                    .acme_managed_certificates
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                direct_file_certificates: runtime
+                    .direct_file_certificates
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                direct_file_watcher: runtime.direct_file_watcher.map(Into::into),
+                rtmp: RtmpMonitoringDto::project(snapshot, recording_supported)?,
+            },
         })
+    }
+
+    /// The JSON of the response: the head and the tail through serde, the pools between them written directly.
+    pub(crate) fn body(&self) -> serde_json::Result<Vec<u8>> {
+        let mut body = serde_json::to_vec(&self.head)?;
+        body.pop(); // the closing brace; the pools and the tail continue the object
+        body.extend_from_slice(b",\"upstreamPools\":");
+        body.extend(pools_json(&self.upstream_pools));
+        body.push(b',');
+        let tail = serde_json::to_vec(&self.tail)?;
+        body.extend_from_slice(&tail[1..]);
+        Ok(body)
     }
 }
 

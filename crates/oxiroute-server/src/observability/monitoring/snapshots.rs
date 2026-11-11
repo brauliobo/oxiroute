@@ -157,6 +157,17 @@ pub struct RuntimeSnapshot {
     pub direct_file_watcher: Option<DirectFileWatcherSnapshot>,
 }
 
+impl RuntimeSnapshot {
+    /// Whether the process and every public listener accept traffic (see [`RuntimeMetrics::serving`]).
+    #[must_use]
+    pub fn serving(&self) -> bool {
+        self.process.administrative_state == AdministrativeState::Ready
+            && self.listeners.iter().all(|listener| {
+                super::listener::listener_serving(listener.administrative_state, listener.state)
+            })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcmeManagedCertificateSnapshot {

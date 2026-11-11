@@ -380,6 +380,10 @@ fn execute(cli: &Cli, client: &Client) -> Result<FollowOutcome, CliError> {
             ));
         }
     };
+    if selection.is_none() && matches!(cli.output, Output::Json) && response.is_json() {
+        print_json_body(&response, cli.quiet)?;
+        return Ok(FollowOutcome::Complete);
+    }
     let value = response.output_value()?;
     let value = match selection {
         Some(selection) => selection.apply(value)?,

@@ -18,16 +18,11 @@ pub(super) struct TopologyBuilder {
     listener_nodes: HashMap<String, String>,
     pool_nodes: HashMap<String, String>,
     pool_paths: HashMap<String, String>,
-    endpoint_nodes: HashMap<(String, String), String>,
+    static_endpoints: HashMap<String, HashSet<String>>,
 }
 
 impl TopologyBuilder {
     pub(super) fn new(config: &ConfigDraft) -> Self {
-        let endpoint_capacity = config
-            .upstream_pools
-            .iter()
-            .map(|pool| pool.endpoints.len())
-            .sum();
         Self {
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -36,7 +31,7 @@ impl TopologyBuilder {
             ),
             pool_nodes: HashMap::with_capacity(config.upstream_pools.len()),
             pool_paths: HashMap::with_capacity(config.upstream_pools.len()),
-            endpoint_nodes: HashMap::with_capacity(endpoint_capacity),
+            static_endpoints: HashMap::with_capacity(config.upstream_pools.len()),
         }
     }
 
@@ -348,6 +343,7 @@ impl TopologyBuilder {
             self.pool_paths
                 .insert(pool.name.clone(), config_path.clone());
 
+            let mut static_servers = HashSet::with_capacity(pool.servers.len());
             for (server_index, server) in pool.servers.iter().enumerate() {
                 let endpoint = &server.endpoint;
                 let endpoint_id = endpoint_id(&pool.name, &server.name);
@@ -370,9 +366,10 @@ impl TopologyBuilder {
                     &endpoint_id,
                     endpoint_path,
                 ));
-                self.endpoint_nodes
-                    .insert((pool.name.clone(), server.name.clone()), endpoint_id);
+                static_servers.insert(server.name.clone());
             }
+            self.static_endpoints
+                .insert(pool.name.clone(), static_servers);
         }
     }
 
@@ -383,7 +380,8 @@ impl TopologyBuilder {
             listener_nodes: self.listener_nodes,
             pool_nodes: self.pool_nodes,
             pool_paths: self.pool_paths,
-            endpoint_nodes: self.endpoint_nodes,
+            static_endpoints: self.static_endpoints,
+            rendered: OnceLock::new(),
         }
     }
 }

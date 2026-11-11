@@ -12,11 +12,11 @@ use super::{
         DnsRefreshServer, DrainRequest, DrainResponse, EvacuationResponse, EventPageV1Response,
         EventPageV2Response, GenerationActionResponse, GenerationResponse,
         ListenerInventoryResponse, ListenerStateRequest, MutationResponse, PoolEvacuateRequest,
-        PoolInventoryResponse, PoolStateRequest, ProcessMutationResponse, RevisionRequest,
-        ServerCapacityRequest, ServerChange, ServerChecksRequest, ServerEvacuateRequest,
-        ServerHealthRequest, ServerInventoryResponse, ServerStateRequest, ServerWeightRequest,
-        TlsActionResponse, TlsCertificateDto, TlsInventoryResponse, TlsJobControlResponse,
-        TlsReconcileOutcome, TlsReconcileResponse, TlsRenewResponse, TlsRequest, TlsRevokeRequest,
+        PoolStateRequest, ProcessMutationResponse, RevisionRequest, ServerCapacityRequest,
+        ServerChange, ServerChecksRequest, ServerEvacuateRequest, ServerHealthRequest,
+        ServerStateRequest, ServerWeightRequest, TlsActionResponse, TlsCertificateDto,
+        TlsInventoryResponse, TlsJobControlResponse, TlsReconcileOutcome, TlsReconcileResponse,
+        TlsRenewResponse, TlsRequest, TlsRevokeRequest, pools_body, servers_body,
     },
 };
 use crate::{

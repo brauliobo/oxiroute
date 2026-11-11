@@ -114,6 +114,33 @@ impl RuntimeMetrics {
         Ok(snapshot)
     }
 
+    /// Whether the process and every public listener accept traffic: the readiness facts of [`Self::snapshot`] read
+    /// straight from the state atomics, without sampling the host, the pools or the certificates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the listener registry is poisoned.
+    pub fn serving(&self) -> Result<bool, MetricsError> {
+        let listeners = self
+            .inner
+            .listeners
+            .read()
+            .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
+        let process = AdministrativeState::from_u8(
+            self.inner
+                .process_admission
+                .administrative_state
+                .load(Ordering::Acquire),
+        );
+        Ok(process == AdministrativeState::Ready
+            && listeners
+                .order
+                .iter()
+                .map(|id| &listeners.states[id])
+                .filter(|state| state.metric_policy == ListenerMetricPolicy::Public)
+                .all(|state| state.serving()))
+    }
+
     /// Samples the counters a supervised worker reports to its master, without the process, host,
     /// pool, certificate or listener-detail sampling that [`Self::snapshot`] does.
     ///
@@ -148,6 +175,16 @@ impl RuntimeMetrics {
             listeners,
             upstream_pools: self.upstream_pool_snapshots()?,
         })
+    }
+
+    /// Samples the public listeners, as [`Self::snapshot`] lists them, without sampling the host, the pools or the
+    /// certificates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the listener registry is poisoned.
+    pub fn public_listener_snapshots(&self) -> Result<Vec<ListenerSnapshot>, MetricsError> {
+        self.listener_snapshots(true)
     }
 
     /// Samples every registered listener, including internal-only control listeners.
