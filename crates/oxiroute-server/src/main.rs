@@ -51,7 +51,7 @@ use pingora::{
     proxy::http_proxy,
     server::{
         RunArgs, Server, ShutdownSignal, ShutdownSignalWatch, ShutdownWatch,
-        configuration::ServerConf,
+        configuration::{ServerConf, WorkerScalingConf},
     },
     services::{
         Service as PingoraService, ServiceReadyNotifier, ServiceWithDependents,
@@ -422,6 +422,7 @@ fn serve_generation(
         work_stealing: !aged_per_worker,
         aged_connections: aged_per_worker,
         connection_age_ms: config.connection_age_ms,
+        worker_scaling: worker_scaling(config),
         ..ServerConf::default()
     };
     let mut server = Server::new_with_opt_and_conf(None, server_config)?;

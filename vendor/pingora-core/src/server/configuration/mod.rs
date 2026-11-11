@@ -88,6 +88,9 @@ pub struct ServerConf {
     pub aged_connections: bool,
     #[serde(default)]
     pub connection_age_ms: Option<u64>,
+    /// With `aged_connections`: keep only as many workers of a service active as its load needs.
+    #[serde(default)]
+    pub worker_scaling: Option<WorkerScalingConf>,
     /// The path to CA file the SSL library should use. If empty, the default trust store location
     /// defined by the SSL library will be used.
     pub ca_file: Option<String>,
@@ -246,6 +249,7 @@ impl Default for ServerConf {
             runtime_enable_alt_timer: false,
             aged_connections: false,
             connection_age_ms: None,
+            worker_scaling: None,
             upstream_keepalive_pool_size: 128,
             upstream_connect_offload_threadpools: None,
             upstream_connect_offload_thread_per_pool: None,
@@ -441,6 +445,14 @@ impl ServerConf {
                 Some(ms) => pingora_runtime::Age::Fixed(Duration::from_millis(ms)),
                 None => pingora_runtime::Age::adaptive(),
             }),
+            worker_scaling: self
+                .worker_scaling
+                .filter(|_| self.aged_connections)
+                .map(|scaling| pingora_runtime::ScalingPolicy {
+                    min_active: scaling.min_active,
+                    target_busy_permille: scaling.target_busy_percent * 10,
+                    release_delay: Duration::from_millis(scaling.scale_down_delay_ms),
+                }),
             #[cfg(feature = "dial9")]
             dial9: None,
         }
@@ -451,6 +463,17 @@ impl ServerConf {
             self.daemon = true;
         }
     }
+}
+
+/// The worker scaling of a service (`ServerConf::worker_scaling`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerScalingConf {
+    /// Workers that stay active however light the load.
+    pub min_active: usize,
+    /// Share of one worker's time, in percent, the active workers are kept under.
+    pub target_busy_percent: u32,
+    /// How long the load must fit fewer workers before one is released.
+    pub scale_down_delay_ms: u64,
 }
 
 /// Create an instance of Opt by parsing the current command-line args.
@@ -502,6 +525,7 @@ mod tests {
             runtime_enable_alt_timer: false,
             aged_connections: false,
             connection_age_ms: None,
+            worker_scaling: None,
             upstream_keepalive_pool_size: 4,
             upstream_connect_offload_threadpools: None,
             upstream_connect_offload_thread_per_pool: None,

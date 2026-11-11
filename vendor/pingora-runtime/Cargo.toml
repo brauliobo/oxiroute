@@ -67,6 +67,9 @@ version = "0.4"
 [dependencies.oxiroute-aged-executor]
 path = "../../crates/oxiroute-aged-executor"
 
+[dependencies.oxiroute-worker-scaling]
+path = "../../crates/oxiroute-worker-scaling"
+
 [dependencies.once_cell]
 version = "1"
 

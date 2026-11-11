@@ -39,6 +39,7 @@ notify.workspace = true
 openssl.workspace = true
 oxiroute-acme = { path = "../oxiroute-acme" }
 oxiroute-aged-executor = { path = "../oxiroute-aged-executor" }
+oxiroute-worker-scaling = { path = "../oxiroute-worker-scaling" }
 oxiroute-config = { path = "../oxiroute-config" }
 oxiroute-h1-head = { path = "../oxiroute-h1-head" }
 oxiroute-config-source = { path = "../oxiroute-config-source" }

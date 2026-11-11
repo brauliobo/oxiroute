@@ -260,6 +260,9 @@ def build(args):
             dict(listener, name=f"bench{index}", bind={"type": "socket", "address": f"127.0.0.1:{args.proxy_port + 10 + index}"}))
     if args.workers:
         config["listener_workers"] = args.workers
+    for item in args.set:  # root options as KEY=JSON, e.g. connection_scheduling="aged_per_worker"
+        key, value = item.split("=", 1)
+        config[key] = json.loads(value)
     if args.classic:
         config["http_fast_lane"] = False
     if args.tls_handshake_threads >= 0:
@@ -308,6 +311,7 @@ def main():
                         help="policy.backend of the TLS profile")
     parser.add_argument("--run-dir", default="/tmp")
     parser.add_argument("--feature", action="append", default=[])
+    parser.add_argument("--set", action="append", default=[], help="a root option as KEY=JSON (repeatable)")
     args = parser.parse_args()
     with open(args.out, "w", encoding="utf-8", newline="\n") as handle:
         handle.write("return " + lua(build(args)) + "\n")

@@ -10,7 +10,10 @@ use std::{
 use slab::Slab;
 use tokio::task::coop::has_budget_remaining;
 
-use crate::queue::{Shared, Task, TaskWaker};
+use crate::{
+    migrate,
+    queue::{Shared, Task, TaskWaker},
+};
 
 /// Tasks polled before the runner yields to the Tokio scheduler, which then polls the I/O driver. Serving many more
 /// ready tasks than that between two polls of the driver turns the queue into first-in first-out.
@@ -62,12 +65,20 @@ impl Runner {
         };
         task.queued.store(false, Ordering::Release);
         let mut cx = Context::from_waker(&slot.waker);
-        let polled = catch_unwind(AssertUnwindSafe(|| slot.future.as_mut().poll(&mut cx)));
-        if !matches!(polled, Ok(Poll::Pending)) {
-            task.queued.store(true, Ordering::Release);
-            let finished = self.slots.remove(task.id);
-            self.shared.count_tasks(0, 1);
-            drop(finished);
+        let polled = migrate::polling(|| {
+            catch_unwind(AssertUnwindSafe(|| slot.future.as_mut().poll(&mut cx)))
+        });
+        let target = migrate::take_request();
+        if matches!(polled, Ok(Poll::Pending)) && target.is_none() {
+            return;
+        }
+        // Finished, or asked to continue on another worker: the slot goes, and wakers of the old slot stay inert.
+        task.queued.store(true, Ordering::Release);
+        let left = self.slots.remove(task.id);
+        self.shared.count_tasks(0, 1);
+        match target {
+            Some(target) if matches!(polled, Ok(Poll::Pending)) => target.submit(left.future),
+            _ => drop(left),
         }
     }
 }
@@ -77,8 +88,19 @@ impl Future for Runner {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let this = self.get_mut();
-        this.shared.register_runner(cx.waker());
         let now = Instant::now();
+        let polled = this.poll_batch(cx, now);
+        if this.shared.measured() {
+            this.shared.add_busy(now.elapsed());
+        }
+        polled
+    }
+}
+
+impl Runner {
+    fn poll_batch(&mut self, cx: &mut Context<'_>, now: Instant) -> Poll<()> {
+        let this = self;
+        this.shared.register_runner(cx.waker());
         let submitted = this.shared.begin_batch(now);
         this.admit(submitted);
         for _ in 0..BATCH {

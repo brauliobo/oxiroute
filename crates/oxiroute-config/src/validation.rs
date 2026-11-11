@@ -84,6 +84,7 @@ mod retirement;
 mod rtmp;
 mod tls;
 mod upstream;
+mod worker_scaling;
 
 use audit::validate_audit;
 use log_filter::validate_log_filter;
@@ -98,6 +99,7 @@ pub use upstream::{
     validate_health_check_config, validate_upstream_pool_definitions, validate_upstream_pools,
 };
 use upstream::{validate_l4_services, validate_proxy_protocol_timeout};
+use worker_scaling::validate_worker_scaling;
 
 const MAX_UDP_WIRE_DATAGRAM_BYTES: u64 = 65_507;
 const MAX_UDP_PROXY_V2_ADDRESS_HEADER_BYTES: u64 = 52;
@@ -149,6 +151,7 @@ pub(crate) fn validate_config_in_place(config: &mut ConfigDraft) -> Result<(), C
         return Err(ConfigError::InvalidListenerWorkers(workers));
     }
     validate_connection_age(config)?;
+    validate_worker_scaling(config)?;
     validate_tls_handshake_threads(config)?;
     retirement::validate_retirement(config)?;
     validate_management(config.management.as_ref())?;

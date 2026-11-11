@@ -795,6 +795,12 @@ fn render_prometheus_snapshot(
             .as_ref()
             .map(|generation| generation.config().as_draft()),
     )?;
+    render_worker_scaling(
+        &mut output,
+        active
+            .as_ref()
+            .map(|generation| generation.config().as_draft()),
+    )?;
     render_retirement(&mut output, generations, &generation)?;
     labels(
         &mut output,

@@ -5,7 +5,7 @@ use std::{net::SocketAddr, path::PathBuf};
 use lua_support::{load_lua, render_lua, render_lua_error};
 use oxiroute_config::{
     AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, CircuitBreaker, ConfigDraft,
-    ConfigError, DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType,
+    ConfigError, ConnectionScheduling, DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType,
     HealthStartup, HttpAccessPolicy, HttpAffinity, HttpCookiePathRewrite, HttpHostSelector,
     HttpLiteralHeader, HttpPathSelector, HttpPoolSelect, HttpPoolSelectRule, HttpProxyPathRewrite,
     HttpProxyPolicy, HttpProxyTimeouts, HttpRedirectLocation, HttpRequestHeaderMutation,
@@ -21,7 +21,7 @@ use oxiroute_config::{
     RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
     RtmpService, RtmpSessionCeilings, TlsClientAuthMode, TlsClientAuthPolicy, TlsPolicy,
     TlsProfile, TlsSessionCache, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse,
-    UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
+    UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, WorkerScaling,
 };
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -730,6 +730,10 @@ fn complete_config() -> ConfigDraft {
         http_fast_lane: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        worker_scaling: None,
+        min_active_workers: None,
+        target_busy_percent: None,
+        scale_down_delay_ms: None,
         tls_handshake_threads: None,
         retirement: None,
         version: 1,
@@ -761,6 +765,10 @@ fn minimal_config() -> ConfigDraft {
         http_fast_lane: None,
         connection_scheduling: None,
         connection_age_ms: None,
+        worker_scaling: None,
+        min_active_workers: None,
+        target_busy_percent: None,
+        scale_down_delay_ms: None,
         tls_handshake_threads: None,
         retirement: None,
         version: 1,
@@ -789,6 +797,23 @@ fn normalized_round_trip(config: ConfigDraft) -> (ConfigDraft, String) {
     let loaded = load_lua(&source).expect("rendered Lua must load");
     assert_eq!(loaded, config);
     (config, source)
+}
+
+#[test]
+fn renders_and_round_trips_dynamic_worker_scaling() {
+    let mut config = minimal_config();
+    config.listener_workers = Some(6);
+    config.connection_scheduling = Some(ConnectionScheduling::AgedPerWorker);
+    config.worker_scaling = Some(WorkerScaling::Dynamic);
+    config.min_active_workers = Some(2);
+    config.target_busy_percent = Some(65);
+    config.scale_down_delay_ms = Some(1_500);
+
+    let (_, source) = normalized_round_trip(config);
+    assert!(source.contains("worker_scaling = \"dynamic\""));
+    assert!(source.contains("min_active_workers = 2"));
+    assert!(source.contains("target_busy_percent = 65"));
+    assert!(source.contains("scale_down_delay_ms = 1500"));
 }
 
 #[test]

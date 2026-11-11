@@ -10,9 +10,11 @@
 //! runtime, so the timers, the I/O driver and the wakers of the tasks work as in any Tokio task. Dropping the runner
 //! drops every task it owns.
 
+mod migrate;
 mod queue;
 mod runner;
 
+pub use migrate::{in_task, move_to};
 pub use queue::{Age, Stats};
 pub use runner::Runner;
 
@@ -35,7 +37,17 @@ impl AgedExecutor {
     /// An executor whose ready tasks wait at most `age` behind newer ones, with the future that runs it.
     #[must_use]
     pub fn new(age: Age) -> (Self, Runner) {
-        let shared = Arc::new(Shared::new(age));
+        Self::build(age, false)
+    }
+
+    /// [`Self::new`] whose runner also times its polls, for [`Self::busy_nanos`]: two clock reads per batch of tasks.
+    #[must_use]
+    pub fn new_measured(age: Age) -> (Self, Runner) {
+        Self::build(age, true)
+    }
+
+    fn build(age: Age, measured: bool) -> (Self, Runner) {
+        let shared = Arc::new(Shared::new(age, measured));
         let mut executors = queue::lock(&EXECUTORS);
         executors.retain(|executor| executor.strong_count() > 0);
         executors.push(Arc::downgrade(&shared));
@@ -50,6 +62,17 @@ impl AgedExecutor {
     /// Queues `future` to run on this executor. It is dropped at once when the runner is gone.
     pub fn spawn(&self, future: impl Future<Output = ()> + Send + 'static) {
         self.shared.submit(Box::pin(future));
+    }
+
+    pub(crate) fn submit_task(&self, task: queue::Task) {
+        self.shared.submit(task);
+    }
+
+    /// Nanoseconds the runner has spent polling tasks since it started; zero unless the executor is measured. Only the
+    /// difference between two readings says anything.
+    #[must_use]
+    pub fn busy_nanos(&self) -> u64 {
+        self.shared.busy_nanos()
     }
 
     #[must_use]

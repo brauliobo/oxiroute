@@ -57,10 +57,14 @@ fn all_decoders_apply_the_source_bound_before_parsing() {
 #[test]
 fn typed_configs_render_in_every_supported_format() {
     let config = oxiroute_config::ConfigDraft {
-        listener_workers: None,
+        listener_workers: Some(4),
         http_fast_lane: None,
-        connection_scheduling: None,
+        connection_scheduling: Some(oxiroute_config::ConnectionScheduling::AgedPerWorker),
         connection_age_ms: None,
+        worker_scaling: Some(oxiroute_config::WorkerScaling::Dynamic),
+        min_active_workers: Some(2),
+        target_busy_percent: Some(60),
+        scale_down_delay_ms: Some(2_500),
         tls_handshake_threads: None,
         retirement: None,
         version: 1,

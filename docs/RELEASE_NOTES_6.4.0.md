@@ -155,6 +155,18 @@ Details: [connection scheduling](developer/PERF_6_4_CONNECTION_SCHEDULING.md).
 - **HTTP/2 streams stay on their connection's worker** in per-worker mode (they used to run on Tokio's shared queue).
 - A slow handler delays the other connections of its worker (p99.9 is the delay itself, 203 to 211 ms in the slow-handler
   lane); work stealing hides that.
+- `worker_scaling = "dynamic"` (needs `aged_per_worker`) keeps only as many of a listener's `listener_workers` active as
+  its load needs: new connections go to the active workers, idle kept-alive HTTP/1 connections move off released or
+  crowded workers between two requests, and workers are activated within a few 20 ms ticks when the active ones saturate.
+  It saves the wake-ups and kernel entries that a lightly loaded listener with many workers pays per request. TLS
+  connections cannot move, so they keep spreading over every worker (no saving, no loss); cleartext HTTP/2 is not
+  distinguished from HTTP/1 at accept time and may pack. The default stays `static`: the saving is measured only at 8
+  or more workers under light load, and the p99 gate was missed by 0.5 ms at the edge. See
+  [worker consolidation](developer/PERF_6_4_WORKER_CONSOLIDATION.md).
+- With `aged_per_worker` a pooled upstream connection taken by another worker is registered with that worker's I/O
+  driver, so its readiness wakes the thread that serves the request (it woke the thread that had pooled it).
+- The idle upstream connection pool has one stripe per CPU (at least eight) instead of eight, so listeners with more than
+  eight workers no longer share stripe locks.
 
 ## Release binaries
 
@@ -208,6 +220,10 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
 | `http_fast_lane` | `true` | boolean | new connections of the new generation |
 | `connection_scheduling` | `work_stealing` | `work_stealing`, `aged_per_worker` | new generation |
 | `connection_age_ms` | adaptive: a multiple of the time of one pass over the ready queue, 1 to 3 passes (200 us to 1 s) | 1 to 1000 fixes it, only with `aged_per_worker` | new generation |
+| `worker_scaling` | `static` | `static`, `dynamic` (needs `aged_per_worker`) | new generation |
+| `min_active_workers` | 1 | 1 to `listener_workers`, only with `dynamic` | new generation |
+| `target_busy_percent` | 40 | 10 to 90, only with `dynamic` | new generation |
+| `scale_down_delay_ms` | 5000 | 100 to 3600000, only with `dynamic` | new generation |
 | `log_filter` | `RUST_LOG`, then errors only | `RUST_LOG` syntax without regex filters, at most 1024 bytes | every accepted reload |
 | `management.token_file` | `OXIROUTE_MANAGEMENT_TOKEN_FILE` | absolute normalized path of a regular `0400` or `0600` file | read when a generation starts |
 | `audit.dir` | `audit` next to the token file, else `OXIROUTE_AUDIT_DIR`, else in memory | absolute directory path | read when a generation starts |
@@ -223,6 +239,8 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
   `oxiroute_aged_queue_ready`, `oxiroute_aged_queue_oldest_ready_seconds`, `oxiroute_aged_queue_age_seconds`,
   `oxiroute_aged_queue_polls_total` and `oxiroute_aged_queue_aged_polls_total`, the last six only with
   `connection_scheduling = aged_per_worker`. See [operations](OPERATIONS.md).
+- `oxiroute_worker_scaling_info` (`mode`), and with `worker_scaling = dynamic` `oxiroute_worker_scaling_workers`,
+  `oxiroute_worker_scaling_active_workers` and `oxiroute_worker_scaling_relocations_total` per listener runtime.
 
 ## Fixes
 
