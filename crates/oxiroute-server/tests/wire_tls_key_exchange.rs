@@ -107,19 +107,33 @@ async fn a_listed_group_is_negotiated() {
     .expect("key exchange wire test timed out");
 }
 
+/// OpenSSL retries with the first group of the profile's list the client offers; rustls picks the client's first
+/// offered group among the listed ones (it has no server preference for key-exchange groups).
 #[tokio::test]
-async fn the_servers_order_chooses_the_retry_group() {
+async fn the_retry_group_is_the_first_listed_one_on_openssl_and_the_clients_first_listed_one_on_rustls()
+ {
     timeout(TEST_TIMEOUT, async {
-        for backend in BACKENDS {
-            use TlsKeyExchangeGroup::{Secp256r1, Secp384r1};
-            assert_eq!(
-                negotiated(backend, Some(vec![Secp384r1, Secp256r1]), &CLASSICAL).await,
-                Some(NamedGroup::secp384r1)
-            );
-            assert_eq!(
-                negotiated(backend, Some(vec![Secp256r1, Secp384r1]), &CLASSICAL).await,
-                Some(NamedGroup::secp256r1)
-            );
+        use TlsKeyExchangeGroup::{Secp256r1, Secp384r1};
+        for (backend, expected) in [
+            (
+                TlsBackend::Openssl,
+                [NamedGroup::secp384r1, NamedGroup::secp256r1],
+            ),
+            (
+                TlsBackend::Rustls,
+                [NamedGroup::secp256r1, NamedGroup::secp256r1],
+            ),
+        ] {
+            for (listed, expected) in [[Secp384r1, Secp256r1], [Secp256r1, Secp384r1]]
+                .into_iter()
+                .zip(expected)
+            {
+                assert_eq!(
+                    negotiated(backend, Some(listed.to_vec()), &CLASSICAL).await,
+                    Some(expected),
+                    "{backend:?} {listed:?}"
+                );
+            }
         }
     })
     .await

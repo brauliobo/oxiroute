@@ -128,7 +128,8 @@ Details: [TLS handshake offload and the HTTP/2 session](developer/PERF_6_4_TLS_H
   (no DHE, CBC or RSA key exchange), answers a TLS 1.0 or 1.1 client with `handshake_failure` instead of
   `protocol_version`, reports TLS 1.2 cipher names in IANA form, and does not request a client certificate on a
   TLS-ALPN-01 challenge connection. `key_exchange_groups` restricts the groups of the rustls backend like those of
-  OpenSSL (the hybrid group stays preferred when the list is absent). Upstream TLS, ACME and HTTP/3 keep their libraries. HTTP/3 now reads its server
+  OpenSSL (the hybrid group stays preferred when the list is absent); when a client sends no key share for a listed group,
+  the retry names the client's first listed group, not the list's first as on OpenSSL. Upstream TLS, ACME and HTTP/3 keep their libraries. HTTP/3 now reads its server
   certificate from a key that is built once per certificate generation instead of on every handshake.
 
 ## Kernel offload
