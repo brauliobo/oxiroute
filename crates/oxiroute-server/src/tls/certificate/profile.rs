@@ -352,39 +352,30 @@ impl TlsProfilePlan {
                 source,
             }
         })?;
+        let profile_error =
+            |source: openssl::error::ErrorStack| TlsBuildError::TlsProfileSettings {
+                profile: self.name.clone(),
+                source,
+            };
         let min_version = match self.min_version {
             TlsVersion::Tls12 => SslVersion::TLS1_2,
             TlsVersion::Tls13 => SslVersion::TLS1_3,
         };
         settings
             .set_min_proto_version(Some(min_version))
-            .map_err(|source| TlsBuildError::TlsProfileSettings {
-                profile: self.name.clone(),
-                source,
-            })?;
+            .map_err(profile_error)?;
         if let Some(cipher_list) = &self.cipher_list {
-            settings.set_cipher_list(cipher_list).map_err(|source| {
-                TlsBuildError::TlsProfileSettings {
-                    profile: self.name.clone(),
-                    source,
-                }
-            })?;
+            settings
+                .set_cipher_list(cipher_list)
+                .map_err(profile_error)?;
         }
         if let Some(dh_parameters) = &self.dh_parameters {
-            settings.set_tmp_dh(dh_parameters).map_err(|source| {
-                TlsBuildError::TlsProfileSettings {
-                    profile: self.name.clone(),
-                    source,
-                }
-            })?;
+            settings.set_tmp_dh(dh_parameters).map_err(profile_error)?;
         }
         if let Some(compiled) = &self.session_cache {
             settings
                 .set_session_id_context(&compiled.id_context)
-                .map_err(|source| TlsBuildError::TlsProfileSettings {
-                    profile: self.name.clone(),
-                    source,
-                })?;
+                .map_err(profile_error)?;
             settings.set_session_cache_size(compiled.capacity);
             settings.set_session_cache_mode(SslSessionCacheMode::SERVER);
         } else {
@@ -400,12 +391,7 @@ impl TlsProfilePlan {
         }
         // Without a cache or stateless tickets a TLS 1.3 ticket cannot be resumed, so none is sent.
         if !self.session_tickets && self.session_cache.is_none() {
-            settings
-                .set_num_tickets(0)
-                .map_err(|source| TlsBuildError::TlsProfileSettings {
-                    profile: self.name.clone(),
-                    source,
-                })?;
+            settings.set_num_tickets(0).map_err(profile_error)?;
         }
         // Read whatever the socket holds in one call instead of a record header, then its body.
         settings.set_read_ahead(true);
@@ -421,10 +407,7 @@ impl TlsProfilePlan {
                 .collect::<Vec<_>>();
             settings
                 .set_groups_list(&list.join(":"))
-                .map_err(|source| TlsBuildError::TlsProfileSettings {
-                    profile: self.name.clone(),
-                    source,
-                })?;
+                .map_err(profile_error)?;
         }
         let selection_index = tls_alpn_selection_index()?;
         let normal_alpn = self.alpn.clone();
