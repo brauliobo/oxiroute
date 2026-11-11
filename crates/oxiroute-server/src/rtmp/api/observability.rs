@@ -146,10 +146,10 @@ fn readiness_response(
     metrics: &RuntimeMetrics,
     generations: Option<&GenerationManager>,
 ) -> ApiResponse {
-    let Ok(runtime) = metrics.snapshot() else {
+    let Ok(serving) = metrics.serving() else {
         return ApiResponse::error(503, "not_ready", "runtime metrics are unavailable");
     };
-    let response = ReadinessResponse::project(&runtime, generations.map(GenerationManager::status));
+    let response = ReadinessResponse::project(serving, generations.map(GenerationManager::status));
     serialized_response(
         if response.ready() { 200 } else { 503 },
         &response,
@@ -219,7 +219,7 @@ fn monitoring_response(metrics: &RuntimeMetrics, control: &RtmpControlHandle) ->
             "RTMP monitoring totals exceed the supported range",
         );
     };
-    match serde_json::to_vec(&response) {
+    match response.body() {
         Ok(body) => ApiResponse::bytes(200, body, "application/json"),
         Err(error) => ApiResponse::error(
             500,
@@ -240,13 +240,8 @@ fn topology_response(metrics: &RuntimeMetrics, topology: &TopologySnapshot) -> A
             );
         }
     };
-    match TopologyResponse::active(topology, &runtime) {
-        Ok(response) => serialized_response(
-            200,
-            &response,
-            "topology_serialization_failed",
-            "could not serialize active runtime topology",
-        ),
+    match TopologyResponse::active_body(topology, &runtime) {
+        Ok(body) => ApiResponse::bytes(200, body, "application/json"),
         Err(error) => ApiResponse::error(
             500,
             "topology_serialization_failed",

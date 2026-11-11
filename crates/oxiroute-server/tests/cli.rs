@@ -36,9 +36,56 @@ fn json_output_is_script_safe_and_preserves_fields() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "{\"ready\":true,\"schemaVersion\":1}\n"
+        "{\"schemaVersion\":1,\"ready\":true}\n"
     );
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn json_output_prints_the_server_body_untouched() {
+    let body = r#"{"servers":[{"pool":"b","name":"é\u0000","n":1.50,"x":1e2},{"pool":"a"}]}"#;
+    let endpoint = serve_once(200, body);
+    let output = cli()
+        .args(["--endpoint", &endpoint, "--output", "json", "ready"])
+        .output()
+        .expect("CLI");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("{body}\n")
+    );
+}
+
+#[test]
+fn json_output_rejects_a_body_that_is_not_json() {
+    let endpoint = serve_once(200, "{\"ready\":true}\u{1b}[31m");
+    let output = cli()
+        .args(["--endpoint", &endpoint, "--output", "json", "ready"])
+        .output()
+        .expect("CLI");
+
+    assert_eq!(output.status.code(), Some(8));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn quiet_json_output_prints_nothing() {
+    let endpoint = serve_once(200, r#"{"ready":true}"#);
+    let output = cli()
+        .args([
+            "--endpoint",
+            &endpoint,
+            "--output",
+            "json",
+            "--quiet",
+            "ready",
+        ])
+        .output()
+        .expect("CLI");
+
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
 }
 
 #[test]
@@ -66,7 +113,7 @@ fn public_ready_does_not_read_an_unusable_token_file() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "{\"ready\":true,\"schemaVersion\":1}\n"
+        "{\"schemaVersion\":1,\"ready\":true}\n"
     );
 }
 

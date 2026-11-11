@@ -156,17 +156,26 @@ pub(crate) struct ListenerInventoryResponse {
 
 impl From<RuntimeSnapshot> for ListenerInventoryResponse {
     fn from(snapshot: RuntimeSnapshot) -> Self {
+        snapshot.listeners.into()
+    }
+}
+
+impl From<Vec<ListenerSnapshot>> for ListenerInventoryResponse {
+    fn from(listeners: Vec<ListenerSnapshot>) -> Self {
         Self {
-            listeners: snapshot.listeners.into_iter().map(Into::into).collect(),
+            listeners: listeners.into_iter().map(Into::into).collect(),
         }
     }
 }
 
+// The contract and the reference encoding of the pool listing; the server writes the bytes with `inventory`.
+#[cfg(test)]
 #[derive(JsonSchema, Serialize)]
 pub(crate) struct PoolInventoryResponse {
     pools: Vec<PoolDto>,
 }
 
+#[cfg(test)]
 impl From<Vec<PoolHealthSnapshot>> for PoolInventoryResponse {
     fn from(pools: Vec<PoolHealthSnapshot>) -> Self {
         Self {
@@ -175,11 +184,14 @@ impl From<Vec<PoolHealthSnapshot>> for PoolInventoryResponse {
     }
 }
 
+// The contract and the reference encoding of the server listing; the server writes the bytes with `inventory`.
+#[cfg(test)]
 #[derive(JsonSchema, Serialize)]
 pub(crate) struct ServerInventoryResponse {
     servers: Vec<ServerInventoryEntry>,
 }
 
+#[cfg(test)]
 impl From<Vec<PoolHealthSnapshot>> for ServerInventoryResponse {
     fn from(pools: Vec<PoolHealthSnapshot>) -> Self {
         let servers = pools
@@ -436,6 +448,7 @@ impl From<PoolHealthSnapshot> for PoolDto {
     }
 }
 
+#[cfg(test)]
 #[derive(JsonSchema, Serialize)]
 struct ServerInventoryEntry {
     pool: String,
@@ -594,6 +607,9 @@ api_enum!(ProxyProtocolResultDto from ProxyProtocolResult {
     ProxyProtocolResult::Mismatch => Mismatch,
     ProxyProtocolResult::IoError => IoError,
 });
+
+mod inventory;
+pub(crate) use inventory::{pools_body, pools_json, servers_body};
 
 #[cfg(test)]
 mod tests;

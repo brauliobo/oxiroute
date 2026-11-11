@@ -444,7 +444,7 @@ pub enum ConfigError {
     InvalidTlsHandshakeThreads(u64),
     #[error("connection_age_ms {0} is invalid: it must be between 1 and 1000")]
     InvalidConnectionAge(u64),
-    #[error("connection_age_ms needs connection_scheduling = \"aged_per_worker\"")]
+    #[error("connection_age_ms needs connection_scheduling = \"aged_per_worker\" or \"auto\"")]
     ConnectionAgeWithoutAgedScheduling,
     #[error("log_filter is invalid: {detail}")]
     InvalidLogFilter { detail: &'static str },

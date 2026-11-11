@@ -653,6 +653,13 @@ impl ListenerMetricsState {
         }
     }
 
+    pub(super) fn serving(&self) -> bool {
+        listener_serving(
+            AdministrativeState::from_u8(self.shared.administrative_state.load(Ordering::Acquire)),
+            ListenerRuntimeState::from_u8(self.runtime_state.load(Ordering::Acquire)),
+        )
+    }
+
     pub(super) fn snapshot(&self) -> ListenerSnapshot {
         ListenerSnapshot {
             administrative_state: AdministrativeState::from_u8(
@@ -726,6 +733,14 @@ impl SharedListenerMetricsState {
     fn record_proxy_protocol(&self, result: ProxyProtocolResult) -> Result<(), MetricsError> {
         self.operations.record_proxy_protocol(result)
     }
+}
+
+/// A listener takes traffic when its socket is bound and nobody drained it.
+pub(super) fn listener_serving(
+    administrative: AdministrativeState,
+    state: ListenerRuntimeState,
+) -> bool {
+    administrative == AdministrativeState::Ready && state == ListenerRuntimeState::Listening
 }
 
 const fn encode_limit(limit: Option<u64>) -> u64 {

@@ -19,7 +19,8 @@ pub struct ConfigDraft {
     pub http_fast_lane: Option<bool>,
     /// How each listener worker orders the connections that are ready: `work_stealing` (the default) shares them
     /// between the workers of a listener; `aged_per_worker` gives every worker its own queue, served newest first
-    /// and oldest first once a connection has waited `connection_age_ms`, by default a few passes over the ready connections.
+    /// and oldest first once a connection has waited `connection_age_ms`, by default a few passes over the ready connections;
+    /// `auto` is `aged_per_worker` from two `listener_workers` up and `work_stealing` with one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_scheduling: Option<ConnectionScheduling>,
     /// Longest a ready connection waits behind newer ones with `aged_per_worker`. Omitted means a multiple of the time one
@@ -88,10 +89,22 @@ impl ConfigDraft {
         )
     }
 
+    /// The scheduling the workers of a listener run: the configured one, with `auto` resolved from the worker count.
+    #[must_use]
+    pub fn effective_connection_scheduling(&self) -> ConnectionScheduling {
+        match self.connection_scheduling {
+            Some(ConnectionScheduling::AgedPerWorker) => ConnectionScheduling::AgedPerWorker,
+            Some(ConnectionScheduling::Auto) if self.listener_workers.unwrap_or(1) >= 2 => {
+                ConnectionScheduling::AgedPerWorker
+            }
+            _ => ConnectionScheduling::WorkStealing,
+        }
+    }
+
     /// Whether the workers of a listener serve per-worker queues.
     #[must_use]
     pub fn aged_per_worker(&self) -> bool {
-        self.connection_scheduling == Some(ConnectionScheduling::AgedPerWorker)
+        self.effective_connection_scheduling() == ConnectionScheduling::AgedPerWorker
     }
 }
 
@@ -100,6 +113,8 @@ impl ConfigDraft {
 pub enum ConnectionScheduling {
     WorkStealing,
     AgedPerWorker,
+    /// Per-worker queues when a listener has two workers or more, work stealing with one.
+    Auto,
 }
 
 impl ConnectionScheduling {
@@ -108,6 +123,7 @@ impl ConnectionScheduling {
         match self {
             Self::WorkStealing => "work_stealing",
             Self::AgedPerWorker => "aged_per_worker",
+            Self::Auto => "auto",
         }
     }
 }

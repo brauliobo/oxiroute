@@ -20,17 +20,6 @@ pub(crate) struct TopologyResponse {
 }
 
 impl TopologyResponse {
-    pub(crate) fn active(
-        topology: &TopologySnapshot,
-        runtime: &RuntimeHealthSnapshot,
-    ) -> Result<Self, String> {
-        let response = topology
-            .response_value(runtime)
-            .map_err(|error| error.to_string())?;
-        serde_json::from_value(response)
-            .map_err(|error| format!("could not project active topology API DTO: {error}"))
-    }
-
     pub(crate) fn candidate(
         topology: &TopologySnapshot,
         sampled_at_unix_ms: u64,
@@ -825,6 +814,8 @@ enum HealthFailureDto {
     ProtocolError,
     Slow,
 }
+
+mod active;
 
 #[cfg(test)]
 mod tests;

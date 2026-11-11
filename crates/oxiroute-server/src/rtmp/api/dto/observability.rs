@@ -2,14 +2,14 @@ use oxiroute_rtmp::{RecorderPhase, RtmpCatalogSnapshot};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::management::{ListenerDto, PoolDto};
+use super::management::{ListenerDto, PoolDto, pools_json};
 use super::{DecimalCounter, management::LatencyDto};
 use crate::observability::operational_event::{AuditComponentState, AuditStatus};
 use crate::{
     AccessRecord, AcmeManagedCertificateSnapshot, AdministrativeState, CertbotCertificateSnapshot,
     CertbotWatcherHealth, CertbotWatcherSnapshot, ComponentState, ComponentStatus,
     DirectFileCertificateSnapshot, DirectFileWatcherSnapshot, GenerationStatus, HostSnapshot,
-    ListenerRuntimeState, ListenerSnapshot, ObservedTransport, ProcessSnapshot, RuntimeMode,
+    ListenerSnapshot, ObservedTransport, PoolHealthSnapshot, ProcessSnapshot, RuntimeMode,
     RuntimeSnapshot, TopologyNodeKind, TopologySnapshot, TrafficSnapshot,
     TransportOperationCountSnapshot, TransportOperationSnapshot, TransportOutcome,
 };

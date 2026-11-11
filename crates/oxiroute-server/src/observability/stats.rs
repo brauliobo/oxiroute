@@ -151,14 +151,7 @@ impl HaproxyStatsApi {
 
     fn readiness_response(&self) -> ApiResponse {
         let status = self.generations.status();
-        let listeners_ready = self.metrics.snapshot().is_ok_and(|runtime| {
-            runtime.process.administrative_state == crate::AdministrativeState::Ready
-                && runtime.listeners.iter().all(|listener| {
-                    listener.state == crate::ListenerRuntimeState::Listening
-                        && listener.administrative_state == crate::AdministrativeState::Ready
-                })
-        });
-        let ready = status.serving() && listeners_ready;
+        let ready = status.serving() && self.metrics.serving().unwrap_or(false);
         ApiResponse::json(
             if ready { 200 } else { 503 },
             &serde_json::json!({

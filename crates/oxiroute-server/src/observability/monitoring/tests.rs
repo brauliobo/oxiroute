@@ -533,3 +533,66 @@ fn computes_cpu_percent_from_process_and_aggregate_ticks() {
     );
     assert_eq!(cpu_percent(None, &current).expect("first sample"), None);
 }
+
+#[test]
+fn serving_matches_the_full_snapshot_without_sampling_the_host() {
+    let process = ProcessRuntime::new(None);
+    let metrics = RuntimeMetrics::for_process(process);
+    let entry = inventory_entry(
+        ListenerId::Traffic("edge".into()),
+        "edge",
+        ListenerBind::Socket {
+            address: "127.0.0.1:8080".parse().expect("edge address"),
+        },
+    );
+    metrics
+        .register_inventory(std::slice::from_ref(&entry))
+        .unwrap()
+        .commit()
+        .unwrap();
+    let listener = metrics
+        .inventory_listener(&entry.id)
+        .unwrap()
+        .expect("listener");
+    let snapshot_serving = |metrics: &RuntimeMetrics| metrics.snapshot().unwrap().serving();
+
+    assert!(!metrics.serving().unwrap());
+    assert_eq!(metrics.serving().unwrap(), snapshot_serving(&metrics));
+    listener.mark_listening();
+    assert!(metrics.serving().unwrap());
+    assert_eq!(metrics.serving().unwrap(), snapshot_serving(&metrics));
+    metrics.set_process_administrative_state(AdministrativeState::Drain);
+    assert!(!metrics.serving().unwrap());
+    assert_eq!(metrics.serving().unwrap(), snapshot_serving(&metrics));
+    metrics.set_process_administrative_state(AdministrativeState::Ready);
+    listener.mark_stopped();
+    assert!(!metrics.serving().unwrap());
+    assert_eq!(metrics.serving().unwrap(), snapshot_serving(&metrics));
+}
+
+#[test]
+fn public_listener_snapshots_are_the_listeners_of_the_full_snapshot() {
+    let metrics = RuntimeMetrics::for_process(ProcessRuntime::new(None));
+    let entry = inventory_entry(
+        ListenerId::Traffic("edge".into()),
+        "edge",
+        ListenerBind::Socket {
+            address: "127.0.0.1:8080".parse().expect("edge address"),
+        },
+    );
+    metrics
+        .register_inventory(std::slice::from_ref(&entry))
+        .unwrap()
+        .commit()
+        .unwrap();
+    metrics
+        .inventory_listener(&entry.id)
+        .unwrap()
+        .expect("listener")
+        .mark_listening();
+
+    assert_eq!(
+        metrics.public_listener_snapshots().unwrap(),
+        metrics.snapshot().unwrap().listeners
+    );
+}

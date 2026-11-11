@@ -142,10 +142,7 @@ fn server_evacuate_posts_every_pool_and_the_force_flag_and_prints_the_report() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).expect("UTF-8"),
-        format!(
-            "{}\n",
-            serde_json::to_string(&serde_json::from_str::<Value>(REPORT).unwrap()).unwrap()
-        )
+        format!("{REPORT}\n")
     );
     assert_mutation(
         &recorder.join().expect("recorder"),

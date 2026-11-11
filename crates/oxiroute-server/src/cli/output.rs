@@ -16,6 +16,20 @@ pub(super) fn print_value(value: &Value, output: Output, quiet: bool) -> Result<
     Ok(())
 }
 
+/// `--output json` of a response that needs no selection: the body the server wrote, after a syntax check, without
+/// building a `Value` tree and printing it again.
+pub(super) fn print_json_body(response: &Response, quiet: bool) -> Result<(), CliError> {
+    let body = response.checked_json_body()?;
+    if quiet {
+        return Ok(());
+    }
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(body)
+        .and_then(|()| stdout.write_all(b"\n"))
+        .map_err(|error| CliError::Local(error.to_string()))
+}
+
 fn print_table(value: &Value) {
     let Some(object) = value.as_object() else {
         print_plain(value);
