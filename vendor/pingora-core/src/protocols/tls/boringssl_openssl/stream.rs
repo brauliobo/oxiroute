@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::ktls;
 use crate::protocols::digest::TimingDigest;
 use crate::protocols::tls::{SslDigest, ALPN};
 use crate::protocols::{Peek, Ssl, UniqueID, UniqueIDType};
@@ -20,11 +21,13 @@ use crate::utils::tls::{get_organization, get_serial};
 use log::warn;
 use pingora_error::{ErrorType::*, OrErr, Result};
 use std::cell::Cell;
+use std::os::fd::AsRawFd;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 use std::time::{Instant, SystemTime};
-use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{self, AsyncRead, AsyncWrite, Interest, ReadBuf};
+use tokio::net::TcpStream;
 
 #[cfg(feature = "boringssl")]
 use pingora_boringssl as ssl_lib;
@@ -50,6 +53,25 @@ thread_local! {
     static SPARE: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
 }
 
+/// Where an accepted connection is with the kernel TLS offload of its write direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KtlsTx {
+    /// Not offered on this connection.
+    Off,
+    /// Offered: the first caller that asks converts the connection.
+    Armed,
+    /// The `KeyUpdate` that installs the kernel keys is being written.
+    Converting,
+    /// The kernel encrypts the records of this connection's writes.
+    Active,
+    /// Asked for and not possible here (TLS 1.2, a cipher the kernel does not offer, the kernel refused): the
+    /// connection stays in user space.
+    Declined,
+}
+
+/// The TCP socket a transport sits on, as the kernel TLS offload needs it.
+type SocketOf<T> = fn(&T) -> Option<&TcpStream>;
+
 /// The TLS connection
 #[derive(Debug)]
 pub struct SslStream<T> {
@@ -64,6 +86,8 @@ pub struct SslStream<T> {
     read_probe: Option<ReadProbe<T>>,
     /// The last `SSL_read` ran out of ciphertext and the transport had nothing more either.
     read_blocked: bool,
+    ktls: KtlsTx,
+    socket_of: Option<SocketOf<T>>,
 }
 
 type ReadProbe<T> = fn(&mut T, &mut Context<'_>) -> Poll<io::Result<()>>;
@@ -89,7 +113,16 @@ where
             coalesce: false,
             read_probe: None,
             read_blocked: false,
+            ktls: KtlsTx::Off,
+            socket_of: None,
         })
+    }
+
+    /// Offer the kernel TLS offload on this connection: the first [`Ssl::poll_kernel_tx`] converts it when the
+    /// connection is TLS 1.3 with an AES-GCM cipher and `socket_of` finds a TCP socket under the transport.
+    pub(super) fn offer_ktls(&mut self, socket_of: SocketOf<T>) {
+        self.ktls = KtlsTx::Armed;
+        self.socket_of = Some(socket_of);
     }
 
     /// Make the writes of this stream share TLS records: bytes written between two flushes leave as
@@ -167,9 +200,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
         }
         Self::clear_error();
         while self.sent < self.pending.len() {
-            let written =
-                ready!(Pin::new(&mut self.ssl).poll_write(cx, &self.pending[self.sent..]))?;
-            self.sent += written;
+            let result = Pin::new(&mut self.ssl).poll_write(cx, &self.pending[self.sent..]);
+            self.wake_for_write(cx, &result);
+            self.sent += ready!(result)?;
         }
         self.sent = 0;
         self.pending.clear();
@@ -177,6 +210,91 @@ impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
             SPARE.set(std::mem::take(&mut self.pending));
         }
         Poll::Ready(Ok(()))
+    }
+
+    /// The TCP socket under the transport.
+    fn ktls_socket(&self) -> Option<&TcpStream> {
+        (self.socket_of?)(self.ssl.get_ref())
+    }
+
+    /// Once the kernel sends this connection's records, OpenSSL writes to the descriptor itself and a full socket
+    /// buffer reaches no waker: ask the socket to wake the task when it can take more bytes.
+    fn wake_for_write<R>(&self, cx: &mut Context<'_>, result: &Poll<R>) {
+        if !matches!(self.ktls, KtlsTx::Converting | KtlsTx::Active)
+            || result.is_ready()
+            || !ktls::wants_write(self.ssl.ssl())
+        {
+            return;
+        }
+        let Some(socket) = self.ktls_socket() else {
+            return;
+        };
+        // The write that met the full buffer did not go through the socket's own readiness tracking.
+        let _ = socket.try_io(Interest::WRITABLE, || {
+            Err::<(), _>(io::ErrorKind::WouldBlock.into())
+        });
+        if socket.poll_write_ready(cx).is_ready() {
+            cx.waker().wake_by_ref();
+        }
+    }
+
+    /// Whether the kernel offers what this connection negotiated: TLS 1.3 with AES-GCM (TLS 1.2 has no key update
+    /// to install the kernel keys with; the other suites are not part of the offload).
+    fn ktls_negotiated(&self) -> bool {
+        let ssl = self.ssl.ssl();
+        ssl.version2() == Some(ssl::SslVersion::TLS1_3)
+            && ssl.current_cipher().is_some_and(|cipher| {
+                matches!(
+                    cipher.name(),
+                    "TLS_AES_128_GCM_SHA256" | "TLS_AES_256_GCM_SHA384"
+                )
+            })
+    }
+
+    /// Drives the conversion of the write direction to the kernel TLS offload: `Ready(true)` when the kernel sends
+    /// the records of this connection, `Ready(false)` when it stays in user space.
+    pub(super) fn poll_ktls_tx(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
+        loop {
+            match self.ktls {
+                KtlsTx::Off | KtlsTx::Declined => return Poll::Ready(false),
+                KtlsTx::Active => return Poll::Ready(true),
+                KtlsTx::Armed => {
+                    let socket = self.ktls_socket().map(AsRawFd::as_raw_fd);
+                    let Some(fd) = socket.filter(|_| self.ktls_negotiated()) else {
+                        self.ktls = KtlsTx::Declined;
+                        continue;
+                    };
+                    // Nothing may wait in user space when the keys change hands.
+                    let mut flushed = ready!(self.poll_write_pending(cx));
+                    if flushed.is_ok() {
+                        flushed = ready!(Pin::new(&mut self.ssl).poll_flush(cx));
+                    }
+                    if flushed.is_err() {
+                        self.ktls = KtlsTx::Declined;
+                        continue;
+                    }
+                    let scheduled = ktls::begin_tx(self.ssl.ssl(), fd);
+                    self.ktls = if scheduled {
+                        KtlsTx::Converting
+                    } else {
+                        KtlsTx::Declined
+                    };
+                }
+                KtlsTx::Converting => {
+                    let result = Pin::new(&mut self.ssl).poll_do_handshake(cx);
+                    self.wake_for_write(cx, &result);
+                    let done = ready!(result);
+                    if done.is_ok() && ktls::tx_active(self.ssl.ssl()) {
+                        self.ktls = KtlsTx::Active;
+                        continue;
+                    }
+                    // The key update went out with the user-space keys: either the kernel refused its half (the
+                    // connection goes on as it was) or the stream is broken (the next read or write reports it).
+                    self.ktls = KtlsTx::Declined;
+                    ktls::restore_wbio(self.ssl.ssl());
+                }
+            }
+        }
     }
 }
 
@@ -227,8 +345,11 @@ where
         }
         Self::clear_error();
         let result = Pin::new(&mut this.ssl).poll_read(cx, buf);
+        this.wake_for_write(cx, &result);
+        // A read that waits for room to write (the answer to a `KeyUpdate`) is not waiting for ciphertext.
+        let wants_write = this.ktls != KtlsTx::Off && ktls::wants_write(this.ssl.ssl());
         if let (Poll::Pending, Some(probe)) = (&result, this.read_probe) {
-            this.read_blocked = probe(this.ssl.get_mut(), cx).is_pending();
+            this.read_blocked = !wants_write && probe(this.ssl.get_mut(), cx).is_pending();
         }
         result
     }
@@ -253,7 +374,9 @@ where
             }
         }
         Self::clear_error();
-        Pin::new(&mut self.ssl).poll_write(cx, buf)
+        let result = Pin::new(&mut self.ssl).poll_write(cx, buf);
+        self.wake_for_write(cx, &result);
+        result
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
@@ -264,7 +387,9 @@ where
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
         Self::clear_error();
         ready!(self.poll_write_pending(cx))?;
-        Pin::new(&mut self.ssl).poll_shutdown(cx)
+        let result = Pin::new(&mut self.ssl).poll_shutdown(cx);
+        self.wake_for_write(cx, &result);
+        result
     }
 
     fn poll_write_vectored(
@@ -276,7 +401,9 @@ where
             return self.poll_write_vectored_pending(cx, bufs);
         }
         Self::clear_error();
-        Pin::new(&mut self.ssl).poll_write_vectored(cx, bufs)
+        let result = Pin::new(&mut self.ssl).poll_write_vectored(cx, bufs);
+        self.wake_for_write(cx, &result);
+        result
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -293,7 +420,7 @@ where
     }
 }
 
-impl<T> Ssl for SslStream<T> {
+impl<T: AsyncRead + AsyncWrite + Unpin> Ssl for SslStream<T> {
     fn get_ssl(&self) -> Option<&ssl::SslRef> {
         Some(self.ssl())
     }
@@ -306,6 +433,14 @@ impl<T> Ssl for SslStream<T> {
     fn selected_alpn_proto(&self) -> Option<ALPN> {
         let ssl = self.get_ssl()?;
         ALPN::from_wire_selected(ssl.selected_alpn_protocol()?)
+    }
+
+    fn poll_kernel_tx(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
+        self.poll_ktls_tx(cx)
+    }
+
+    fn kernel_tx_socket(&self) -> Option<&TcpStream> {
+        self.ktls_socket().filter(|_| self.ktls == KtlsTx::Active)
     }
 }
 

@@ -26,7 +26,7 @@ use crate::tls::ssl::{SslAcceptor, SslAcceptorBuilder, SslFiletype, SslMethod};
 use crate::{
     listeners::{SharedTlsAcceptCallbacks, TlsAcceptCallbacks},
     protocols::tls::{
-        server::{handshake, handshake_with_callback},
+        server::{handshake, handshake_with_callback, offer_kernel_tx},
         SslStream,
     },
 };
@@ -45,6 +45,7 @@ pub(crate) struct Acceptor {
     ssl_acceptor: SslAcceptor,
     callbacks: Option<SharedTlsAcceptCallbacks>,
     offload: Option<OffloadRuntime>,
+    kernel_tx: bool,
 }
 
 /// The TLS settings of a listening endpoint
@@ -52,6 +53,7 @@ pub struct TlsSettings {
     accept_builder: SslAcceptorBuilder,
     callbacks: Option<TlsAcceptCallbacks>,
     offload_threadpool: Option<(usize, usize)>,
+    kernel_tx: bool,
 }
 
 impl From<SslAcceptorBuilder> for TlsSettings {
@@ -60,6 +62,7 @@ impl From<SslAcceptorBuilder> for TlsSettings {
             accept_builder: settings,
             callbacks: None,
             offload_threadpool: None,
+            kernel_tx: false,
         }
     }
 }
@@ -99,6 +102,7 @@ impl TlsSettings {
             accept_builder,
             callbacks: None,
             offload_threadpool: None,
+            kernel_tx: false,
         })
     }
 
@@ -113,6 +117,7 @@ impl TlsSettings {
             accept_builder,
             callbacks: Some(callbacks),
             offload_threadpool: None,
+            kernel_tx: false,
         })
     }
 
@@ -146,6 +151,14 @@ impl TlsSettings {
         if let Some((shards, threads_per_shard)) = server_conf.downstream_tls_offload_threadpool() {
             self.set_offload_threadpool(shards, threads_per_shard);
         }
+    }
+
+    /// Offer the kernel TLS transmit offload on this endpoint's TLS 1.3 AES-GCM connections: a connection that
+    /// sends a file with `sendfile(2)` is converted with one `KeyUpdate` (see [`Ssl::poll_kernel_tx`]). The caller
+    /// checks that the kernel supports it ([`crate::protocols::l4::ktls::probe`]); a connection the kernel cannot
+    /// serve stays in user space.
+    pub fn offer_kernel_tx(&mut self) {
+        self.kernel_tx = true;
     }
 
     /// Enable HTTP/2 support for this endpoint, which is default off.
@@ -200,12 +213,21 @@ impl TlsSettings {
             offload: self.offload_threadpool.map(|(shards, threads_per_shard)| {
                 OffloadRuntime::new("downstream TLS offload", shards, threads_per_shard)
             }),
+            kernel_tx: self.kernel_tx,
         }
     }
 }
 
 impl Acceptor {
     pub async fn tls_handshake<S: IO + 'static>(&self, stream: S) -> Result<SslStream<S>> {
+        let mut stream = self.accept(stream).await?;
+        if self.kernel_tx {
+            offer_kernel_tx(&mut stream);
+        }
+        Ok(stream)
+    }
+
+    async fn accept<S: IO + 'static>(&self, stream: S) -> Result<SslStream<S>> {
         debug!("new ssl session");
         if let Some(offload) = self.offload.as_ref() {
             let ssl_acceptor = self.ssl_acceptor.clone();
