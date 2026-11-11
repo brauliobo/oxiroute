@@ -155,7 +155,7 @@ def main():
     parser.add_argument("--reload-every", type=int, default=0, help="reload again every N seconds after the first")
     parser.add_argument("--mix", default="", help="comma list of load names to run (default all)")
     parser.add_argument("--pace-ms", type=int, default=20)
-    parser.add_argument("--tmp", default="/dev/shm")
+    parser.add_argument("--tmp", default="/var/tmp")
     args = parser.parse_args()
 
     work = Path(tempfile.mkdtemp(prefix="soak-", dir=args.tmp))

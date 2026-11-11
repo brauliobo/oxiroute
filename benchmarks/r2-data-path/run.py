@@ -889,7 +889,7 @@ def main():
     parser.add_argument("--lanes", default="default", help="comma list, 'default', 'all' or a prefix ending in '*'")
     parser.add_argument("--reps", type=int, default=5)
     parser.add_argument("--out", type=Path, default=Path(os.environ.get("R2_OUT", "/tmp/r2-out")))
-    parser.add_argument("--tmp", default=os.environ.get("R2_TMP", "/dev/shm"))
+    parser.add_argument("--tmp", default=os.environ.get("R2_TMP", "/var/tmp"))
     parser.add_argument("--no-perf", dest="perf", action="store_false", help="skip the instruction/latency lane run")
     parser.add_argument("--train", action="store_true",
                         help="replay each lane once without any measurement or perf (pair with --proxy-env "
