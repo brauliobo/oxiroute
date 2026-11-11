@@ -12,6 +12,8 @@ Every feature is an independent A/B switch on top of the minimal reverse-proxy c
 import argparse
 import json
 
+KTLS_ON = "auto"  # the value of `ktls` for the `ktls` feature
+
 
 def lua(value, indent=0):
     pad = "  " * (indent + 1)
@@ -193,8 +195,7 @@ def build(args):
             "source": {"type": "self_signed_development", "key_type": key_type},
         }]
         tls_policy = {"session_tickets": on("tls_tickets")}
-        if on("ktls"):
-            tls_policy["ktls"] = "static"
+        tls_policy["ktls"] = KTLS_ON if on("ktls") else "off"
         if on("tls_cache"):
             tls_policy["session_cache"] = {"name": "bench-sessions", "size_bytes": 4194304}
         config["tls_profiles"] = [{
