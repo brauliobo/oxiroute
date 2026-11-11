@@ -256,11 +256,43 @@ pub(crate) fn connection(buf: &[u8], h: &Header, dup: bool) -> Connection {
     }
 }
 
-fn scan(buf: &[u8], out: &mut RequestHead) -> Result<(), Stop> {
+/// The request line at the start of a buffer: where the method and the target are, and where the fields start.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestLine {
+    pub method: Span,
+    pub target: Span,
+    fields_start: u32,
+}
+
+impl RequestLine {
+    /// The offset of the first header field: the bytes after the line and its CRLF.
+    #[inline]
+    #[must_use]
+    pub const fn fields_start(&self) -> usize {
+        self.fields_start as usize
+    }
+}
+
+fn line(buf: &[u8]) -> Result<RequestLine, Stop> {
     let method_end = method_end(buf)?;
     let target_start = method_end + 1;
     let target_end = target_end(buf, target_start)?;
     let fields_start = version_end(buf, target_end + 1)?;
+    Ok(RequestLine {
+        method: Span {
+            start: 0,
+            len: method_end as u32,
+        },
+        target: Span {
+            start: target_start as u32,
+            len: (target_end - target_start) as u32,
+        },
+        fields_start: fields_start as u32,
+    })
+}
+
+fn scan(buf: &[u8], line: RequestLine, out: &mut RequestHead) -> Result<(), Stop> {
+    let fields_start = line.fields_start as usize;
     let mut block = Block::new();
     scan_fields(buf, fields_start, &mut out.headers, &mut block)?;
     let facts = &mut out.facts;
@@ -313,19 +345,40 @@ fn scan(buf: &[u8], out: &mut RequestHead) -> Result<(), Stop> {
     facts.has_uppercase = block.upper();
     facts.duplicate_names = block.duplicate_names;
     facts.present = block.seen;
-    out.method = Span {
-        start: 0,
-        len: method_end as u32,
-    };
-    out.target = Span {
-        start: target_start as u32,
-        len: (target_end - target_start) as u32,
-    };
+    out.method = line.method;
+    out.target = line.target;
     out.minor = 1;
-    out.line_len = fields_start as u32;
+    out.line_len = line.fields_start;
     out.head_len = block.head_len;
     out.count = block.count;
     Ok(())
+}
+
+fn stopped(stop: Stop) -> Scan {
+    match stop {
+        Stop::Partial => Scan::Partial,
+        Stop::Bad(reason) => Scan::Miss(reason),
+    }
+}
+
+/// Reads the request line at the start of `buf`, for a caller that needs the method and the target before the fields.
+/// The error is `Partial` or `Miss`, as [`scan_request`] would answer for the same bytes, never `Head`; the line is
+/// the one [`scan_request_fields`] continues from.
+///
+/// # Errors
+///
+/// `Partial` when the line is not complete, `Miss` when it is not the lane's.
+pub fn scan_request_line(buf: &[u8]) -> Result<RequestLine, Scan> {
+    if u32::try_from(buf.len()).is_err() {
+        return Err(Scan::Miss(MissReason::TooLarge));
+    }
+    line(buf).map_err(stopped)
+}
+
+/// Scans the header fields that follow `line`, which [`scan_request_line`] read from the start of the same `buf`.
+#[must_use]
+pub fn scan_request_fields(buf: &[u8], line: RequestLine, out: &mut RequestHead) -> Scan {
+    scan(buf, line, out).map_or_else(stopped, |()| Scan::Head)
 }
 
 /// Scans the request head at the start of `buf`.
@@ -334,12 +387,8 @@ fn scan(buf: &[u8], out: &mut RequestHead) -> Result<(), Stop> {
 /// facts; see the crate documentation for what is refused. `out` is only meaningful after `Head`.
 #[must_use]
 pub fn scan_request(buf: &[u8], out: &mut RequestHead) -> Scan {
-    if u32::try_from(buf.len()).is_err() {
-        return Scan::Miss(MissReason::TooLarge);
-    }
-    match scan(buf, out) {
-        Ok(()) => Scan::Head,
-        Err(Stop::Partial) => Scan::Partial,
-        Err(Stop::Bad(reason)) => Scan::Miss(reason),
+    match scan_request_line(buf) {
+        Ok(line) => scan_request_fields(buf, line, out),
+        Err(miss) => miss,
     }
 }

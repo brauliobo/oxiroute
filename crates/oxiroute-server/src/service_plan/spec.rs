@@ -233,6 +233,10 @@ impl HttpServicePlan {
         self.route_plans.get(route.route_id()).cloned()
     }
 
+    pub(crate) fn selects_on_host(&self) -> bool {
+        self.routes.selects_on_host()
+    }
+
     pub(crate) fn select_route_path(
         &self,
         authority: Option<&Authority>,
