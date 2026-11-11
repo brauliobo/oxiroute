@@ -9,6 +9,7 @@ pub(super) async fn handle_reverse_request(
     metrics: ListenerMetrics,
     client_addr: Option<SocketAddr>,
     downstream_timeouts: DownstreamTimeoutPolicy,
+    origin: Arc<OriginClient>,
     mut shutdown: watch::Receiver<bool>,
     request_slots: Arc<Semaphore>,
 ) {
@@ -61,6 +62,7 @@ pub(super) async fn handle_reverse_request(
                 &service,
                 &metrics,
                 client_addr,
+                &origin,
                 deadline,
                 dispatch_shutdown,
             ) => response,
@@ -111,6 +113,7 @@ async fn dispatch_reverse_request(
     service: &HttpServicePlan,
     metrics: &ListenerMetrics,
     client_addr: Option<SocketAddr>,
+    origin: &OriginClient,
     deadline: Instant,
     mut shutdown: watch::Receiver<bool>,
 ) -> Option<u16> {
@@ -211,16 +214,14 @@ async fn dispatch_reverse_request(
                         .then_some(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE.as_u16());
                     }
                 };
-            if proxy.pool.h3().is_none() {
-                return send_h3_error(
-                    stream,
-                    StatusCode::BAD_GATEWAY,
-                    b"HTTP/3 reverse routes require an exact HTTP/3 upstream pool\n",
-                    deadline,
-                )
-                .await
-                .then_some(StatusCode::BAD_GATEWAY.as_u16());
-            }
+            let upstream = match Upstream::select(proxy, route.policy, origin) {
+                Ok(upstream) => upstream,
+                Err(message) => {
+                    return send_h3_error(stream, StatusCode::BAD_GATEWAY, message, deadline)
+                        .await
+                        .then_some(StatusCode::BAD_GATEWAY.as_u16());
+                }
+            };
             let body_limit = match (
                 service.max_request_body_bytes(),
                 route.policy.max_request_body_bytes,
@@ -338,6 +339,7 @@ async fn dispatch_reverse_request(
                 request,
                 authority,
                 proxy,
+                &upstream,
                 &request_header_decisions,
                 body,
                 metrics,

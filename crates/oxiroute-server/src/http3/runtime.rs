@@ -85,8 +85,8 @@ impl Http3Runtime {
     /// Starts one active reverse HTTP/3 listener on a previously reserved UDP socket.
     ///
     /// The reverse listener owns QUIC directly because Pingora does not expose a downstream H3
-    /// service app. Proxy routes require an exact H3 upstream pool and use the native H3 upstream
-    /// transport without an H1/H2 fallback.
+    /// service app. Proxy routes to an exact H3 pool use the native H3 upstream transport; routes to
+    /// every other pool use the classic HTTP/1.1 and HTTP/2 origin connections, with the answer buffered.
     ///
     /// # Errors
     ///
@@ -257,6 +257,7 @@ fn run_reverse(
             listener,
             metrics,
             downstream_timeouts,
+            Arc::new(OriginClient::new()),
             shutdown,
             accept_gate,
         )
@@ -412,6 +413,7 @@ async fn serve_reverse_endpoint(
     listener: ListenerRuntime,
     metrics: ListenerMetrics,
     downstream_timeouts: DownstreamTimeoutPolicy,
+    origin: Arc<OriginClient>,
     mut shutdown: watch::Receiver<bool>,
     mut accept_gate: AcceptGateParticipant,
 ) -> bool {
@@ -454,6 +456,7 @@ async fn serve_reverse_endpoint(
                 let shutdown = shutdown.clone();
                 let drain = drain_rx.clone();
                 let server_config = Arc::clone(&server_config);
+                let origin = Arc::clone(&origin);
                 connections.spawn(async move {
                     run_reverse_connection(
                         incoming,
@@ -463,6 +466,7 @@ async fn serve_reverse_endpoint(
                         listener,
                         metrics,
                         downstream_timeouts,
+                        origin,
                         shutdown,
                         drain,
                         handshake,

@@ -18,6 +18,7 @@ pub(super) async fn run_reverse_connection(
     listener: ListenerRuntime,
     metrics: ListenerMetrics,
     downstream_timeouts: DownstreamTimeoutPolicy,
+    origin: Arc<OriginClient>,
     mut shutdown: watch::Receiver<bool>,
     mut drain: watch::Receiver<bool>,
     _handshake: OwnedSemaphorePermit,
@@ -80,6 +81,7 @@ pub(super) async fn run_reverse_connection(
                     metrics.clone(),
                     client_addr,
                     downstream_timeouts,
+                    Arc::clone(&origin),
                     request_cancel_rx.clone(),
                     Arc::clone(&request_slots),
                 ));
