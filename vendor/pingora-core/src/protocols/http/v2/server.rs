@@ -338,7 +338,7 @@ pub struct Idle<'a>(&'a mut HttpSession);
 impl Future for Idle<'_> {
     type Output = Result<Reason>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.0
             .stream
             .poll_reset(cx)
