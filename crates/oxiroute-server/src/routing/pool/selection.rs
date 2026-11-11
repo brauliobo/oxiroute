@@ -188,21 +188,33 @@ impl EndpointPool {
         &self,
         excluded: &[String],
     ) -> Option<EndpointLease> {
-        let (lease, _) = self.connection_target(excluded);
+        let (lease, _) = self.connection_target(excluded, now_unix_ms());
         if lease.is_none() {
             self.note_unavailable_selection();
         }
         lease
     }
 
-    /// Like [`Self::select_connection_target_excluding`], but waits up to the pool's
-    /// `queue_while_unavailable_ms` for a server to become selectable. A pool with a queue also
-    /// holds the request there until any server frees a permit or an idle connection, so it is
-    /// never bound to one busy server while another is free.
+    #[cfg(test)]
     pub(crate) async fn select_connection_target_waiting(
         &self,
         excluded: &[String],
         tag: QueueTag,
+    ) -> Option<EndpointLease> {
+        self.select_connection_target_waiting_at(excluded, tag, now_unix_ms())
+            .await
+    }
+
+    /// Like [`Self::select_connection_target_excluding`], but waits up to the pool's
+    /// `queue_while_unavailable_ms` for a server to become selectable. A pool with a queue also
+    /// holds the request there until any server frees a permit or an idle connection, so it is
+    /// never bound to one busy server while another is free. `at_unix_ms` is the wall-clock time
+    /// of the first selection.
+    pub(crate) async fn select_connection_target_waiting_at(
+        &self,
+        excluded: &[String],
+        tag: QueueTag,
+        at_unix_ms: u64,
     ) -> Option<EndpointLease> {
         if self.queue_timeout.is_some() {
             return self
@@ -210,8 +222,10 @@ impl EndpointPool {
                 .await;
         }
         let recovery_deadline = self.recovery_deadline();
+        let mut known = Some(at_unix_ms);
         loop {
-            let (lease, pool_available) = self.connection_target(excluded);
+            let (lease, pool_available) =
+                self.connection_target(excluded, known.take().unwrap_or_else(now_unix_ms));
             if lease.is_some() || pool_available || !self.await_recovery(recovery_deadline).await {
                 if lease.is_none() {
                     self.note_unavailable_selection();
@@ -222,8 +236,11 @@ impl EndpointPool {
     }
 
     /// A connection target, and whether any server was selectable.
-    fn connection_target(&self, excluded: &[String]) -> (Option<EndpointLease>, bool) {
-        let now_unix_ms = now_unix_ms();
+    fn connection_target(
+        &self,
+        excluded: &[String],
+        now_unix_ms: u64,
+    ) -> (Option<EndpointLease>, bool) {
         let chosen = {
             let mut selection = self.lock_selection();
             let members = self.health.members.load();

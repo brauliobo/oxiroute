@@ -361,7 +361,7 @@ pub(super) fn ejection_entropy(salt: u64) -> u64 {
     RandomState::new().hash_one(salt)
 }
 
-pub(super) fn now_unix_ms() -> u64 {
+pub(crate) fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()
