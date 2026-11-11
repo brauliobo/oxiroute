@@ -55,16 +55,13 @@ pub(super) async fn stale_h3_response(
     Some(response)
 }
 
-pub(super) async fn purge_h3_cache<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+pub(super) async fn purge_h3_cache(
+    stream: &mut H3Stream,
     request: &Request<()>,
     authority: &Authority,
     cache: Arc<HttpCachePlan>,
     deadline: Instant,
-) -> Option<u16>
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
+) -> Option<u16> {
     let access = cache
         .purge_access
         .as_ref()
@@ -124,15 +121,12 @@ where
         .then_some(status.as_u16())
 }
 
-pub(super) async fn send_h3_cached_response<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+pub(super) async fn send_h3_cached_response(
+    stream: &mut H3Stream,
     request: &Request<()>,
     mut response: CachedResponse,
     deadline: Instant,
-) -> bool
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
+) -> bool {
     if conditional_h3_cache_status(request, &response) == StatusCode::NOT_MODIFIED {
         response.status = StatusCode::NOT_MODIFIED;
         response.body = Bytes::new();

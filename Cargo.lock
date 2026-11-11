@@ -2807,6 +2807,7 @@ dependencies = [
  "oxiroute-config-source",
  "oxiroute-forward-proxy",
  "oxiroute-h1-head",
+ "oxiroute-h3",
  "oxiroute-import",
  "oxiroute-rtmp",
  "oxiroute-supervision",

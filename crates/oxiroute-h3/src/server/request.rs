@@ -157,6 +157,12 @@ impl RequestStream {
         event
     }
 
+    /// Refuses the request: both directions are reset with `H3_REQUEST_REJECTED`, which tells the peer that nothing was
+    /// processed and the request may be retried (on another connection).
+    pub fn reject(mut self) {
+        self.abort(Code::H3_REQUEST_REJECTED, Error::State("request rejected"));
+    }
+
     /// Stops the request body; the peer sees `code`.
     pub fn stop_sending(&mut self, code: Code) {
         let _ = self.recv.stop(code.varint());

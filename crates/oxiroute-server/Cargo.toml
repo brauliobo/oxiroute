@@ -45,6 +45,7 @@ oxiroute-config-source = { path = "../oxiroute-config-source" }
 oxiroute-cache = { path = "../oxiroute-cache" }
 oxiroute-import = { path = "../oxiroute-import" }
 oxiroute-forward-proxy = { path = "../oxiroute-forward-proxy" }
+oxiroute-h3 = { path = "../oxiroute-h3" }
 oxiroute-rtmp = { path = "../oxiroute-rtmp" }
 oxiroute-supervision = { path = "../oxiroute-supervision" }
 parking_lot.workspace = true

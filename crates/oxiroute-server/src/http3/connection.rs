@@ -42,14 +42,11 @@ pub(super) async fn run_reverse_connection(
                 return;
             }
         };
-    let mut builder = h3::server::builder();
-    builder
-        .max_field_section_size(H3_MAX_FIELD_SECTION_BYTES)
-        .send_grease(false);
-    let mut h3: h3::server::Connection<_, Bytes> = match builder
-        .build(h3_quinn::Connection::new(connection.clone()))
-        .await
-    {
+    let config = H3Config {
+        max_field_section_size: H3_MAX_FIELD_SECTION_BYTES,
+        ..H3Config::default()
+    };
+    let mut h3 = match H3Connection::new(connection.clone(), config).await {
         Ok(connection) => connection,
         Err(error) => {
             warn!("reverse HTTP/3 connection setup failed: {error}");
@@ -65,8 +62,8 @@ pub(super) async fn run_reverse_connection(
             _ = drain.changed() => break true,
             _ = shutdown.changed() => break true,
             accepted = h3.accept() => {
-                let resolver = match accepted {
-                    Ok(Some(resolver)) => resolver,
+                let stream = match accepted {
+                    Ok(Some(stream)) => stream,
                     Ok(None) => break false,
                     Err(error) => {
                         warn!("reverse HTTP/3 request acceptance failed: {error}");
@@ -74,47 +71,40 @@ pub(super) async fn run_reverse_connection(
                     }
                 };
                 if *drain.borrow() || *shutdown.borrow() {
-                    reject_h3_resolver(resolver);
+                    stream.reject();
                     break true;
                 }
-                let service = Arc::clone(&service);
-                let metrics = metrics.clone();
-                let request_cancel = request_cancel_rx.clone();
-                let request_slots = Arc::clone(&request_slots);
-                requests.spawn(async move {
-                    Box::pin(handle_reverse_request(
-                        resolver,
-                        service,
-                        metrics,
-                        client_addr,
-                        downstream_timeouts,
-                        request_cancel,
-                        request_slots,
-                    ))
-                    .await;
-                });
+                requests.spawn(handle_reverse_request(
+                    stream,
+                    Arc::clone(&service),
+                    metrics.clone(),
+                    client_addr,
+                    downstream_timeouts,
+                    request_cancel_rx.clone(),
+                    Arc::clone(&request_slots),
+                ));
             }
         }
     };
     let deadline = Instant::now() + h3_drain_window(&generation, &shutdown);
-    let goaway_sent = if graceful {
-        drain_h3_connection(&mut h3, deadline).await
-    } else {
-        false
-    };
+    let goaway_sent = graceful && matches!(timeout_at(deadline, h3.shutdown()).await, Ok(Ok(())));
     if !goaway_sent {
         let _ = request_cancel_tx.send(true);
         requests.abort_all();
     }
-    join_h3_requests(
-        "reverse HTTP/3",
-        &mut requests,
-        &request_cancel_tx,
-        deadline,
-    )
-    .await;
+    tokio::select! {
+        () = join_h3_requests("reverse HTTP/3", &mut requests, &request_cancel_tx, deadline) => {}
+        never = accept_until_closed(&mut h3) => match never {},
+    }
     close_h3_connection(&connection, goaway_sent, deadline).await;
     drop(traffic_lease);
+}
+
+/// Keeps accepting until the connection has nothing left to hand out: the peer's control streams are read
+/// while this waits, and streams that arrive after the GOAWAY are refused.
+async fn accept_until_closed(h3: &mut H3Connection) -> std::convert::Infallible {
+    while matches!(h3.accept().await, Ok(Some(_))) {}
+    std::future::pending().await
 }
 
 #[allow(clippy::too_many_arguments)]
