@@ -24,9 +24,13 @@ pub fn client_endpoint(ca_certificate_path: &Path, alpn: &[u8]) -> io::Result<qu
             .add(certificate.map_err(io::Error::other)?)
             .map_err(io::Error::other)?;
     }
-    let mut crypto = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let mut crypto = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(std::io::Error::other)?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
     crypto.alpn_protocols = vec![alpn.to_vec()];
     let config = quinn::ClientConfig::new(Arc::new(
         QuicClientConfig::try_from(crypto).map_err(io::Error::other)?,

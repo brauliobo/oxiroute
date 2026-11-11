@@ -396,6 +396,7 @@ class Env:
              "--listeners", str(lane.listeners), "--workers", str(lane.workers),
              "--tls-handshake-threads", str(lane.handshake_threads), "--run-dir", str(self.work)]
             + (["--classic"] if self.args.classic else [])
+            + ["--tls-backend", self.args.tls_backend]
             + [item for feature in lane.features for item in ("--feature", feature)],
             check=True, capture_output=True, text=True, timeout=LANE_TIMEOUT)
         self.generated = generated.stdout
@@ -797,6 +798,8 @@ def main():
     parser.add_argument("--alloc-requests", type=int, default=4000)
     parser.add_argument("--alloc-warmup", type=int, default=1000)
     parser.add_argument("--scale", type=float, default=1.0, help="multiply every lane's request counts (smoke runs)")
+    parser.add_argument("--tls-backend", choices=["openssl", "rustls"], default="openssl",
+                        help="policy.backend of the generated TLS profile")
     parser.add_argument("--classic", action="store_true",
                         help="generate `http_fast_lane = false`: every request takes the classic path")
     parser.add_argument("--proxy-env", action="append", default=[], metavar="KEY=VALUE",

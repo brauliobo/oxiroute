@@ -51,7 +51,7 @@ function canonicalConfig(): CanonicalConfig {
         default_certificate: 'direct-public',
         min_version: '1.2',
         alpn: ['h2', 'http/1.1'],
-         policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
+         policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true, backend: 'openssl' },
       },
       {
         name: 'internal-sni',
@@ -59,7 +59,7 @@ function canonicalConfig(): CanonicalConfig {
         default_certificate: 'direct-public',
         min_version: '1.3',
         alpn: ['http/1.1'],
-         policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
+         policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true, backend: 'openssl' },
       },
     ],
     listeners: [
@@ -1063,6 +1063,7 @@ describe('ConfigurationWorkspace', () => {
         session_timeout_seconds: 86_400,
         session_tickets: false,
         prefer_server_ciphers: false,
+        backend: 'openssl',
       },
     }))
     expect(submitted.upstream_pools[0]).toEqual(expect.objectContaining({

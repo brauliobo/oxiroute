@@ -881,6 +881,7 @@ tls_profiles = {
       session_timeout_seconds = nil,
       session_tickets = false,
       prefer_server_ciphers = true,
+      backend = "openssl",
       key_exchange_groups = nil,
       client_auth = {
         mode = "disabled",
@@ -987,6 +988,16 @@ The current certificate and profile rules are:
 - `min_version` accepts only `"1.2"` (the default) or `"1.3"`. `alpn` defaults to
   `{ "http/1.1" }`; the only accepted policies are `{ "http/1.1" }`, `{ "h2" }`, and
   `{ "h2", "http/1.1" }` in that order.
+- `policy.backend` selects the TLS library that runs the handshakes and records of every listener using the profile:
+  `"openssl"` (the default) or `"rustls"` (rustls with the aws-lc-rs provider). Certificates, SNI selection, ALPN, the
+  minimum version, client authentication (`mode`, `ca_certificate_path`, `allowed_dns_names`), `session_cache`,
+  `session_timeout_seconds`, `session_tickets`, `prefer_server_ciphers`, certificate hot reload and TLS-ALPN-01
+  challenges behave the same on both. `cipher_list` and `dh_parameters_path` are OpenSSL settings and are rejected
+  with `backend = "rustls"` (rustls has no cipher-list syntax, no DHE and no CBC suites); the rustls suites are
+  TLS 1.3 AES-128-GCM, AES-256-GCM and ChaCha20-Poly1305 and, for TLS 1.2, the ECDHE AEAD suites in that order.
+  Upstream TLS, ACME and HTTP/3 are not affected by the setting. Changing it is an ordinary reload: new connections
+  of the new generation use the new library and connections of the replaced generation finish as they were accepted.
+  See `docs/developer/PERF_6_4_RUSTLS.md` for the differences and the measurements.
 - Downstream TLS session caching and tickets are disabled. Every new handshake selects one identity
   and takes one immutable certificate-generation snapshot through the TLS callback, so an atomic
   generation publication cannot mix key and chain material and existing connections retain their

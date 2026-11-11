@@ -111,6 +111,7 @@ export function prepareTlsAlpnDeployment(
       session_timeout_seconds: null,
       session_tickets: false,
       prefer_server_ciphers: true,
+      backend: 'openssl',
     },
   })
   config.listeners.push({

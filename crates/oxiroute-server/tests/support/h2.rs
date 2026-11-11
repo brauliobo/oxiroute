@@ -650,10 +650,14 @@ fn tls_server_config_with_identity_and_versions(
 ) -> ServerConfig {
     let certificates = load_certificates(certificate_chain_path).expect("origin certificates");
     let private_key = load_private_key(private_key_path).expect("origin private key");
-    let mut config = ServerConfig::builder_with_protocol_versions(versions)
-        .with_no_client_auth()
-        .with_single_cert(certificates, private_key)
-        .expect("origin TLS identity");
+    let mut config = ServerConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(versions)
+    .expect("origin TLS protocol versions")
+    .with_no_client_auth()
+    .with_single_cert(certificates, private_key)
+    .expect("origin TLS identity");
     config.alpn_protocols = alpn.to_vec();
     config
 }

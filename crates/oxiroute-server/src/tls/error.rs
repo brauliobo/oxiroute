@@ -392,6 +392,8 @@ pub enum TlsBuildError {
     },
     #[error("failed to initialize TLS-ALPN-01 certificate selection: {detail}")]
     TlsAlpnSelectionIndex { detail: String },
+    #[error("failed to build the rustls settings of TLS profile `{profile}`: {detail}")]
+    RustlsSettings { profile: String, detail: String },
     #[error("failed to apply OpenSSL settings for TLS profile `{profile}`")]
     TlsProfileSettings {
         profile: String,

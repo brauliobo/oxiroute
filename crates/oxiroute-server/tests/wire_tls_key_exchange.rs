@@ -6,7 +6,9 @@ mod support;
 
 use std::sync::Arc;
 
-use oxiroute_config::{AlpnProtocol, HttpVersionPolicy, TlsKeyExchangeGroup, TlsVersion};
+use oxiroute_config::{
+    AlpnProtocol, HttpVersionPolicy, TlsBackend, TlsKeyExchangeGroup, TlsVersion,
+};
 use rustls::NamedGroup;
 use tokio::time::timeout;
 
@@ -15,8 +17,11 @@ use support::{
     h1_request, proxy_config, tls_client_config_with_groups, tls_connect_with_config,
 };
 
+const BACKENDS: [TlsBackend; 2] = [TlsBackend::Openssl, TlsBackend::Rustls];
+
 /// The group a client that offers `offered` negotiates with a profile listing `groups`, or `None` when the handshake fails.
 async fn negotiated(
+    backend: TlsBackend,
     groups: Option<Vec<TlsKeyExchangeGroup>>,
     offered: &[NamedGroup],
 ) -> Option<NamedGroup> {
@@ -29,6 +34,7 @@ async fn negotiated(
         None,
         HttpVersionPolicy::default(),
     );
+    config.tls_profiles[0].policy.backend = backend;
     config.tls_profiles[0].policy.key_exchange_groups = groups;
     let proxy = ProxyHarness::start(&config.validate(), reserved);
 
@@ -61,11 +67,16 @@ const CLASSICAL: [NamedGroup; 3] = [
 #[tokio::test]
 async fn the_default_list_is_unchanged_and_picks_the_clients_first_share() {
     timeout(TEST_TIMEOUT, async {
-        assert_eq!(negotiated(None, &CLASSICAL).await, Some(NamedGroup::X25519));
-        assert_eq!(
-            negotiated(None, &[NamedGroup::secp256r1, NamedGroup::X25519]).await,
-            Some(NamedGroup::secp256r1)
-        );
+        for backend in BACKENDS {
+            assert_eq!(
+                negotiated(backend, None, &CLASSICAL).await,
+                Some(NamedGroup::X25519)
+            );
+            assert_eq!(
+                negotiated(backend, None, &[NamedGroup::secp256r1, NamedGroup::X25519]).await,
+                Some(NamedGroup::secp256r1)
+            );
+        }
     })
     .await
     .expect("key exchange wire test timed out");
@@ -74,38 +85,56 @@ async fn the_default_list_is_unchanged_and_picks_the_clients_first_share() {
 #[tokio::test]
 async fn a_listed_group_is_negotiated() {
     timeout(TEST_TIMEOUT, async {
-        use TlsKeyExchangeGroup::{Secp256r1, Secp384r1, X25519};
-        // The client's key share (X25519) is listed: no retry round trip, whatever the order.
-        assert_eq!(
-            negotiated(Some(vec![Secp256r1, X25519]), &CLASSICAL).await,
-            Some(NamedGroup::X25519)
-        );
-        // No listed group has a share: the server asks for a retry with a listed group.
-        assert_eq!(
-            negotiated(Some(vec![Secp256r1]), &CLASSICAL).await,
-            Some(NamedGroup::secp256r1)
-        );
-        assert_eq!(
-            negotiated(Some(vec![Secp384r1]), &CLASSICAL).await,
-            Some(NamedGroup::secp384r1)
-        );
+        for backend in BACKENDS {
+            use TlsKeyExchangeGroup::{Secp256r1, Secp384r1, X25519};
+            // The client's key share (X25519) is listed: no retry round trip, whatever the order.
+            assert_eq!(
+                negotiated(backend, Some(vec![Secp256r1, X25519]), &CLASSICAL).await,
+                Some(NamedGroup::X25519)
+            );
+            // No listed group has a share: the server asks for a retry with a listed group.
+            assert_eq!(
+                negotiated(backend, Some(vec![Secp256r1]), &CLASSICAL).await,
+                Some(NamedGroup::secp256r1)
+            );
+            assert_eq!(
+                negotiated(backend, Some(vec![Secp384r1]), &CLASSICAL).await,
+                Some(NamedGroup::secp384r1)
+            );
+        }
     })
     .await
     .expect("key exchange wire test timed out");
 }
 
+/// OpenSSL retries with the first group of the profile's list the client offers; rustls picks the client's first
+/// offered group among the listed ones (it has no server preference for key-exchange groups).
 #[tokio::test]
-async fn the_servers_order_chooses_the_retry_group() {
+async fn the_retry_group_is_the_first_listed_one_on_openssl_and_the_clients_first_listed_one_on_rustls()
+ {
     timeout(TEST_TIMEOUT, async {
         use TlsKeyExchangeGroup::{Secp256r1, Secp384r1};
-        assert_eq!(
-            negotiated(Some(vec![Secp384r1, Secp256r1]), &CLASSICAL).await,
-            Some(NamedGroup::secp384r1)
-        );
-        assert_eq!(
-            negotiated(Some(vec![Secp256r1, Secp384r1]), &CLASSICAL).await,
-            Some(NamedGroup::secp256r1)
-        );
+        for (backend, expected) in [
+            (
+                TlsBackend::Openssl,
+                [NamedGroup::secp384r1, NamedGroup::secp256r1],
+            ),
+            (
+                TlsBackend::Rustls,
+                [NamedGroup::secp256r1, NamedGroup::secp256r1],
+            ),
+        ] {
+            for (listed, expected) in [[Secp384r1, Secp256r1], [Secp256r1, Secp384r1]]
+                .into_iter()
+                .zip(expected)
+            {
+                assert_eq!(
+                    negotiated(backend, Some(listed.to_vec()), &CLASSICAL).await,
+                    Some(expected),
+                    "{backend:?} {listed:?}"
+                );
+            }
+        }
     })
     .await
     .expect("key exchange wire test timed out");
@@ -114,15 +143,23 @@ async fn the_servers_order_chooses_the_retry_group() {
 #[tokio::test]
 async fn a_client_without_a_listed_group_cannot_connect() {
     timeout(TEST_TIMEOUT, async {
-        let groups = Some(vec![TlsKeyExchangeGroup::Secp256r1]);
-        assert_eq!(negotiated(groups, &[NamedGroup::X25519]).await, None);
+        for backend in BACKENDS {
+            let groups = Some(vec![TlsKeyExchangeGroup::Secp256r1]);
+            assert_eq!(
+                negotiated(backend, groups, &[NamedGroup::X25519]).await,
+                None
+            );
+        }
     })
     .await
     .expect("key exchange wire test timed out");
 }
 
 /// Whether a browser-like OpenSSL client (key shares for the hybrid group and X25519) ended on a plain X25519 exchange.
-async fn browser_hello_negotiates_x25519(groups: Option<Vec<TlsKeyExchangeGroup>>) -> bool {
+async fn browser_hello_negotiates_x25519(
+    backend: TlsBackend,
+    groups: Option<Vec<TlsKeyExchangeGroup>>,
+) -> bool {
     use openssl::{
         pkey::Id,
         ssl::{SslConnector, SslMethod, SslVerifyMode},
@@ -136,6 +173,7 @@ async fn browser_hello_negotiates_x25519(groups: Option<Vec<TlsKeyExchangeGroup>
         None,
         HttpVersionPolicy::default(),
     );
+    config.tls_profiles[0].policy.backend = backend;
     config.tls_profiles[0].policy.key_exchange_groups = groups;
     let proxy = ProxyHarness::start(&config.validate(), reserved);
     let address = proxy.address;
@@ -164,9 +202,11 @@ async fn browser_hello_negotiates_x25519(groups: Option<Vec<TlsKeyExchangeGroup>
 #[tokio::test]
 async fn a_browser_hello_gets_the_hybrid_group_by_default_and_x25519_when_the_list_leaves_it_out() {
     timeout(TEST_TIMEOUT, async {
-        assert!(!browser_hello_negotiates_x25519(None).await);
-        let classical = vec![TlsKeyExchangeGroup::X25519, TlsKeyExchangeGroup::Secp256r1];
-        assert!(browser_hello_negotiates_x25519(Some(classical)).await);
+        for backend in BACKENDS {
+            assert!(!browser_hello_negotiates_x25519(backend, None).await);
+            let classical = vec![TlsKeyExchangeGroup::X25519, TlsKeyExchangeGroup::Secp256r1];
+            assert!(browser_hello_negotiates_x25519(backend, Some(classical)).await);
+        }
     })
     .await
     .expect("key exchange wire test timed out");

@@ -43,7 +43,11 @@
 //! # }
 //! ```
 
+mod custom_tls;
 mod l4;
+
+pub use custom_tls::{CustomTlsSettings, StreamTlsAcceptor};
+use custom_tls::CustomTlsAcceptor;
 
 #[cfg(feature = "connection_filter")]
 pub mod connection_filter;
@@ -166,6 +170,7 @@ pub type PreTlsCallback = Arc<dyn PreTlsProcess>;
 struct TransportStackBuilder {
     l4: ServerAddress,
     tls: Option<TlsSettings>,
+    custom_tls: Option<CustomTlsSettings>,
     l4_buffer: L4BufferSettings,
     #[cfg(feature = "connection_filter")]
     connection_filter: Option<Arc<dyn ConnectionFilter>>,
@@ -195,6 +200,7 @@ impl TransportStackBuilder {
         Ok(TransportStack {
             l4,
             tls: self.tls.take().map(|tls| Arc::new(tls.build())),
+            custom_tls: self.custom_tls.take().map(|tls| Arc::new(tls.build())),
             l4_buffer: self.l4_buffer,
             pre_tls_callback: self.pre_tls_callback.clone(),
         })
@@ -209,6 +215,7 @@ impl TransportStackBuilder {
 pub struct ListenerConfig {
     l4: ServerAddress,
     tls: Option<TlsSettings>,
+    custom_tls: Option<CustomTlsSettings>,
     l4_buffer: L4BufferSettings,
 }
 
@@ -218,6 +225,7 @@ impl ListenerConfig {
         Self {
             l4: ServerAddress::Tcp(addr.into(), None),
             tls: None,
+            custom_tls: None,
             l4_buffer: L4BufferSettings::default(),
         }
     }
@@ -228,6 +236,7 @@ impl ListenerConfig {
         Self {
             l4: ServerAddress::Uds(addr.into(), None),
             tls: None,
+            custom_tls: None,
             l4_buffer: L4BufferSettings::default(),
         }
     }
@@ -272,6 +281,12 @@ impl ListenerConfig {
         self
     }
 
+    /// Hand the accepted connections of this endpoint to a [`StreamTlsAcceptor`] instead of the built-in TLS backend.
+    pub fn custom_tls(mut self, settings: CustomTlsSettings) -> Self {
+        self.custom_tls = Some(settings);
+        self
+    }
+
     /// Set L4 read and write buffer sizes for this endpoint.
     pub fn l4_buffer(mut self, settings: L4BufferSettings) -> Self {
         self.l4_buffer = settings;
@@ -283,6 +298,7 @@ impl ListenerConfig {
 pub(crate) struct TransportStack {
     l4: ListenerEndpoint,
     tls: Option<Arc<Acceptor>>,
+    custom_tls: Option<Arc<CustomTlsAcceptor>>,
     l4_buffer: L4BufferSettings,
     pre_tls_callback: Option<PreTlsCallback>,
 }
@@ -302,6 +318,7 @@ impl TransportStack {
         Ok(UninitializedStream {
             l4: stream,
             tls: self.tls.clone(),
+            custom_tls: self.custom_tls.clone(),
             accepted_by: Handle::current().id(),
             l4_buffer: self.l4_buffer,
             pre_tls_callback: self.pre_tls_callback.clone(),
@@ -316,6 +333,7 @@ impl TransportStack {
 pub(crate) struct UninitializedStream {
     l4: L4Stream,
     tls: Option<Arc<Acceptor>>,
+    custom_tls: Option<Arc<CustomTlsAcceptor>>,
     /// The runtime whose I/O driver the socket is registered with.
     accepted_by: runtime::Id,
     l4_buffer: L4BufferSettings,
@@ -332,12 +350,15 @@ impl UninitializedStream {
         self.l4
             .set_buffer(self.l4_buffer, own_driver)
             .or_err(AcceptError, "failed to move the connection to its runtime")?;
-        if let Some(tls) = self.tls {
+        if self.tls.is_some() || self.custom_tls.is_some() {
             // Process pre-TLS data if a callback is configured (e.g., PROXY protocol)
             if let Some(ref callback) = self.pre_tls_callback {
                 callback.process(&mut self.l4).await?;
             }
-
+        }
+        if let Some(custom_tls) = self.custom_tls {
+            custom_tls.tls_handshake(self.l4).await
+        } else if let Some(tls) = self.tls {
             let tls_stream = tls.tls_handshake(self.l4).await?;
             Ok(Box::new(tls_stream))
         } else {
@@ -438,6 +459,11 @@ impl Listeners {
         self.add_listener(endpoint);
     }
 
+    /// Add a TCP endpoint whose connections are secured by the given [`StreamTlsAcceptor`].
+    pub fn add_custom_tls(&mut self, addr: &str, settings: CustomTlsSettings) {
+        self.add_listener(ListenerConfig::tcp(addr).custom_tls(settings));
+    }
+
     /// Add the given [`ServerAddress`] to `self`.
     pub fn add_address(&mut self, addr: ServerAddress) {
         self.add_endpoint(addr, None);
@@ -467,10 +493,16 @@ impl Listeners {
 
     /// Add the given listener endpoint to `self`.
     pub fn add_listener(&mut self, endpoint: ListenerConfig) {
-        let ListenerConfig { l4, tls, l4_buffer } = endpoint;
+        let ListenerConfig {
+            l4,
+            tls,
+            custom_tls,
+            l4_buffer,
+        } = endpoint;
         self.stacks.push(TransportStackBuilder {
             l4,
             tls,
+            custom_tls,
             l4_buffer,
             #[cfg(feature = "connection_filter")]
             connection_filter: self.connection_filter.clone(),
@@ -512,6 +544,7 @@ impl Listeners {
         self.stacks.push(TransportStackBuilder {
             l4,
             tls,
+            custom_tls: None,
             l4_buffer: L4BufferSettings::default(),
             #[cfg(feature = "connection_filter")]
             connection_filter: self.connection_filter.clone(),

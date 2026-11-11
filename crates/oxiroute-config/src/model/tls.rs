@@ -113,6 +113,8 @@ pub struct TlsPolicy {
     pub session_tickets: bool,
     #[serde(default = "default_true")]
     pub prefer_server_ciphers: bool,
+    #[serde(default)]
+    pub backend: TlsBackend,
     /// Key-exchange groups in server preference order; absent keeps the backend default list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_exchange_groups: Option<Vec<TlsKeyExchangeGroup>>,
@@ -128,6 +130,7 @@ impl Default for TlsPolicy {
             session_timeout_seconds: None,
             session_tickets: false,
             prefer_server_ciphers: true,
+            backend: TlsBackend::default(),
             key_exchange_groups: None,
         }
     }
@@ -159,6 +162,15 @@ impl TlsKeyExchangeGroup {
             Self::X25519Mlkem768 => "x25519mlkem768",
         }
     }
+}
+
+/// The TLS library that runs the handshakes and records of the listeners using a profile.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TlsBackend {
+    #[default]
+    Openssl,
+    Rustls,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

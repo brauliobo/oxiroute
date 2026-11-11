@@ -28,9 +28,12 @@ pub fn tls_client_config_with_versions(
     for certificate in load_certificates(ca_certificate_path)? {
         roots.add(certificate)?;
     }
-    let mut config = ClientConfig::builder_with_protocol_versions(versions)
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let mut config = ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(versions)?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
     config.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
     Ok(Arc::new(config))
 }
@@ -72,10 +75,10 @@ pub fn tls_client_config_with_identity(
     }
     let certificates = load_certificates(client_chain_path)?;
     let private_key = load_private_key(client_private_key_path)?;
-    let mut config = ClientConfig::builder_with_protocol_versions(&[
-        &rustls::version::TLS13,
-        &rustls::version::TLS12,
-    ])
+    let mut config = ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])?
     .with_root_certificates(roots)
     .with_client_auth_cert(certificates, private_key)?;
     config.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();

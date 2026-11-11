@@ -275,34 +275,8 @@ fn run_reverse(
 pub(super) fn h3_crypto_provider(
     groups: Option<&[TlsKeyExchangeGroup]>,
 ) -> io::Result<Arc<rustls::crypto::CryptoProvider>> {
-    let mut provider = rustls::crypto::ring::default_provider();
-    if let Some(groups) = groups {
-        let available = std::mem::take(&mut provider.kx_groups);
-        provider.kx_groups = groups
-            .iter()
-            .filter_map(|&group| {
-                available
-                    .iter()
-                    .copied()
-                    .find(|kx| kx.name() == named_group(group))
-            })
-            .collect();
-        if provider.kx_groups.is_empty() {
-            return Err(io::Error::other(
-                "no key_exchange_groups entry is available to HTTP/3",
-            ));
-        }
-    }
-    Ok(Arc::new(provider))
-}
-
-const fn named_group(group: TlsKeyExchangeGroup) -> rustls::NamedGroup {
-    match group {
-        TlsKeyExchangeGroup::X25519 => rustls::NamedGroup::X25519,
-        TlsKeyExchangeGroup::Secp256r1 => rustls::NamedGroup::secp256r1,
-        TlsKeyExchangeGroup::Secp384r1 => rustls::NamedGroup::secp384r1,
-        TlsKeyExchangeGroup::X25519Mlkem768 => rustls::NamedGroup::X25519MLKEM768,
-    }
+    crate::tls::provider::with_key_exchange_groups(crate::tls::provider::ring_provider(), groups)
+        .map_err(io::Error::other)
 }
 
 fn server_config(
@@ -317,7 +291,7 @@ fn server_config(
     )?)
     .with_protocol_versions(&[&rustls::version::TLS13])
     .map_err(io::Error::other)?;
-    let mut crypto = match tls.h3_client_cert_verifier() {
+    let mut crypto = match tls.rustls_client_cert_verifier() {
         Some(verifier) => crypto_builder
             .with_client_cert_verifier(verifier)
             .with_cert_resolver(resolver),
@@ -557,13 +531,13 @@ struct QuicCertificateResolver {
 
 impl ResolvesServerCert for QuicCertificateResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<rustls::sign::CertifiedKey>> {
-        self.profile
-            .selected_generation(client_hello.server_name())
-            .quic_certified_key()
-            .map(Arc::new)
-            .map_err(|error| {
+        let generation = self.profile.selected_generation(client_hello.server_name());
+        match generation.certified_key() {
+            Ok(key) => Some(Arc::clone(key)),
+            Err(error) => {
                 warn!("QUIC certificate selection failed: {error}");
-            })
-            .ok()
+                None
+            }
+        }
     }
 }
