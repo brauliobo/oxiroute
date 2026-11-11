@@ -365,7 +365,8 @@ async fn assert_access_lines_identical(reply: &'static [u8], closes: bool, cases
 async fn access_lines_are_identical_on_both_paths() {
     let cases: Vec<_> = [
         corpus::forwarded("/r"),
-        corpus::requests("/fixed").into_iter().take(6).collect(),
+        corpus::requests("/fixed"),
+        corpus::requests("/moved"),
         corpus::requests("/r").into_iter().take(40).collect(),
         corpus::bodies("/r"),
     ]
@@ -379,7 +380,11 @@ async fn access_lines_are_identical_on_both_paths() {
 /// escaped the same way on both paths.
 #[tokio::test]
 async fn access_lines_of_requests_with_odd_text_are_identical_on_both_paths() {
-    assert_access_lines_identical(OK, false, &corpus::logged("/r")).await;
+    let cases: Vec<_> = ["/r", "/fixed", "/moved"]
+        .into_iter()
+        .flat_map(corpus::logged)
+        .collect();
+    assert_access_lines_identical(OK, false, &cases).await;
 }
 
 /// An origin that answers with something the proxy refuses, or closes the connection: the line carries the reason.
