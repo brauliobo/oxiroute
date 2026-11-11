@@ -6,7 +6,7 @@ Usage: gen_config.py OUT --proxy-port P --upstream-port U [--servers N] [--echo-
 
 Every feature is an independent A/B switch on top of the minimal reverse-proxy configuration:
   access_log timeouts retry queue capacity passive breaker outlier gzip cache reqbuf respbuf
-  forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host lc wrr
+  forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host lc wrr h2_win_old
 """
 
 import argparse
@@ -175,6 +175,8 @@ def build(args):
         "protocol": "http",
         "service": "bench",
     }
+    if on("h2_win_old"):  # the HTTP/2 windows of releases before 6.4: 65,535 for the stream and the connection
+        listener["h2_initial_stream_window"] = listener["h2_initial_connection_window"] = 65535
     config = {
         "version": 1,
         "listeners": [listener],
