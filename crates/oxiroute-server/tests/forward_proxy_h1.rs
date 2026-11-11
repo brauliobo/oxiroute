@@ -129,6 +129,8 @@ async fn downstream_tls_h1_forwards_absolute_form_and_connect_on_a_real_listener
         proxy_protocol: None,
         max_connections: Some(1),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
@@ -436,6 +438,8 @@ async fn basic_authenticated_absolute_form_and_connect_cross_the_runtime_listene
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
@@ -690,6 +694,8 @@ async fn static_peers_retry_in_order_and_receive_absolute_form() {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
@@ -771,6 +777,8 @@ async fn failed_static_peer_can_fall_back_to_direct_http() {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);
@@ -1544,6 +1552,8 @@ async fn connect_udp_upgrade_relays_capsule_datagrams_on_a_real_listener() {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     let config = config.validate().expect("valid forward proxy config");
     let mut server = process_support::ServerProcess::start(&config, None);

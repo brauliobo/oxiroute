@@ -133,6 +133,21 @@ a listener takes thousands of new TLS connections per second and those threads a
 workers. A change is an ordinary reload (the new generation starts its own threads, the replaced one finishes its handshakes
 on its own). Handshakes waiting for a thread count against `max_connections` and the handshake timeout.
 
+## HTTP/2 receive windows
+
+An `http` or `forward_http2` listener advertises `h2_initial_stream_window` (default 1 MiB, 65535 to 16 MiB) as each
+request stream's window and `h2_initial_connection_window` (default 8 MiB, 65535 to 64 MiB, not below the stream window)
+as the connection's. A client may send that much before the proxy has read it, and the proxy gives credit back only as
+it reads, so the windows are the memory bound: a connection whose requests are stalled (an origin that is slow to accept
+the body) holds at most its connection window of request data, whatever the number of streams, and a stream at most its
+stream window. At the defaults that is 8 MiB per connection, against 64 KiB before 6.4; budget
+`max_connections * h2_initial_connection_window` for the worst case and lower the options on a listener that faces many
+untrusted connections (idle and ordinary connections hold nothing extra: nothing is allocated up front). The larger
+windows cut the `WINDOW_UPDATE` frames of an upload from 64 per MiB to about 2 (each was a TLS record and a write) and
+raise the per-stream ceiling from 64 KiB per round trip to 1 MiB per round trip (168 Mbit/s at 50 ms). Raise the
+stream window for high-latency clients that upload large bodies; downloads depend on the client's windows, not these.
+A change is an ordinary reload; connections already open keep the windows they were opened with.
+
 ## Shutdown
 
 Pingora is configured with a 3-second connection grace period followed by a 2-second runtime

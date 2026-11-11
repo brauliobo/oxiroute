@@ -444,6 +444,8 @@ impl Renderer {
             proxy_protocol,
             max_connections,
             downstream_timeouts,
+            h2_initial_stream_window,
+            h2_initial_connection_window,
         } = listener;
 
         self.string_field("name", name);
@@ -494,6 +496,12 @@ impl Renderer {
         self.begin_table_field("downstream_timeouts");
         self.downstream_timeouts(downstream_timeouts);
         self.end_table();
+        if let Some(window) = h2_initial_stream_window {
+            self.integer_field("h2_initial_stream_window", window);
+        }
+        if let Some(window) = h2_initial_connection_window {
+            self.integer_field("h2_initial_connection_window", window);
+        }
         Ok(())
     }
 

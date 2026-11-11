@@ -260,6 +260,8 @@ impl Farm {
                 proxy_protocol: None,
                 max_connections: Some(100),
                 downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+                h2_initial_stream_window: None,
+                h2_initial_connection_window: None,
             }],
             upstream_pools: self
                 .pools

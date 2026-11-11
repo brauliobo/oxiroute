@@ -98,6 +98,8 @@ pub(super) fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf)
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     })
     .collect();
     ConfigDraft {
@@ -175,6 +177,8 @@ pub(super) fn udp_only_config(
             proxy_protocol: None,
             max_connections: Some(8),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         cache_stores: Vec::new(),
         upstream_pools: vec![UpstreamPool {
@@ -257,6 +261,8 @@ pub(super) fn h3_only_config(listener_address: SocketAddr, private_key_path: &Pa
             proxy_protocol: None,
             max_connections: Some(8),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         cache_stores: Vec::new(),
         upstream_pools: Vec::new(),

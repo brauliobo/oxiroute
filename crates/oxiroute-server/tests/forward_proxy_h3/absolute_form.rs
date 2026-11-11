@@ -109,6 +109,8 @@ async fn daemon_forwards_h3_http_absolute_form_to_a_tcp_origin_and_releases_udp_
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
 
     let config = config.validate().expect("valid forward H3 config");
@@ -351,6 +353,8 @@ async fn h3_cache_serves_a_second_absolute_form_get_without_origin_contact() {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
 
     let config = config.validate().expect("valid forward H3 config");

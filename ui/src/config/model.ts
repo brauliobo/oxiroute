@@ -186,6 +186,8 @@ export interface ListenerConfig {
     request_timeout_ms: number | null
     keepalive_timeout_ms: number | null
   }
+  h2_initial_stream_window?: number
+  h2_initial_connection_window?: number
 }
 
 interface CacheStoreLimitsConfig {

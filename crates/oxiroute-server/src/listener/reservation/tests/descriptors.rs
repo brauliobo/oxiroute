@@ -189,6 +189,8 @@ fn worker_descriptor_limit_is_explicitly_sixty_four() {
             proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         })
         .collect();
 
@@ -215,6 +217,8 @@ fn descriptor_capacity_calculation_includes_amplification_and_headroom() {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     let config = validated_test_config(&config).expect("valid capacity config");
     let inventory = ListenerInventory::compile(&config);
@@ -247,6 +251,8 @@ fn adopted_unix_reservation_never_owns_master_namespace_cleanup() {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     let master = prepare_reservations(&config, None).expect("master reservation");
     let (manifest, originals) = export_reservations(&master, &config).expect("descriptor export");

@@ -112,6 +112,8 @@ fn test_listeners() -> Vec<Listener> {
             proxy_protocol: None,
             max_connections: Some(MAX_SAFE_INTEGER),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         },
         Listener {
             name: "plain-web".into(),
@@ -124,6 +126,8 @@ fn test_listeners() -> Vec<Listener> {
             proxy_protocol: None,
             max_connections: Some(10_000),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         },
         Listener {
             name: "database".into(),
@@ -136,6 +140,8 @@ fn test_listeners() -> Vec<Listener> {
             proxy_protocol: None,
             max_connections: Some(2_000),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         },
         Listener {
             name: "live".into(),
@@ -149,6 +155,8 @@ fn test_listeners() -> Vec<Listener> {
             proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         },
     ]
 }
@@ -1894,6 +1902,8 @@ fn rejects_rendered_sources_beyond_the_loader_limit() {
         proxy_protocol: None,
         max_connections: Some(1),
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     config.rtmp_services = test_rtmp_services();
 

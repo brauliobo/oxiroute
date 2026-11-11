@@ -209,6 +209,8 @@ fn stage_two_configuration_accepts_stream_listeners_and_statistics() {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     assert!(validate_stage_one_config(&config.clone().validate().expect("valid config")).is_ok());
 

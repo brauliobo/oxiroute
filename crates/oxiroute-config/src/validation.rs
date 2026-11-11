@@ -76,6 +76,7 @@ use crate::{
 };
 
 mod audit;
+mod h2_windows;
 mod log_filter;
 mod management;
 mod registry;

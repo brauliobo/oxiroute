@@ -551,6 +551,8 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'listeners[].downstream_timeouts.client_timeout_ms', kind: 'integer' },
   { path: 'listeners[].downstream_timeouts.request_timeout_ms', kind: 'integer' },
   { path: 'listeners[].downstream_timeouts.keepalive_timeout_ms', kind: 'integer' },
+  { path: 'listeners[].h2_initial_stream_window', kind: 'integer' },
+  { path: 'listeners[].h2_initial_connection_window', kind: 'integer' },
   { path: 'upstream_pools[].servers', kind: 'collection' },
   { path: 'upstream_pools[].servers[].name', kind: 'string' },
   { path: 'upstream_pools[].servers[].endpoint', kind: 'object' },

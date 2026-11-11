@@ -639,6 +639,8 @@ impl Lowerer<'_> {
                     request_timeout_ms,
                     keepalive_timeout_ms,
                 },
+                h2_initial_stream_window: None,
+                h2_initial_connection_window: None,
             });
             let listener_path = CanonicalPath::indexed("listeners", listener_index);
             let mut sources = section_sources(section);

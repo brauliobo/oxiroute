@@ -226,6 +226,8 @@ fn udp_config(listener: SocketAddr, upstream: SocketAddr) -> ConfigDraft {
             proxy_protocol: None,
             max_connections: Some(8),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         cache_stores: Vec::new(),
         upstream_pools: vec![UpstreamPool {

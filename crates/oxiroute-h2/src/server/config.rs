@@ -1,4 +1,4 @@
-//! Connection limits and tuning knobs; `Config::default()` is the production profile.
+//! Connection limits and tuning knobs; `Config::default()` is the protocol profile, the proxy applies its own on top.
 use std::time::Duration;
 
 /// Settings advertised to the peer and abuse limits enforced on the connection.
@@ -6,13 +6,20 @@ use std::time::Duration;
 /// The limits mirror the `h2` crate's server builder where one exists (same names, same defaults); the
 /// remaining fields cover protections this crate adds.
 ///
-/// None of these is an operator option, by decision: the proxy sets only `max_header_list_size` (64 KiB, or the
-/// forward proxy's configured `max_header_bytes`) and `max_concurrent_streams` (100) and keeps every other field at
-/// its default. The abuse limits are protocol-safety bounds with no deployment-dependent right value (each is the
-/// `h2` crate's own default where one exists, which carried the same traffic before 6.4; the others are generous
-/// bounds chosen with the regression tests of each protection), and the windows stay at the protocol's
-/// 65,535 so that a connection's buffered memory stays bounded by the stream count times 64 KiB. A value that needs
-/// to change for a deployment becomes a root configuration option, never an environment variable.
+/// Only the two receive windows are operator options (`h2_initial_stream_window` and `h2_initial_connection_window`
+/// of a listener, 1 MiB and 8 MiB unless set). The proxy also sets `max_header_list_size` (64 KiB, or the forward
+/// proxy's configured `max_header_bytes`) and `max_concurrent_streams` (100) and keeps every other field at its
+/// default. The abuse limits are protocol-safety bounds with no deployment-dependent right value (each is the `h2`
+/// crate's own default where one exists, which carried the same traffic before 6.4; the others are generous bounds
+/// chosen with the regression tests of each protection).
+///
+/// The windows were fixed at the protocol's 65,535 until 6.4 so that a connection's buffered memory stayed bounded by
+/// 64 KiB. That bound was bought with throughput: an upload cost one `WINDOW_UPDATE` per 32 KiB on the stream and
+/// another on the connection (64 per MiB, each its own TLS record and write) and a stream could move at most 64 KiB
+/// per round trip. Credit goes back to the peer only when the application has read the data, so what a connection
+/// holds for an application that reads nothing is bounded by its connection window, however many streams carry it,
+/// and by the stream window for each stream: the window is the memory bound, and it is now chosen per listener. A
+/// value that needs to change for a deployment becomes a configuration option, never an environment variable.
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     /// `SETTINGS_MAX_CONCURRENT_STREAMS`; a stream opened beyond it is refused (`REFUSED_STREAM`).

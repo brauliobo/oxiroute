@@ -90,6 +90,8 @@ fn listener(name: &str, protocol: Protocol, tls_profile: Option<&str>) -> Listen
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     }
 }
 

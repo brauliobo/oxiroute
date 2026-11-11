@@ -46,6 +46,8 @@ fn config(
             proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         http_services: vec![HttpService {
             drain_deadline_ms: None,

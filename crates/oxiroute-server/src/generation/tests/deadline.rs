@@ -100,6 +100,8 @@ fn ordinary_preparation_failure_quarantines_even_after_deadline() {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     let document = document_for(&config);
     let revision = document.effective_revision.clone();

@@ -148,6 +148,14 @@ def build_lanes():
                                "--expect-len", "65536"], features=["tls"], requests=5000, warmup=200))
     add(lane("h2_post1k_c4s16", ["--proto", "h2tls", "--method", "POST", "--path", "/sink", "--body-bytes", "1024",
                                  "--conns", "4", "--streams", "16"], features=["tls"], requests=20000))
+    # HTTP/2 uploads at the default windows (1 MiB stream, 8 MiB connection) and at the 65,535 of releases before 6.4.
+    post1m = ["--proto", "h2tls", "--method", "POST", "--path", "/sink", "--body-bytes", "1048576", "--conns", "4",
+              "--streams", "4"]
+    add(lane("h2_post1m_c4s4", post1m, features=["tls"], requests=800, warmup=40))
+    add(lane("h2_post1m_c4s4_oldwin", post1m, features=["tls", "h2_win_old"], requests=800, warmup=40))
+    add(lane("h2_post1k_c4s16_oldwin", ["--proto", "h2tls", "--method", "POST", "--path", "/sink", "--body-bytes", "1024",
+                                        "--conns", "4", "--streams", "16"], features=["tls", "h2_win_old"],
+             requests=20000))
     add(lane("h1_b1k_h2up", ["--path", "/b1k", "--expect-len", "1024"] + base, features=["upstream_h2"]))
     add(lane("h1_b1k_tlsup", ["--path", "/b1k", "--expect-len", "1024"] + base, features=["upstream_tls"]))
     add(lane("h1_b64k_h2up", ["--path", "/b64k", "--expect-len", "65536"] + base, features=["upstream_h2"],
