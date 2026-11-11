@@ -478,6 +478,24 @@ describe('canonical field registry', () => {
     expect(isCanonicalConfig(config)).toBe(false)
   })
 
+  it('decodes the TLS backend, key exchange groups and kernel TLS mode', () => {
+    const config = contractConfigSnapshot().config
+    const policy = config.tls_profiles[0]!.policy
+    expect(isCanonicalConfig(config)).toBe(true)
+    policy.backend = 'rustls'
+    policy.key_exchange_groups = ['x25519mlkem768', 'x25519']
+    policy.ktls = 'auto'
+    expect(isCanonicalConfig(config)).toBe(true)
+    policy.backend = 'boringssl' as typeof policy.backend
+    expect(isCanonicalConfig(config)).toBe(false)
+    policy.backend = 'openssl'
+    policy.key_exchange_groups = [1] as unknown as string[]
+    expect(isCanonicalConfig(config)).toBe(false)
+    policy.key_exchange_groups = null
+    policy.ktls = 'on' as typeof policy.ktls
+    expect(isCanonicalConfig(config)).toBe(false)
+  })
+
   it('accepts bounded weighted round-robin weights and rejects malformed shapes', () => {
     const config = contractConfigSnapshot().config
     const pool = config.upstream_pools[0]!

@@ -884,6 +884,9 @@ describe('ConfigurationWorkspace', () => {
     await wrapper.get('[data-field="tls_profiles[].policy.session_tickets"] input').setValue(true)
     await wrapper.get('[data-field="tls_profiles[].policy.session_tickets"] input').setValue(false)
     await wrapper.get('[data-field="tls_profiles[].policy.prefer_server_ciphers"] input').setValue(false)
+    await wrapper.get('[data-field="tls_profiles[].policy.backend"] select').setValue('rustls')
+    await wrapper.get('[data-field="tls_profiles[].policy.backend"] select').setValue('openssl')
+    await wrapper.get('[data-field="tls_profiles[].policy.key_exchange_groups"] input').setValue('x25519mlkem768, x25519')
     await wrapper.get('[data-field="tls_profiles[].policy.ktls"] select').setValue('auto')
     await wrapper.get('[data-field="tls_profiles[].policy.client_auth.mode"] select').setValue('optional')
     await wrapper.get('[data-field="tls_profiles[].policy.client_auth.ca_certificate_path"] input').setValue('/etc/oxiroute/client-ca.pem')
@@ -1065,6 +1068,7 @@ describe('ConfigurationWorkspace', () => {
         session_tickets: false,
         prefer_server_ciphers: false,
         backend: 'openssl',
+        key_exchange_groups: ['x25519mlkem768', 'x25519'],
         ktls: 'auto',
       },
     }))
