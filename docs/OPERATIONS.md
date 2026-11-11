@@ -198,10 +198,11 @@ away.
 
 ### HTTP/1.1 fast lane
 
-Plain HTTP/1.1 requests of fixed-response routes and of plain proxy routes (no header rules, retries, cache, affinity,
-TLS upstream, gzip or access log) are served on a compiled lane that answers them on the connection itself, with the
-same bytes, headers, framing and connection handling as the classic path. Anything else takes the classic path from the
-first byte. The root option `http_fast_lane = false` sends every request through the classic path (for a comparison
+Plain HTTP/1.1 requests of fixed-response and redirect routes and of proxy routes are served on a compiled lane that
+answers them on the connection itself, with the same bytes, headers, framing and connection handling as the classic
+path. Proxy routes may have header rules, retries of `GET` and `HEAD`, queue classes, an HTTP/1.1 TLS origin and a
+service access log, and a request body that arrives with its head. Rescue pools, cache, affinity, path and cookie
+rewrites, buffering, gzip, streamed or chunked bodies and `Expect` take the classic path from the first byte. The root option `http_fast_lane = false` sends every request through the classic path (for a comparison
 or to rule the lane out); it is an ordinary reload, applied to the new connections of the new generation.
 
 ### Request tracing and in-flight requests
