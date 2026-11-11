@@ -6,12 +6,13 @@ pub type ForwardHttp2ServicePlan = ForwardHttp1ServicePlan;
 
 pub struct ForwardHttp2ServiceApp {
     service: Arc<ForwardHttp2ServicePlan>,
+    windows: H2Windows,
 }
 
 impl ForwardHttp2ServiceApp {
     #[must_use]
-    pub fn new(service: Arc<ForwardHttp2ServicePlan>) -> Self {
-        Self { service }
+    pub fn new(service: Arc<ForwardHttp2ServicePlan>, windows: H2Windows) -> Self {
+        Self { service, windows }
     }
 }
 
@@ -26,7 +27,10 @@ impl HttpServerApp for ForwardHttp2ServiceApp {
     }
 
     fn h2_options(&self) -> Option<H2Options> {
-        self.service.h2_options()
+        Some(crate::with_h2_windows(
+            self.service.h2_options()?,
+            self.windows,
+        ))
     }
 
     fn server_options(&self) -> Option<&HttpServerOptions> {

@@ -70,6 +70,8 @@ fn validation_source_preserves_direct_capacity_and_unix_path_only_reuse_semantic
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     let active = prepare_reservations(&active_config, None).expect("active Unix reservation");
     let mut changed = active_config.clone();

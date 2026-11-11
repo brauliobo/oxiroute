@@ -76,6 +76,8 @@ fn rtmp_config(name: &str) -> ConfigDraft {
         proxy_protocol: None,
         max_connections: Some(10_000),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     config.rtmp_services.push(RtmpService {
         name: "rtmp-service".into(),
@@ -119,6 +121,8 @@ fn normalizable_config() -> ConfigDraft {
         proxy_protocol: None,
         max_connections: Some(10_000),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     config.upstream_pools.push(UpstreamPool {
         name: "web-pool".into(),

@@ -78,6 +78,8 @@ pub(super) async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
         proxy_protocol: None,
         max_connections: Some(8),
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
 
     let config = config

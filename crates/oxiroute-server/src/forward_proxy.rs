@@ -36,7 +36,7 @@ use oxiroute_config::{
     ForwardAccessAction, ForwardAccessCondition, ForwardAccessMatcher, ForwardAccessPolicy,
     ForwardAuditMode, ForwardDirectFallback, ForwardHeaderPolicy, ForwardHttpVersion, ForwardPeer,
     ForwardProxyAuth, ForwardResolverPolicy, ForwardTimeRange, ForwardViaPolicy, ForwardWeekday,
-    ForwardedForPolicy,
+    ForwardedForPolicy, H2Windows,
 };
 use oxiroute_forward_proxy::{
     ApprovedDestination, BoundedTunnel, Destination, DestinationRules, ForwardScheme,

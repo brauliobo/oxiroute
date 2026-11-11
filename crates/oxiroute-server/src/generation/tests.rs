@@ -142,6 +142,8 @@ fn colliding_listener_document() -> ResolvedConfigDocument {
             proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         },
         Listener {
             name: "@stats-0".into(),
@@ -154,6 +156,8 @@ fn colliding_listener_document() -> ResolvedConfigDocument {
             proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         },
     ];
     config.management = Some(Management {

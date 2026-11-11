@@ -666,6 +666,8 @@ fn runtime_config(
             proxy_protocol: None,
             max_connections: Some(8),
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         rtmp_services: vec![RtmpService {
             name: "wire-rtmp".into(),
@@ -710,6 +712,8 @@ fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr)
             proxy_protocol: None,
             max_connections: Some(4),
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         rtmp_services: vec![RtmpService {
             name: "timer-rtmp".into(),
@@ -761,6 +765,8 @@ fn handoff_runtime_config(
         proxy_protocol: None,
         max_connections: Some(512),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     };
     ConfigDraft {
         listener_workers: None,

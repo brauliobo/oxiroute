@@ -195,6 +195,8 @@ fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) 
             proxy_protocol: None,
             max_connections: Some(16),
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         rtmp_services: vec![RtmpService {
             name: "live".into(),

@@ -21,6 +21,8 @@ fn unix_reservation_reload_reuses_only_an_identical_path_and_mode() {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     let first = prepare_reservations(&first_config, None).expect("first Unix bind");
     let unchanged =

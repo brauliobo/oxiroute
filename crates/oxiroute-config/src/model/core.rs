@@ -261,6 +261,51 @@ pub struct Listener {
     pub max_connections: Option<u64>,
     #[serde(default)]
     pub downstream_timeouts: DownstreamTimeoutPolicy,
+    /// HTTP/2 receive window of each request stream, in bytes (`http` and `forward_http2` listeners). It caps what a
+    /// client may send on one stream before the proxy has read it. Omitted means 1 MiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h2_initial_stream_window: Option<u64>,
+    /// HTTP/2 receive window of the whole connection, in bytes (`http` and `forward_http2` listeners). It caps the
+    /// request data one connection can have buffered, whatever the number of streams. Omitted means 8 MiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h2_initial_connection_window: Option<u64>,
+}
+
+impl Listener {
+    pub const MIN_H2_WINDOW: u64 = 65_535;
+    pub const DEFAULT_H2_STREAM_WINDOW: u64 = 1 << 20;
+    pub const DEFAULT_H2_CONNECTION_WINDOW: u64 = 8 << 20;
+    pub const MAX_H2_STREAM_WINDOW: u64 = 16 << 20;
+    pub const MAX_H2_CONNECTION_WINDOW: u64 = 64 << 20;
+
+    /// The stream and connection receive windows this listener advertises over HTTP/2.
+    ///
+    /// # Panics
+    ///
+    /// A window that validation would have refused (above `u32::MAX`).
+    #[must_use]
+    pub fn effective_h2_windows(&self) -> H2Windows {
+        let window = |configured: Option<u64>, default: u64| {
+            u32::try_from(configured.unwrap_or(default)).expect("validated window fits u32")
+        };
+        H2Windows {
+            stream: window(
+                self.h2_initial_stream_window,
+                Self::DEFAULT_H2_STREAM_WINDOW,
+            ),
+            connection: window(
+                self.h2_initial_connection_window,
+                Self::DEFAULT_H2_CONNECTION_WINDOW,
+            ),
+        }
+    }
+}
+
+/// HTTP/2 receive windows in bytes, as advertised to the client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct H2Windows {
+    pub stream: u32,
+    pub connection: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

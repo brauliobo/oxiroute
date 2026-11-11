@@ -380,6 +380,8 @@ impl Lowerer<'_> {
                 proxy_protocol: None,
                 max_connections: None,
                 downstream_timeouts: DownstreamTimeoutPolicy::default(),
+                h2_initial_stream_window: None,
+                h2_initial_connection_window: None,
             });
             let path = format!("/listeners/{index}");
             self.record(path.clone(), vec![pool_origin.clone()]);

@@ -42,6 +42,8 @@ pub(super) fn reverse_config(
         proxy_protocol: None,
         max_connections,
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     config
 }

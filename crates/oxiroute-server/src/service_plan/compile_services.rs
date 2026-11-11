@@ -266,6 +266,7 @@ pub(super) fn compile_listener(
         bind: listener.bind.clone(),
         max_connections: listener.max_connections,
         downstream_timeouts: listener.downstream_timeouts,
+        h2_windows: listener.h2_windows,
         proxy_protocol: listener.proxy_protocol,
         kind,
         tls,

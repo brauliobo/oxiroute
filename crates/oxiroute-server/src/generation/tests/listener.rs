@@ -217,6 +217,8 @@ fn failed_listener_candidate_releases_resources_and_preserves_active_generation(
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     candidate.rtmp_services.push(oxiroute_config::RtmpService {
         name: "live".into(),
