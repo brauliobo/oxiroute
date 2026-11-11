@@ -67,10 +67,10 @@ fn dynamic_scaling_decodes_with_the_defaults() {
     assert_eq!(draft.worker_scaling, Some(WorkerScaling::Dynamic));
     assert!(draft.dynamic_worker_scaling());
     assert_eq!(draft.effective_min_active_workers(), 1);
-    assert_eq!(draft.effective_target_busy_percent(), 50);
+    assert_eq!(draft.effective_target_busy_percent(), 40);
     assert_eq!(draft.effective_scale_down_delay_ms(), 5_000);
     assert_eq!(ConfigDraft::DEFAULT_MIN_ACTIVE_WORKERS, 1);
-    assert_eq!(ConfigDraft::DEFAULT_TARGET_BUSY_PERCENT, 50);
+    assert_eq!(ConfigDraft::DEFAULT_TARGET_BUSY_PERCENT, 40);
     assert_eq!(ConfigDraft::DEFAULT_SCALE_DOWN_DELAY_MS, 5_000);
 }
 
