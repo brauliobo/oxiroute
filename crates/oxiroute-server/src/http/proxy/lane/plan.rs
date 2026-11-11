@@ -13,8 +13,8 @@ pub(crate) enum LaneRoute {
     Classic,
     /// A fixed response written from a rendered head.
     Direct,
-    /// A request without a body forwarded to an HTTP/1.1 server of a pool, with header rules the codec can apply:
-    /// no retries, no cache, no rewriting.
+    /// A request forwarded to an HTTP/1.1 server of a pool, with header rules the codec can apply, retries and a
+    /// queue class: no rescue pool, no cache, no affinity, no rewriting.
     Proxy,
 }
 
@@ -51,14 +51,9 @@ fn forwards_plainly(proxy: &ProxyActionPlan, route: &RoutePolicyPlan) -> bool {
         && rules::supported(policy)
         && policy.cookie_path_rewrites.is_empty()
         && policy.cookie_attributes.is_empty()
-        && policy.max_retries == 0
-        && policy.retry_response_statuses.is_empty()
         && policy.rescue_statuses.is_empty()
-        && policy.retry_budget.is_none()
         && policy.cache.is_none()
         && policy.affinity.is_none()
-        && policy.queue_class.is_none()
-        && !policy.queue_headers
         && policy.nginx_error_server.is_none()
 }
 

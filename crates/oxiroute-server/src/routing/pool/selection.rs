@@ -353,7 +353,11 @@ impl EndpointPool {
     }
 
     /// Where a request queues in this pool: the route class, else the class header, plus the tenant.
-    pub(crate) fn queue_tag(&self, route_class: Option<&str>, headers: &HeaderMap) -> QueueTag {
+    pub(crate) fn queue_tag(
+        &self,
+        route_class: Option<&str>,
+        headers: &impl FirstHeader,
+    ) -> QueueTag {
         self.queue
             .schedule
             .as_ref()

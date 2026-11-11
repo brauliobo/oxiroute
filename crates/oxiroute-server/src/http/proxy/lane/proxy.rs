@@ -4,32 +4,22 @@
 //! always served. Selection, leases, timeouts, health signals, evacuation and accounting are the classic request
 //! context's own steps.
 
-use std::{
-    io::Write as _,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{io::Write as _, sync::Arc, time::Instant};
 
-use bytes::{BufMut as _, Bytes, BytesMut};
+use bytes::{BufMut as _, BytesMut};
 use http::{HeaderValue, Method, StatusCode, Version, uri::Authority};
 use log::{debug, warn};
 use oxiroute_config::HttpUpstreamHost;
-use oxiroute_h1_head::{
-    Automatic, Class, Connection, Edits, HOP_KEEP_ALIVE, RequestHead, ResponseHead, ScanResponse,
-    Value, names, scan_response, write_request, write_response,
-};
+use oxiroute_h1_head::{Connection, Edits, RequestHead, Value, names, write_request};
 use pingora::{
     Error, ErrorType,
     apps::Http1Connection,
     connectors::http::v1::Connector,
     protocols::{
         Stream,
-        http::{
-            date::get_cached_date_at,
-            v1::{
-                client::{FastFraming, FastHead, HttpSession},
-                server::{render_final_response_head, render_informational_head},
-            },
+        http::v1::{
+            client::{FastFraming, HttpSession},
+            server::{render_final_response_head, render_informational_head},
         },
     },
     upstreams::peer::Peer as _,
@@ -39,24 +29,29 @@ use tokio::io::AsyncWriteExt as _;
 use super::{
     Served, buffers,
     head::Request,
+    response::serve_fast,
     rules,
     timing::{Expired, within},
 };
 use crate::{
     HealthFailure,
-    clock::wall_ms,
     http::{
         action::{HttpActionPlan, HttpRoutePlan, ProxyPolicyPlan},
         evacuation::LeftRunning,
         inflight::Phase,
         proxy::{
-            ErrorReason, HttpRequestContext, apply_response_policy, attempt::AttemptTimeouts,
+            ErrorReason, HttpRequestContext, apply_response_policy,
+            attempt::{AttemptTimeouts, Exchanged},
             classify_http_result, error_reason, error_response, failure_reason, proxy_error_status,
-            proxy_policy, selected_upstream_host,
+            proxy_policy,
+            retry::status_retry_possible,
+            selected_upstream_host,
         },
         request_id::stamp_response,
     },
-    upstream_peer::{POOL_UNAVAILABLE_HEADER, ReusePeer},
+    observability::upstream_stats::AttemptOutcome,
+    routing::FirstHeader,
+    upstream_peer::{POOL_UNAVAILABLE, POOL_UNAVAILABLE_HEADER, ReusePeer},
 };
 
 /// A body piece of at least this size is written as it was read; smaller ones are copied behind the head.
@@ -64,7 +59,7 @@ const DIRECT_BODY: usize = 16 * 1024;
 
 /// How the body of the response goes to the client.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Framing {
+pub(super) enum Framing {
     Length,
     Chunked,
     Empty,
@@ -162,7 +157,7 @@ pub(super) fn decide(
 }
 
 impl Forward<'_> {
-    fn policy(&self) -> &ProxyPolicyPlan {
+    pub(super) fn policy(&self) -> &ProxyPolicyPlan {
         let HttpActionPlan::Proxy(proxy) = &self.route.action else {
             unreachable!("only proxied routes reach the proxied lane");
         };
@@ -245,13 +240,32 @@ impl super::LaneFront {
         ctx.authority = Some(authority);
         ctx.route = Some(Arc::clone(route));
         let policy = &proxy.policy;
-        let replay_safe = policy.request_is_replay_safe(
+        let replay_safe = policy.request_is_replay_safe_with(
             method,
-            &http::HeaderMap::new(),
+            |name| {
+                let name = name.as_str().as_bytes();
+                let key = forward
+                    .head
+                    .headers()
+                    .iter()
+                    .find(|header| header.name(buffer).eq_ignore_ascii_case(name));
+                key.is_some_and(|header| !header.value(buffer).is_empty())
+            },
             request.body_len == 0,
             route.policy.request_buffering,
         );
+        ctx.connection_retryable = policy.max_retries > 0;
+        ctx.replay_retryable = policy.max_retries > 0 && replay_safe;
         ctx.evacuation_pin = LeftRunning::unmovable(false, replay_safe);
+        if let Some(budget) = &policy.retry_budget {
+            budget.record_request(ctx.now);
+        }
+        if proxy.pool.selector().schedules_queue() {
+            ctx.queue_tag = proxy
+                .pool
+                .selector()
+                .queue_tag(policy.queue_class.as_deref(), &Scanned(forward));
+        }
         ctx.adopt_route_total(
             policy
                 .timeouts
@@ -281,7 +295,13 @@ impl super::LaneFront {
         }
         self.relay(stream, ctx, upstream, opened, progress)
             .await
-            .map_err(|error| ctx.attempt_failed_for_lane(error))
+            .map_err(|error| {
+                let exchanged = Exchanged {
+                    body_replayable: progress.received == 0,
+                    response_retryable: false,
+                };
+                ctx.attempt_failed(error, exchanged)
+            })
     }
 
     /// Attempts on the pool's servers until one answers or the request fails; an attempt an operator moved goes on
@@ -300,7 +320,7 @@ impl super::LaneFront {
                 let attempt = self.attempt(stream, ctx, upstream, forward, progress);
                 tokio::select! {
                     biased;
-                    error = cancelled => Err(ctx.attempt_failed_for_lane(error)),
+                    error = cancelled => Err(ctx.attempt_failed(error, Exchanged::UNANSWERED)),
                     opened = attempt => opened,
                 }
             };
@@ -343,7 +363,13 @@ impl super::LaneFront {
             progress,
         )
         .await
-        .map_err(|error| ctx.attempt_failed_for_lane(error))
+        .map_err(|error| {
+            let exchanged = Exchanged {
+                body_replayable: progress.received == 0,
+                response_retryable: true,
+            };
+            ctx.attempt_failed(error, exchanged)
+        })
     }
 
     /// An idle connection to the selected server, when its address is fixed: no peer is built to ask for one.
@@ -425,10 +451,16 @@ impl super::LaneFront {
         let now = ctx.refresh_clock();
         let keepalive = forward.keepalive && !self.generation.retired();
         let mut head = buffers::take_write();
+        let queue = ctx.queue_stamp();
         let (status, framing, refused, keepalive, buffered) =
-            if let Some((status, framing, refused, buffered)) =
-                serve_fast(&mut head, &raw, &mut session, forward, keepalive, now)
-            {
+            if let Some((status, framing, refused, buffered)) = serve_fast(
+                &mut head,
+                &raw,
+                &mut session,
+                forward,
+                keepalive,
+                (now, queue),
+            ) {
                 (status, framing, refused, keepalive, buffered)
             } else {
                 session.reparse_raw_head();
@@ -446,8 +478,24 @@ impl super::LaneFront {
                 (status, framing, refused, keepalive, false)
             };
         ctx.remaining_at(now, true)?;
+        let retries_on_status = refused || proxy_policy(ctx).retries_on_status(status);
+        if retries_on_status
+            && status_retry_possible(ctx, refused, false)
+            && ctx.spend_retry_budget()
+        {
+            // The origin keeps what it has not sent: its connection is not used again.
+            ctx.retry_prepaid = true;
+            ctx.trace.finish(AttemptOutcome::StatusRetry, Some(status));
+            let mut error = if refused {
+                Error::new_up(POOL_UNAVAILABLE)
+            } else {
+                Error::new_up(ErrorType::HTTPStatus(status))
+            };
+            error.set_retry(true);
+            return Err(error);
+        }
         ctx.commit_response(StatusCode::from_u16(status).expect("a scanned status"))?;
-        if refused {
+        if retries_on_status {
             ctx.record_passive_failure(HealthFailure::UnexpectedStatus);
         } else {
             ctx.record_passive_success();
@@ -672,25 +720,6 @@ fn host_edit(ctx: &mut HttpRequestContext) -> HostEdit {
         .map_or(HostEdit::Remove, HostEdit::Set)
 }
 
-/// Whether the response head is one the codec serves: final, no upgrade, a plain `Connection` and no `Keep-Alive`.
-fn is_plain(head: &ResponseHead) -> bool {
-    let facts = head.facts;
-    !facts.informational
-        && !facts.upgrade
-        && facts.connection != Connection::Other
-        && facts.hop_by_hop & HOP_KEEP_ALIVE == 0
-        && (!facts.transfer_encoding || facts.chunked_final)
-}
-
-fn refused_by_pool(buffer: &[u8], head: &ResponseHead) -> bool {
-    head.status == 503
-        && head.headers().iter().any(|header| {
-            header
-                .name(buffer)
-                .eq_ignore_ascii_case(POOL_UNAVAILABLE_HEADER.as_str().as_bytes())
-        })
-}
-
 /// The upstream request head: the client's, as the classic path forwards it. The edits are the `HeaderMap` calls of
 /// the classic sequence in its order: the `Connection` of a keep-alive client leaves with the hop-by-hop fields, an
 /// id is stamped when the request has no single valid one, the host policy applies, a client's `close` is not
@@ -745,116 +774,6 @@ fn render_request(
     write_request(out, buffer, head, &edits);
 }
 
-/// Serves a response head the codec scans and knows: the status, the framing and whether the origin refused the
-/// request as a pool without servers. `None` leaves the head to the classic parser.
-fn serve_fast(
-    out: &mut Vec<u8>,
-    raw: &Bytes,
-    session: &mut HttpSession,
-    forward: &Forward<'_>,
-    keepalive: bool,
-    now: Instant,
-) -> Option<(u16, Framing, bool, bool)> {
-    let mut head = buffers::take_response_head();
-    let served =
-        (scan_response(raw, &mut head) == ScanResponse::Head && is_plain(&head)).then(|| {
-            let framing = render_fast(out, raw, &head, session, forward, keepalive, now);
-            let body = &raw[head.head_len as usize..];
-            let buffered = match framing {
-                Framing::Length => head
-                    .facts
-                    .content_length
-                    .is_some_and(|length| body.len() as u64 >= length),
-                Framing::Chunked => body.ends_with(b"0\r\n\r\n"),
-                Framing::Empty => false,
-            };
-            (head.status, framing, refused_by_pool(raw, &head), buffered)
-        });
-    buffers::give_response_head(head);
-    served
-}
-
-/// The client's response head for a head the codec scanned, and the facts of it reported to the session.
-fn render_fast(
-    out: &mut Vec<u8>,
-    raw: &Bytes,
-    head: &ResponseHead,
-    session: &mut HttpSession,
-    forward: &Forward<'_>,
-    keepalive: bool,
-    now: Instant,
-) -> Framing {
-    let facts = head.facts;
-    let is_head = forward.request.is_head;
-    let mut edits = Edits::new();
-    let edit = |result: Result<(), oxiroute_h1_head::EditsFull>| {
-        result.expect("a response head needs few edits");
-    };
-    if facts.transfer_encoding && head.find(Class::ContentLength).is_some() {
-        edit(edits.remove(names::CONTENT_LENGTH));
-    }
-    for (class, name) in [
-        (Class::Connection, names::CONNECTION),
-        (Class::KeepAlive, names::KEEP_ALIVE),
-        (Class::ProxyAuthenticate, names::PROXY_AUTHENTICATE),
-        (Class::ProxyAuthorization, names::PROXY_AUTHORIZATION),
-        (Class::ProxyConnection, names::PROXY_CONNECTION),
-        (Class::Te, names::TE),
-        (Class::Trailer, names::TRAILER),
-        (Class::TransferEncoding, names::TRANSFER_ENCODING),
-        (Class::Upgrade, names::UPGRADE),
-    ] {
-        if facts.present & class.bit() != 0 {
-            edit(edits.remove(name));
-        }
-    }
-    edit(rules::edit_response(
-        &mut edits,
-        &forward.route.edits,
-        forward.policy(),
-        head.status,
-    ));
-    let no_body = is_head || matches!(head.status, 204 | 304);
-    let chunked = !no_body && facts.content_length.is_none();
-    edit(edits.stamp_request_id(raw, head, Value::trusted(forward.id.as_bytes())));
-    if chunked {
-        edit(edits.set(names::TRANSFER_ENCODING, Value::trusted(b"chunked")));
-    }
-    let date = get_cached_date_at(Duration::from_millis(wall_ms(now)));
-    let automatic = Automatic {
-        date: date.as_bytes(),
-        connection: if keepalive { b"keep-alive" } else { b"close" },
-    };
-    let minor = if chunked { 1 } else { head.minor };
-    write_response(out, raw, head, &edits, minor, Some(automatic));
-    session.accept_fast_head(FastHead {
-        status: StatusCode::from_u16(head.status).expect("a scanned status"),
-        version: if head.minor == 0 {
-            Version::HTTP_10
-        } else {
-            Version::HTTP_11
-        },
-        head_len: head.head_len as usize,
-        connection: match facts.connection {
-            Connection::KeepAlive => Some(HeaderValue::from_static("keep-alive")),
-            Connection::Close => Some(HeaderValue::from_static("close")),
-            Connection::Absent | Connection::Other => None,
-        },
-        transfer_encoding: facts.transfer_encoding,
-        framing: FastFraming {
-            chunked: facts.transfer_encoding && facts.chunked_final,
-            content_length: facts
-                .content_length
-                .map(|length| usize::try_from(length).expect("a scanned length")),
-        },
-    });
-    match (no_body, chunked) {
-        (true, _) => Framing::Empty,
-        (false, true) => Framing::Chunked,
-        (false, false) => Framing::Length,
-    }
-}
-
 /// The final response head of the session's parser; informational heads on the way go to the client filtered and
 /// stamped as the classic response filter does.
 async fn read_final_head(
@@ -892,6 +811,7 @@ fn prepare_slow(
     forward: &Forward<'_>,
 ) -> Result<(Framing, bool), Box<Error>> {
     apply_response_policy(response, proxy_policy(ctx), true)?;
+    ctx.stamp_queue_headers(response)?;
     stamp_response(response, forward.id)?;
     let no_body = forward.request.is_head || matches!(response.status.as_u16(), 204 | 304);
     let has_length = response.headers.contains_key(http::header::CONTENT_LENGTH);
@@ -909,4 +829,25 @@ fn prepare_slow(
         (false, false, true) => (Framing::Length, false),
         (false, false, false) => (Framing::Empty, true),
     })
+}
+
+/// The scanned head of a request, for what a queue tag reads of it.
+struct Scanned<'a, 'b>(&'a Forward<'b>);
+
+impl FirstHeader for Scanned<'_, '_> {
+    fn first(&self, name: &http::HeaderName) -> Option<&str> {
+        let (buffer, name) = (self.0.buffer, name.as_str().as_bytes());
+        let header = self
+            .0
+            .head
+            .headers()
+            .iter()
+            .find(|header| header.name(buffer).eq_ignore_ascii_case(name))?;
+        // What `HeaderValue::to_str` accepts: visible ASCII and tabs.
+        let value = header.value(buffer);
+        value
+            .iter()
+            .all(|byte| matches!(byte, b' '..=b'~' | b'\t'))
+            .then(|| std::str::from_utf8(value).expect("visible ASCII is UTF-8"))
+    }
 }

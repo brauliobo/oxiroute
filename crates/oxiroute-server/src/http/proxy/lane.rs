@@ -13,6 +13,7 @@ mod log;
 mod peek;
 mod plan;
 mod proxy;
+mod response;
 mod rules;
 mod timing;
 

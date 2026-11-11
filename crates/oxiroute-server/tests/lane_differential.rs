@@ -17,6 +17,8 @@ mod process_support;
 mod corpus;
 #[path = "lane_differential/features.rs"]
 mod features;
+#[path = "lane_differential/retries.rs"]
+mod retries;
 
 use std::fmt::Write as _;
 use std::{fs, os::unix::fs::PermissionsExt as _, path::Path, time::Duration};

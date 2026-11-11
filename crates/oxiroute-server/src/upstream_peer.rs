@@ -139,14 +139,13 @@ impl UpstreamPlan {
     }
 
     /// Whether requests reach the pool's servers as HTTP/1.1, over TLS or not, on a stream the lane can drive
-    /// itself, with nothing queued by class. A TLS pool that may negotiate HTTP/2 is not: the lane speaks no frames.
+    /// itself. A TLS pool that may negotiate HTTP/2 is not: the lane speaks no frames.
     pub(crate) fn is_http1_only(&self) -> bool {
         self.tls
             .as_ref()
             .is_none_or(|tls| tls.max_http_version() == HttpVersion::Http11)
             && self.h3.is_none()
             && self.http_version == HttpVersion::Http11
-            && !self.selector.schedules_queue()
     }
 
     pub(crate) fn label(&self) -> &Label {

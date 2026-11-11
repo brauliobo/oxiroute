@@ -32,6 +32,16 @@ use super::{
 
 pub const STEP: Duration = Duration::from_secs(5);
 
+/// What a scripted origin does with one request.
+#[derive(Clone, Copy, Debug)]
+pub enum Step {
+    Reply(&'static [u8]),
+    /// Reads the request and closes the connection without a word.
+    Drop,
+    /// Answers after a while.
+    Slow(Duration, &'static [u8]),
+}
+
 pub type Captured = Arc<Mutex<Vec<Vec<u8>>>>;
 
 /// An origin that answers every request with `reply` and records the request bytes it received.
@@ -64,6 +74,43 @@ impl Origin {
             .expect("origin identity");
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
         Self::serve_with(reply, closes, Some(TlsAcceptor::from(Arc::new(config)))).await
+    }
+
+    /// An origin that does `steps[n]` with the n-th request it receives, over all its connections (the last step
+    /// for every request after the script): the replies and the failures a retry policy reacts to.
+    pub async fn scripted(steps: &'static [Step]) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let requests = Captured::default();
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&requests);
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("origin accept");
+                let (seen, counter) = (Arc::clone(&seen), Arc::clone(&counter));
+                tokio::spawn(async move {
+                    while let Some(request) = read_request(&mut stream).await {
+                        seen.lock().expect("captured requests").push(request);
+                        let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        match steps[n.min(steps.len() - 1)] {
+                            Step::Reply(reply) => {
+                                if stream.write_all(reply).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Step::Drop => return,
+                            Step::Slow(delay, reply) => {
+                                tokio::time::sleep(delay).await;
+                                if stream.write_all(reply).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        Self { address, requests }
     }
 
     async fn serve(reply: &'static [u8], closes: bool) -> Self {

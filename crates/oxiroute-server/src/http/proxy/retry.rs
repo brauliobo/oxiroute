@@ -27,16 +27,26 @@ pub(super) fn response_status_retryable(
     refused: bool,
     rescued: bool,
 ) -> bool {
+    request_body_replayable(session)
+        && !session.was_upgraded()
+        && response_is_retryable(session)
+        && status_retry_possible(ctx, refused, rescued)
+}
+
+/// Whether a response status that the route retries on may be retried: the request can be sent again, within the
+/// route's retries, to a server that is left to try. What the exchange has already done (a body read, an upgrade, a
+/// response begun) is the caller's to check.
+pub(super) fn status_retry_possible(
+    ctx: &HttpRequestContext,
+    refused: bool,
+    rescued: bool,
+) -> bool {
     let eligible = if refused {
         ctx.connection_retryable
     } else {
         ctx.replay_retryable
     };
-    if !eligible
-        || !request_body_replayable(session)
-        || session.was_upgraded()
-        || !response_is_retryable(session)
-    {
+    if !eligible {
         return false;
     }
     let policy = proxy_policy(ctx);
@@ -87,25 +97,24 @@ pub(super) fn request_body_replayable(session: &Session) -> bool {
 
 pub(super) fn retryable_upstream_error(
     error: &Error,
-    session: &Session,
+    response_retryable: bool,
     policy: &ProxyPolicyPlan,
 ) -> bool {
     match error.etype() {
         ErrorType::HTTPStatus(status) => {
             policy.retries_on_status(*status) || policy.rescues_status(*status)
         }
-        _ => {
-            response_retry_trigger(error, session).is_some_and(|trigger| policy.retries_on(trigger))
-        }
+        _ => response_retry_trigger(error, response_retryable)
+            .is_some_and(|trigger| policy.retries_on(trigger)),
     }
 }
 
-fn response_retry_trigger(error: &Error, session: &Session) -> Option<HttpRetryTrigger> {
+fn response_retry_trigger(error: &Error, response_retryable: bool) -> Option<HttpRetryTrigger> {
     if is_refused_stream(error) {
         return Some(HttpRetryTrigger::RefusedStream);
     }
     match error.etype() {
-        ErrorType::ConnectionClosed | ErrorType::ReadError if response_is_retryable(session) => {
+        ErrorType::ConnectionClosed | ErrorType::ReadError if response_retryable => {
             Some(HttpRetryTrigger::EmptyResponse)
         }
         ErrorType::ReadTimedout => Some(HttpRetryTrigger::ResponseTimeout),
