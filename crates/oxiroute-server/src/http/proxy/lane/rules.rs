@@ -464,7 +464,7 @@ mod tests {
             HttpRequestHeaderValue::ClientIp,
             HttpRequestHeaderValue::AppendedXForwardedFor {
                 max_bytes: 64,
-                except_source_cidrs: vec!["192.0.2.0/8".into()],
+                except_source_cidrs: vec!["198.51.100.0/24".into()],
             },
             HttpRequestHeaderValue::AppendedXForwardedFor {
                 max_bytes: 20,
@@ -502,7 +502,7 @@ mod tests {
             let authority: Authority = authority.parse().unwrap();
             for client_ip in [
                 Some("192.0.2.1"),
-                Some("192.0.2.202"),
+                Some("198.51.100.3"),
                 Some("2001:db8::1"),
                 None,
             ] {
