@@ -1,13 +1,40 @@
 # OxiRoute 6.4.0
 
 OxiRoute 6.4.0 makes the connection and protocol layers cheaper. Plain HTTP/1.1 requests of fixed-response and plain
-proxy routes are served on a compiled fast lane and need about 30% to 55% fewer user-space instructions than in 6.3.1
-(1 MiB responses 33% fewer), an idle keep-alive connection holds no session and no read buffer, HTTP/2 over TLS needs
-10% to 23% fewer instructions and TLS handshakes run on their own threads, TCP relays and large static files move their
-bytes in the kernel (`splice`, `sendfile`: 29% to 75% less CPU per request), and the vendored Pingora is rebased from 0.8.1
-onto 0.9.1, which closes three advisories. Settings that were environment variables are configuration options (log
-verbosity, the management token file, the audit log), in every source format. The release remains pre-alpha and retains
-conservative compatibility claims.
+proxy routes are served on a compiled fast lane and need 32% to 52% fewer user-space instructions than in 6.3.1,
+bodyless HTTP/2 requests of the same routes are served on a stream lane (HTTP/2 over TLS: 50% fewer instructions for
+1 KiB responses), an idle keep-alive connection holds no session and no read buffer (also over TLS and
+for WebSocket), TLS handshakes run on their own threads, TCP relays and large static files move their bytes in the
+kernel (`splice`, `sendfile`, and kernel TLS where the host has it), HTTP/3 and the HTTP/2 session are purpose-built,
+and the vendored Pingora is rebased from 0.8.1 onto 0.9.1, which closes three advisories. Settings that were
+environment variables are configuration options (log verbosity, the management token file, the audit log), in every
+source format. The release remains pre-alpha and retains conservative compatibility claims.
+
+## Behaviour decisions
+
+These defaults were chosen for 6.4.0 and are listed so that nobody flips them by accident.
+
+| Option | Default in 6.4.0 | Decision |
+| --- | --- | --- |
+| `ktls` (per TLS profile) | `auto` | New default. Converts a connection only when it sends a large static file and the host has kernel TLS; a host without the `tls` module behaves as `off`. Worst case: +1% to +4% instructions for small responses on a converted connection. |
+| `h2_initial_stream_window`, `h2_initial_connection_window` | 1 MiB and 8 MiB (65,535 octets before) | Large uploads send 97% fewer `WINDOW_UPDATE` frames (1 MiB POST: -13% instructions). **Worst-case buffered request data per listener is `max_connections` x 8 MiB** (64 KiB per connection before, 128 times less); nothing is allocated up front, so idle and ordinary connections do not grow. Lower both options on a listener that faces many untrusted connections. |
+| `backend` (per TLS profile) | `openssl` | The rustls backend is opt-in. |
+| `connection_scheduling` | `work_stealing` when omitted; `auto` is available | `auto` (per-worker queues from two `listener_workers` up, work stealing with one) is the recommended value on a multi-worker host that wants a lower tail, but did not meet the flip criteria (rate cells at 512 and 2,048 connections and the paced probe p99), so it is not the default. |
+| `worker_scaling` | `static` | `dynamic` is opt-in and needs `aged_per_worker`. |
+| `http_fast_lane` | `true` | One option controls the HTTP/1 and the HTTP/2 lane. |
+| `tls_handshake_threads` | one per 8 CPUs, 1 to 4 | `0` keeps handshakes on the workers. |
+| `key_exchange_groups` | absent (hybrid post-quantum group preferred) | Restricting it trades the hybrid group's protection for CPU. |
+| Release artefacts | default artefact built with `-O3` C flags, unwinding panics | `x86-64-v3` and `abort` flavours are separate, explicitly named artefacts. |
+
+## Host requirements
+
+- **Kernel TLS** (optional): the `tls` kernel module and Linux 6.5 or newer. The module is not loaded by default and an
+  unprivileged service cannot load it: add `tls` to `/etc/modules-load.d/` (or `modprobe tls`) and reload the
+  configuration. Without it nothing changes; the log of each TLS profile says once why TLS stays in user space.
+- **Large static files** are sent with `sendfile` on tmpfs, ramfs and file systems that support `RWF_NOWAIT`; other file
+  systems keep the copy path.
+- `splice` relays need pipe quota for up to two descriptors per bulk direction; past the quota the relay copies.
+- The default release artefact needs no CPU feature beyond baseline x86-64; the `x86-64-v3` artefact needs AVX2 and BMI2.
 
 ## Summary
 
@@ -17,11 +44,19 @@ conservative compatibility claims.
   connection handling as before. Header rules and access lines cost about a third of what they did on the classic
   path. Rescue pools, cache, affinity, rewrites, gzip, streamed bodies and `Expect` take the classic path.
   `http_fast_lane = false` turns it off.
+- **HTTP/2 fast lane.** A bodyless HTTP/2 request of a fixed-response, redirect or plain proxy route is served on its
+  stream without a Pingora session, with the HTTP/1 lane's header rules, retries and queue classes; the responses of
+  ready streams share one write. Everything else, including every request with a body, takes the classic session.
+  `http_fast_lane = false` turns both lanes off.
 - **Idle connections.** A keep-alive connection that waits for its next request holds no session, no header buffer and
-  no request future (10,000 idle connections: 17.5 kB to 2.2 kB of resident memory each with the allocator decay set to
-  zero; 2,048 busy connections: 140 MB to 86 MB).
+  no request future, also over TLS (-9% to -12% resident memory per open connection) and for WebSocket (-15% to
+  -27%); 2,048 busy HTTP/1 connections: 140 MB to 86 MB. The 6.4 figure of 2.2 kB per idle connection was the residue
+  after the connections closed: an open idle plain connection holds about 12 kB, a TLS one about 34 kB.
 - **TLS and HTTP/2.** Handshakes run on `tls_handshake_threads` threads away from the workers; the HTTP/2 server is a
-  purpose-built session (`oxiroute-h2`) instead of the `h2` crate: 10% to 23% fewer instructions per request.
+  purpose-built session (`oxiroute-h2`) instead of the `h2` crate. Its receive windows are listener options
+  (`h2_initial_stream_window`, `h2_initial_connection_window`, 1 MiB and 8 MiB by default).
+- **Control plane.** `/ready` and `/api/v1/listeners` cost 93% to 95% fewer instructions per call, the listings of
+  1,000 servers 44% to 47% fewer and `/api/v1/topology` 93% fewer; `oxiroute --output json` is 68% to 77% cheaper.
 - **HTTP/3.** Reverse `http3` listeners are served by a purpose-built HTTP/3 layer (`oxiroute-h3`) instead of the generic
   `h3` crate: 33% fewer instructions per 1 KiB request, one system call per request fewer, stricter RFC 9114 and 9204
   handling. A route of an `http3` listener can proxy to HTTP/1.1 and HTTP/2 origins like an `https` listener.
@@ -36,8 +71,10 @@ conservative compatibility claims.
 - **rustls backend (opt-in).** `tls_profiles[].policy.backend = "rustls"` runs the handshakes and records of a profile's
   listeners with rustls and aws-lc-rs instead of OpenSSL; `openssl` stays the default. See
   [the rustls backend](developer/PERF_6_4_RUSTLS.md).
-- **Configuration.** New options: `tls_profiles[].policy.backend`, `tls_profiles[].policy.ktls`, `tls_handshake_threads`, `http_fast_lane`, `connection_scheduling`,
-  `connection_age_ms`, `log_filter`, `management.token_file` and the `audit` block.
+- **Configuration.** New options: `tls_profiles[].policy.backend`, `tls_profiles[].policy.ktls`,
+  `tls_profiles[].policy.key_exchange_groups`, `h2_initial_stream_window`, `h2_initial_connection_window`,
+  `tls_handshake_threads`, `http_fast_lane`, `connection_scheduling` (with `auto`), `connection_age_ms`, `worker_scaling`
+  with its three tunables, `log_filter`, `management.token_file` and the `audit` block. See the table below.
 
 ## Behaviour changes to know before upgrading
 
@@ -58,8 +95,27 @@ conservative compatibility claims.
 - **HTTP/2 server.** A request whose stream the client reset before the proxy accepted it is not delivered (the proxy
   used to start the upstream request and cancel it a moment later). A request body that ends with an empty DATA frame
   carrying END_STREAM ends without an empty chunk. Graceful shutdown waits for the client's PING reply before the closing
-  GOAWAY; a client that never answers is ended by the retirement drain or the idle timeout. Initial windows stay at the
-  protocol default.
+  GOAWAY; a client that never answers is ended by the retirement drain or the idle timeout. The initial receive windows
+  are 1 MiB per stream and 8 MiB per connection (65,535 octets before); see the behaviour decisions above. They apply to
+  connections opened after a reload.
+- **HTTP/2 fast lane.** With `http_fast_lane` on, a bodyless `GET` or `HEAD` of a fixed-response or plain proxy route
+  is served without a Pingora session. An informational (`1xx`) answer of the origin is not forwarded to an HTTP/2
+  client (the classic session does not forward it either; a `101` is a `502` on both). A fixed response or redirect
+  without a body is one `HEADERS` frame with `END_STREAM` (the classic session adds an empty `DATA` frame). Services with
+  an access log stay on the classic path for HTTP/2. Every HTTP/2 connection lets the scheduler run other ready tasks
+  before it writes queued responses, so more responses share a write.
+- **Wider HTTP/1.1 fast lane.** It also serves routes with retries and queue classes, routes that forward to a TLS
+  origin, request and response header rules (forwarded headers, host rewrites), services with an access log (and their
+  fixed responses and redirects), and requests whose `Content-Length` body arrives with the head; the output is the
+  classic path's, byte for byte. A response a retry rule rejected is not reused (its connection is closed); an origin
+  that closes without reading a request body it was sent has its answer relayed and neither connection is reused.
+  Requests with `Expect` and streamed bodies still take the classic path. Request context and upstream session of a
+  proxied request live on the heap, per-server and per-listener counters use up to 24 per-thread slots (was 8), the
+  `Date` header of a lane response comes from the clock reading taken when the request arrived, and the idle keep-alive
+  timeout of the lane runs from the end of the previous response.
+- **Control plane.** `oxiroute --output json` prints the management response exactly as the server wrote it (field order
+  is the server's, no longer alphabetical); `/ready` and `/api/v1/listeners` no longer sample the host, pools or
+  certificates; the bodies of `/api/v1/servers`, `/pools`, `/monitoring` and `/topology` are byte-identical to before.
 - **Idle keep-alive wait.** The idle wait of an HTTP/1 keep-alive connection ends at the listener's
   `keepalive_timeout_ms` and does not count against `request_timeout_ms`, which runs from the first byte of the next
   request. TLS connections wait as before (their idle memory did not change).
@@ -80,37 +136,40 @@ conservative compatibility claims.
   Set `"off"` to keep TLS in user space. A host without the `tls` module behaves exactly as `"off"`. TLS 1.2,
   ChaCha20, HTTP/2, HTTP/3 and proxied bodies are unchanged. The profile checks the kernel when a generation starts and
   logs once (info) whether kernel TLS is active or why TLS stays in user space (the `tls` module is not loaded and an
-  unprivileged service cannot load it: add `tls` to `/etc/modules-load.d/`; kernel older than 6.5; unsupported cipher). The vendored OpenSSL is now built with kernel TLS
-  support. Details: [kernel TLS](developer/PERF_6_4_KTLS.md).
+  unprivileged service cannot load it: add `tls` to `/etc/modules-load.d/`; kernel older than 6.5; unsupported cipher;
+  the `rustls` backend). The vendored OpenSSL is now built with kernel TLS support. Details:
+  [kernel TLS](developer/PERF_6_4_KTLS.md).
 - **Timeouts** beyond a threshold use Tokio's timer instead of the clock thread (Pingora 0.9).
 - **Environment variables** that now have a configuration option keep working as fallbacks that the configuration
   overrides: `OXIROUTE_MANAGEMENT_TOKEN_FILE` (`management.token_file`), `OXIROUTE_AUDIT_DIR` and `OXIROUTE_AUDIT_MAX_*`
   (`audit.*`), `RUST_LOG` (`log_filter`). Supervised workers run with a cleared environment and do not inherit `RUST_LOG`;
   set `log_filter` to change their verbosity. The log filter follows every reload.
-- **Costs.** A 1 KiB static file and a WebSocket message cost about 5% to 21% more user-space instructions than in 6.3.1
-  (the 0.9.1 base, and the lane's look at a request of a classic route in a service that also has lane routes; see the
-  summary). Requests that use header rules, retries, cache, access logs or a TLS origin pay only the 0.9.1 base (1% to
-  8%).
+- **Costs.** A 1 KiB static file costs about 15% and a WebSocket message about 3% more user-space instructions than in
+  6.3.1 (the 0.9.1 base, and for the static file the lane's look at a request of a classic route in a service that also
+  has lane routes; see the summary). Requests that take the classic path (cache, rescue pools, streamed bodies, `Expect`,
+  gzip) pay only the 0.9.1 base (1% to 8%). A classic HTTP/2 request (a request with a body) pays 3% to 10% more in the
+  session codec than before the HTTP/2 view API, and is still 19% below 6.3.1.
 
 ## Measured effect
 
-User-space instructions per request from `benchmarks/r2-data-path`, 6.3.1 and 6.4 built the same way (shipped profile
-without fat LTO, no profile-guided optimization), three repetitions, alternated on one shared host. The full table, the
-CPU columns of the kernel-offload lanes, the handshake storm and the method are in
-[the 6.4 performance summary](developer/PERF_6_4_SUMMARY.md).
+User-space instructions per request from `benchmarks/r2-data-path`, 6.3.1 and the integrated 6.4 tree built the same
+way (shipped profile without fat LTO, no profile-guided optimization), three repetitions, alternated on one shared host.
+The full table, the lane-off column, the CPU columns of the kernel-offload lanes, the handshake storm and the method are
+in [the 6.4 performance summary](developer/PERF_6_4_SUMMARY.md).
 
 | Lane | 6.3.1 | 6.4 | Change |
 | --- | ---: | ---: | ---: |
-| HTTP/1.1 proxied, 1 KiB | 53,035 | 36,572 | -31.0% |
-| Fixed response | 22,638 | 10,361 | -54.2% |
-| New connection per request | 69,817 | 49,641 | -28.9% |
-| 2,048 keep-alive connections | 54,898 | 38,031 | -30.7% |
-| Proxied 64 KiB / 1 MiB response | 56,697 / 83,551 | 39,824 / 55,638 | -29.8% / -33.4% |
-| WebSocket echo 1 KiB | 15,473 | 16,259 | +5.1% |
-| TLS 1.3 keep-alive, 1 KiB | 66,327 | 49,889 | -24.8% |
-| HTTP/2 over TLS, 1 KiB / 64 KiB / POST 1 KiB | 87,314 / 183,825 / 99,397 | 74,001 / 142,127 / 89,261 | -15.2% / -22.7% / -10.2% |
-| Static file 1 KiB / 1 MiB | 32,738 / 84,113 | 39,707 / 124,024 | +21.3% / +47.4% (CPU of 1 MiB: -65% to -75%) |
-| TCP relay echo 1 KiB / 256 KiB | 8,919 / 38,240 | 9,156 / 59,489 | +2.7% / +55.6% (CPU of 256 KiB: -29%) |
+| HTTP/1.1 proxied, 1 KiB | 53,320 | 34,967 | -34.4% |
+| Fixed response | 22,654 | 10,863 | -52.0% |
+| New connection per request | 69,621 | 47,440 | -31.9% |
+| 2,048 keep-alive connections | 55,327 | 35,876 | -35.2% |
+| Proxied 1 MiB response | 85,074 | 56,367 | -33.7% |
+| WebSocket echo 1 KiB | 15,756 | 16,270 | +3.3% |
+| TLS 1.3 keep-alive, 1 KiB | 66,555 | 46,021 | -30.9% |
+| HTTP/2 over TLS, 1 KiB / 64 KiB / POST 1 KiB | 86,749 / 183,153 / 99,714 | 43,683 / 116,506 / 81,027 | -49.6% / -36.4% / -18.7% |
+| HTTP/3, fixed 1 KiB response | 69,815 | 43,889 | -37.1% |
+| TLS 1.3 full handshake (plus one request) | 1,737,119 | 1,726,260 | -0.6% |
+| Static file 1 KiB / 1 MiB | 32,752 / 80,993 | 37,672 / 114,588 | +15.0% / +41.5% (CPU of 1 MiB: -65% to -75%) |
 
 ## Request path and connections
 
@@ -217,6 +276,12 @@ Details: [connection scheduling](developer/PERF_6_4_CONNECTION_SCHEDULING.md).
 - **The default stays `work_stealing`.** Measured on a shared host, per-worker mode raises the request rate 4% to 58% and
   lowers p99 for most lanes with two or more workers, but loses rate with one worker (0.6x to 0.8x at 512 and 2,048
   busy connections). Use it with `listener_workers` of two or more and many busy keep-alive connections.
+- **`connection_scheduling = "auto"`** is `aged_per_worker` when `listener_workers` is 2 or more and `work_stealing`
+  with one or omitted, and accepts `connection_age_ms`. With two workers and 1 KiB proxied responses the aged order
+  measured 1.12x the rate at 64 connections, 0.95x at 512 and 0.88x at 2,048 busy connections, with a lower p99 of
+  the load at every size (0.55x to 0.97x); the paced probe connection saw 1.1x to 1.6x higher p99 at 64 connections.
+  That missed the flip criteria, so `auto` is a value to set, not the default. The mode in force is
+  `oxiroute_connection_scheduling_info{mode}`.
 - **HTTP/2 streams stay on their connection's worker** in per-worker mode (they used to run on Tokio's shared queue).
 - A slow handler delays the other connections of its worker (p99.9 is the delay itself, 203 to 211 ms in the slow-handler
   lane); work stealing hides that.
@@ -283,8 +348,12 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
 | `tls_profiles[].policy.key_exchange_groups` | backend default list (hybrid group preferred) | nonempty list of `x25519`, `secp256r1`, `secp384r1`, `x25519mlkem768`; hybrid-only needs `min_version` 1.3 | new generation |
 | `tls_handshake_threads` | one per 8 CPUs, 1 to 4 | 0 to 64 (`0`: handshakes on the workers) | new generation |
 | `http_fast_lane` | `true` | boolean | new connections of the new generation |
-| `connection_scheduling` | `work_stealing` | `work_stealing`, `aged_per_worker` | new generation |
-| `connection_age_ms` | adaptive: a multiple of the time of one pass over the ready queue, 1 to 3 passes (200 us to 1 s) | 1 to 1000 fixes it, only with `aged_per_worker` | new generation |
+| `tls_profiles[].policy.backend` | `openssl` | `openssl`, `rustls` (rustls rejects `cipher_list` and `dh_parameters_path`) | new generation |
+| `tls_profiles[].policy.ktls` | `auto` | `auto`, `off` | new generation (the probe runs per generation) |
+| `h2_initial_stream_window` | 1 MiB | 65535 to 16 MiB, `http` and `forward_http2` listeners | connections opened after the reload |
+| `h2_initial_connection_window` | 8 MiB | 65535 to 64 MiB, not below the stream window, same listeners | connections opened after the reload |
+| `connection_scheduling` | `work_stealing` | `work_stealing`, `aged_per_worker`, `auto` | new generation |
+| `connection_age_ms` | adaptive: a multiple of the time of one pass over the ready queue, 1 to 3 passes (200 us to 1 s) | 1 to 1000 fixes it, only with `aged_per_worker` or `auto` | new generation |
 | `worker_scaling` | `static` | `static`, `dynamic` (needs `aged_per_worker`) | new generation |
 | `min_active_workers` | 1 | 1 to `listener_workers`, only with `dynamic` | new generation |
 | `target_busy_percent` | 40 | 10 to 90, only with `dynamic` | new generation |
@@ -307,6 +376,32 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
 - `oxiroute_worker_scaling_info` (`mode`), and with `worker_scaling = dynamic` `oxiroute_worker_scaling_workers`,
   `oxiroute_worker_scaling_active_workers` and `oxiroute_worker_scaling_relocations_total` per listener runtime.
 
+## Memory of open connections
+
+Details: [connection memory](developer/PERF_6_5_CONNECTION_MEMORY.md). An idle TLS keep-alive connection is parked like a
+plain one (the stream can tell whether its socket is readable without decrypting, the handshake state is released, the
+coalescing buffer returns to a per-thread spare), and an idle WebSocket holds no body or head buffer. Resident memory
+per open idle connection at 10,000 connections: TLS 1.3 38.7 kB to 34.2 kB (-11.5%), WebSocket 49.3 kB to 35.8 kB
+(-27%), plain HTTP/1 about 12 kB (unchanged code path). `tls_h1_keepalive` costs 4% fewer instructions per request.
+`run.py --mem` now reports the open-connection figure and the figure after close separately.
+
+## HTTP/2 lane and windows
+
+Details: [HTTP/2 lane](developer/PERF_6_5_H2_LANE.md), [view API](developer/PERF_6_5_H2_VIEW_API.md),
+[receive windows](developer/PERF_6_4_H2_WINDOWS.md). The lane reads the decoded request head instead of building an
+`http` request, writes the response fields from the scanned origin head, and batches the responses of ready streams into
+one write (2.35 system calls per request instead of 3.09). Against the build before it: `h2_b1k_c4s16` 70.9k to 43.7k
+instructions (-38%), 64 KiB responses -17%, the classic path with the lane off -10%, a request with a body -4%. Larger
+receive windows cut the `WINDOW_UPDATE` frames of an upload from 64 to 2 per MiB and a 1 MiB POST by 13%.
+
+## Control plane
+
+Details: [control plane](developer/PERF_6_5_CONTROL_PLANE.md). Instructions per call at 1,000 servers: `/ready` 731k to
+28k to 36k, `/api/v1/listeners` 723k to 38k to 51k, `/servers` 13.1M to 7.0M, `/pools` 12.7M to 7.0M, `/monitoring`
+12.9M to 7.2M, `/topology` 92.8M to 6.9M, `oxiroute --output json server list` 56M to 13M. A registrar that shells out
+every few seconds pays about 21M client instructions per cycle with `--output json` instead of about 65M. The table
+output is unchanged.
+
 ## Fixes
 
 - With per-worker (non-stealing) runtimes, a replaced generation's workers left their runtime in thread-local state, so the
@@ -324,6 +419,11 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
 - A configuration whose `http3` service has a route with a retry budget, rescue, pool selection, affinity or queue
   class no longer validates; remove the setting (it had no effect on HTTP/3).
 - Restart or reload as usual. `http_fast_lane = false` returns every request to the classic path.
+- HTTP/2 listeners buffer up to 8 MiB of unread request data per connection (64 KiB before). Size `max_connections` with
+  that bound or lower `h2_initial_connection_window` on listeners that face many untrusted clients.
+- To use kernel TLS, load the `tls` module before the service starts (see the host requirements); nothing else changes
+  if you do not.
+- Scripts that parse `oxiroute --output json` by field order must not rely on the alphabetical order any more.
 - Operators who set `RUST_LOG`, `OXIROUTE_AUDIT_*` or `OXIROUTE_MANAGEMENT_TOKEN_FILE` keep working; set the options when
   convenient. Supervised workers do not inherit `RUST_LOG`: use `log_filter`.
 
@@ -332,5 +432,6 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
 `pingora-core`: the HTTP/1 connection-level front (`Http1Front`, the fast lane's hook), the parked idle wait and pooled
 request future, rendered response head functions, the raw response head read and raw request write, the HTTP/2 session
 ported onto `oxiroute-h2`, per-worker connection placement and `ServerConf::connection_age_ms`, the stream buffer
-accessors and the `sendfile` body write. `pingora-proxy`: the shared HTTP/1 connector and the borrowed request future.
-`pingora-runtime`: aged queues. See each crate's `README.oxiroute.md`.
+accessors and the `sendfile` body write. `pingora-proxy`: the shared HTTP/1 connector, the borrowed request future and the lane hooks of both protocols.
+`pingora-runtime`: aged queues. The `pingora-core` build script enables kernel TLS in the vendored OpenSSL, and an endpoint
+can hand accepted sockets to an application TLS acceptor (the rustls backend). See each crate's `README.oxiroute.md`.
