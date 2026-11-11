@@ -25,6 +25,7 @@ use std::pin::{pin, Pin};
 use std::task::{ready, Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::protocols::Stream;
 use crate::utils::chunk_pool::{self, CHUNK_BYTES};
 use crate::utils::BufRef;
 
@@ -513,6 +514,21 @@ impl BodyReader {
         Ok(body_ref.map(|body_ref| self.take_bytes(&body_ref, handover)))
     }
 
+    /// Waits until `stream` has something to read when the body is what the connection carries until it closes (an
+    /// upgraded connection, a response ended by the close). The body buffer is taken for the read that follows, not
+    /// before the wait, so a connection that waits for its next bytes holds none.
+    pub async fn wait_readable(&self, stream: &mut Stream) -> Result<()> {
+        if matches!(self.body_state, PS::UntilClose(_))
+            && self.owned_preread.is_none()
+            && self.rewind_buf_len == 0
+        {
+            std::future::poll_fn(|cx| stream.poll_read_ready(cx))
+                .await
+                .or_err(ReadError, "when waiting for the body")?;
+        }
+        Ok(())
+    }
+
     fn take_bytes(&mut self, body_ref: &BufRef, handover: bool) -> Bytes {
         if handover
             && body_ref.1 - body_ref.0 >= HANDOVER_MIN_BYTES
@@ -522,7 +538,9 @@ impl BodyReader {
             return chunk_pool::freeze(body_buf, body_ref.0, body_ref.1);
         }
         let bytes = Bytes::copy_from_slice(self.get_body(body_ref));
-        if self.body_done() && self.body_buf_overread.is_none() {
+        // A close-delimited body waits for its next bytes with no buffer, however long it takes.
+        let idle_next = matches!(self.body_state, PS::UntilClose(_));
+        if (self.body_done() || idle_next) && self.body_buf_overread.is_none() {
             self.release_body_buf();
         }
         bytes
@@ -2240,6 +2258,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_close_delimited_body_holds_no_buffer_between_small_reads() {
+        init_log();
+        let mut mock_io = Builder::new().read(b"abc").read(b"def").build();
+        let mut body_reader = BodyReader::new(true);
+        body_reader.init_close_delimited(b"");
+        for expected in [&b"abc"[..], b"def"] {
+            let read = body_reader
+                .read_body_bytes(&mut mock_io)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(&read[..], expected);
+            assert!(body_reader.body_buf.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_close_delimited_body_waits_for_its_bytes_before_it_takes_a_buffer() {
+        use crate::protocols::l4::stream::Stream as L4Stream;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+        init_log();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let mut stream: Stream = Box::new(L4Stream::from(listener.accept().await.unwrap().0));
+        let mut body_reader = BodyReader::new(true);
+        body_reader.init_close_delimited(b"");
+        body_reader.release_body_buf();
+        // A read that finds nothing is what tells the runtime the socket is not readable.
+        let mut probe = [0; 1];
+        assert!(futures::poll!(std::pin::pin!(stream.read(&mut probe))).is_pending());
+
+        let waiting = body_reader.wait_readable(&mut stream);
+        assert!(futures::poll!(std::pin::pin!(waiting)).is_pending());
+        assert!(body_reader.body_buf.is_none());
+
+        peer.write_all(b"ping").await.unwrap();
+        body_reader.wait_readable(&mut stream).await.unwrap();
+        let read = body_reader
+            .read_body_bytes(&mut stream)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&read[..], b"ping");
+        assert!(body_reader.body_buf.is_none());
+    }
+
+    #[tokio::test]
     async fn small_reads_are_copied_and_the_buffer_goes_back_when_the_body_ends() {
         init_log();
         let mut mock_io = Builder::new().read(b"abc").read(b"def").build();
@@ -2547,16 +2615,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(second, b"c"[..]);
-        let body_buf_ptr = body_reader.body_buf.as_ref().unwrap().as_ptr();
-        let body_buf_capacity = body_reader.body_buf.as_ref().unwrap().capacity();
+        // A close-delimited body waits for its next bytes with no buffer.
+        assert!(body_reader.body_buf.is_none());
         assert!(body_reader
             .read_body_bytes(&mut mock_io)
             .await
             .unwrap()
             .is_none());
-        let body_buf = body_reader.body_buf.as_ref().unwrap();
-        assert_eq!(body_buf.as_ptr(), body_buf_ptr);
-        assert_eq!(body_buf.capacity(), body_buf_capacity);
         assert_eq!(body_reader.body_state, ParseState::Complete(3));
     }
 

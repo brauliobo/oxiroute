@@ -692,6 +692,9 @@ impl HttpSession {
     async fn do_read_body_bytes(&mut self) -> Result<Option<Bytes>> {
         self.init_body_reader();
         self.body_reader
+            .wait_readable(&mut self.underlying_stream)
+            .await?;
+        self.body_reader
             .read_body_bytes(&mut self.underlying_stream)
             .await
     }
@@ -770,7 +773,8 @@ impl HttpSession {
     }
 
     fn keep_rendered_response_buf(&mut self, buf: BytesMut) {
-        if buf.capacity() <= RENDERED_RESPONSE_BUF_KEEP {
+        // An upgraded connection renders no other response head.
+        if buf.capacity() <= RENDERED_RESPONSE_BUF_KEEP && !self.upgraded {
             self.rendered_response_buf = buf;
         }
     }
