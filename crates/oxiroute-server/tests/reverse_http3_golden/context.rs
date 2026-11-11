@@ -94,10 +94,6 @@ impl Context {
         self.run_with(id, requests, None).await;
     }
 
-    pub async fn run_tolerant(&mut self, id: &str, requests: Vec<Req>, tolerance: Tolerance) {
-        self.run_with(id, requests, Some(tolerance)).await;
-    }
-
     async fn run_with(&mut self, id: &str, requests: Vec<Req>, tolerance: Option<Tolerance>) {
         let host = host(id);
         let mut hosts = vec![host.clone()];
@@ -124,7 +120,6 @@ impl Context {
             "duplicate case {id}"
         );
         eprintln!("case {id}");
-        let tolerance = tolerance.map(|tolerance| tolerance.with_steps(&steps));
         self.cases.push(Case {
             id: id.into(),
             hosts,

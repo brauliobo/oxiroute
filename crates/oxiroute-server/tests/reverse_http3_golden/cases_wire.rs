@@ -18,21 +18,8 @@ use crate::{
     },
 };
 
-const LENIENT: &str = "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted";
-const FRAME_UNEXPECTED: u64 = 0x105;
-const FRAME_ERROR: u64 = 0x106;
-const STREAM_CREATION_ERROR: u64 = 0x103;
-const CLOSED_CRITICAL_STREAM: u64 = 0x104;
-const ID_ERROR: u64 = 0x108;
-const SETTINGS_ERROR: u64 = 0x109;
-const MISSING_SETTINGS: u64 = 0x10a;
-
 pub fn ok_request(host: &str) -> Vec<u8> {
     headers(&raw::base(host, "/fixed/ok"))
-}
-
-fn lenient(code: u64) -> Option<Tolerance> {
-    Some(Tolerance::mandated(LENIENT, code))
 }
 
 /// Records the answer to the first exchange, then, if the connection survived, one ordinary request.
@@ -168,14 +155,7 @@ async fn frames(c: &mut Context) {
         trailers(),
     ]
     .concat();
-    request_case(
-        c,
-        id,
-        "HEADERS DATA HEADERS HEADERS",
-        &bytes,
-        lenient(FRAME_UNEXPECTED),
-    )
-    .await;
+    request_case(c, id, "HEADERS DATA HEADERS HEADERS", &bytes, None).await;
     let id = "wire/data-after-trailers";
     let bytes = [
         post(&host(id), "/fixed/ok", 1),
@@ -184,24 +164,10 @@ async fn frames(c: &mut Context) {
         data(b"y"),
     ]
     .concat();
-    request_case(
-        c,
-        id,
-        "HEADERS DATA HEADERS DATA",
-        &bytes,
-        lenient(FRAME_UNEXPECTED),
-    )
-    .await;
+    request_case(c, id, "HEADERS DATA HEADERS DATA", &bytes, None).await;
     let id = "wire/truncated-frame-at-the-end-of-the-stream";
     let bytes = [ok_request(&host(id)), vec![DATA as u8, 10, 1, 2]].concat();
-    request_case(
-        c,
-        id,
-        "HEADERS then a DATA frame cut short",
-        &bytes,
-        lenient(FRAME_ERROR),
-    )
-    .await;
+    request_case(c, id, "HEADERS then a DATA frame cut short", &bytes, None).await;
 }
 
 async fn framing_that_is_accepted(c: &mut Context) {
@@ -242,20 +208,12 @@ async fn framing_that_is_accepted(c: &mut Context) {
         data(b"c"),
     ]
     .concat();
-    let reason = "RFC 9114 7.2.1 allows empty DATA frames; the recorded implementation rejected the body with 400, the body \
-                  reaching the origin is accepted";
-    let delivered = json!({
-        "step": 0,
-        "outcome": { "status": 200, "headers": [["content-length", "9"], ["x-origin", "1"]], "body": "origin-ok" },
-        "origin": [{ "body": "abc", "headers": [["content-length", "3"]], "method": "POST", "uri": format!("https://{}/p/echo", host(id)) }],
-    });
-    let tolerance = Tolerance::new(reason).accept(delivered);
     request_case(
         c,
         id,
         "DATA of 2 bytes, an empty DATA, DATA of 1 byte",
         &empty,
-        Some(tolerance),
+        None,
     )
     .await;
     let id = "wire/trailers-without-data";
@@ -298,7 +256,7 @@ async fn control_stream(c: &mut Context) {
             "wire/settings-duplicate-identifier",
             "SETTINGS with identifier 0x21 twice",
             frame(SETTINGS, &[0x21, 0x01, 0x21, 0x02]),
-            lenient(SETTINGS_ERROR),
+            None,
         ),
         (
             "wire/goaway-id-increases",
@@ -310,13 +268,13 @@ async fn control_stream(c: &mut Context) {
             "wire/max-push-id-decreases",
             "SETTINGS MAX_PUSH_ID 8 then 4",
             two(frame(MAX_PUSH_ID, &[8]), frame(MAX_PUSH_ID, &[4])),
-            lenient(ID_ERROR),
+            None,
         ),
         (
             "wire/cancel-push-without-a-push-id-grant",
             "SETTINGS CANCEL_PUSH 0",
             two(frame(CANCEL_PUSH, &[0]), vec![]),
-            lenient(ID_ERROR),
+            None,
         ),
         (
             "wire/control-data-frame",
@@ -351,27 +309,25 @@ async fn control_stream(c: &mut Context) {
     let id = "wire/control-stream-without-settings";
     let raw = Raw::open_raw_control(&endpoint, address, &[]).await;
     let outcome = raw.exchange(&ok_request(&host(id))).await;
-    let reason = "serving requests before SETTINGS arrive is the server's choice (RFC 9114 6.2.1); closing with H3_MISSING_SETTINGS is accepted";
     conclude(
         c,
         id,
         "request while SETTINGS is missing",
         raw,
         outcome,
-        Some(Tolerance::mandated(reason, MISSING_SETTINGS)),
+        None,
     )
     .await;
     let id = "wire/no-control-stream";
     let raw = Raw::without_control(&endpoint, address).await;
     let outcome = raw.exchange(&ok_request(&host(id))).await;
-    let reason = "when a server notices that no control stream was opened is its choice (RFC 9114 6.2.1); closing with H3_MISSING_SETTINGS is accepted";
     conclude(
         c,
         id,
         "request without a control stream",
         raw,
         outcome,
-        Some(Tolerance::mandated(reason, MISSING_SETTINGS)),
+        None,
     )
     .await;
     control_stream_endings(c).await;
@@ -402,14 +358,13 @@ async fn control_stream_endings(c: &mut Context) {
         .reset(0u32.into())
         .expect("reset control stream");
     let outcome = raw.closed(raw::CLOSE_WAIT).await;
-    let tolerance = lenient(CLOSED_CRITICAL_STREAM);
     conclude(
         c,
         "wire/control-stream-is-reset",
         "RESET_STREAM on the control stream",
         raw,
         outcome,
-        tolerance,
+        None,
     )
     .await;
 }
@@ -423,7 +378,7 @@ async fn unidirectional_streams(c: &mut Context) {
             0x01,
             vec![0],
             1,
-            lenient(STREAM_CREATION_ERROR),
+            None,
         ),
         (
             "wire/second-control-stream",
@@ -455,7 +410,7 @@ async fn unidirectional_streams(c: &mut Context) {
             0x03,
             vec![0x84],
             1,
-            lenient(0x202),
+            None,
         ),
         (
             "wire/qpack-insert-count-increment-for-nothing",
@@ -463,7 +418,7 @@ async fn unidirectional_streams(c: &mut Context) {
             0x03,
             vec![0x01],
             1,
-            lenient(0x202),
+            None,
         ),
         (
             "wire/qpack-set-capacity-above-the-limit",
@@ -471,7 +426,7 @@ async fn unidirectional_streams(c: &mut Context) {
             0x02,
             vec![0x3f, 0xbd, 0x01],
             1,
-            lenient(0x201),
+            None,
         ),
     ];
     for (id, description, kind, bytes, count, tolerance) in cases {
@@ -532,16 +487,13 @@ async fn qpack(c: &mut Context) {
     let encoder = raw.uni(0x02, &insert).await;
     sleep(Duration::from_millis(100)).await;
     let outcome = raw.exchange(&dynamic_reference_request(&host(id), 2)).await;
-    let reason = "a dynamic table is optional (RFC 9204 3.2): a server without one closes with QPACK_ENCODER_STREAM_ERROR for the \
-                  capacity instruction or QPACK_DECOMPRESSION_FAILED for the reference";
-    let tolerance = Tolerance::mandated(reason, 0x201);
     conclude(
         c,
         id,
         "table capacity 220, one insert, one reference",
         raw,
         outcome,
-        Some(tolerance),
+        None,
     )
     .await;
     drop(encoder);
@@ -567,7 +519,7 @@ async fn qpack(c: &mut Context) {
         "Huffman string with invalid padding",
         raw,
         outcome,
-        lenient(0x200),
+        None,
     )
     .await;
 }
@@ -615,9 +567,5 @@ async fn stream_lifecycle(c: &mut Context) {
     let id = "wire/stream-finished-without-a-request";
     let raw = Raw::open(&endpoint, address).await;
     let outcome = raw.exchange(&[]).await;
-    let reason = "a request stream that ends before any request: the server aborts it or ends its side (RFC 9114 4.1)";
-    let tolerance = Tolerance::new(reason)
-        .outcome(0, json!({ "stream_reset": 0x10d }))
-        .outcome(0, json!({ "finished_without_response": true }));
-    conclude(c, id, "FIN with no frames", raw, outcome, Some(tolerance)).await;
+    conclude(c, id, "FIN with no frames", raw, outcome, None).await;
 }

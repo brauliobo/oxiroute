@@ -22,9 +22,9 @@
 //! - Record: `OXIROUTE_INTERNAL_TEST_RECORD_GOLDEN=1` rewrites the fixture from the current implementation;
 //!   `OXIROUTE_INTERNAL_TEST_RECORD_CASES=id1,id2,stats` re-records only the listed cases (and the counters when
 //!   `stats` is listed), keeping the `deviation` note of each: a deliberate, reviewable change.
-//! - A case with `tolerance` may legitimately differ where the RFCs leave the choice open: its steps
-//!   accept the listed `accept` alternatives (each overrides keys of the recorded step) and its access
-//!   log lines are not compared.
+//! - A case with a `deviation` note is a recorded difference from the `h3` crate path that RFC 9114/9204 or the
+//!   behaviour of that path justifies; it replays exactly like any other case.
+//! - A case with `tolerance` is compared without its access log lines, whose content depends on timing.
 
 #[path = "../support/fixtures.rs"]
 mod fixture_support;

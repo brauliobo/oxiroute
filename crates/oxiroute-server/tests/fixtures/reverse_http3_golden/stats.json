@@ -4,9 +4,9 @@
       "accepted_connections": "167",
       "active_connections": 0,
       "bytes_received": "69",
-      "bytes_sent": "410423",
+      "bytes_sent": "410369",
       "cache": {"admissions":"27","evictions":"0","hits":"16","misses":"34"},
-      "http_operations": {"cancelled":"0","client_error":"51","internal_error":"0","server_error":"23","success":"223","timeout":"0","upstream_error":"0"},
+      "http_operations": {"cancelled":"0","client_error":"51","internal_error":"0","server_error":"23","success":"217","timeout":"0","upstream_error":"0"},
       "rejected_connections": "0"
     },
     "after_fixed_responses": {
@@ -22,9 +22,9 @@
       "accepted_connections": "145",
       "active_connections": 0,
       "bytes_received": "66",
-      "bytes_sent": "205362",
+      "bytes_sent": "205308",
       "cache": null,
-      "http_operations": {"cancelled":"0","client_error":"44","internal_error":"0","server_error":"22","success":"167","timeout":"0","upstream_error":"0"},
+      "http_operations": {"cancelled":"0","client_error":"44","internal_error":"0","server_error":"22","success":"161","timeout":"0","upstream_error":"0"},
       "rejected_connections": "0"
     },
     "after_static_files": {

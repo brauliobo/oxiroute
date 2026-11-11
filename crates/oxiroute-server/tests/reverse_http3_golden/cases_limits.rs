@@ -170,45 +170,29 @@ fn sized(host: &str, size: usize) -> Vec<u8> {
 }
 
 async fn header_sections(c: &mut Context) {
-    let too_large = || {
-        Tolerance::new("the body and headers of a 431 answer are the server's own")
-            .ignore("steps[0].outcome.body")
-            .ignore("steps[0].outcome.headers")
-    };
     let id = "header-section/h3-client-20000-byte-field";
+    // the first exchange makes sure the client has seen the advertised SETTINGS_MAX_FIELD_SECTION_SIZE
     let long = Req::get("/fixed/ok").header("x-padding", &"x".repeat(20_000));
-    let reason = "the client refuses locally once it has seen the advertised SETTINGS_MAX_FIELD_SECTION_SIZE; otherwise the server answers 431";
-    let tolerance = Tolerance::new(reason)
-        .outcome(0, json!({ "status": 431, "headers": [], "body": "" }))
-        .ignore("steps[0].outcome.body")
-        .ignore("steps[0].outcome.headers");
-    c.run_tolerant(id, vec![long], tolerance).await;
+    c.run(id, vec![Req::get("/fixed/ok"), long]).await;
     for size in [16_000, 17_000, 20_000, 70_000] {
         let id = format!("header-section/size-{size}");
-        let tolerance = (size > SECTION_LIMIT).then(too_large);
         request_case(
             c,
             &id,
             &format!("field section of {size} bytes"),
             &sized(&host(&id), size),
-            tolerance,
+            None,
         )
         .await;
     }
     for size in [SECTION_LIMIT, SECTION_LIMIT + 1] {
         let id = format!("header-section/boundary-{size}");
-        let reason = "a field section up to the advertised size is accepted and a larger one may be answered 431 (RFC 9114 4.2.2)";
-        let alternative = json!({ "status": if size == SECTION_LIMIT { 431 } else { 200 }, "headers": [], "body": "" });
-        let tolerance = Tolerance::new(reason)
-            .outcome(0, alternative)
-            .ignore("steps[0].outcome.body")
-            .ignore("steps[0].outcome.headers");
         request_case(
             c,
             &id,
             &format!("field section of {size} bytes"),
             &sized(&host(&id), size),
-            Some(tolerance),
+            None,
         )
         .await;
     }
@@ -218,23 +202,10 @@ async fn header_sections(c: &mut Context) {
         .into_iter()
         .chain(extra)
         .collect();
-    request_case(
-        c,
-        id,
-        "500 small fields",
-        &raw::headers(&fields),
-        Some(too_large()),
-    )
-    .await;
-}
-
-fn malformed(reason: &str) -> Option<Tolerance> {
-    let reset = json!({ "step": 0, "outcome": { "stream_reset": 0x10e }, "origin": null, "connection_after": "open" });
-    Some(Tolerance::new(reason).accept(reset))
+    request_case(c, id, "500 small fields", &raw::headers(&fields), None).await;
 }
 
 async fn malformed_requests(c: &mut Context) {
-    let reason = "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform";
     let strings = |fields: &[(&str, &str)]| {
         fields
             .iter()
@@ -347,7 +318,7 @@ async fn malformed_requests(c: &mut Context) {
             .into_iter()
             .map(|(n, v)| (n, if v == "m.test" { host(&id) } else { v }))
             .collect();
-        request_case(c, &id, name, &raw::headers(&fields), malformed(reason)).await;
+        request_case(c, &id, name, &raw::headers(&fields), None).await;
     }
     let id = "malformed/host-field-instead-of-authority";
     let fields = strings(&[
@@ -369,16 +340,12 @@ async fn malformed_requests(c: &mut Context) {
         raw::base(&host(id), "/fixed/ok"),
         &[("host", "elsewhere.test")],
     );
-    let differing = "differing :authority and host fields are unspecified (RFC 9114 4.3.1): the request is served or reset";
-    let tolerance = Tolerance::new(differing)
-        .ignore("steps[0].outcome")
-        .ignore("steps[0].origin");
     request_case(
         c,
         id,
         ":authority and host disagree",
         &raw::headers(&fields),
-        Some(tolerance),
+        None,
     )
     .await;
     let id = "malformed/options-asterisk";
@@ -388,14 +355,7 @@ async fn malformed_requests(c: &mut Context) {
         (":path", "*"),
         (":authority", &host(id)),
     ]);
-    request_case(
-        c,
-        id,
-        "OPTIONS *",
-        &raw::headers(&fields),
-        malformed(reason),
-    )
-    .await;
+    request_case(c, id, "OPTIONS *", &raw::headers(&fields), None).await;
     let id = "malformed/connect-request";
     let fields = strings(&[(":method", "CONNECT"), (":authority", &host(id))]);
     request_case(
@@ -403,7 +363,7 @@ async fn malformed_requests(c: &mut Context) {
         id,
         "CONNECT without scheme and path",
         &raw::headers(&fields),
-        malformed(reason),
+        None,
     )
     .await;
 }
@@ -508,25 +468,18 @@ async fn connection_limit(c: &mut Context) {
     for raw in held {
         raw.finish();
     }
-    let reason = "the reaction to a connection over the listener limit is a server choice (RFC 9114 8.1 lists H3_NO_ERROR and H3_EXCESSIVE_LOAD)";
-    let tolerance = Tolerance::new(reason).outcome(1, json!({ "connection_closed": 0x107 }));
-    c.record(id, vec![host(id)], recorded, Some(tolerance));
+    c.record(id, vec![host(id)], recorded, None);
 }
 
 /// A response whose headers exceed the bound cannot be sent: the exchange ends without one.
 async fn unsendable_response(c: &mut Context) {
     let id = "fixed/oversized-response-header";
-    let tolerance = Tolerance::new(
-        "a response that cannot be sent: which error code the stream is reset with is not mandated",
-    )
-    .outcome(0, json!({ "stream_reset": 0x102 }))
-    .outcome(0, json!({ "stream_reset": 0x100 }));
     request_case(
         c,
         id,
         "GET /fixed/oversized-header",
         &raw::headers(&raw::base(&host(id), "/fixed/oversized-header")),
-        Some(tolerance),
+        None,
     )
     .await;
 }
