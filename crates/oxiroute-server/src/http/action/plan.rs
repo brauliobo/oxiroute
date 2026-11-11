@@ -125,6 +125,17 @@ pub(crate) enum ResponseHeaderMutationPlan {
 }
 
 impl ResponseHeaderMutationPlan {
+    /// Whether the mutation applies to a response with `status`: `add_header` without `always` skips the
+    /// statuses nginx does.
+    pub(crate) fn applies(&self, status: u16) -> bool {
+        match self {
+            Self::Set { always, .. } | Self::Add { always, .. } => {
+                *always || nginx_add_header_status(status)
+            }
+            Self::Remove { .. } => true,
+        }
+    }
+
     pub(crate) fn compile(mutation: &HttpResponseHeaderMutation) -> Self {
         match mutation {
             HttpResponseHeaderMutation::Set {

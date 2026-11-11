@@ -1,6 +1,7 @@
 //! What a route compiles to for the fast lane: the lane serves a request only when its route is plain enough for the
 //! lane to reproduce the classic path exactly, and the route says so once, when its generation is built.
 
+use super::rules;
 use crate::http::action::{
     HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RouteAccess, RoutePolicyPlan,
 };
@@ -12,8 +13,8 @@ pub(crate) enum LaneRoute {
     Classic,
     /// A fixed response written from a rendered head.
     Direct,
-    /// A request without a body forwarded as it is to a plain HTTP/1.1 server of a pool: no header rules, no
-    /// retries, no cache, no rewriting.
+    /// A request without a body forwarded to an HTTP/1.1 server of a pool, with header rules the codec can apply:
+    /// no retries, no cache, no rewriting.
     Proxy,
 }
 
@@ -41,14 +42,13 @@ impl LaneRoute {
 
 fn forwards_plainly(proxy: &ProxyActionPlan, route: &RoutePolicyPlan) -> bool {
     let policy: &ProxyPolicyPlan = &proxy.policy;
-    proxy.pool.is_plain_http1()
+    proxy.pool.is_http1_only()
         && proxy.select.is_none()
         && proxy.rescue_pool.is_none()
         && !route.request_buffering
         && !route.response_buffering
         && policy.upstream_path_rewrite.is_none()
-        && policy.request_headers.is_empty()
-        && policy.response_headers.is_empty()
+        && rules::supported(policy)
         && policy.cookie_path_rewrites.is_empty()
         && policy.cookie_attributes.is_empty()
         && policy.max_retries == 0

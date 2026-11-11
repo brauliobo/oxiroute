@@ -237,11 +237,11 @@ async fn pingora_join_bounds_include_inserted_separators() {
         .unwrap();
 
     assert_eq!(
-        crate::http::policy::join_header_values(&session.req_header().headers, &name, 5),
+        crate::http::policy::IncomingHeaders::joined(&session.req_header().headers, &name, 5),
         Ok(Some(b"abc, ".to_vec()))
     );
     assert_eq!(
-        crate::http::policy::join_header_values(&session.req_header().headers, &name, 4),
+        crate::http::policy::IncomingHeaders::joined(&session.req_header().headers, &name, 4),
         Err(RequestPolicyError::SourceTooLarge)
     );
 }
