@@ -523,14 +523,23 @@
       ]
     },
     {
-      "access_log": ["h3 web POST 502"],
-      "id": "retry/post-is-not-replayed",
+      "access_log": ["h3 web POST 200"],
+      "deviation": "a request that never left because the connection was refused may be sent again whatever its method (the HTTP/1.1 and HTTP/2 origin paths do the same); the h3 crate path answered 502",
+      "id": "retry/post-fails-over-after-a-refused-connection",
       "steps": [
         {
           "connection_after": "open",
-          "outcome": {"body":"HTTP/3 upstream request failed\n","headers":[["content-length","31"]],"status":502},
+          "origin": [
+            {
+              "body": "body",
+              "headers": [["content-length","4"]],
+              "method": "POST",
+              "uri": "https://post-fails-over-after-a-refused-connection.retry.test/failover/x"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
           "refused": 1,
-          "request": "POST https://post-is-not-replayed.retry.test/failover/x"
+          "request": "POST https://post-fails-over-after-a-refused-connection.retry.test/failover/x"
         }
       ]
     },
