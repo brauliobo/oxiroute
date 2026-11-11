@@ -252,3 +252,68 @@ async fn test_a_unix_stream_has_no_tcp_socket() {
     let stream: Stream = near.into();
     assert!(stream.tcp_socket().is_none());
 }
+
+#[tokio::test]
+async fn try_read_now_takes_what_the_socket_holds_without_the_driver() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let (accepted, _) = listener.accept().await.unwrap();
+    let mut stream: Stream = accepted.into();
+    let mut buffer = [0u8; 16];
+
+    // nothing yet: no bytes and no waiting
+    assert_eq!(stream.try_read_now(&mut buffer).unwrap(), None);
+
+    // the socket has no readiness event for the bytes yet; they are read all the same
+    client.write_all(b"hello").await.unwrap();
+    for _ in 0..100 {
+        if let Some(count) = stream.try_read_now(&mut buffer).unwrap() {
+            assert_eq!(&buffer[..count], b"hello");
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(stream.try_read_now(&mut buffer).unwrap(), None);
+
+    // the stream reads on as usual afterwards
+    client.write_all(b"world").await.unwrap();
+    let mut rest = [0u8; 5];
+    stream.read_exact(&mut rest).await.unwrap();
+    assert_eq!(&rest, b"world");
+
+    // the end of the stream is a zero-length read
+    drop(client);
+    for _ in 0..100 {
+        if let Some(count) = stream.try_read_now(&mut buffer).unwrap() {
+            assert_eq!(count, 0);
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("the close was not seen");
+}
+
+#[tokio::test]
+async fn try_read_now_leaves_bytes_put_back_to_the_reader() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let (accepted, _) = listener.accept().await.unwrap();
+    let mut stream: Stream = accepted.into();
+    stream.rewind(b"early");
+    client.write_all(b"later").await.unwrap();
+    let mut buffer = [0u8; 16];
+
+    assert_eq!(stream.try_read_now(&mut buffer).unwrap(), None);
+    let mut head = [0u8; 5];
+    stream.read_exact(&mut head).await.unwrap();
+    assert_eq!(&head, b"early");
+}
+
+#[tokio::test]
+async fn try_read_now_is_not_offered_by_a_unix_stream() {
+    let (left, _right) = tokio::net::UnixStream::pair().unwrap();
+    let mut stream: Stream = left.into();
+    assert_eq!(stream.try_read_now(&mut [0u8; 4]).unwrap(), None);
+}

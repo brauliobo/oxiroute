@@ -18,7 +18,7 @@
 //! Each [Service] can be configured with custom application logic (e.g. an `HTTPProxy`) and one or
 //! more endpoints to listen to.
 
-use crate::apps::ServerApp;
+use crate::apps::{ConnectionAdmission, ServerApp};
 use crate::listeners::tls::TlsSettings;
 #[cfg(feature = "connection_filter")]
 use crate::listeners::AcceptAllFilter;
@@ -33,6 +33,7 @@ use crate::server::{RuntimeOpts, ShutdownWatch};
 use crate::services::{Service as ServiceTrait, ServiceReadyNotifier};
 
 use async_trait::async_trait;
+use futures::FutureExt;
 use log::{debug, error, info};
 use pingora_error::Result;
 use pingora_runtime::{current_handle, spawn_connection_as};
@@ -204,20 +205,42 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
         }
     }
 
-    /// One accepted connection: its handshake, then its requests. The handshake future is dropped before the first
-    /// request is read: held as a temporary of a `match` it would keep its state (8 KiB for TLS) for the whole life
-    /// of the connection.
-    async fn serve_connection(io: UninitializedStream, app: Arc<A>, shutdown: ShutdownWatch) {
-        let peer_addr = io.peer_addr();
-        let handshake = timeout(app.handshake_timeout(), Box::pin(io.handshake())).await;
-        match handshake {
-            Ok(Ok(io)) => Self::handle_event(io, app, shutdown).await,
-            Ok(Err(e)) => match peer_addr {
-                Some(addr) => error!("Downstream handshake error from {addr}: {e}"),
-                None => error!("Downstream handshake error: {e}"),
-            },
-            Err(_) => error!("Downstream handshake timeout"),
-        }
+    /// Runs the connection of an accepted socket: the transport handshake (a plain socket has none), then the
+    /// application.
+    async fn serve_accepted(io: UninitializedStream, app: Arc<A>, shutdown: ShutdownWatch) {
+        let io = match io.ready() {
+            Ok(Ok(io)) => io,
+            Ok(Err(e)) => return error!("Downstream handshake error: {e}"),
+            Err(io) => {
+                let peer_addr = io.peer_addr();
+                match timeout(app.handshake_timeout(), Box::pin(io.handshake())).await {
+                    Ok(Ok(io)) => io,
+                    Ok(Err(e)) => {
+                        // TODO: Maybe IOApp trait needs a fn to handle/filter out this error
+                        return if let Some(addr) = peer_addr {
+                            error!("Downstream handshake error from {}: {e}", addr);
+                        } else {
+                            error!("Downstream handshake error: {e}");
+                        };
+                    }
+                    Err(_) => return error!("Downstream handshake timeout"),
+                }
+            }
+        };
+        Self::handle_event(io, app, shutdown).await;
+    }
+
+    fn spawn_accepted(
+        mut io: UninitializedStream,
+        admission: ConnectionAdmission,
+        app: &Arc<A>,
+        shutdown: &ShutdownWatch,
+    ) {
+        io.hold_admission(admission);
+        spawn_connection_as(
+            !io.is_tls(),
+            Self::serve_accepted(io, app.clone(), shutdown.clone()),
+        );
     }
 
     async fn run_endpoint(
@@ -250,56 +273,63 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                 let Some(ownership) = participant.claim() else {
                     continue;
                 };
-                tokio::select! {
-                    biased;
-                    shutdown_signal = shutdown.changed() => {
-                        drop(ownership);
-                        match shutdown_signal {
-                            Ok(()) => {
-                                if !*shutdown.borrow() {
+                // A connection already waiting in the kernel's queue is taken without registering on the gate
+                // and shutdown signals, which only matter while the accept would block (a gate change is seen
+                // at the top of the loop, a pending shutdown signal here).
+                let ready = if matches!(shutdown.has_changed(), Ok(false)) {
+                    stack.accept().now_or_never()
+                } else {
+                    None
+                };
+                let accepted = match ready {
+                    Some(accepted) => accepted,
+                    None => tokio::select! {
+                        biased;
+                        shutdown_signal = shutdown.changed() => {
+                            drop(ownership);
+                            match shutdown_signal {
+                                Ok(()) => {
+                                    if !*shutdown.borrow() {
+                                        continue;
+                                    }
+                                    info!("Shutting down {}", stack.as_str());
+                                    break;
+                                }
+                                Err(e) => {
+                                    error!("shutdown_signal error {e}");
+                                    break;
+                                }
+                            }
+                        }
+                        changed = participant.changed() => {
+                            drop(ownership);
+                            match changed {
+                                Ok(state) => {
+                                    if !state.accepting {
+                                        participant.acknowledge(state.epoch);
+                                    }
                                     continue;
                                 }
-                                info!("Shutting down {}", stack.as_str());
-                                break;
-                            }
-                            Err(e) => {
-                                error!("shutdown_signal error {e}");
-                                break;
-                            }
-                        }
-                    }
-                    changed = participant.changed() => {
-                        drop(ownership);
-                        match changed {
-                            Ok(state) => {
-                                if !state.accepting {
-                                    participant.acknowledge(state.epoch);
+                                Err(error) => {
+                                    error!("accept gate error {error}");
+                                    break;
                                 }
-                                continue;
-                            }
-                            Err(error) => {
-                                error!("accept gate error {error}");
-                                break;
                             }
                         }
+                        accepted = stack.accept() => accepted,
+                    },
+                };
+                let admission = app_logic.admit_owned_connection();
+                drop(ownership);
+                let Some(admission) = admission else {
+                    continue;
+                };
+                match accepted {
+                    Ok(io) => {
+                        Self::spawn_accepted(io, admission, &app_logic, &shutdown);
+                        continue;
                     }
-                    new_io = stack.accept() => {
-                        let admission = app_logic.admit_owned_connection();
-                        drop(ownership);
-                        let Some(admission) = admission else {
-                            continue;
-                        };
-                        match new_io {
-                            Ok(mut io) => {
-                                io.hold_admission(admission);
-                                let app = app_logic.clone();
-                                let shutdown = shutdown.clone();
-                                spawn_connection_as(!io.is_tls(), Self::serve_connection(io, app, shutdown));
-                                continue;
-                            }
-                            Err(error) => Err(error),
-                        }
-                    }
+                    Err(error) => Err(error),
                 }
             } else {
                 tokio::select! { // TODO: consider biased for perf reason?
@@ -323,14 +353,11 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                 }
             };
             match new_io {
-                Ok(mut io) => {
+                Ok(io) => {
                     let Some(admission) = app_logic.admit_connection() else {
                         continue;
                     };
-                    io.hold_admission(admission);
-                    let app = app_logic.clone();
-                    let shutdown = shutdown.clone();
-                    spawn_connection_as(!io.is_tls(), Self::serve_connection(io, app, shutdown));
+                    Self::spawn_accepted(io, admission, &app_logic, &shutdown);
                 }
                 Err(e) => {
                     error!("Accept() failed {e}");

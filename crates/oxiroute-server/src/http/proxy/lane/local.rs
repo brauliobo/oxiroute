@@ -121,7 +121,7 @@ impl LaneFront {
         if sent && connection.will_keepalive() {
             return Served::Next(ended);
         }
-        let _ = stream.shutdown().await;
+        super::end_connection(stream).await;
         Served::Close
     }
 

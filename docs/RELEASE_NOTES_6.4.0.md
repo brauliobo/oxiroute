@@ -205,6 +205,12 @@ Details: [fast lane](developer/PERF_6_4_REQUEST_PIPELINE_IMPL.md), [fast lane co
 - An idle HTTP/1 keep-alive connection awaits readiness of its socket, the shutdown watch and the keep-alive timeout, and
   builds its session when the next request arrives. The request future lives in a block the thread keeps for the next
   request, and the write buffer is taken from a per-thread pool when a response is staged.
+- New plain connections skip the handshake future and its timer and read their first request at once on accept (a
+  non-blocking `recv` right after accept; a miss falls back to the readiness wait). The accept loop takes a connection
+  that is already waiting before it arms its shutdown and gate watchers, plain TCP no longer calls `shutdown` before the
+  close that follows (TLS still does), and the receive-timestamp buffer is allocated only when timestamps are enabled.
+  About 2% fewer instructions per new connection. Details: [connect path](developer/PERF_6_4_CONNECT_PATH.md).
+- A plain connection that fails before its first request is logged without the peer address.
 
 ## TLS and HTTP/2
 
@@ -466,6 +472,6 @@ table of instructions per request. CI runs the offline harness checks (`benchmar
 `pingora-core`: the HTTP/1 connection-level front (`Http1Front`, the fast lane's hook), the parked idle wait and pooled
 request future, rendered response head functions, the raw response head read and raw request write, the HTTP/2 session
 ported onto `oxiroute-h2`, per-worker connection placement and `ServerConf::connection_age_ms`, the stream buffer
-accessors and the `sendfile` body write. `pingora-proxy`: the shared HTTP/1 connector, the borrowed request future and the lane hooks of both protocols.
+accessors, the `sendfile` body write, the plain-connection `ready` path, `Peek::try_read_now` and the accept fast path. `pingora-proxy`: the shared HTTP/1 connector, the borrowed request future and the lane hooks of both protocols.
 `pingora-runtime`: aged queues. The `pingora-core` build script enables kernel TLS in the vendored OpenSSL, and an endpoint
 can hand accepted sockets to an application TLS acceptor (the rustls backend). See each crate's `README.oxiroute.md`.

@@ -6,6 +6,7 @@ use std::cell::RefCell;
 
 use bytes::BytesMut;
 use oxiroute_h1_head::{RequestHead, ResponseHead};
+use pingora::protocols::Stream;
 
 const READ_CAPACITY: usize = 8 * 1024;
 /// What one read of an upload takes from the client: a request body larger than the head's read buffer is read in
@@ -24,6 +25,27 @@ thread_local! {
     static RESPONSES: RefCell<Vec<Box<ResponseHead>>> = const { RefCell::new(Vec::new()) };
     static WRITE: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
     static UPLOADS: RefCell<Vec<BytesMut>> = const { RefCell::new(Vec::new()) };
+    // Where a new connection's request is read before it is known to be there: initialised once, so an empty read
+    // costs no buffer.
+    static ARRIVAL: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The bytes a new connection holds already, read at once. The I/O driver has no readiness event for a connection that
+/// was just accepted, so waiting for one parks the task although the request is usually in the socket. Nothing is
+/// read when the socket is empty, the peer is gone or the transport cannot say; the wait that follows reports those.
+pub(in crate::http::proxy) fn read_arrived(stream: &mut Stream) -> Option<BytesMut> {
+    ARRIVAL.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        if scratch.is_empty() {
+            scratch.resize(READ_CAPACITY, 0);
+        }
+        let Ok(Some(count @ 1..)) = stream.try_read_now(&mut scratch) else {
+            return None;
+        };
+        let mut buffer = take_read();
+        buffer.extend_from_slice(&scratch[..count]);
+        Some(buffer)
+    })
 }
 
 pub(in crate::http::proxy) fn take_read() -> BytesMut {
