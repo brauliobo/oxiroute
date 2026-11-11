@@ -39,7 +39,10 @@ use pingora::{
     protocols::Stream,
     server::ShutdownWatch,
 };
-use tokio::{io::AsyncReadExt as _, sync::Notify};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    sync::Notify,
+};
 
 use timing::within;
 
@@ -93,6 +96,16 @@ pub(crate) struct LaneFront {
     /// Time a response write may take before the connection is given up: the least of the service deadline and
     /// the downstream timeouts.
     pub(in crate::http::proxy) write_budget: Duration,
+}
+
+/// Ends a connection after its last response. TLS says goodbye; a plain socket only flushes, because the close that
+/// follows sends the FIN after the queued bytes, as a `shutdown` before it would have.
+pub(in crate::http::proxy) async fn end_connection(stream: &mut Stream) {
+    let _ = if stream.get_ssl().is_some() {
+        stream.shutdown().await
+    } else {
+        stream.flush().await
+    };
 }
 
 enum Served {
@@ -165,8 +178,12 @@ impl LaneFront {
         stopped: Pin<&mut impl Future<Output = ()>>,
     ) -> Option<BytesMut> {
         // Between two requests nothing of the connection is parked: it may move to a lighter worker (worker_scaling).
-        if connection.is_reused() && relocate_idle_connection(stream).await.is_err() {
-            return None;
+        if connection.is_reused() {
+            if relocate_idle_connection(stream).await.is_err() {
+                return None;
+            }
+        } else if let Some(buffer) = buffers::read_arrived(stream) {
+            return Some(buffer);
         }
         let read = async {
             poll_fn(|cx| stream.poll_read_ready(cx)).await.ok()?;

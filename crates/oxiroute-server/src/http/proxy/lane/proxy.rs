@@ -229,7 +229,7 @@ impl super::LaneFront {
         if error.is_none() && connection.will_keepalive() {
             return Served::Next(ctx.now);
         }
-        let _ = stream.shutdown().await;
+        super::end_connection(stream).await;
         Served::Close
     }
 
