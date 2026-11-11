@@ -1,37 +1,12 @@
 //! The body on the stream: flow control, the wait for the client's window bounded by the write timeout, and the
 //! client's departure noticed while the lane waits for the origin.
 
-use std::{
-    future::{Future, poll_fn},
-    pin::Pin,
-    task::Poll,
-    time::Duration,
-};
+use std::{future::poll_fn, time::Duration};
 
 use bytes::Bytes;
 use pingora::{Error, ErrorType, protocols::http::v2::server::H2Stream};
-use tokio::time::{Sleep, sleep};
 
-/// The work did not finish within its time.
-struct Expired;
-
-/// Runs `work` for at most `limit`. The timer is armed the first time `work` cannot go on, so work that does not
-/// wait (a window that has room) never touches the timer wheel.
-async fn within_for<F: Future>(limit: Option<Duration>, work: F) -> Result<F::Output, Expired> {
-    let mut work = std::pin::pin!(work);
-    let mut timer: Option<Pin<Box<Sleep>>> = None;
-    poll_fn(|cx| {
-        if let Poll::Ready(output) = work.as_mut().poll(cx) {
-            return Poll::Ready(Ok(output));
-        }
-        let Some(limit) = limit else {
-            return Poll::Pending;
-        };
-        let timer = timer.get_or_insert_with(|| Box::pin(sleep(limit)));
-        timer.as_mut().poll(cx).map(|()| Err(Expired))
-    })
-    .await
-}
+use crate::http::proxy::lane::timing::{Expired, within_for};
 
 async fn reserve_and_send(
     stream: &mut H2Stream,
@@ -91,7 +66,7 @@ pub(super) fn finish(stream: &mut H2Stream) -> Result<(), Box<Error>> {
 
 /// Resolves when the client reset the stream or the connection closed: the error the classic session raises when
 /// it waits for the downstream to go away.
-pub(super) async fn client_left(stream: &mut H2Stream) -> Box<Error> {
+pub(super) async fn client_left(stream: &H2Stream) -> Box<Error> {
     let error = match poll_fn(|cx| stream.poll_reset(cx)).await {
         Ok(reason) => Error::explain(
             ErrorType::H2Error,

@@ -13,7 +13,10 @@ use pingora::{
     Error, ErrorType,
     connectors::http::v1::Connector,
     http::ResponseHeader,
-    protocols::http::{v1::client::HttpSession, v2::server::H2Stream},
+    protocols::http::{
+        v1::client::{FastFraming, HttpSession},
+        v2::server::H2Stream,
+    },
     upstreams::peer::Peer as _,
 };
 
@@ -21,7 +24,9 @@ use super::{
     claim::Plan,
     fast, head, relay,
     response::{self, Head},
+    upload::{Event, Upload},
 };
+use crate::http::proxy::lane::render::SMALL_BODY;
 use crate::{
     HealthFailure,
     http::{
@@ -96,6 +101,14 @@ fn begin(front: &LaneFront, plan: &Plan) -> Box<HttpRequestContext> {
     })
 }
 
+/// What an attempt that failed has done, for the retry policy: a body that began to flow is not sent again.
+fn exchanged(progress: &Progress) -> Exchanged {
+    Exchanged {
+        body_replayable: progress.received == 0,
+        response_retryable: true,
+    }
+}
+
 /// The origin's answer, sent to the client; the status that went out is left in `progress`.
 async fn exchange(
     front: &LaneFront,
@@ -105,17 +118,18 @@ async fn exchange(
     progress: &mut Progress,
 ) -> Result<(), Box<Error>> {
     let upstream = &*front.upstream;
+    let mut upload = Upload::new(plan.body);
     let opened = tokio::select! {
         biased;
-        opened = attempts(ctx, upstream, plan) => opened?,
-        left = relay::client_left(stream) => return Err(ctx.attempt_failed(left, Exchanged::UNANSWERED)),
+        opened = attempts(front, &*stream, ctx, (plan, &mut upload), progress) => opened?,
+        left = relay::client_left(&*stream) => return Err(ctx.attempt_failed(left, exchanged(progress))),
     };
     progress.status = Some(opened.head.status().as_u16());
     let answered = Exchanged {
         body_replayable: true,
         response_retryable: false,
     };
-    relay_response(front, stream, ctx, upstream, opened, progress)
+    relay_response(front, stream, ctx, upstream, (opened, upload), progress)
         .await
         .map_err(|error| ctx.attempt_failed(error, answered))
 }
@@ -123,14 +137,16 @@ async fn exchange(
 /// Attempts on the pool's servers until one answers or the request fails; an attempt an operator moved, or one the
 /// route's retry policy allows, goes on to another server.
 async fn attempts(
+    front: &LaneFront,
+    stream: &H2Stream,
     ctx: &mut HttpRequestContext,
-    upstream: &Connector,
-    plan: &Plan,
+    (plan, upload): (&Plan, &mut Upload),
+    progress: &mut Progress,
 ) -> Result<Opened, Box<Error>> {
     loop {
         let cancelled = ctx.arm_evacuation_for_lane();
         let outcome = {
-            let attempt = attempt(ctx, upstream, plan);
+            let attempt = attempt(front, stream, ctx, (plan, &mut *upload), progress);
             tokio::select! {
                 biased;
                 error = cancelled => Err(ctx.attempt_failed(error, Exchanged::UNANSWERED)),
@@ -146,27 +162,35 @@ async fn attempts(
 }
 
 async fn attempt(
+    front: &LaneFront,
+    stream: &H2Stream,
     ctx: &mut HttpRequestContext,
-    upstream: &Connector,
-    plan: &Plan,
+    (plan, upload): (&Plan, &mut Upload),
+    progress: &mut Progress,
 ) -> Result<Opened, Box<Error>> {
+    let upstream = &*front.upstream;
     let timeouts = ctx.next_attempt(|_| None, selected_upstream_host).await?;
     let (session, reused, release) = match LaneFront::idle_session(ctx, upstream).await {
         Some(idle) => idle,
         None => LaneFront::connect(ctx, upstream, timeouts).await?,
     };
-    send_and_open(ctx, session, (reused, release), &timeouts, plan)
-        .await
-        .map_err(|error| ctx.attempt_failed(error, Exchanged::UNANSWERED))
+    let sent = (&mut *upload, &mut *progress);
+    send_and_open(
+        (front, stream, &mut *ctx),
+        (session, reused, release),
+        &timeouts,
+        (plan, sent),
+    )
+    .await
+    .map_err(|error| ctx.attempt_failed(error, exchanged(progress)))
 }
 
-/// Sends the request on a connected session and reads the response head.
+/// Sends the request on a connected session and reads the response head, while the body goes on its way.
 async fn send_and_open(
-    ctx: &mut HttpRequestContext,
-    mut session: Box<HttpSession>,
-    (reused, release): (bool, ReusePeer),
+    (front, stream, ctx): (&LaneFront, &H2Stream, &mut HttpRequestContext),
+    (mut session, reused, release): (Box<HttpSession>, bool, ReusePeer),
     timeouts: &AttemptTimeouts,
-    plan: &Plan,
+    (plan, (upload, progress)): (&Plan, (&mut Upload, &mut Progress)),
 ) -> Result<Opened, Box<Error>> {
     ctx.connected(reused, Some(session.digest()))?;
     timeouts.apply(&mut session);
@@ -177,12 +201,106 @@ async fn send_and_open(
     }
     let mut request = buffers::take_write();
     render_request(&mut request, ctx, plan, host.as_ref());
+    // A small body that the client sent with its head leaves with the origin's head, in one write.
+    let first = match plan.body {
+        0 => None,
+        _ => match upload.ready(stream) {
+            Some(Event::Left(error)) => return Err(error),
+            ready => ready,
+        },
+    };
+    let with_head = match &first {
+        Some(Event::Piece(piece)) if piece.len() == plan.body && plan.body <= SMALL_BODY => {
+            request.extend_from_slice(piece);
+            true
+        }
+        _ => false,
+    };
     let written = session
         .write_request_head_raw(&request, plan.is_head())
         .await;
     buffers::give_write(request);
     written.map_err(Error::into_up)?;
-    open(ctx, session, release, plan).await
+    if plan.body > 0 && !with_head {
+        session.init_request_body(FastFraming {
+            chunked: false,
+            content_length: Some(plan.body),
+        });
+    }
+    let raw = head_of(
+        front,
+        (stream, &mut *ctx),
+        &mut session,
+        (upload, progress, first),
+    )
+    .await?;
+    open(ctx, session, release, plan, raw).await
+}
+
+/// The origin's response head. The body goes to the origin as the client sends it, and an answer that comes before
+/// the body ends is the response: the rest of the upload is not sent. An origin that answers and then does not take
+/// the body, a write that fails, still has its answer relayed.
+async fn head_of(
+    front: &LaneFront,
+    (stream, ctx): (&H2Stream, &mut HttpRequestContext),
+    session: &mut HttpSession,
+    (upload, progress, mut first): (&mut Upload, &mut Progress, Option<Event>),
+) -> Result<Bytes, Box<Error>> {
+    let idle = front.timeouts.request;
+    loop {
+        // What the client already sent goes first, without arming the origin's read timer for each piece.
+        let ready = first
+            .take()
+            .or_else(|| upload.pumping().then(|| upload.ready(stream)).flatten());
+        let event = match ready {
+            Some(event) => event,
+            None if !upload.pumping() => {
+                return session.read_raw_head().await.map_err(Error::into_up);
+            }
+            None => tokio::select! {
+                biased;
+                raw = session.read_raw_head() => return raw.map_err(Error::into_up),
+                event = upload.event(stream, idle) => event,
+            },
+        };
+        if let Err(error) = forward(upload, event, (session, stream, ctx), progress).await {
+            return answered_before_failing(session, upload, error).await;
+        }
+    }
+}
+
+/// Writes one event of the upload to the origin, and accounts for it.
+async fn forward(
+    upload: &mut Upload,
+    event: Event,
+    (session, stream, ctx): (&mut HttpSession, &H2Stream, &mut HttpRequestContext),
+    progress: &mut Progress,
+) -> Result<(), Box<Error>> {
+    let written = upload.forward(event, session, stream).await?;
+    if written > 0 {
+        progress.received += written;
+        ctx.observe_bytes(progress.received, progress.sent, Instant::now());
+    }
+    Ok(())
+}
+
+/// An origin that closed on the upload may have answered before: its answer goes to the client, and the upload is
+/// over. A failure of the client's side, or no answer, is the failure of the request.
+async fn answered_before_failing(
+    session: &mut HttpSession,
+    upload: &mut Upload,
+    error: Box<Error>,
+) -> Result<Bytes, Box<Error>> {
+    if error.esource() != &pingora::ErrorSource::Upstream {
+        return Err(error);
+    }
+    match session.read_raw_head().await {
+        Ok(raw) => {
+            upload.refuse();
+            Ok(raw)
+        }
+        Err(_) => Err(error),
+    }
 }
 
 /// The request head the origin gets: the classic sequence of the edits and then the route's header rules.
@@ -215,8 +333,8 @@ async fn open(
     mut session: Box<HttpSession>,
     release: ReusePeer,
     plan: &Plan,
+    raw: Bytes,
 ) -> Result<Opened, Box<Error>> {
-    let raw = session.read_raw_head().await.map_err(Error::into_up)?;
     let now = ctx.refresh_clock();
     let queue = ctx.queue_stamp().map(QueueValues::new);
     let (head, refused, whole) =
@@ -321,13 +439,14 @@ async fn final_head(session: &mut HttpSession) -> Result<ResponseHeader, Box<Err
     }
 }
 
-/// Writes the response head and relays the body, then gives the origin connection back to the pool.
+/// Writes the response head and relays the body, while what is left of the upload goes on, then gives the origin
+/// connection back to the pool when it has served the whole request.
 async fn relay_response(
     front: &LaneFront,
     stream: &mut H2Stream,
     ctx: &mut HttpRequestContext,
     upstream: &Connector,
-    opened: Opened,
+    (opened, mut upload): (Opened, Upload),
     progress: &mut Progress,
 ) -> Result<(), Box<Error>> {
     let Opened {
@@ -339,6 +458,7 @@ async fn relay_response(
     } = opened;
     let deadline = tokio::time::Instant::from_std(ctx.deadline);
     let write_timeout = front.timeouts.session_write();
+    let idle = front.timeouts.request;
     let body = async {
         if buffered {
             return send_whole(stream, ctx, &mut session, head, (progress, write_timeout)).await;
@@ -349,11 +469,8 @@ async fn relay_response(
         let mut done = end;
         let mut closed = end;
         while !done {
-            let piece = tokio::select! {
-                biased;
-                piece = session.read_body_bytes() => piece.map_err(Error::into_up)?,
-                left = relay::client_left(stream) => return Err(left),
-            };
+            let piece =
+                next_piece(&*stream, ctx, (&mut session, &mut upload), (progress, idle)).await?;
             let Some(data) = piece else { break };
             progress.sent += data.len();
             // The first piece follows the clock reading of the head.
@@ -362,7 +479,7 @@ async fn relay_response(
             } else {
                 Instant::now()
             };
-            ctx.observe_bytes(0, progress.sent, now);
+            ctx.observe_bytes(progress.received, progress.sent, now);
             done = session.is_body_done();
             if !data.is_empty() {
                 relay::send_body(stream, data, done, write_timeout).await?;
@@ -377,9 +494,48 @@ async fn relay_response(
     within(deadline, body)
         .await
         .map_err(|Expired| Error::new_up(ErrorType::ReadTimedout))??;
-    upstream
-        .release_boxed_http_session(session, &release, release.idle_timeout())
-        .await;
+    // An origin that did not get the whole body keeps what it has not read: its connection is not used again.
+    if upload.is_complete() {
+        upstream
+            .release_boxed_http_session(session, &release, release.idle_timeout())
+            .await;
+    }
+    Ok(())
+}
+
+/// The next piece of the origin's response body. What is left of the request body goes to the origin meanwhile, as it
+/// arrives; once it is over, only the response and the client are waited for.
+async fn next_piece(
+    stream: &H2Stream,
+    ctx: &mut HttpRequestContext,
+    (session, upload): (&mut HttpSession, &mut Upload),
+    (progress, idle): (&mut Progress, Option<Duration>),
+) -> Result<Option<Bytes>, Box<Error>> {
+    while upload.pumping() {
+        tokio::select! {
+            biased;
+            piece = session.read_body_bytes() => return piece.map_err(Error::into_up),
+            event = upload.event(stream, idle) => {
+                let sent = forward(upload, event, (&mut *session, stream, ctx), progress).await;
+                sent.or_else(|error| refused(upload, error))?;
+            }
+            left = relay::client_left(stream) => return Err(left),
+        }
+    }
+    tokio::select! {
+        biased;
+        piece = session.read_body_bytes() => piece.map_err(Error::into_up),
+        left = relay::client_left(stream) => Err(left),
+    }
+}
+
+/// An origin that stopped taking the body while it answers: the answer goes on, and the upload is over. Anything else
+/// ends the exchange.
+fn refused(upload: &mut Upload, error: Box<Error>) -> Result<(), Box<Error>> {
+    if error.esource() != &pingora::ErrorSource::Upstream {
+        return Err(error);
+    }
+    upload.refuse();
     Ok(())
 }
 
@@ -397,7 +553,7 @@ async fn send_whole(
         .map_err(Error::into_up)?
         .expect("the body arrived with the head");
     progress.sent += body.len();
-    ctx.observe_bytes(0, progress.sent, ctx.now);
+    ctx.observe_bytes(progress.received, progress.sent, ctx.now);
     let rest = head.send_with_body(stream, body.clone())?;
     if rest > 0 {
         relay::send_body(stream, body.slice(body.len() - rest..), true, write_timeout).await?;

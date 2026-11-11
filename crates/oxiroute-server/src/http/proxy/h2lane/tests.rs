@@ -55,10 +55,21 @@ fn lane_fields(
     host: &str,
     close: bool,
 ) -> Option<Vec<u8>> {
+    lane_body(request, fields, host, close, 0)
+}
+
+/// Like `lane_fields` for a request whose body of `body` bytes follows the head.
+fn lane_body(
+    request: &RequestHeader,
+    fields: &WireFields<'_>,
+    host: &str,
+    close: bool,
+    body: usize,
+) -> Option<Vec<u8>> {
     let authority = request.uri.authority().unwrap();
     let target = request.uri.path_and_query().unwrap().as_str().as_bytes();
     let method = request.method.as_str().as_bytes();
-    let (id, wire) = request::read((method, target), &fields.iter().copied(), authority)?;
+    let (id, wire) = request::read((method, target), &fields.iter().copied(), authority, body)?;
     let mut out = Vec::new();
     let host = HeaderValue::from_str(host).unwrap();
     head::render(
@@ -103,6 +114,7 @@ fn id_of(request: &RequestHeader) -> HeaderValue {
         (method, target),
         &fields.iter().copied(),
         request.uri.authority().unwrap(),
+        0,
     )
     .unwrap();
     id
@@ -210,9 +222,47 @@ fn a_request_with_a_field_the_lane_does_not_write_is_not_the_lanes() {
 }
 
 #[test]
-fn a_content_length_of_zero_goes_on_and_a_larger_one_is_not_the_lanes() {
+fn a_content_length_of_zero_goes_on_and_a_larger_one_is_not_the_lanes_without_its_body() {
     let empty = request_of(Method::POST, "/", &[("content-length", "0")]);
     same_head(&empty, "example.com", false);
     let body = request_of(Method::POST, "/", &[("content-length", "5")]);
     assert!(lane(&body, "example.com", false).is_none());
+}
+
+#[test]
+fn a_request_with_a_body_is_written_as_the_classic_path_writes_it() {
+    let request = request_of(
+        Method::POST,
+        "/up?x=1",
+        &[("content-type", "text/plain"), ("content-length", "5")],
+    );
+    let actual = lane_body(&request, &map_fields(&request), "example.com", false, 5)
+        .expect("the lane serves a body the fields announce");
+    assert_eq!(
+        mask_generated(&actual),
+        mask_generated(&classic(&request, "example.com", false))
+    );
+}
+
+#[test]
+fn a_body_that_the_fields_do_not_announce_is_not_the_lanes() {
+    let request = request_of(Method::POST, "/", &[("content-length", "5")]);
+    for body in [0, 4, 6] {
+        let lane = lane_body(&request, &map_fields(&request), "example.com", false, body);
+        assert!(
+            lane.is_none(),
+            "a body of {body} bytes against a length of 5"
+        );
+    }
+    let unannounced = request_of(Method::POST, "/", &[("accept", "*/*")]);
+    assert!(
+        lane_body(
+            &unannounced,
+            &map_fields(&unannounced),
+            "example.com",
+            false,
+            5
+        )
+        .is_none()
+    );
 }
