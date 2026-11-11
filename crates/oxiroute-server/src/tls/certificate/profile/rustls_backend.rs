@@ -18,6 +18,7 @@ use self::{
     session::{SessionCache, TimedTicketer},
 };
 use super::{ALPN, TlsBackend, TlsBuildError, TlsProfilePlan, TlsVersion};
+use crate::tls::provider::{aws_lc_provider, with_key_exchange_groups};
 
 mod resolver;
 mod router;
@@ -86,7 +87,12 @@ impl TlsProfilePlan {
         alpn_protocols: Vec<Vec<u8>>,
         sessions: &Sessions,
     ) -> Result<Arc<ServerConfig>, TlsBuildError> {
-        let builder = ServerConfig::builder_with_provider(crate::tls::provider::aws_lc_provider())
+        let provider = with_key_exchange_groups(
+            aws_lc_provider(),
+            self.policy.key_exchange_groups.as_deref(),
+        )
+        .map_err(|detail| self.rustls_error(detail.into()))?;
+        let builder = ServerConfig::builder_with_provider(provider)
             .with_protocol_versions(self.protocol_versions())
             .map_err(|error| self.rustls_error(error.to_string()))?;
         let builder = match self.client_auth.rustls_verifier() {

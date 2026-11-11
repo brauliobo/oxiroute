@@ -87,6 +87,7 @@ fn test_tls_profiles() -> Vec<TlsProfile> {
                 session_tickets: false,
                 prefer_server_ciphers: false,
                 backend: oxiroute_config::TlsBackend::Openssl,
+                key_exchange_groups: None,
             },
         },
         TlsProfile {
