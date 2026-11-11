@@ -406,7 +406,9 @@ fn static_request_decision_matrix_is_protocol_neutral() {
     ];
 
     let mut file = StaticFile {
-        content: StaticContent::Open(File::open(path).expect("open static decision file")),
+        content: StaticContent::open(Arc::new(
+            File::open(path).expect("open static decision file"),
+        )),
         content_type: HeaderValue::from_static("text/plain; charset=utf-8"),
         etag: HeaderValue::from_static("\"etag\""),
         content_length: HeaderValue::from_static("10"),
@@ -480,7 +482,7 @@ async fn small_files_are_served_from_memory_for_one_validity_window() {
 fn cache_entries_expire_after_the_validity_window() {
     let cache = StaticCache::default();
     let start = Instant::now();
-    cache.insert("/a", &memory_file(b"a"), start);
+    cache.insert("/a", &memory_file(b"a"), None, start);
     assert!(
         cache
             .get("/a", start + Duration::from_millis(999))
@@ -495,14 +497,14 @@ fn a_full_cache_drops_expired_entries_and_otherwise_skips_new_ones() {
     let cache = StaticCache::default();
     let start = Instant::now();
     for index in 0..512 {
-        cache.insert(&format!("/{index}"), &memory_file(b"x"), start);
+        cache.insert(&format!("/{index}"), &memory_file(b"x"), None, start);
     }
-    cache.insert("/late", &memory_file(b"x"), start + VALIDITY / 2);
+    cache.insert("/late", &memory_file(b"x"), None, start + VALIDITY / 2);
     assert!(
         cache.get("/late", start + VALIDITY / 2).is_none(),
         "full of fresh entries"
     );
-    cache.insert("/late", &memory_file(b"x"), start + VALIDITY);
+    cache.insert("/late", &memory_file(b"x"), None, start + VALIDITY);
     assert!(
         cache.get("/late", start + VALIDITY).is_some(),
         "expired entries made room"
@@ -511,23 +513,57 @@ fn a_full_cache_drops_expired_entries_and_otherwise_skips_new_ones() {
 }
 
 #[test]
-fn files_over_the_memory_limit_are_not_cached() {
+fn a_file_over_the_memory_limit_is_cached_as_an_open_descriptor() {
     let directory = tempfile::tempdir().expect("static cache directory");
     let path = directory.path().join("big.bin");
-    std::fs::write(
-        &path,
-        vec![7; usize::try_from(MEMORY_FILE_BYTES).unwrap() + 1],
-    )
-    .expect("write");
-    let content = StaticContent::Open(File::open(path).expect("open"));
+    let size = usize::try_from(MEMORY_FILE_BYTES).unwrap() + 1;
+    std::fs::write(&path, vec![7; size]).expect("write");
+    let content = StaticContent::open(Arc::new(File::open(path).expect("open")));
     let loaded = StaticFile {
         content: content.load(MEMORY_FILE_BYTES + 1).expect("load"),
         ..memory_file(b"")
     };
-    assert!(matches!(loaded.content, StaticContent::Open(_)));
+    assert!(matches!(loaded.content, StaticContent::Open { .. }));
     let cache = StaticCache::default();
-    cache.insert("/big", &loaded, Instant::now());
-    assert!(cache.get("/big", Instant::now()).is_none());
+    let now = Instant::now();
+    cache.insert("/big", &loaded, None, now);
+    let cached = cache.get("/big", now).expect("cached");
+    assert!(matches!(cached.file.content, StaticContent::Open { .. }));
+    assert!(cached.head.is_none());
+}
+
+#[test]
+fn open_descriptors_are_bounded_and_expired_ones_make_room() {
+    let directory = tempfile::tempdir().expect("static cache directory");
+    let path = directory.path().join("data.bin");
+    std::fs::write(&path, b"abc").expect("write");
+    let open = StaticFile {
+        content: StaticContent::open(Arc::new(File::open(path).expect("open"))),
+        ..memory_file(b"abc")
+    };
+    let cache = StaticCache::default();
+    let start = Instant::now();
+    for index in 0..200 {
+        cache.insert(&format!("/{index}"), &open, None, start);
+    }
+    let held = (0..200)
+        .filter(|index| cache.get(&format!("/{index}"), start).is_some())
+        .count();
+    assert_eq!(held, 128, "no more descriptors than the bound");
+    cache.insert("/late", &open, None, start + VALIDITY);
+    assert!(cache.get("/late", start + VALIDITY).is_some());
+}
+
+#[test]
+fn replacing_an_entry_does_not_leak_its_accounting() {
+    let cache = StaticCache::default();
+    let now = Instant::now();
+    for _ in 0..100_000 {
+        cache.insert("/same", &memory_file(&[0; 1024]), None, now);
+    }
+    assert!(cache.get("/same", now).is_some());
+    cache.insert("/other", &memory_file(&[0; 1024]), None, now);
+    assert!(cache.get("/other", now).is_some());
 }
 
 async fn collect(content: StaticContent, start: u64, length: u64) -> Vec<u8> {
@@ -557,7 +593,7 @@ async fn memory_and_open_content_yield_the_same_ranges() {
             usize::try_from(start + length).unwrap(),
         );
         let expected = &data[from..to];
-        let open = StaticContent::Open(File::open(&path).expect("open"));
+        let open = StaticContent::open(Arc::new(File::open(&path).expect("open")));
         assert_eq!(
             collect(open, start, length).await,
             expected,
@@ -577,7 +613,8 @@ async fn a_truncated_file_ends_the_stream_with_an_error() {
     let directory = tempfile::tempdir().expect("static content directory");
     let path = directory.path().join("short.bin");
     std::fs::write(&path, b"abc").expect("write data");
-    let mut reader = StaticContent::Open(File::open(&path).expect("open")).into_reader(0, 10);
+    let mut reader =
+        StaticContent::open(Arc::new(File::open(&path).expect("open"))).into_reader(0, 10);
     assert!(reader.next_chunk().await.is_err());
 }
 
@@ -598,7 +635,7 @@ fn written_file(length: usize) -> (tempfile::TempDir, File) {
 fn a_large_cached_file_is_handed_to_the_kernel_in_slices_and_the_tail_goes_through_chunks() {
     let length = 2 * 1024 * 1024 + 40_000;
     let (_directory, file) = written_file(length);
-    let mut reader = StaticContent::Open(file).into_reader(0, length as u64);
+    let mut reader = StaticContent::open(Arc::new(file)).into_reader(0, length as u64);
     let mut covered = 0;
     while let Some(slice) = reader.kernel_slice() {
         assert_eq!(slice.offset, covered);
@@ -616,7 +653,7 @@ fn a_large_cached_file_is_handed_to_the_kernel_in_slices_and_the_tail_goes_throu
 #[test]
 fn ranges_below_the_threshold_and_memory_content_stay_with_the_chunk_reader() {
     let (_directory, file) = written_file(1_000_000);
-    let mut small = StaticContent::Open(file).into_reader(10, 60_000);
+    let mut small = StaticContent::open(Arc::new(file)).into_reader(10, 60_000);
     assert!(small.kernel_slice().is_none());
     let mut memory = StaticContent::Memory(Bytes::from(vec![0; 500_000])).into_reader(0, 500_000);
     assert!(memory.kernel_slice().is_none());
@@ -625,7 +662,7 @@ fn ranges_below_the_threshold_and_memory_content_stay_with_the_chunk_reader() {
 #[test]
 fn a_connection_that_cannot_take_the_kernel_path_stops_asking_for_it() {
     let (_directory, file) = written_file(1_000_000);
-    let mut reader = StaticContent::Open(file).into_reader(0, 1_000_000);
+    let mut reader = StaticContent::open(Arc::new(file)).into_reader(0, 1_000_000);
     assert!(reader.kernel_slice().is_some());
     reader.without_kernel();
     assert!(reader.kernel_slice().is_none());
@@ -634,7 +671,7 @@ fn a_connection_that_cannot_take_the_kernel_path_stops_asking_for_it() {
 #[test]
 fn a_range_past_the_end_of_the_file_is_not_sent_by_the_kernel() {
     let (_directory, file) = written_file(100_000);
-    let mut reader = StaticContent::Open(file).into_reader(0, 300_000);
+    let mut reader = StaticContent::open(Arc::new(file)).into_reader(0, 300_000);
     assert!(reader.kernel_slice().is_none());
 }
 
@@ -647,7 +684,7 @@ async fn the_chunk_reader_continues_where_the_kernel_slices_ended() {
     let path = directory.path().join("data.bin");
     std::fs::write(&path, &data).expect("write data");
     let mut reader =
-        StaticContent::Open(File::open(&path).expect("open")).into_reader(5, 1_200_000);
+        StaticContent::open(Arc::new(File::open(&path).expect("open"))).into_reader(5, 1_200_000);
     let slice = reader.kernel_slice().expect("a first slice");
     reader.advance(slice.length as u64);
     let mut rest = Vec::new();

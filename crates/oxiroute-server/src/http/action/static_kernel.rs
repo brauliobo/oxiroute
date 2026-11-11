@@ -23,13 +23,14 @@ pub(crate) struct KernelSlice {
 }
 
 impl KernelSlice {
-    /// The slice that starts at `offset`, if at least [`KERNEL_MIN_BYTES`] remain and the page cache holds it.
-    pub(super) fn next(file: &Arc<File>, offset: u64, remaining: u64) -> Option<Self> {
+    /// The slice that starts at `offset`, if at least [`KERNEL_MIN_BYTES`] remain and the page cache holds it
+    /// (`warm`: the file was read whole a moment ago).
+    pub(super) fn next(file: &Arc<File>, offset: u64, remaining: u64, warm: bool) -> Option<Self> {
         if remaining < KERNEL_MIN_BYTES {
             return None;
         }
         let length = remaining.min(KERNEL_SLICE_BYTES);
-        resident(file, offset, length).then(|| Self {
+        resident(file, offset, length, warm).then(|| Self {
             file: Arc::clone(file),
             offset,
             length: usize::try_from(length).expect("a slice is at most one mebibyte"),
@@ -38,17 +39,25 @@ impl KernelSlice {
 }
 
 /// Whether `sendfile` of the range cannot wait for the disk: the first and the last byte are answered by a
-/// non-blocking read, or the file system keeps every page in memory. A page evicted between the probe and the send
-/// makes that one `sendfile` read it from the disk on the worker thread.
-fn resident(file: &File, offset: u64, length: u64) -> bool {
-    match [offset, offset + length - 1]
+/// non-blocking read, or the file system keeps every page in memory, or the file was just read whole. A page
+/// evicted between the probe and the send makes that one `sendfile` read it from the disk on the worker thread.
+fn resident(file: &File, offset: u64, length: u64, warm: bool) -> bool {
+    let probe = [offset, offset + length - 1]
         .into_iter()
-        .try_for_each(|position| cached(file, position))
-    {
+        .try_for_each(|position| cached(file, position));
+    match probe {
         Ok(()) => true,
-        Err(Errno::OPNOTSUPP) => in_memory_file_system(file) && holds(file, offset + length),
+        Err(Errno::OPNOTSUPP) => {
+            (warm || in_memory_file_system(file)) && holds(file, offset + length)
+        }
         Err(_) => false,
     }
+}
+
+/// Whether the file system answers neither a non-blocking read nor a question about memory residency, so a file can
+/// only be known to be in memory by reading it.
+pub(super) fn needs_warming(file: &File) -> bool {
+    matches!(cached(file, 0), Err(Errno::OPNOTSUPP)) && !in_memory_file_system(file)
 }
 
 fn cached(file: &File, position: u64) -> Result<(), Errno> {

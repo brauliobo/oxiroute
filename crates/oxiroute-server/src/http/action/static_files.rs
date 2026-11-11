@@ -91,6 +91,17 @@ pub(crate) enum StaticErrorResponsePlan {
     },
 }
 
+/// Test hook: the validity window of the cache in milliseconds, so a test can hold an entry for the whole run or
+/// let it expire quickly.
+const TEST_VALIDITY_ENV: &str = "OXIROUTE_INTERNAL_TEST_STATIC_VALIDITY_MS";
+
+fn cache_validity() -> Duration {
+    std::env::var(TEST_VALIDITY_ENV)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map_or(VALIDITY, Duration::from_millis)
+}
+
 impl StaticFilesPlan {
     pub(crate) fn acquire(blueprint: &StaticFilesBlueprint) -> Result<Self, StaticPreflightError> {
         Ok(Self {
@@ -109,7 +120,7 @@ impl StaticFilesPlan {
             default_type: blueprint.default_type.clone(),
             headers: blueprint.headers.clone(),
             error_responses: blueprint.error_responses.clone(),
-            cache: StaticCache::default(),
+            cache: StaticCache::new(cache_validity()),
         })
     }
 }
@@ -265,8 +276,8 @@ impl StaticFilesBlueprint {
 impl StaticFilesPlan {
     pub(crate) async fn serve(&self, request_path: &str) -> Result<StaticTarget, StaticServeError> {
         let now = Instant::now();
-        if let Some(file) = self.cache.get(request_path, now) {
-            return Ok(StaticTarget::File(file));
+        if let Some(cached) = self.cache.get(request_path, now) {
+            return Ok(StaticTarget::File(cached.file.clone()));
         }
         let lookup = StaticLookup {
             components: self.request_components(request_path)?,
@@ -286,14 +297,68 @@ impl StaticFilesPlan {
             return Ok(target);
         };
         let file = self.typed(file);
-        self.cache.insert(request_path, &file, now);
+        let head = self.rendered_head(&file);
+        self.cache.insert(request_path, &file, head, now);
         Ok(StaticTarget::File(file))
+    }
+
+    /// A file the cache holds for `request_path` and its rendered response, for a writer that needs no file access.
+    pub(crate) fn cached(&self, request_path: &str, now: Instant) -> Option<Arc<CachedFile>> {
+        self.cache.get(request_path, now)
     }
 
     /// The configured MIME mapping decides the content type; the lookup only knows the built-in one.
     fn typed(&self, mut file: StaticFile) -> StaticFile {
         file.content_type = self.content_type(&file.name);
         file
+    }
+
+    /// The header block of the plain `200` response of `file` on an HTTP/1 connection.
+    fn rendered_head(&self, file: &StaticFile) -> Option<Bytes> {
+        let response = self.response_header(file, 200, None, &[]).ok()?;
+        Some(h1_head(&response))
+    }
+
+    /// The response header every protocol's static writer starts from: the configured headers and `extra`, the
+    /// validators, the type and the length of the whole file or of `range`.
+    pub(crate) fn response_header(
+        &self,
+        file: &StaticFile,
+        status: u16,
+        range: Option<(u64, u64)>,
+        extra: &[(HeaderName, HeaderValue)],
+    ) -> pingora::Result<pingora::http::ResponseHeader> {
+        let configured = self.headers(status);
+        // Every name is a `HeaderName`, so the wire casing is the same without the second, case-preserving map.
+        let mut response = pingora::http::ResponseHeader::build_no_case(
+            status,
+            Some(configured.len() + extra.len() + 7),
+        )?;
+        for (name, value) in configured.into_iter().chain(extra.iter().cloned()) {
+            response.append_header(name, value)?;
+        }
+        if self.etag {
+            response.append_header(http::header::ETAG, file.etag.clone())?;
+        }
+        response.append_header(http::header::LAST_MODIFIED, file.last_modified.clone())?;
+        response.insert_header(http::header::CONTENT_TYPE, file.content_type.clone())?;
+        response.insert_header(
+            http::header::ACCEPT_RANGES,
+            HeaderValue::from_static("bytes"),
+        )?;
+        if let Some((start, end)) = range {
+            response.insert_header(
+                http::header::CONTENT_LENGTH,
+                HeaderValue::from(end - start + 1),
+            )?;
+            response.insert_header(
+                http::header::CONTENT_RANGE,
+                format!("bytes {start}-{end}/{}", file.size),
+            )?;
+        } else {
+            response.insert_header(http::header::CONTENT_LENGTH, file.content_length.clone())?;
+        }
+        Ok(response)
     }
 
     pub(crate) async fn error_document(&self, status: u16) -> Option<StaticErrorTarget> {
