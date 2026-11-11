@@ -113,6 +113,16 @@ pub trait Peek {
     ) -> std::task::Poll<std::io::Result<()>> {
         std::task::Poll::Ready(Ok(()))
     }
+
+    /// Reads what the transport already holds into `buf`, now, without registering a waker. `Some(0)` is the end
+    /// of the stream; `None` means nothing could be read (or the stream does not support it): wait with
+    /// [`Self::poll_read_ready`] as usual.
+    ///
+    /// A connection that was just accepted has no readiness event yet, so a read through the I/O driver parks the
+    /// task until the driver has run, although its first request is usually in the socket already.
+    fn try_read_now(&mut self, _buf: &mut [u8]) -> std::io::Result<Option<usize>> {
+        Ok(None)
+    }
 }
 
 use std::any::Any;

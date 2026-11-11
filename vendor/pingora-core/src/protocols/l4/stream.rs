@@ -200,12 +200,16 @@ impl RawStreamWrapper {
             #[cfg(target_os = "linux")]
             enable_rx_ts: false,
             #[cfg(target_os = "linux")]
-            reusable_cmsg_space: nix::cmsg_space!(nix::sys::socket::Timestamps),
+            // Allocated when timestamps are enabled, which almost no connection does.
+            reusable_cmsg_space: Vec::new(),
         }
     }
 
     #[cfg(target_os = "linux")]
     pub fn enable_rx_ts(&mut self, enable_rx_ts: bool) {
+        if enable_rx_ts && self.reusable_cmsg_space.is_empty() {
+            self.reusable_cmsg_space = nix::cmsg_space!(nix::sys::socket::Timestamps);
+        }
         self.enable_rx_ts = enable_rx_ts;
     }
 }
@@ -720,6 +724,25 @@ impl Peek for Stream {
             #[cfg(unix)]
             RawStream::Unix(s) => s.poll_read_ready(cx),
             RawStream::Virtual(_) => Poll::Ready(Ok(())),
+        }
+    }
+
+    #[cfg(unix)]
+    fn try_read_now(&mut self, buf: &mut [u8]) -> io::Result<Option<usize>> {
+        if self.has_read_ahead() {
+            return Ok(None);
+        }
+        let Some(socket) = self.tcp_socket() else {
+            return Ok(None);
+        };
+        match nix::sys::socket::recv(
+            socket.as_raw_fd(),
+            buf,
+            nix::sys::socket::MsgFlags::MSG_DONTWAIT,
+        ) {
+            Ok(count) => Ok(Some(count)),
+            Err(nix::errno::Errno::EAGAIN | nix::errno::Errno::EINTR) => Ok(None),
+            Err(errno) => Err(errno.into()),
         }
     }
 }
