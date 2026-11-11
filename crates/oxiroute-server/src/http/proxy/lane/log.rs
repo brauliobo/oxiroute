@@ -52,8 +52,11 @@ impl RouteLog {
     }
 }
 
+/// A host and its `host` field as the line writes it.
+type Remembered = Option<(Box<str>, Box<[u8]>)>;
+
 thread_local! {
-    static HOSTS: RefCell<[Option<(Box<str>, Box<[u8]>)>; HOST_SLOTS]> =
+    static HOSTS: RefCell<[Remembered; HOST_SLOTS]> =
         const { RefCell::new([const { None }; HOST_SLOTS]) };
 }
 
