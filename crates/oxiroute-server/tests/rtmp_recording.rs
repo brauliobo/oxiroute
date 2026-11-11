@@ -165,9 +165,16 @@ fn manual_api_start_and_stop_control_the_exact_runtime_recorder() {
         stream.id
     );
     let stopped = api.handle("POST", &stop_path, 1_721_657_969_300);
-    assert_eq!(stopped.status, 202);
     let stopped_json: Value = serde_json::from_slice(&stopped.body).expect("stop JSON");
-    assert_eq!(stopped_json["phase"]["state"], "stopping");
+    // The worker finalizes on its own thread: the answer is 202 while it is stopping and 200 when it has settled.
+    let phase = stopped_json["phase"]["state"]
+        .as_str()
+        .expect("phase state");
+    assert!(
+        matches!((stopped.status, phase), (202, "stopping") | (200, "idle")),
+        "{} {phase}",
+        stopped.status
+    );
     wait_for_phase(&control, |phase| phase == RecorderPhase::Idle);
     wait_until(Duration::from_secs(30), || {
         root.path().join("manual-camera.flv").is_file()
