@@ -218,6 +218,34 @@ fn rejects_sharing_a_service_with_an_h3_pool_with_a_tcp_listener() {
 }
 
 #[test]
+fn rejects_reverse_http3_routes_with_policies_its_proxy_path_does_not_apply() {
+    for policy in [
+        json!({"retry": {"budget": {"per_second": 5}}}),
+        json!({"rescue": {"target": "pool", "pool": "other", "statuses": [502]}}),
+        json!({"affinity": {"type": "header", "name": "x-server"}}),
+        json!({"queue_class": "gold"}),
+        json!({"queue_headers": true}),
+    ] {
+        let mut config = reverse_http3_proxy_config("1.1", "1.1");
+        config.http_services[0].routes[0].action = serde_json::from_value(json!({
+            "type": "proxy",
+            "upstream_pool": "web",
+            "policy": policy,
+        }))
+        .expect("proxy HTTP/3 route");
+        let error = config
+            .validate()
+            .expect_err("a policy the HTTP/3 proxy path ignores");
+        assert!(
+            error
+                .to_string()
+                .contains("HTTP/3 reverse routes do not support"),
+            "unexpected rejection for {policy}: {error}"
+        );
+    }
+}
+
+#[test]
 fn rejects_reverse_http3_without_request_buffering() {
     let error = http3_config(false, Some("h3"))
         .validate()

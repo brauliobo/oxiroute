@@ -558,6 +558,17 @@ fn validate_http3_listener(
         }
         match &route.action {
             HttpRouteAction::Proxy { policy, .. } => {
+                if policy.retry.budget.is_some()
+                    || policy.rescue.is_some()
+                    || policy.select.is_some()
+                    || policy.affinity.is_some()
+                    || policy.queue_class.is_some()
+                    || policy.queue_headers
+                {
+                    return Err(invalid(
+                        "HTTP/3 reverse routes do not support retry budgets, rescue, pool selection, affinity or queue classes",
+                    ));
+                }
                 if policy.request_headers.iter().any(|mutation| {
                     matches!(
                         mutation,
