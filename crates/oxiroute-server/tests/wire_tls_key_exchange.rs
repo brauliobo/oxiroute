@@ -40,7 +40,7 @@ async fn negotiated(
                 .get_ref()
                 .1
                 .negotiated_key_exchange_group()
-                .map(|kx| kx.name());
+                .map(rustls::crypto::SupportedKxGroup::name);
             let response = h1_request(&mut stream, "/groups", true).await.unwrap();
             assert_eq!(response.status, 200);
             group

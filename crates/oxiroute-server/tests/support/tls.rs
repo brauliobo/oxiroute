@@ -36,6 +36,7 @@ pub fn tls_client_config_with_versions(
 }
 
 /// A TLS 1.3 client that offers exactly `groups` (in order) and sends a key share for the first.
+#[allow(dead_code)]
 pub fn tls_client_config_with_groups(
     ca_certificate_path: &Path,
     alpn: &[&[u8]],
