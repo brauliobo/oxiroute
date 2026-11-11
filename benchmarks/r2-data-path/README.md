@@ -117,8 +117,8 @@ the proxy CPU set must hold at least two CPUs.
 The listener uses a `self_signed_development` certificate for `bench.example.com` (TLS 1.3, ALPN `h3`) like the TLS
 lanes, and the client does not verify it for the same reason. HTTP/3 listeners require request buffering and a bounded
 body on every route, so `gen_config.py --feature h3` sets both; `fixed_b1k` / `fixed_b64k` answer `/fixed` with that
-body and leave out the proxy route (an `http3` service must not mix fixed routes with HTTP/1.1 proxy routes on a
-binary that only proxies HTTP/3 origins). Readiness is a UDP probe (a datagram of an unknown QUIC version is answered with
+body and leave out the proxy route; `h3_b1k_c8s4` and `h3_post1k_c8s4` keep it and proxy to the HTTP/1.1 origin
+pool (they need a binary whose `http3` listener accepts such routes; an older one is reported as skipped). Readiness is a UDP probe (a datagram of an unknown QUIC version is answered with
 Version Negotiation), not a TCP connect.
 
 Limits: no certificate verification, no 0-RTT or session resumption, one client process with two runtime threads
@@ -155,4 +155,4 @@ protocol for it.
 
 ## Limits
 
-Forward-proxy mode and RTMP are not covered by this harness; HTTP/3 covers the reverse listener only (no HTTP/3 origin).
+Forward-proxy mode and RTMP are not covered by this harness; HTTP/3 covers the reverse listener, answering itself or proxying to an HTTP/1.1 origin (no HTTP/3 or HTTP/2 origin lane).
