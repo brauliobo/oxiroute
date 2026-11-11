@@ -118,6 +118,7 @@ pub struct TlsPolicy {
     /// Key-exchange groups in server preference order; absent keeps the backend default list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_exchange_groups: Option<Vec<TlsKeyExchangeGroup>>,
+    pub ktls: KtlsMode,
 }
 
 impl Default for TlsPolicy {
@@ -132,6 +133,7 @@ impl Default for TlsPolicy {
             prefer_server_ciphers: true,
             backend: TlsBackend::default(),
             key_exchange_groups: None,
+            ktls: KtlsMode::default(),
         }
     }
 }
@@ -171,6 +173,14 @@ pub enum TlsBackend {
     #[default]
     Openssl,
     Rustls,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KtlsMode {
+    Off,
+    #[default]
+    Auto,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

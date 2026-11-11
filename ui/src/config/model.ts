@@ -135,9 +135,12 @@ export interface TlsPolicyConfig {
   prefer_server_ciphers: boolean
   backend: TlsBackend
   key_exchange_groups?: string[] | null
+  ktls: KtlsMode
 }
 
 export type TlsBackend = 'openssl' | 'rustls'
+
+export type KtlsMode = 'off' | 'auto'
 
 export type TlsClientAuthMode = 'disabled' | 'optional' | 'required'
 

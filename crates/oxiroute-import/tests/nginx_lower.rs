@@ -4,8 +4,8 @@ use std::{fmt::Write as _, fs, path::Path};
 
 use oxiroute_config::{
     CertificateSource, HttpGzipMinimumVersion, HttpGzipPolicy, HttpHostSelector, HttpPathSelector,
-    HttpRouteAction, HttpSameSite, HttpUpstreamHost, ListenerBind, TlsPolicy, TlsSessionCache,
-    UpstreamConnectionReuse,
+    HttpRouteAction, HttpSameSite, HttpUpstreamHost, KtlsMode, ListenerBind, TlsPolicy,
+    TlsSessionCache, UpstreamConnectionReuse,
 };
 use oxiroute_import::{DiagnosticStage, nginx::import_http_fragment};
 use tempfile::TempDir;
@@ -634,6 +634,7 @@ fn lowers_inherited_nginx_tls_policy_exactly() {
             prefer_server_ciphers: false,
             backend: oxiroute_config::TlsBackend::Openssl,
             key_exchange_groups: None,
+            ktls: KtlsMode::Auto,
         }
     );
 }

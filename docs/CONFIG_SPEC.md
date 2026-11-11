@@ -895,6 +895,7 @@ tls_profiles = {
       prefer_server_ciphers = true,
       backend = "openssl",
       key_exchange_groups = nil,
+      ktls = "auto",
       client_auth = {
         mode = "disabled",
         ca_certificate_path = nil,
@@ -954,6 +955,19 @@ The current certificate and profile rules are:
   of the listed groups fails its handshake. The list applies to HTTP/1.1, HTTP/2 and HTTP/3 listeners of the
   profile; the HTTP/3 stack has no hybrid group and skips it, and a list that holds only groups it lacks fails
   the listener at start.
+- `ktls` is `"auto"` (default) or `"off"`. `"auto"` asks the kernel at the start of each
+  generation whether kernel TLS works. If it does, a TLS 1.3 connection with an AES-GCM cipher that
+  serves a large HTTP/1.1 static file (about 256 KiB and up, from a file the `sendfile` path accepts)
+  is switched to kernel TLS before that file with one TLS KeyUpdate, and the file is then sent with
+  kTLS transmit offload and `sendfile`; later responses on that connection are encrypted by the
+  kernel too (a few percent more instructions for small responses, many fewer cycles for large
+  files). If the kernel cannot (the `tls` kernel module is not loaded, the kernel is older than 6.5,
+  or the cipher is refused), TLS stays in user space exactly as with `"off"` and the server logs one
+  `info` line per generation and profile. The host needs the `tls` kernel module loaded at boot (a
+  file in `/etc/modules-load.d/`, or `modprobe tls`) and kernel 6.5 or newer; a service without
+  permission to autoload the module simply stays in user space. Set `"off"` to keep TLS in user
+  space. The option has no effect on HTTP/2, HTTP/3, proxied bodies, or TLS 1.2, and changes nothing
+  else about the profile.
 - Downstream client authentication defaults to `disabled`. `optional` requests a client certificate
   but permits an absent certificate; `required` rejects the handshake when no certificate is sent.
   Enabled modes require one bounded absolute `ca_certificate_path`. The CA bundle is read twice for

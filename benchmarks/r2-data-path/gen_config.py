@@ -6,7 +6,7 @@ Usage: gen_config.py OUT --proxy-port P --upstream-port U [--servers N] [--echo-
 
 Every feature is an independent A/B switch on top of the minimal reverse-proxy configuration:
   access_log timeouts retry queue capacity passive breaker outlier gzip cache reqbuf respbuf
-  forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa tls_kx upstream_h2 upstream_tls l4 stats nginx_host lc wrr
+  forward forwarded dns dns_startup retry_buffered fixed static tls ktls tls_cache tls_tickets tls_rsa tls_kx upstream_h2 upstream_tls l4 stats nginx_host lc wrr
   p2c first auth_bearer auth_basic_apr1 auth_basic_bcrypt redirect path_rewrite cookie_rewrite affinity_cookie
   affinity_hash affinity_header select gzip_l<level> cache_revalidate forward_connect hc_tcp hc_http hc_ms_<interval> canary h2_win_old
   h3 fixed_b1k fixed_b64k
@@ -18,6 +18,8 @@ that size and leave out the proxy route (without them an `h3` service proxies to
 
 import argparse
 import json
+
+KTLS_ON = "auto"  # the value of `ktls` for the `ktls` feature
 
 
 def lua(value, indent=0):
@@ -252,7 +254,7 @@ def build(args):
     }
     if on("h3"):
         listener.update(protocol="http3", bind={"type": "udp", "address": f"127.0.0.1:{args.proxy_port}"})
-    if on("tls") or on("tls_cache") or on("tls_tickets") or on("tls_rsa") or on("tls_kx") or on("h3"):
+    if on("tls") or on("tls_cache") or on("tls_tickets") or on("tls_rsa") or on("tls_kx") or on("h3") or on("ktls"):
         key_type = "rsa_2048" if on("tls_rsa") else "ecdsa_p256"
         config["certificates"] = [{
             "name": "bench-cert",
@@ -262,6 +264,7 @@ def build(args):
         tls_policy = {"session_tickets": on("tls_tickets"), "backend": args.tls_backend}
         if on("tls_kx"):
             tls_policy["key_exchange_groups"] = ["x25519", "secp256r1"]
+        tls_policy["ktls"] = KTLS_ON if on("ktls") else "off"
         if on("tls_cache"):
             tls_policy["session_cache"] = {"name": "bench-sessions", "size_bytes": 4194304}
         config["tls_profiles"] = [{

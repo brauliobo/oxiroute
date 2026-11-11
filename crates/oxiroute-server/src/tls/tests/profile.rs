@@ -82,6 +82,7 @@ fn applies_explicit_server_tls_policy_to_openssl_settings() {
         prefer_server_ciphers: false,
         backend: oxiroute_config::TlsBackend::Openssl,
         key_exchange_groups: None,
+        ktls: oxiroute_config::KtlsMode::Off,
     };
 
     let prepared = prepare_tls(&config.clone().validate().expect("valid TLS test config")).unwrap();
