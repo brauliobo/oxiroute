@@ -716,8 +716,7 @@ pub trait ProxyHttp {
     ///
     /// The response status code of the error response may be returned for logging purposes.
     /// Additionally, the user can return whether this session may be reused in spite of the error.
-    /// Today this reuse status is only respected for errors that occur prior to upstream peer
-    /// selection, and the keepalive configured on the `Session` itself still takes precedent.
+    /// The keepalive configured on the `Session` itself still takes precedent.
     fn fail_to_proxy(
         &self,
         session: &mut Session,
