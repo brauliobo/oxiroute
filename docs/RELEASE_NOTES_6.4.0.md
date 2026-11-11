@@ -61,6 +61,16 @@ conservative compatibility claims.
   the body are two writes instead of one `writev`; TLS, HTTP/2, HTTP/3 and gzip-compressed responses are unchanged, as are
   file systems without `RWF_NOWAIT` other than tmpfs and ramfs. One more system call (`preadv2` probe) per large static
   request.
+- **Static files on the fast lane.** A plain `GET` or `HEAD` of a file the static cache holds is answered by the HTTP/1.1
+  fast lane (plain and TLS) with the same bytes, access line and metrics as the classic path; requests with `Range` or a
+  condition header (`If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `If-Range`) and other methods
+  still take the classic path. Files of any size are now kept for the 1 s validity window (up to 512 entries, 128 open
+  descriptors, 16 MiB of small bodies per route): a file replaced or deleted inside the window is served as it was, whole;
+  a file truncated in place inside it ends the response with the connection. On file systems that cannot say whether a
+  read would wait (ZFS, some network mounts) a file of up to 8 MiB is read once per window when opened and then sent with
+  `sendfile`; if the kernel evicts its pages in the window that `sendfile` waits for the disk on the worker thread.
+  Measured: 1 KiB 26,949 to 9,298 and 1 MiB 95,827 to 10,540 (ZFS), 40,971 to 11,689 (btrfs) user instructions per request
+  (nginx 13.2k to 13.6k); see [static files](developer/PERF_6_4_STATIC_FILES.md).
 - **Timeouts** beyond a threshold use Tokio's timer instead of the clock thread (Pingora 0.9).
 - **Environment variables** that now have a configuration option keep working as fallbacks that the configuration
   overrides: `OXIROUTE_MANAGEMENT_TOKEN_FILE` (`management.token_file`), `OXIROUTE_AUDIT_DIR` and `OXIROUTE_AUDIT_MAX_*`
