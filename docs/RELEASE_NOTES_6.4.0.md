@@ -331,7 +331,7 @@ one accessor) and `pingora-rustls` is no longer vendored. The delta records are 
 
 - The audit no longer reports RUSTSEC-2026-0388 (HTTP/2 `:authority` that differs from `Host`; the product already refused
   it), RUSTSEC-2026-0390 (hop-by-hop request fields, fixed in the product in 6.3.1) or RUSTSEC-2026-0253 (`lru`). The
-  `unsafe-libyaml` warning remains.
+  `unsafe-libyaml` warning (RUSTSEC-2024-0449) is gone as well: the vendored Pingora server configuration no longer reads YAML files (OxiRoute never used them), so `serde_yaml` left both lockfiles, and `cargo audit -D warnings` and `cargo deny` report no advisories.
 
 ## Configuration: environment variables are options
 
