@@ -623,7 +623,7 @@ impl super::LaneFront {
         ctx.account_attempt(received, sent, now);
         ctx.record_failed_evacuations(error);
         if let Some(log) = self.service.access_log() {
-            super::log::write(log, &self.service_log, ctx, forward, progress, elapsed);
+            super::log::write_proxied(log, &self.service_log, ctx, forward, progress, elapsed);
         }
     }
 }

@@ -6,7 +6,7 @@
 
 use std::{cell::RefCell, time::Duration};
 
-use http::uri::Authority;
+use http::{Method, uri::Authority};
 use log::warn;
 
 use super::proxy::{Forward, Progress};
@@ -28,7 +28,7 @@ use crate::{
 };
 
 /// The names of a route that its access lines repeat, as the line writes them: from `,"pool":` to the opening quote of
-/// the queue wait, and the whole `route` field.
+/// the queue wait (a route without a pool has `null` there), and the whole `route` field.
 #[derive(Debug, Default)]
 pub(crate) struct RouteLog {
     pool: Box<[u8]>,
@@ -36,9 +36,12 @@ pub(crate) struct RouteLog {
 }
 
 impl RouteLog {
-    pub(crate) fn new(pool: &Label, route: &Label) -> Self {
+    pub(crate) fn new(pool: Option<&Label>, route: &Label) -> Self {
         let mut pool_part = br#","pool":"#.to_vec();
-        push_text(&mut pool_part, pool.logged());
+        match pool {
+            Some(pool) => push_text(&mut pool_part, pool.logged()),
+            None => pool_part.extend_from_slice(b"null"),
+        }
         pool_part.extend_from_slice(br#","protocol":"http/1.1","queueWaitMs":""#);
         let mut route_part = br#","route":"#.to_vec();
         push_text(&mut route_part, route.logged());
@@ -87,7 +90,77 @@ pub(super) fn service_part(log: &AccessLog) -> Box<[u8]> {
     part.into()
 }
 
-pub(super) fn write(
+/// What a line says of a request, as the classic record takes it from the request context.
+pub(super) struct Line<'a> {
+    pub(super) attempts: usize,
+    pub(super) received: u64,
+    pub(super) sent: u64,
+    pub(super) connect: Option<Duration>,
+    pub(super) header: Option<Duration>,
+    /// A valid id, a client's only when it passed the check, else the proxy's own.
+    pub(super) id: &'a [u8],
+    pub(super) id_generated: bool,
+    pub(super) elapsed: Duration,
+    pub(super) evacuations: usize,
+    pub(super) host: Option<&'a Authority>,
+    pub(super) idempotency: Option<&'a [u8]>,
+    pub(super) method: &'a Method,
+    pub(super) queue_wait: Duration,
+    pub(super) reason: &'static str,
+    pub(super) rescued: bool,
+    pub(super) servers: &'a [Label],
+    pub(super) status: Option<u16>,
+    pub(super) unix_ms: u64,
+    pub(super) stuck: bool,
+}
+
+impl<'a> Line<'a> {
+    /// The line of a request the lane proxied.
+    fn proxied(
+        ctx: &'a HttpRequestContext,
+        forward: &Forward<'a>,
+        progress: &Progress,
+        elapsed: Duration,
+    ) -> Self {
+        let (buffer, head) = (forward.buffer, forward.head);
+        let trace = &ctx.trace;
+        let idempotency = idempotency_header(ctx).and_then(|name| {
+            let name = name.as_str().as_bytes();
+            head.headers()
+                .iter()
+                .find(|header| header.name(buffer).eq_ignore_ascii_case(name))
+                .map(|header| header.value(buffer))
+        });
+        Self {
+            attempts: ctx.attempt_count(),
+            received: progress.received as u64,
+            sent: progress.sent as u64,
+            connect: trace.connect,
+            header: trace.header,
+            id: forward.id.as_bytes(),
+            id_generated: forward.request.client_id.is_none(),
+            elapsed,
+            evacuations: ctx
+                .evacuation()
+                .map_or(0, |evacuation| evacuation.redispatches()),
+            host: ctx.authority.as_ref(),
+            idempotency,
+            method: forward.method,
+            queue_wait: trace.queue_wait,
+            reason: trace.failure_reason.unwrap_or(""),
+            rescued: ctx.rescued,
+            servers: &trace.servers,
+            status: progress.status,
+            unix_ms: crate::clock::wall_ms(ctx.now),
+            stuck: ctx
+                .inflight
+                .as_ref()
+                .is_some_and(crate::http::inflight::InflightGuard::stuck),
+        }
+    }
+}
+
+pub(super) fn write_proxied(
     log: &AccessLog,
     service: &[u8],
     ctx: &HttpRequestContext,
@@ -95,8 +168,13 @@ pub(super) fn write(
     progress: &Progress,
     elapsed: Duration,
 ) {
-    let result = log.write_with(|line| {
-        render(line, service, ctx, forward, progress, elapsed);
+    let line = Line::proxied(ctx, forward, progress, elapsed);
+    write(log, service, &forward.route.edits.log, &line);
+}
+
+pub(super) fn write(log: &AccessLog, service: &[u8], route: &RouteLog, line: &Line<'_>) {
+    let result = log.write_with(|out| {
+        render(out, service, route, line);
         Ok(())
     });
     if let Err(error) = result {
@@ -122,80 +200,59 @@ fn boolean(out: &mut Vec<u8>, prefix: &[u8], value: bool) {
     out.extend_from_slice(if value { b"true" } else { b"false" });
 }
 
-fn render(
-    out: &mut Vec<u8>,
-    service: &[u8],
-    ctx: &HttpRequestContext,
-    forward: &Forward<'_>,
-    progress: &Progress,
-    elapsed: Duration,
-) {
-    let (buffer, head) = (forward.buffer, forward.head);
-    let trace = &ctx.trace;
-    let route = &forward.route.edits.log;
+fn render(out: &mut Vec<u8>, service: &[u8], route: &RouteLog, line: &Line<'_>) {
     out.reserve(512);
     out.extend_from_slice(br#"{"attempts":"#);
-    push_u64(out, ctx.attempt_count() as u64);
+    push_u64(out, line.attempts as u64);
     out.extend_from_slice(br#","bytesReceived":""#);
-    push_u64(out, progress.received as u64);
+    push_u64(out, line.received);
     out.extend_from_slice(br#"","bytesSent":""#);
-    push_u64(out, progress.sent as u64);
+    push_u64(out, line.sent);
     out.push(b'"');
-    millis(out, br#","connectMs":"#, trace.connect);
-    // The id is a valid one by construction: a client's only when it passed the check, else the proxy's own.
+    millis(out, br#","connectMs":"#, line.connect);
+    // The id is a valid one by construction, so the correlation id is the id itself.
     out.extend_from_slice(br#","correlationId":""#);
-    out.extend_from_slice(forward.id.as_bytes());
+    out.extend_from_slice(line.id);
     out.extend_from_slice(br#"","durationMs":""#);
-    push_decimal(out, elapsed.as_millis());
+    push_decimal(out, line.elapsed.as_millis());
     out.extend_from_slice(br#"","evacuations":"#);
-    let redispatches = ctx
-        .evacuation()
-        .map_or(0, |evacuation| evacuation.redispatches());
-    push_u64(out, redispatches as u64);
-    millis(out, br#","headerMs":"#, trace.header);
+    push_u64(out, line.evacuations as u64);
+    millis(out, br#","headerMs":"#, line.header);
     out.extend_from_slice(br#","host":"#);
-    match &ctx.authority {
+    match line.host {
         Some(host) if !host.as_str().is_empty() => push_host(out, host),
         Some(host) => push_text(out, &redact_text_cow(&normalized_request_host(host))),
         None => out.extend_from_slice(b"null"),
     }
     out.extend_from_slice(br#","idemKey":"#);
-    let idempotency = idempotency_header(ctx).and_then(|name| {
-        let name = name.as_str().as_bytes();
-        head.headers()
-            .iter()
-            .find(|header| header.name(buffer).eq_ignore_ascii_case(name))
-            .map(|header| header.value(buffer))
-    });
-    match idempotency {
+    match line.idempotency {
         Some(key) => push_text(out, &redact_text_cow(&idempotency_tag(key))),
         None => out.extend_from_slice(b"null"),
     }
     out.extend_from_slice(br#","method":"#);
-    push_safe(out, &method_text(forward.method));
+    push_safe(out, &method_text(line.method));
     out.extend_from_slice(&route.pool);
-    push_decimal(out, trace.queue_wait.as_millis());
+    push_decimal(out, line.queue_wait.as_millis());
     out.extend_from_slice(br#"","reason":"#);
-    push_text(out, trace.failure_reason.unwrap_or(""));
+    push_text(out, line.reason);
     out.extend_from_slice(br#","requestId":"#);
-    if forward.request.client_id.is_none() {
+    if line.id_generated {
         // A generated id is hex between fixed letters and dashes: no credential marker can match it.
         out.push(b'"');
-        out.extend_from_slice(forward.id.as_bytes());
+        out.extend_from_slice(line.id);
         out.push(b'"');
     } else {
-        let id = String::from_utf8_lossy(forward.id.as_bytes());
-        push_text(out, &redact_text_cow(&id));
+        push_text(out, &redact_text_cow(&String::from_utf8_lossy(line.id)));
     }
-    boolean(out, br#","rescued":"#, ctx.rescued);
+    boolean(out, br#","rescued":"#, line.rescued);
     out.extend_from_slice(&route.route);
     out.extend_from_slice(br#","server":"#);
-    match trace.servers.last() {
+    match line.servers.last() {
         Some(server) => push_text(out, server.logged()),
         None => out.extend_from_slice(b"null"),
     }
     out.extend_from_slice(br#","servers":"#);
-    match trace.servers.as_slice() {
+    match line.servers {
         [] => out.extend_from_slice(b"null"),
         [only] => push_text(out, only.logged()),
         many => {
@@ -205,17 +262,13 @@ fn render(
     }
     out.extend_from_slice(service);
     out.extend_from_slice(br#","status":"#);
-    match progress.status {
+    match line.status {
         Some(status) => push_u64(out, u64::from(status)),
         None => out.extend_from_slice(b"null"),
     }
     out.extend_from_slice(br#","timestampUnixMs":"#);
-    push_u64(out, crate::clock::wall_ms(ctx.now));
-    let stuck = ctx
-        .inflight
-        .as_ref()
-        .is_some_and(crate::http::inflight::InflightGuard::stuck);
-    boolean(out, br#","wasStuck":"#, stuck);
+    push_u64(out, line.unix_ms);
+    boolean(out, br#","wasStuck":"#, line.stuck);
     out.push(b'}');
 }
 

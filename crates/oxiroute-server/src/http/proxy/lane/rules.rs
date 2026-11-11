@@ -119,8 +119,12 @@ impl RouteEdits {
     pub(crate) fn compile(lane: LaneRoute, action: &HttpActionPlan, route_id: &Label) -> Self {
         match (lane, action) {
             (LaneRoute::Proxy, HttpActionPlan::Proxy(proxy)) => Self {
-                log: RouteLog::new(proxy.pool.label(), route_id),
+                log: RouteLog::new(Some(proxy.pool.label()), route_id),
                 ..Self::of(&proxy.policy)
+            },
+            (LaneRoute::Direct, _) => Self {
+                log: RouteLog::new(None, route_id),
+                ..Self::default()
             },
             _ => Self::default(),
         }

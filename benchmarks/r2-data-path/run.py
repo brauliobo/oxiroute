@@ -99,6 +99,7 @@ def build_lanes():
     work = ["--path", "/b1k", "--expect-len", "1024"] + base
     add(lane("f_base", work))
     add(lane("f_fixed", ["--path", "/fixed"] + base, features=["fixed"]))
+    add(lane("f_fixed_log", ["--path", "/fixed"] + base, features=["fixed", "access_log"]))
     for feature in FEATURES_6_0 + ["nginx_host"]:
         add(lane(f"f_{feature}", work, features=[feature]))
     add(lane("f_forwarded", work, features=["forwarded"]))
