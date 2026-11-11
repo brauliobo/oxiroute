@@ -42,7 +42,7 @@ pub(super) fn worker_scaling(config: &oxiroute_config::ConfigDraft) -> Option<Wo
     }
     test_scaling_workers().map(|_| WorkerScalingConf {
         min_active: 1,
-        target_busy_percent: 50,
+        target_busy_percent: 40,
         scale_down_delay_ms: 100,
     })
 }

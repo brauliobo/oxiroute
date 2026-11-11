@@ -36,7 +36,7 @@ pub struct ConfigDraft {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_active_workers: Option<u64>,
     /// Share of one worker's time the active workers are kept under, in percent, before another worker is
-    /// activated. Omitted means 50.
+    /// activated. Omitted means 40.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_busy_percent: Option<u64>,
     /// How long the load must fit in fewer workers before one is released, in milliseconds. Omitted means 5000.
@@ -92,7 +92,7 @@ impl ConfigDraft {
     pub const MIN_SCALE_DOWN_DELAY_MS: u64 = 100;
     pub const MAX_SCALE_DOWN_DELAY_MS: u64 = 3_600_000;
     pub const DEFAULT_MIN_ACTIVE_WORKERS: u64 = 1;
-    pub const DEFAULT_TARGET_BUSY_PERCENT: u64 = 50;
+    pub const DEFAULT_TARGET_BUSY_PERCENT: u64 = 40;
     pub const DEFAULT_SCALE_DOWN_DELAY_MS: u64 = 5_000;
     pub const MAX_TLS_HANDSHAKE_THREADS: u64 = 64;
     pub const MAX_LOG_FILTER_BYTES: usize = 1024;

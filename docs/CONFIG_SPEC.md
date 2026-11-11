@@ -324,7 +324,7 @@ Current constraints:
   moving idle keep-alive HTTP/1 connections to, the active ones, and activates more workers under pressure. It needs
   `connection_scheduling = "aged_per_worker"` and three tunables that are valid only with `dynamic`:
   `min_active_workers` (1 to 256, default 1, at most `listener_workers`; an omitted `listener_workers` counts as 1),
-  `target_busy_percent` (10 to 90, default 50: the share of one worker's time the active workers are kept under before
+  `target_busy_percent` (10 to 90, default 40: the share of one worker's time the active workers are kept under before
   another worker is activated) and `scale_down_delay_ms` (100 to 3600000, default 5000: how long the load must fit in
   fewer workers before one is released).
 - `retirement` is optional and bounds how a replaced generation drains: `drain_deadline_ms`
