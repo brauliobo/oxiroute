@@ -87,11 +87,18 @@ cargo +1.97.1 test -p oxiroute-import --test import_report --test varnish_founda
 cargo +1.97.1 test -p oxiroute --test process_udp_drain --locked --jobs 4
 cargo +1.97.1 test -p oxiroute-rtmp --test amf_hardening --test chunk_interop --locked --jobs 4
 cargo test -p oxiroute --test rtmp_api
+cargo test -p oxiroute --test reverse_http3_golden
 cargo +1.97.1 test -p oxiroute --lib contract:: --locked --jobs 4
 cargo test -p oxiroute --test wire_tls_interop
 cargo test -p oxiroute-rtmp --test recording_store --test recording_worker
 pnpm --dir ui test
 ```
+
+The `reverse_http3_golden` test replays a corpus of reverse HTTP/3 requests (routes, static files, proxying, cache,
+limits, protocol violations) against one daemon and compares the normalised observations with
+`crates/oxiroute-server/tests/fixtures/reverse_http3_golden.json`, printing a per-case diff on any difference.
+`OXIROUTE_INTERNAL_TEST_RECORD_GOLDEN=1 cargo test -p oxiroute --test reverse_http3_golden` re-records the
+fixture from the current implementation; cases marked `tolerance` accept the alternatives listed beside them.
 
 Use the nearest focused test while iterating. Run the workspace gates before describing the change as
 complete.
