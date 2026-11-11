@@ -47,6 +47,10 @@ struct Fleet {
 
 impl Fleet {
     fn start(runtime: &NoStealRuntime, count: usize, relocate: bool) -> Self {
+        Self::spawn(runtime, count, relocate, true)
+    }
+
+    fn spawn(runtime: &NoStealRuntime, count: usize, relocate: bool, movable: bool) -> Self {
         let fleet = Self {
             started: Arc::default(),
             ended: Arc::default(),
@@ -60,7 +64,7 @@ impl Fleet {
         runtime.get_runtime_at(0).spawn(async move {
             for _ in 0..count {
                 let (started, ended, release) = (started.clone(), ended.clone(), release.clone());
-                spawn_connection(async move {
+                spawn_connection_as(movable, async move {
                     started.lock().unwrap().push(std::thread::current().id());
                     release.notified().await;
                     if relocate && wants_relocation() {
@@ -108,6 +112,20 @@ fn a_light_load_is_packed_and_later_connections_land_on_the_active_worker() {
     let later = Fleet::start(&runtime, 16, false);
     later.wait_started(16);
     assert_eq!(Fleet::threads(&later.started).len(), 1);
+    runtime.shutdown_timeout(Duration::from_secs(1));
+}
+
+#[test]
+fn connections_that_cannot_move_spread_over_every_worker_even_when_the_load_is_packed() {
+    let runtime = runtime(1);
+    let first = Fleet::start(&runtime, 8, false);
+    first.wait_started(8);
+    wait_for("the light load to be packed", || {
+        stats(&runtime).active == 1
+    });
+    let fixed = Fleet::spawn(&runtime, 16, false, false);
+    fixed.wait_started(16);
+    assert_eq!(Fleet::threads(&fixed.started).len(), WORKERS);
     runtime.shutdown_timeout(Duration::from_secs(1));
 }
 

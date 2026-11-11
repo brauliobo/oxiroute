@@ -24,7 +24,8 @@ OxiRoute's delta is limited to `src/lib.rs` (and `src/scaling_tests.rs`, `Cargo.
   stealing). Without aged queues it behaves as upstream does.
 - `RuntimeOpts::worker_scaling` (a `ScalingPolicy`, with `connection_age`; the table is a `Table` with the pools and an
   optional `oxiroute_worker_scaling::Scaling`) makes the runtime keep only as many workers active as the load needs:
-  `spawn_connection` places on the active workers only, `wants_relocation` and `relocate_connection` move a connection
+  `spawn_connection` places on the active workers only (`spawn_connection_as(false, ..)`, used for TLS connections that
+  cannot move later, spreads over every worker), `wants_relocation` and `relocate_connection` move a connection
   between two requests to a lighter active worker (the connection's task is handed from one worker's executor to
   another's, see `oxiroute-aged-executor` `move_to`; the caller re-registers the socket), and a controller thread
   (`oxiroute-worker-scaling`) reads each executor's busy time and connection count. The worker executors are then
