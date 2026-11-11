@@ -14,6 +14,7 @@ mod config;
 mod driver;
 mod stream;
 
+pub use crate::conn::{Fields, RequestView};
 pub use config::Config;
 pub use driver::Server;
 pub use stream::Stream;
