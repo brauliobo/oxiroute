@@ -87,11 +87,21 @@ cargo +1.97.1 test -p oxiroute-import --test import_report --test varnish_founda
 cargo +1.97.1 test -p oxiroute --test process_udp_drain --locked --jobs 4
 cargo +1.97.1 test -p oxiroute-rtmp --test amf_hardening --test chunk_interop --locked --jobs 4
 cargo test -p oxiroute --test rtmp_api
+cargo test -p oxiroute --test reverse_http3_golden
 cargo +1.97.1 test -p oxiroute --lib contract:: --locked --jobs 4
 cargo test -p oxiroute --test wire_tls_interop
 cargo test -p oxiroute-rtmp --test recording_store --test recording_worker
 pnpm --dir ui test
 ```
+
+The `reverse_http3_golden` test replays a corpus of reverse HTTP/3 requests (routes, static files, proxying, cache,
+limits, protocol violations) against one daemon and compares the normalised observations with the per-area files in
+`crates/oxiroute-server/tests/fixtures/reverse_http3_golden/`, printing a per-case diff on any difference.
+`OXIROUTE_INTERNAL_TEST_RECORD_GOLDEN=1 cargo test -p oxiroute --test reverse_http3_golden` re-records every area
+file; `OXIROUTE_INTERNAL_TEST_RECORD_CASES=id1,id2,stats` re-records only the listed cases (and the counters), so a
+behaviour change is a deliberate fixture change. Cases marked `tolerance` are compared without their access log
+lines (their content depends on timing); cases marked `deviation` record a difference from the original `h3` crate
+path with its RFC reason.
 
 Use the nearest focused test while iterating. Run the workspace gates before describing the change as
 complete.

@@ -1,6 +1,6 @@
 //! Deterministic load generator: a fixed number of requests over a fixed set of connections.
 //!
-//! Protocols: `h1`, `h1tls`, `h2c`, `h2tls`, `ws` (HTTP upgrade then byte echo) and `tcp` (byte echo).
+//! Protocols: `h1`, `h1tls`, `h2c`, `h2tls`, `h3` (QUIC), `ws` (HTTP upgrade then byte echo) and `tcp` (byte echo).
 //! A warm-up phase opens the connections and sends `--warmup` requests; `--hook-start` runs to
 //! completion, then exactly `--requests` requests are measured; `--hook-stop` runs afterwards.
 
@@ -38,7 +38,7 @@ use tokio::{
 };
 use tokio_rustls::TlsConnector;
 
-use crate::{Flags, flag};
+use crate::{Flags, flag, h3client};
 
 trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
@@ -50,6 +50,7 @@ enum Proto {
     H1Tls,
     H2c,
     H2Tls,
+    H3,
     Ws,
     WsTls,
     Tcp,
@@ -66,6 +67,7 @@ impl std::str::FromStr for Proto {
             "h1tls" => Self::H1Tls,
             "h2c" => Self::H2c,
             "h2tls" => Self::H2Tls,
+            "h3" => Self::H3,
             "ws" => Self::Ws,
             "wstls" => Self::WsTls,
             "tcp" => Self::Tcp,
@@ -94,6 +96,8 @@ struct Spec {
     expect_len: Option<usize>,
     connector: Option<TlsConnector>,
     connect_to: String,
+    /// One client endpoint (UDP socket) per connection, created inside the runtime (`h3` only).
+    endpoints: Vec<quinn::Endpoint>,
     h1_request: Vec<u8>,
     /// Offset of an eight-digit counter in `h1_request` (`--vary`): every request carries a distinct query, so a
     /// cache sees a new key each time.
@@ -133,6 +137,7 @@ impl Stats {
 enum Client {
     H1(Io),
     H2(SendRequest<Full<Bytes>>),
+    H3(h3client::Link),
     Raw(Io),
 }
 
@@ -142,6 +147,7 @@ impl Client {
     fn peer_closed(&mut self) -> bool {
         match self {
             Self::H2(sender) => sender.is_closed(),
+            Self::H3(link) => link.is_closed(),
             Self::H1(io) | Self::Raw(io) => {
                 use futures_util::FutureExt;
                 io.read(&mut [0u8; 1]).now_or_never().is_some()
@@ -253,7 +259,7 @@ fn tls_provider(groups: &str) -> Arc<rustls::crypto::CryptoProvider> {
     })
 }
 
-pub fn tls_connector(alpn: &[u8], version: &str, resume: bool, groups: &str) -> TlsConnector {
+pub fn tls_config(alpn: &[u8], version: &str, resume: bool, groups: &str) -> ClientConfig {
     let provider = tls_provider(groups);
     let versions: &[&rustls::SupportedProtocolVersion] = match version {
         "1.2" => &[&rustls::version::TLS12],
@@ -272,7 +278,11 @@ pub fn tls_connector(alpn: &[u8], version: &str, resume: bool, groups: &str) -> 
     } else {
         Resumption::disabled()
     };
-    TlsConnector::from(Arc::new(config))
+    config
+}
+
+pub fn tls_connector(alpn: &[u8], version: &str, resume: bool, groups: &str) -> TlsConnector {
+    TlsConnector::from(Arc::new(tls_config(alpn, version, resume, groups)))
 }
 
 fn seconds(value: &str, name: &str) -> Duration {
@@ -308,7 +318,7 @@ fn spec_from(flags: &Flags) -> Spec {
             HeaderValue::from_str(value).expect("header value"),
         );
     }
-    let scheme = if proto == Proto::H2Tls { "https" } else { "http" };
+    let scheme = if matches!(proto, Proto::H2Tls | Proto::H3) { "https" } else { "http" };
     Spec {
         proto,
         targets: flag(flags, "target", "127.0.0.1:0".to_owned())
@@ -330,6 +340,7 @@ fn spec_from(flags: &Flags) -> Spec {
             .get("expect-len")
             .map(|value| value.parse().expect("--expect-len")),
         connector,
+        endpoints: Vec::new(),
         h1_request: h1_request(&method, &path, &host, &padding, &body, flag(flags, "chunk-bytes", 0), !new_conn),
         connect_to: flag(flags, "connect-to", String::new()),
         vary_at: vary.then(|| method.len() + 1 + path.len() - 8),
@@ -342,6 +353,11 @@ fn spec_from(flags: &Flags) -> Spec {
 }
 
 async fn connect(spec: &Spec, slot: usize) -> io::Result<Client> {
+    if spec.proto == Proto::H3 {
+        let target = spec.targets[slot % spec.targets.len()];
+        let endpoint = &spec.endpoints[slot % spec.endpoints.len()];
+        return h3client::Link::connect(endpoint, target, &spec.host).await.map(Client::H3);
+    }
     let tcp = TcpStream::connect(spec.targets[slot % spec.targets.len()]).await?;
     tcp.set_nodelay(true)?;
     let mut io: Io = match &spec.connector {
@@ -353,6 +369,7 @@ async fn connect(spec: &Spec, slot: usize) -> io::Result<Client> {
     };
     match spec.proto {
         Proto::H1 | Proto::H1Tls => Ok(Client::H1(io)),
+        Proto::H3 => unreachable!("QUIC clients return before the TCP connect"),
         Proto::Tcp => Ok(Client::Raw(io)),
         Proto::Connect => {
             let destination = &spec.connect_to;
@@ -447,6 +464,14 @@ async fn read_response(io: &mut Io, buf: &mut Vec<u8>) -> io::Result<Outcome> {
     Ok(Outcome { status, body_len: buf.len() - head_end, close })
 }
 
+fn request_for<B>(spec: &Spec, body: B) -> Request<B> {
+    let mut request = Request::new(body);
+    *request.method_mut() = spec.h2_method.clone();
+    *request.uri_mut() = spec.h2_uri.clone();
+    *request.headers_mut() = spec.h2_headers.clone();
+    request
+}
+
 async fn exchange(client: &mut Client, spec: &Spec, scratch: &mut Vec<u8>) -> io::Result<Outcome> {
     scratch.clear();
     match client {
@@ -464,15 +489,16 @@ async fn exchange(client: &mut Client, spec: &Spec, scratch: &mut Vec<u8>) -> io
             read_response(io, scratch).await
         }
         Client::H2(sender) => {
-            let mut request = Request::new(Full::new(spec.body.clone()));
-            *request.method_mut() = spec.h2_method.clone();
-            *request.uri_mut() = spec.h2_uri.clone();
-            *request.headers_mut() = spec.h2_headers.clone();
+            let request = request_for(spec, Full::new(spec.body.clone()));
             sender.ready().await.map_err(io::Error::other)?;
             let response = sender.send_request(request).await.map_err(io::Error::other)?;
             let status = response.status().as_u16();
             let body = response.into_body().collect().await.map_err(io::Error::other)?;
             Ok(Outcome { status, body_len: body.to_bytes().len(), close: false })
+        }
+        Client::H3(link) => {
+            let (status, body_len) = link.request(request_for(spec, ()), &spec.body).await?;
+            Ok(Outcome { status, body_len, close: false })
         }
         Client::Raw(io) => {
             scratch.clear();
@@ -614,6 +640,9 @@ async fn initial_clients(spec: &Spec) -> io::Result<Vec<Option<Client>>> {
             Client::H2(sender) => {
                 clients.extend((0..spec.streams).map(|_| Some(Client::H2(sender.clone()))));
             }
+            Client::H3(link) => {
+                clients.extend((0..spec.streams).map(|_| Some(Client::H3(link.clone()))));
+            }
             other => clients.push(Some(other)),
         }
     }
@@ -680,11 +709,17 @@ async fn drive(spec: Arc<Spec>, flags: &Flags) -> ExitCode {
 }
 
 pub fn run(flags: &Flags) -> ExitCode {
-    let spec = Arc::new(spec_from(flags));
+    let mut spec = spec_from(flags);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(flag(flags, "threads", 2))
         .enable_all()
         .build()
         .expect("runtime");
-    runtime.block_on(drive(spec, flags))
+    runtime.block_on(async {
+        if spec.proto == Proto::H3 {
+            let tls = || h3client::endpoint(tls_config(b"h3", "1.3", false, "default")).expect("quic client endpoint");
+            spec.endpoints = (0..spec.conns).map(|_| tls()).collect();
+        }
+        drive(Arc::new(spec), flags).await
+    })
 }

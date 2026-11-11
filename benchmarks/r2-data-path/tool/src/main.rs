@@ -5,6 +5,7 @@
 //! `key=value` lines. Synchronisation with the outside world is by hooks (`--hook-start` and
 //! `--hook-stop` run to completion before and after the measured phase), never by timers.
 
+mod h3client;
 mod load;
 mod storm;
 mod upstream;

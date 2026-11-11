@@ -67,14 +67,41 @@ pub(crate) enum H3UpstreamError {
     ResourceExhausted,
     #[error("HTTP/3 upstream server name is unavailable")]
     MissingServerName,
+    #[error("upstream pool has no selectable server")]
+    PoolUnavailable,
+    #[error("upstream connection capacity was not available in time")]
+    QueueTimeout,
+    #[error("upstream did not answer in time")]
+    ResponseTimeout,
+    #[error("upstream closed the connection without a complete response")]
+    EmptyResponse,
+    #[error("upstream answered with a malformed response")]
+    JunkResponse,
+    #[error("upstream exchange failed")]
+    Failed,
 }
 
 impl H3UpstreamError {
+    /// Whether a retry policy may consider the request again.
     pub(crate) const fn retryable(&self) -> bool {
+        self.reconnectable()
+            || matches!(
+                self,
+                Self::ResponseTimeout | Self::EmptyResponse | Self::JunkResponse
+            )
+    }
+
+    /// Whether the failure is one of reaching the server, which another address of it may cure.
+    pub(crate) const fn reconnectable(&self) -> bool {
         matches!(
             self,
             Self::Connect | Self::Timeout | Self::RefusedStream | Self::Protocol
         )
+    }
+
+    /// Whether the request never reached the server, so any request may be sent again.
+    pub(crate) const fn request_not_sent(&self) -> bool {
+        matches!(self, Self::Connect | Self::Timeout)
     }
 }
 

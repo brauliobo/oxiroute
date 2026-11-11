@@ -1,0 +1,640 @@
+{
+  "cases": [
+    {
+      "access_log": [],
+      "id": "wire/first-frame-is-empty-data",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"empty DATA frame first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/data-before-headers",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"DATA then HEADERS"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/settings-on-a-request-stream",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"SETTINGS first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/goaway-on-a-request-stream",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"GOAWAY first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/cancel-push-on-a-request-stream",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"CANCEL_PUSH first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/push-promise-from-a-client",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"PUSH_PROMISE first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/max-push-id-on-a-request-stream",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"MAX_PUSH_ID first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/reserved-http2-frame-type-0x2",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"frame type of HTTP/2 with no HTTP/3 meaning"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/reserved-http2-frame-type-0x6",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"frame type of HTTP/2 with no HTTP/3 meaning"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/reserved-http2-frame-type-0x8",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"frame type of HTTP/2 with no HTTP/3 meaning"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/reserved-http2-frame-type-0x9",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"frame type of HTTP/2 with no HTTP/3 meaning"}]
+    },
+    {
+      "access_log": ["h3 web POST 200","h3 web GET 200"],
+      "id": "wire/headers-after-trailers",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "HEADERS DATA HEADERS HEADERS"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200","h3 web GET 200"],
+      "id": "wire/data-after-trailers",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "HEADERS DATA HEADERS DATA"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/truncated-frame-at-the-end-of-the-stream",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "HEADERS then a DATA frame cut short"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/baseline-request",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "HEADERS"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/unknown-frames-before-headers",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "unknown frame types then HEADERS"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200","h3 web GET 200"],
+      "id": "wire/unknown-frame-between-data-frames",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "helloworld",
+              "headers": [["content-length","10"]],
+              "method": "POST",
+              "uri": "https://unknown-frame-between-data-frames.wire.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "HEADERS DATA unknown DATA"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200","h3 web GET 200"],
+      "id": "wire/body-in-many-data-frames",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": {"fnv1a64":"5b7c27bd39c9f885","len":5000},
+              "headers": [["content-length","5000"]],
+              "method": "POST",
+              "uri": "https://body-in-many-data-frames.wire.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "three DATA frames of 5000 bytes"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200","h3 web GET 200"],
+      "deviation": "RFC 9114 7.2.1 allows empty DATA frames; the h3 crate path rejected the body with 400, the body now reaches the origin",
+      "id": "wire/empty-data-frame-in-a-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"abc","headers":[["content-length","3"]],"method":"POST","uri":"https://empty-data-frame-in-a-body.wire.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "DATA of 2 bytes, an empty DATA, DATA of 1 byte"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/trailers-without-data",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://trailers-without-data.wire.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "HEADERS HEADERS(trailers)"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200","h3 web GET 200"],
+      "id": "wire/unknown-frame-after-trailers",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "HEADERS DATA HEADERS unknown"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": [],
+      "id": "wire/control-first-frame-is-goaway",
+      "steps": [{"connection_after":{"closed":266},"outcome":{"connection_closed":266},"request":"GOAWAY first on the control stream"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/control-settings-twice",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"SETTINGS, SETTINGS"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/settings-reserved-http2-identifier",
+      "steps": [{"connection_after":{"closed":265},"outcome":{"connection_closed":265},"request":"SETTINGS with identifier 0x2"}]
+    },
+    {
+      "access_log": [],
+      "deviation": "RFC 9114 7.2.4: a duplicate setting identifier may be a connection error of H3_SETTINGS_ERROR; the h3 crate path ignored it",
+      "id": "wire/settings-duplicate-identifier",
+      "steps": [{"connection_after":{"closed":265},"outcome":{"connection_closed":265},"request":"SETTINGS with identifier 0x21 twice"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/goaway-id-increases",
+      "steps": [{"connection_after":{"closed":264},"outcome":{"connection_closed":264},"request":"SETTINGS GOAWAY 8 GOAWAY 12"}]
+    },
+    {
+      "access_log": [],
+      "deviation": "RFC 9114 7.2.7: a smaller MAX_PUSH_ID than before is a connection error of H3_ID_ERROR; the h3 crate path ignored it",
+      "id": "wire/max-push-id-decreases",
+      "steps": [{"connection_after":{"closed":264},"outcome":{"connection_closed":264},"request":"SETTINGS MAX_PUSH_ID 8 then 4"}]
+    },
+    {
+      "access_log": [],
+      "deviation": "RFC 9114 7.2.3: CANCEL_PUSH for a push ID never granted is a connection error of H3_ID_ERROR; the h3 crate path ignored it",
+      "id": "wire/cancel-push-without-a-push-id-grant",
+      "steps": [{"connection_after":{"closed":264},"outcome":{"connection_closed":264},"request":"SETTINGS CANCEL_PUSH 0"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/control-data-frame",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"SETTINGS DATA on the control stream"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/control-headers-frame",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"SETTINGS HEADERS on the control stream"}]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/control-unknown-frames-are-ignored",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"SETTINGS, unknown frame"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/settings-unknown-identifier-is-ignored",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"SETTINGS with identifier 0x21"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/control-stream-without-settings",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "request while SETTINGS is missing"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/no-control-stream",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "request without a control stream"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": [],
+      "id": "wire/control-stream-is-finished",
+      "steps": [{"connection_after":{"closed":260},"outcome":{"connection_closed":260},"request":"FIN on the control stream"}]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/control-stream-is-reset",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"RESET_STREAM on the control stream"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": [],
+      "deviation": "RFC 9114 6.2.2: a push stream opened by a client is a connection error of H3_STREAM_CREATION_ERROR; the h3 crate path ignored it",
+      "id": "wire/push-stream-from-a-client",
+      "steps": [{"connection_after":{"closed":259},"outcome":{"connection_closed":259},"request":"stream type 0x01"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/second-control-stream",
+      "steps": [{"connection_after":{"closed":259},"outcome":{"connection_closed":259},"request":"second stream type 0x00"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/second-qpack-encoder-stream",
+      "steps": [{"connection_after":{"closed":259},"outcome":{"connection_closed":259},"request":"two streams type 0x02"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/second-qpack-decoder-stream",
+      "steps": [{"connection_after":{"closed":259},"outcome":{"connection_closed":259},"request":"two streams type 0x03"}]
+    },
+    {
+      "access_log": [],
+      "deviation": "RFC 9204 4.4.1: acknowledging a section that was never sent is a connection error of QPACK_DECODER_STREAM_ERROR; the h3 crate path ignored it",
+      "id": "wire/qpack-section-acknowledgment-for-nothing",
+      "steps": [{"connection_after":{"closed":514},"outcome":{"connection_closed":514},"request":"decoder instruction for no section"}]
+    },
+    {
+      "access_log": [],
+      "deviation": "RFC 9204 4.4.3: an Insert Count Increment beyond the inserts is a connection error of QPACK_DECODER_STREAM_ERROR; the h3 crate path ignored it",
+      "id": "wire/qpack-insert-count-increment-for-nothing",
+      "steps": [{"connection_after":{"closed":514},"outcome":{"connection_closed":514},"request":"decoder instruction without inserts"}]
+    },
+    {
+      "access_log": [],
+      "deviation": "RFC 9204 4.3.1: a table capacity above the advertised maximum is a connection error of QPACK_ENCODER_STREAM_ERROR; the h3 crate path ignored it",
+      "id": "wire/qpack-set-capacity-above-the-limit",
+      "steps": [{"connection_after":{"closed":513},"outcome":{"connection_closed":513},"request":"encoder instruction: capacity 220"}]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/unknown-unidirectional-stream-types",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "reserved and unknown stream types, then a request"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": [],
+      "deviation": "RFC 9204 4.3.1: the capacity instruction already exceeds the advertised maximum of 0 and is a connection error of QPACK_ENCODER_STREAM_ERROR; the h3 crate path accepted it and failed at the reference with QPACK_DECOMPRESSION_FAILED",
+      "id": "wire/qpack-dynamic-table-use",
+      "steps": [{"connection_after":{"closed":513},"outcome":{"connection_closed":513},"request":"table capacity 220, one insert, one reference"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/qpack-reference-without-an-insert",
+      "steps": [{"connection_after":{"closed":512},"outcome":{"connection_closed":512},"request":"section needing an insert that never arrived"}]
+    },
+    {
+      "access_log": [],
+      "deviation": "RFC 9204 4.1.2 and RFC 7541 5.2: an invalid Huffman string is a decoding error, a connection error of QPACK_DECOMPRESSION_FAILED; the h3 crate path reset the stream with H3_MESSAGE_ERROR",
+      "id": "wire/qpack-invalid-huffman",
+      "steps": [{"connection_after":{"closed":512},"outcome":{"connection_closed":512},"request":"Huffman string with invalid padding"}]
+    },
+    {
+      "access_log": ["h3 web POST 400","h3 web GET 200"],
+      "id": "wire/client-resets-the-stream-mid-body",
+      "steps": [
+        {"connection_after":"open","outcome":{"reset_sent":true},"request":"POST with 10 of 100 bytes, then RESET_STREAM"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "whether and how an abandoned request is logged depends on when the server notices the reset"
+    },
+    {
+      "access_log": ["h3 web GET -","h3 web GET 200"],
+      "id": "wire/client-stops-the-response",
+      "steps": [
+        {"connection_after":"open","outcome":{"stop_sent":true},"request":"STOP_SENDING on a response"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "whether and how an abandoned response is logged depends on when the server notices the stop"
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/stream-finished-without-a-request",
+      "steps": [
+        {"connection_after":"open","outcome":{"stream_reset":269},"request":"FIN with no frames"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "accept": [],
+      "access_log": [
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -"
+      ],
+      "id": "limits/bidirectional-stream-limit",
+      "steps": [{"outcome":{"next_stream_blocked":true,"streams_opened":128},"request":"128 pending requests, then one more stream"}],
+      "tolerance": "requests cancelled when the connection closes are logged or not depending on timing"
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "limits/unidirectional-stream-limit",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"streams_opened_with_the_control_stream":16},
+          "request": "unidirectional streams until opening blocks"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": [
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200"
+      ],
+      "id": "limits/listener-connection-limit",
+      "steps": [
+        {"outcome":{"statuses":[200,200,200,200,200,200,200,200]},"request":"the connections up to the limit are served"},
+        {"outcome":{"connection_closed":256},"request":"one more connection"},
+        {"outcome":{"rejected_connections":"1"},"request":"rejected connections counted"},
+        {
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "a connection after one was released"
+        }
+      ]
+    },
+    {
+      "access_log": [
+        "h3 web GET 308",
+        "h3 web GET 401",
+        "h3 web POST 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200"
+      ],
+      "id": "access-log/other",
+      "steps": []
+    }
+  ]
+}

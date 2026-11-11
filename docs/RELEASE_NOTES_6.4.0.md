@@ -22,6 +22,9 @@ conservative compatibility claims.
   zero; 2,048 busy connections: 140 MB to 86 MB).
 - **TLS and HTTP/2.** Handshakes run on `tls_handshake_threads` threads away from the workers; the HTTP/2 server is a
   purpose-built session (`oxiroute-h2`) instead of the `h2` crate: 10% to 23% fewer instructions per request.
+- **HTTP/3.** Reverse `http3` listeners are served by a purpose-built HTTP/3 layer (`oxiroute-h3`) instead of the generic
+  `h3` crate: 33% fewer instructions per 1 KiB request, one system call per request fewer, stricter RFC 9114 and 9204
+  handling. A route of an `http3` listener can proxy to HTTP/1.1 and HTTP/2 origins like an `https` listener.
 - **Kernel offload.** Bulk data of a TCP relay between plain sockets is moved with `splice`, and static files of 64 KiB or
   more over plain HTTP/1.1 are sent with `sendfile`.
 - **Pingora 0.9.1.** The vendored Pingora crates are rebased; the advisories RUSTSEC-2026-0388, RUSTSEC-2026-0390 and
@@ -64,6 +67,8 @@ conservative compatibility claims.
   the body are two writes instead of one `writev`; TLS, HTTP/2, HTTP/3 and gzip-compressed responses are unchanged, as are
   file systems without `RWF_NOWAIT` other than tmpfs and ramfs. One more system call (`preadv2` probe) per large static
   request.
+- **HTTP/3 listeners.** See [the HTTP/3 section](#http3) for the stricter request handling, the origins behind `http3`
+  listeners and the configuration that is now refused.
 - **Timeouts** beyond a threshold use Tokio's timer instead of the clock thread (Pingora 0.9).
 - **Environment variables** that now have a configuration option keep working as fallbacks that the configuration
   overrides: `OXIROUTE_MANAGEMENT_TOKEN_FILE` (`management.token_file`), `OXIROUTE_AUDIT_DIR` and `OXIROUTE_AUDIT_MAX_*`
@@ -135,6 +140,51 @@ Details: [TLS handshake offload and the HTTP/2 session](developer/PERF_6_4_TLS_H
   OpenSSL (the hybrid group stays preferred when the list is absent); when a client sends no key share for a listed group,
   the retry names the client's first listed group, not the list's first as on OpenSSL. Upstream TLS, ACME and HTTP/3 keep their libraries. HTTP/3 now reads its server
   certificate from a key that is built once per certificate generation instead of on every handshake.
+
+## HTTP/3
+
+Details: [HTTP/3 layer and origins](developer/PERF_6_4_HTTP3.md).
+
+- **Cheaper requests.** The reverse `http3` listener reads and answers requests with a purpose-built layer over QUIC
+  streams (`oxiroute-h3`): a 1 KiB fixed response needs 33% fewer user-space instructions (70,279 to 46,672), a request on
+  an otherwise idle connection 32% fewer (88,352 to 59,689), 64 KiB responses 5% fewer and a new QUIC connection per
+  request 3% fewer (the handshake dominates), with 1.24 instead of 2.58 system calls per request. The upstream HTTP/3
+  client and `forward_http3` still use the `h3` crate.
+- **Origins behind `http3` listeners.** A proxy route of a service attached to an `http3` listener may use a pool that
+  speaks HTTP/1.1 or HTTP/2 (plain TCP, TLS or Unix socket), with the pool's connection reuse, TLS policy, timeouts,
+  retries, passive health and the route's header, path, response and cache policy. The response is buffered, bounded by
+  the 64 MiB HTTP/3 response limit (a larger one is a 502), and HTTP/1.1 origin trailers are not forwarded. A service
+  that uses an HTTP/1.1 or HTTP/2 pool can be shared between an `http3` listener and the TCP listeners; a service with an
+  exact HTTP/3 pool still cannot.
+- **Refused at validation.** A route of a service attached to an `http3` listener that configures a retry budget,
+  rescue, pool selection, affinity, a queue class or queue headers is refused (the HTTP/3 path never applied them, and
+  used to ignore them silently).
+- **Malformed requests are reset.** A request with a connection-specific field (`Connection`, `Keep-Alive`,
+  `Proxy-Connection`, `Upgrade`, `Transfer-Encoding`, or `TE` other than `trailers`), a repeated `:method` or a response
+  pseudo-header field is reset with `H3_MESSAGE_ERROR` instead of being served or forwarded to the origin.
+- **Oversized field sections.** A request head over 16 KiB is answered 431 with the listener's own error body (the `h3`
+  crate answered with an empty one); every field counts 32 bytes besides its name and value, so hundreds of tiny fields
+  are refused too.
+- **Request bodies.** An empty `DATA` frame inside a request body reaches the origin instead of failing the request with
+  400.
+- **Protocol violations close the connection** as RFC 9114 and RFC 9204 mandate: a duplicate `SETTINGS` identifier
+  (`H3_SETTINGS_ERROR`), a decreasing `MAX_PUSH_ID` or a `CANCEL_PUSH` that was never granted (`H3_ID_ERROR`), a push
+  stream opened by the client (`H3_STREAM_CREATION_ERROR`), a QPACK acknowledgment or insert count increment for nothing
+  (`QPACK_DECODER_STREAM_ERROR`), a QPACK table capacity above the announced 0 (`QPACK_ENCODER_STREAM_ERROR`) and an
+  invalid Huffman string (`QPACK_DECOMPRESSION_FAILED`). Before, the `h3` crate ignored most of them.
+- **QPACK without a dynamic table.** The listener announces a QPACK table capacity of 0: a client's request fields are
+  sent as literals every time (cookies repeat on the wire); responses are unaffected.
+- **Unsendable responses.** A response whose head cannot be sent aborts the stream with `H3_REQUEST_CANCELLED` instead of
+  finishing it without a response.
+- **Requests while a configuration generation drains** are refused with `H3_REQUEST_REJECTED`, so clients send them
+  again on the new generation.
+- **Retries.** A request that never left the proxy because the connection to the server was refused (any method) is sent
+  to the next server of the pool; the `h3` crate path answered 502 for a POST.
+- **Abuse limits.** A connection that keeps resetting requests (more than 1,000 within 10 seconds) is closed with
+  `H3_EXCESSIVE_LOAD`; a `HEADERS` frame over four times the field section limit resets its stream before the payload is
+  read.
+- **Not changed.** 0-RTT and connection migration stay off, one endpoint still runs on one thread, and compression,
+  upgrades and CONNECT-UDP over HTTP/3 stay unsupported.
 
 ## Kernel offload
 
@@ -256,6 +306,8 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
 ## Upgrade notes
 
 - No configuration change is needed. A 6.3.1 configuration loads unchanged; the new options are optional.
+- A configuration whose `http3` service has a route with a retry budget, rescue, pool selection, affinity or queue
+  class no longer validates; remove the setting (it had no effect on HTTP/3).
 - Restart or reload as usual. `http_fast_lane = false` returns every request to the classic path.
 - Operators who set `RUST_LOG`, `OXIROUTE_AUDIT_*` or `OXIROUTE_MANAGEMENT_TOKEN_FILE` keep working; set the options when
   convenient. Supervised workers do not inherit `RUST_LOG`: use `log_filter`.

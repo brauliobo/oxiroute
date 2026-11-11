@@ -1,0 +1,792 @@
+{
+  "cases": [
+    {
+      "access_log": ["h3 web GET 200","h3 web HEAD 200"],
+      "id": "proxy-response/status-200",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-200"]],
+              "method": "GET",
+              "uri": "https://status-200.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"status-200","headers":[["content-length","10"],["x-origin-status","200"]],"status":200},
+          "request": "GET https://status-200.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-200"]],
+              "method": "HEAD",
+              "uri": "https://status-200.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","10"],["x-origin-status","200"]],"status":200},
+          "request": "HEAD https://status-200.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 201","h3 web HEAD 201"],
+      "id": "proxy-response/status-201",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-201"]],
+              "method": "GET",
+              "uri": "https://status-201.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"status-201","headers":[["content-length","10"],["x-origin-status","201"]],"status":201},
+          "request": "GET https://status-201.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-201"]],
+              "method": "HEAD",
+              "uri": "https://status-201.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","10"],["x-origin-status","201"]],"status":201},
+          "request": "HEAD https://status-201.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 204","h3 web HEAD 204"],
+      "id": "proxy-response/status-204",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-204"]],
+              "method": "GET",
+              "uri": "https://status-204.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["x-origin-status","204"]],"status":204},
+          "request": "GET https://status-204.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-204"]],
+              "method": "HEAD",
+              "uri": "https://status-204.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["x-origin-status","204"]],"status":204},
+          "request": "HEAD https://status-204.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 205","h3 web HEAD 205"],
+      "id": "proxy-response/status-205",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-205"]],
+              "method": "GET",
+              "uri": "https://status-205.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["x-origin-status","205"]],"status":205},
+          "request": "GET https://status-205.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-205"]],
+              "method": "HEAD",
+              "uri": "https://status-205.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["x-origin-status","205"]],"status":205},
+          "request": "HEAD https://status-205.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 304","h3 web HEAD 304"],
+      "id": "proxy-response/status-304",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-304"]],
+              "method": "GET",
+              "uri": "https://status-304.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["x-origin-status","304"]],"status":304},
+          "request": "GET https://status-304.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-304"]],
+              "method": "HEAD",
+              "uri": "https://status-304.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["x-origin-status","304"]],"status":304},
+          "request": "HEAD https://status-304.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 400","h3 web HEAD 400"],
+      "id": "proxy-response/status-400",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-400"]],
+              "method": "GET",
+              "uri": "https://status-400.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"status-400","headers":[["content-length","10"],["x-origin-status","400"]],"status":400},
+          "request": "GET https://status-400.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-400"]],
+              "method": "HEAD",
+              "uri": "https://status-400.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","10"],["x-origin-status","400"]],"status":400},
+          "request": "HEAD https://status-400.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 404","h3 web HEAD 404"],
+      "id": "proxy-response/status-404",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-404"]],
+              "method": "GET",
+              "uri": "https://status-404.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"status-404","headers":[["content-length","10"],["x-origin-status","404"]],"status":404},
+          "request": "GET https://status-404.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-404"]],
+              "method": "HEAD",
+              "uri": "https://status-404.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","10"],["x-origin-status","404"]],"status":404},
+          "request": "HEAD https://status-404.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 500","h3 web HEAD 500"],
+      "id": "proxy-response/status-500",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-500"]],
+              "method": "GET",
+              "uri": "https://status-500.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"status-500","headers":[["content-length","10"],["x-origin-status","500"]],"status":500},
+          "request": "GET https://status-500.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-500"]],
+              "method": "HEAD",
+              "uri": "https://status-500.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","10"],["x-origin-status","500"]],"status":500},
+          "request": "HEAD https://status-500.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 502","h3 web HEAD 502"],
+      "id": "proxy-response/status-502",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-502"]],
+              "method": "GET",
+              "uri": "https://status-502.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"status-502","headers":[["content-length","10"],["x-origin-status","502"]],"status":502},
+          "request": "GET https://status-502.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-502"]],
+              "method": "HEAD",
+              "uri": "https://status-502.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","10"],["x-origin-status","502"]],"status":502},
+          "request": "HEAD https://status-502.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 503","h3 web HEAD 503"],
+      "id": "proxy-response/status-503",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-503"]],
+              "method": "GET",
+              "uri": "https://status-503.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"status-503","headers":[["content-length","10"],["x-origin-status","503"]],"status":503},
+          "request": "GET https://status-503.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-503"]],
+              "method": "HEAD",
+              "uri": "https://status-503.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","10"],["x-origin-status","503"]],"status":503},
+          "request": "HEAD https://status-503.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy-response/headers",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","headers"]],
+              "method": "GET",
+              "uri": "https://headers.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {
+            "body": "headers",
+            "headers": [
+              ["content-length","7"],
+              ["set-cookie","sid=1; Path=/internal; Secure; SameSite=Strict"],
+              ["set-cookie","other=2; Path=/internal"],
+              ["x-add","upstream"],
+              ["x-dup","a"],
+              ["x-dup","b"],
+              ["x-remove","stale"],
+              ["x-set","upstream"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://headers.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy-response/hop-by-hop-headers-are-dropped",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","headers-hop"]],
+              "method": "GET",
+              "uri": "https://hop-by-hop-headers-are-dropped.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"hop","headers":[["content-length","3"],["x-kept","yes"]],"status":200},
+          "request": "GET https://hop-by-hop-headers-are-dropped.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web HEAD 200"],
+      "id": "proxy-response/trailers",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","trailers"]],
+              "method": "GET",
+              "uri": "https://trailers.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {
+            "body": "with-trailers",
+            "headers": [["content-length","13"]],
+            "status": 200,
+            "trailers": [["x-origin-trailer","complete"],["x-second","two"]]
+          },
+          "request": "GET https://trailers.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","trailers"]],
+              "method": "HEAD",
+              "uri": "https://trailers.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","13"]],"status":200},
+          "request": "HEAD https://trailers.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy-response/trailers-with-hop-by-hop-fields",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","trailers-hop"]],
+              "method": "GET",
+              "uri": "https://trailers-with-hop-by-hop-fields.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"bad-trailers","headers":[["content-length","12"]],"status":200,"trailers":[["x-kept","yes"]]},
+          "request": "GET https://trailers-with-hop-by-hop-fields.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web HEAD 200"],
+      "id": "proxy-response/large-body",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","big"]],
+              "method": "GET",
+              "uri": "https://large-body.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":{"fnv1a64":"6081ebb93b7079c5","len":204800},"headers":[["content-length","204800"]],"status":200},
+          "request": "GET https://large-body.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","big"]],
+              "method": "HEAD",
+              "uri": "https://large-body.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","204800"]],"status":200},
+          "request": "HEAD https://large-body.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web HEAD 200"],
+      "id": "proxy-response/no-content-length",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","nolength"]],
+              "method": "GET",
+              "uri": "https://no-content-length.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"chunk-achunk-b","headers":[["content-length","14"]],"status":200},
+          "request": "GET https://no-content-length.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","nolength"]],
+              "method": "HEAD",
+              "uri": "https://no-content-length.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","0"]],"status":200},
+          "request": "HEAD https://no-content-length.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web HEAD 200"],
+      "id": "proxy-response/empty-body",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","empty"]],
+              "method": "GET",
+              "uri": "https://empty-body.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","0"]],"status":200},
+          "request": "GET https://empty-body.proxy-response.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","empty"]],
+              "method": "HEAD",
+              "uri": "https://empty-body.proxy-response.test/p/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","0"]],"status":200},
+          "request": "HEAD https://empty-body.proxy-response.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "body/at-the-route-limit",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"zzzzzzzz","headers":[["content-length","8"]],"method":"POST","uri":"https://at-the-route-limit.body.test/limit/x"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "POST https://at-the-route-limit.body.test/limit/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 413"],
+      "id": "body/over-the-route-limit",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request body exceeds the configured limit\n","headers":[["content-length","42"]],"status":413},
+          "request": "POST https://over-the-route-limit.body.test/limit/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 413","h3 web GET 200"],
+      "id": "body/over-the-limit-streamed",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request body exceeds the configured limit\n","headers":[["content-length","42"]],"status":413},
+          "request": "streamed body of 10 bytes"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "body/within-the-limit-in-chunks",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "aaaabbbb",
+              "headers": [["content-length","8"]],
+              "method": "POST",
+              "uri": "https://within-the-limit-in-chunks.body.test/limit/x"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "POST https://within-the-limit-in-chunks.body.test/limit/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 413"],
+      "id": "body/over-the-limit-by-content-length",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request body exceeds the configured limit\n","headers":[["content-length","42"]],"status":413},
+          "request": "POST https://over-the-limit-by-content-length.body.test/limit/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 413"],
+      "id": "body/over-the-limit-by-content-length-with-the-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request body exceeds the configured limit\n","headers":[["content-length","42"]],"status":413},
+          "request": "POST https://over-the-limit-by-content-length-with-the-body.body.test/limit/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 413","h3 web GET 200"],
+      "id": "body/over-the-limit-then-a-valid-request",
+      "steps": [
+        {
+          "outcome": {"body":"request body exceeds the configured limit\n","headers":[["content-length","42"]],"status":413},
+          "request": "POST https://over-the-limit-then-a-valid-request.body.test/limit/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"]],
+              "method": "GET",
+              "uri": "https://over-the-limit-then-a-valid-request.body.test/limit/x"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://over-the-limit-then-a-valid-request.body.test/limit/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "body/service-limit-reached",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": {"fnv1a64":"500303219cda2325","len":65536},
+              "headers": [["content-length","65536"]],
+              "method": "POST",
+              "uri": "https://service-limit-reached.body.test/p/x"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "POST https://service-limit-reached.body.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 413"],
+      "id": "body/service-limit-exceeded",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request body exceeds the configured limit\n","headers":[["content-length","42"]],"status":413},
+          "request": "POST https://service-limit-exceeded.body.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "body/bound-is-not-applied-to-fixed-routes",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "POST https://bound-is-not-applied-to-fixed-routes.body.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 400"],
+      "id": "content-length/not-a-number",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request content-length is invalid\n","headers":[["content-length","34"]],"status":400},
+          "request": "POST https://not-a-number.content-length.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 400"],
+      "id": "content-length/negative",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request content-length is invalid\n","headers":[["content-length","34"]],"status":400},
+          "request": "POST https://negative.content-length.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "content-length/plus-sign",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"12345","headers":[["content-length","5"]],"method":"POST","uri":"https://plus-sign.content-length.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "POST https://plus-sign.content-length.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 400"],
+      "id": "content-length/trailing-space",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request content-length is invalid\n","headers":[["content-length","34"]],"status":400},
+          "request": "POST https://trailing-space.content-length.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 400"],
+      "id": "content-length/empty",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request content-length is invalid\n","headers":[["content-length","34"]],"status":400},
+          "request": "POST https://empty.content-length.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 400"],
+      "id": "content-length/duplicated-equal",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request content-length is invalid\n","headers":[["content-length","34"]],"status":400},
+          "request": "POST https://duplicated-equal.content-length.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 400"],
+      "id": "content-length/duplicated-different",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request content-length is invalid\n","headers":[["content-length","34"]],"status":400},
+          "request": "POST https://duplicated-different.content-length.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 400"],
+      "id": "content-length/list",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request content-length is invalid\n","headers":[["content-length","34"]],"status":400},
+          "request": "POST https://list.content-length.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 400"],
+      "id": "content-length/shorter-than-the-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request body is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "POST https://shorter-than-the-body.content-length.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 400"],
+      "id": "content-length/longer-than-the-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request body is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "POST https://longer-than-the-body.content-length.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "content-length/leading-zeros",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"12345","headers":[["content-length","5"]],"method":"POST","uri":"https://leading-zeros.content-length.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "POST https://leading-zeros.content-length.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "content-length/on-a-bodyless-get",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://on-a-bodyless-get.content-length.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://on-a-bodyless-get.content-length.test/p/echo"
+        }
+      ]
+    }
+  ]
+}

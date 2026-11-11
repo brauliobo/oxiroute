@@ -44,6 +44,8 @@ are unavailable, while detected but broken tooling or a crashing/failed target r
 | `h1_head` | Fast-lane HTTP/1 head scanners and writers: `Head` agrees with httparse, prefixes stay partial, written heads scan again | 128 KiB |
 | `hpack` | HPACK header block decoding of arbitrary bytes and encoder-to-decoder round trips with table size changes | 64 KiB |
 | `h2_frames` | `oxiroute-h2` server connection: frame codec, HPACK, stream state, flow control, abuse limits, and the poll-style stream API | 64 KiB |
+| `h3_qpack` | `oxiroute-h3` QPACK request and trailer sections of arbitrary bytes (static table and literals only), and response encoder-to-decoder round trips | 64 KiB |
+| `h3_frames` | `oxiroute-h3` request-stream and control-stream frame parsers, fed from memory at arbitrary chunk boundaries, plus SETTINGS parsing | 64 KiB |
 
 Each parser receives a fresh state per input. The RTMP target limits are intentionally below the
 production protocol ceilings so a local smoke run remains bounded; the production parser limits
@@ -98,6 +100,12 @@ single review-friendly trailing line ending; this keeps binary protocol seeds re
 - `h2_frames` feeds arbitrary bytes, in fragments, into the sans-IO `oxiroute_h2::conn::Connection`, drives
   accepted streams through its poll-style API with a no-op waker, and checks that the output parses as
   frames. The async driver, TLS, and real sockets are not covered.
+- `h3_qpack` decodes arbitrary bytes as `oxiroute-h3` request and trailer sections (no dynamic table: any
+  reference to one must fail), checks the head builder against the line decoder, and round-trips encoded
+  response sections. The QPACK encoder and decoder streams are not covered.
+- `h3_frames` drives the I/O-free request-stream and control-stream parsers of `oxiroute-h3` with arbitrary
+  bytes and asserts that the result does not depend on how the bytes are cut into chunks. The quinn driver,
+  TLS, and real sockets are not covered.
 - `http1` covers Pingora's public HTTP/1 request and response sessions, header normalization, and
   body/chunk framing over memory streams. It does not claim daemon application routing, connection
   lifecycle, or socket-level wire interoperability.

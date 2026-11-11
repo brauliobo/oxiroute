@@ -9,6 +9,11 @@ Every feature is an independent A/B switch on top of the minimal reverse-proxy c
   forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa tls_kx upstream_h2 upstream_tls l4 stats nginx_host lc wrr
   p2c first auth_bearer auth_basic_apr1 auth_basic_bcrypt redirect path_rewrite cookie_rewrite affinity_cookie
   affinity_hash affinity_header select gzip_l<level> cache_revalidate forward_connect hc_tcp hc_http hc_ms_<interval> canary h2_win_old
+  h3 fixed_b1k fixed_b64k
+
+`h3` serves the service on an `http3` UDP listener (TLS 1.3, ALPN h3, self-signed development certificate; routes get
+the request buffering and body bound that HTTP/3 requires). `fixed_b1k` and `fixed_b64k` answer `/fixed` with a body of
+that size and leave out the proxy route (without them an `h3` service proxies to the HTTP/1.1 origin pool).
 """
 
 import argparse
@@ -125,12 +130,19 @@ def build(args):
     if on("respbuf"):
         route_policy.update({"response_buffering": True, "max_request_body_bytes": 10485760})
 
+    h3_fixed = on("fixed_b1k") or on("fixed_b64k")
     routes = []
     if on("redirect"):
         routes.append({
             "path": {"kind": "segment_prefix", "value": "/redirect"},
             "methods": [],
             "action": {"type": "redirect", "status": 301, "location": {"kind": "literal", "value": "https://example.com/"}},
+        })
+    if h3_fixed:
+        routes.append({
+            "path": {"kind": "segment_prefix", "value": "/fixed"},
+            "methods": [],
+            "action": {"type": "fixed_response", "status": 200, "body": "x" * (1024 if on("fixed_b1k") else 65536)},
         })
     if on("fixed"):
         routes.append({
@@ -156,7 +168,11 @@ def build(args):
             "type": "basic_htpasswd_file", "htpasswd_file_path": f"{args.run_dir}/htpasswd", "realm": "bench"}
     if route_policy:
         proxy_route["policy"] = route_policy
-    routes.append(proxy_route)
+    if not h3_fixed:
+        routes.append(proxy_route)
+    if on("h3"):
+        for route in routes:
+            route["policy"] = {"request_buffering": True, "max_request_body_bytes": 10485760}
 
     service = {
         "name": "bench",
@@ -234,7 +250,9 @@ def build(args):
         "rtmp_services": [],
         "l4_services": [],
     }
-    if on("tls") or on("tls_cache") or on("tls_tickets") or on("tls_rsa") or on("tls_kx"):
+    if on("h3"):
+        listener.update(protocol="http3", bind={"type": "udp", "address": f"127.0.0.1:{args.proxy_port}"})
+    if on("tls") or on("tls_cache") or on("tls_tickets") or on("tls_rsa") or on("tls_kx") or on("h3"):
         key_type = "rsa_2048" if on("tls_rsa") else "ecdsa_p256"
         config["certificates"] = [{
             "name": "bench-cert",
@@ -250,8 +268,8 @@ def build(args):
             "name": "bench-tls",
             "certificates": ["bench-cert"],
             "default_certificate": "bench-cert",
-            "min_version": "1.2",
-            "alpn": ["h2", "http/1.1"],
+            "min_version": "1.3" if on("h3") else "1.2",
+            "alpn": ["h3"] if on("h3") else ["h2", "http/1.1"],
             "policy": tls_policy,
         }]
         listener["tls_profile"] = "bench-tls"

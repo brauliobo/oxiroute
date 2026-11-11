@@ -559,6 +559,17 @@ fn validate_http3_listener(
         }
         match &route.action {
             HttpRouteAction::Proxy { policy, .. } => {
+                if policy.retry.budget.is_some()
+                    || policy.rescue.is_some()
+                    || policy.select.is_some()
+                    || policy.affinity.is_some()
+                    || policy.queue_class.is_some()
+                    || policy.queue_headers
+                {
+                    return Err(invalid(
+                        "HTTP/3 reverse routes do not support retry budgets, rescue, pool selection, affinity or queue classes",
+                    ));
+                }
                 if policy.request_headers.iter().any(|mutation| {
                     matches!(
                         mutation,
@@ -626,28 +637,17 @@ pub(super) fn validate_h3_upstream_usage(
             }
             continue;
         };
-        let mut uses_h3_pool = false;
         for route in &service.routes {
             let HttpRouteAction::Proxy { upstream_pool, .. } = &route.action else {
                 continue;
             };
-            let Some(pool) = pools.get(upstream_pool.as_str()) else {
+            if !pools.contains_key(upstream_pool.as_str()) {
                 return Err(ConfigError::InvalidListenerTransport {
                     listener: http3_listener.name.clone(),
                     protocol: Protocol::Http3,
-                    detail: "HTTP/3 reverse routes require a resolvable exact HTTP/3 upstream pool",
-                });
-            };
-            if pool.http_versions.min != HttpVersion::Http3
-                || pool.http_versions.max != HttpVersion::Http3
-            {
-                return Err(ConfigError::InvalidListenerTransport {
-                    listener: http3_listener.name.clone(),
-                    protocol: Protocol::Http3,
-                    detail: "HTTP/3 reverse routes require an exact HTTP/3 upstream pool",
+                    detail: "HTTP/3 reverse routes require a resolvable upstream pool",
                 });
             }
-            uses_h3_pool = true;
         }
         if uses_h3_pool
             && service_listeners

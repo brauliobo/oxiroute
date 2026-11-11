@@ -20,6 +20,40 @@ mod table;
 pub use decoder::Decoder;
 pub use encoder::Encoder;
 
+/// Primitives the HTTP/3 QPACK codec shares with HPACK (RFC 9204 uses the RFC 7541 Huffman code and integers).
+pub mod shared {
+    /// Bytes the Huffman form of `src` takes.
+    #[must_use]
+    #[inline]
+    pub fn huffman_encoded_len(src: &[u8]) -> usize {
+        super::huffman::encoded_len(src)
+    }
+
+    /// Appends the Huffman form of `src`.
+    #[inline]
+    pub fn huffman_encode(src: &[u8], out: &mut Vec<u8>) {
+        super::huffman::encode(src, out);
+    }
+
+    /// Appends the decoded form of `src`, or `false` when it is not valid Huffman data.
+    #[inline]
+    pub fn huffman_decode(src: &[u8], out: &mut Vec<u8>) -> bool {
+        super::huffman::decode(src, out).is_ok()
+    }
+
+    /// Reads an integer with a `prefix`-bit prefix, `None` when truncated or past 32 bits.
+    #[inline]
+    pub fn integer_decode(src: &mut &[u8], prefix: u32) -> Option<usize> {
+        super::integer::decode(src, prefix)
+    }
+
+    /// Appends `value` with a `prefix`-bit prefix whose high bits are `first`.
+    #[inline]
+    pub fn integer_encode(out: &mut Vec<u8>, first: u8, prefix: u32, value: usize) {
+        super::integer::encode(out, first, prefix, value);
+    }
+}
+
 /// Why a header block could not be decoded. Every variant is a connection error (`COMPRESSION_ERROR`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodeError {
