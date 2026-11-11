@@ -123,10 +123,10 @@ async fn a_huge_unknown_frame_is_skipped_without_buffering() {
     assert_eq!(status_of(&frames[0].1), 200);
 }
 
-#[tokio::test]
-async fn oversized_field_section_is_answered_with_431_by_the_application() {
+/// A server whose application answers 431 to an oversized field section, and a client that reads it raw.
+async fn answering_431(config: Config) -> (Fixture, Raw) {
     let fx = fixture();
-    fx.serve(Config::default(), |mut stream: RequestStream| async move {
+    fx.serve(config, |mut stream: RequestStream| async move {
         match stream.read_head().await {
             Err(oxiroute_h3::HeadError::FieldSectionTooLarge { .. }) => {
                 let response = Response::builder().status(431).body(()).unwrap();
@@ -145,11 +145,41 @@ async fn oversized_field_section_is_answered_with_431_by_the_application() {
         .await
         .unwrap();
     let raw = Raw::new(conn).await;
-    let big = "x".repeat(20_000);
-    let (mut send, mut recv) = raw.request(&request_bytes(&[("x-padding", &big)])).await;
+    (fx, raw)
+}
+
+async fn status_for(raw: &Raw, extra: &[(&str, &str)]) -> u16 {
+    let (mut send, mut recv) = raw.request(&request_bytes(extra)).await;
     send.finish().unwrap();
     let frames = within(read_frames(&mut recv)).await.unwrap();
-    assert_eq!(status_of(&frames[0].1), 431);
+    status_of(&frames[0].1)
+}
+
+#[tokio::test]
+async fn oversized_field_section_is_answered_with_431_by_the_application() {
+    let (_fx, raw) = answering_431(Config::default()).await;
+    assert_eq!(
+        status_for(&raw, &[("x-padding", &"x".repeat(20_000))]).await,
+        431
+    );
+    assert!(raw.conn.close_reason().is_none());
+}
+
+#[tokio::test]
+async fn every_field_counts_32_bytes_against_the_field_section_size() {
+    let config = Config {
+        max_field_section_size: 1024,
+        ..Config::default()
+    };
+    let (_fx, raw) = answering_431(config).await;
+    let names = (0..30)
+        .map(|index| format!("x-{index:02}"))
+        .collect::<Vec<_>>();
+    let fields = names
+        .iter()
+        .map(|name| (name.as_str(), "v"))
+        .collect::<Vec<_>>();
+    assert_eq!(status_for(&raw, &fields).await, 431);
     assert!(raw.conn.close_reason().is_none());
 }
 

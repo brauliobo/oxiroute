@@ -20,11 +20,11 @@
 //!
 //! Each limit is covered by a test in `tests/wire.rs` or in the unit tests of [`parse`].
 //!
-//! * Field sections: the decoded size (sum of name and value lengths) is counted while decoding and stops at
-//!   [`server::Config::max_field_section_size`] ([`HeadError::FieldSectionTooLarge`], the application answers 431). The
-//!   encoded `HEADERS` frame may be at most [`server::HEADERS_FRAME_FACTOR`] times that; a larger one is refused from
-//!   its frame header, before any payload is read, by resetting the stream with `H3_EXCESSIVE_LOAD`. Trailers are held
-//!   to the same limits.
+//! * Field sections: the decoded size (name and value lengths plus 32 bytes per field, RFC 9114 section 4.2.2) is
+//!   counted while decoding and stops at [`server::Config::max_field_section_size`]
+//!   ([`HeadError::FieldSectionTooLarge`], the application answers 431). The encoded `HEADERS` frame may be at most
+//!   [`server::HEADERS_FRAME_FACTOR`] times that; a larger one is refused from its frame header, before any payload
+//!   is read, by resetting the stream with `H3_EXCESSIVE_LOAD`. Trailers are held to the same limits.
 //! * Buffering: a request stream holds at most one received chunk plus one `HEADERS` payload within the bound above;
 //!   `DATA` is handed out as zero-copy slices, unknown frames are skipped without being stored, a frame header split
 //!   across chunks needs 16 bytes. The peer's control stream holds at most a 4 KiB `SETTINGS` payload, QPACK streams

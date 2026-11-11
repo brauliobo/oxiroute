@@ -8,6 +8,9 @@ use http::{Method, Request};
 use crate::qpack::decode::{DecodeError, Line, Section, Str, section};
 use crate::qpack::static_table::{ENTRIES, KINDS, Kind, NAMES, VALUES};
 
+/// The size every field adds to a field section beyond its name and value (RFC 9114 section 4.2.2).
+const FIELD_OVERHEAD: usize = 32;
+
 /// Why a section did not become a head.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
@@ -47,9 +50,9 @@ impl Builder {
         }
     }
 
-    /// Counts a field against the limit.
+    /// Counts a field against the limit: name and value lengths plus 32 bytes (RFC 9114 section 4.2.2).
     fn count(&mut self, name: usize, value: usize) -> Result<(), Failure> {
-        self.size += (name + value) as u64;
+        self.size += (name + value + FIELD_OVERHEAD) as u64;
         if self.size > self.limit {
             return Err(Failure::TooLarge(self.size));
         }

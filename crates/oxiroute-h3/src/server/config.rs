@@ -5,7 +5,7 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub struct Config {
     /// `SETTINGS_MAX_FIELD_SECTION_SIZE` announced to the peer, and the limit on the decoded size of a request head
-    /// (name and value lengths summed over its fields). The encoded `HEADERS` frame may be at most
+    /// (name and value lengths plus 32 bytes per field, RFC 9114 section 4.2.2). The encoded `HEADERS` frame may be at most
     /// [`HEADERS_FRAME_FACTOR`] times this; a larger one resets the stream with `H3_EXCESSIVE_LOAD`.
     pub max_field_section_size: u64,
     /// Request streams the peer may reset before the response was finished within [`Config::reset_flood_window`]
