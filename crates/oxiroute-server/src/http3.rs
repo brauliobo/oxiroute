@@ -64,7 +64,9 @@ use crate::{
 mod cache;
 mod capability;
 mod connection;
+mod failure;
 mod headers;
+mod origin;
 mod reverse;
 mod runtime;
 mod static_files;
@@ -76,7 +78,11 @@ use cache::*;
 pub(crate) use capability::*;
 #[allow(clippy::wildcard_imports)]
 use connection::*;
+#[allow(clippy::wildcard_imports)]
+use failure::*;
 pub(crate) use headers::*;
+#[allow(clippy::wildcard_imports)]
+use origin::*;
 #[allow(clippy::wildcard_imports)]
 use reverse::*;
 pub use runtime::*;

@@ -312,25 +312,25 @@ async fn serve_tls_h2(
             .expect("origin HTTP/2 request-header observations")
             .push(request.headers().clone());
         let path = request.uri().path().to_owned();
-        if path == "/grpc/upload" {
-            let mut body = request.into_body();
-            while let Some(chunk) = body.data().await {
-                let chunk = chunk?;
-                observations
-                    .request_body_bytes
-                    .fetch_add(chunk.len(), Ordering::SeqCst);
-                body.flow_control().release_capacity(chunk.len())?;
-            }
-        }
+        let upload = path == "/grpc/upload";
         let observations = Arc::clone(&observations);
-        let slow = path == "/grpc/slow";
+        let slow = path == "/grpc/slow" || upload;
         let answer = async move {
+            if upload {
+                let mut body = request.into_body();
+                while let Some(Ok(chunk)) = body.data().await {
+                    observations
+                        .request_body_bytes
+                        .fetch_add(chunk.len(), Ordering::SeqCst);
+                    let _ = body.flow_control().release_capacity(chunk.len());
+                }
+            }
             if respond_h2(&path, respond).await.is_err() {
                 observations.h2_send_errors.fetch_add(1, Ordering::SeqCst);
             }
         };
         if slow {
-            // The connection keeps being read while the answer waits, so a reset that arrives meanwhile is seen.
+            // The connection keeps being read while the answer waits, so a reset or a body that arrives meanwhile is seen.
             tokio::spawn(answer);
         } else {
             answer.await;
