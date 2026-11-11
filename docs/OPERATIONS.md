@@ -148,6 +148,28 @@ raise the per-stream ceiling from 64 KiB per round trip to 1 MiB per round trip 
 stream window for high-latency clients that upload large bodies; downloads depend on the client's windows, not these.
 A change is an ordinary reload; connections already open keep the windows they were opened with.
 
+## TLS handshake cost
+
+A full TLS 1.3 handshake costs about 1.7 million user instructions with an ECDSA P-256 certificate (about 200 us of CPU
+on a current core) and 4.6 million with an RSA-2048 certificate, because the RSA signature is 3.1 million against 0.2
+million. Prefer ECDSA certificates on listeners that take many new connections (`key_type = "ecdsa_p256"` is the default
+of the managed and self-signed sources; a Certbot or file certificate takes the key it was issued with, so request an
+ECDSA certificate from Certbot with `--key-type ecdsa`). A profile serves one certificate per name, so the choice is
+per name: use RSA only where clients that cannot verify ECDSA must be served.
+
+Three profile options (`tls_profiles[].policy`, see `CONFIG_SPEC.md`) change the cost of connections that arrive:
+
+| Option | Effect | Cost |
+| --- | --- | --- |
+| `key_exchange_groups = { "x25519", "secp256r1" }` | a browser handshake costs 1.58 million instead of 2.27 million instructions (-30%): browsers offer the post-quantum hybrid `x25519mlkem768`, which the default list prefers and which costs 0.68 million more | the key exchange is classical only: recorded traffic is not protected against a future quantum computer; default unchanged |
+| `session_cache = { name, size_bytes }` | a TLS 1.2 client that reconnects resumes at 255 thousand instead of 1.5 million (-83%); a TLS 1.3 client at -6% to -14% (the key exchange still runs) | memory of `size_bytes` per profile, shared by the workers of the process; off by default |
+| `session_tickets = true` | stateless tickets, no server memory | a full handshake costs 10% more (two tickets are issued); pays back above about 57% resumption; off by default |
+
+Handshake CPU is the sum over new connections, so the effect shows in `top -H` as the `downstream TLS offload` threads
+(one thread handles about 4,800 ECDSA handshakes per second, see `tls_handshake_threads` above). A keep-alive or HTTP/2
+connection pays the handshake once: with 50 requests per connection the handshake is under 40% of the connection's CPU,
+with 1,000 requests it is below 5%, and the options above matter for short connections only.
+
 ## Shutdown
 
 Pingora is configured with a 3-second connection grace period followed by a 2-second runtime

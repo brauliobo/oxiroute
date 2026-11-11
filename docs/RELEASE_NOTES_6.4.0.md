@@ -109,6 +109,11 @@ Details: [fast lane](developer/PERF_6_4_REQUEST_PIPELINE_IMPL.md), [fast lane co
 
 Details: [TLS handshake offload and the HTTP/2 session](developer/PERF_6_4_TLS_H2.md).
 
+- **TLS key exchange groups (opt-in).** `tls_profiles[].policy.key_exchange_groups` lists the groups a profile accepts
+  (`x25519`, `secp256r1`, `secp384r1`, `x25519mlkem768`), in all configuration formats and the management UI. Absent
+  keeps the default, which prefers the post-quantum hybrid group that browsers offer. `{ "x25519", "secp256r1" }`
+  leaves the hybrid out: a browser handshake costs 29% fewer instructions and its key exchange is no longer protected
+  against a future quantum computer. Details and the resumption options: [TLS options](developer/PERF_6_4_TLS_OPTIONS.md).
 - Every TLS listener hands the accepted socket to `tls_handshake_threads` threads (default one per 8 CPUs, 1 to 4; `0`
   keeps handshakes on the workers). Certificate selection, SNI, ALPN, client certificates, session cache and tickets are
   unchanged. Handshakes waiting for a thread count against `max_connections` and the handshake timeout. A reload applies
@@ -152,6 +157,9 @@ Details: [binary-level work](developer/PERF_6_4_BINARY_LEVEL.md), [releasing](de
 - **BOLT stage (optional).** The release script can rewrite the binary with BOLT (`BOLT=0` skips it) and runs the whole
   workspace tests against the rewritten bytes. On the measuring host it gave no cycle gain that survives the noise; it is
   a release decision whether to publish BOLT output.
+- **C dependencies at `-O3`.** The release build compiles the vendored OpenSSL and the other C libraries with `-O3`:
+  7% to 10% fewer instructions per TLS handshake, per-request cost unchanged. A separate `x86-64-v3` artefact
+  (`oxiroute-VERSION-TARGET-x86-64-v3.tar.gz`, AVX2 and BMI2 CPUs only, started manually) saves 2.5% to 4% more.
 - **Abort flavour.** A separate artefact (`oxiroute-VERSION-TARGET-abort.tar.gz`) is built with `panic = "abort"` (3% to
   7% fewer instructions): the first panic ends the worker process, the supervisor fails the generation as for a killed
   worker, and recorder panics are no longer reported as `worker_panicked`. Arch, the source archive and the default
@@ -182,6 +190,7 @@ All are optional, available in KDL, restricted Lua, UCI and HOCON, in the manage
 
 | Option | Default | Range | Reload |
 | --- | --- | --- | --- |
+| `tls_profiles[].policy.key_exchange_groups` | backend default list (hybrid group preferred) | nonempty list of `x25519`, `secp256r1`, `secp384r1`, `x25519mlkem768`; hybrid-only needs `min_version` 1.3 | new generation |
 | `tls_handshake_threads` | one per 8 CPUs, 1 to 4 | 0 to 64 (`0`: handshakes on the workers) | new generation |
 | `http_fast_lane` | `true` | boolean | new connections of the new generation |
 | `connection_scheduling` | `work_stealing` | `work_stealing`, `aged_per_worker` | new generation |

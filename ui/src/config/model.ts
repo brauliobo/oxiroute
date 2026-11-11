@@ -133,6 +133,7 @@ export interface TlsPolicyConfig {
   session_timeout_seconds: number | null
   session_tickets: boolean
   prefer_server_ciphers: boolean
+  key_exchange_groups?: string[] | null
 }
 
 export type TlsClientAuthMode = 'disabled' | 'optional' | 'required'

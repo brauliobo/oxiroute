@@ -407,6 +407,10 @@ impl Renderer {
         }
         self.boolean_field("session_tickets", policy.session_tickets);
         self.boolean_field("prefer_server_ciphers", policy.prefer_server_ciphers);
+        if let Some(groups) = &policy.key_exchange_groups {
+            let names = groups.iter().map(|group| group.name()).collect::<Vec<_>>();
+            self.string_list_field("key_exchange_groups", &names);
+        }
         self.begin_table_field("client_auth");
         self.string_field(
             "mode",
