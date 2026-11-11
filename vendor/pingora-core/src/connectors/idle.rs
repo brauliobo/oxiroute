@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use tokio::io::{AsyncRead, ReadBuf};
+use tokio::runtime;
 use tokio::sync::Notify;
 use tokio::time::{sleep_until, Instant};
 
@@ -77,7 +78,22 @@ struct Idle {
     sequence: u64,
     released: Instant,
     expires: Option<Instant>,
+    /// The runtime whose I/O driver the socket is registered with.
+    runtime: runtime::Id,
     stream: Stream,
+}
+
+impl Idle {
+    /// The stream, registered with the I/O driver of the runtime that takes it, so that its readiness events arrive on
+    /// the thread that uses it and do not wake the one that released it (a runtime per worker: the connections of a
+    /// released worker would keep waking it). `None` when the socket could not be registered again.
+    fn into_current_runtime(self) -> Option<Stream> {
+        let mut stream = self.stream;
+        if self.runtime != runtime::Handle::current().id() && stream.can_move_to_current_runtime() {
+            stream.move_to_current_runtime().ok()?;
+        }
+        Some(stream)
+    }
 }
 
 #[derive(Default)]
@@ -204,6 +220,7 @@ impl IdlePool {
                 sequence,
                 released,
                 expires,
+                runtime: runtime::Handle::current().id(),
                 stream,
             };
             guard.by_key.entry(key).or_default().push_back(idle);
@@ -253,8 +270,8 @@ impl IdlePool {
                     .is_some_and(|expires| expires <= Instant::now())
                 {
                     expired.push(idle);
-                } else {
-                    break Some(idle.stream);
+                } else if let Some(stream) = idle.into_current_runtime() {
+                    break Some(stream);
                 }
             };
             drop(expired);
@@ -357,6 +374,31 @@ async fn watcher(wakeups: Arc<Wakeups>, pool: Weak<IdlePool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_connection_taken_by_another_runtime_is_registered_with_its_driver() {
+        use tokio::io::AsyncReadExt;
+        use std::io::Write;
+        let build = || tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (first, second) = (build(), build());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let pool = IdlePool::new(4, Arc::default());
+        first.block_on(async {
+            let client = tokio::net::TcpStream::connect(address).await.unwrap();
+            let stream: Stream = Box::new(crate::protocols::l4::stream::Stream::from(client));
+            pool.put(1, stream, None);
+        });
+        let (mut server, _) = listener.accept().unwrap();
+        // The first runtime is never polled again: the byte reaches the second only if the socket moved to its driver.
+        let received = second.block_on(async {
+            let mut stream = pool.take(1).expect("pooled");
+            server.write_all(b"x").unwrap();
+            let mut byte = [0; 1];
+            tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut byte)).await.is_ok()
+        });
+        assert!(received);
+    }
 
     #[test]
     fn the_pool_has_a_stripe_for_every_cpu_and_at_least_eight() {
