@@ -595,58 +595,65 @@ impl HttpSession {
     /// timeouts and errors of [`Self::read_response()`]. The bytes (and any body bytes that arrived with them)
     /// stay in the session; the caller scans them and then either reports what they say with
     /// [`Self::accept_fast_head()`] or leaves them to [`Self::reparse_raw_head()`].
+    ///
+    /// Cancel safe: the bytes read so far stay on the session, so a read that lost a race resumes where it stopped.
     pub async fn read_raw_head(&mut self) -> Result<Bytes> {
-        let mut buf = BytesMut::with_capacity(INIT_HEADER_BUF_SIZE);
-        let mut scanned = 0;
         loop {
-            if buf.len() > MAX_HEADER_SIZE {
-                return Error::e_explain(
+            let already_read = self.response_header_read_buf.len();
+            if already_read > MAX_HEADER_SIZE {
+                return self.fail_response_header_read(Error::explain(
                     InvalidHTTPHeader,
                     format!("Response header larger than {MAX_HEADER_SIZE}"),
-                );
+                ));
             }
-            let read_fut = self.underlying_stream.read_buf(&mut buf);
+            if self.response_header_read_buf.capacity() == 0 {
+                self.response_header_read_buf = BytesMut::with_capacity(INIT_HEADER_BUF_SIZE);
+            }
+            let read_fut = self
+                .underlying_stream
+                .read_buf(&mut self.response_header_read_buf);
             let read_result = match self.read_timeout {
                 Some(t) => timeout(t, read_fut)
                     .await
-                    .map_err(|_| Error::explain(ReadTimedout, "while reading response headers"))?,
-                None => read_fut.await,
+                    .map_err(|_| Error::explain(ReadTimedout, "while reading response headers")),
+                None => Ok(read_fut.await),
             };
-            match read_result {
-                Ok(0) => {
+            let error = match read_result {
+                Err(timed_out) => timed_out,
+                Ok(Ok(0)) => {
                     let mut e = Error::explain(
                         ConnectionClosed,
                         format!(
-                            "while reading response headers, bytes already read: {}",
-                            buf.len()
+                            "while reading response headers, bytes already read: {already_read}"
                         ),
                     );
                     e.retry = RetryType::ReusedOnly;
-                    return Err(e);
+                    e
                 }
-                Ok(_) => {}
-                Err(e) => {
+                Ok(Ok(_)) => {
+                    if head_end(&self.response_header_read_buf, already_read).is_some() {
+                        self.buf = std::mem::take(&mut self.response_header_read_buf).freeze();
+                        self.preread_body = None;
+                        return Ok(self.buf.clone());
+                    }
+                    continue;
+                }
+                Ok(Err(e)) => {
                     let true_io_error = e.raw_os_error().is_some();
                     let mut e = Error::because(
                         ReadError,
                         format!(
-                            "while reading response headers, bytes already read: {}",
-                            buf.len()
+                            "while reading response headers, bytes already read: {already_read}"
                         ),
                         e,
                     );
                     if true_io_error {
                         e.retry = RetryType::ReusedOnly;
                     }
-                    return Err(e);
+                    e
                 }
-            }
-            if head_end(&buf, scanned).is_some() {
-                self.buf = buf.freeze();
-                self.preread_body = None;
-                return Ok(self.buf.clone());
-            }
-            scanned = buf.len();
+            };
+            return self.fail_response_header_read(error);
         }
     }
 
@@ -1427,6 +1434,23 @@ mod tests_stream {
         assert!(http_stream.is_body_done());
         http_stream.respect_keepalive();
         assert!(http_stream.will_keepalive());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_raw_head_read_resumes_where_it_stopped() {
+        let head = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n";
+        let (first, second) = head.split_at(20);
+        let io = Builder::new()
+            .read(first)
+            .wait(Duration::from_millis(100))
+            .read(second)
+            .build();
+        let mut http_stream = HttpSession::new(Box::new(io));
+        let cancelled =
+            tokio::time::timeout(Duration::from_millis(20), http_stream.read_raw_head()).await;
+        assert!(cancelled.is_err(), "the head is not complete yet");
+        let raw = http_stream.read_raw_head().await.unwrap();
+        assert_eq!(&raw[..head.len()], head);
     }
 
     #[tokio::test]
