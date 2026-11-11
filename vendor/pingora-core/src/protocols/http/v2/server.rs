@@ -20,6 +20,7 @@ use http::header::HeaderName;
 use http::uri::PathAndQuery;
 use http::{header, HeaderMap, Response, StatusCode};
 use log::{debug, warn};
+pub use oxiroute_h2::server::RequestView as H2Request;
 use oxiroute_h2::server::Server;
 pub use oxiroute_h2::server::Stream as H2Stream;
 pub use oxiroute_h2::{server::Config as H2Options, Reason};
@@ -421,12 +422,18 @@ async fn accept_validated(
         "while accepting new downstream requests",
     )?;
 
-    let Some((request_header, mut stream)) = res else {
+    let Some((request_header, stream)) = res else {
         return Ok(None);
     };
+    check_request(request_header.into(), stream, malformed_streams).map(Some)
+}
 
-    let request_header: RequestHeader = request_header.into();
-
+/// The acceptance checks of one request.
+fn check_request(
+    request_header: RequestHeader,
+    mut stream: H2Stream,
+    malformed_streams: &mut usize,
+) -> Result<Validated> {
     // Depending on how the request URI is parsed, control bytes
     // (including CR and LF) may be accepted in the `:path`
     // pseudo-header. Reject them here as defense-in-depth: these
@@ -437,7 +444,7 @@ async fn accept_validated(
         debug!("Rejecting H2 request: forbidden delimiter byte in request target");
         stream.send_reset(Reason::PROTOCOL_ERROR);
         account_malformed_stream(malformed_streams)?;
-        return Ok(Some(Validated::Rejected));
+        return Ok(Validated::Rejected);
     }
 
     // Reject ambiguous Content-Length framing at the stream level.
@@ -454,7 +461,7 @@ async fn accept_validated(
         stream.send_reset(Reason::PROTOCOL_ERROR);
 
         account_malformed_stream(malformed_streams)?;
-        return Ok(Some(Validated::Rejected));
+        return Ok(Validated::Rejected);
     }
 
     // RFC 9113 section 8.1.1 forbids forwarding a malformed request:
@@ -467,14 +474,28 @@ async fn accept_validated(
             debug!("failed to send downstream h2 authority rejection: {e}");
         }
         account_malformed_stream(malformed_streams)?;
-        return Ok(Some(Validated::Rejected));
+        return Ok(Validated::Rejected);
     }
 
-    Ok(Some(Validated::Request(request_header, stream)))
+    Ok(Validated::Request(request_header, stream))
 }
 
-/// [`accept_validated`], then the application's front: a request it claims is served by its future, any other
-/// becomes a session.
+/// Whether a request is one the acceptance checks pass without looking at more than its decoded head: an origin-form
+/// target without a forbidden byte, an `:authority` without userinfo, no `Host` or `Transfer-Encoding` field, and
+/// not `CONNECT`. `Content-Length` is validated by the decoder.
+fn passes_the_checks_plainly(view: &H2Request) -> bool {
+    let (path, authority) = (view.path(), view.authority());
+    view.method() != b"CONNECT"
+        && path.first() == Some(&b'/')
+        && !request_target_has_forbidden_byte(path)
+        && authority.is_some_and(|authority| !authority.contains(&b'@'))
+        && view
+            .fields()
+            .all(|(name, _)| name != b"host" && name != b"transfer-encoding")
+}
+
+/// The next request of the connection and what the loop does with it: the application's front is offered the ones
+/// that plainly pass the acceptance checks, and a request it does not claim is checked and becomes a session.
 async fn accept_checked(
     conn: &mut H2Connection<Stream>,
     digest: &Arc<Digest>,
@@ -482,24 +503,45 @@ async fn accept_checked(
     front: Option<&Arc<dyn Http2Front>>,
     shutdown: &ShutdownWatch,
 ) -> Result<Option<Accepted>> {
-    let (mut request_header, mut stream) = match accept_validated(conn, malformed_streams).await? {
-        None => return Ok(None),
-        Some(Validated::Rejected) => return Ok(Some(Accepted::Rejected)),
-        Some(Validated::Request(request_header, stream)) => (request_header, stream),
+    let Some(front) = front else {
+        return Ok(match accept_validated(conn, malformed_streams).await? {
+            None => None,
+            Some(Validated::Rejected) => Some(Accepted::Rejected),
+            Some(Validated::Request(request_header, stream)) => {
+                Some(session(request_header, stream, digest))
+            }
+        });
     };
-    if let Some(front) = front {
-        match Arc::clone(front).claim(request_header, stream, digest, shutdown) {
+    let accepted = conn.accept_view().await.transpose().or_err(
+        ErrorType::H2Error,
+        "while accepting new downstream requests",
+    )?;
+    let Some((mut view, mut stream)) = accepted else {
+        return Ok(None);
+    };
+    if passes_the_checks_plainly(&view) {
+        match Arc::clone(front).claim(view, stream, digest, shutdown) {
             Http2Claim::Claimed(claimed) => {
                 return Ok(Some(Accepted::Dispatch(Dispatch::Claimed(claimed))));
             }
             Http2Claim::Declined {
                 request,
                 stream: declined,
-            } => (request_header, stream) = (request, declined),
+            } => (view, stream) = (request, declined),
         }
     }
+    let request_header = conn.request_parts(view).into();
+    Ok(Some(
+        match check_request(request_header, stream, malformed_streams)? {
+            Validated::Rejected => Accepted::Rejected,
+            Validated::Request(request_header, stream) => session(request_header, stream, digest),
+        },
+    ))
+}
+
+fn session(request_header: RequestHeader, stream: H2Stream, digest: &Arc<Digest>) -> Accepted {
     let session = HttpSession::new_accepted(request_header, stream, digest.clone());
-    Ok(Some(Accepted::Dispatch(Dispatch::Session(session))))
+    Accepted::Dispatch(Dispatch::Session(session))
 }
 
 /// Reject ambiguous H2 authority representations:

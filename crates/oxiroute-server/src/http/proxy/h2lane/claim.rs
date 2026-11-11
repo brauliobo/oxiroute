@@ -7,8 +7,10 @@ use oxiroute_acme::ChallengeStore;
 use oxiroute_config::is_unambiguous_http_path;
 use pingora::{
     apps::{ClaimedStream, Http2Claim},
-    http::RequestHeader,
-    protocols::{Digest, http::v2::server::H2Stream},
+    protocols::{
+        Digest,
+        http::v2::server::{H2Request, H2Stream},
+    },
 };
 
 use super::{direct, exchange, request};
@@ -47,34 +49,31 @@ impl Plan {
 
 pub(super) fn claim(
     front: Arc<LaneFront>,
-    request: RequestHeader,
+    request: H2Request,
     stream: H2Stream,
     digest: &Digest,
 ) -> Http2Claim {
-    let Some(plan) = plan(&front, &request, &stream, digest) else {
+    let Some(plan) = plan(&front, &request, digest) else {
         return Http2Claim::Declined { request, stream };
     };
-    // The request is read: its header map is not needed any more.
+    // The request is read: its arena goes back to the pool.
     drop(request);
     Http2Claim::Claimed(ClaimedStream::new(move || serve(front, stream, plan)))
 }
 
 /// `None` when the classic path must see the request: it has a body, the route is not the lane's, or its fields are
 /// not of the shape the lane writes (see `request::read`).
-fn plan(
-    front: &LaneFront,
-    request: &RequestHeader,
-    stream: &H2Stream,
-    digest: &Digest,
-) -> Option<Plan> {
-    if request.method == Method::CONNECT
-        || !stream.is_end_stream()
+fn plan(front: &LaneFront, request: &H2Request, digest: &Digest) -> Option<Plan> {
+    if !request.is_end_stream()
+        || request.content_length().is_some_and(|length| length != 0)
         || front.service.access_log().is_some()
     {
         return None;
     }
-    let authority = request.uri.authority()?;
-    let path = request.uri.path();
+    let method = Method::from_bytes(request.method()).ok()?;
+    let authority = Authority::try_from(request.authority()?).ok()?;
+    let target = request.path();
+    let path = std::str::from_utf8(target.split(|byte| *byte == b'?').next()?).ok()?;
     if !is_unambiguous_http_path(path)
         || (front.challenge.is_some() && ChallengeStore::serves(path))
     {
@@ -82,33 +81,39 @@ fn plan(
     }
     let route = front
         .service
-        .select_route_path(Some(authority), path, &request.method)
+        .select_route_path(Some(&authority), path, &method)
         .filter(|route| matches!(route.lane, LaneRoute::Direct | LaneRoute::Proxy))?;
     let client_ip = client_ip(digest);
     let (id, wire, values, replay_safe) = match &route.action {
         HttpActionPlan::Proxy(proxy) => {
-            let (id, wire) = request::read(request, authority)?;
+            let (id, wire) =
+                request::read((request.method(), target), request.fields(), &authority)?;
             let https = digest.ssl_digest.is_some();
             let Some(values) = decide(
                 https,
                 &route,
                 (&wire.text, client_ip),
                 &wire.head,
-                authority,
+                &authority,
             ) else {
                 wire.recycle();
                 return None;
             };
-            let replay_safe = proxy.policy.request_is_replay_safe(
-                &request.method,
-                &request.headers,
+            let replay_safe = proxy.policy.request_is_replay_safe_with(
+                &method,
+                |name| {
+                    request
+                        .fields()
+                        .find(|(field, _)| *field == name.as_str().as_bytes())
+                        .is_some_and(|(_, value)| !value.is_empty())
+                },
                 true,
                 route.policy.request_buffering,
             );
             (id, Some(wire), values, replay_safe)
         }
         _ => (
-            request::request_id(&request.headers),
+            request::request_id(request.fields()),
             None,
             rules::Evaluated::default(),
             false,
@@ -116,8 +121,8 @@ fn plan(
     };
     Some(Plan {
         route,
-        authority: authority.clone(),
-        method: request.method.clone(),
+        authority,
+        method,
         client_ip,
         id,
         wire,

@@ -6,11 +6,11 @@ use std::sync::{
 };
 
 use http::{HeaderMap, Method, Request, StatusCode};
-use pingora_http::{RequestHeader, ResponseHeader};
+use pingora_http::ResponseHeader;
 use tokio::io::duplex;
 use tokio::sync::watch;
 
-use super::server::{self, handshake, Dispatch, H2Stream};
+use super::server::{self, handshake, Dispatch, H2Request, H2Stream};
 use crate::apps::{ClaimedStream, Http2Claim, Http2Front};
 use crate::protocols::Digest;
 use crate::server::ShutdownWatch;
@@ -23,13 +23,13 @@ struct TestFront {
 impl Http2Front for TestFront {
     fn claim(
         self: Arc<Self>,
-        request: RequestHeader,
+        request: H2Request,
         mut stream: H2Stream,
         _digest: &Digest,
         _shutdown: &ShutdownWatch,
     ) -> Http2Claim {
         self.asked.fetch_add(1, Ordering::SeqCst);
-        if request.uri.path() != "/claimed" {
+        if request.path() != b"/claimed" {
             return Http2Claim::Declined { request, stream };
         }
         Http2Claim::Claimed(ClaimedStream::new(move || async move {

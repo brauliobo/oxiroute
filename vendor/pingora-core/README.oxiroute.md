@@ -256,15 +256,19 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   application.
 
 - `apps/mod.rs` lets an application put a front before the HTTP/2 session of each request: `HttpServerApp::http2_front` returns an
-  `Http2Front`, which `protocols/http/v2/server.rs` consults for every request that passed the loop's own acceptance checks
-  (request target bytes, `Content-Length` framing, authority, the malformed-stream budget: they run first, so a request they reject
-  never reaches the front and is accounted as before). The front gets the request, the stream, the connection `Digest` and
-  the shutdown watch and decides without waiting: `Http2Claim::Claimed(future)` is spawned by the loop where it would spawn a
-  session (same `StreamGuard`, so the idle timeout still counts the stream), `Http2Claim::Declined` gives the request and stream
-  back and the session is built as without a front. The future is a `ClaimedStream` (`apps/pooled_future.rs` `ErasedFuture`): its heap
-  block is kept by the thread for the next claim, as the HTTP/1 request future's is. The loop is `accept_downstream_dispatch`;
-  `accept_downstream_sessions` (no front) is a wrapper for its tests. `HttpSession::from_h2_conn` is unchanged; the acceptance checks
-  moved into `accept_validated`, which both use. `v2::server` re-exports the stream type as `H2Stream`.
+  `Http2Front`, which `protocols/http/v2/server.rs` offers the requests that plainly pass the loop's own acceptance checks. With a front
+  the loop takes each request as the connection's decoded head (`oxiroute_h2::server::RequestView`, re-exported as `H2Request`) and
+  `passes_the_checks_plainly` decides from that head alone: an origin-form `:path` without a forbidden byte, an `:authority` without
+  userinfo, no `Host` or `Transfer-Encoding` field, not `CONNECT` (`Content-Length` is validated by the decoder). Any other request is
+  not offered: it becomes the `RequestHeader` (`Server::request_parts`) and goes through `check_request`, the acceptance checks as they
+  were (request target bytes, `Content-Length` framing, authority, the malformed-stream budget), so a request they reject never reaches
+  the front and is accounted as before. The front gets the head, the stream, the connection `Digest` and the shutdown watch and decides
+  without waiting: `Http2Claim::Claimed(future)` is spawned by the loop where it would spawn a session (same `StreamGuard`, so the idle
+  timeout still counts the stream), `Http2Claim::Declined` gives the head and stream back and the session is built as without a front.
+  The future is a `ClaimedStream` (`apps/pooled_future.rs` `ErasedFuture`): its heap block is kept by the thread for the next claim, as
+  the HTTP/1 request future's is. The loop is `accept_downstream_dispatch`; without a front it still reads `Parts` with
+  `Server::accept` and `accept_downstream_sessions` is a wrapper for its tests. `HttpSession::from_h2_conn` is unchanged; the checks
+  are `accept_validated` and `check_request`. `v2::server` re-exports the stream type as `H2Stream`.
 
 - Tests: the unit tests no longer depend on the Internet, fixed ports, a stored key pair or host sysctls. `connectors/test_servers.rs`
   provides loopback servers that own a kernel-assigned port (HTTP redirect, TLS with HTTP/1.1 or HTTP/2, a refused address, a
