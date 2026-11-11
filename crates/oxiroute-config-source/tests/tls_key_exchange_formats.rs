@@ -11,7 +11,7 @@ const FORMATS: [ConfigFormat; 4] = [
     ConfigFormat::Hocon,
 ];
 
-fn draft(min_version: &str, policy: Value) -> Result<ValidatedConfig, serde_json::Error> {
+fn draft(min_version: &str, policy: &Value) -> Result<ValidatedConfig, serde_json::Error> {
     let draft = serde_json::from_value::<ConfigDraft>(json!({
         "version": 1,
         "certificates": [{
@@ -46,7 +46,7 @@ fn groups(config: &ValidatedConfig) -> Option<Vec<TlsKeyExchangeGroup>> {
 fn key_exchange_groups_round_trip_through_every_source_format() {
     let config = draft(
         "1.2",
-        json!({"key_exchange_groups": ["x25519", "secp256r1"]}),
+        &json!({"key_exchange_groups": ["x25519", "secp256r1"]}),
     )
     .unwrap();
     assert_eq!(
@@ -70,7 +70,7 @@ fn key_exchange_groups_round_trip_through_every_source_format() {
 
 #[test]
 fn unset_key_exchange_groups_keep_the_runtime_default_and_render_nothing() {
-    let config = draft("1.2", json!({})).unwrap();
+    let config = draft("1.2", &json!({})).unwrap();
     assert_eq!(groups(&config), None);
     for format in FORMATS {
         let rendered = render_config(format, &config).expect("render");
@@ -81,7 +81,7 @@ fn unset_key_exchange_groups_keep_the_runtime_default_and_render_nothing() {
 #[test]
 fn every_group_name_is_accepted() {
     let all = json!(["x25519mlkem768", "x25519", "secp256r1", "secp384r1"]);
-    let config = draft("1.3", json!({"key_exchange_groups": all})).unwrap();
+    let config = draft("1.3", &json!({"key_exchange_groups": all})).unwrap();
     assert_eq!(groups(&config).map(|groups| groups.len()), Some(4));
 }
 
@@ -89,13 +89,13 @@ fn every_group_name_is_accepted() {
 fn unknown_group_names_are_rejected_by_the_decoder() {
     for name in ["P-256", "prime256v1", "ffdhe2048", "x448", "secp521r1", ""] {
         assert!(
-            draft("1.2", json!({"key_exchange_groups": [name]})).is_err(),
+            draft("1.2", &json!({"key_exchange_groups": [name]})).is_err(),
             "{name:?}"
         );
     }
 }
 
-fn validation_error(min_version: &str, groups: Value) -> ConfigError {
+fn validation_error(min_version: &str, groups: &Value) -> ConfigError {
     let draft = serde_json::from_value::<ConfigDraft>(json!({
         "version": 1,
         "certificates": [{
@@ -124,7 +124,7 @@ fn validation_error(min_version: &str, groups: Value) -> ConfigError {
 fn empty_and_repeated_group_lists_are_rejected() {
     for list in [json!([]), json!(["x25519", "x25519"])] {
         assert!(matches!(
-            validation_error("1.2", list),
+            validation_error("1.2", &list),
             ConfigError::InvalidTlsProfilePolicy {
                 field: "key_exchange_groups",
                 ..
@@ -136,16 +136,16 @@ fn empty_and_repeated_group_lists_are_rejected() {
 #[test]
 fn hybrid_only_lists_need_tls_13_because_tls_12_has_no_hybrid_groups() {
     assert!(matches!(
-        validation_error("1.2", json!(["x25519mlkem768"])),
+        validation_error("1.2", &json!(["x25519mlkem768"])),
         ConfigError::InvalidTlsProfilePolicy {
             field: "key_exchange_groups",
             ..
         }
     ));
-    draft("1.3", json!({"key_exchange_groups": ["x25519mlkem768"]})).unwrap();
+    draft("1.3", &json!({"key_exchange_groups": ["x25519mlkem768"]})).unwrap();
     draft(
         "1.2",
-        json!({"key_exchange_groups": ["x25519mlkem768", "x25519"]}),
+        &json!({"key_exchange_groups": ["x25519mlkem768", "x25519"]}),
     )
     .unwrap();
 }
