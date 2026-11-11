@@ -303,3 +303,6 @@ impl Wake for TaskWaker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
