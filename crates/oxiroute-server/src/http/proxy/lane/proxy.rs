@@ -1,5 +1,5 @@
-//! The proxied lane: a request is forwarded to an HTTP/1.1 server of a pool on the connection itself, with its body
-//! when that arrived with the head. The head goes upstream and the response head comes back through the head codec,
+//! The proxied lane: a request is forwarded to an HTTP/1.1 server of a pool on the connection itself, with its body,
+//! which is streamed to the origin as it arrives when it did not come with the head (`upload`). The head goes upstream and the response head comes back through the head codec,
 //! without a header map on either side; a response head the codec does not know is read by the classic client parser, so the response is
 //! always served. Selection, leases, timeouts, health signals, evacuation and accounting are the classic request
 //! context's own steps.
@@ -10,11 +10,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::{BufMut as _, BytesMut};
+use bytes::{BufMut as _, Bytes, BytesMut};
+use futures_util::FutureExt as _;
 use http::{HeaderValue, Method, StatusCode, Version, uri::Authority};
 use log::{debug, warn};
 use oxiroute_config::HttpUpstreamHost;
-use oxiroute_h1_head::{Connection, Edits, RequestHead, Value, names, write_request};
+use oxiroute_h1_head::RequestHead;
 use pingora::{
     Error, ErrorType,
     apps::Http1Connection,
@@ -33,9 +34,11 @@ use tokio::io::AsyncWriteExt as _;
 use super::{
     Served, buffers,
     head::Request,
+    render::{host_edit, push_small_body, render_request},
     response::serve_fast,
     rules,
     timing::{Expired, within},
+    upload::Upload,
 };
 use crate::{
     HealthFailure,
@@ -57,6 +60,10 @@ use crate::{
     routing::FirstHeader,
     upstream_peer::{POOL_UNAVAILABLE, POOL_UNAVAILABLE_HEADER, ReusePeer},
 };
+
+/// The log target of the debug line that says a request was served by the lane, with its id: how a test (or an
+/// operator who raises the level of this target) tells the lane from the classic path.
+pub(crate) const LOG_TARGET: &str = "oxiroute::lane";
 
 /// A body piece of at least this size is written as it was read; smaller ones are copied behind the head.
 const DIRECT_BODY: usize = 16 * 1024;
@@ -81,17 +88,8 @@ struct Opened {
     keepalive: bool,
     /// The whole body arrived with the head, so the first read of it does not wait.
     buffered: bool,
-    /// The origin connection may serve another request when the response is over.
-    reusable: bool,
-}
-
-impl Opened {
-    /// The response of an origin that did not take the whole request: nothing is reused after it.
-    fn unfinished(mut self) -> Self {
-        self.keepalive = false;
-        self.reusable = false;
-        self
-    }
+    /// What is left of the request body, which goes on while the response is relayed.
+    upload: Upload,
 }
 
 /// What an exchange has moved so far.
@@ -102,13 +100,6 @@ pub(in crate::http::proxy) struct Progress {
     pub(in crate::http::proxy) sent: usize,
     /// The status that went out.
     pub(in crate::http::proxy) status: Option<u16>,
-}
-
-/// What the request sends to the origin as its `Host`.
-enum HostEdit {
-    AsSent,
-    Set(HeaderValue),
-    Remove,
 }
 
 pub(super) struct Forward<'a> {
@@ -200,6 +191,11 @@ impl super::LaneFront {
         forward: Forward<'_>,
         authority: Authority,
     ) -> Served {
+        debug!(
+            target: LOG_TARGET,
+            "served by the HTTP/1 lane: request_id={}",
+            forward.id.to_str().unwrap_or_default()
+        );
         let upstream = &*self.upstream;
         let mut ctx = self.begin(&forward, authority);
         let mut progress = Progress {
@@ -464,24 +460,81 @@ impl super::LaneFront {
         });
         let mut request = buffers::take_write();
         render_request(&mut request, forward, &host, connection_close);
+        let with_head = push_small_body(&mut request, forward);
         let written = session
             .write_request_head_raw(&request, forward.request.is_head)
             .await;
         buffers::give_write(request);
         written.map_err(Error::into_up)?;
-        if forward.request.body_len == 0 {
-            return self.open(stream, ctx, session, release, forward).await;
-        }
-        match send_body(ctx, &mut session, forward, progress).await {
-            Ok(()) => self.open(stream, ctx, session, release, forward).await,
-            // An origin that answered and closed without reading the body is not a failure of the request: its answer
-            // goes to the client, and neither connection is used again.
+        let mut upload = Upload::new(
+            forward.request.body_len,
+            forward.buffer.len() - forward.request.head_len,
+        );
+        let raw = if forward.request.body_len == 0 {
+            session.read_raw_head().await.map_err(Error::into_up)?
+        } else {
+            self.head_of(
+                stream,
+                ctx,
+                &mut session,
+                (forward, with_head),
+                (&mut upload, progress),
+            )
+            .await?
+        };
+        self.open(stream, ctx, (session, release), forward, (raw, upload))
+            .await
+    }
+
+    /// The origin's response head. The body goes to the origin as the client sends it, and an answer that comes before
+    /// the body ends is the response: the rest of the upload is not sent. An origin that answered and then did not
+    /// take the body still has its answer relayed.
+    async fn head_of(
+        &self,
+        stream: &mut Stream,
+        ctx: &mut HttpRequestContext,
+        session: &mut HttpSession,
+        request: (&Forward<'_>, bool),
+        (upload, progress): (&mut Upload, &mut Progress),
+    ) -> Result<Bytes, Box<Error>> {
+        match self
+            .upload_until_head(stream, ctx, session, request, (upload, progress))
+            .await
+        {
             Err(error) if error.esource() == &pingora::ErrorSource::Upstream => {
-                let opened = self.open(stream, ctx, session, release, forward).await;
-                opened.map(Opened::unfinished).map_err(|_| error)
+                let raw = session.read_raw_head().await.map_err(|_| error)?;
+                upload.refuse();
+                Ok(raw)
             }
-            Err(error) => Err(error),
+            outcome => outcome,
         }
+    }
+
+    async fn upload_until_head(
+        &self,
+        stream: &mut Stream,
+        ctx: &mut HttpRequestContext,
+        session: &mut HttpSession,
+        (forward, with_head): (&Forward<'_>, bool),
+        (upload, progress): (&mut Upload, &mut Progress),
+    ) -> Result<Bytes, Box<Error>> {
+        send_arrived(ctx, session, (forward, with_head), progress).await?;
+        while upload.pumping() {
+            // What the client already sent goes first, without arming the origin's read timer for each piece.
+            let ready = if let Some(ready) = upload.readable(stream, None).now_or_never() {
+                ready
+            } else {
+                tokio::select! {
+                    biased;
+                    raw = session.read_raw_head() => return raw.map_err(Error::into_up),
+                    ready = upload.readable(stream, self.timeouts.request) => ready,
+                }
+            };
+            ready?;
+            progress.received += upload.forward(stream, session).await?;
+            ctx.observe_bytes(progress.received, 0, Instant::now());
+        }
+        session.read_raw_head().await.map_err(Error::into_up)
     }
 
     /// Reads the response head, applies what the classic response filter applies and renders what the client gets.
@@ -489,13 +542,14 @@ impl super::LaneFront {
         &self,
         stream: &mut Stream,
         ctx: &mut HttpRequestContext,
-        mut session: Box<HttpSession>,
-        release: ReusePeer,
+        (mut session, release): (Box<HttpSession>, ReusePeer),
         forward: &Forward<'_>,
+        (raw, upload): (Bytes, Upload),
     ) -> Result<Opened, Box<Error>> {
-        let raw = session.read_raw_head().await.map_err(Error::into_up)?;
         let now = ctx.refresh_clock();
-        let keepalive = forward.keepalive && !self.generation.retired();
+        // The client connection goes on only when the whole body arrived: what is left of it cannot be told from the
+        // next request.
+        let keepalive = forward.keepalive && !self.generation.retired() && upload.is_complete();
         let mut head = buffers::take_write();
         let queue = ctx.queue_stamp();
         let (status, framing, refused, keepalive, buffered) =
@@ -556,7 +610,7 @@ impl super::LaneFront {
             status,
             keepalive,
             buffered,
-            reusable: true,
+            upload,
         })
     }
 
@@ -575,7 +629,7 @@ impl super::LaneFront {
             head,
             framing,
             buffered,
-            reusable,
+            mut upload,
             ..
         } = opened;
         let deadline = tokio::time::Instant::from_std(ctx.deadline);
@@ -589,7 +643,10 @@ impl super::LaneFront {
                 frame.clear();
             }
             let mut first = true;
-            while let Some(data) = session.read_body_bytes().await.map_err(Error::into_up)? {
+            while let Some(data) = self
+                .next_piece(stream, ctx, &mut session, (&mut upload, progress))
+                .await?
+            {
                 progress.sent += data.len();
                 // The first piece follows the clock reading of the head.
                 let now = if std::mem::take(&mut first) {
@@ -632,12 +689,42 @@ impl super::LaneFront {
         within(deadline, body)
             .await
             .map_err(|Expired| Error::new_up(ErrorType::ReadTimedout))??;
-        if reusable {
+        // An origin that did not get the whole body keeps what it has not read: its connection is not used again.
+        if upload.is_complete() {
             upstream
                 .release_boxed_http_session(session, &release, release.idle_timeout())
                 .await;
         }
         Ok(())
+    }
+
+    /// The next piece of the origin's response body. What is left of the request body goes to the origin meanwhile,
+    /// as it arrives.
+    async fn next_piece(
+        &self,
+        stream: &mut Stream,
+        ctx: &mut HttpRequestContext,
+        session: &mut HttpSession,
+        (upload, progress): (&mut Upload, &mut Progress),
+    ) -> Result<Option<Bytes>, Box<Error>> {
+        while upload.pumping() {
+            tokio::select! {
+                piece = session.read_body_bytes() => return piece.map_err(Error::into_up),
+                ready = upload.readable(stream, self.timeouts.request) => {
+                    ready?;
+                    match upload.forward(stream, session).await {
+                        Ok(count) => {
+                            progress.received += count;
+                            ctx.observe_bytes(progress.received, progress.sent, Instant::now());
+                        }
+                        // The origin took no more of the body; its response goes on.
+                        Err(error) if error.esource() == &pingora::ErrorSource::Upstream => upload.refuse(),
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        }
+        session.read_body_bytes().await.map_err(Error::into_up)
     }
 
     /// Answers a request that ended in `error`, unless a response went out already; the status of the response
@@ -746,22 +833,31 @@ pub(in crate::http::proxy) fn error_answer(
     Ok((code, reason))
 }
 
-/// Sends the request body, which arrived with the head, to the origin.
-async fn send_body(
+/// Sends the part of the request body that arrived with the head to the origin; all of it ends the body. Nothing
+/// is written for a body that went with the head: the session's body is complete with it.
+async fn send_arrived(
     ctx: &mut HttpRequestContext,
     session: &mut HttpSession,
-    forward: &Forward<'_>,
+    (forward, with_head): (&Forward<'_>, bool),
     progress: &mut Progress,
 ) -> Result<(), Box<Error>> {
     let body = forward.request.body(forward.buffer);
-    session.init_request_body(FastFraming {
-        chunked: false,
-        content_length: Some(body.len()),
-    });
-    session.write_body(body).await.map_err(Error::into_up)?;
-    progress.received = body.len();
-    ctx.observe_bytes(progress.received, 0, Instant::now());
-    session.finish_body().await.map_err(Error::into_up)?;
+    if !with_head {
+        session.init_request_body(FastFraming {
+            chunked: false,
+            content_length: Some(forward.request.body_len),
+        });
+        if !body.is_empty() {
+            session.write_body(body).await.map_err(Error::into_up)?;
+        }
+        if body.len() == forward.request.body_len {
+            session.finish_body().await.map_err(Error::into_up)?;
+        }
+    }
+    if !body.is_empty() {
+        progress.received = body.len();
+        ctx.observe_bytes(progress.received, 0, Instant::now());
+    }
     Ok(())
 }
 
@@ -776,72 +872,6 @@ async fn write(stream: &mut Stream, bytes: &[u8]) -> Result<(), Box<Error>> {
     stream.write_all(bytes).await.map_err(|error| {
         Error::because(ErrorType::WriteError, "writing the response", error).into_down()
     })
-}
-
-fn host_edit(ctx: &mut HttpRequestContext) -> HostEdit {
-    if matches!(
-        proxy_policy(ctx).upstream_host,
-        HttpUpstreamHost::PreserveIncoming
-    ) {
-        return HostEdit::AsSent;
-    }
-    ctx.selected_upstream_host
-        .take()
-        .map_or(HostEdit::Remove, HostEdit::Set)
-}
-
-/// The upstream request head: the client's, as the classic path forwards it. The edits are the `HeaderMap` calls of
-/// the classic sequence in its order: the `Connection` of a keep-alive client leaves with the hop-by-hop fields, an
-/// id is stamped when the request has no single valid one, the host policy applies, a client's `close` is not
-/// forwarded and a pool that never reuses connections says `close` itself.
-fn render_request(
-    out: &mut Vec<u8>,
-    forward: &Forward<'_>,
-    host: &HostEdit,
-    connection_close: bool,
-) {
-    let (buffer, head, request) = (forward.buffer, forward.head, forward.request);
-    let connection = head.facts.connection;
-    let mut edits = Edits::new();
-    let edit = |result: Result<(), oxiroute_h1_head::EditsFull>| {
-        result.expect("a request head needs few edits");
-    };
-    if connection == Connection::KeepAlive {
-        edit(edits.remove(names::CONNECTION));
-    }
-    if !request.id_stamped {
-        edit(edits.set(names::X_REQUEST_ID, Value::trusted(forward.id.as_bytes())));
-    }
-    match host {
-        HostEdit::AsSent => {}
-        HostEdit::Set(value) => edit(edits.set(names::HOST, Value::trusted(value.as_bytes()))),
-        HostEdit::Remove => edit(edits.remove(names::HOST)),
-    }
-    if connection == Connection::Close {
-        edit(edits.remove(names::CONNECTION));
-    }
-    if connection_close {
-        edit(edits.set(names::CONNECTION, Value::trusted(b"close")));
-    }
-    // The host a rule may name: the request's own when it is passed on as it is.
-    let incoming;
-    let selected = match host {
-        HostEdit::Set(value) => Some(value),
-        HostEdit::AsSent if forward.values.names_host() => {
-            incoming = HeaderValue::from_bytes(head.host(buffer)).ok();
-            incoming.as_ref()
-        }
-        HostEdit::AsSent | HostEdit::Remove => None,
-    };
-    let policy = forward.policy();
-    edit(rules::edit_request(
-        &mut edits,
-        &forward.route.edits,
-        policy,
-        forward.values,
-        selected,
-    ));
-    write_request(out, buffer, head, &edits);
 }
 
 /// The final response head of the session's parser; informational heads on the way go to the client filtered and

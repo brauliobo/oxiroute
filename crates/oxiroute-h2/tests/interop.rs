@@ -291,7 +291,7 @@ async fn concurrent_streams_never_exceed_the_limit() {
 async fn peer_reset_mid_body_fails_reads_and_completes_poll_reset() {
     use std::sync::Mutex;
     static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    fn watch(_: http::request::Parts, mut stream: Stream) -> Fut {
+    fn watch(_: http::request::Parts, stream: Stream) -> Fut {
         Box::pin(async move {
             let first = poll_fn(|cx| stream.poll_data(cx)).await.unwrap().unwrap();
             stream.release_capacity(first.len());
@@ -326,7 +326,7 @@ async fn peer_reset_mid_body_fails_reads_and_completes_poll_reset() {
 async fn peer_reset_before_any_body_byte_fails_reads() {
     use std::sync::Mutex;
     static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    fn watch(_: http::request::Parts, mut stream: Stream) -> Fut {
+    fn watch(_: http::request::Parts, stream: Stream) -> Fut {
         Box::pin(async move {
             let next = poll_fn(|cx| stream.poll_data(cx)).await.unwrap();
             SEEN.lock().unwrap().push(format!("{}", next.is_err()));

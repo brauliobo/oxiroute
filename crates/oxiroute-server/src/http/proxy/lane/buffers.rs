@@ -8,6 +8,10 @@ use bytes::BytesMut;
 use oxiroute_h1_head::{RequestHead, ResponseHead};
 
 const READ_CAPACITY: usize = 8 * 1024;
+/// What one read of an upload takes from the client: a request body larger than the head's read buffer is read in
+/// pieces of at most this size.
+const UPLOAD_CAPACITY: usize = 64 * 1024;
+const UPLOADS_POOLED: usize = 16;
 const POOLED: usize = 64;
 const WRITE_CAPACITY: usize = 1024;
 
@@ -19,6 +23,7 @@ thread_local! {
     #[allow(clippy::vec_box)]
     static RESPONSES: RefCell<Vec<Box<ResponseHead>>> = const { RefCell::new(Vec::new()) };
     static WRITE: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+    static UPLOADS: RefCell<Vec<BytesMut>> = const { RefCell::new(Vec::new()) };
 }
 
 pub(in crate::http::proxy) fn take_read() -> BytesMut {
@@ -35,6 +40,26 @@ pub(in crate::http::proxy) fn give_read(mut buffer: BytesMut) {
     READ.with(|pool| {
         let mut pool = pool.borrow_mut();
         if pool.len() < POOLED {
+            pool.push(buffer);
+        }
+    });
+}
+
+/// A buffer one read of an upload goes into.
+pub(in crate::http::proxy) fn take_upload() -> BytesMut {
+    UPLOADS
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_else(|| BytesMut::with_capacity(UPLOAD_CAPACITY))
+}
+
+pub(in crate::http::proxy) fn give_upload(mut buffer: BytesMut) {
+    if buffer.capacity() < UPLOAD_CAPACITY {
+        return;
+    }
+    buffer.clear();
+    UPLOADS.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < UPLOADS_POOLED {
             pool.push(buffer);
         }
     });

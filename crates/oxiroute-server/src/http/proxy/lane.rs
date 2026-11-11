@@ -14,9 +14,11 @@ mod log;
 mod peek;
 mod plan;
 pub(in crate::http::proxy) mod proxy;
+pub(in crate::http::proxy) mod render;
 pub(in crate::http::proxy) mod response;
 pub(in crate::http::proxy) mod rules;
 pub(in crate::http::proxy) mod timing;
+mod upload;
 
 use std::{
     future::{Future, poll_fn},

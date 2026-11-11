@@ -39,18 +39,20 @@ impl Wire {
 }
 
 /// The id the request goes on with, and the wire of the request; `None` when the lane does not serve it. `target` is
-/// the request target as sent (path and query).
+/// the request target as sent (path and query); `body` is the length of the body that follows the head, which the
+/// fields must announce.
 pub(super) fn read<'a>(
     (method, target): (&[u8], &[u8]),
     fields: &impl Fields<'a>,
     authority: &Authority,
+    body: usize,
 ) -> Option<(HeaderValue, Wire)> {
     let mut text = buffers::take_write();
     let mut scanned = buffers::take_head();
     let read = write_text(&mut text, (method, target), fields, authority)
         .then(|| head::line(&text).and_then(|line| head::scan(&text, line, &mut scanned)))
         .flatten()
-        .filter(|read| read.body_len == 0);
+        .filter(|read| read.body_len == body);
     let Some(read) = read else {
         buffers::give_write(text);
         buffers::give_head(scanned);

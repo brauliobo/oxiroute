@@ -254,6 +254,40 @@ pub fn bodies(base: &str) -> Vec<Case> {
         "body in two pieces",
         vec![post(base, &length(10), "01234"), bytes(b"56789")],
     ));
+    let head = |size: usize| post(base, &length(size), "");
+    let big = sized(60_000);
+    cases.push(Case::writes(
+        "large body in three pieces",
+        vec![
+            [head(60_000), big[..1000].to_vec()].concat(),
+            big[1000..31_000].to_vec(),
+            big[31_000..].to_vec(),
+        ],
+    ));
+    cases.push(Case::writes(
+        "body in small pieces",
+        vec![
+            [head(20), bytes(b"01234")].concat(),
+            bytes(b"56789"),
+            bytes(b"01234"),
+            bytes(b"56789"),
+        ],
+    ));
+    cases.push(Case::writes(
+        "body at the limit of the route after the head",
+        vec![head(65_536), sized(65_536)],
+    ));
+    cases.push(Case::writes(
+        "body in pieces with close",
+        vec![
+            post(base, "Content-Length: 10\r\nConnection: close\r\n", "01234"),
+            bytes(b"56789"),
+        ],
+    ));
+    cases.push(Case::writes(
+        "body that stops short of its length",
+        vec![post(base, &length(30_000), ""), sized(12_000)],
+    ));
     let chunked_head = post(base, te, "");
     cases.push(Case::writes(
         "chunks in separate writes",
