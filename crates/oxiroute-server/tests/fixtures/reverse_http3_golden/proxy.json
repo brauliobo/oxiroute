@@ -1,0 +1,721 @@
+{
+  "cases": [
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy/get",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://get.proxy.test/p/echo?a=1&b=two"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://get.proxy.test/p/echo?a=1&b=two"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 200"],
+      "id": "proxy/head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"HEAD","uri":"https://head.proxy.test/p/echo"}],
+          "outcome": {"body":"","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "HEAD https://head.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "proxy/post-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"hello world","headers":[["content-length","11"]],"method":"POST","uri":"https://post-body.proxy.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "POST https://post-body.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "proxy/post-with-content-length",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "hello world",
+              "headers": [["content-length","11"]],
+              "method": "POST",
+              "uri": "https://post-with-content-length.proxy.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "POST https://post-with-content-length.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "proxy/post-empty-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"POST","uri":"https://post-empty-body.proxy.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "POST https://post-empty-body.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "proxy/post-without-content-length",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"POST","uri":"https://post-without-content-length.proxy.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "POST https://post-without-content-length.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web PUT 200"],
+      "id": "proxy/method-put",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"m","headers":[["content-length","1"]],"method":"PUT","uri":"https://method-put.proxy.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "PUT https://method-put.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web PATCH 200"],
+      "id": "proxy/method-patch",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"m","headers":[["content-length","1"]],"method":"PATCH","uri":"https://method-patch.proxy.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "PATCH https://method-patch.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web DELETE 200"],
+      "id": "proxy/method-delete",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"m","headers":[["content-length","1"]],"method":"DELETE","uri":"https://method-delete.proxy.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "DELETE https://method-delete.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web OPTIONS 200"],
+      "id": "proxy/method-options",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"m","headers":[["content-length","1"]],"method":"OPTIONS","uri":"https://method-options.proxy.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "OPTIONS https://method-options.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web PURGE 200"],
+      "id": "proxy/method-purge",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"m","headers":[["content-length","1"]],"method":"PURGE","uri":"https://method-purge.proxy.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "PURGE https://method-purge.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": [],
+      "id": "proxy/streamed-request-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "aaaaaaaaaabbbbbbbbbbccccc",
+              "headers": [["content-length","25"]],
+              "method": "POST",
+              "uri": "https://streamed-request-body.proxy.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "POST https://streamed-request-body.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "proxy/request-trailers-are-dropped",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "body",
+              "headers": [["content-length","4"]],
+              "method": "POST",
+              "uri": "https://request-trailers-are-dropped.proxy.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "POST https://request-trailers-are-dropped.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy/path-and-query-are-kept",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"]],
+              "method": "GET",
+              "uri": "https://path-and-query-are-kept.proxy.test/p/a%20b/c?x=1&y=%2F&z"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://path-and-query-are-kept.proxy.test/p/a%20b/c?x=1&y=%2F&z"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy/request-headers-are-forwarded",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [
+                ["accept-encoding","gzip, br"],
+                ["authorization","Bearer forwarded"],
+                ["content-length","0"],
+                ["cookie","a=1"],
+                ["cookie","b=2"],
+                ["forwarded","for=203.0.113.9"],
+                ["user-agent","golden/1"],
+                ["x-a","1"],
+                ["x-a","2"],
+                ["x-forwarded-for","203.0.113.9"]
+              ],
+              "method": "GET",
+              "uri": "https://request-headers-are-forwarded.proxy.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://request-headers-are-forwarded.proxy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200","h3 web GET 200","h3 web GET 200"],
+      "id": "proxy/many-requests-on-one-connection",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"]],
+              "method": "GET",
+              "uri": "https://many-requests-on-one-connection.proxy.test/p/echo/0"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://many-requests-on-one-connection.proxy.test/p/echo/0"
+        },
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"]],
+              "method": "GET",
+              "uri": "https://many-requests-on-one-connection.proxy.test/p/echo/1"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://many-requests-on-one-connection.proxy.test/p/echo/1"
+        },
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"]],
+              "method": "GET",
+              "uri": "https://many-requests-on-one-connection.proxy.test/p/echo/2"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://many-requests-on-one-connection.proxy.test/p/echo/2"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"]],
+              "method": "GET",
+              "uri": "https://many-requests-on-one-connection.proxy.test/p/echo/3"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://many-requests-on-one-connection.proxy.test/p/echo/3"
+        }
+      ]
+    },
+    {
+      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy/request-field-connection",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://request-field-connection.proxy.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://request-field-connection.proxy.test/p/echo"
+        }
+      ],
+      "tolerance": "connection-specific request fields: forwarding without them, a reset with H3_MESSAGE_ERROR or a 4xx all conform"
+    },
+    {
+      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy/request-field-keep-alive",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-hop","marker"]],
+              "method": "GET",
+              "uri": "https://request-field-keep-alive.proxy.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://request-field-keep-alive.proxy.test/p/echo"
+        }
+      ],
+      "tolerance": "connection-specific request fields: forwarding without them, a reset with H3_MESSAGE_ERROR or a 4xx all conform"
+    },
+    {
+      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy/request-field-proxy-connection",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-hop","marker"]],
+              "method": "GET",
+              "uri": "https://request-field-proxy-connection.proxy.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://request-field-proxy-connection.proxy.test/p/echo"
+        }
+      ],
+      "tolerance": "connection-specific request fields: forwarding without them, a reset with H3_MESSAGE_ERROR or a 4xx all conform"
+    },
+    {
+      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy/request-field-upgrade",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-hop","marker"]],
+              "method": "GET",
+              "uri": "https://request-field-upgrade.proxy.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://request-field-upgrade.proxy.test/p/echo"
+        }
+      ],
+      "tolerance": "connection-specific request fields: forwarding without them, a reset with H3_MESSAGE_ERROR or a 4xx all conform"
+    },
+    {
+      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy/request-field-transfer-encoding",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-hop","marker"]],
+              "method": "GET",
+              "uri": "https://request-field-transfer-encoding.proxy.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://request-field-transfer-encoding.proxy.test/p/echo"
+        }
+      ],
+      "tolerance": "connection-specific request fields: forwarding without them, a reset with H3_MESSAGE_ERROR or a 4xx all conform"
+    },
+    {
+      "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
+      "access_log": ["h3 web GET 200"],
+      "id": "proxy/request-field-te",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-hop","marker"]],
+              "method": "GET",
+              "uri": "https://request-field-te.proxy.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://request-field-te.proxy.test/p/echo"
+        }
+      ],
+      "tolerance": "connection-specific request fields: forwarding without them, a reset with H3_MESSAGE_ERROR or a 4xx all conform"
+    },
+    {
+      "access_log": ["h3 web GET 502","h3 web GET 200"],
+      "id": "proxy-failure/origin-mismatch",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","mismatch"]],
+              "method": "GET",
+              "uri": "https://origin-mismatch.proxy-failure.test/p/x"
+            }
+          ],
+          "outcome": {"body":"HTTP/3 upstream request failed\n","headers":[["content-length","31"]],"status":502},
+          "request": "GET https://origin-mismatch.proxy-failure.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://origin-mismatch.proxy-failure.test/p/x"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://origin-mismatch.proxy-failure.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 502","h3 web GET 200"],
+      "id": "proxy-failure/origin-dupcl",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","dupcl"]],
+              "method": "GET",
+              "uri": "https://origin-dupcl.proxy-failure.test/p/x"
+            }
+          ],
+          "outcome": {"body":"HTTP/3 upstream request failed\n","headers":[["content-length","31"]],"status":502},
+          "request": "GET https://origin-dupcl.proxy-failure.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://origin-dupcl.proxy-failure.test/p/x"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://origin-dupcl.proxy-failure.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 502","h3 web GET 200"],
+      "id": "proxy-failure/origin-badcl",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","badcl"]],
+              "method": "GET",
+              "uri": "https://origin-badcl.proxy-failure.test/p/x"
+            }
+          ],
+          "outcome": {"body":"HTTP/3 upstream request failed\n","headers":[["content-length","31"]],"status":502},
+          "request": "GET https://origin-badcl.proxy-failure.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://origin-badcl.proxy-failure.test/p/x"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://origin-badcl.proxy-failure.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 502","h3 web GET 200"],
+      "id": "proxy-failure/origin-bighdr",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","bighdr"]],
+              "method": "GET",
+              "uri": "https://origin-bighdr.proxy-failure.test/p/x"
+            }
+          ],
+          "outcome": {"body":"HTTP/3 upstream request failed\n","headers":[["content-length","31"]],"status":502},
+          "request": "GET https://origin-bighdr.proxy-failure.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://origin-bighdr.proxy-failure.test/p/x"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://origin-bighdr.proxy-failure.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 502","h3 web GET 200"],
+      "id": "proxy-failure/origin-reset",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","reset"]],
+              "method": "GET",
+              "uri": "https://origin-reset.proxy-failure.test/p/x"
+            }
+          ],
+          "outcome": {"body":"HTTP/3 upstream request failed\n","headers":[["content-length","31"]],"status":502},
+          "request": "GET https://origin-reset.proxy-failure.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://origin-reset.proxy-failure.test/p/x"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://origin-reset.proxy-failure.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 504","h3 web GET 200"],
+      "id": "proxy-failure/origin-hangs",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","hang"]],
+              "method": "GET",
+              "uri": "https://origin-hangs.proxy-failure.test/p/x"
+            }
+          ],
+          "outcome": {"body":"HTTP/3 upstream request failed\n","headers":[["content-length","31"]],"status":504},
+          "request": "GET https://origin-hangs.proxy-failure.test/p/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://origin-hangs.proxy-failure.test/p/x"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://origin-hangs.proxy-failure.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 502","h3 web POST 502"],
+      "id": "proxy-failure/dead-origin",
+      "steps": [
+        {
+          "outcome": {"body":"HTTP/3 upstream request failed\n","headers":[["content-length","31"]],"status":502},
+          "refused": 1,
+          "request": "GET https://dead-origin.proxy-failure.test/dead/x"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"HTTP/3 upstream request failed\n","headers":[["content-length","31"]],"status":502},
+          "refused": 1,
+          "request": "POST https://dead-origin.proxy-failure.test/dead/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 504"],
+      "id": "proxy-failure/body-stalls",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request timed out\n","headers":[["content-length","18"]],"status":504},
+          "request": "POST https://body-stalls.proxy-failure.test/p/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web HEAD 200"],
+      "id": "retry/failover-after-a-refused-connection",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"]],
+              "method": "GET",
+              "uri": "https://failover-after-a-refused-connection.retry.test/failover/x"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "refused": 1,
+          "request": "GET https://failover-after-a-refused-connection.retry.test/failover/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"]],
+              "method": "HEAD",
+              "uri": "https://failover-after-a-refused-connection.retry.test/failover/x"
+            }
+          ],
+          "outcome": {"body":"","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "refused": 1,
+          "request": "HEAD https://failover-after-a-refused-connection.retry.test/failover/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 502"],
+      "id": "retry/post-is-not-replayed",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"HTTP/3 upstream request failed\n","headers":[["content-length","31"]],"status":502},
+          "refused": 1,
+          "request": "POST https://post-is-not-replayed.retry.test/failover/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 502"],
+      "id": "retry/disabled",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"HTTP/3 upstream request failed\n","headers":[["content-length","31"]],"status":502},
+          "refused": 1,
+          "request": "GET https://disabled.retry.test/no-retry/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "retry/on-response-status",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-flaky-key","get"],["x-origin-mode","flaky"]],
+              "method": "GET",
+              "uri": "https://on-response-status.retry.test/retry-status/x"
+            },
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-flaky-key","get"],["x-origin-mode","flaky"]],
+              "method": "GET",
+              "uri": "https://on-response-status.retry.test/retry-status/x"
+            }
+          ],
+          "outcome": {"body":"recovered","headers":[["content-length","9"]],"status":200},
+          "request": "GET https://on-response-status.retry.test/retry-status/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 503"],
+      "id": "retry/on-response-status-post-passes-through",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "b",
+              "headers": [["content-length","1"],["x-flaky-key","post"],["x-origin-mode","flaky"]],
+              "method": "POST",
+              "uri": "https://on-response-status-post-passes-through.retry.test/retry-status/x"
+            }
+          ],
+          "outcome": {"body":"flaky-503","headers":[["content-length","9"]],"status":503},
+          "request": "POST https://on-response-status-post-passes-through.retry.test/retry-status/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 503"],
+      "id": "retry/on-response-status-exhausted",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-503"]],
+              "method": "GET",
+              "uri": "https://on-response-status-exhausted.retry.test/retry-status/x"
+            },
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-503"]],
+              "method": "GET",
+              "uri": "https://on-response-status-exhausted.retry.test/retry-status/x"
+            }
+          ],
+          "outcome": {"body":"status-503","headers":[["content-length","10"],["x-origin-status","503"]],"status":503},
+          "request": "GET https://on-response-status-exhausted.retry.test/retry-status/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 500"],
+      "id": "retry/other-statuses-are-not-retried",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-500"]],
+              "method": "GET",
+              "uri": "https://other-statuses-are-not-retried.retry.test/retry-status/x"
+            }
+          ],
+          "outcome": {"body":"status-500","headers":[["content-length","10"],["x-origin-status","500"]],"status":500},
+          "request": "GET https://other-statuses-are-not-retried.retry.test/retry-status/x"
+        }
+      ]
+    }
+  ]
+}

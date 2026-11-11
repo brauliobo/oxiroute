@@ -1,0 +1,650 @@
+{
+  "cases": [
+    {
+      "access_log": ["h3 web GET 401"],
+      "id": "auth/bearer-missing",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["www-authenticate","Bearer realm=\"golden\""]],"status":401},
+          "request": "GET https://bearer-missing.auth.test/auth/bearer"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 401"],
+      "id": "auth/bearer-missing-head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["www-authenticate","Bearer realm=\"golden\""]],"status":401},
+          "request": "HEAD https://bearer-missing-head.auth.test/auth/bearer"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "auth/bearer-valid",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"secret-bearer","headers":[["content-length","13"]],"status":200},
+          "request": "GET https://bearer-valid.auth.test/auth/bearer"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 401"],
+      "id": "auth/bearer-wrong",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["www-authenticate","Bearer realm=\"golden\""]],"status":401},
+          "request": "GET https://bearer-wrong.auth.test/auth/bearer"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 401"],
+      "id": "auth/bearer-duplicated-header",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["www-authenticate","Bearer realm=\"golden\""]],"status":401},
+          "request": "GET https://bearer-duplicated-header.auth.test/auth/bearer"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "auth/api-key-valid",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"secret-key","headers":[["content-length","10"]],"status":200},
+          "request": "GET https://api-key-valid.auth.test/auth/api-key"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 401"],
+      "id": "auth/api-key-missing",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["www-authenticate","Bearer"]],"status":401},
+          "request": "GET https://api-key-missing.auth.test/auth/api-key"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "auth/basic-valid",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"secret-basic","headers":[["content-length","12"]],"status":200},
+          "request": "GET https://basic-valid.auth.test/auth/basic"
+        }
+      ]
+    },
+    {
+      "access_log": [],
+      "id": "auth/basic-wrong-password",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["www-authenticate","Basic realm=\"golden-basic\", charset=\"UTF-8\""]],"status":401},
+          "request": "GET https://basic-wrong-password.auth.test/auth/basic"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 401"],
+      "id": "auth/basic-missing",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["www-authenticate","Basic realm=\"golden-basic\", charset=\"UTF-8\""]],"status":401},
+          "request": "GET https://basic-missing.auth.test/auth/basic"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 401"],
+      "id": "auth/proxy-denied-without-contacting-the-origin",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["www-authenticate","Bearer"]],"status":401},
+          "request": "GET https://proxy-denied-without-contacting-the-origin.auth.test/auth/proxy"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "auth/proxy-allowed",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["authorization","Bearer 0123456789abcdef0123456789abcdef"],["content-length","0"]],
+              "method": "GET",
+              "uri": "https://proxy-allowed.auth.test/auth/proxy"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://proxy-allowed.auth.test/auth/proxy"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "policy/request-headers",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [
+                ["content-length","0"],
+                ["x-authority","request-headers.policy.test"],
+                ["x-client-ip","127.0.0.1"],
+                ["x-forwarded-for","trusted, 127.0.0.1"],
+                ["x-joined","one, two"],
+                ["x-literal","literal"],
+                ["x-normalized-host","request-headers.policy.test"],
+                ["x-overridden","policy"],
+                ["x-scheme","https"],
+                ["x-selected-host","request-headers.policy.test"],
+                ["x-source","one"],
+                ["x-source","two"]
+              ],
+              "method": "GET",
+              "uri": "https://request-headers.policy.test/pol/x"
+            }
+          ],
+          "outcome": {
+            "body": "origin-ok",
+            "headers": [["content-length","9"],["x-add","policy"],["x-add-always","policy"],["x-origin","1"],["x-set","policy"]],
+            "status": 200
+          },
+          "request": "GET https://request-headers.policy.test/pol/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [
+                ["content-length","0"],
+                ["x-authority","policy-two.policy.test:8443"],
+                ["x-client-ip","127.0.0.1"],
+                ["x-forwarded-for","127.0.0.1"],
+                ["x-joined",""],
+                ["x-literal","literal"],
+                ["x-normalized-host","policy-two.policy.test"],
+                ["x-overridden","policy"],
+                ["x-scheme","https"],
+                ["x-selected-host","policy-two.policy.test:8443"]
+              ],
+              "method": "GET",
+              "uri": "https://policy-two.policy.test:8443/pol/y"
+            }
+          ],
+          "outcome": {
+            "body": "origin-ok",
+            "headers": [["content-length","9"],["x-add","policy"],["x-add-always","policy"],["x-origin","1"],["x-set","policy"]],
+            "status": 200
+          },
+          "request": "GET https://policy-two.policy.test:8443/pol/y"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 200","h3 web POST 200"],
+      "id": "policy/request-headers-head-and-post",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [
+                ["content-length","0"],
+                ["x-authority","request-headers-head-and-post.policy.test"],
+                ["x-client-ip","127.0.0.1"],
+                ["x-forwarded-for","127.0.0.1"],
+                ["x-joined",""],
+                ["x-literal","literal"],
+                ["x-normalized-host","request-headers-head-and-post.policy.test"],
+                ["x-overridden","policy"],
+                ["x-scheme","https"],
+                ["x-selected-host","request-headers-head-and-post.policy.test"]
+              ],
+              "method": "HEAD",
+              "uri": "https://request-headers-head-and-post.policy.test/pol/x"
+            }
+          ],
+          "outcome": {
+            "body": "",
+            "headers": [["content-length","9"],["x-add","policy"],["x-add-always","policy"],["x-origin","1"],["x-set","policy"]],
+            "status": 200
+          },
+          "request": "HEAD https://request-headers-head-and-post.policy.test/pol/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "body",
+              "headers": [
+                ["content-length","4"],
+                ["x-authority","request-headers-head-and-post.policy.test"],
+                ["x-client-ip","127.0.0.1"],
+                ["x-forwarded-for","127.0.0.1"],
+                ["x-joined",""],
+                ["x-literal","literal"],
+                ["x-normalized-host","request-headers-head-and-post.policy.test"],
+                ["x-overridden","policy"],
+                ["x-scheme","https"],
+                ["x-selected-host","request-headers-head-and-post.policy.test"]
+              ],
+              "method": "POST",
+              "uri": "https://request-headers-head-and-post.policy.test/pol/x"
+            }
+          ],
+          "outcome": {
+            "body": "origin-ok",
+            "headers": [["content-length","9"],["x-add","policy"],["x-add-always","policy"],["x-origin","1"],["x-set","policy"]],
+            "status": 200
+          },
+          "request": "POST https://request-headers-head-and-post.policy.test/pol/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "policy/response-headers",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [
+                ["content-length","0"],
+                ["x-authority","response-headers.policy.test"],
+                ["x-client-ip","127.0.0.1"],
+                ["x-forwarded-for","127.0.0.1"],
+                ["x-joined",""],
+                ["x-literal","literal"],
+                ["x-normalized-host","response-headers.policy.test"],
+                ["x-origin-mode","headers"],
+                ["x-overridden","policy"],
+                ["x-scheme","https"],
+                ["x-selected-host","response-headers.policy.test"]
+              ],
+              "method": "GET",
+              "uri": "https://response-headers.policy.test/pol/x"
+            }
+          ],
+          "outcome": {
+            "body": "headers",
+            "headers": [
+              ["content-length","7"],
+              ["set-cookie","sid=1; Path=/; SameSite=Lax; HttpOnly"],
+              ["set-cookie","other=2; Path=/"],
+              ["x-add","upstream"],
+              ["x-add","policy"],
+              ["x-add-always","policy"],
+              ["x-dup","a"],
+              ["x-dup","b"],
+              ["x-set","policy"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://response-headers.policy.test/pol/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 503","h3 web GET 404"],
+      "id": "policy/response-headers-on-errors",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [
+                ["content-length","0"],
+                ["x-authority","response-headers-on-errors.policy.test"],
+                ["x-client-ip","127.0.0.1"],
+                ["x-forwarded-for","127.0.0.1"],
+                ["x-joined",""],
+                ["x-literal","literal"],
+                ["x-normalized-host","response-headers-on-errors.policy.test"],
+                ["x-origin-mode","status-503"],
+                ["x-overridden","policy"],
+                ["x-scheme","https"],
+                ["x-selected-host","response-headers-on-errors.policy.test"]
+              ],
+              "method": "GET",
+              "uri": "https://response-headers-on-errors.policy.test/pol/x"
+            }
+          ],
+          "outcome": {
+            "body": "status-503",
+            "headers": [["content-length","10"],["x-add-always","policy"],["x-origin-status","503"],["x-set","policy"]],
+            "status": 503
+          },
+          "request": "GET https://response-headers-on-errors.policy.test/pol/x"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [
+                ["content-length","0"],
+                ["x-authority","response-headers-on-errors.policy.test"],
+                ["x-client-ip","127.0.0.1"],
+                ["x-forwarded-for","127.0.0.1"],
+                ["x-joined",""],
+                ["x-literal","literal"],
+                ["x-normalized-host","response-headers-on-errors.policy.test"],
+                ["x-origin-mode","status-404"],
+                ["x-overridden","policy"],
+                ["x-scheme","https"],
+                ["x-selected-host","response-headers-on-errors.policy.test"]
+              ],
+              "method": "GET",
+              "uri": "https://response-headers-on-errors.policy.test/pol/x"
+            }
+          ],
+          "outcome": {
+            "body": "status-404",
+            "headers": [["content-length","10"],["x-add-always","policy"],["x-origin-status","404"],["x-set","policy"]],
+            "status": 404
+          },
+          "request": "GET https://response-headers-on-errors.policy.test/pol/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 200"],
+      "id": "policy/response-headers-head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [
+                ["content-length","0"],
+                ["x-authority","response-headers-head.policy.test"],
+                ["x-client-ip","127.0.0.1"],
+                ["x-forwarded-for","127.0.0.1"],
+                ["x-joined",""],
+                ["x-literal","literal"],
+                ["x-normalized-host","response-headers-head.policy.test"],
+                ["x-origin-mode","headers"],
+                ["x-overridden","policy"],
+                ["x-scheme","https"],
+                ["x-selected-host","response-headers-head.policy.test"]
+              ],
+              "method": "HEAD",
+              "uri": "https://response-headers-head.policy.test/pol/x"
+            }
+          ],
+          "outcome": {
+            "body": "",
+            "headers": [
+              ["content-length","7"],
+              ["set-cookie","sid=1; Path=/; SameSite=Lax; HttpOnly"],
+              ["set-cookie","other=2; Path=/"],
+              ["x-add","upstream"],
+              ["x-add","policy"],
+              ["x-add-always","policy"],
+              ["x-dup","a"],
+              ["x-dup","b"],
+              ["x-set","policy"]
+            ],
+            "status": 200
+          },
+          "request": "HEAD https://response-headers-head.policy.test/pol/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "policy/upstream-host-is-the-incoming-authority",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"]],
+              "method": "GET",
+              "uri": "https://upstream-host-is-the-incoming-authority.policy.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://upstream-host-is-the-incoming-authority.policy.test/p/echo"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "policy/upstream-host-literal",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://literal.example:9443/host-literal/x"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://upstream-host-literal.policy.test/host-literal/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "policy/upstream-host-endpoint",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://<origin>/host-endpoint/x"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://upstream-host-endpoint.policy.test/host-endpoint/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "policy/upstream-host-nginx",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://upstream-host-nginx.policy.test/host-nginx/x"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://upstream-host-nginx.policy.test/host-nginx/x"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200","h3 web GET 200"],
+      "id": "policy/path-rewrite",
+      "steps": [
+        {
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://path-rewrite.policy.test/rewritten/a/b?x=1"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://path-rewrite.policy.test/rw/a/b?x=1"
+        },
+        {
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://path-rewrite.policy.test/rewritten"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://path-rewrite.policy.test/rw"
+        },
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://path-rewrite.policy.test/rewritten/"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://path-rewrite.policy.test/rw/"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 400","h3 web GET 200"],
+      "id": "path/double-slash",
+      "steps": [
+        {
+          "outcome": {"body":"request path is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "GET https://double-slash.path.test/p//double"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://double-slash.path.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 400","h3 web GET 200"],
+      "id": "path/dot-segment",
+      "steps": [
+        {
+          "outcome": {"body":"request path is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "GET https://dot-segment.path.test/p/./dot"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://dot-segment.path.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 400","h3 web GET 200"],
+      "id": "path/dot-dot-segment",
+      "steps": [
+        {
+          "outcome": {"body":"request path is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "GET https://dot-dot-segment.path.test/p/../dotdot"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://dot-dot-segment.path.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 400","h3 web GET 200"],
+      "id": "path/encoded-dot-dot",
+      "steps": [
+        {
+          "outcome": {"body":"request path is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "GET https://encoded-dot-dot.path.test/p/%2e%2e/x"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://encoded-dot-dot.path.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 400","h3 web GET 200"],
+      "id": "path/encoded-slash",
+      "steps": [
+        {
+          "outcome": {"body":"request path is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "GET https://encoded-slash.path.test/p/a%2fb"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://encoded-slash.path.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 400","h3 web GET 200"],
+      "id": "path/invalid-percent-escape",
+      "steps": [
+        {
+          "outcome": {"body":"request path is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "GET https://invalid-percent-escape.path.test/p/%zz"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://invalid-percent-escape.path.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 400","h3 web GET 200"],
+      "id": "path/encoded-unreserved-letter",
+      "steps": [
+        {
+          "outcome": {"body":"request path is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "GET https://encoded-unreserved-letter.path.test/p/%41"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://encoded-unreserved-letter.path.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "path/encoded-space",
+      "steps": [
+        {
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://encoded-space.path.test/p/a%20b"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://encoded-space.path.test/p/a%20b"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://encoded-space.path.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "path/encoded-utf8",
+      "steps": [
+        {
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://encoded-utf8.path.test/p/%E2%9C%93"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://encoded-utf8.path.test/p/%E2%9C%93"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://encoded-utf8.path.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 400","h3 web GET 400"],
+      "id": "path/static-dot-segments",
+      "steps": [
+        {
+          "outcome": {"body":"request path is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "GET https://static-dot-segments.path.test/static/../static/ok.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request path is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "GET https://static-dot-segments.path.test/static/sub/../ok.txt"
+        }
+      ]
+    }
+  ]
+}

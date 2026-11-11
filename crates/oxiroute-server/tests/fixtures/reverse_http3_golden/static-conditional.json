@@ -1,0 +1,343 @@
+{
+  "cases": [
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 304","h3 web HEAD 304"],
+      "id": "static/if-none-match-hit",
+      "steps": [
+        {
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-none-match-hit.static.test/static/ok.txt"
+        },
+        {
+          "outcome": {
+            "body": "",
+            "headers": [["etag","\"6553f100-a\""],["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],["x-static","yes"]],
+            "status": 304
+          },
+          "request": "GET https://if-none-match-hit.static.test/static/ok.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [["etag","\"6553f100-a\""],["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],["x-static","yes"]],
+            "status": 304
+          },
+          "request": "HEAD https://if-none-match-hit.static.test/static/ok.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 304","h3 web GET 200","h3 web GET 304","h3 web GET 304"],
+      "id": "static/if-none-match-variants",
+      "steps": [
+        {
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-none-match-variants.static.test/static/ok.txt"
+        },
+        {
+          "outcome": {
+            "body": "",
+            "headers": [["etag","\"6553f100-a\""],["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],["x-static","yes"]],
+            "status": 304
+          },
+          "request": "GET https://if-none-match-variants.static.test/static/ok.txt"
+        },
+        {
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-none-match-variants.static.test/static/ok.txt"
+        },
+        {
+          "outcome": {
+            "body": "",
+            "headers": [["etag","\"6553f100-a\""],["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],["x-static","yes"]],
+            "status": 304
+          },
+          "request": "GET https://if-none-match-variants.static.test/static/ok.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [["etag","\"6553f100-a\""],["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],["x-static","yes"]],
+            "status": 304
+          },
+          "request": "GET https://if-none-match-variants.static.test/static/ok.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 304","h3 web GET 200","h3 web GET 304","h3 web GET 200"],
+      "id": "static/if-modified-since",
+      "steps": [
+        {
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-modified-since.static.test/static/ok.txt"
+        },
+        {
+          "outcome": {
+            "body": "",
+            "headers": [["etag","\"6553f100-a\""],["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],["x-static","yes"]],
+            "status": 304
+          },
+          "request": "GET https://if-modified-since.static.test/static/ok.txt"
+        },
+        {
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-modified-since.static.test/static/ok.txt"
+        },
+        {
+          "outcome": {
+            "body": "",
+            "headers": [["etag","\"6553f100-a\""],["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],["x-static","yes"]],
+            "status": 304
+          },
+          "request": "GET https://if-modified-since.static.test/static/ok.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-modified-since.static.test/static/ok.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200","h3 web GET 412","h3 web GET 200"],
+      "id": "static/if-match",
+      "steps": [
+        {
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-match.static.test/static/ok.txt"
+        },
+        {
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-match.static.test/static/ok.txt"
+        },
+        {
+          "outcome": {
+            "body": "",
+            "headers": [["content-length","0"],["etag","\"6553f100-a\""],["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],["x-static","yes"]],
+            "status": 412
+          },
+          "request": "GET https://if-match.static.test/static/ok.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-match.static.test/static/ok.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 412","h3 web GET 200","h3 web GET 200"],
+      "id": "static/if-unmodified-since",
+      "steps": [
+        {
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-unmodified-since.static.test/static/ok.txt"
+        },
+        {
+          "outcome": {
+            "body": "",
+            "headers": [["content-length","0"],["etag","\"6553f100-a\""],["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],["x-static","yes"]],
+            "status": 412
+          },
+          "request": "GET https://if-unmodified-since.static.test/static/ok.txt"
+        },
+        {
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-unmodified-since.static.test/static/ok.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-unmodified-since.static.test/static/ok.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "static/if-none-match-wins-over-if-modified-since",
+      "steps": [
+        {
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-none-match-wins-over-if-modified-since.static.test/static/ok.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://if-none-match-wins-over-if-modified-since.static.test/static/ok.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 304","h3 web GET 304"],
+      "id": "static/without-etag-if-modified-since",
+      "steps": [
+        {
+          "outcome": {"body":"","headers":[["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],["x-static","yes"]],"status":304},
+          "request": "GET https://without-etag-if-modified-since.static.test/noetag/ok.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],["x-static","yes"]],"status":304},
+          "request": "GET https://without-etag-if-modified-since.static.test/noetag/ok.txt"
+        }
+      ]
+    }
+  ]
+}

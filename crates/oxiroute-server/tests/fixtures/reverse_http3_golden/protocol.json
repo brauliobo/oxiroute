@@ -1,0 +1,794 @@
+{
+  "cases": [
+    {
+      "access_log": [],
+      "id": "wire/first-frame-is-empty-data",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"empty DATA frame first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/data-before-headers",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"DATA then HEADERS"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/settings-on-a-request-stream",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"SETTINGS first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/goaway-on-a-request-stream",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"GOAWAY first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/cancel-push-on-a-request-stream",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"CANCEL_PUSH first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/push-promise-from-a-client",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"PUSH_PROMISE first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/max-push-id-on-a-request-stream",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"MAX_PUSH_ID first"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/reserved-http2-frame-type-0x2",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"frame type of HTTP/2 with no HTTP/3 meaning"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/reserved-http2-frame-type-0x6",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"frame type of HTTP/2 with no HTTP/3 meaning"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/reserved-http2-frame-type-0x8",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"frame type of HTTP/2 with no HTTP/3 meaning"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/reserved-http2-frame-type-0x9",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"frame type of HTTP/2 with no HTTP/3 meaning"}]
+    },
+    {
+      "accept": [
+        {"steps":[{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"HEADERS DATA HEADERS HEADERS"}]},
+        {
+          "steps": [
+            {
+              "connection_after": {"closed":261},
+              "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+              "request": "HEADERS DATA HEADERS HEADERS"
+            }
+          ]
+        }
+      ],
+      "access_log": ["h3 web POST 200","h3 web GET 200"],
+      "id": "wire/headers-after-trailers",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "HEADERS DATA HEADERS HEADERS"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "accept": [
+        {"steps":[{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"HEADERS DATA HEADERS DATA"}]},
+        {
+          "steps": [
+            {
+              "connection_after": {"closed":261},
+              "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+              "request": "HEADERS DATA HEADERS DATA"
+            }
+          ]
+        }
+      ],
+      "access_log": ["h3 web POST 200","h3 web GET 200"],
+      "id": "wire/data-after-trailers",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "HEADERS DATA HEADERS DATA"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "accept": [
+        {"steps":[{"connection_after":{"closed":262},"outcome":{"connection_closed":262},"request":"HEADERS then a DATA frame cut short"}]},
+        {
+          "steps": [
+            {
+              "connection_after": {"closed":262},
+              "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+              "request": "HEADERS then a DATA frame cut short"
+            }
+          ]
+        }
+      ],
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/truncated-frame-at-the-end-of-the-stream",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "HEADERS then a DATA frame cut short"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/baseline-request",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "HEADERS"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/unknown-frames-before-headers",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "unknown frame types then HEADERS"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200","h3 web GET 200"],
+      "id": "wire/unknown-frame-between-data-frames",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "helloworld",
+              "headers": [["content-length","10"]],
+              "method": "POST",
+              "uri": "https://unknown-frame-between-data-frames.wire.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "HEADERS DATA unknown DATA"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200","h3 web GET 200"],
+      "id": "wire/body-in-many-data-frames",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": {"fnv1a64":"5b7c27bd39c9f885","len":5000},
+              "headers": [["content-length","5000"]],
+              "method": "POST",
+              "uri": "https://body-in-many-data-frames.wire.test/p/echo"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "three DATA frames of 5000 bytes"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "accept": [
+        {
+          "origin": [{"body":"abc","headers":[["content-length","3"]],"method":"POST","uri":"https://empty-data-frame-in-a-body.wire.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "step": 0
+        }
+      ],
+      "access_log": ["h3 web POST 400","h3 web GET 200"],
+      "id": "wire/empty-data-frame-in-a-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"request body is invalid\n","headers":[["content-length","24"]],"status":400},
+          "request": "DATA of 2 bytes, an empty DATA, DATA of 1 byte"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC 9114 7.2.1 allows empty DATA frames; the recorded implementation rejected the body with 400, the body reaching the origin is accepted"
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/trailers-without-data",
+      "steps": [
+        {
+          "connection_after": "open",
+          "origin": [{"body":"","headers":[["content-length","0"]],"method":"GET","uri":"https://trailers-without-data.wire.test/p/echo"}],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "HEADERS HEADERS(trailers)"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200","h3 web GET 200"],
+      "id": "wire/unknown-frame-after-trailers",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "HEADERS DATA HEADERS unknown"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": [],
+      "id": "wire/control-first-frame-is-goaway",
+      "steps": [{"connection_after":{"closed":266},"outcome":{"connection_closed":266},"request":"GOAWAY first on the control stream"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/control-settings-twice",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"SETTINGS, SETTINGS"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/settings-reserved-http2-identifier",
+      "steps": [{"connection_after":{"closed":265},"outcome":{"connection_closed":265},"request":"SETTINGS with identifier 0x2"}]
+    },
+    {
+      "accept": [{"steps":[{"connection_after":{"closed":265},"outcome":{"connection_closed":265},"request":"SETTINGS with identifier 0x21 twice"}]}],
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/settings-duplicate-identifier",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"SETTINGS with identifier 0x21 twice"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "access_log": [],
+      "id": "wire/goaway-id-increases",
+      "steps": [{"connection_after":{"closed":264},"outcome":{"connection_closed":264},"request":"SETTINGS GOAWAY 8 GOAWAY 12"}]
+    },
+    {
+      "accept": [{"steps":[{"connection_after":{"closed":264},"outcome":{"connection_closed":264},"request":"SETTINGS MAX_PUSH_ID 8 then 4"}]}],
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/max-push-id-decreases",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"SETTINGS MAX_PUSH_ID 8 then 4"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "accept": [{"steps":[{"connection_after":{"closed":264},"outcome":{"connection_closed":264},"request":"SETTINGS CANCEL_PUSH 0"}]}],
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/cancel-push-without-a-push-id-grant",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"SETTINGS CANCEL_PUSH 0"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "access_log": [],
+      "id": "wire/control-data-frame",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"SETTINGS DATA on the control stream"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/control-headers-frame",
+      "steps": [{"connection_after":{"closed":261},"outcome":{"connection_closed":261},"request":"SETTINGS HEADERS on the control stream"}]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/control-unknown-frames-are-ignored",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"SETTINGS, unknown frame"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/settings-unknown-identifier-is-ignored",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"SETTINGS with identifier 0x21"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "accept": [
+        {"steps":[{"connection_after":{"closed":266},"outcome":{"connection_closed":266},"request":"request while SETTINGS is missing"}]},
+        {
+          "steps": [
+            {
+              "connection_after": {"closed":266},
+              "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+              "request": "request while SETTINGS is missing"
+            }
+          ]
+        }
+      ],
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/control-stream-without-settings",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "request while SETTINGS is missing"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "serving requests before SETTINGS arrive is the server's choice (RFC 9114 6.2.1); closing with H3_MISSING_SETTINGS is accepted"
+    },
+    {
+      "accept": [
+        {"steps":[{"connection_after":{"closed":266},"outcome":{"connection_closed":266},"request":"request without a control stream"}]},
+        {
+          "steps": [
+            {
+              "connection_after": {"closed":266},
+              "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+              "request": "request without a control stream"
+            }
+          ]
+        }
+      ],
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/no-control-stream",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "request without a control stream"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "when a server notices that no control stream was opened is its choice (RFC 9114 6.2.1); closing with H3_MISSING_SETTINGS is accepted"
+    },
+    {
+      "access_log": [],
+      "id": "wire/control-stream-is-finished",
+      "steps": [{"connection_after":{"closed":260},"outcome":{"connection_closed":260},"request":"FIN on the control stream"}]
+    },
+    {
+      "accept": [{"steps":[{"connection_after":{"closed":260},"outcome":{"connection_closed":260},"request":"RESET_STREAM on the control stream"}]}],
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/control-stream-is-reset",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"RESET_STREAM on the control stream"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "accept": [{"steps":[{"connection_after":{"closed":259},"outcome":{"connection_closed":259},"request":"stream type 0x01"}]}],
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/push-stream-from-a-client",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"stream type 0x01"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "access_log": [],
+      "id": "wire/second-control-stream",
+      "steps": [{"connection_after":{"closed":259},"outcome":{"connection_closed":259},"request":"second stream type 0x00"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/second-qpack-encoder-stream",
+      "steps": [{"connection_after":{"closed":259},"outcome":{"connection_closed":259},"request":"two streams type 0x02"}]
+    },
+    {
+      "access_log": [],
+      "id": "wire/second-qpack-decoder-stream",
+      "steps": [{"connection_after":{"closed":259},"outcome":{"connection_closed":259},"request":"two streams type 0x03"}]
+    },
+    {
+      "accept": [{"steps":[{"connection_after":{"closed":514},"outcome":{"connection_closed":514},"request":"decoder instruction for no section"}]}],
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/qpack-section-acknowledgment-for-nothing",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"decoder instruction for no section"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "accept": [{"steps":[{"connection_after":{"closed":514},"outcome":{"connection_closed":514},"request":"decoder instruction without inserts"}]}],
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/qpack-insert-count-increment-for-nothing",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"decoder instruction without inserts"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "accept": [{"steps":[{"connection_after":{"closed":513},"outcome":{"connection_closed":513},"request":"encoder instruction: capacity 220"}]}],
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/qpack-set-capacity-above-the-limit",
+      "steps": [
+        {"connection_after":"open","outcome":{"connection_open":true},"request":"encoder instruction: capacity 220"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "wire/unknown-unidirectional-stream-types",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "reserved and unknown stream types, then a request"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "accept": [
+        {
+          "steps": [
+            {
+              "connection_after": {"closed":513},
+              "outcome": {"connection_closed":513},
+              "request": "table capacity 220, one insert, one reference"
+            }
+          ]
+        }
+      ],
+      "access_log": [],
+      "id": "wire/qpack-dynamic-table-use",
+      "steps": [{"connection_after":{"closed":512},"outcome":{"connection_closed":512},"request":"table capacity 220, one insert, one reference"}],
+      "tolerance": "a dynamic table is optional (RFC 9204 3.2): a server without one closes with QPACK_ENCODER_STREAM_ERROR for the capacity instruction or QPACK_DECOMPRESSION_FAILED for the reference"
+    },
+    {
+      "access_log": [],
+      "id": "wire/qpack-reference-without-an-insert",
+      "steps": [{"connection_after":{"closed":512},"outcome":{"connection_closed":512},"request":"section needing an insert that never arrived"}]
+    },
+    {
+      "accept": [{"steps":[{"connection_after":{"closed":512},"outcome":{"connection_closed":512},"request":"Huffman string with invalid padding"}]}],
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/qpack-invalid-huffman",
+      "steps": [
+        {"connection_after":"open","outcome":{"stream_reset":270},"request":"Huffman string with invalid padding"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "RFC mandates this connection error; the recorded implementation did not apply it, so the mandated close is accepted"
+    },
+    {
+      "accept": [],
+      "access_log": ["h3 web POST 400","h3 web GET 200"],
+      "id": "wire/client-resets-the-stream-mid-body",
+      "steps": [
+        {"connection_after":"open","outcome":{"reset_sent":true},"request":"POST with 10 of 100 bytes, then RESET_STREAM"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "whether and how an abandoned request is logged depends on when the server notices the reset"
+    },
+    {
+      "accept": [],
+      "access_log": ["h3 web GET -","h3 web GET 200"],
+      "id": "wire/client-stops-the-response",
+      "steps": [
+        {"connection_after":"open","outcome":{"stop_sent":true},"request":"STOP_SENDING on a response"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "whether and how an abandoned response is logged depends on when the server notices the stop"
+    },
+    {
+      "accept": [{"outcome":{"stream_reset":269},"step":0},{"outcome":{"finished_without_response":true},"step":0}],
+      "access_log": ["h3 web GET 200"],
+      "id": "wire/stream-finished-without-a-request",
+      "steps": [
+        {"connection_after":"open","outcome":{"stream_reset":269},"request":"FIN with no frames"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "a request stream that ends before any request: the server aborts it or ends its side (RFC 9114 4.1)"
+    },
+    {
+      "accept": [],
+      "access_log": [
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -",
+        "h3 web POST -"
+      ],
+      "id": "limits/bidirectional-stream-limit",
+      "steps": [{"outcome":{"next_stream_blocked":true,"streams_opened":128},"request":"128 pending requests, then one more stream"}],
+      "tolerance": "requests cancelled when the connection closes are logged or not depending on timing"
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "limits/unidirectional-stream-limit",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"streams_opened_with_the_control_stream":16},
+          "request": "unidirectional streams until opening blocks"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ]
+    },
+    {
+      "accept": [{"outcome":{"connection_closed":263},"step":1}],
+      "access_log": [
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200"
+      ],
+      "id": "limits/listener-connection-limit",
+      "steps": [
+        {"outcome":{"statuses":[200,200,200,200,200,200,200,200]},"request":"the connections up to the limit are served"},
+        {"outcome":{"connection_closed":256},"request":"one more connection"},
+        {"outcome":{"rejected_connections":"1"},"request":"rejected connections counted"},
+        {
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "a connection after one was released"
+        }
+      ],
+      "tolerance": "the reaction to a connection over the listener limit is a server choice (RFC 9114 8.1 lists H3_NO_ERROR and H3_EXCESSIVE_LOAD)"
+    },
+    {
+      "access_log": [
+        "h3 web GET 308",
+        "h3 web GET 401",
+        "h3 web POST 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200",
+        "h3 web GET 200"
+      ],
+      "id": "access-log/other",
+      "steps": []
+    }
+  ]
+}
