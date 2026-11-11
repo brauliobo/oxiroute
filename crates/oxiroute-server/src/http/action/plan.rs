@@ -1,6 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::http::proxy::lane::LaneRoute;
+use crate::http::proxy::lane::{LaneRoute, RouteEdits};
 use crate::http::request_id::REQUEST_ID_HEADER;
 use crate::label::Label;
 use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, DATE, LOCATION, TRANSFER_ENCODING};
@@ -10,6 +10,8 @@ pub(crate) struct HttpRoutePlan {
     pub(crate) access: Option<RouteAccess>,
     pub(crate) action: HttpActionPlan,
     pub(crate) lane: LaneRoute,
+    /// What the fast lane edits on a proxied route: compiled with the route.
+    pub(crate) edits: RouteEdits,
     pub(crate) policy: RoutePolicyPlan,
     pub(crate) route_id: Label,
 }

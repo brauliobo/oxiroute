@@ -463,6 +463,24 @@ fn address_text_matches_the_standard_formatting() {
 }
 
 #[test]
+fn socket_text_matches_the_standard_formatting_for_ipv4() {
+    for text in [
+        "0.0.0.1:1",
+        "127.0.0.1:80",
+        "192.0.2.255:9",
+        "198.51.100.40:443",
+        "203.0.113.99:8080",
+        "203.0.113.99:10000",
+        "203.0.113.99:65535",
+    ] {
+        let address: std::net::SocketAddr = text.parse().expect("address");
+        let rendered = IpText::socket(address).expect("an IPv4 address");
+        assert_eq!(rendered.as_bytes(), text.as_bytes());
+    }
+    assert!(IpText::socket("[::1]:80".parse().unwrap()).is_none());
+}
+
+#[test]
 fn forwarded_for_is_the_client_alone_or_appended_to_what_arrived() {
     let plan = request_mutation(HttpRequestHeaderValue::AppendedXForwardedFor {
         max_bytes: 64,
