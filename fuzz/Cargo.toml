@@ -18,6 +18,7 @@ oxiroute-config-source = { path = "../crates/oxiroute-config-source" }
 oxiroute-forward-proxy = { path = "../crates/oxiroute-forward-proxy" }
 oxiroute-h1-head = { path = "../crates/oxiroute-h1-head" }
 oxiroute-h2 = { path = "../crates/oxiroute-h2" }
+oxiroute-h3 = { path = "../crates/oxiroute-h3" }
 oxiroute-import = { path = "../crates/oxiroute-import" }
 oxiroute-rtmp = { path = "../crates/oxiroute-rtmp", features = ["fuzzing"] }
 oxiroute-server = { package = "oxiroute", path = "../crates/oxiroute-server" }
@@ -139,6 +140,20 @@ bench = false
 [[bin]]
 name = "h2_frames"
 path = "fuzz_targets/h2_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h3_qpack"
+path = "fuzz_targets/h3_qpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h3_frames"
+path = "fuzz_targets/h3_frames.rs"
 test = false
 doc = false
 bench = false

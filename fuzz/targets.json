@@ -15,6 +15,8 @@
     { "name": "http1", "max_input_bytes": 131072 },
     { "name": "h1_head", "max_input_bytes": 131072 },
     { "name": "hpack", "max_input_bytes": 65536 },
-    { "name": "h2_frames", "max_input_bytes": 65536 }
+    { "name": "h2_frames", "max_input_bytes": 65536 },
+    { "name": "h3_qpack", "max_input_bytes": 65536 },
+    { "name": "h3_frames", "max_input_bytes": 65536 }
   ]
 }

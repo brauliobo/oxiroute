@@ -2370,6 +2370,7 @@ dependencies = [
  "oxiroute-forward-proxy",
  "oxiroute-h1-head",
  "oxiroute-h2",
+ "oxiroute-h3",
  "oxiroute-import",
  "oxiroute-rtmp",
  "pingora-core",
@@ -2390,6 +2391,19 @@ dependencies = [
  "bytes",
  "http",
  "log",
+ "tokio",
+]
+
+[[package]]
+name = "oxiroute-h3"
+version = "6.3.1"
+dependencies = [
+ "atomic-waker",
+ "bytes",
+ "http",
+ "oxiroute-h2",
+ "quinn",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
