@@ -168,11 +168,14 @@ impl From<Vec<ListenerSnapshot>> for ListenerInventoryResponse {
     }
 }
 
+/// The contract and the reference encoding of the pool listing; the server writes the bytes with [`inventory`].
+#[cfg(test)]
 #[derive(JsonSchema, Serialize)]
 pub(crate) struct PoolInventoryResponse {
     pools: Vec<PoolDto>,
 }
 
+#[cfg(test)]
 impl From<Vec<PoolHealthSnapshot>> for PoolInventoryResponse {
     fn from(pools: Vec<PoolHealthSnapshot>) -> Self {
         Self {
@@ -181,11 +184,14 @@ impl From<Vec<PoolHealthSnapshot>> for PoolInventoryResponse {
     }
 }
 
+/// The contract and the reference encoding of the server listing; the server writes the bytes with [`inventory`].
+#[cfg(test)]
 #[derive(JsonSchema, Serialize)]
 pub(crate) struct ServerInventoryResponse {
     servers: Vec<ServerInventoryEntry>,
 }
 
+#[cfg(test)]
 impl From<Vec<PoolHealthSnapshot>> for ServerInventoryResponse {
     fn from(pools: Vec<PoolHealthSnapshot>) -> Self {
         let servers = pools
@@ -442,6 +448,7 @@ impl From<PoolHealthSnapshot> for PoolDto {
     }
 }
 
+#[cfg(test)]
 #[derive(JsonSchema, Serialize)]
 struct ServerInventoryEntry {
     pool: String,

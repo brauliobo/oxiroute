@@ -6,6 +6,7 @@
 //! and [`PoolDto`], which stay the contract (schemas) and the reference the tests compare these bytes with.
 use serde::Serialize;
 
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::wire::decimal;
 
