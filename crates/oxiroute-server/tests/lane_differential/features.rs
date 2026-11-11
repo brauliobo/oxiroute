@@ -328,24 +328,41 @@ fn volatile_fields_masked(line: &str) -> String {
     record.to_string()
 }
 
-#[tokio::test]
-async fn access_lines_are_identical_on_both_paths() {
+/// Both proxies with an access log of their own in front of an origin that sends `reply`, and what each logged for the
+/// `cases`: the responses are compared as everywhere, then the lines.
+async fn assert_access_lines_identical(reply: &'static [u8], closes: bool, cases: &[corpus::Case]) {
     let directory = tempfile::tempdir().expect("log directory");
     let [classic_log, lane_log] =
         ["classic.log", "lane.log"].map(|name| directory.path().join(name));
     let (classic_path, lane_path) = (classic_log.clone(), lane_log.clone());
-    let classic = Wire::over(Origin::start(OK).await, move |config| {
+    let origin = || async move {
+        if closes {
+            Origin::start_closing(reply).await
+        } else {
+            Origin::start(reply).await
+        }
+    };
+    let classic = Wire::over(origin().await, move |config| {
         super::with_fixed_route(config);
         config.http_services[0].access_log = Some(AccessLogPolicy::File { path: classic_path });
         config.http_fast_lane = Some(false);
     })
     .await;
-    let lane = Wire::over(Origin::start(OK).await, move |config| {
+    let lane = Wire::over(origin().await, move |config| {
         super::with_fixed_route(config);
         config.http_services[0].access_log = Some(AccessLogPolicy::File { path: lane_path });
     })
     .await;
     let pair = Pair { classic, lane }.warmed().await;
+    compare(&pair, cases).await;
+    let (classic_lines, lane_lines) = (log_lines(&classic_log).await, log_lines(&lane_log).await);
+    pair.finish();
+    assert!(!classic_lines.is_empty());
+    assert_eq!(classic_lines, lane_lines);
+}
+
+#[tokio::test]
+async fn access_lines_are_identical_on_both_paths() {
     let cases: Vec<_> = [
         corpus::forwarded("/r"),
         corpus::requests("/fixed").into_iter().take(6).collect(),
@@ -355,9 +372,23 @@ async fn access_lines_are_identical_on_both_paths() {
     .into_iter()
     .flatten()
     .collect();
-    compare(&pair, &cases).await;
-    let (classic_lines, lane_lines) = (log_lines(&classic_log).await, log_lines(&lane_log).await);
-    pair.finish();
-    assert!(!classic_lines.is_empty());
-    assert_eq!(classic_lines, lane_lines);
+    assert_access_lines_identical(OK, false, &cases).await;
+}
+
+/// Text a request chooses (the host, the request id, the idempotency key, the method) reaches the line redacted and
+/// escaped the same way on both paths.
+#[tokio::test]
+async fn access_lines_of_requests_with_odd_text_are_identical_on_both_paths() {
+    assert_access_lines_identical(OK, false, &corpus::logged("/r")).await;
+}
+
+/// An origin that answers with something the proxy refuses, or closes the connection: the line carries the reason.
+#[tokio::test]
+async fn access_lines_of_failed_requests_are_identical_on_both_paths() {
+    let cases = corpus::requests("/r")
+        .into_iter()
+        .take(12)
+        .collect::<Vec<_>>();
+    assert_access_lines_identical(b"garbage\r\n\r\n", true, &cases).await;
+    assert_access_lines_identical(b"", true, &cases).await;
 }

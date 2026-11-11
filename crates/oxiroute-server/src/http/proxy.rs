@@ -169,7 +169,7 @@ pub struct HttpRequestContext {
 /// What the access log and per-server counters need to know about the attempts of one request.
 #[derive(Default)]
 struct AttemptTrace {
-    servers: Vec<Arc<str>>,
+    servers: Vec<crate::label::Label>,
     failure_reason: Option<&'static str>,
     budget_spent: std::sync::atomic::AtomicBool,
     queue_wait: Duration,

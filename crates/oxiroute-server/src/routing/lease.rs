@@ -202,6 +202,11 @@ impl EndpointLease {
         &self.inner.server.name
     }
 
+    /// The server's name, shared with the records that mention it.
+    pub(crate) fn server_label(&self) -> &crate::label::Label {
+        &self.inner.server.label
+    }
+
     /// The server's lifetime counters.
     pub(crate) fn server_stats(&self) -> &Arc<ServerStats> {
         &self.inner.server.stats

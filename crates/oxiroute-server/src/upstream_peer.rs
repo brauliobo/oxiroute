@@ -384,6 +384,10 @@ impl SelectedEndpoint {
         self.lease.server_name()
     }
 
+    pub(crate) fn server_label(&self) -> &crate::label::Label {
+        self.lease.server_label()
+    }
+
     pub(crate) fn observation(&self) -> EndpointObservation {
         self.observation.clone()
     }

@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use http::{HeaderName, HeaderValue, uri::Authority};
 use oxiroute_h1_head::{Class, Edits, EditsFull, Name, RequestHead, Value};
 
-use super::LaneRoute;
+use super::{LaneRoute, log::RouteLog};
 use crate::http::{
     action::{
         HttpActionPlan, ProxyPolicyPlan, RequestHeaderMutationPlan, RequestHeaderValuePlan,
@@ -20,6 +20,7 @@ use crate::http::{
         render_request_value,
     },
 };
+use crate::label::Label;
 
 /// Rules a route may have, request and response each: the codec's edit list holds [`oxiroute_h1_head::MAX_EDITS`] and
 /// the fixed edits of a head take about half of it.
@@ -104,6 +105,8 @@ pub(crate) struct RouteEdits {
     response: Box<[Rule]>,
     /// Some request rule takes its value from the request.
     computed: bool,
+    /// What the route's access lines repeat.
+    pub(super) log: RouteLog,
 }
 
 impl RouteEdits {
@@ -113,9 +116,12 @@ impl RouteEdits {
     }
 
     /// The edits of a route the lane proxies; none for any other.
-    pub(crate) fn compile(lane: LaneRoute, action: &HttpActionPlan) -> Self {
+    pub(crate) fn compile(lane: LaneRoute, action: &HttpActionPlan, route_id: &Label) -> Self {
         match (lane, action) {
-            (LaneRoute::Proxy, HttpActionPlan::Proxy(proxy)) => Self::of(&proxy.policy),
+            (LaneRoute::Proxy, HttpActionPlan::Proxy(proxy)) => Self {
+                log: RouteLog::new(proxy.pool.label(), route_id),
+                ..Self::of(&proxy.policy)
+            },
             _ => Self::default(),
         }
     }
@@ -148,6 +154,7 @@ impl RouteEdits {
             request,
             response,
             computed,
+            log: RouteLog::default(),
         }
     }
 }

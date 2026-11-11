@@ -158,6 +158,8 @@ pub(super) struct PoolEndpoint {
     pub(super) configured_max_connections: AtomicU64,
     pub(super) max_connections_override: AtomicU64,
     pub(super) name: String,
+    /// The name as the access log writes it, redacted once.
+    pub(super) label: crate::label::Label,
     pinned_addresses: Option<RwLock<Arc<[SocketAddr]>>>,
     protected_addresses: Arc<[SocketAddr]>,
     /// The shared lookup of a DNS endpoint that resolves on connect.
@@ -221,6 +223,7 @@ impl PoolEndpoint {
             reuse_peer: std::sync::OnceLock::new(),
             configured_max_connections: AtomicU64::new(server.max_connections.unwrap_or(0)),
             max_connections_override: AtomicU64::new(0),
+            label: crate::label::Label::new(&server.name),
             name: server.name,
             pinned_addresses: server.pinned_addresses.map(RwLock::new),
             protected_addresses: server.protected_addresses,

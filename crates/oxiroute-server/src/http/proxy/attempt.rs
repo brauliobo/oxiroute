@@ -110,11 +110,11 @@ impl HttpRequestContext {
             }
             self.trace.queue_wait += now.saturating_duration_since(selection_started);
             self.trace.attempt_started = Some(now);
-            let server: Arc<str> = selected.server_name().into();
-            self.trace.servers.push(Arc::clone(&server));
+            let server = selected.server_label().clone();
+            self.trace.servers.push(server.clone());
             self.trace.stats = Some(Arc::clone(selected.server_stats()));
             if let Some(inflight) = &self.inflight {
-                inflight.place_attempt(pool.label(), server);
+                inflight.place_attempt(pool.label(), server.shared());
                 selected.observe_queue_position(inflight.queue_cell());
                 inflight.set_phase(Phase::Connecting, now);
             }

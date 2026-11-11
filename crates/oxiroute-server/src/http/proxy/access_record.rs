@@ -1,15 +1,12 @@
-use std::borrow::Cow;
-
-use std::sync::Arc;
-
 use pingora::proxy::Session;
 
 use http::{HeaderName, HeaderValue, Method};
 
 use super::{HttpActionPlan, HttpRequestContext, normalized_request_host};
+use crate::label::Label;
 use crate::{
     http::request_id::{idempotency_header_or_default, idempotency_tag},
-    observability::access_record::{Correlation, Count, HttpAccess, Safe, SafeId},
+    observability::access_record::{Correlation, Count, HttpAccess, Safe},
 };
 
 /// What an access line says of the request beyond its context: the same facts whichever path served it.
@@ -18,6 +15,8 @@ pub(super) struct Exchange<'a> {
     /// The value of the request's idempotency header, if it has one.
     pub(super) idempotency: Option<&'a [u8]>,
     pub(super) protocol: &'static str,
+    /// The request id is one this proxy generated, which no credential marker can match.
+    pub(super) request_id_generated: bool,
     pub(super) bytes_received: u64,
     pub(super) bytes_sent: u64,
 }
@@ -48,6 +47,7 @@ pub(super) fn build<'a>(
         method: &request.method,
         idempotency,
         protocol: if session.is_http2() { "h2" } else { "http/1.1" },
+        request_id_generated: false,
         bytes_received: session.body_bytes_read() as u64,
         bytes_sent: session.body_bytes_sent() as u64,
     };
@@ -90,17 +90,26 @@ pub(super) fn access_line<'a>(
             .pool
             .as_ref()
             .map(|pool| Safe::verified(pool.label().logged())),
-        protocol: SafeId(exchange.protocol),
+        protocol: Safe::verified(exchange.protocol),
         queue_wait_ms: Count(trace.queue_wait.as_millis()),
         reason: Safe::verified(trace.failure_reason.unwrap_or("")),
-        request_id: request_id.map(Safe::from),
+        request_id: request_id.map(|id| {
+            if exchange.request_id_generated {
+                Safe::verified(id)
+            } else {
+                Safe::from(id)
+            }
+        }),
         rescued: ctx.rescued,
         route: ctx
             .route
             .as_ref()
             .map(|route| Safe::verified(route.route_id.logged())),
-        server: trace.servers.last().map(|server| (&**server).into()),
-        servers: tried_servers(&trace.servers).map(Safe::from),
+        server: trace
+            .servers
+            .last()
+            .map(|server| Safe::verified(server.logged())),
+        servers: tried_servers(&trace.servers),
         service: Safe::verified(service),
         status: response_status,
         timestamp_unix_ms: Some(crate::clock::wall_ms(ctx.now)),
@@ -112,7 +121,7 @@ pub(super) fn access_line<'a>(
 }
 
 /// The standard methods are fixed clean text; an extension method is the client's.
-fn method_text(method: &Method) -> Safe<'_> {
+pub(super) fn method_text(method: &Method) -> Safe<'_> {
     match *method {
         Method::GET
         | Method::HEAD
@@ -127,11 +136,16 @@ fn method_text(method: &Method) -> Safe<'_> {
     }
 }
 
-/// Every server tried, comma separated; the single-attempt case borrows.
-fn tried_servers(servers: &[Arc<str>]) -> Option<Cow<'_, str>> {
+/// Every server tried, comma separated; the single-attempt case is the server's own logged name.
+fn tried_servers(servers: &[Label]) -> Option<Safe<'_>> {
     match servers {
         [] => None,
-        [only] => Some(Cow::Borrowed(&**only)),
-        many => Some(Cow::Owned(many.join(","))),
+        [only] => Some(Safe::verified(only.logged())),
+        many => Some(Safe::from(
+            many.iter()
+                .map(|server| &**server)
+                .collect::<Vec<_>>()
+                .join(","),
+        )),
     }
 }

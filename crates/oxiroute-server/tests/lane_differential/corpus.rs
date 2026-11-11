@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 #[path = "corpus_features.rs"]
 mod features;
 
-pub use features::{bodies, chunked_over_the_limit, forwarded};
+pub use features::{bodies, chunked_over_the_limit, forwarded, logged};
 
 pub struct Case {
     pub name: String,

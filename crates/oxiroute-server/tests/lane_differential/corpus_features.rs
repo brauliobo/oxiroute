@@ -315,3 +315,58 @@ pub fn bodies(base: &str) -> Vec<Case> {
     ));
     cases
 }
+
+/// Requests whose text reaches the access line: names a client chooses.
+pub fn logged(base: &str) -> Vec<Case> {
+    let mut cases = Vec::new();
+    let mut add = |name: &str, request: String| cases.push(Case::one(name, request));
+    for host in [
+        "token.example.test",
+        "Secret.Example.Test:8080",
+        "[2001:db8::1]:8443",
+        "EXAMPLE.test.",
+        "192.0.2.7",
+        "a.b-c.example.test",
+    ] {
+        add(
+            &format!("host {host}"),
+            format!("GET {base} HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+        );
+    }
+    for id in [
+        "token-1",
+        "my-secret-id",
+        "bearer-x",
+        "plain-id_1.2:3",
+        "COOKIE",
+        "a".repeat(64).as_str(),
+    ] {
+        add(
+            &format!("request id {id}"),
+            get(base, &format!("X-Request-Id: {id}\r\n")),
+        );
+    }
+    for key in ["abc", "order-8841-secret", ""] {
+        add(
+            &format!("idempotency key {key:?}"),
+            get(base, &format!("Idempotency-Key: {key}\r\n")),
+        );
+    }
+    add(
+        "idempotency key twice",
+        get(base, "Idempotency-Key: a\r\nIdempotency-Key: b\r\n"),
+    );
+    add(
+        "idempotency key in capitals",
+        get(base, "IDEMPOTENCY-KEY: caps\r\n"),
+    );
+    for method in [
+        "GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "PURGE", "TOKEN",
+    ] {
+        add(
+            &format!("method {method}"),
+            format!("{method} {base} HTTP/1.1\r\n{HOST}\r\n"),
+        );
+    }
+    cases
+}
