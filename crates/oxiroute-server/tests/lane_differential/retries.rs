@@ -79,8 +79,7 @@ async fn scenario(
     })
     .await;
     let pair = Pair { classic, lane }.warmed().await;
-    let classic = play(&pair.classic, script).await;
-    let lane = play(&pair.lane, script).await;
+    let (classic, lane) = pair.play(script).await;
     let (classic_lines, lane_lines) = (log_lines(&classic_log).await, log_lines(&lane_log).await);
     pair.finish();
     Outcomes {
@@ -341,8 +340,7 @@ async fn requests_that_queue_are_told_their_place_on_both_paths() {
             }
         })
         .await;
-        wire.exchange(b"GET /r HTTP/1.1\r\nHost: warm.test\r\n\r\n")
-            .await;
+        play(&wire, &[b"GET /r HTTP/1.1\r\nHost: warm.test\r\n\r\n"]).await;
         let first = tokio::spawn({
             let address = wire.proxy;
             async move {
