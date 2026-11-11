@@ -46,8 +46,8 @@
 mod custom_tls;
 mod l4;
 
-pub use custom_tls::{CustomTlsSettings, StreamTlsAcceptor};
 use custom_tls::CustomTlsAcceptor;
+pub use custom_tls::{CustomTlsSettings, StreamTlsAcceptor};
 
 #[cfg(feature = "connection_filter")]
 pub mod connection_filter;

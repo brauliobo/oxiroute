@@ -23,11 +23,11 @@ use bytes::Bytes;
 use h2::SendStream;
 
 pub mod client;
+#[cfg(test)]
+mod front_tests;
 pub mod server;
 #[cfg(test)]
 mod server_response_tests;
-#[cfg(test)]
-mod front_tests;
 
 async fn reserve_and_send(
     writer: &mut SendStream<Bytes>,

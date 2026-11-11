@@ -23,8 +23,8 @@ use crate::listeners::tls::TlsSettings;
 #[cfg(feature = "connection_filter")]
 use crate::listeners::AcceptAllFilter;
 use crate::listeners::{
-    ConnectionFilter, CustomTlsSettings, ListenerConfig, Listeners, ServerAddress, TcpSocketOptions,
-    TransportStack, UninitializedStream,
+    ConnectionFilter, CustomTlsSettings, ListenerConfig, Listeners, ServerAddress,
+    TcpSocketOptions, TransportStack, UninitializedStream,
 };
 use crate::protocols::Stream;
 #[cfg(unix)]
