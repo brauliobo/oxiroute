@@ -61,6 +61,7 @@ impl Head {
     }
 }
 
+#[allow(clippy::unnecessary_box_returns)]
 fn write_error(error: impl std::error::Error + Send + Sync + 'static) -> Box<Error> {
     Error::because(
         ErrorType::WriteError,

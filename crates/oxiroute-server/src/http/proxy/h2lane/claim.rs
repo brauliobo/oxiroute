@@ -87,7 +87,7 @@ fn plan(front: &LaneFront, request: &H2Request, digest: &Digest) -> Option<Plan>
     let (id, wire, values, replay_safe) = match &route.action {
         HttpActionPlan::Proxy(proxy) => {
             let (id, wire) =
-                request::read((request.method(), target), request.fields(), &authority)?;
+                request::read((request.method(), target), &request.fields(), &authority)?;
             let https = digest.ssl_digest.is_some();
             let Some(values) = decide(
                 https,
