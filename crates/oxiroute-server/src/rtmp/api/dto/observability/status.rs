@@ -150,7 +150,7 @@ pub(crate) struct ReadinessResponse {
 
 impl ReadinessResponse {
     pub(crate) fn project(serving: bool, generation: Option<GenerationStatus>) -> Self {
-        let ready = serving && generation.as_ref().is_some_and(|status| status.serving());
+        let ready = serving && generation.as_ref().is_some_and(GenerationStatus::serving);
         Self {
             ready,
             build_version: crate::cli::BUILD_VERSION,

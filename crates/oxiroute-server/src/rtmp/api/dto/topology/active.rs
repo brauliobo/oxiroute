@@ -2,6 +2,7 @@
 //! generation) and the live part, the overlays and the servers that registered at runtime, is written around them.
 use std::{collections::HashSet, io::Write as _};
 
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::{
     EndpointHealthSnapshot, EndpointHealthState, HealthFailure, ListenerRuntimeState,
