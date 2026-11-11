@@ -625,28 +625,17 @@ pub(super) fn validate_h3_upstream_usage(
             }
             continue;
         };
-        let mut uses_h3_pool = false;
         for route in &service.routes {
             let HttpRouteAction::Proxy { upstream_pool, .. } = &route.action else {
                 continue;
             };
-            let Some(pool) = pools.get(upstream_pool.as_str()) else {
+            if !pools.contains_key(upstream_pool.as_str()) {
                 return Err(ConfigError::InvalidListenerTransport {
                     listener: http3_listener.name.clone(),
                     protocol: Protocol::Http3,
-                    detail: "HTTP/3 reverse routes require a resolvable exact HTTP/3 upstream pool",
-                });
-            };
-            if pool.http_versions.min != HttpVersion::Http3
-                || pool.http_versions.max != HttpVersion::Http3
-            {
-                return Err(ConfigError::InvalidListenerTransport {
-                    listener: http3_listener.name.clone(),
-                    protocol: Protocol::Http3,
-                    detail: "HTTP/3 reverse routes require an exact HTTP/3 upstream pool",
+                    detail: "HTTP/3 reverse routes require a resolvable upstream pool",
                 });
             }
-            uses_h3_pool = true;
         }
         if uses_h3_pool
             && service_listeners
