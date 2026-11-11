@@ -170,6 +170,32 @@ Handshake CPU is the sum over new connections, so the effect shows in `top -H` a
 connection pays the handshake once: with 50 requests per connection the handshake is under 40% of the connection's CPU,
 with 1,000 requests it is below 5%, and the options above matter for short connections only.
 
+## Kernel TLS
+
+`tls_profiles[].policy.ktls` is `"auto"` by default. A TLS 1.3 AES-GCM HTTP/1.1 connection that sends its first
+large static file (about 256 KiB and up) is switched to kernel TLS and the file goes out with `sendfile`; every later
+response on that connection is encrypted by the kernel as well. It needs the `tls` kernel module and kernel 6.5 or
+newer. The module is not loaded by default and an unprivileged service cannot load it, so load it before OxiRoute
+starts and reload the configuration afterwards (the probe runs per generation):
+
+```sh
+echo tls | sudo tee /etc/modules-load.d/ktls.conf   # at boot
+sudo modprobe tls                                   # now
+grep -E 'TlsTxSw|TlsCurrTxSw|TlsDecryptError' /proc/net/tls_stat   # converted since boot, alive now
+```
+
+Without the module, or with an older kernel, an unsupported cipher or the `rustls` backend, `"auto"` behaves exactly as
+`"off"`; the log of the profile says once (info) whether kernel TLS is active or why not. Set `ktls = "off"` to keep
+all TLS in user space. A converted connection that then serves small responses costs 1% to 4% more instructions per
+request; the break-even is one large file per 200 small requests. Details: `developer/PERF_6_4_KTLS.md`.
+
+## TLS backend
+
+`tls_profiles[].policy.backend` is `"openssl"` by default; `"rustls"` runs the handshakes and records of the profile's
+listeners with rustls and aws-lc-rs. It rejects `cipher_list` and `dh_parameters_path`, offers only the TLS 1.3 and ECDHE
+AEAD suites, and has no kernel TLS. Switch one profile at a time (a reload applies it to new connections) and compare the
+handshake and error counters before moving more. Differences and numbers: `developer/PERF_6_4_RUSTLS.md`.
+
 ## Shutdown
 
 Pingora is configured with a 3-second connection grace period followed by a 2-second runtime
