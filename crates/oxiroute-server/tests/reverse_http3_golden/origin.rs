@@ -109,11 +109,13 @@ fn server_config() -> quinn::ServerConfig {
         .next()
         .expect("origin key block")
         .expect("origin key");
-    let mut crypto =
-        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-            .with_no_client_auth()
-            .with_single_cert(certificates, key)
-            .expect("origin TLS identity");
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut crypto = rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .expect("origin protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(certificates, key)
+        .expect("origin TLS identity");
     crypto.alpn_protocols = vec![H3_ALPN.to_vec()];
     crypto.max_early_data_size = 0;
     quinn::ServerConfig::with_crypto(Arc::new(
