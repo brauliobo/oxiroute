@@ -6,7 +6,7 @@ Usage: gen_config.py OUT --proxy-port P --upstream-port U [--servers N] [--echo-
 
 Every feature is an independent A/B switch on top of the minimal reverse-proxy configuration:
   access_log timeouts retry queue capacity passive breaker outlier gzip cache reqbuf respbuf
-  forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host lc wrr
+  forward forwarded dns dns_startup retry_buffered fixed static tls ktls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host lc wrr
 """
 
 import argparse
@@ -185,7 +185,7 @@ def build(args):
         "rtmp_services": [],
         "l4_services": [],
     }
-    if on("tls") or on("tls_cache") or on("tls_tickets") or on("tls_rsa"):
+    if on("tls") or on("tls_cache") or on("tls_tickets") or on("tls_rsa") or on("ktls"):
         key_type = "rsa_2048" if on("tls_rsa") else "ecdsa_p256"
         config["certificates"] = [{
             "name": "bench-cert",
@@ -193,6 +193,8 @@ def build(args):
             "source": {"type": "self_signed_development", "key_type": key_type},
         }]
         tls_policy = {"session_tickets": on("tls_tickets")}
+        if on("ktls"):
+            tls_policy["ktls"] = "static"
         if on("tls_cache"):
             tls_policy["session_cache"] = {"name": "bench-sessions", "size_bytes": 4194304}
         config["tls_profiles"] = [{
