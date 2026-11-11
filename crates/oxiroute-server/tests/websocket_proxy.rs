@@ -44,30 +44,8 @@ async fn websocket_upgrade_proxies_frames_in_both_directions() {
             websocket.close(None).await.expect("origin close");
         });
 
-        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
-        let proxy_address = proxy_listener.local_addr().expect("proxy address");
-        let runtime_metrics = RuntimeMetrics::new();
-        let metrics = runtime_metrics
-            .register_listener("websocket", "http", proxy_address.to_string(), 100)
-            .expect("listener metrics");
-        let config = websocket_config(proxy_address, origin_address);
-        let config = config.validate().expect("valid websocket config");
-        let mut services = service_specs(&config).expect("service plan");
-        let ServiceKind::Http(http_service) = services.remove(0).kind else {
-            panic!("websocket listener must compile as HTTP");
-        };
-        let configuration = Arc::new(ServerConf::default());
-        let proxy = Arc::new(http_proxy(
-            &configuration,
-            HttpReverseProxy::new(http_service, metrics),
-        ));
-        let (_shutdown_tx, shutdown) = watch::channel(false);
-        let proxy_task = tokio::spawn(async move {
-            let (stream, _) = proxy_listener.accept().await.expect("proxy accept");
-            let stream: pingora::protocols::Stream =
-                Box::new(pingora::protocols::l4::stream::Stream::from(stream));
-            proxy.process_new(stream, &shutdown).await;
-        });
+        let (proxy_address, proxy_task, runtime_metrics, _shutdown_tx) =
+            serve_one_connection(origin_address).await;
 
         let (mut client, response) = connect_async(format!("ws://{proxy_address}/socket"))
             .await
@@ -95,6 +73,87 @@ async fn websocket_upgrade_proxies_frames_in_both_directions() {
     })
     .await
     .expect("websocket exchange timed out");
+}
+
+/// A proxy in front of `origin_address` that serves the one connection it accepts.
+async fn serve_one_connection(
+    origin_address: SocketAddr,
+) -> (
+    SocketAddr,
+    tokio::task::JoinHandle<()>,
+    RuntimeMetrics,
+    watch::Sender<bool>,
+) {
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
+    let proxy_address = proxy_listener.local_addr().expect("proxy address");
+    let runtime_metrics = RuntimeMetrics::new();
+    let metrics = runtime_metrics
+        .register_listener("websocket", "http", proxy_address.to_string(), 100)
+        .expect("listener metrics");
+    let config = websocket_config(proxy_address, origin_address);
+    let config = config.validate().expect("valid websocket config");
+    let mut services = service_specs(&config).expect("service plan");
+    let ServiceKind::Http(http_service) = services.remove(0).kind else {
+        panic!("websocket listener must compile as HTTP");
+    };
+    let configuration = Arc::new(ServerConf::default());
+    let proxy = Arc::new(http_proxy(
+        &configuration,
+        HttpReverseProxy::new(http_service, metrics),
+    ));
+    let (shutdown_tx, shutdown) = watch::channel(false);
+    let proxy_task = tokio::spawn(async move {
+        let (stream, _) = proxy_listener.accept().await.expect("proxy accept");
+        let stream: pingora::protocols::Stream =
+            Box::new(pingora::protocols::l4::stream::Stream::from(stream));
+        proxy.process_new(stream, &shutdown).await;
+    });
+    (proxy_address, proxy_task, runtime_metrics, shutdown_tx)
+}
+
+#[tokio::test]
+async fn an_upgraded_connection_that_idles_in_either_direction_still_relays() {
+    timeout(Duration::from_secs(30), async {
+        let origin_listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let origin_address = origin_listener.local_addr().expect("origin address");
+        let origin = tokio::spawn(async move {
+            let (stream, _) = origin_listener.accept().await.expect("origin accept");
+            let mut websocket = accept_async(stream).await.expect("origin upgrade");
+            for round in 0..3 {
+                let frame = websocket.next().await.expect("frame").expect("valid frame");
+                assert_eq!(frame, Message::Text(format!("ping {round}").into()));
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                websocket
+                    .send(Message::Text(format!("pong {round}").into()))
+                    .await
+                    .expect("origin send");
+            }
+            websocket.close(None).await.expect("origin close");
+        });
+        let (proxy_address, proxy_task, _metrics, _shutdown_tx) =
+            serve_one_connection(origin_address).await;
+
+        let (mut client, response) = connect_async(format!("ws://{proxy_address}/socket"))
+            .await
+            .expect("client upgrade");
+        assert_eq!(response.status().as_u16(), 101);
+        for round in 0..3 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            client
+                .send(Message::Text(format!("ping {round}").into()))
+                .await
+                .expect("client send");
+            assert_eq!(
+                client.next().await.expect("frame").expect("valid frame"),
+                Message::Text(format!("pong {round}").into())
+            );
+        }
+        client.close(None).await.expect("client close");
+        origin.await.expect("origin task");
+        proxy_task.await.expect("proxy task");
+    })
+    .await
+    .expect("idle websocket exchange timed out");
 }
 
 #[tokio::test]

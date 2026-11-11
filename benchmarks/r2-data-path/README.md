@@ -32,7 +32,8 @@ of each per-request feature. Wall-clock numbers on a shared host are unreliable,
   indicative; per-request syscalls such as `recvfrom` and `write` are exact.
 * `--alloc`: allocator calls, requested bytes and `clock_gettime` calls per request from the `LD_PRELOAD` shim
   (valgrind does not run on glibc 2.44 with AVX-512, so callgrind/dhat are unavailable on the reference host).
-* `--mem`: heap and RSS per idle keep-alive connection.
+* `--mem`: RSS per idle keep-alive connection, sampled while the connections are open (`rss_bytes_per_conn`) and after the
+  load tool closed them (`rss_after_close_bytes_per_conn`: what the allocator keeps, not a footprint).
 * `--profile`: `perf record -e instructions:u -c PERIOD` (flat, per-function instruction sampling; instruction
   sampling skids onto the instruction after long-latency atomics, so lock-heavy libc spots are over-weighted).
   With `--profile-bin` pointing at a frame-pointer build (`RUSTFLAGS='-C force-frame-pointers=yes'`) it records
@@ -72,7 +73,7 @@ python3 benchmarks/r2-data-path/table.py /tmp/r2-after/results.json /tmp/r2-befo
 
 `instr_per_req cycles_per_req vctxsw_per_req nvctxsw_per_req rps p50_us p99_us p999_us connects errors rss_kb
 hwm_kb threads fds` and, with the optional modes, `syscalls_per_req sys_*`, `mallocs_per_req frees_per_req
-alloc_bytes_per_req clock_gettime_per_req`, `heap_live_bytes_per_conn rss_bytes_per_conn`.
+alloc_bytes_per_req clock_gettime_per_req`, `heap_live_bytes_per_conn rss_bytes_per_conn rss_after_close_bytes_per_conn`.
 
 ## Lanes
 

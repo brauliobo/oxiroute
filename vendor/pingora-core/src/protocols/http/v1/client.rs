@@ -748,6 +748,9 @@ impl HttpSession {
     async fn do_read_body_bytes(&mut self) -> Result<Option<Bytes>> {
         self.init_body_reader();
         self.body_reader
+            .wait_readable(&mut self.underlying_stream)
+            .await?;
+        self.body_reader
             .read_body_bytes(&mut self.underlying_stream)
             .await
     }
