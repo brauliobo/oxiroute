@@ -327,11 +327,25 @@ impl UninitializedStream {
         self.l4.hold_admission(admission);
     }
 
-    pub async fn handshake(mut self) -> Result<Stream> {
+    /// Moves the socket to the I/O driver of the runtime that serves it, when another one accepted it.
+    fn move_to_runtime(&mut self) -> Result<()> {
         let own_driver = Handle::current().id() != self.accepted_by;
         self.l4
             .set_buffer(self.l4_buffer, own_driver)
-            .or_err(AcceptError, "failed to move the connection to its runtime")?;
+            .or_err(AcceptError, "failed to move the connection to its runtime")
+    }
+
+    /// The stream of a connection that needs no transport handshake (plain TCP): there is nothing to wait for, so no
+    /// handshake future and no timeout. A TLS connection comes back to be handshaken.
+    pub fn ready(mut self) -> std::result::Result<Result<Stream>, Self> {
+        if self.tls.is_some() {
+            return Err(self);
+        }
+        Ok(self.move_to_runtime().map(|()| Box::new(self.l4) as Stream))
+    }
+
+    pub async fn handshake(mut self) -> Result<Stream> {
+        self.move_to_runtime()?;
         if let Some(tls) = self.tls {
             // Process pre-TLS data if a callback is configured (e.g., PROXY protocol)
             if let Some(ref callback) = self.pre_tls_callback {
