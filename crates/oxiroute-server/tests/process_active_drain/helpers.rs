@@ -44,6 +44,8 @@ pub(super) fn http_config(
             proxy_protocol: None,
             max_connections: Some(8),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         http_services: vec![HttpService {
             drain_deadline_ms: None,
@@ -137,6 +139,8 @@ pub(super) fn forward_h2_config(
             proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         ..empty_config()
     }
@@ -164,6 +168,8 @@ pub(super) fn tcp_config(
             proxy_protocol: None,
             max_connections: Some(8),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         upstream_pools: vec![UpstreamPool {
             name: "upstream".into(),
@@ -218,6 +224,8 @@ pub(super) fn rtmp_config(
             proxy_protocol: None,
             max_connections: Some(8),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         rtmp_services: vec![RtmpService {
             name: "live".into(),

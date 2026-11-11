@@ -68,6 +68,8 @@ async fn daemon_rejects_h3_extended_connect_without_tcp_or_h1_fallback() {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
 
     let config = config.validate().expect("valid forward H3 config");

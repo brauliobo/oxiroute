@@ -295,6 +295,8 @@ impl Lowerer {
             }),
             max_connections: None,
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         });
         let listener_path = format!("/listeners/{listener_index}");
         let mut origins = service_origins.to_vec();

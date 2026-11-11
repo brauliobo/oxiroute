@@ -585,6 +585,13 @@ Current constraints:
 - `automatic_response_headers` defaults to true. When enabled, the runtime generates downstream
   HTTP/1 Date and Connection headers and HTTP/2 Date headers. When disabled, none of those headers
   are generated; mandatory HTTP/2 hop-header removal still applies.
+- Listener `h2_initial_stream_window` and `h2_initial_connection_window` are optional integers (bytes) that set the
+  HTTP/2 receive windows an `http` or `forward_http2` listener advertises: the per-stream window (65535 to 16777216,
+  default 1048576) and the connection window (65535 to 67108864, default 8388608). The effective connection window
+  may not be below the effective stream window. Other listener protocols reject both. The windows bound what a
+  client can send before the proxy has read it, so a connection buffers at most its connection window of request
+  data however many streams it opens. Changing them is an ordinary reload: connections already open keep the windows
+  they were opened with. Dynamic window growth is not implemented; the values are fixed per listener.
 - Listener `downstream_timeouts` independently represents optional client, request-header, and HTTP
   keepalive deadlines from 1 through 86400000 milliseconds. Request and keepalive deadlines are
   accepted only on HTTP listener protocols. The HTTP runtime enforces all three through downstream

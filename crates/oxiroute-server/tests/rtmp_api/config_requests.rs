@@ -453,6 +453,8 @@ pub(super) async fn rejects_invalid_malformed_and_oversized_config_requests() {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     let serviceless = harness
         .request(

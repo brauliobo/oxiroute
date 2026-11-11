@@ -35,6 +35,8 @@ fn config(name: &str, address: SocketAddr) -> ConfigDraft {
             proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         ..empty_config()
     }
@@ -245,6 +247,8 @@ fn many_listener_config(count: usize) -> ValidatedConfig {
             proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         })
         .collect();
     config.validate().expect("valid many-listener config")

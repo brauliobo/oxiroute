@@ -221,6 +221,8 @@ fn public_stats_page_display_name_rejects_traffic_collision_but_hidden_names_coe
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     config.management = Some(Management {
         bind: ([127, 0, 0, 1], 9_899).into(),
@@ -326,6 +328,8 @@ fn inventory_config(
         proxy_protocol: None,
         max_connections,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     config.validate().expect("valid inventory config")
 }

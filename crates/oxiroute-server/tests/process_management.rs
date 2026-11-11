@@ -2146,6 +2146,8 @@ fn recording_candidate(active: &ConfigDraft, root: &Path) -> ConfigDraft {
         proxy_protocol: None,
         max_connections: Some(8),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
     candidate.rtmp_services.push(RtmpService {
         name: "recording-wire".into(),
@@ -2200,6 +2202,8 @@ fn rtmp_listener_config(bind: ListenerBind) -> ConfigDraft {
             proxy_protocol: None,
             max_connections: Some(8),
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         }],
         rtmp_services: vec![RtmpService {
             name: "live".into(),

@@ -7680,6 +7680,8 @@ impl ProxyHarness {
                 proxy_protocol: None,
                 max_connections: Some(max_connections),
                 downstream_timeouts,
+                h2_initial_stream_window: None,
+                h2_initial_connection_window: None,
             }],
             upstream_pools,
             http_services: vec![HttpService {

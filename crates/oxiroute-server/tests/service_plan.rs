@@ -768,6 +768,8 @@ fn compiles_a_bounded_udp_service_plan() {
         proxy_protocol: None,
         max_connections: Some(32),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
 
     let services =
@@ -1630,6 +1632,8 @@ fn canonical_config() -> ConfigDraft {
                 proxy_protocol: None,
                 max_connections: Some(500),
                 downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+                h2_initial_stream_window: None,
+                h2_initial_connection_window: None,
             },
             Listener {
                 name: "web-alt".into(),
@@ -1640,6 +1644,8 @@ fn canonical_config() -> ConfigDraft {
                 proxy_protocol: None,
                 max_connections: Some(250),
                 downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+                h2_initial_stream_window: None,
+                h2_initial_connection_window: None,
             },
             Listener {
                 name: "database".into(),
@@ -1650,6 +1656,8 @@ fn canonical_config() -> ConfigDraft {
                 proxy_protocol: None,
                 max_connections: Some(100),
                 downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+                h2_initial_stream_window: None,
+                h2_initial_connection_window: None,
             },
             Listener {
                 name: "live".into(),
@@ -1660,6 +1668,8 @@ fn canonical_config() -> ConfigDraft {
                 proxy_protocol: None,
                 max_connections: Some(50),
                 downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+                h2_initial_stream_window: None,
+                h2_initial_connection_window: None,
             },
         ],
         upstream_pools: vec![

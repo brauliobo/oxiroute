@@ -138,6 +138,8 @@ pub(super) async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool()
         proxy_protocol: None,
         max_connections: Some(8),
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
 
     let config = config.validate().expect("valid reverse H3 configuration");
@@ -361,6 +363,8 @@ pub(super) async fn reverse_h3_cache_serves_a_second_get_without_origin_contact(
         proxy_protocol: None,
         max_connections: Some(8),
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     });
 
     let config = config

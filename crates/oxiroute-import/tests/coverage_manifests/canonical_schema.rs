@@ -110,6 +110,8 @@ fn exclude_nonintegrated_component_controls(
         "l4_services[].drain_deadline_ms",
         "listeners[].bind.mode",
         "listeners[].downstream_timeouts",
+        "listeners[].h2_initial_stream_window",
+        "listeners[].h2_initial_connection_window",
         "upstream_pools[].endpoints",
         "upstream_pools[].servers[].max_connections",
         "upstream_pools[].servers[].dns_resolution",
