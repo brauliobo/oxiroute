@@ -76,7 +76,7 @@ impl Wake for Wakes {
 async fn a_queued_response_is_written_after_one_turn_of_the_scheduler() {
     let (client_io, server_io) = duplex(1 << 20);
     let client = tokio::spawn(async move {
-        let (mut sender, connection) = h2::client::handshake(client_io).await.unwrap();
+        let (sender, connection) = h2::client::handshake(client_io).await.unwrap();
         tokio::spawn(connection);
         let request = Request::builder()
             .uri("https://example.com/")
@@ -102,8 +102,8 @@ async fn a_queued_response_is_written_after_one_turn_of_the_scheduler() {
     stream
         .send_response(StatusCode::OK, HeaderMap::new(), true)
         .unwrap();
-    let wakes = Arc::new(Wakes::default());
-    let waker = Waker::from(wakes.clone());
+    let counter = Arc::new(Wakes::default());
+    let waker = Waker::from(counter.clone());
     let mut cx = Context::from_waker(&waker);
     let mut accept = pin!(server.accept_view());
     assert!(accept.as_mut().poll(&mut cx).is_pending());
@@ -113,7 +113,7 @@ async fn a_queued_response_is_written_after_one_turn_of_the_scheduler() {
         "nothing is written before the other ready tasks had their turn"
     );
     assert!(
-        wakes.0.load(Ordering::SeqCst) >= 1,
+        counter.0.load(Ordering::SeqCst) >= 1,
         "the driver asked for another turn"
     );
 
@@ -122,6 +122,5 @@ async fn a_queued_response_is_written_after_one_turn_of_the_scheduler() {
         writes.load(Ordering::SeqCst) > before,
         "the response is written on the next turn"
     );
-    drop(accept);
     assert_eq!(client.await.unwrap(), StatusCode::OK);
 }

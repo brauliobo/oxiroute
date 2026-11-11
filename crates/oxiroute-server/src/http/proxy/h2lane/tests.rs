@@ -58,7 +58,7 @@ fn lane_fields(
     let authority = request.uri.authority().unwrap();
     let target = request.uri.path_and_query().unwrap().as_str().as_bytes();
     let method = request.method.as_str().as_bytes();
-    let (id, wire) = request::read((method, target), fields.iter().copied(), authority)?;
+    let (id, wire) = request::read((method, target), &fields.iter().copied(), authority)?;
     let mut out = Vec::new();
     let host = HeaderValue::from_str(host).unwrap();
     head::render(
@@ -101,7 +101,7 @@ fn id_of(request: &RequestHeader) -> HeaderValue {
     let method = request.method.as_str().as_bytes();
     let (id, _) = request::read(
         (method, target),
-        fields.iter().copied(),
+        &fields.iter().copied(),
         request.uri.authority().unwrap(),
     )
     .unwrap();

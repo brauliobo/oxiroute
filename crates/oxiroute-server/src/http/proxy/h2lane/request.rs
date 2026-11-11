@@ -42,7 +42,7 @@ impl Wire {
 /// the request target as sent (path and query).
 pub(super) fn read<'a>(
     (method, target): (&[u8], &[u8]),
-    fields: impl Fields<'a>,
+    fields: &impl Fields<'a>,
     authority: &Authority,
 ) -> Option<(HeaderValue, Wire)> {
     let mut text = buffers::take_write();
@@ -74,7 +74,7 @@ pub(super) fn read<'a>(
 fn write_text<'a>(
     out: &mut Vec<u8>,
     (method, target): (&[u8], &[u8]),
-    fields: impl Fields<'a>,
+    fields: &impl Fields<'a>,
     authority: &Authority,
 ) -> bool {
     out.extend_from_slice(method);

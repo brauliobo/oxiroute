@@ -2,7 +2,7 @@
 //! configured ones, `Content-Length`, the request id, `Date`), written without a request context or a header map.
 //! A response without a body ends on its head's frame.
 
-use std::time::Instant;
+use std::{io::Write as _, time::Instant};
 
 use bytes::Bytes;
 use http::header::CONTENT_LENGTH;
@@ -44,7 +44,7 @@ async fn send(
     plan: &Plan,
 ) -> Result<(), Box<Error>> {
     let mut digits = [0_u8; 20];
-    let length = decimal(&mut digits, response.body.len());
+    let length = decimal(&mut digits, response.body.len() as u64);
     let date = get_cached_date();
     let id = plan.id.as_bytes();
     // The classic head sets `Content-Length` where a configured one is, or appends it; then the id and the date.
@@ -92,15 +92,10 @@ async fn send(
     Ok(())
 }
 
-/// The decimal digits of `value`, written at the end of `digits`.
-fn decimal(digits: &mut [u8; 20], mut value: usize) -> &[u8] {
-    let mut start = digits.len();
-    loop {
-        start -= 1;
-        digits[start] = b'0' + (value % 10) as u8;
-        value /= 10;
-        if value == 0 {
-            return &digits[start..];
-        }
-    }
+/// The decimal digits of `value`, written at the start of `digits`.
+fn decimal(digits: &mut [u8; 20], value: u64) -> &[u8] {
+    let mut cursor = std::io::Cursor::new(&mut digits[..]);
+    write!(cursor, "{value}").expect("a u64 has at most 20 digits");
+    let written = usize::try_from(cursor.position()).expect("at most 20");
+    &digits[..written]
 }
