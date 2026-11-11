@@ -151,11 +151,15 @@ fn kernel_tx_available(profile: &str, mode: KtlsMode) -> bool {
     }
     match pingora::protocols::l4::ktls::probe() {
         Ok(()) => {
-            log::info!("TLS profile `{profile}`: ktls = \"static\": large static files are sent with kernel TLS");
+            log::info!(
+                "TLS profile `{profile}`: ktls = \"static\": large static files are sent with kernel TLS"
+            );
             true
         }
         Err(unavailable) => {
-            log::warn!("TLS profile `{profile}`: ktls = \"static\" is not active, TLS stays in user space: {unavailable}");
+            log::warn!(
+                "TLS profile `{profile}`: ktls = \"static\" is not active, TLS stays in user space: {unavailable}"
+            );
             false
         }
     }

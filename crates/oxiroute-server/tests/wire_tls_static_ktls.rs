@@ -16,8 +16,8 @@ use oxiroute_config::{
 };
 use pingora::protocols::l4::ktls::probe;
 use support::{
-    PROXY_SERVER_NAME, ProxyHarness, ReservedListener, TEST_TIMEOUT, h1_request, proxy_config,
-    tls_client_config_with_versions, tls_connect, tls_connect_with_config, fixture,
+    PROXY_SERVER_NAME, ProxyHarness, ReservedListener, TEST_TIMEOUT, fixture, h1_request,
+    proxy_config, tls_client_config_with_versions, tls_connect, tls_connect_with_config,
 };
 use tokio::time::timeout;
 
@@ -45,16 +45,15 @@ fn kernel_available() -> bool {
     match probe() {
         Ok(()) => true,
         Err(unavailable) => {
-            eprintln!("kernel TLS is not available on this host, user-space path only: {unavailable}");
+            eprintln!(
+                "kernel TLS is not available on this host, user-space path only: {unavailable}"
+            );
             false
         }
     }
 }
 
-fn serving(
-    root: std::path::PathBuf,
-    ktls: KtlsMode,
-) -> (ProxyHarness, std::net::TcpListener) {
+fn serving(root: std::path::PathBuf, ktls: KtlsMode) -> (ProxyHarness, std::net::TcpListener) {
     let unused_origin = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve unused origin");
     let reserved = ReservedListener::new();
     let mut config = proxy_config(
@@ -81,7 +80,10 @@ fn serving(
         headers: Vec::new(),
         error_responses: Vec::new(),
     };
-    (ProxyHarness::start(&config.validate(), reserved), unused_origin)
+    (
+        ProxyHarness::start(&config.validate(), reserved),
+        unused_origin,
+    )
 }
 
 fn static_root(body: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -104,9 +106,15 @@ async fn large_files_arrive_intact_over_kernel_tls_and_the_connection_serves_the
         let mut stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("TLS connection to OxiRoute");
-        for (index, path) in ["/small.txt", "/big.bin", "/small.txt", "/big.bin", "/big.bin"]
-            .into_iter()
-            .enumerate()
+        for (index, path) in [
+            "/small.txt",
+            "/big.bin",
+            "/small.txt",
+            "/big.bin",
+            "/big.bin",
+        ]
+        .into_iter()
+        .enumerate()
         {
             let response = h1_request(&mut stream, path, index == 4)
                 .await
@@ -116,7 +124,10 @@ async fn large_files_arrive_intact_over_kernel_tls_and_the_connection_serves_the
             assert!(response.body == expected, "{path}: body differs");
         }
         if kernel_available() {
-            assert!(kernel_tx_sockets() > before, "the kernel did not encrypt the connection");
+            assert!(
+                kernel_tx_sockets() > before,
+                "the kernel did not encrypt the connection"
+            );
         }
         drop(stream);
         proxy.finish().await;
@@ -140,7 +151,11 @@ async fn a_key_update_from_the_client_between_downloads_keeps_the_connection_int
                 .expect("static response");
             assert!(response.body == body, "round {round}: body differs");
             if round < 2 {
-                stream.get_mut().1.refresh_traffic_keys().expect("client key update");
+                stream
+                    .get_mut()
+                    .1
+                    .refresh_traffic_keys()
+                    .expect("client key update");
             }
         }
         drop(stream);
@@ -187,7 +202,9 @@ async fn a_profile_without_the_option_serves_the_same_bytes_from_user_space() {
         let mut stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("TLS connection to OxiRoute");
-        let response = h1_request(&mut stream, "/big.bin", true).await.expect("static response");
+        let response = h1_request(&mut stream, "/big.bin", true)
+            .await
+            .expect("static response");
         assert!(response.body == body);
         drop(stream);
         proxy.finish().await;
