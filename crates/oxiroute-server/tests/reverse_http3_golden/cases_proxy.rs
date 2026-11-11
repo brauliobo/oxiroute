@@ -285,7 +285,7 @@ async fn retries(c: &mut Context) {
     )
     .await;
     c.run(
-        "retry/post-is-not-replayed",
+        "retry/post-fails-over-after-a-refused-connection",
         vec![Req::new("POST", "/failover/x").text("body")],
     )
     .await;
