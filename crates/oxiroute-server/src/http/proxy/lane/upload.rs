@@ -7,6 +7,7 @@
 use std::{future::poll_fn, time::Duration};
 
 use bytes::BufMut as _;
+use futures_util::FutureExt as _;
 use pingora::{
     Error, ErrorType,
     protocols::{Stream, http::v1::client::HttpSession},
@@ -76,16 +77,22 @@ impl Upload {
     }
 
     /// Reads what the client has of the body, up to what is left of it, and writes it to the origin. The last piece
-    /// ends the body. How many bytes went to the origin.
+    /// ends the body. How many bytes went to the origin: 0 when the client has nothing after all. `readable` can
+    /// report readiness that a read of the first request (which does not go through the I/O driver) left behind, and a
+    /// read that waited here would not watch the origin's answer: the caller goes back to its wait instead.
     pub(in crate::http::proxy) async fn forward(
         &mut self,
         stream: &mut Stream,
         session: &mut HttpSession,
     ) -> Result<usize, Box<Error>> {
         let mut buffer = buffers::take_upload();
-        let read = stream
+        let Some(read) = stream
             .read_buf(&mut (&mut buffer).limit(self.remaining))
-            .await;
+            .now_or_never()
+        else {
+            buffers::give_upload(buffer);
+            return Ok(0);
+        };
         let result = match read {
             Ok(0) => Err(Error::explain(
                 ErrorType::ConnectionClosed,
