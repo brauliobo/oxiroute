@@ -481,8 +481,7 @@ mod tests {
     #[test]
     fn test_default() {
         init_log();
-        let conf_str = r#"{"version": 1}"#
-        .to_string();
+        let conf_str = r#"{"version": 1}"#.to_string();
         let conf = ServerConf::from_json(&conf_str).unwrap();
         assert_eq!(0, conf.client_bind_to_ipv4.len());
         assert_eq!(0, conf.client_bind_to_ipv6.len());
@@ -578,7 +577,8 @@ mod tests {
     #[test]
     fn test_valid_max_blocking_threads() {
         init_log();
-        let conf_str = r#"{"version": 1, "max_blocking_threads": 64, "blocking_threads_ttl_seconds": 30}"#;
+        let conf_str =
+            r#"{"version": 1, "max_blocking_threads": 64, "blocking_threads_ttl_seconds": 30}"#;
         let conf = ServerConf::from_json(conf_str).unwrap();
         assert_eq!(Some(64), conf.max_blocking_threads);
         assert_eq!(Some(30), conf.blocking_threads_ttl_seconds);
