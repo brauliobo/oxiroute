@@ -118,6 +118,7 @@ pub struct TlsPolicy {
     /// Key-exchange groups in server preference order; absent keeps the backend default list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_exchange_groups: Option<Vec<TlsKeyExchangeGroup>>,
+    #[serde(default)]
     pub ktls: KtlsMode,
 }
 
