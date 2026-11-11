@@ -630,7 +630,10 @@ def measure_allocs(args, lane):
 
 
 def measure_memory(args, lane):
-    """Heap and RSS per idle keep-alive connection: live-byte delta of the allocator shim between 0 and N connections."""
+    """RSS per idle keep-alive connection, sampled while the N connections are open and idle (one second after the last
+    request), and again after the load tool has closed them: `rss_after_close_bytes_per_conn` is what the allocator
+    keeps once the connections are gone, not their footprint. The live-byte delta of the allocator shim only sees libc
+    allocations, so it is 0 while jemalloc is the global allocator."""
     env = Env(args, lane)
     snapshots = env.work / "mem.txt"
     connections = args.mem_conns
@@ -642,18 +645,22 @@ def measure_memory(args, lane):
         deadline = time.monotonic() + 5
         while not snapshots.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
-        command = env.load_command(connections, connections, [("hook-start", f"kill -USR1 {pid}")])
+        open_status = env.work / "status.open"
+        hook = f"kill -USR1 {pid}; sleep 1; cp /proc/{pid}/status {open_status}"
+        command = env.load_command(connections, connections, [("hook-start", hook)])
         command[command.index("--conns") + 1] = str(connections)
         subprocess.run(command, capture_output=True, text=True, check=True, timeout=LANE_TIMEOUT)
         deadline = time.monotonic() + 5
         while len(snapshots.read_text().splitlines()) < 2 and time.monotonic() < deadline:
             time.sleep(0.02)
-        rss_after = proc_status(pid)["rss_kb"]
+        rss_closed = proc_status(pid)["rss_kb"]
+        rss_open = int(re.search(r"^VmRSS:\s+(\d+)", open_status.read_text(), re.M).group(1))
         first, second = [list(map(int, line.split())) for line in snapshots.read_text().splitlines()[:2]]
     finally:
         env.close()
     return {"mem_conns": connections, "heap_live_bytes_per_conn": round((second[7] - first[7]) / connections),
-            "rss_bytes_per_conn": round((rss_after - rss_before) * 1024 / connections)}
+            "rss_bytes_per_conn": round((rss_open - rss_before) * 1024 / connections),
+            "rss_after_close_bytes_per_conn": round((rss_closed - rss_before) * 1024 / connections)}
 
 
 def measure_profile(args, lane):

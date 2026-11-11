@@ -84,6 +84,19 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   An accepted OpenSSL stream uses it after a read that ran dry: it returns pending from the transport's answer without
   calling `SSL_read` again until the socket is readable, instead of running the record layer once per wake-up for the
   same "want read". `SSL_write`, handshakes and clients are unchanged.
+- `protocols/tls/boringssl_openssl/stream.rs` implements `Peek::poll_read_ready` for `SslStream`: ready when the TLS layer holds
+  bytes of the connection that it has not handed out (`SSL_has_pending`, declared here because `openssl-sys` does not bind
+  it: plaintext of the current record and, with the listener's read-ahead, ciphertext read ahead of it), else the answer of
+  the transport. An idle TLS keep-alive connection therefore parks like a plain one (`apps/idle_wait.rs`, the lane's wait)
+  and holds no session, request future or read buffer. A stream without a probe (clients, tests) stays always ready; the
+  BoringSSL build has no binding and also stays always ready.
+- `services/listening.rs` `serve_connection`: one function for both accept paths. The handshake future is dropped before the
+  first request is read; held as a temporary of the `match` it kept its state for the whole life of the connection.
+- `protocols/http/v1/body.rs` `BodyReader::wait_readable` (called by `do_read_body_bytes` of the server and client sessions):
+  a close-delimited body (an upgraded connection, a response ended by the close) waits for the stream to be readable
+  before it takes a body buffer, and `take_bytes` gives the buffer back after a small read of such a body, so an idle
+  upgraded connection holds none of the two 128 KiB chunk buffers.
+- `protocols/http/v1/server.rs` `keep_rendered_response_buf` keeps no rendered response head for an upgraded session.
 - `protocols/http/v2/server.rs` `write_response_header` moves the header map into the HTTP/2 response instead of cloning it,
   so `response_written()` of an HTTP/2 session keeps the status line and no headers (nothing in OxiRoute reads them there).
 - `connectors/idle.rs` replaces the HTTP/1 upstream keep-alive pool (`pingora_pool::ConnectionPool` behind
@@ -154,8 +167,8 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   shutdown watch when `HttpServerApp::closes_idle_on_shutdown()` (new, default `false`; `HttpProxy` says `true`, the
   `ServeHttp` apps keep answering after a stop), and the keep-alive timeout), then builds the session. The timeout is
   `HttpServerApp::idle_keepalive_timeout()` (new, default `None`) or else the keep-alive seconds of the last response
-  (`HttpPersistentSettings::idle_timeout`). A stream that cannot tell if it is readable (TLS) is ready at once, and the
-  request read that follows waits as before.
+  (`HttpPersistentSettings::idle_timeout`). A stream that cannot tell if it is readable is ready at once, and the
+  request read that follows waits as before; an accepted OpenSSL stream can tell (`Peek::poll_read_ready` of `SslStream`).
 - `apps/mod.rs` `process_new`: the HTTP/1 request future lives on the heap per request (`apps/pooled_future.rs`:
   the block is written in place and kept by the thread for the next request, 64 per thread at most) so the future of
   the connection, which lives as long as the connection, no longer contains it, and the HTTP/2 loop is the boxed free

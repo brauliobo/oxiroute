@@ -24,6 +24,7 @@ use crate::listeners::tls::TlsSettings;
 use crate::listeners::AcceptAllFilter;
 use crate::listeners::{
     ConnectionFilter, ListenerConfig, Listeners, ServerAddress, TcpSocketOptions, TransportStack,
+    UninitializedStream,
 };
 use crate::protocols::Stream;
 #[cfg(unix)]
@@ -198,6 +199,22 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
         }
     }
 
+    /// One accepted connection: its handshake, then its requests. The handshake future is dropped before the first
+    /// request is read: held as a temporary of a `match` it would keep its state (8 KiB for TLS) for the whole life
+    /// of the connection.
+    async fn serve_connection(io: UninitializedStream, app: Arc<A>, shutdown: ShutdownWatch) {
+        let peer_addr = io.peer_addr();
+        let handshake = timeout(app.handshake_timeout(), Box::pin(io.handshake())).await;
+        match handshake {
+            Ok(Ok(io)) => Self::handle_event(io, app, shutdown).await,
+            Ok(Err(e)) => match peer_addr {
+                Some(addr) => error!("Downstream handshake error from {addr}: {e}"),
+                None => error!("Downstream handshake error: {e}"),
+            },
+            Err(_) => error!("Downstream handshake timeout"),
+        }
+    }
+
     async fn run_endpoint(
         app_logic: Arc<A>,
         mut stack: TransportStack,
@@ -272,22 +289,7 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                                 io.hold_admission(admission);
                                 let app = app_logic.clone();
                                 let shutdown = shutdown.clone();
-                                spawn_connection(async move {
-                                    let peer_addr = io.peer_addr();
-                                    match timeout(app.handshake_timeout(), Box::pin(io.handshake())).await {
-                                        Ok(handshake) => match handshake {
-                                            Ok(io) => Self::handle_event(io, app, shutdown).await,
-                                            Err(e) => {
-                                                if let Some(addr) = peer_addr {
-                                                    error!("Downstream handshake error from {}: {e}", addr);
-                                                } else {
-                                                    error!("Downstream handshake error: {e}");
-                                                }
-                                            }
-                                        },
-                                        Err(_) => error!("Downstream handshake timeout"),
-                                    }
-                                });
+                                spawn_connection(Self::serve_connection(io, app, shutdown));
                                 continue;
                             }
                             Err(error) => Err(error),
@@ -323,27 +325,7 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                     io.hold_admission(admission);
                     let app = app_logic.clone();
                     let shutdown = shutdown.clone();
-                    spawn_connection(async move {
-                        let peer_addr = io.peer_addr();
-                        match timeout(app.handshake_timeout(), Box::pin(io.handshake())).await {
-                            Ok(handshake) => {
-                                match handshake {
-                                    Ok(io) => Self::handle_event(io, app, shutdown).await,
-                                    Err(e) => {
-                                        // TODO: Maybe IOApp trait needs a fn to handle/filter out this error
-                                        if let Some(addr) = peer_addr {
-                                            error!("Downstream handshake error from {}: {e}", addr);
-                                        } else {
-                                            error!("Downstream handshake error: {e}");
-                                        }
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                error!("Downstream handshake timeout");
-                            }
-                        }
-                    });
+                    spawn_connection(Self::serve_connection(io, app, shutdown));
                 }
                 Err(e) => {
                     error!("Accept() failed {e}");
