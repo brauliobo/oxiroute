@@ -2,23 +2,20 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
-    path::PathBuf,
     sync::OnceLock,
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Map, Value, json};
 
+use crate::fixture;
+
 static SCRUB: OnceLock<Vec<(String, &'static str)>> = OnceLock::new();
 
 pub const RECORD_VARIABLE: &str = "OXIROUTE_INTERNAL_TEST_RECORD_GOLDEN";
+pub const RECORD_CASES_VARIABLE: &str = "OXIROUTE_INTERNAL_TEST_RECORD_CASES";
 const INLINE_BODY_BYTES: usize = 4096;
 const COMPACT_LINE: usize = 140;
-
-pub fn fixture_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reverse_http3_golden.json")
-}
 
 /// Names the addresses of the helper endpoints, which change from run to run.
 pub fn set_scrub(replacements: Vec<(String, &'static str)>) {
@@ -202,20 +199,16 @@ pub fn observation(
     json!({ "version": 1, "cases": values, "stats": stats })
 }
 
-pub fn record(observed: &Value) {
-    let path = fixture_path();
-    fs::write(&path, format!("{}\n", pretty(observed, 0))).expect("write the golden fixture");
-    eprintln!(
-        "recorded {} cases to {}",
-        observed["cases"].as_array().map_or(0, Vec::len),
-        path.display()
-    );
+/// Rewrites every area file, or, with a list of case ids (`stats` for the counters), only those cases.
+pub fn record(observed: &Value, selected: Option<&str>) {
+    match selected {
+        None => fixture::store(observed),
+        Some(ids) => fixture::store_selected(observed, &ids.split(',').collect::<Vec<_>>()),
+    }
 }
 
 pub fn replay(observed: &Value) {
-    let text = fs::read_to_string(fixture_path()).expect("the golden fixture; record it first");
-    let expected: Value = serde_json::from_str(&text).expect("golden fixture JSON");
-    let problems = compare(&expected, observed);
+    let problems = compare(&fixture::load(), observed);
     assert!(
         problems.is_empty(),
         "the reverse HTTP/3 path differs from the golden fixture:\n{}",
@@ -384,7 +377,7 @@ fn diff(prefix: &str, expected: &Value, observed: &Value) -> Vec<String> {
 }
 
 /// JSON with one line for every value that fits in `COMPACT_LINE` columns.
-fn pretty(value: &Value, indent: usize) -> String {
+pub fn pretty(value: &Value, indent: usize) -> String {
     let compact = value.to_string();
     if compact.len() + indent <= COMPACT_LINE
         || !matches!(value, Value::Object(_) | Value::Array(_))

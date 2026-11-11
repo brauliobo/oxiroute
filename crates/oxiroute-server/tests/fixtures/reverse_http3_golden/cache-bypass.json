@@ -1,0 +1,318 @@
+{
+  "cases": [
+    {
+      "access_log": [],
+      "id": "cache/authorization-bypasses",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","cache-fresh"]],
+              "method": "GET",
+              "uri": "https://authorization-bypasses.cache.test/c/fresh/a1"
+            }
+          ],
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"a1\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://authorization-bypasses.cache.test/c/fresh/a1"
+        },
+        {
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["age","<age>"],
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"a1\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://authorization-bypasses.cache.test/c/fresh/a1"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["age","<age>"],
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"a1\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://authorization-bypasses.cache.test/c/fresh/a1"
+        }
+      ]
+    },
+    {
+      "access_log": [],
+      "id": "cache/request-body-bypasses",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","cache-fresh"]],
+              "method": "GET",
+              "uri": "https://request-body-bypasses.cache.test/c/fresh/body"
+            }
+          ],
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"body\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://request-body-bypasses.cache.test/c/fresh/body"
+        },
+        {
+          "origin": [
+            {
+              "body": "b",
+              "headers": [["content-length","1"],["x-origin-mode","cache-fresh"]],
+              "method": "GET",
+              "uri": "https://request-body-bypasses.cache.test/c/fresh/body"
+            }
+          ],
+          "outcome": {
+            "body": "cached-2",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"body\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://request-body-bypasses.cache.test/c/fresh/body"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["age","<age>"],
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"body\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://request-body-bypasses.cache.test/c/fresh/body"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200","h3 web POST 200"],
+      "id": "cache/post-is-not-cached",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "a",
+              "headers": [["content-length","1"],["x-origin-mode","cache-fresh"]],
+              "method": "POST",
+              "uri": "https://post-is-not-cached.cache.test/c/fresh/post"
+            }
+          ],
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"post\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "POST https://post-is-not-cached.cache.test/c/fresh/post"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "a",
+              "headers": [["content-length","1"],["x-origin-mode","cache-fresh"]],
+              "method": "POST",
+              "uri": "https://post-is-not-cached.cache.test/c/fresh/post"
+            }
+          ],
+          "outcome": {
+            "body": "cached-2",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"post\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "POST https://post-is-not-cached.cache.test/c/fresh/post"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "cache/no-store-response",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","cache-nostore"]],
+              "method": "GET",
+              "uri": "https://no-store-response.cache.test/c/ns/one"
+            }
+          ],
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["cache-control","no-store"],
+              ["content-length","8"],
+              ["etag","\"one\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://no-store-response.cache.test/c/ns/one"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","cache-nostore"]],
+              "method": "GET",
+              "uri": "https://no-store-response.cache.test/c/ns/one"
+            }
+          ],
+          "outcome": {
+            "body": "cached-2",
+            "headers": [
+              ["cache-control","no-store"],
+              ["content-length","8"],
+              ["etag","\"one\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://no-store-response.cache.test/c/ns/one"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 404","h3 web GET 404"],
+      "id": "cache/error-status-is-not-cached",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","status-404"]],
+              "method": "GET",
+              "uri": "https://error-status-is-not-cached.cache.test/c/e/one"
+            }
+          ],
+          "outcome": {"body":"status-404","headers":[["content-length","10"],["x-origin-status","404"]],"status":404},
+          "request": "GET https://error-status-is-not-cached.cache.test/c/e/one"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"status-404","headers":[["age","<age>"],["content-length","10"],["x-origin-status","404"]],"status":404},
+          "request": "GET https://error-status-is-not-cached.cache.test/c/e/one"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "cache/response-trailers-are-not-cached",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","trailers"]],
+              "method": "GET",
+              "uri": "https://response-trailers-are-not-cached.cache.test/c/t/one"
+            }
+          ],
+          "outcome": {
+            "body": "with-trailers",
+            "headers": [["content-length","13"]],
+            "status": 200,
+            "trailers": [["x-origin-trailer","complete"],["x-second","two"]]
+          },
+          "request": "GET https://response-trailers-are-not-cached.cache.test/c/t/one"
+        },
+        {
+          "connection_after": "open",
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","trailers"]],
+              "method": "GET",
+              "uri": "https://response-trailers-are-not-cached.cache.test/c/t/one"
+            }
+          ],
+          "outcome": {
+            "body": "with-trailers",
+            "headers": [["content-length","13"]],
+            "status": 200,
+            "trailers": [["x-origin-trailer","complete"],["x-second","two"]]
+          },
+          "request": "GET https://response-trailers-are-not-cached.cache.test/c/t/one"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200"],
+      "id": "cache/success-without-validators",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","echo"]],
+              "method": "GET",
+              "uri": "https://success-without-validators.cache.test/c/s/one"
+            }
+          ],
+          "outcome": {"body":"origin-ok","headers":[["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://success-without-validators.cache.test/c/s/one"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"origin-ok","headers":[["age","<age>"],["content-length","9"],["x-origin","1"]],"status":200},
+          "request": "GET https://success-without-validators.cache.test/c/s/one"
+        }
+      ]
+    }
+  ]
+}

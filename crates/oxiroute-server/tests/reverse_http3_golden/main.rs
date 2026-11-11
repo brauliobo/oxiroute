@@ -16,10 +16,12 @@
 //! client for protocol violations) is replayed against it and each outcome is normalised: headers are
 //! lowercased and sorted, `date` is dropped, large bodies are hashed, an upstream origin logs everything
 //! it receives, and the listener access log and counters are read back. The result is compared with
-//! `tests/fixtures/reverse_http3_golden.json`, which was recorded from the `h3` crate implementation.
+//! the per-area files of `tests/fixtures/reverse_http3_golden/`, recorded from the `h3` crate implementation.
 //!
 //! - Replay (default): any difference fails with a per-case diff.
-//! - Record: `OXIROUTE_INTERNAL_TEST_RECORD_GOLDEN=1` rewrites the fixture from the current implementation.
+//! - Record: `OXIROUTE_INTERNAL_TEST_RECORD_GOLDEN=1` rewrites the fixture from the current implementation;
+//!   `OXIROUTE_INTERNAL_TEST_RECORD_CASES=id1,id2,stats` re-records only the listed cases (and the counters when
+//!   `stats` is listed), keeping the `deviation` note of each: a deliberate, reviewable change.
 //! - A case with `tolerance` may legitimately differ where the RFCs leave the choice open: its steps
 //!   accept the listed `accept` alternatives (each overrides keys of the recorded step) and its access
 //!   log lines are not compared.
@@ -42,12 +44,13 @@ mod cases_wire;
 mod client;
 mod config;
 mod context;
+mod fixture;
 mod golden;
 mod origin;
 mod raw;
 mod stats;
 
-use golden::RECORD_VARIABLE;
+use golden::{RECORD_CASES_VARIABLE, RECORD_VARIABLE};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reverse_http3_matches_the_golden_corpus() {
@@ -63,8 +66,9 @@ async fn reverse_http3_matches_the_golden_corpus() {
     cases_wire::run(&mut context).await;
     cases_limits::run(&mut context).await;
     let observed = context.finish().await;
-    if std::env::var_os(RECORD_VARIABLE).is_some() {
-        golden::record(&observed);
+    let selected = std::env::var(RECORD_CASES_VARIABLE).ok();
+    if selected.is_some() || std::env::var_os(RECORD_VARIABLE).is_some() {
+        golden::record(&observed, selected.as_deref());
     } else {
         golden::replay(&observed);
     }

@@ -1,0 +1,446 @@
+{
+  "cases": [
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "fixed/get-ok",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://get-ok.fixed.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 200"],
+      "id": "fixed/head-ok",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "HEAD https://head-ok.fixed.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "fixed/post-body-ignored",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "POST https://post-body-ignored.fixed.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "fixed/query-ignored",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://query-ignored.fixed.test/fixed/ok?a=1&b=2"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200","h3 web GET 404"],
+      "id": "fixed/three-on-one-connection",
+      "steps": [
+        {
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "GET https://three-on-one-connection.fixed.test/fixed/ok"
+        },
+        {
+          "outcome": {"body":"","headers":[["content-length","0"]],"status":200},
+          "request": "GET https://three-on-one-connection.fixed.test/fixed/empty"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"gone","headers":[["content-length","4"]],"status":404},
+          "request": "GET https://three-on-one-connection.fixed.test/fixed/404"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "fixed/empty-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"]],"status":200},
+          "request": "GET https://empty-body.fixed.test/fixed/empty"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 200"],
+      "id": "fixed/empty-body-head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"]],"status":200},
+          "request": "HEAD https://empty-body-head.fixed.test/fixed/empty"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 204"],
+      "id": "fixed/status-204-without-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["x-fixed","204"]],"status":204},
+          "request": "GET https://status-204-without-body.fixed.test/fixed/204"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 204"],
+      "id": "fixed/status-204-head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["x-fixed","204"]],"status":204},
+          "request": "HEAD https://status-204-head.fixed.test/fixed/204"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 205"],
+      "id": "fixed/status-205-without-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[],"status":205},
+          "request": "GET https://status-205-without-body.fixed.test/fixed/205"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 205"],
+      "id": "fixed/status-205-head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[],"status":205},
+          "request": "HEAD https://status-205-head.fixed.test/fixed/205"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 304"],
+      "id": "fixed/status-304-without-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["etag","\"v1\""]],"status":304},
+          "request": "GET https://status-304-without-body.fixed.test/fixed/304"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 304"],
+      "id": "fixed/status-304-head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["etag","\"v1\""]],"status":304},
+          "request": "HEAD https://status-304-head.fixed.test/fixed/304"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 201"],
+      "id": "fixed/status-201-location",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"created","headers":[["content-length","7"],["location","/new"]],"status":201},
+          "request": "GET https://status-201-location.fixed.test/fixed/201"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 404"],
+      "id": "fixed/status-404",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"gone","headers":[["content-length","4"]],"status":404},
+          "request": "GET https://status-404.fixed.test/fixed/404"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 503"],
+      "id": "fixed/status-503-retry-after",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"busy","headers":[["content-length","4"],["retry-after","30"]],"status":503},
+          "request": "GET https://status-503-retry-after.fixed.test/fixed/503"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "fixed/duplicate-headers-are-kept",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "dup",
+            "headers": [["content-length","3"],["set-cookie","a=1"],["set-cookie","b=2"],["x-dup","1"],["x-dup","2"]],
+            "status": 200
+          },
+          "request": "GET https://duplicate-headers-are-kept.fixed.test/fixed/duplicates"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "fixed/utf8-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"héllo ✓","headers":[["content-length","10"],["content-type","text/plain; charset=utf-8"]],"status":200},
+          "request": "GET https://utf8-body.fixed.test/fixed/utf8"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "fixed/large-body",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":{"fnv1a64":"8cd4fdb18830e325","len":61440},"headers":[["content-length","61440"]],"status":200},
+          "request": "GET https://large-body.fixed.test/fixed/large"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 200"],
+      "id": "fixed/large-body-head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","61440"]],"status":200},
+          "request": "HEAD https://large-body-head.fixed.test/fixed/large"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web PURGE 200","h3 web OPTIONS 200"],
+      "id": "fixed/custom-method",
+      "steps": [
+        {
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "PURGE https://custom-method.fixed.test/fixed/ok"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "OPTIONS https://custom-method.fixed.test/fixed/ok"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 301"],
+      "id": "redirect/literal-301",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["location","https://target.example/landing"]],"status":301},
+          "request": "GET https://literal-301.redirect.test/redir/301"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 301"],
+      "id": "redirect/literal-head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["location","https://target.example/landing"]],"status":301},
+          "request": "HEAD https://literal-head.redirect.test/redir/301"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 302"],
+      "id": "redirect/template-302-extra-header",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [["content-length","0"],["location","https://template-302-extra-header.redirect.test/moved/redir/302"],["x-redirect","yes"]],
+            "status": 302
+          },
+          "request": "GET https://template-302-extra-header.redirect.test/redir/302"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 308"],
+      "id": "redirect/template-308-keeps-the-query",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [["content-length","0"],["location","https://template-308-keeps-the-query.redirect.test/redir/308?next=1&x=%20y"]],
+            "status": 308
+          },
+          "request": "GET https://template-308-keeps-the-query.redirect.test/redir/308?next=1&x=%20y"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 308"],
+      "id": "redirect/template-308-head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [["content-length","0"],["location","https://template-308-head.redirect.test/redir/308?next=1"]],
+            "status": 308
+          },
+          "request": "HEAD https://template-308-head.redirect.test/redir/308?next=1"
+        }
+      ]
+    },
+    {
+      "access_log": [],
+      "id": "redirect/template-host-is-normalised",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["location","https://mixed.example/redir/308"]],"status":308},
+          "request": "GET https://Mixed.Example.:8443/redir/308"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 302"],
+      "id": "redirect/template-post",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [["content-length","0"],["location","https://template-post.redirect.test/moved/redir/302"],["x-redirect","yes"]],
+            "status": 302
+          },
+          "request": "POST https://template-post.redirect.test/redir/302"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 404"],
+      "id": "routing/not-found",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"route not found\n","headers":[["content-length","16"]],"status":404},
+          "request": "GET https://not-found.routing.test/nothing-here"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 404"],
+      "id": "routing/not-found-head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"route not found\n","headers":[["content-length","16"]],"status":404},
+          "request": "HEAD https://not-found-head.routing.test/nothing-here"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 404"],
+      "id": "routing/exact-does-not-match-a-longer-path",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"route not found\n","headers":[["content-length","16"]],"status":404},
+          "request": "GET https://exact-does-not-match-a-longer-path.routing.test/fixed/ok/extra"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 404"],
+      "id": "routing/segment-prefix-boundary",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"route not found\n","headers":[["content-length","16"]],"status":404},
+          "request": "GET https://segment-prefix-boundary.routing.test/pxyz"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "routing/host-match",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hosted","headers":[["content-length","6"]],"status":200},
+          "request": "GET https://only.example/hosted"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 404"],
+      "id": "routing/host-mismatch",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"route not found\n","headers":[["content-length","16"]],"status":404},
+          "request": "GET https://host-mismatch.routing.test/hosted"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 200"],
+      "id": "routing/method-match",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"post-ok","headers":[["content-length","7"]],"status":200},
+          "request": "POST https://method-match.routing.test/post-only"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 404"],
+      "id": "routing/method-mismatch",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"route not found\n","headers":[["content-length","16"]],"status":404},
+          "request": "GET https://method-mismatch.routing.test/post-only"
+        }
+      ]
+    },
+    {
+      "accept": [{"outcome":{"stream_reset":258},"step":0},{"outcome":{"stream_reset":256},"step":0}],
+      "access_log": ["h3 web GET -","h3 web GET 200"],
+      "id": "fixed/oversized-response-header",
+      "steps": [
+        {"connection_after":"open","outcome":{"finished_without_response":true},"request":"GET /fixed/oversized-header"},
+        {
+          "connection_after": "open",
+          "outcome": {"body":"hello","headers":[["content-length","5"],["content-type","text/plain"],["x-fixed","one"]],"status":200},
+          "request": "follow-up GET /fixed/ok"
+        }
+      ],
+      "tolerance": "a response that cannot be sent: which error code the stream is reset with is not mandated"
+    }
+  ]
+}
