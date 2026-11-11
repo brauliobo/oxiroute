@@ -297,7 +297,7 @@ Current constraints:
   fixed-response or plain proxy route is answered on its stream before any session exists, with the same response and the
   same request to the origin as the classic path. A request the lane cannot prove equivalent (streamed or chunked bodies, `Expect`, rescue pools,
   cache, affinity, path or cookie rewrites, buffering, HTTP/2 or HTTP/3 upstreams, gzip, pipelining, unusual heads; on HTTP/2 also
-  any body, trailers, a `Host`, `TE` or `Expect` field, and services with header rules or an access log)
+  any body, trailers, a `Host`, `TE` or `Expect` field, and services with an access log)
   takes the classic path either way. Changing the
   value is an ordinary reload: the lane belongs to the generation, new connections of the new generation use the new
   setting and connections of the replaced generation finish as they were accepted.
