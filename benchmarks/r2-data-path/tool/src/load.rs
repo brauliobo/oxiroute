@@ -102,6 +102,12 @@ struct Spec {
     /// Offset of an eight-digit counter in `h1_request` (`--vary`): every request carries a distinct query, so a
     /// cache sees a new key each time.
     vary_at: Option<usize>,
+    /// A second request: fetched once on every new HTTP/1 connection before anything is measured (`--prime-path`), and
+    /// in place of the main one on every `mix_every`-th request of a connection (`--mix-path`, `--mix-every`).
+    h1_prime: Option<Vec<u8>>,
+    h1_mix: Option<Vec<u8>>,
+    mix_every: usize,
+    mix_len: Option<usize>,
     h2_method: Method,
     h2_uri: Uri,
     h2_headers: HeaderMap,
@@ -344,6 +350,14 @@ fn spec_from(flags: &Flags) -> Spec {
         h1_request: h1_request(&method, &path, &host, &padding, &body, flag(flags, "chunk-bytes", 0), !new_conn),
         connect_to: flag(flags, "connect-to", String::new()),
         vary_at: vary.then(|| method.len() + 1 + path.len() - 8),
+        h1_prime: flags
+            .get("prime-path")
+            .map(|prime| h1_request("GET", prime, &host, &[], &[], 0, true)),
+        h1_mix: flags
+            .get("mix-path")
+            .map(|mix| h1_request("GET", mix, &host, &[], &[], 0, true)),
+        mix_every: flag(flags, "mix-every", 0),
+        mix_len: flags.get("mix-len").map(|value| value.parse().expect("--mix-len")),
         h2_method: method.parse().expect("method"),
         h2_uri: format!("{scheme}://{host}{path}").parse().expect("uri"),
         h2_headers,
@@ -368,7 +382,16 @@ async fn connect(spec: &Spec, slot: usize) -> io::Result<Client> {
         None => Box::new(tcp),
     };
     match spec.proto {
-        Proto::H1 | Proto::H1Tls => Ok(Client::H1(io)),
+        Proto::H1 | Proto::H1Tls => {
+            if let Some(prime) = &spec.h1_prime {
+                io.write_all(prime).await?;
+                let outcome = read_response(&mut io, &mut Vec::new()).await?;
+                if outcome.status != 200 {
+                    return Err(io::Error::other(format!("prime request answered {}", outcome.status)));
+                }
+            }
+            Ok(Client::H1(io))
+        }
         Proto::H3 => unreachable!("QUIC clients return before the TCP connect"),
         Proto::Tcp => Ok(Client::Raw(io)),
         Proto::Connect => {
@@ -472,19 +495,19 @@ fn request_for<B>(spec: &Spec, body: B) -> Request<B> {
     request
 }
 
-async fn exchange(client: &mut Client, spec: &Spec, scratch: &mut Vec<u8>) -> io::Result<Outcome> {
+async fn exchange(client: &mut Client, spec: &Spec, scratch: &mut Vec<u8>, request: &[u8]) -> io::Result<Outcome> {
     scratch.clear();
     match client {
         Client::H1(io) => {
             match spec.vary_at {
-                Some(at) => {
+                Some(at) if std::ptr::eq(request.as_ptr(), spec.h1_request.as_ptr()) => {
                     static VARY: AtomicUsize = AtomicUsize::new(0);
-                    let mut request = spec.h1_request.clone();
+                    let mut request = request.to_vec();
                     let counter = format!("{:08}", VARY.fetch_add(1, Ordering::Relaxed) % 100_000_000);
                     request[at..at + 8].copy_from_slice(counter.as_bytes());
                     io.write_all(&request).await?;
                 }
-                None => io.write_all(&spec.h1_request).await?,
+                _ => io.write_all(request).await?,
             }
             read_response(io, scratch).await
         }
@@ -543,6 +566,7 @@ async fn worker(
     let mut stats = Stats::default();
     let mut scratch = Vec::with_capacity(64 * 1024);
     let mut retrying = false;
+    let mut sent = 0_usize;
     while retrying || (next.fetch_add(1, Ordering::Relaxed) < total && deadline.is_none_or(|limit| Instant::now() < limit)) {
         let retry = std::mem::take(&mut retrying);
         let reused = client.is_some();
@@ -567,11 +591,16 @@ async fn worker(
                 }
             }
         }
-        let outcome = exchange(client.as_mut().expect("connected"), &spec, &mut scratch).await;
+        sent += 1;
+        let mixed = spec.mix_every > 0 && sent % spec.mix_every == 0;
+        let (request, expected) = match (&spec.h1_mix, mixed) {
+            (Some(mix), true) => (mix.as_slice(), spec.mix_len),
+            _ => (spec.h1_request.as_slice(), spec.expect_len),
+        };
+        let outcome = exchange(client.as_mut().expect("connected"), &spec, &mut scratch, request).await;
         match outcome {
             Ok(outcome) => {
-                let valid = outcome.status == spec.expect_status
-                    && spec.expect_len.is_none_or(|length| length == outcome.body_len);
+                let valid = outcome.status == spec.expect_status && expected.is_none_or(|length| length == outcome.body_len);
                 if valid {
                     stats.ok += 1;
                     stats.bytes += outcome.body_len as u64;

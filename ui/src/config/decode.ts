@@ -221,7 +221,8 @@ function isTlsProfile(value: unknown): value is TlsProfileConfig {
     nullableSafeInteger(value.policy.session_timeout_seconds) &&
     typeof value.policy.session_tickets === 'boolean' && typeof value.policy.prefer_server_ciphers === 'boolean' &&
     ['openssl', 'rustls'].includes(String(value.policy.backend)) &&
-    (value.policy.key_exchange_groups == null || arrayOf(value.policy.key_exchange_groups, isString))
+    (value.policy.key_exchange_groups == null || arrayOf(value.policy.key_exchange_groups, isString)) &&
+    ['off', 'auto'].includes(String(value.policy.ktls))
 }
 
 function isListener(value: unknown): value is ListenerConfig {

@@ -88,6 +88,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'tls_profiles[].policy.prefer_server_ciphers', kind: 'boolean' },
   { path: 'tls_profiles[].policy.backend', kind: 'enum' },
   { path: 'tls_profiles[].policy.key_exchange_groups', kind: 'string_list' },
+  { path: 'tls_profiles[].policy.ktls', kind: 'enum' },
   { path: 'listeners', kind: 'collection' },
   { path: 'listeners[].name', kind: 'string' },
   { path: 'listeners[].bind', kind: 'object' },

@@ -112,6 +112,7 @@ export function prepareTlsAlpnDeployment(
       session_tickets: false,
       prefer_server_ciphers: true,
       backend: 'openssl',
+      ktls: 'auto',
     },
   })
   config.listeners.push({

@@ -93,6 +93,19 @@ pub trait Ssl {
     fn selected_alpn_proto(&self) -> Option<ALPN> {
         None
     }
+
+    /// Switches the write direction of a TLS connection to the kernel TLS offload when the listener offers it, and
+    /// reports whether the kernel now encrypts the records of this connection (`Ready(false)`: it stays in user
+    /// space, and always will). The switch happens once, with one TLS 1.3 `KeyUpdate`; nothing else changes.
+    fn poll_kernel_tx(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<bool> {
+        std::task::Poll::Ready(false)
+    }
+
+    /// The TCP socket whose kernel encrypts the records of this connection (after [`Self::poll_kernel_tx`] said so).
+    /// Bytes written to it with `sendfile(2)` leave as TLS records.
+    fn kernel_tx_socket(&self) -> Option<&tokio::net::TcpStream> {
+        None
+    }
 }
 
 /// The ability peek data before consuming it

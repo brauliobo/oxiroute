@@ -14,6 +14,7 @@ pub(crate) struct CompiledTlsProfilePolicy {
     session_timeout: Option<i32>,
     session_tickets: bool,
     prefer_server_ciphers: bool,
+    ktls: KtlsMode,
     pub(super) selector: CompiledCertificateSelector,
     source_policy: TlsPolicy,
 }
@@ -134,12 +135,39 @@ impl CompiledTlsProfilePolicy {
             session_timeout,
             session_tickets: profile.policy.session_tickets,
             prefer_server_ciphers: profile.policy.prefer_server_ciphers,
+            ktls: profile.policy.ktls,
             selector: CompiledCertificateSelector {
                 exact_names,
                 wildcard_suffixes,
             },
             source_policy: profile.policy.clone(),
         })
+    }
+}
+
+/// Whether connections of the profile are offered the kernel TLS transmit offload. A kernel that cannot do it
+/// leaves the profile in user space, exactly as `ktls = "off"`, and the operator hears it once per generation, here.
+fn kernel_tx_available(profile: &str, mode: KtlsMode, backend: TlsBackend) -> bool {
+    if mode == KtlsMode::Off {
+        return false;
+    }
+    if backend == TlsBackend::Rustls {
+        log::info!(
+            "TLS profile `{profile}`: kernel TLS applies to the OpenSSL backend only, TLS stays in user space"
+        );
+        return false;
+    }
+    match pingora::protocols::l4::ktls::probe() {
+        Ok(()) => {
+            log::info!("TLS profile `{profile}`: kernel TLS is active for large static files");
+            true
+        }
+        Err(unavailable) => {
+            log::info!(
+                "TLS profile `{profile}`: kernel TLS is not available, TLS stays in user space: {unavailable}"
+            );
+            false
+        }
     }
 }
 
@@ -156,6 +184,7 @@ pub struct TlsProfilePlan {
     session_tickets: bool,
     prefer_server_ciphers: bool,
     backend: TlsBackend,
+    kernel_tx: bool,
     tls_alpn_challenge_store: TlsAlpnChallengeStore,
     selector: Arc<CertificateSelector>,
 }
@@ -205,6 +234,11 @@ impl TlsProfilePlan {
             session_tickets: policy.session_tickets,
             prefer_server_ciphers: policy.prefer_server_ciphers,
             backend: policy.source_policy.backend,
+            kernel_tx: kernel_tx_available(
+                &blueprint.name,
+                policy.ktls,
+                policy.source_policy.backend,
+            ),
             tls_alpn_challenge_store,
             selector,
         })
@@ -407,6 +441,9 @@ impl TlsProfilePlan {
         self.client_auth.apply(&self.name, &mut settings)?;
         if handshake_threads > 0 {
             settings.set_offload_threadpool(handshake_threads, 1);
+        }
+        if self.kernel_tx {
+            settings.offer_kernel_tx();
         }
         Ok(settings)
     }

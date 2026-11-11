@@ -65,6 +65,7 @@ const currentCanonicalFields = [
   'tls_profiles[].policy.prefer_server_ciphers',
   'tls_profiles[].policy.backend',
   'tls_profiles[].policy.key_exchange_groups',
+  'tls_profiles[].policy.ktls',
   'listeners',
   'listeners[].name',
   'listeners[].bind',

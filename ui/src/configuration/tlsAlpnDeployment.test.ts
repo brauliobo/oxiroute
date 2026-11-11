@@ -138,5 +138,6 @@ function tlsPolicy() {
     session_tickets: false,
     prefer_server_ciphers: true,
     backend: 'openssl' as const,
+    ktls: 'auto' as const,
   }
 }

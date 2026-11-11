@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod client;
+mod ktls;
 pub mod server;
 mod stream;
 
@@ -24,6 +25,9 @@ use pingora_openssl as ssl_lib;
 
 use ssl_lib::{ssl::SslRef, x509::X509};
 pub use stream::*;
+
+#[cfg(all(test, feature = "openssl", target_os = "linux"))]
+mod ktls_tests;
 
 pub type TlsRef = SslRef;
 pub type CaType = Box<[X509]>;

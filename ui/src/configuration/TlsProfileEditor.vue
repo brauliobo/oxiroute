@@ -63,6 +63,11 @@ header.form-heading
   label.field(data-field="tls_profiles[].policy.key_exchange_groups")
     span Key exchange groups, in preference order (x25519, secp256r1, secp384r1, x25519mlkem768; empty keeps the default list)
     input(type="text" :value="(profile.policy.key_exchange_groups ?? []).join(', ')" @input="setKeyExchangeGroups")
+  label.field(data-field="tls_profiles[].policy.ktls")
+    span Kernel TLS
+    select(v-model="profile.policy.ktls")
+      option(value="off") Off
+      option(value="auto") Automatic (kernel TLS when available)
 StringListField(
   v-model="profile.policy.client_auth.allowed_dns_names"
   label="Allowed client SANs"

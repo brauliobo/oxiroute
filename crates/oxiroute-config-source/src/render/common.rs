@@ -434,6 +434,13 @@ impl Renderer {
             let names = groups.iter().map(|group| group.name()).collect::<Vec<_>>();
             self.string_list_field("key_exchange_groups", &names);
         }
+        self.string_field(
+            "ktls",
+            match policy.ktls {
+                oxiroute_config::KtlsMode::Off => "off",
+                oxiroute_config::KtlsMode::Auto => "auto",
+            },
+        );
         self.begin_table_field("client_auth");
         self.string_field(
             "mode",
