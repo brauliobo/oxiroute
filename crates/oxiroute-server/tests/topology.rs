@@ -760,6 +760,8 @@ fn topology_listeners() -> Vec<Listener> {
             proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         },
         Listener {
             name: "database".into(),
@@ -773,6 +775,8 @@ fn topology_listeners() -> Vec<Listener> {
             proxy_protocol: None,
             max_connections: Some(100),
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         },
         Listener {
             name: "live".into(),
@@ -783,6 +787,8 @@ fn topology_listeners() -> Vec<Listener> {
             proxy_protocol: None,
             max_connections: Some(50),
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            h2_initial_stream_window: None,
+            h2_initial_connection_window: None,
         },
     ]
 }

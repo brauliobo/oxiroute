@@ -385,6 +385,8 @@ impl Lowerer {
                 proxy_protocol: None,
                 max_connections: None,
                 downstream_timeouts: DownstreamTimeoutPolicy::default(),
+                h2_initial_stream_window: None,
+                h2_initial_connection_window: None,
             });
             self.provenance.push(CanonicalProvenance {
                 path: format!("/listeners/{listener_index}"),

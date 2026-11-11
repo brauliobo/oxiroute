@@ -129,6 +129,8 @@ pub fn config(listen: SocketAddr, origin: SocketAddr) -> ConfigDraft {
         proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     }];
     config.upstream_pools = vec![UpstreamPool {
         name: "origin".into(),

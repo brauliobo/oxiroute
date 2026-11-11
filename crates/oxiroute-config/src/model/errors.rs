@@ -193,6 +193,32 @@ pub enum ConfigError {
         "listener `{listener}` has invalid Unix socket mode {mode:o}; expected permission bits from 001 through 777"
     )]
     InvalidListenerUnixMode { listener: String, mode: u16 },
+    #[error(
+        "listener `{listener}` {field} {value} is invalid: it must be between {min} and {max} bytes"
+    )]
+    InvalidListenerH2Window {
+        listener: String,
+        field: &'static str,
+        value: u64,
+        min: u64,
+        max: u64,
+    },
+    #[error(
+        "listener `{listener}` h2_initial_connection_window {connection} is below its h2_initial_stream_window \
+         {stream}: a stream could never use its window"
+    )]
+    ListenerH2ConnectionWindowBelowStream {
+        listener: String,
+        stream: u64,
+        connection: u64,
+    },
+    #[error(
+        "{protocol:?} listener `{listener}` has no HTTP/2 windows to set: h2_initial_* apply to http and forward_http2"
+    )]
+    ListenerH2WindowsUnsupported {
+        listener: String,
+        protocol: Protocol,
+    },
     #[error("upstream pool `{pool}` must contain at least one endpoint")]
     EmptyUpstreamEndpoints { pool: String },
     #[error("upstream pool `{pool}` exceeds the {MAX_ENDPOINTS_PER_POOL}-endpoint limit")]
@@ -514,6 +540,15 @@ impl ConfigError {
             Self::InvalidListenerTransport { listener, .. }
             | Self::InvalidListenerUnixMode { listener, .. } => {
                 format!("/listeners/{listener}/bind")
+            }
+            Self::InvalidListenerH2Window {
+                listener, field, ..
+            } => format!("/listeners/{listener}/{field}"),
+            Self::ListenerH2ConnectionWindowBelowStream { listener, .. } => {
+                format!("/listeners/{listener}/h2_initial_connection_window")
+            }
+            Self::ListenerH2WindowsUnsupported { listener, .. } => {
+                format!("/listeners/{listener}/protocol")
             }
             Self::EmptyHttpRoutes { service } => format!("/http_services/{service}/routes"),
             Self::InvalidHttpRoute {

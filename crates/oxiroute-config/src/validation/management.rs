@@ -405,6 +405,7 @@ fn validate_listener_basics(
 }
 
 fn validate_listener_policies(listener: &Listener) -> Result<(), ConfigError> {
+    super::h2_windows::validate_listener_h2_windows(listener)?;
     if listener.max_connections == Some(0) {
         return Err(ConfigError::ZeroLimit {
             kind: "listener",

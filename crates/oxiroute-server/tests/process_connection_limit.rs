@@ -57,6 +57,8 @@ async fn http_listener_with_one_connection_never_rejects_sequential_close_reques
         proxy_protocol: None,
         max_connections: Some(1),
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        h2_initial_stream_window: None,
+        h2_initial_connection_window: None,
     }];
     config.http_services = vec![HttpService {
         drain_deadline_ms: None,
