@@ -15,7 +15,7 @@ use std::{
 
 use crate::{
     EvacuationReport, LatencyBucketSnapshot, LatencySnapshot, OPERATION_LATENCY_BUCKETS_MS,
-    sharded::Sharded,
+    sharded::{self, Sharded},
 };
 
 /// Request latency bounds plus the waits a saturated pool can produce.
@@ -122,8 +122,8 @@ impl Histogram {
         let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
         let bucket = self.bounds.partition_point(|bound| *bound < millis);
         let slot = self.slots.local();
-        slot.buckets[bucket].fetch_add(1, Ordering::Relaxed);
-        slot.sum_ms.fetch_add(millis, Ordering::Relaxed);
+        sharded::add(&slot.buckets[bucket], 1);
+        sharded::add(&slot.sum_ms, millis);
     }
 
     pub(crate) fn snapshot(&self) -> LatencySnapshot {
@@ -201,8 +201,10 @@ impl ServerStats {
     }
 
     pub(crate) fn record_response(&self, status: Option<u16>) {
-        self.counters.local().responses[response_class_index(status)]
-            .fetch_add(1, Ordering::Relaxed);
+        sharded::add(
+            &self.counters.local().responses[response_class_index(status)],
+            1,
+        );
     }
 
     pub(crate) fn record_attempt(&self, outcome: AttemptOutcome) {
@@ -210,7 +212,7 @@ impl ServerStats {
             .iter()
             .position(|candidate| *candidate == outcome)
             .expect("listed outcome");
-        self.counters.local().attempts[index].fetch_add(1, Ordering::Relaxed);
+        sharded::add(&self.counters.local().attempts[index], 1);
     }
 
     pub(crate) fn record_evacuation(&self, result: EvacuationResult, requests: u64) {
@@ -218,7 +220,7 @@ impl ServerStats {
             .iter()
             .position(|candidate| *candidate == result)
             .expect("listed result");
-        self.counters.local().evacuated[index].fetch_add(requests, Ordering::Relaxed);
+        sharded::add(&self.counters.local().evacuated[index], requests);
     }
 
     pub(crate) fn record_evacuation_report(&self, report: &EvacuationReport) {
@@ -237,10 +239,8 @@ impl ServerStats {
 
     pub(crate) fn record_bytes(&self, sent: u64, received: u64) {
         let counters = self.counters.local();
-        counters.bytes_sent.fetch_add(sent, Ordering::Relaxed);
-        counters
-            .bytes_received
-            .fetch_add(received, Ordering::Relaxed);
+        sharded::add(&counters.bytes_sent, sent);
+        sharded::add(&counters.bytes_received, received);
     }
 
     fn total<const N: usize>(&self, read: fn(&ServerCounters) -> &[AtomicU64; N]) -> [u64; N] {

@@ -1,44 +1,34 @@
 //! The origin's response head to the HTTP/2 response head without a header map on the way in: the codec scans the
-//! head, the edits of the classic sequence (`apply_response_policy`, `stamp_response`, the automatic `Date` of
-//! `write_response_header`) are applied to the scan in the order of the classic header map, and the fields are
-//! appended to the map the stream takes. A head the codec does not know goes the classic way (`exchange::open`).
+//! head, the edits of the classic sequence (`apply_response_policy`, the queue headers, `stamp_response`, the automatic
+//! `Date` of `write_response_header`) are applied to the scan in the order of the classic header map, and the fields
+//! are appended to the map the stream takes. A head the codec does not know goes the classic way (`exchange::open`).
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
-use oxiroute_h1_head::{
-    Class, Edit, Edits, EditsFull, HeaderOrder, Items, MAX_HEADERS, ResponseHead, Value, names,
-};
+use oxiroute_h1_head::{Class, Edit, HeaderOrder, Items, MAX_HEADERS, ResponseHead, Value, names};
 use pingora::protocols::http::date::get_cached_date;
 
-use crate::http::proxy::lane::proxy::RESPONSE_HOP_BY_HOP;
-
-/// The edits the classic sequence makes to the head, `Date` last.
-fn edits<'a>(
-    raw: &'a Bytes,
-    head: &ResponseHead,
-    id: &'a HeaderValue,
-    date: &'a HeaderValue,
-) -> Edits<'a> {
-    let edit = |result: Result<(), EditsFull>| result.expect("a response head needs few edits");
-    let facts = head.facts;
-    let mut edits = Edits::new();
-    if facts.transfer_encoding && head.find(Class::ContentLength).is_some() {
-        edit(edits.remove(names::CONTENT_LENGTH));
-    }
-    for (class, name) in RESPONSE_HOP_BY_HOP {
-        if facts.present & class.bit() != 0 {
-            edit(edits.remove(name));
-        }
-    }
-    edit(edits.stamp_request_id(raw, head, Value::trusted(id.as_bytes())));
-    edit(edits.set(names::DATE, Value::trusted(date.as_bytes())));
-    edits
-}
+use crate::http::{
+    action::ProxyPolicyPlan,
+    proxy::lane::{
+        response::{QueueValues, filtered},
+        rules::RouteEdits,
+    },
+};
 
 /// The response fields of a scanned head, in the order the classic header map holds them after the edits.
-pub(super) fn fields(raw: &Bytes, head: &ResponseHead, id: &HeaderValue) -> HeaderMap {
+pub(super) fn fields(
+    raw: &Bytes,
+    head: &ResponseHead,
+    rules: (&RouteEdits, &ProxyPolicyPlan),
+    queue: Option<&QueueValues>,
+    id: &HeaderValue,
+) -> HeaderMap {
     let date = get_cached_date();
-    let edits = edits(raw, head, id, &date);
+    let mut edits = filtered(raw, head, rules, queue, id);
+    edits
+        .set(names::DATE, Value::trusted(date.as_bytes()))
+        .expect("a response head needs few edits");
     let items = Items {
         buf: raw,
         headers: head.headers(),

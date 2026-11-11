@@ -196,7 +196,14 @@ pub(crate) fn selected_upstream_host(
                 .map_err(pingora_request_policy_error)?)
         }
         HttpUpstreamHost::Endpoint { unix_fallback } => match endpoint {
-            RuntimeEndpoint::Socket { address } => host_value(&address.to_string()),
+            RuntimeEndpoint::Socket { address } => IpText::socket(*address).map_or_else(
+                || host_value(&address.to_string()),
+                |text| {
+                    HeaderValue::from_bytes(text.as_bytes())
+                        .map(Some)
+                        .map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))
+                },
+            ),
             RuntimeEndpoint::Dns { host, port } => host_value(&format!("{host}:{port}")),
             RuntimeEndpoint::Unix { .. } => {
                 host_value(unix_fallback.as_deref().unwrap_or_default())

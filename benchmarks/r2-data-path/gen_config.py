@@ -6,7 +6,9 @@ Usage: gen_config.py OUT --proxy-port P --upstream-port U [--servers N] [--echo-
 
 Every feature is an independent A/B switch on top of the minimal reverse-proxy configuration:
   access_log timeouts retry queue capacity passive breaker outlier gzip cache reqbuf respbuf
-  forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host lc wrr
+  forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 upstream_tls l4 stats nginx_host lc wrr
+  p2c first auth_bearer auth_basic_apr1 auth_basic_bcrypt redirect path_rewrite cookie_rewrite affinity_cookie
+  affinity_hash affinity_header select gzip_l<level> cache_revalidate forward_connect hc_tcp hc_http hc_ms_<interval> canary
 """
 
 import argparse
@@ -33,9 +35,18 @@ def lua(value, indent=0):
     return "{\n" + items + end + "}"
 
 
+def server_address(index, port):
+    """Servers beyond 255 spread over 127.0.A.B so that one port serves them all."""
+    return f"127.0.{index // 250}.{index % 250 + 1}:{port}"
+
+
 def algorithm(args, on):
     if on("lc"):
         return "least_connections"
+    if on("p2c"):
+        return "power_of_two_choices"
+    if on("first"):
+        return "first"
     if on("wrr"):
         return {"type": "weighted_round_robin", "weights": [1 + index % 5 for index in range(args.servers)]}
     return "round_robin"
@@ -89,8 +100,24 @@ def build(args):
     if on("queue"):
         proxy_policy["queue_headers"] = True
         proxy_policy["queue_class"] = "high"
-    if on("cache"):
+    if on("cache") or on("cache_revalidate"):
         proxy_policy["cache"] = {"store": "mem"}
+    if on("path_rewrite"):
+        proxy_policy["upstream_path_rewrite"] = {"from": "/app/", "to": "/"}
+    if on("cookie_rewrite"):
+        proxy_policy["response_cookie_path_rewrites"] = [{"from": "/app", "to": "/"}]
+        proxy_policy["response_cookie_attributes"] = [{"name": "sid", "secure": True, "same_site": "lax"}]
+    if on("affinity_cookie"):
+        proxy_policy["affinity"] = {"type": "cookie", "name": "oxr_affinity"}
+    if on("affinity_hash"):
+        proxy_policy["affinity"] = {"type": "hash", "key": "client_ip"}
+    if on("affinity_header"):
+        proxy_policy["affinity"] = {"type": "header", "name": "x-backend"}
+    if on("select"):
+        proxy_policy["select"] = {
+            "header": "x-size",
+            "rules": [{"at_most": 100, "pool": "origin"}, {"at_most": 1000, "pool": "origin"}],
+        }
 
     route_policy = {}
     if on("reqbuf"):
@@ -99,6 +126,12 @@ def build(args):
         route_policy.update({"response_buffering": True, "max_request_body_bytes": 10485760})
 
     routes = []
+    if on("redirect"):
+        routes.append({
+            "path": {"kind": "segment_prefix", "value": "/redirect"},
+            "methods": [],
+            "action": {"type": "redirect", "status": 301, "location": {"kind": "literal", "value": "https://example.com/"}},
+        })
     if on("fixed"):
         routes.append({
             "path": {"kind": "segment_prefix", "value": "/fixed"},
@@ -116,6 +149,11 @@ def build(args):
         "methods": [],
         "action": {"type": "proxy", "upstream_pool": "origin", "policy": proxy_policy},
     }
+    if on("auth_bearer"):
+        proxy_route["access_policy"] = {"type": "bearer_token_file", "token_file_path": f"{args.run_dir}/token"}
+    if on("auth_basic_apr1") or on("auth_basic_bcrypt"):
+        proxy_route["access_policy"] = {
+            "type": "basic_htpasswd_file", "htpasswd_file_path": f"{args.run_dir}/htpasswd", "realm": "bench"}
     if route_policy:
         proxy_route["policy"] = route_policy
     routes.append(proxy_route)
@@ -128,12 +166,14 @@ def build(args):
     }
     if on("access_log"):
         service["access_log"] = {"type": "file", "path": f"{args.run_dir}/logs/access.log"}
-    if on("gzip"):
-        service["gzip"] = {"level": 1, "content_types": ["text/html"], "min_length_bytes": 20, "min_http_version": "1.1"}
+    gzip_level = next((int(name[6:]) for name in features if name.startswith("gzip_l")), 1 if on("gzip") else 0)
+    if gzip_level:
+        service["gzip"] = {
+            "level": gzip_level, "content_types": ["text/html"], "min_length_bytes": 20, "min_http_version": "1.1"}
 
     servers = []
     for index in range(args.servers):
-        address = f"127.0.0.{index + 1}:{args.upstream_port}" if args.servers > 2 else f"127.0.0.1:{args.upstream_port + index}"
+        address = server_address(index, args.upstream_port) if args.servers > 2 else f"127.0.0.1:{args.upstream_port + index}"
         server = {"name": f"origin-{index + 1}", "endpoint": {"type": "socket", "address": address}}
         if on("capacity"):
             server["max_connections"] = 100000
@@ -147,7 +187,7 @@ def build(args):
         "algorithm": algorithm(args, on),
         "http_versions": {"min": "2", "max": "2"} if on("upstream_h2") else {"min": "1.1", "max": "1.1"},
     }
-    if on("upstream_h2"):
+    if on("upstream_h2") or on("upstream_tls"):
         pool["tls"] = {"server_name": "origin.example.com", "ca_certificate_path": f"{args.run_dir}/origin.pem"}
     if on("queue"):
         pool["queue_timeout_ms"] = 1000
@@ -155,6 +195,13 @@ def build(args):
             "classes": [{"name": "high", "weight": 3}, {"name": "low", "weight": 1}],
             "discipline": "weighted",
         }
+    interval = next((int(name[6:]) for name in features if name.startswith("hc_ms_")), 1000)
+    if on("hc_tcp") or on("hc_http"):
+        pool["health_check"] = {"type": "tcp" if on("hc_tcp") else "http", "interval_ms": interval, "timeout_ms": 500}
+        if on("hc_http"):
+            pool["health_check"].update({"path": "/b0", "expected_status": 200})
+    if on("canary"):
+        pool["canary"] = {"path": "/b1k", "interval_ms": interval}
     passive = on("passive") or on("breaker") or on("outlier")
     if passive:
         policy = {"observe": "layer7", "on_error": "count", "error_limit": 3}
@@ -178,7 +225,7 @@ def build(args):
     config = {
         "version": 1,
         "listeners": [listener],
-        "cache_stores": [{"name": "mem", "type": "memory"}] if on("cache") else [],
+        "cache_stores": [{"name": "mem", "type": "memory"}] if on("cache") or on("cache_revalidate") else [],
         "upstream_pools": [pool],
         "http_services": [service],
         "forward_proxy_services": [],
@@ -228,6 +275,7 @@ def build(args):
     if on("forward"):
         config["forward_proxy_services"].append({
             "name": "fwd", "tls_required": False, "destination_policy": {"deny_private": False},
+            **({"connect": {"enabled": True, "allowed_ports": [args.echo_port]}} if on("forward_connect") else {}),
         })
         config["listeners"].append({
             "name": "fwd",

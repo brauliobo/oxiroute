@@ -34,6 +34,18 @@ impl<'a> Name<'a> {
         })
     }
 
+    /// A name whose class is already known: `class` must be what [`Name::new`] finds for `lower`, which a caller that
+    /// built the name once has seen.
+    #[must_use]
+    pub fn with_class(lower: &'a [u8], class: Class) -> Self {
+        debug_assert_eq!(Self::new(lower).map(|name| name.class), Some(class));
+        Self {
+            lower,
+            wire: class.titled().unwrap_or(lower),
+            class,
+        }
+    }
+
     /// The name of a known class. Not for [`Class::Other`], whose name is not known.
     #[must_use]
     pub const fn known(class: Class) -> Name<'static> {

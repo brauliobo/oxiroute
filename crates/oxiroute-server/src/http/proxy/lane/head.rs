@@ -1,11 +1,15 @@
 //! What the lane takes from a scanned request head: the facts of the shapes it serves, and a refusal for the rest.
 
-use oxiroute_h1_head::{Class, Connection, Header, RequestHead, Scan, Span, scan_request};
+use oxiroute_h1_head::{
+    Class, Connection, Header, RequestHead, RequestLine, Scan, Span, scan_request_fields,
+    scan_request_line,
+};
 
 use crate::observability::logging::valid_correlation_id;
 
-/// A request head the lane can serve: HTTP/1.1, origin-form, no body, no upgrade, no `Expect`, and a `Connection`
-/// that is absent, `keep-alive` or `close`. Small and `Copy`, so it can be held across an await.
+/// A request head the lane can serve: HTTP/1.1, origin-form, a body framed by one `Content-Length` (and so a body the
+/// lane holds whole once it admits the request), no upgrade, no `Expect`, and a `Connection` that is absent,
+/// `keep-alive` or `close`. Small and `Copy`, so it can be held across an await.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::http::proxy) struct Request {
     pub(in crate::http::proxy) method: Span,
@@ -18,11 +22,25 @@ pub(in crate::http::proxy) struct Request {
     pub(in crate::http::proxy) close: bool,
     pub(in crate::http::proxy) head_len: usize,
     pub(in crate::http::proxy) is_head: bool,
+    /// The bytes of the body that follow the head.
+    pub(in crate::http::proxy) body_len: usize,
 }
 
 impl Request {
     pub(in crate::http::proxy) fn method<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
         self.method.of(buf)
+    }
+
+    /// Whether the request is all there is in `read` bytes: its body has arrived with the head and nothing of another
+    /// request follows it. A body still to come is streamed by the classic path, which reads the response while the
+    /// upload goes on.
+    pub(super) const fn admits(&self, read: usize) -> bool {
+        read == self.head_len + self.body_len
+    }
+
+    /// The body, in the bytes `admits` was asked about.
+    pub(super) fn body<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
+        &buf[self.head_len..]
     }
 
     /// The path of the target, which is ASCII (the scanner refuses the rest).
@@ -37,30 +55,65 @@ impl Request {
     }
 }
 
+/// The request line of a head: what routes a request, read before the header fields.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::http::proxy) struct Line {
+    line: RequestLine,
+    path: Span,
+}
+
+impl Line {
+    pub(super) fn fields_start(&self) -> usize {
+        self.line.fields_start()
+    }
+
+    pub(super) fn method<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
+        self.line.method.of(buf)
+    }
+
+    /// The path of the target, which is ASCII (the scanner refuses the rest).
+    pub(super) fn path<'a>(&self, buf: &'a [u8]) -> &'a str {
+        std::str::from_utf8(self.path.of(buf)).unwrap_or_default()
+    }
+}
+
+/// `None` when the request line is partial or refused: the classic path reads the request.
+pub(in crate::http::proxy) fn line(buf: &[u8]) -> Option<Line> {
+    let line = scan_request_line(buf).ok()?;
+    let target = line.target;
+    let query = target.of(buf).iter().position(|byte| *byte == b'?');
+    let path = Span {
+        start: target.start,
+        len: query.map_or(target.len, |at| u32::try_from(at).unwrap_or(target.len)),
+    };
+    Some(Line { line, path })
+}
+
 /// `None` when the classic path must see the request: it is partial, refused or not of the lane's shape. `head`
 /// describes the headers of the request when it is the lane's.
-pub(in crate::http::proxy) fn scan(buf: &[u8], head: &mut RequestHead) -> Option<Request> {
-    if scan_request(buf, head) != Scan::Head {
+pub(in crate::http::proxy) fn scan(
+    buf: &[u8],
+    line: Line,
+    head: &mut RequestHead,
+) -> Option<Request> {
+    if scan_request_fields(buf, line.line, head) != Scan::Head {
         return None;
     }
     let facts = head.facts;
-    let bodyless = facts.content_length.is_none_or(|length| length == 0);
-    let plain =
-        !(facts.transfer_encoding || facts.upgrade || facts.expect) && facts.hop_by_hop == 0;
+    // The scanner reads no length when there is a `Transfer-Encoding`: a chunked body is the classic path's.
+    if facts.transfer_encoding {
+        return None;
+    }
+    let body_len = usize::try_from(facts.content_length.unwrap_or(0)).ok()?;
+    let plain = !(facts.upgrade || facts.expect) && facts.hop_by_hop == 0;
     let close = match facts.connection {
         Connection::Absent | Connection::KeepAlive => false,
         Connection::Close => true,
         Connection::Other => return None,
     };
-    if !(bodyless && plain) {
+    if !plain {
         return None;
     }
-    let target = head.target;
-    let query = head.target(buf).iter().position(|byte| *byte == b'?');
-    let path = Span {
-        start: target.start,
-        len: query.map_or(target.len, |at| u32::try_from(at).unwrap_or(target.len)),
-    };
     let client_id = (facts.request_id_count >= 1)
         .then(|| head.headers()[usize::from(facts.request_id)])
         .filter(|header| header.class == Class::XRequestId)
@@ -68,13 +121,14 @@ pub(in crate::http::proxy) fn scan(buf: &[u8], head: &mut RequestHead) -> Option
         .filter(|span| std::str::from_utf8(span.of(buf)).is_ok_and(valid_correlation_id));
     Some(Request {
         method: head.method,
-        path,
+        path: line.path,
         host: value_span(&head.headers()[usize::from(facts.host)]),
         client_id,
         id_stamped: client_id.is_some() && facts.request_id_count == 1,
         close,
         head_len: head.head_len as usize,
         is_head: head.method(buf) == b"HEAD",
+        body_len,
     })
 }
 
@@ -82,5 +136,65 @@ fn value_span(header: &Header) -> Span {
     Span {
         start: header.value_start,
         len: header.value_len,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body_len_of(request: &str) -> Option<usize> {
+        let buffer = request.as_bytes();
+        let line = line(buffer)?;
+        let mut head = RequestHead::new();
+        scan(buffer, line, &mut head).map(|request| request.body_len)
+    }
+
+    const HEAD: &str = "POST /r HTTP/1.1\r\nHost: a.test\r\n";
+
+    #[test]
+    fn a_request_names_the_length_of_its_body() {
+        assert_eq!(body_len_of(&format!("{HEAD}\r\n")), Some(0));
+        assert_eq!(
+            body_len_of(&format!("{HEAD}Content-Length: 0\r\n\r\n")),
+            Some(0)
+        );
+        assert_eq!(
+            body_len_of(&format!("{HEAD}Content-Length: 5\r\n\r\nhello")),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn chunked_or_ambiguous_or_unserved_framing_is_left_to_the_classic_path() {
+        let chunked = format!("{HEAD}Transfer-Encoding: chunked\r\n\r\n");
+        assert_eq!(body_len_of(&chunked), None);
+        let both = format!("{HEAD}Content-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n");
+        assert_eq!(body_len_of(&both), None);
+        let expect = format!("{HEAD}Content-Length: 5\r\nExpect: 100-continue\r\n\r\n");
+        assert_eq!(body_len_of(&expect), None);
+        let upgrade =
+            format!("{HEAD}Content-Length: 5\r\nUpgrade: x\r\nConnection: Upgrade\r\n\r\n");
+        assert_eq!(body_len_of(&upgrade), None);
+    }
+
+    #[test]
+    fn a_request_is_admitted_when_its_body_has_arrived_and_no_other_request_follows() {
+        let request = |body_len| Request {
+            method: Span { start: 0, len: 4 },
+            path: Span { start: 5, len: 2 },
+            host: Span { start: 0, len: 0 },
+            client_id: None,
+            id_stamped: false,
+            close: false,
+            head_len: 10,
+            is_head: false,
+            body_len,
+        };
+        assert!(request(0).admits(10));
+        assert!(!request(0).admits(11));
+        assert!(request(5).admits(15));
+        assert!(!request(5).admits(16));
+        assert!(!request(5).admits(12));
     }
 }

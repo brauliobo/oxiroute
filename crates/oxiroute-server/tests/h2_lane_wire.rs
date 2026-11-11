@@ -24,8 +24,9 @@ use std::{
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use oxiroute_config::{
-    AlpnProtocol, HttpLiteralHeader, HttpPathSelector, HttpRoute, HttpRouteAction,
-    HttpVersionPolicy,
+    AlpnProtocol, ConfigDraft, HttpLiteralHeader, HttpPathSelector, HttpProxyPolicy,
+    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    HttpResponseHeaderMutation, HttpRoute, HttpRouteAction, HttpUpstreamHost, HttpVersionPolicy,
 };
 use process_support::{ServerProcess, reserve_tcp_address};
 use tokio::{
@@ -51,6 +52,7 @@ fn reply(path: &str) -> Vec<u8> {
         "/missing" => b"HTTP/1.1 404 Not Found\r\nContent-Length: 10\r\n\r\nnot found\n".to_vec(),
         "/empty" => b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
         "/hop" => b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive, X-Private\r\nX-Private: 1\r\nKeep-Alive: timeout=5\r\nProxy-Authenticate: Basic\r\nTE: trailers\r\nX-Kept: 1\r\n\r\nok".to_vec(),
+        "/powered" => b"HTTP/1.1 200 OK\r\nX-Powered-By: php\r\nX-Origin: a\r\nServer: origin\r\nCache-Control: max-age=5\r\nContent-Length: 2\r\n\r\nok".to_vec(),
         "/ids" => b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Request-Id: from-origin\r\n\r\nok".to_vec(),
         "/dates" => b"HTTP/1.1 200 OK\r\nX-Before: 1\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nX-After: 2\r\nContent-Length: 2\r\n\r\nok".to_vec(),
         "/multi" => b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nX-Dup: 1\r\nSet-Cookie: b=2\r\nX-Dup: 2\r\nContent-Length: 2\r\n\r\nok".to_vec(),
@@ -133,6 +135,26 @@ struct Side {
     _config: wire_support::ValidatedProxyConfig,
 }
 
+fn moved_route() -> HttpRoute {
+    HttpRoute {
+        path: HttpPathSelector::SegmentPrefix {
+            value: "/moved".into(),
+        },
+        action: HttpRouteAction::Redirect {
+            status: 308,
+            location: HttpRedirectLocation::Literal {
+                value: "https://example.com/new".into(),
+            },
+            headers: vec![HttpLiteralHeader {
+                name: "x-moved".into(),
+                value: "yes".into(),
+                always: true,
+            }],
+        },
+        ..fixed_route()
+    }
+}
+
 fn fixed_route() -> HttpRoute {
     HttpRoute {
         host: None,
@@ -156,6 +178,10 @@ fn fixed_route() -> HttpRoute {
 
 impl Side {
     async fn start(lane: bool) -> Self {
+        Self::start_with(lane, |_| {}).await
+    }
+
+    async fn start_with(lane: bool, configure: impl Fn(&mut ConfigDraft)) -> Self {
         let origin = Origin::start().await;
         let address = reserve_tcp_address();
         let mut config = wire_support::proxy_config(
@@ -166,8 +192,10 @@ impl Side {
             HttpVersionPolicy::default(),
         );
         config.http_services[0].routes.insert(0, fixed_route());
+        config.http_services[0].routes.insert(1, moved_route());
         config.http_fast_lane = (!lane).then_some(false);
         config.log_filter = Some("oxiroute::h2lane=debug".into());
+        configure(&mut config);
         let validated = config.validate();
         let mut server = ServerProcess::start(&validated, None);
         server.wait_for_tcp(address).await;
@@ -262,7 +290,18 @@ async fn run(
 
 /// Runs `requests` on both sides and compares everything observable; the lane side must have served `lane_served`.
 async fn same(requests: Vec<Request3>, lane_served: usize) {
-    let (classic, lane) = (Side::start(false).await, Side::start(true).await);
+    same_with(requests, lane_served, |_| {}).await;
+}
+
+async fn same_with(
+    requests: Vec<Request3>,
+    lane_served: usize,
+    configure: impl Fn(&mut ConfigDraft),
+) {
+    let (classic, lane) = (
+        Side::start_with(false, &configure).await,
+        Side::start_with(true, &configure).await,
+    );
     let (mut c, mut l) = (classic.client().await, lane.client().await);
     let from_classic = run(&mut c, &requests).await;
     let from_lane = run(&mut l, &requests).await;
@@ -275,7 +314,9 @@ async fn same(requests: Vec<Request3>, lane_served: usize) {
             .lock()
             .expect("heads")
             .iter()
-            .map(|head| masked_head(head))
+            .map(|head| {
+                masked_head(head).replace(&side.origin.address.port().to_string(), "<port>")
+            })
             .collect()
     };
     assert_eq!(heads(&lane), heads(&classic), "request heads at the origin");
@@ -372,8 +413,10 @@ async fn fixed_responses_are_answered_as_the_classic_path_answers_them() {
             get("/fixed"),
             (Method::HEAD, "/fixed", Vec::new()),
             get("/fixed/more?q=1"),
+            get("/moved"),
+            (Method::HEAD, "/moved/x", Vec::new()),
         ],
-        3,
+        5,
     )
     .await;
 }
@@ -435,4 +478,105 @@ async fn a_client_that_resets_while_the_origin_answers_ends_the_exchange() {
     drop(sender);
     driver.abort();
     assert_eq!(lane.served(), 2);
+}
+
+fn header_rules(upstream_host: HttpUpstreamHost) -> impl Fn(&mut ConfigDraft) {
+    move |config| {
+        let route = config.http_services[0]
+            .routes
+            .last_mut()
+            .expect("the proxy route");
+        let HttpRouteAction::Proxy { policy, .. } = &mut route.action else {
+            panic!("the last route proxies");
+        };
+        let set = |name: &str, value| HttpRequestHeaderMutation::Set {
+            name: name.into(),
+            value,
+        };
+        let respond = |name: &str, value: &str, add| {
+            let (name, value) = (name.into(), value.into());
+            if add {
+                HttpResponseHeaderMutation::Add {
+                    name,
+                    value,
+                    always: true,
+                }
+            } else {
+                HttpResponseHeaderMutation::Set {
+                    name,
+                    value,
+                    always: true,
+                }
+            }
+        };
+        **policy = HttpProxyPolicy {
+            upstream_host: upstream_host.clone(),
+            request_headers: vec![
+                set(
+                    "x-forwarded-proto",
+                    HttpRequestHeaderValue::DownstreamScheme,
+                ),
+                set(
+                    "x-forwarded-host",
+                    HttpRequestHeaderValue::IncomingAuthority,
+                ),
+                set("x-real-ip", HttpRequestHeaderValue::ClientIp),
+                set(
+                    "x-incoming",
+                    HttpRequestHeaderValue::IncomingHeader {
+                        name: "x-a".into(),
+                        max_bytes: 64,
+                    },
+                ),
+                set(
+                    "x-selected-host",
+                    HttpRequestHeaderValue::SelectedUpstreamHost,
+                ),
+                HttpRequestHeaderMutation::Remove {
+                    name: "x-secret".into(),
+                },
+            ],
+            response_headers: vec![
+                respond("x-served-by", "lane-test", false),
+                respond("x-extra", "one", true),
+                respond("x-extra", "two", true),
+                HttpResponseHeaderMutation::Remove {
+                    name: "x-powered-by".into(),
+                },
+                respond("server", "lane", false),
+                respond("cache-control", "no-store", false),
+            ],
+            ..HttpProxyPolicy::default()
+        };
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn header_rules_are_applied_as_the_classic_path_applies_them() {
+    let requests: Vec<Request3> = vec![
+        get("/plain"),
+        get("/powered"),
+        (Method::HEAD, "/powered", Vec::new()),
+        (
+            Method::GET,
+            "/plain",
+            vec![
+                ("x-a", "1"),
+                ("x-secret", "s"),
+                ("x-forwarded-for", "192.0.2.1"),
+            ],
+        ),
+    ];
+    let served = requests.len();
+    for host in [
+        HttpUpstreamHost::default(),
+        HttpUpstreamHost::Literal {
+            value: "origin.internal".into(),
+        },
+        HttpUpstreamHost::Endpoint {
+            unix_fallback: None,
+        },
+    ] {
+        same_with(requests.clone(), served, header_rules(host)).await;
+    }
 }

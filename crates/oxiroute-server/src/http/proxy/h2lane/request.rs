@@ -5,7 +5,7 @@
 //! selected server (`Host`, `Connection`): fields in the order the classic header map holds them, `Host` last, as
 //! `set_h1_host_from_authority` appends it. That text goes through the scanner of the HTTP/1 lane, so what the
 //! codec refuses is not the lane's (a `Host`, `TE`, `Trailer`, `Expect` or `Proxy-*` field, a field value with
-//! whitespace around it, a target the codec would write differently).
+//! whitespace around it, a target the codec would write differently) and a request that announces a body.
 
 use http::{HeaderMap, HeaderValue, uri::Authority};
 use oxiroute_h1_head::RequestHead;
@@ -36,8 +36,9 @@ pub(super) fn read(request: &RequestHeader, authority: &Authority) -> Option<(He
     let mut text = buffers::take_write();
     let mut scanned = buffers::take_head();
     let read = write_text(&mut text, request, authority)
-        .then(|| head::scan(&text, &mut scanned))
-        .flatten();
+        .then(|| head::line(&text).and_then(|line| head::scan(&text, line, &mut scanned)))
+        .flatten()
+        .filter(|read| read.body_len == 0);
     let Some(read) = read else {
         buffers::give_write(text);
         buffers::give_head(scanned);
