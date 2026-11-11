@@ -2807,6 +2807,7 @@ dependencies = [
  "oxiroute-config-source",
  "oxiroute-forward-proxy",
  "oxiroute-h1-head",
+ "oxiroute-h3",
  "oxiroute-import",
  "oxiroute-rtmp",
  "oxiroute-supervision",
@@ -2954,6 +2955,24 @@ dependencies = [
  "h2",
  "http",
  "log",
+ "tokio",
+]
+
+[[package]]
+name = "oxiroute-h3"
+version = "6.3.1"
+dependencies = [
+ "atomic-waker",
+ "bytes",
+ "h3",
+ "h3-quinn",
+ "http",
+ "oxiroute-h2",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
+ "thiserror 2.0.21",
  "tokio",
 ]
 

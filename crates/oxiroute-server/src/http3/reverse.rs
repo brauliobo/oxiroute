@@ -3,20 +3,30 @@ use super::*;
 use crate::observability::access_record::{Correlation, Count, Http3Access, SafeId};
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn handle_reverse_request<C>(
-    resolver: RequestResolver<C, Bytes>,
+pub(super) async fn handle_reverse_request(
+    mut stream: H3Stream,
     service: Arc<HttpServicePlan>,
     metrics: ListenerMetrics,
     client_addr: Option<SocketAddr>,
     downstream_timeouts: DownstreamTimeoutPolicy,
+    origin: Arc<OriginClient>,
     mut shutdown: watch::Receiver<bool>,
     request_slots: Arc<Semaphore>,
-) where
-    C: h3::quic::Connection<Bytes> + Send + 'static,
-    C::BidiStream: h3::quic::BidiStream<Bytes> + Send + 'static,
-{
-    let Ok((request, mut stream)) = resolver.resolve_request().await else {
-        return;
+) {
+    let request = match stream.read_head().await {
+        Ok(request) => request,
+        Err(HeadError::FieldSectionTooLarge { .. }) => {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let _ = send_h3_error(
+                &mut stream,
+                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                b"request headers exceed the HTTP/3 limit\n",
+                deadline,
+            )
+            .await;
+            return;
+        }
+        Err(_) => return,
     };
     let Ok(_request_slot) = request_slots.try_acquire_owned() else {
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -36,49 +46,32 @@ pub(super) async fn handle_reverse_request<C>(
     let deadline = request_deadline(&service, downstream_timeouts, started_at);
     let method = request.method().clone();
     let uri = request.uri().clone();
-    let authority = request_authority(&request);
-    let response_status = if let Some(authority) = authority.as_ref() {
-        if header_bytes(request.headers())
-            > usize::try_from(H3_MAX_FIELD_SECTION_BYTES).expect("H3 field limit fits usize")
-        {
-            send_h3_error(
+    let authority = request
+        .uri()
+        .authority()
+        .cloned()
+        .expect("the HTTP/3 layer delivers requests with an authority");
+    let response_status = if is_unambiguous_http_path(uri.path()) {
+        let dispatch_shutdown = shutdown.clone();
+        tokio::select! {
+            _ = shutdown.changed() => None,
+            response = dispatch_reverse_request(
                 &mut stream,
-                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                b"request headers exceed the HTTP/3 limit\n",
+                &request,
+                &authority,
+                &service,
+                &metrics,
+                client_addr,
+                &origin,
                 deadline,
-            )
-            .await
-            .then_some(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE.as_u16())
-        } else if !is_unambiguous_http_path(uri.path()) {
-            send_h3_error(
-                &mut stream,
-                StatusCode::BAD_REQUEST,
-                b"request path is invalid\n",
-                deadline,
-            )
-            .await
-            .then_some(StatusCode::BAD_REQUEST.as_u16())
-        } else {
-            let dispatch_shutdown = shutdown.clone();
-            tokio::select! {
-                _ = shutdown.changed() => None,
-                response = dispatch_reverse_request(
-                    &mut stream,
-                    &request,
-                    authority,
-                    &service,
-                    &metrics,
-                    client_addr,
-                    deadline,
-                    dispatch_shutdown,
-                ) => response,
-            }
+                dispatch_shutdown,
+            ) => response,
         }
     } else {
         send_h3_error(
             &mut stream,
             StatusCode::BAD_REQUEST,
-            b"request authority is required\n",
+            b"request path is invalid\n",
             deadline,
         )
         .await
@@ -92,7 +85,7 @@ pub(super) async fn handle_reverse_request<C>(
         && let Err(error) = access_log.write_record(&Http3Access {
             correlation_id: Correlation(None),
             duration_ms: Count(started_at.elapsed().as_millis()),
-            host: authority.as_ref().map(|authority| authority.host().into()),
+            host: Some(authority.host().into()),
             method: method.as_str().into(),
             protocol: SafeId("h3"),
             service: access_log.service().into(),
@@ -113,19 +106,17 @@ pub(super) async fn handle_reverse_request<C>(
     clippy::too_many_arguments
 )]
 #[allow(clippy::too_many_lines)]
-async fn dispatch_reverse_request<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+async fn dispatch_reverse_request(
+    stream: &mut H3Stream,
     request: &Request<()>,
     authority: &Authority,
     service: &HttpServicePlan,
     metrics: &ListenerMetrics,
     client_addr: Option<SocketAddr>,
+    origin: &OriginClient,
     deadline: Instant,
     mut shutdown: watch::Receiver<bool>,
-) -> Option<u16>
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
+) -> Option<u16> {
     let method = request.method();
     let uri = request.uri();
     let Some(route) = service.select_route(Some(authority), uri, method) else {
@@ -156,14 +147,11 @@ where
 
     match &route.action {
         HttpActionPlan::Fixed(response) => {
-            let headers = response.headers.to_vec();
-            return send_h3_response(
-                stream,
-                StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                &headers,
-                response.body.clone(),
-                *method == Method::HEAD,
+            let head = response.h3_head.as_ref()?;
+            let head_only = *method == Method::HEAD;
+            return within(
                 deadline,
+                stream.send_prepared(head, response.body.clone(), head_only),
             )
             .await
             .then_some(response.status);
@@ -226,16 +214,14 @@ where
                         .then_some(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE.as_u16());
                     }
                 };
-            if proxy.pool.h3().is_none() {
-                return send_h3_error(
-                    stream,
-                    StatusCode::BAD_GATEWAY,
-                    b"HTTP/3 reverse routes require an exact HTTP/3 upstream pool\n",
-                    deadline,
-                )
-                .await
-                .then_some(StatusCode::BAD_GATEWAY.as_u16());
-            }
+            let upstream = match Upstream::select(proxy, route.policy, origin) {
+                Ok(upstream) => upstream,
+                Err(message) => {
+                    return send_h3_error(stream, StatusCode::BAD_GATEWAY, message, deadline)
+                        .await
+                        .then_some(StatusCode::BAD_GATEWAY.as_u16());
+                }
+            };
             let body_limit = match (
                 service.max_request_body_bytes(),
                 route.policy.max_request_body_bytes,
@@ -266,7 +252,7 @@ where
                 }
             };
             if content_length.is_some_and(|length| length > body_limit) {
-                stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+                stream.stop_sending(H3Code::H3_REQUEST_CANCELLED);
                 return send_h3_error(
                     stream,
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -353,6 +339,7 @@ where
                 request,
                 authority,
                 proxy,
+                &upstream,
                 &request_header_decisions,
                 body,
                 metrics,
@@ -373,16 +360,13 @@ enum ReverseBodyError {
     Cancelled,
 }
 
-async fn recv_reverse_body<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+async fn recv_reverse_body(
+    stream: &mut H3Stream,
     limit: u64,
     expected_length: Option<u64>,
     deadline: Instant,
     shutdown: &mut watch::Receiver<bool>,
-) -> Result<Bytes, ReverseBodyError>
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
+) -> Result<Bytes, ReverseBodyError> {
     let mut body = Vec::new();
     loop {
         let next = tokio::select! {
@@ -399,16 +383,13 @@ where
         let Some(chunk) = next else {
             break;
         };
-        let mut chunk = chunk;
-        let chunk_length = chunk.remaining();
-        let chunk = chunk.copy_to_bytes(chunk_length);
         let next_length = body
             .len()
             .checked_add(chunk.len())
             .and_then(|length| u64::try_from(length).ok())
             .ok_or(ReverseBodyError::TooLarge)?;
         if next_length > limit {
-            stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+            stream.stop_sending(H3Code::H3_REQUEST_CANCELLED);
             return Err(ReverseBodyError::TooLarge);
         }
         body.extend_from_slice(&chunk);
@@ -420,20 +401,17 @@ where
     Ok(Bytes::from(body))
 }
 
-pub(super) async fn send_h3_error<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+pub(super) async fn send_h3_error(
+    stream: &mut H3Stream,
     status: StatusCode,
-    body: &[u8],
+    body: &'static [u8],
     deadline: Instant,
-) -> bool
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
+) -> bool {
     send_h3_response(
         stream,
         status,
         &[],
-        Bytes::copy_from_slice(body),
+        Bytes::from_static(body),
         false,
         deadline,
     )

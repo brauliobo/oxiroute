@@ -295,13 +295,26 @@ where
     Ok(bytes)
 }
 
+type H2Accepted = (Request<h2::RecvStream>, h2::server::SendResponse<Bytes>);
+
+/// The next request of the connection, or `None` once the peer is gone, however abruptly: a proxy closes a
+/// connection whose stream failed, and that must not stop the origin.
+async fn accept_h2(
+    connection: &mut h2::server::Connection<ServerTlsStream<TcpStream>, Bytes>,
+) -> Result<Option<H2Accepted>, BoxError> {
+    match connection.accept().await {
+        Some(Ok(accepted)) => Ok(Some(accepted)),
+        Some(Err(error)) if !error.is_io() => Err(error.into()),
+        Some(Err(_)) | None => Ok(None),
+    }
+}
+
 async fn serve_tls_h2(
     stream: ServerTlsStream<TcpStream>,
     observations: Arc<OriginObservations>,
 ) -> Result<(), BoxError> {
     let mut connection = h2::server::handshake(stream).await?;
-    while let Some(request) = connection.accept().await {
-        let (request, respond) = request?;
+    while let Some((request, respond)) = accept_h2(&mut connection).await? {
         observations.http_requests.fetch_add(1, Ordering::SeqCst);
         observations
             .http_bytes
@@ -312,25 +325,25 @@ async fn serve_tls_h2(
             .expect("origin HTTP/2 request-header observations")
             .push(request.headers().clone());
         let path = request.uri().path().to_owned();
-        if path == "/grpc/upload" {
-            let mut body = request.into_body();
-            while let Some(chunk) = body.data().await {
-                let chunk = chunk?;
-                observations
-                    .request_body_bytes
-                    .fetch_add(chunk.len(), Ordering::SeqCst);
-                body.flow_control().release_capacity(chunk.len())?;
-            }
-        }
+        let upload = path == "/grpc/upload";
         let observations = Arc::clone(&observations);
-        let slow = path == "/grpc/slow";
+        let slow = path == "/grpc/slow" || upload;
         let answer = async move {
+            if upload {
+                let mut body = request.into_body();
+                while let Some(Ok(chunk)) = body.data().await {
+                    observations
+                        .request_body_bytes
+                        .fetch_add(chunk.len(), Ordering::SeqCst);
+                    let _ = body.flow_control().release_capacity(chunk.len());
+                }
+            }
             if respond_h2(&path, respond).await.is_err() {
                 observations.h2_send_errors.fetch_add(1, Ordering::SeqCst);
             }
         };
         if slow {
-            // The connection keeps being read while the answer waits, so a reset that arrives meanwhile is seen.
+            // The connection keeps being read while the answer waits, so a reset or a body that arrives meanwhile is seen.
             tokio::spawn(answer);
         } else {
             answer.await;
@@ -344,8 +357,7 @@ async fn serve_tls_h2_refusing_streams(
     observations: Arc<OriginObservations>,
 ) -> Result<(), BoxError> {
     let mut connection = h2::server::handshake(stream).await?;
-    while let Some(request) = connection.accept().await {
-        let (request, mut respond) = request?;
+    while let Some((request, mut respond)) = accept_h2(&mut connection).await? {
         observations.http_requests.fetch_add(1, Ordering::SeqCst);
         observations
             .http_bytes

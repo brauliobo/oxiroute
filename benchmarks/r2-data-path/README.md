@@ -12,7 +12,7 @@ of each per-request feature. Wall-clock numbers on a shared host are unreliable,
 | `run.sh` | Entry point; `run.sh --help` lists every option. Wraps `run.py`. |
 | `run.py` | Lane table, process orchestration, `perf stat` / strace / allocator-shim / `perf record` measurements. |
 | `gen_config.py` | Renders the Lua configuration of a lane from independent feature switches. |
-| `tool/` | `r2tool`: in-tree upstream (0 B, 1 KiB, 64 KiB, 1 MiB, chunked, slow, sink, upgrade echo, TCP echo) and a fixed-count load generator (h1, h1+TLS, h2c, h2+TLS, WebSocket-style upgrade, TCP echo; keep-alive or new connection per request; header padding; request bodies; p50/p99/p99.9). `alloc_count.c` is an `LD_PRELOAD` shim counting allocator and `clock_gettime` calls. |
+| `tool/` | `r2tool`: in-tree upstream (0 B, 1 KiB, 64 KiB, 1 MiB, chunked, slow, sink, upgrade echo, TCP echo) and a fixed-count load generator (h1, h1+TLS, h2c, h2+TLS, HTTP/3, WebSocket-style upgrade, TCP echo; keep-alive or new connection per request; header padding; request bodies; p50/p99/p99.9). `alloc_count.c` is an `LD_PRELOAD` shim counting allocator and `clock_gettime` calls. |
 | `table.py` | Compact table of a `results.json`, optionally with instruction deltas against a previous run. |
 | `profile_summary.py` | Component and symbol summary of a `--profile` `perf.data`. |
 | `soak.py` | Mixed-traffic soak of one process (keep-alive, new connection, POST, 1 MiB upload, slow response, WebSocket-style upgrade over plain and TLS, TLS HTTP/1.1, HTTP/2, TCP echo, paced) with RSS, descriptor and thread samples, a configuration reload through the management API in the middle, an origin stop and a SIGTERM at the end. |
@@ -91,6 +91,9 @@ alloc_bytes_per_req clock_gettime_per_req`, `heap_live_bytes_per_conn rss_bytes_
 * `tls_hs_browser_tls13` and `tls_hs_browser_kx_tls13` use a client hello like a browser's (`--tls-groups browser`: shares for
   `X25519MLKEM768` and `X25519`); the second sets `key_exchange_groups = { "x25519", "secp256r1" }` on the profile
   (`tls_kx` feature), which drops the hybrid group.
+* HTTP/3 listener (see [HTTP/3](#http3)): `h3_fixed_b1k_c8s4 h3_fixed_b1k_c1s1 h3_fixed_b64k_c8s4 h3_newconn_fixed_b1k`
+  (answered by the listener itself), `h3_b1k_c8s4 h3_post1k_c8s4` (proxied to the HTTP/1.1 origin; they need a proxy that
+  supports that, an older binary is reported as `skipped=...` instead of measured).
 * HTTP/2 to the origin (`upstream_h2` feature: the upstream tool serves TLS with ALPN `h2` and a throwaway certificate
   made with `openssl`, the pool trusts it): `h1_b1k_h2up h1_b64k_h2up h1_post1k_h2up`.
 * Scaling over listeners: `scale_l{1,2,4,8}` and `scale_all_l{1,2,4,8}` (all 6.0 features on), and `scale4_<feature>`
@@ -104,6 +107,41 @@ alloc_bytes_per_req clock_gettime_per_req`, `heap_live_bytes_per_conn rss_bytes_
   (handshakes on the worker thread) for the comparison. The p99 and p99.9 columns are the result.
 * Load-aware pools: `pool_{lc,wrr}_s{8,64,200}` (`least_connections` and `weighted_round_robin` over N servers).
 * `--lock-batch N` holds the shared benchmark lock across N consecutive lanes (re-entrant) so long runs are not starved.
+
+## HTTP/3
+
+`r2tool load --proto h3` is a quinn + h3 client: `--conns` QUIC connections, each on its own UDP socket (one quinn
+endpoint per connection), `--streams` concurrent request streams per connection (cloned h3 `SendRequest`s, so one
+worker task per stream), keep-alive connections, GET without a body or, with `--method POST --body-bytes N`, a request
+body followed by FIN. `--new-conn` opens a new QUIC connection (full TLS 1.3 handshake, no resumption) for every request
+and closes it afterwards. Warm-up, hooks, the 2xx/length validation (`--expect-status`, `--expect-len`) and the latency
+columns are the ones of the other protocols; `connect_p50_us` is the QUIC handshake time. The client runs on
+`R2_LOAD_CPUS`, the proxy on `R2_PROXY_CPUS`: the H3 listener runs on its own thread of the proxy process, so
+the proxy CPU set must hold at least two CPUs.
+
+The listener uses a `self_signed_development` certificate for `bench.example.com` (TLS 1.3, ALPN `h3`) like the TLS
+lanes, and the client does not verify it for the same reason. HTTP/3 listeners require request buffering and a bounded
+body on every route, so `gen_config.py --feature h3` sets both; `fixed_b1k` / `fixed_b64k` answer `/fixed` with that
+body and leave out the proxy route; `h3_b1k_c8s4` and `h3_post1k_c8s4` keep it and proxy to the HTTP/1.1 origin
+pool (they need a binary whose `http3` listener accepts such routes; an older one is reported as skipped). Readiness is a UDP probe (a datagram of an unknown QUIC version is answered with
+Version Negotiation), not a TCP connect.
+
+Limits: no certificate verification, no 0-RTT or session resumption, one client process with two runtime threads
+(raise `--threads` for a large stream count), loopback only, quinn's default flow-control windows and idle timeout, and
+`--reconnect-closed` only notices a connection that quinn already knows is closed.
+
+```sh
+export OXIROUTE_BIN=/path/to/oxiroute-before R2TOOL_BIN=/path/to/r2tool
+benchmarks/r2-data-path/run.sh --lanes h3_fixed_b1k_c8s4,h3_fixed_b1k_c1s1 --reps 3 --out /tmp/h3-before
+benchmarks/r2-data-path/run.sh --lanes h3_fixed_b64k_c8s4,h3_newconn_fixed_b1k --reps 3 --out /tmp/h3-before2
+benchmarks/r2-data-path/run.sh --lanes h3_fixed_b1k_c8s4 --no-perf --sys --out /tmp/h3-before-sys
+benchmarks/r2-data-path/run.sh --lanes h3_fixed_b1k_c8s4 --no-perf --profile --flat --out /tmp/h3-before-prof
+```
+
+Compare before and after with the same load tool, lane and CPU sets, on binaries built with the same profile:
+`python3 benchmarks/r2-data-path/table.py /tmp/h3-after/results.json /tmp/h3-before/results.json` prints the
+instruction delta per lane. `instr_per_req` counts every proxy thread (the H3 listener thread, runtime helpers); read the
+spread columns before trusting a delta below 1%.
 
 ## Soak
 
@@ -122,4 +160,4 @@ protocol for it.
 
 ## Limits
 
-Forward-proxy mode, RTMP and HTTP/3 are not covered by this harness.
+Forward-proxy mode and RTMP are not covered by this harness; HTTP/3 covers the reverse listener, answering itself or proxying to an HTTP/1.1 origin (no HTTP/3 or HTTP/2 origin lane).

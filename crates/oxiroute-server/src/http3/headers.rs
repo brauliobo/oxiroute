@@ -19,16 +19,6 @@ pub(super) fn request_deadline(
     started_at + timeout
 }
 
-pub(super) fn request_authority(request: &Request<()>) -> Option<Authority> {
-    request.uri().authority().cloned().or_else(|| {
-        request
-            .headers()
-            .get(HOST)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse().ok())
-    })
-}
-
 pub(super) fn header_bytes(headers: &HeaderMap) -> usize {
     headers.iter().fold(0, |total, (name, value)| {
         total
@@ -125,51 +115,65 @@ pub(crate) fn sanitize_h3_trailers(headers: &mut HeaderMap) -> Result<(), ()> {
         .ok_or(())
 }
 
-pub(super) async fn send_h3_response<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+pub(super) fn body_forbidden(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
+    )
+}
+
+/// Awaits a stream operation under the request deadline; `true` when it completed without error.
+pub(super) async fn within<T, E>(
+    deadline: Instant,
+    operation: impl Future<Output = Result<T, E>>,
+) -> bool {
+    matches!(timeout_at(deadline, operation).await, Ok(Ok(_)))
+}
+
+pub(super) fn h3_response_head(
+    status: StatusCode,
+    headers: &[(HeaderName, HeaderValue)],
+    body_length: usize,
+    head: bool,
+) -> Result<Response<()>, ()> {
+    let mut response = Response::new(());
+    *response.status_mut() = status;
+    for (name, value) in headers {
+        response.headers_mut().append(name.clone(), value.clone());
+    }
+    let body_length = u64::try_from(body_length).map_err(|_| ())?;
+    sanitize_h3_response_headers(response.headers_mut(), status, body_length, head)?;
+    Ok(response)
+}
+
+/// The encoded head of a fixed response: the same for every request, `HEAD` included.
+pub(crate) fn fixed_response_head(
+    status: u16,
+    headers: &[(HeaderName, HeaderValue)],
+    body_length: usize,
+) -> Option<PreparedHead> {
+    let status = StatusCode::from_u16(status).ok()?;
+    let head = h3_response_head(status, headers, body_length, false).ok()?;
+    Some(PreparedHead::new(&head))
+}
+
+pub(super) async fn send_h3_response(
+    stream: &mut H3Stream,
     status: StatusCode,
     headers: &[(HeaderName, HeaderValue)],
     body: Bytes,
     head: bool,
     deadline: Instant,
-) -> bool
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
-    let body_forbidden = matches!(
-        status,
-        StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
-    );
-    let body_length = u64::try_from(body.len()).map_err(|_| ()).ok();
-    let Some(body_length) = body_length else {
+) -> bool {
+    let Ok(response) = h3_response_head(status, headers, body.len(), head) else {
         return false;
     };
-    let Ok(mut response) = Response::builder().status(status).body(()) else {
-        return false;
-    };
-    for (name, value) in headers {
-        response.headers_mut().append(name.clone(), value.clone());
-    }
-    if sanitize_h3_response_headers(response.headers_mut(), status, body_length, head).is_err() {
-        return false;
-    }
-    if !matches!(
-        timeout_at(deadline, stream.send_response(response)).await,
-        Ok(Ok(()))
-    ) {
-        return false;
-    }
-    if !head
-        && !body_forbidden
-        && !body.is_empty()
-        && !matches!(
-            timeout_at(deadline, stream.send_data(body)).await,
-            Ok(Ok(()))
-        )
-    {
-        return false;
-    }
-    matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(())))
+    let head_only = head || body_forbidden(status);
+    within(
+        deadline,
+        stream.send_full_response(response, body, head_only),
+    )
+    .await
 }
 
 pub(super) fn h3_redirect_location(

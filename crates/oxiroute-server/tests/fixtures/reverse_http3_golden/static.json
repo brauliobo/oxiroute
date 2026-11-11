@@ -1,0 +1,579 @@
+{
+  "cases": [
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "static/hit",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://hit.static.test/static/ok.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 200"],
+      "id": "static/head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "HEAD https://head.static.test/static/ok.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 404"],
+      "id": "static/miss",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"custom-not-found","headers":[["content-length","16"],["x-error","static"],["x-static","yes"]],"status":404},
+          "request": "GET https://miss.static.test/static/missing.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web HEAD 404"],
+      "id": "static/miss-head",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","16"],["x-error","static"],["x-static","yes"]],"status":404},
+          "request": "HEAD https://miss-head.static.test/static/missing.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web HEAD 200"],
+      "id": "static/empty-file",
+      "steps": [
+        {
+          "outcome": {
+            "body": "",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","0"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-0\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://empty-file.static.test/static/empty.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","0"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-0\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "HEAD https://empty-file.static.test/static/empty.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200","h3 web GET 200"],
+      "id": "static/mime-types",
+      "steps": [
+        {
+          "outcome": {
+            "body": "<h1>page</h1>\n",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","14"],
+              ["content-type","text/html; charset=utf-8"],
+              ["etag","\"6553f100-e\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://mime-types.static.test/static/page.html"
+        },
+        {
+          "outcome": {
+            "body": "{\"a\":1}",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","7"],
+              ["content-type","application/json"],
+              ["etag","\"6553f100-7\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://mime-types.static.test/static/data.json"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": {"fnv1a64":"e09ae0dbcbd49f85","len":300000},
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","300000"],
+              ["content-type","application/octet-stream"],
+              ["etag","\"6553f100-493e0\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://mime-types.static.test/static/big.bin"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "static/nested",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "inner",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","5"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-5\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://nested.static.test/static/sub/inner.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web HEAD 200"],
+      "id": "static/large-file",
+      "steps": [
+        {
+          "outcome": {
+            "body": {"fnv1a64":"e09ae0dbcbd49f85","len":300000},
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","300000"],
+              ["content-type","application/octet-stream"],
+              ["etag","\"6553f100-493e0\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://large-file.static.test/static/big.bin"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","300000"],
+              ["content-type","application/octet-stream"],
+              ["etag","\"6553f100-493e0\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "HEAD https://large-file.static.test/static/big.bin"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 413","h3 web HEAD 413"],
+      "id": "static/over-the-body-bound",
+      "steps": [
+        {
+          "outcome": {"body":"static response body exceeds the HTTP/3 limit\n","headers":[["content-length","46"]],"status":413},
+          "request": "GET https://over-the-body-bound.static.test/static/oversized.bin"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"static response body exceeds the HTTP/3 limit\n","headers":[["content-length","46"]],"status":413},
+          "request": "HEAD https://over-the-body-bound.static.test/static/oversized.bin"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web POST 405","h3 web OPTIONS 405"],
+      "id": "static/method-not-allowed",
+      "steps": [
+        {
+          "outcome": {"body":"","headers":[["allow","GET, HEAD"],["content-length","0"]],"status":405},
+          "request": "POST https://method-not-allowed.static.test/static/ok.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["allow","GET, HEAD"],["content-length","0"]],"status":405},
+          "request": "OPTIONS https://method-not-allowed.static.test/static/ok.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "static/trailing-slash-on-a-file",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://trailing-slash-on-a-file.static.test/static/ok.txt/"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200"],
+      "id": "static/query-ignored",
+      "steps": [
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://query-ignored.static.test/static/ok.txt?v=1"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web HEAD 200"],
+      "id": "static/without-etag",
+      "steps": [
+        {
+          "outcome": {
+            "body": "noetag",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","6"],
+              ["content-type","text/plain"],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://without-etag.static.test/noetag/ok.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","6"],
+              ["content-type","text/plain"],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "HEAD https://without-etag.static.test/noetag/ok.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 404"],
+      "id": "static/custom-header-on-every-response",
+      "steps": [
+        {
+          "outcome": {
+            "body": "0123456789",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","10"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-a\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://custom-header-on-every-response.static.test/static/ok.txt"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"custom-not-found","headers":[["content-length","16"],["x-error","static"],["x-static","yes"]],"status":404},
+          "request": "GET https://custom-header-on-every-response.static.test/static/missing.txt"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web HEAD 200"],
+      "id": "static/index-file",
+      "steps": [
+        {
+          "outcome": {
+            "body": "<h1>index</h1>\n",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","15"],
+              ["content-type","text/html; charset=utf-8"],
+              ["etag","\"6553f100-f\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://index-file.static.test/static/dir/"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","15"],
+              ["content-type","text/html; charset=utf-8"],
+              ["etag","\"6553f100-f\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "HEAD https://index-file.static.test/static/dir/"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 301","h3 web HEAD 301","h3 web GET 301"],
+      "id": "static/directory-redirect",
+      "steps": [
+        {
+          "outcome": {"body":"","headers":[["content-length","0"],["location","/static/dir/"],["x-static","yes"]],"status":301},
+          "request": "GET https://directory-redirect.static.test/static/dir"
+        },
+        {
+          "outcome": {"body":"","headers":[["content-length","0"],["location","/static/dir/"],["x-static","yes"]],"status":301},
+          "request": "HEAD https://directory-redirect.static.test/static/dir"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["location","/static/dir/"],["x-static","yes"]],"status":301},
+          "request": "GET https://directory-redirect.static.test/static/dir?x=1"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 403","h3 web GET 301"],
+      "id": "static/directory-without-index",
+      "steps": [
+        {
+          "outcome": {"body":"","headers":[["content-length","0"],["x-static","yes"]],"status":403},
+          "request": "GET https://directory-without-index.static.test/static/emptydir/"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["content-length","0"],["location","/static/emptydir/"],["x-static","yes"]],"status":301},
+          "request": "GET https://directory-without-index.static.test/static/emptydir"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web HEAD 200","h3 web GET 200"],
+      "id": "static/autoindex",
+      "steps": [
+        {
+          "outcome": {
+            "body": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Index</title></head><body><h1>Index</h1><pre><a href=\"../\">../</a>\n<a href=\"a.txt\">a.txt</a>  2023-11-14 22:13  1\n<a href=\"subdir/\">subdir/</a>  2023-11-14 22:13  -\n</pre></body></html>\n",
+            "headers": [["content-length","242"],["content-type","text/html; charset=utf-8"],["x-static","yes"]],
+            "status": 200
+          },
+          "request": "GET https://autoindex.static.test/listing/"
+        },
+        {
+          "outcome": {"body":"","headers":[["content-length","242"],["content-type","text/html; charset=utf-8"],["x-static","yes"]],"status":200},
+          "request": "HEAD https://autoindex.static.test/listing/"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "<!doctype html><html><head><meta charset=\"utf-8\"><title>Index</title></head><body><h1>Index</h1><pre><a href=\"../\">../</a>\n</pre></body></html>\n",
+            "headers": [["content-length","144"],["content-type","text/html; charset=utf-8"],["x-static","yes"]],
+            "status": 200
+          },
+          "request": "GET https://autoindex.static.test/listing/subdir/"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200","h3 web GET 200"],
+      "id": "static/spa-fallback",
+      "steps": [
+        {
+          "outcome": {
+            "body": "spa-fallback",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","12"],
+              ["content-type","text/html; charset=utf-8"],
+              ["etag","\"6553f100-c\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://spa-fallback.static.test/spa/anything/deep"
+        },
+        {
+          "outcome": {
+            "body": "spa-fallback",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","12"],
+              ["content-type","text/html; charset=utf-8"],
+              ["etag","\"6553f100-c\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://spa-fallback.static.test/spa/"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "spa-fallback",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","12"],
+              ["content-type","text/html; charset=utf-8"],
+              ["etag","\"6553f100-c\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://spa-fallback.static.test/spa/index.html"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 404","h3 web HEAD 404"],
+      "id": "static/error-document-from-a-file",
+      "steps": [
+        {
+          "outcome": {
+            "body": "file-404\n",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","9"],
+              ["content-type","text/html; charset=utf-8"],
+              ["etag","\"6553f100-9\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 404
+          },
+          "request": "GET https://error-document-from-a-file.static.test/errs/missing"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","9"],
+              ["content-type","text/html; charset=utf-8"],
+              ["etag","\"6553f100-9\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-static","yes"]
+            ],
+            "status": 404
+          },
+          "request": "HEAD https://error-document-from-a-file.static.test/errs/missing"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 403","h3 web HEAD 403"],
+      "id": "static/error-document-by-internal-redirect",
+      "steps": [
+        {
+          "outcome": {
+            "body": "redirected-403\n",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","15"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-f\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-from","403"],
+              ["x-static","yes"]
+            ],
+            "status": 403
+          },
+          "request": "GET https://error-document-by-internal-redirect.static.test/errs/emptydir/"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "",
+            "headers": [
+              ["accept-ranges","bytes"],
+              ["content-length","15"],
+              ["content-type","text/plain"],
+              ["etag","\"6553f100-f\""],
+              ["last-modified","Tue, 14 Nov 2023 22:13:20 GMT"],
+              ["x-from","403"],
+              ["x-static","yes"]
+            ],
+            "status": 403
+          },
+          "request": "HEAD https://error-document-by-internal-redirect.static.test/errs/emptydir/"
+        }
+      ]
+    }
+  ]
+}

@@ -3,41 +3,19 @@ use super::*;
 use crate::routing::QueueTag;
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-pub(super) async fn dispatch_h3_upstream_request<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+pub(super) async fn dispatch_h3_upstream_request(
+    stream: &mut H3Stream,
     request: &Request<()>,
     authority: &Authority,
     proxy: &ProxyActionPlan,
+    upstream: &Upstream<'_>,
     request_header_decisions: &[RequestHeaderDecision],
     body: Bytes,
     metrics: &ListenerMetrics,
     deadline: Instant,
     mut shutdown: watch::Receiver<bool>,
     mut cache_transaction: Option<CacheTransaction>,
-) -> Option<u16>
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
-    let Some(h3) = proxy.pool.h3() else {
-        return send_h3_error(
-            stream,
-            StatusCode::BAD_GATEWAY,
-            b"HTTP/3 upstream policy is unavailable\n",
-            deadline,
-        )
-        .await
-        .then_some(StatusCode::BAD_GATEWAY.as_u16());
-    };
-    let Some(server_name) = h3.server_name() else {
-        return send_h3_error(
-            stream,
-            StatusCode::BAD_GATEWAY,
-            b"HTTP/3 upstream SNI is unavailable\n",
-            deadline,
-        )
-        .await
-        .then_some(StatusCode::BAD_GATEWAY.as_u16());
-    };
+) -> Option<u16> {
     let mut attempted = Vec::new();
     let mut retry_server: Option<String> = None;
     let max_attempts = usize::from(proxy.policy.max_retries).saturating_add(1);
@@ -59,7 +37,10 @@ where
                 result = timeout_at(deadline, proxy.pool.select_server_endpoint(&server, QueueTag::default())) => {
                     match result {
                         Ok(Ok(selected)) => selected,
-                        Ok(Err(_)) => break,
+                        Ok(Err(_)) => {
+                            last_error = H3UpstreamError::PoolUnavailable;
+                            break;
+                        }
                         Err(_) => {
                             last_error = H3UpstreamError::Timeout;
                             break;
@@ -76,7 +57,10 @@ where
                 result = timeout_at(deadline, proxy.pool.select_endpoint(&attempted, QueueTag::default())) => {
                     match result {
                         Ok(Ok(selected)) => selected,
-                        Ok(Err(_)) => break,
+                        Ok(Err(_)) => {
+                            last_error = H3UpstreamError::PoolUnavailable;
+                            break;
+                        }
                         Err(_) => {
                             last_error = H3UpstreamError::Timeout;
                             break;
@@ -93,11 +77,11 @@ where
             last_error = H3UpstreamError::Protocol;
             break;
         };
-        let Ok(mut upstream_request) = build_h3_upstream_request(
+        let Ok(mut upstream_request) = upstream.build_request(
+            &proxy.policy,
             request,
             body.len(),
             &selected_host,
-            &proxy.policy,
             request_header_decisions,
         ) else {
             last_error = H3UpstreamError::Protocol;
@@ -117,18 +101,14 @@ where
                 last_error = H3UpstreamError::Timeout;
                 break;
             }
-            let Ok(address) = selected.prepare_h3_address(remaining).await else {
-                last_error = H3UpstreamError::Connect;
-                break;
-            };
-            match h3
-                .request(
-                    address,
-                    server_name,
-                    upstream_request.clone(),
-                    body.clone(),
+            match upstream
+                .exchange(
+                    &mut selected,
+                    &upstream_request,
+                    &body,
+                    remaining,
                     deadline,
-                    shutdown.clone(),
+                    &shutdown,
                 )
                 .await
             {
@@ -136,7 +116,7 @@ where
                     response = Some(value);
                     break;
                 }
-                Err(error) if error.retryable() && selected.has_address_fallback() => {
+                Err(error) if error.reconnectable() && selected.has_address_fallback() => {
                     last_error = error;
                 }
                 Err(error) => {
@@ -212,7 +192,7 @@ where
             HttpRetryTarget::SameServer => attempted.last().is_some(),
             HttpRetryTarget::NextServer => proxy.pool.has_unattempted(&attempted),
         };
-        let retry = retry_safe
+        let retry = (retry_safe || last_error.request_not_sent())
             && attempt.saturating_add(1) < max_attempts
             && target_available
             && proxy.policy.retries_on(trigger)
@@ -239,11 +219,6 @@ where
         }
     }
 
-    let status = if matches!(last_error, H3UpstreamError::Timeout) {
-        StatusCode::GATEWAY_TIMEOUT
-    } else {
-        StatusCode::BAD_GATEWAY
-    };
     if let Some(response) = stale_h3_response(&mut cache_transaction).await {
         let status = conditional_h3_cache_status(request, &response);
         return send_h3_cached_response(stream, request, response, deadline)
@@ -253,62 +228,24 @@ where
     if let Some(transaction) = cache_transaction.as_mut() {
         transaction.complete_without_store();
     }
-    send_h3_error(
-        stream,
-        status,
-        b"HTTP/3 upstream request failed\n",
-        deadline,
-    )
-    .await
-    .then_some(status.as_u16())
-}
-
-fn h3_retry_trigger(error: &H3UpstreamError) -> HttpRetryTrigger {
-    match error {
-        H3UpstreamError::Timeout => HttpRetryTrigger::ConnectTimeout,
-        H3UpstreamError::RefusedStream => HttpRetryTrigger::RefusedStream,
-        H3UpstreamError::Connect
-        | H3UpstreamError::Protocol
-        | H3UpstreamError::Cancelled
-        | H3UpstreamError::ResponseBodyTooLarge
-        | H3UpstreamError::RequestBodyTooLarge
-        | H3UpstreamError::ResourceExhausted
-        | H3UpstreamError::MissingServerName => HttpRetryTrigger::ConnectFailure,
-    }
-}
-
-fn h3_passive_failure(error: &H3UpstreamError) -> Option<HealthFailure> {
-    match error {
-        H3UpstreamError::Connect => Some(HealthFailure::ConnectFailed),
-        H3UpstreamError::Timeout => Some(HealthFailure::Timeout),
-        H3UpstreamError::RefusedStream | H3UpstreamError::Protocol => {
-            Some(HealthFailure::ProtocolError)
-        }
-        H3UpstreamError::Cancelled
-        | H3UpstreamError::ResponseBodyTooLarge
-        | H3UpstreamError::RequestBodyTooLarge
-        | H3UpstreamError::ResourceExhausted
-        | H3UpstreamError::MissingServerName => None,
-    }
+    let head = request.method() == Method::HEAD;
+    send_h3_upstream_failure(stream, &last_error, &proxy.pool, head, deadline).await
 }
 
 #[allow(clippy::too_many_lines)]
-async fn send_h3_upstream_response<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+async fn send_h3_upstream_response(
+    stream: &mut H3Stream,
     request: &Request<()>,
     response: crate::http3::upstream_plan::H3UpstreamResponse,
     proxy: &ProxyActionPlan,
     metrics: &ListenerMetrics,
     deadline: Instant,
     cache_transaction: &mut Option<CacheTransaction>,
-) -> Option<u16>
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
+) -> Option<u16> {
     let status = response.status;
     let mut headers = response.headers;
     let body = response.body;
-    let mut trailers = response.trailers;
+    let trailers = response.trailers;
     if apply_response_policy_map(status, &mut headers, &proxy.policy).is_err() {
         if let Some(transaction) = cache_transaction.as_mut() {
             transaction.complete_without_store();
@@ -400,45 +337,13 @@ where
     let mut response_head = Response::new(());
     *response_head.status_mut() = status;
     *response_head.headers_mut() = headers;
-    if !matches!(
-        timeout_at(deadline, stream.send_response(response_head)).await,
-        Ok(Ok(()))
-    ) {
-        if let Some(transaction) = cache_transaction.as_mut() {
-            transaction.cancel();
-        }
-        return None;
-    }
-    let body_forbidden = matches!(
-        status,
-        StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
-    );
-    if request.method() != Method::HEAD && !body_forbidden && !body.is_empty() {
+    let head = request.method() == Method::HEAD;
+    let send_body = !head && !body_forbidden(status) && !body.is_empty();
+    if send_body {
         let _ = metrics.record_bytes_sent(body_length);
-        if !matches!(
-            timeout_at(deadline, stream.send_data(body)).await,
-            Ok(Ok(()))
-        ) {
-            if let Some(transaction) = cache_transaction.as_mut() {
-                transaction.cancel();
-            }
-            return None;
-        }
     }
-    if request.method() != Method::HEAD
-        && let Some(mut trailers) = trailers.take()
-        && (sanitize_h3_trailers(&mut trailers).is_err()
-            || !matches!(
-                timeout_at(deadline, stream.send_trailers(trailers)).await,
-                Ok(Ok(()))
-            ))
-    {
-        if let Some(transaction) = cache_transaction.as_mut() {
-            transaction.cancel();
-        }
-        return None;
-    }
-    if !matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(()))) {
+    let trailers = trailers.filter(|_| !head);
+    if !send_h3_upstream_parts(stream, response_head, body, !send_body, trailers, deadline).await {
         if let Some(transaction) = cache_transaction.as_mut() {
             transaction.cancel();
         }
@@ -452,6 +357,29 @@ where
     Some(status.as_u16())
 }
 
+/// Sends head, body and trailers and finishes the stream; a response without trailers goes out in one write.
+async fn send_h3_upstream_parts(
+    stream: &mut H3Stream,
+    head: Response<()>,
+    body: Bytes,
+    head_only: bool,
+    trailers: Option<HeaderMap>,
+    deadline: Instant,
+) -> bool {
+    let Some(mut trailers) = trailers else {
+        return within(deadline, stream.send_full_response(head, body, head_only)).await;
+    };
+    if !within(deadline, stream.send_response(head)).await {
+        return false;
+    }
+    if !head_only && !within(deadline, stream.send_data(body)).await {
+        return false;
+    }
+    sanitize_h3_trailers(&mut trailers).is_ok()
+        && within(deadline, stream.send_trailers(trailers)).await
+        && stream.finish().is_ok()
+}
+
 pub(super) fn build_h3_upstream_request(
     request: &Request<()>,
     body_length: usize,
@@ -459,32 +387,26 @@ pub(super) fn build_h3_upstream_request(
     policy: &ProxyPolicyPlan,
     request_header_decisions: &[RequestHeaderDecision],
 ) -> Result<Request<()>, ()> {
-    let mut uri = request.uri().clone();
-    if let Some(rewrite) = &policy.upstream_path_rewrite {
-        rewrite_upstream_path(&mut uri, rewrite).map_err(|_| ())?;
-    }
     let selected_authority = selected_host
         .to_str()
         .map_err(|_| ())?
         .parse::<Authority>()
         .map_err(|_| ())?;
-    let path = uri
-        .path_and_query()
-        .map_or(uri.path(), |value| value.as_str());
     let uri = Uri::builder()
         .scheme("https")
         .authority(selected_authority.as_str())
-        .path_and_query(path)
+        .path_and_query(upstream_path(request, policy)?)
         .build()
         .map_err(|_| ())?;
-    let mut headers = request.headers().clone();
-    strip_h3_hop_by_hop_headers(&mut headers)?;
-    headers.remove(HOST);
-    headers.insert(
-        CONTENT_LENGTH,
-        HeaderValue::from_str(&body_length.to_string()).map_err(|_| ())?,
-    );
-    apply_h3_header_mutations(&mut headers, request_header_decisions, selected_host)?;
+    let content_length = HeaderValue::from_str(&body_length.to_string()).map_err(|_| ())?;
+    let headers = upstream_headers(
+        request,
+        selected_host,
+        request_header_decisions,
+        |headers| {
+            headers.insert(CONTENT_LENGTH, content_length);
+        },
+    )?;
     let mut output = Request::builder()
         .method(request.method().clone())
         .uri(uri)
@@ -493,6 +415,34 @@ pub(super) fn build_h3_upstream_request(
     *output.version_mut() = http::Version::HTTP_3;
     *output.headers_mut() = headers;
     Ok(output)
+}
+
+/// The request's path and query as the upstream gets them, after the route's rewrite.
+pub(super) fn upstream_path(request: &Request<()>, policy: &ProxyPolicyPlan) -> Result<String, ()> {
+    let mut uri = request.uri().clone();
+    if let Some(rewrite) = &policy.upstream_path_rewrite {
+        rewrite_upstream_path(&mut uri, rewrite).map_err(|_| ())?;
+    }
+    Ok(uri
+        .path_and_query()
+        .map_or(uri.path(), |value| value.as_str())
+        .to_owned())
+}
+
+/// The request's fields as an upstream gets them: hop-by-hop fields and `Host` removed, the fields the transport
+/// owns set by `transport`, then the route's header policy applied.
+pub(super) fn upstream_headers(
+    request: &Request<()>,
+    selected_host: &HeaderValue,
+    request_header_decisions: &[RequestHeaderDecision],
+    transport: impl FnOnce(&mut HeaderMap),
+) -> Result<HeaderMap, ()> {
+    let mut headers = request.headers().clone();
+    strip_h3_hop_by_hop_headers(&mut headers)?;
+    headers.remove(HOST);
+    transport(&mut headers);
+    apply_h3_header_mutations(&mut headers, request_header_decisions, selected_host)?;
+    Ok(headers)
 }
 
 pub(super) fn apply_h3_header_mutations(

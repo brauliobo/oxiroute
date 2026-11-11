@@ -9,6 +9,7 @@ members = [
     "crates/oxiroute-forward-proxy",
     "crates/oxiroute-h1-head",
     "crates/oxiroute-h2",
+    "crates/oxiroute-h3",
     "crates/oxiroute-import",
     "crates/oxiroute-rtmp",
     "crates/oxiroute-server",

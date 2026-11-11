@@ -1,0 +1,237 @@
+{
+  "cases": [
+    {
+      "access_log": ["h3 web GET 200","h3 web PURGE 200","h3 web GET 200","h3 web PURGE 200","h3 web PURGE 404"],
+      "id": "cache/purge",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","cache-fresh"]],
+              "method": "GET",
+              "uri": "https://purge.cache.test/c/fresh/p1"
+            }
+          ],
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"p1\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://purge.cache.test/c/fresh/p1"
+        },
+        {
+          "outcome": {"body":"","headers":[["cache-control","private, no-store"],["content-length","0"]],"status":200},
+          "request": "PURGE https://purge.cache.test/c/fresh/p1"
+        },
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","cache-fresh"]],
+              "method": "GET",
+              "uri": "https://purge.cache.test/c/fresh/p1"
+            }
+          ],
+          "outcome": {
+            "body": "cached-2",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"p1\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://purge.cache.test/c/fresh/p1"
+        },
+        {
+          "outcome": {"body":"","headers":[["cache-control","private, no-store"],["content-length","0"]],"status":200},
+          "request": "PURGE https://purge.cache.test/c/fresh/p1"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["cache-control","private, no-store"],["content-length","0"]],"status":404},
+          "request": "PURGE https://purge.cache.test/c/fresh/never-cached"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web PURGE 401","h3 web PURGE 401","h3 web GET 200"],
+      "id": "cache/purge-denied",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","cache-fresh"]],
+              "method": "GET",
+              "uri": "https://purge-denied.cache.test/c/fresh/p2"
+            }
+          ],
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"p2\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://purge-denied.cache.test/c/fresh/p2"
+        },
+        {
+          "outcome": {"body":"","headers":[["content-length","0"],["www-authenticate","Bearer"]],"status":401},
+          "request": "PURGE https://purge-denied.cache.test/c/fresh/p2"
+        },
+        {
+          "outcome": {"body":"","headers":[["content-length","0"],["www-authenticate","Bearer"]],"status":401},
+          "request": "PURGE https://purge-denied.cache.test/c/fresh/p2"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["age","<age>"],
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"p2\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://purge-denied.cache.test/c/fresh/p2"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web GET 200","h3 web PURGE 200","h3 web GET 200","h3 web PURGE 404"],
+      "id": "cache/purge-by-surrogate-tag",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","cache-fresh"]],
+              "method": "GET",
+              "uri": "https://purge-by-surrogate-tag.cache.test/c/fresh/t1"
+            }
+          ],
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"t1\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://purge-by-surrogate-tag.cache.test/c/fresh/t1"
+        },
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","cache-fresh"]],
+              "method": "GET",
+              "uri": "https://purge-by-surrogate-tag.cache.test/c/fresh/t2"
+            }
+          ],
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"t2\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://purge-by-surrogate-tag.cache.test/c/fresh/t2"
+        },
+        {
+          "outcome": {"body":"","headers":[["cache-control","private, no-store"],["content-length","0"]],"status":200},
+          "request": "PURGE https://purge-by-surrogate-tag.cache.test/c/fresh/ignored"
+        },
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","cache-fresh"]],
+              "method": "GET",
+              "uri": "https://purge-by-surrogate-tag.cache.test/c/fresh/t1"
+            }
+          ],
+          "outcome": {
+            "body": "cached-2",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"t1\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://purge-by-surrogate-tag.cache.test/c/fresh/t1"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["cache-control","private, no-store"],["content-length","0"]],"status":404},
+          "request": "PURGE https://purge-by-surrogate-tag.cache.test/c/fresh/ignored"
+        }
+      ]
+    },
+    {
+      "access_log": ["h3 web GET 200","h3 web PURGE 200","h3 web PURGE 404"],
+      "id": "cache/purge-with-a-query",
+      "steps": [
+        {
+          "origin": [
+            {
+              "body": "",
+              "headers": [["content-length","0"],["x-origin-mode","cache-fresh"]],
+              "method": "GET",
+              "uri": "https://purge-with-a-query.cache.test/c/fresh/pq?a=1"
+            }
+          ],
+          "outcome": {
+            "body": "cached-1",
+            "headers": [
+              ["cache-control","public, max-age=60"],
+              ["content-length","8"],
+              ["etag","\"pq\""],
+              ["last-modified","Sat, 01 Jan 2022 00:00:00 GMT"],
+              ["surrogate-key","tag-a tag-b"]
+            ],
+            "status": 200
+          },
+          "request": "GET https://purge-with-a-query.cache.test/c/fresh/pq?a=1"
+        },
+        {
+          "outcome": {"body":"","headers":[["cache-control","private, no-store"],["content-length","0"]],"status":200},
+          "request": "PURGE https://purge-with-a-query.cache.test/c/fresh/pq?a=1"
+        },
+        {
+          "connection_after": "open",
+          "outcome": {"body":"","headers":[["cache-control","private, no-store"],["content-length","0"]],"status":404},
+          "request": "PURGE https://purge-with-a-query.cache.test/c/fresh/pq"
+        }
+      ]
+    }
+  ]
+}
