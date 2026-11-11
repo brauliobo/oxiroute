@@ -438,7 +438,7 @@ mod tests {
             attempts += 1;
 
             tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                _ = tokio::task::yield_now() => {
                     continue;
                 }
                 result = header_writer.write_current_header_task(&mut mock_io) => {

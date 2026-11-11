@@ -330,6 +330,10 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   whose head the caller wrote with `write_request_head_raw` (`FastFraming`: chunked or a content length); the body then
   goes out with `write_body` and `finish_body`.
 
+`protocols/http/v1/header.rs`: `test_header_write_timeout_persists` cancels the header write by yielding to the scheduler instead
+of by 10 ms sleeps, so the number of cancelled attempts before its 100 ms timeout no longer depends on how late a loaded
+host wakes the timer (the pristine test failed with fewer than 5 attempts).
+
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
