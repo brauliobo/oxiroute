@@ -574,8 +574,12 @@ Current constraints:
   contract as reverse HTTP; configured bearer-protected `PURGE` handles an exact request key or
   surrogate tag.
 - HTTP/3 reverse services require a bounded service and route request body, request buffering, no
-  response buffering, no gzip, no upgrade header mutation, and an exact `3/3` upstream pool for every
-  proxy route. Fixed, redirect, descriptor-pinned static-file, and bounded memory/persistent cache
+  response buffering, no gzip, no upgrade header mutation, and a configured upstream pool for every
+  proxy route: an exact `3/3` pool is reached with the QUIC client, any other pool with the classic
+  HTTP/1.1 and HTTP/2 origin connections (plain TCP, TLS, Unix socket), the answer buffered up to
+  the 64 MiB response limit and bigger ones answered `502`. Retry budgets, rescue, pool selection,
+  affinity and queue classes are not applied by the HTTP/3 path and are rejected on its routes.
+  HTTP/1.1 origin trailers are not forwarded. Fixed, redirect, descriptor-pinned static-file, and bounded memory/persistent cache
   actions are active; compression and upgrades remain explicitly unsupported. H3 cache uses the
   shared freshness, revalidation, stale-if-error, collapsed-fill, authenticated purge, surrogate-tag,
   bounded admission, and listener-metric contract. Trailer-bearing responses are forwarded but not
@@ -1031,8 +1035,10 @@ upstream_pools = {
   bounded safe retries. It never falls back to HTTP/1.1 or HTTP/2. Any range with `max = "2"`
   requires `tls`; upstream h2c is not supported.
 - A service route using an exact `3/3` pool must be attached only to an `http3` listener. It cannot
-  share that service with a non-HTTP/3 listener. A route using an H3 pool with unsupported listener
-  or upstream semantics is rejected during configuration validation.
+  share that service with a non-HTTP/3 listener. A service whose routes use `1.1` or `2` pools can
+  be attached to an `http3` listener and to `http` listeners at once; an HTTP/3 client then reaches
+  the same origins with the same route policy as an HTTPS client. A route using an H3 pool with
+  unsupported listener or upstream semantics is rejected during configuration validation.
 - Upstream TLS always verifies both the certificate chain and hostname. A pinned, documented
   Pingora connector hook applies security level 2, a TLS 1.2 minimum, ECDHE+AEAD TLS 1.2 ciphers,
   and standard TLS 1.3 AEAD suites before handshake. The negotiated digest is checked again before
