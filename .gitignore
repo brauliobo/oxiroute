@@ -10,3 +10,4 @@
 /ui/node_modules/
 /remotion/node_modules/
 /remotion/out/
+/vendor/pingora-*/Cargo.lock
