@@ -67,6 +67,51 @@ impl Stream {
             .send_response(self.idx, self.id, status, &headers, end)
     }
 
+    /// [`Stream::send_response`] without `http` types: `status` (100 to 999) and `fields` are encoded straight
+    /// into the `HEADERS` block with the indexing policy of `send_response` (`set-cookie`, `authorization`,
+    /// `proxy-authorization` and `x-request-id` are never indexed).
+    ///
+    /// The caller guarantees what `http` types would have: names lowercase and valid, no pseudo-headers, no
+    /// connection-specific fields, values without control characters (checked by `debug_assert` only). `fields` is
+    /// iterated while the connection is locked and must not call back into this crate.
+    ///
+    /// # Errors
+    ///
+    /// The stream was reset, the connection closed or a response was already sent.
+    pub fn send_response_fields<'a>(
+        &mut self,
+        status: u16,
+        fields: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
+        end: bool,
+    ) -> Result<(), Error> {
+        self.shared
+            .lock()
+            .send_response_fields(self.idx, self.id, status, fields, end)
+    }
+
+    /// A whole small response under one lock: the `HEADERS` (same guarantees as
+    /// [`Stream::send_response_fields`]) and as much of `body` as fits the stream and connection send windows
+    /// at once, split into frames of at most the peer's maximum frame size.
+    ///
+    /// Returns the number of trailing octets of `body` that did not fit. With `0` the body and `END_STREAM` are
+    /// queued and the response is complete; otherwise the response stays open and the caller sends
+    /// `body[body.len() - n..]` with [`Stream::poll_capacity`] and [`Stream::send_data`]. An empty `body` ends the
+    /// response with the `HEADERS` frame.
+    ///
+    /// # Errors
+    ///
+    /// The stream was reset, the connection closed or a response was already sent.
+    pub fn send_response_with_data<'a>(
+        &mut self,
+        status: u16,
+        fields: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
+        body: Bytes,
+    ) -> Result<usize, Error> {
+        self.shared
+            .lock()
+            .send_response_with_data(self.idx, self.id, status, fields, body)
+    }
+
     /// How many octets (at least 1, at most `want`) can be framed right now within the stream and connection
     /// send windows. Pending, with the waker registered, while either window is empty; connection-window waiters
     /// are woken in FIFO order. The grant stays reserved for this stream until [`Stream::send_data`].
