@@ -412,6 +412,10 @@ output is unchanged.
   connection was reset (the second revalidation of an always-stale entry, plain or TLS). The connection now stays open
   for any number of revalidations, with the HTTP/1.1 fast lane on or off, and the request no longer logs an error line.
   HTTP/2 clients were not affected.
+- When an origin answered and closed the connection while the client was still uploading a request body, the client could
+  get `400 Bad Request` instead of the origin's answer (the proxy treated the client's next bytes as a protocol violation
+  when they arrived before it had read the answer). The upload that follows the refusal is now read and dropped until the
+  answer is relayed; the origin connection is still not reused. HTTP/1.1, classic path.
 
 ## Upgrade notes
 
