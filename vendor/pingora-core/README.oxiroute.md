@@ -254,6 +254,11 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   Streams coalesce writes, so a test server must flush. `scripts/test-vendored.sh` runs every vendored suite against these sources
   in a network namespace with only loopback.
 
+- Fast lane request bodies: `protocols/http/v1/mod.rs` makes `body` public, so the lane reads a downstream request body with
+  the same `BodyReader` the session uses (framing, chunk parsing, limits, errors), and `HttpSession::init_request_body`
+  (`protocols/http/v1/client.rs`) frames the body of a request whose head the caller wrote with `write_request_head_raw`
+  (`FastFraming`: chunked or a content length); the body then goes out with `write_body` and `finish_body`.
+
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
