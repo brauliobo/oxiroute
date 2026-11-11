@@ -41,12 +41,10 @@ const COALESCE_PLAIN_LIMIT: usize = 1460;
 /// Plaintext vectored writes may leave pending: a whole TLS record. Vectored writers (HTTP/2
 /// frames, chunked bodies) flush right after, and their bytes are packed into full records.
 const COALESCE_VECTORED_LIMIT: usize = 16 * 1024;
-/// A drained buffer larger than this goes back to the thread's spare instead of staying with the connection.
-const COALESCE_RETAINED_CAPACITY: usize = 2048;
 
 thread_local! {
-    /// The record-sized buffer of the connections of this thread that are writing a body: a connection
-    /// that went idle keeps none.
+    /// The buffer of the connections of this thread that are writing: a drained one goes back here, so a
+    /// connection that went idle keeps none.
     static SPARE: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
 }
 
@@ -173,9 +171,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
         }
         self.sent = 0;
         self.pending.clear();
-        if self.pending.capacity() > COALESCE_RETAINED_CAPACITY {
-            SPARE.set(std::mem::take(&mut self.pending));
-        }
+        SPARE.set(std::mem::take(&mut self.pending));
         Poll::Ready(Ok(()))
     }
 }
@@ -248,6 +244,9 @@ where
                 ready!(self.poll_write_pending(cx))?;
             }
             if buf.len() <= COALESCE_PLAIN_LIMIT {
+                if self.pending.capacity() == 0 {
+                    self.pending = SPARE.take();
+                }
                 self.pending.extend_from_slice(buf);
                 return Poll::Ready(Ok(buf.len()));
             }
@@ -331,8 +330,40 @@ impl SslDigest {
     }
 }
 
-// TODO: implement Peek if needed
-impl<T> Peek for SslStream<T> {}
+#[cfg(feature = "openssl")]
+extern "C" {
+    /// 1 when the TLS layer holds bytes of the connection it has not handed out yet: plaintext, and, with read-ahead,
+    /// ciphertext read from the transport ahead of the record being processed.
+    fn SSL_has_pending(ssl: *const ssl_lib::ssl_sys::SSL) -> std::ffi::c_int;
+}
+
+impl<T> SslStream<T> {
+    #[cfg(feature = "openssl")]
+    fn has_pending(&self) -> bool {
+        use foreign_types::ForeignTypeRef;
+        // safety: `ssl()` is the live connection of `self`; the call only reads its record layer
+        unsafe { SSL_has_pending(self.ssl.ssl().as_ptr()) == 1 }
+    }
+
+    /// Without the library telling, a stream cannot be waited on without reading it.
+    #[cfg(not(feature = "openssl"))]
+    fn has_pending(&self) -> bool {
+        true
+    }
+}
+
+impl<T> Peek for SslStream<T> {
+    /// What an idle connection waits on instead of `SSL_read`, which would need the connection's request state to
+    /// wait. Bytes the TLS layer already holds are readable; anything else needs the transport to have bytes: the
+    /// rest of a partial record, the next record and a `close_notify` all arrive there. A stream without a probe
+    /// cannot tell and is always readable.
+    fn poll_read_ready(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.read_probe {
+            Some(probe) if !self.has_pending() => probe(self.ssl.get_mut(), cx),
+            _ => Poll::Ready(Ok(())),
+        }
+    }
+}
 
 #[cfg(all(test, feature = "openssl"))]
 #[path = "stream_tests.rs"]
