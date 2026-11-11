@@ -39,6 +39,16 @@ pub fn prepare_tls_stream<S: IO>(ssl_acceptor: &SslAcceptor, io: S) -> Result<Ss
     Ok(stream)
 }
 
+/// Offers the kernel TLS offload on an accepted connection whose transport is an L4 stream.
+pub fn offer_kernel_tx<S: IO>(stream: &mut SslStream<S>) {
+    fn socket_of<S: IO>(io: &S) -> Option<&tokio::net::TcpStream> {
+        io.as_any()
+            .downcast_ref::<crate::protocols::l4::stream::Stream>()?
+            .tcp_socket()
+    }
+    stream.offer_ktls(socket_of::<S>);
+}
+
 /// Perform TLS handshake for the given connection with the given configuration
 pub async fn handshake<S: IO>(ssl_acceptor: &SslAcceptor, io: S) -> Result<SslStream<S>> {
     let mut stream = prepare_tls_stream(ssl_acceptor, io)?;

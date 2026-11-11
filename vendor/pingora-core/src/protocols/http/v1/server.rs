@@ -30,6 +30,7 @@ use pingora_timeout::timeout;
 use regex::bytes::Regex;
 use std::any::Any;
 use std::collections::VecDeque;
+use std::future::poll_fn;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1215,9 +1216,10 @@ impl HttpSession {
     /// page cache to the socket without entering user space.
     ///
     /// Returns `Ok(None)` without sending anything when that is not possible: the body is not framed by
-    /// `Content-Length`, has fewer than `length` bytes left, or the connection is not a plain TCP socket (TLS and
-    /// Unix sockets need the bytes in user space). Otherwise returns the bytes sent, which is `length` unless the
-    /// file ended early.
+    /// `Content-Length`, has fewer than `length` bytes left, or the connection is neither a plain TCP socket nor a
+    /// TLS connection whose records the kernel encrypts (kernel TLS, see [`crate::protocols::Ssl::poll_kernel_tx`]): other TLS
+    /// connections and Unix sockets need the bytes in user space. A TLS connection that offers kernel TLS is
+    /// converted here, once. Otherwise returns the bytes sent, which is `length` unless the file ended early.
     pub async fn write_body_from_file(
         &mut self,
         file: &std::fs::File,
@@ -1231,7 +1233,9 @@ impl HttpSession {
         {
             return Ok(None);
         }
-        if plain_tcp_socket(&self.underlying_stream).is_none() {
+        if plain_tcp_socket(&self.underlying_stream).is_none()
+            && !poll_fn(|cx| self.underlying_stream.poll_kernel_tx(cx)).await
+        {
             return Ok(None);
         }
         // The response head waits in the write buffer; it must go out before the body.
@@ -1239,7 +1243,9 @@ impl HttpSession {
             .flush()
             .await
             .or_err(WriteError, "flushing response header before sendfile")?;
-        let socket = plain_tcp_socket(&self.underlying_stream).expect("checked above");
+        let socket = plain_tcp_socket(&self.underlying_stream)
+            .or_else(|| self.underlying_stream.kernel_tx_socket())
+            .expect("checked above");
         let send = crate::protocols::l4::sendfile::send_file(socket, file, offset, length);
         let sent = match self.write_timeout(length) {
             Some(t) => match timeout(t, send).await {

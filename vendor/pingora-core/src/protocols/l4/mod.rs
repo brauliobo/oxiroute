@@ -15,6 +15,7 @@
 //! Transport layer protocol implementation
 
 pub mod ext;
+pub mod ktls;
 mod lazy_read;
 pub mod listener;
 pub mod sendfile;

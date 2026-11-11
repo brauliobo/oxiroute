@@ -106,6 +106,20 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   the pool of the thread that drops the last clone) instead of copying it into a new `Bytes`; chunked and smaller
   reads are copied as before. `finish_body_buf` only splits the buffer when bytes were read past the body.
   `oxiroute-server` also reads static file chunks into the same pool (it sizes the buffer first).
+- Kernel TLS transmit offload of an accepted OpenSSL TLS 1.3 connection (AES-128/256-GCM), opt-in per listener
+  (`TlsSettings::offer_kernel_tx`). `protocols/l4/ktls.rs` probes the kernel with throw-away keys on loopback sockets
+  (`tls` ULP, both ciphers, a second key on a live socket: the TLS 1.3 `KeyUpdate` rekey of kernel 6.5). An offered
+  `SslStream` (`protocols/tls/boringssl_openssl/{stream,ktls}.rs`) is converted on the first `Ssl::poll_kernel_tx`:
+  pending plaintext is flushed, the write BIO becomes a socket BIO (`SSL_set0_wbio`), `SSL_OP_ENABLE_KTLS` is set and one
+  `SSL_key_update(NOT_REQUESTED)` makes OpenSSL install the new write key with `TCP_ULP`/`TLS_TX`. The read direction
+  stays in user space. TLS 1.2, other ciphers and a refusing kernel leave the connection as it was (the forwarding BIO is
+  put back). Once the kernel owns the keys `SSL_write` writes plaintext to the descriptor, a full socket buffer registers
+  no waker, so the stream asks the socket's own readiness (`wake_for_write`). `Ssl::kernel_tx_socket` hands the TCP
+  socket out and `protocols/http/v1/server.rs` `write_body_from_file` uses it for `sendfile` over TLS. `build.rs` and
+  the optional `openssl-src` build dependency with the `ktls` feature are what make `openssl-sys` build the vendored
+  OpenSSL with `enable-ktls` (Cargo unifies build dependency features; a normal dependency would not reach it). A system
+  OpenSSL (`OPENSSL_NO_VENDOR=1`) must have been built with kTLS. The tests (`ktls_tests.rs`) need `modprobe tls` and
+  skip with a reason without it.
 - `protocols/http/v1/server.rs` writes a body task of 4 KiB or more from its own buffer after the bodies queued
   before it, instead of copying it into the batch buffer (`queue_body_data`).
 - `protocols/l4/lazy_read.rs` replaces `tokio::io::BufWriter` with `CoalescingWriter`: same buffering and
@@ -264,8 +278,8 @@ response facts, noted request write, inline request loop, zero-copy request body
 Date and Connection lines, header map headroom, single-clock timeouts, the parked idle wait (`apps/idle_wait.rs`), the pooled request future (`apps/pooled_future.rs`), the pooled coalescing write buffer, owned-preread, borrowed-request-write,
 parsed-header ownership, response-task batch, lazy read buffer and coalescing writer, pooled gzip state, header-name
 cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, the per-worker connection placement (`set_buffer(own_driver)`) and
-`ServerConf::connection_age_ms`, the stream buffer accessors (`tcp_socket`, `has_read_ahead`, `has_write_behind`) and the
-sendfile body write (`write_body_from_file`).
+`ServerConf::connection_age_ms`, the stream buffer accessors (`tcp_socket`, `has_read_ahead`, `has_write_behind`), the
+sendfile body write (`write_body_from_file`) and the kernel TLS offload (`ktls` modules, `Ssl::poll_kernel_tx`, `build.rs`).
 Every upstream H1 correctness fix whose code our forks replace (`idle.rs`, `proxy_h1_inline.rs` in `pingora-proxy`,
 the inline relay) must be re-derived by hand. Then run `scripts/test-vendored.sh`, the OxiRoute TLS and HTTP wire
 tests and strict clippy.
