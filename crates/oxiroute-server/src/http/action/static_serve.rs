@@ -12,7 +12,7 @@ pub(crate) fn nginx_add_header_status(status: u16) -> bool {
     )
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct StaticFile {
     pub(crate) content: StaticContent,
     pub(crate) content_type: HeaderValue,
@@ -201,7 +201,7 @@ fn read_regular_file(descriptor: OwnedFd, name: &OsStr) -> Result<StaticFile, St
         })
         .unwrap_or(std::time::UNIX_EPOCH);
     Ok(StaticFile {
-        content: StaticContent::Open(File::from(descriptor)),
+        content: StaticContent::open(Arc::new(File::from(descriptor))),
         content_type: HeaderValue::from_static(builtin_content_type(name)),
         etag: nginx_static_etag(before.st_mtime, size),
         content_length: HeaderValue::from(size),

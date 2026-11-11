@@ -48,7 +48,8 @@ use crate::protocols::http::{
     authority::validate_request_authority, body_buffer::FixedBuffer, date, HttpTask,
     ReusableHttpStream,
 };
-use crate::protocols::{Digest, SocketAddr, Stream, IO};
+use crate::protocols::l4::sendfile::plain_tcp_socket;
+use crate::protocols::{Digest, SocketAddr, Stream};
 use crate::utils::BufRef;
 
 // A response body chunk of at least this size is written on its own instead of being copied into the batch buffer.
@@ -2224,13 +2225,6 @@ fn validate_origin_form_authority(req: &RequestHeader) -> Result<()> {
         }
     }
     validate_request_authority(req)
-}
-
-/// The TCP socket of a stream that is a plain TCP connection: no TLS and no other transport in between.
-fn plain_tcp_socket(stream: &Stream) -> Option<&tokio::net::TcpStream> {
-    IO::as_any(&**stream)
-        .downcast_ref::<crate::protocols::l4::stream::Stream>()?
-        .tcp_socket()
 }
 
 #[cfg(test)]

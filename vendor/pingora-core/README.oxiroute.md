@@ -279,6 +279,8 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   sends a range of an open file as the body of a `Content-Length` response with `sendfile(2)` (flushes the response head first, accounts the
   bytes in the body writer and `body_bytes_sent`, applies the write timeout) and returns `None`, sending nothing, for chunked bodies, HTTP/2, TLS
   and any other transport than a plain TCP stream. Tests in `protocols/l4/sendfile.rs`.
+  `l4::sendfile::plain_tcp_socket` and `send_file_to_stream` do the same for a bare `Stream` (the HTTP/1 fast lane has no session):
+  the caller flushes its response head first, and the result is `None` when the stream is not a plain TCP connection.
 
 - `protocols/http/v2/server.rs` serves downstream HTTP/2 with the in-tree `oxiroute-h2` server (`crates/oxiroute-h2`) instead
   of `h2::server`. `H2Options` is now `oxiroute_h2::server::Config` and `Reason` is `oxiroute_h2::Reason`; `handshake`,

@@ -41,6 +41,13 @@ fn serve(root: std::path::PathBuf) -> impl FnOnce(&mut oxiroute_config::ConfigDr
 }
 
 async fn wire_serving(data: &[u8]) -> (Wire, tempfile::TempDir) {
+    wire_serving_with(data, &[]).await
+}
+
+/// The test hook that sets how long the static cache holds a file, in milliseconds.
+const STATIC_VALIDITY: &str = "OXIROUTE_INTERNAL_TEST_STATIC_VALIDITY_MS";
+
+async fn wire_serving_with(data: &[u8], environment: &[(&str, &str)]) -> (Wire, tempfile::TempDir) {
     let directory = tempfile::tempdir_in("/dev/shm").expect("static root directory in memory");
     let root = directory.path().join("public");
     fs::create_dir(&root).expect("create static root");
@@ -48,7 +55,8 @@ async fn wire_serving(data: &[u8]) -> (Wire, tempfile::TempDir) {
     fs::write(root.join("big.bin"), data).expect("write the large file");
     fs::write(root.join("small.txt"), b"small").expect("write the small file");
     let origin = Origin::start(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
-    (Wire::over(origin, serve(root)).await, directory)
+    let wire = Wire::over_with_env(origin, environment, serve(root)).await;
+    (wire, directory)
 }
 
 /// One response: its head and its body, framed by `Content-Length`; a response to `HEAD` has no body.
@@ -227,5 +235,89 @@ async fn a_compressed_static_response_does_not_bypass_the_compression_module() {
         [0x1f, 0x8b],
         "not a gzip stream"
     );
+    wire.finish();
+}
+
+/// A file that shrinks while the cache holds it cannot be sent whole: the response ends with the connection, never
+/// with a hang or with bytes of another length than announced, and the server keeps serving.
+#[tokio::test]
+async fn a_cached_file_that_shrinks_ends_its_response_with_the_connection() {
+    let data = pattern(BIG);
+    let (wire, directory) = wire_serving_with(&data, &[(STATIC_VALIDITY, "600000")]).await;
+    let mut client = TcpStream::connect(wire.proxy).await.expect("connect");
+    let (_, body) = get(&mut client, "GET", "/big.bin", None).await;
+    assert!(body == data, "the first read fills the cache");
+    let file = directory.path().join("public/big.bin");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&file)
+        .expect("open for truncation")
+        .set_len(1_000_000)
+        .expect("truncate");
+
+    let mut shrunk = TcpStream::connect(wire.proxy).await.expect("connect");
+    shrunk
+        .write_all(b"GET /big.bin HTTP/1.1\r\nHost: example.test\r\n\r\n")
+        .await
+        .expect("request");
+    let mut received = Vec::new();
+    timeout(STEP, shrunk.read_to_end(&mut received))
+        .await
+        .expect("the connection ends")
+        .expect("read");
+    let head_end = find(&received, b"\r\n\r\n").expect("a head") + 4;
+    assert!(received.len() - head_end < BIG, "the body is cut short");
+
+    let mut other = TcpStream::connect(wire.proxy).await.expect("connect");
+    let (head, body) = get(&mut other, "GET", "/small.txt", None).await;
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert_eq!(body, b"small");
+    wire.finish();
+}
+
+/// More large files than the cache holds descriptors for: every file is served whole, cached or not.
+#[tokio::test]
+async fn more_large_files_than_the_cache_holds_open_are_all_served_whole() {
+    let directory = tempfile::tempdir_in("/dev/shm").expect("static root directory in memory");
+    let root = directory.path().join("public");
+    fs::create_dir(&root).expect("create static root");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("secure static root");
+    let data = pattern(140 * 1024);
+    for index in 0..150 {
+        fs::write(root.join(format!("f{index}.bin")), &data).expect("write a file");
+    }
+    let origin = Origin::start(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
+    let environment = [(STATIC_VALIDITY, "600000")];
+    let wire = Wire::over_with_env(origin, &environment, serve(root)).await;
+    let mut client = TcpStream::connect(wire.proxy).await.expect("connect");
+    for round in 0..2 {
+        for index in 0..150 {
+            let (head, body) = get(&mut client, "GET", &format!("/f{index}.bin"), None).await;
+            assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+            assert!(body == data, "file {index} in round {round} differs");
+        }
+    }
+    wire.finish();
+}
+
+/// What a client sees of a cached file is what it saw of the first read: the validators, the type, the length, and
+/// the bytes, on every request of one connection.
+#[tokio::test]
+async fn a_cached_large_file_is_answered_with_the_same_head_every_time() {
+    let data = pattern(BIG);
+    let (wire, _directory) = wire_serving_with(&data, &[(STATIC_VALIDITY, "600000")]).await;
+    let mut client = TcpStream::connect(wire.proxy).await.expect("connect");
+    let mut heads = Vec::new();
+    for _ in 0..4 {
+        let (head, body) = get(&mut client, "GET", "/big.bin", None).await;
+        assert_eq!(body, data);
+        heads.push(
+            head.lines()
+                .filter(|line| !line.starts_with("Date:") && !line.starts_with("x-request-id:"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    assert!(heads.iter().all(|head| head == &heads[0]), "{heads:#?}");
     wire.finish();
 }
