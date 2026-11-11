@@ -51,6 +51,7 @@ class Lane:
     workers: int = 0  # `listener_workers` of the generated configuration; 0 leaves the setting out
     handshake_threads: int = -1  # `tls_handshake_threads`; -1 leaves the setting out (automatic), 0 handshakes inline
     servers: int = 1
+    options: tuple = ()  # root options of the generated configuration as KEY=JSON
     storm: int = 0  # TLS handshakes per second that new connections add during the measured window (`r2tool storm`)
     target_offset: int = 0  # proxy port offset the load goes to (forward listener: 3, TCP listener: 1)
     note: str = ""
@@ -326,6 +327,7 @@ class Env:
              "--listeners", str(lane.listeners), "--workers", str(lane.workers),
              "--tls-handshake-threads", str(lane.handshake_threads), "--run-dir", str(self.work)]
             + (["--classic"] if self.args.classic else [])
+            + [item for option in lane.options for item in ("--set", option)]
             + [item for feature in lane.features for item in ("--feature", feature)],
             check=True, capture_output=True, text=True, timeout=LANE_TIMEOUT)
         self.generated = generated.stdout
