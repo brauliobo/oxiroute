@@ -30,7 +30,7 @@ pub struct Resp {
     ip: String,
 }
 
-pub struct Json2Yaml {
+pub struct JsonPretty {
     addr: std::net::SocketAddr,
 }
 
@@ -38,7 +38,7 @@ pub struct MyCtx {
     buffer: Vec<u8>,
 }
 
-impl ProxyHttp for Json2Yaml {
+impl ProxyHttp for JsonPretty {
     type CTX = MyCtx;
     fn new_ctx(&self) -> Self::CTX {
         MyCtx { buffer: vec![] }
@@ -101,8 +101,8 @@ impl ProxyHttp for Json2Yaml {
         if end_of_stream {
             // This is the last chunk, we can process the data now
             let json_body: Resp = serde_json::de::from_slice(&ctx.buffer).unwrap();
-            let yaml_body = serde_yaml::to_string(&json_body).unwrap();
-            *body = Some(Bytes::copy_from_slice(yaml_body.as_bytes()));
+            let pretty_body = serde_json::to_string_pretty(&json_body).unwrap();
+            *body = Some(Bytes::copy_from_slice(pretty_body.as_bytes()));
         }
 
         Ok(None)
@@ -120,7 +120,7 @@ fn main() {
 
     let mut my_proxy = pingora_proxy::http_proxy_service(
         &my_server.configuration,
-        Json2Yaml {
+        JsonPretty {
             // hardcode the IP of ip.jsontest.com for now
             addr: ("142.251.2.121", 80)
                 .to_socket_addrs()

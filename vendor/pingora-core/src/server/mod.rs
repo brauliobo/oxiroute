@@ -456,10 +456,7 @@ impl Server {
     /// Create a new [`Server`], using the [`Opt`] and [`ServerConf`] values provided
     ///
     /// This method is intended for pingora frontends that are NOT using the built-in
-    /// command line and configuration file parsing, and are instead using their own.
-    ///
-    /// If a configuration file path is provided as part of `opt`, it will be ignored
-    /// and a warning will be logged.
+    /// command line parsing, and are instead using their own.
     ///
     /// # Errors
     ///
@@ -470,9 +467,6 @@ impl Server {
     ) -> Result<Server> {
         let opt = raw_opt.into();
         if let Some(opts) = &opt {
-            if let Some(c) = opts.conf.as_ref() {
-                warn!("Ignoring command line argument using '{c}' as configuration, and using provided configuration instead.");
-            }
             conf.merge_with_opt(opts);
         }
         let conf = conf.validate()?;
@@ -510,23 +504,11 @@ impl Server {
         let (tx, rx) = watch::channel(false);
 
         let execution_phase_watch = broadcast::channel(100).0;
-        let conf = if let Some(opt) = opt.as_ref() {
-            opt.conf.as_ref().map_or_else(
-                || {
-                    // options, no conf, generated
-                    ServerConf::new_with_opt_override(opt).ok_or_else(|| {
-                        Error::explain(ErrorType::ReadError, "Conf generation failed")
-                    })
-                },
-                |_| {
-                    // options and conf loaded
-                    ServerConf::load_yaml_with_opt_override(opt)
-                },
-            )
-        } else {
-            ServerConf::new()
-                .ok_or_else(|| Error::explain(ErrorType::ReadError, "Conf generation failed"))
-        }?;
+        let conf = match opt.as_ref() {
+            Some(opt) => ServerConf::new_with_opt_override(opt),
+            None => ServerConf::new(),
+        }
+        .ok_or_else(|| Error::explain(ErrorType::ReadError, "Conf generation failed"))?;
 
         let bootstrap = Arc::new(Mutex::new(Bootstrap::new(
             &opt,

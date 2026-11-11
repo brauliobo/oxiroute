@@ -20,13 +20,12 @@
 //! * Error log file path
 
 use clap::Parser;
-use log::{debug, trace};
+use log::trace;
 use pingora_error::{Error, ErrorType::*, OrErr, Result};
 pub use pingora_runtime::RuntimeMetricsPollTimeHistogramScale;
 use pingora_runtime::{RuntimeMetricsOpts, RuntimeOpts};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
-use std::fs;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -35,10 +34,9 @@ use std::time::Duration;
 const DEFAULT_MAX_RETRIES: usize = 16;
 const MAX_RUNTIME_METRICS_POLL_TIME_HISTOGRAM_BUCKETS: usize = 1024;
 
-/// The configuration file
+/// The server configuration
 ///
-/// Pingora configuration files are by default YAML files, but any key value format can potentially
-/// be used.
+/// Any serde key value format can be used; the tests and the defaults use JSON.
 ///
 /// # Extension
 /// New keys can be added to the configuration files which this configuration object will ignore.
@@ -314,39 +312,11 @@ pub struct Opt {
         long_help = None
     )]
     pub test: bool,
-
-    /// The path to the configuration file.
-    ///
-    /// See [`ServerConf`] for more details of the configuration file.
-    #[clap(short, long, help = "The path to the configuration file.", long_help = None)]
-    pub conf: Option<String>,
 }
 
 impl ServerConf {
-    // Does not has to be async until we want runtime reload
-    pub fn load_from_yaml<P>(path: P) -> Result<Self>
-    where
-        P: AsRef<std::path::Path> + std::fmt::Display,
-    {
-        let conf_str = fs::read_to_string(&path).or_err_with(ReadError, || {
-            format!("Unable to read conf file from {path}")
-        })?;
-        debug!("Conf file read from {path}");
-        Self::from_yaml(&conf_str)
-    }
-
-    pub fn load_yaml_with_opt_override(opt: &Opt) -> Result<Self> {
-        if let Some(path) = &opt.conf {
-            let mut conf = Self::load_from_yaml(path)?;
-            conf.merge_with_opt(opt);
-            Ok(conf)
-        } else {
-            Error::e_explain(ReadError, "No path specified")
-        }
-    }
-
     pub fn new() -> Option<Self> {
-        Self::from_yaml("---\nversion: 1").ok()
+        Self::from_json(r#"{"version": 1}"#).ok()
     }
 
     pub fn new_with_opt_override(opt: &Opt) -> Option<Self> {
@@ -360,18 +330,14 @@ impl ServerConf {
         }
     }
 
-    pub fn from_yaml(conf_str: &str) -> Result<Self> {
-        trace!("Read conf file: {conf_str}");
-        let conf: ServerConf = serde_yaml::from_str(conf_str).or_err_with(ReadError, || {
-            format!("Unable to parse yaml conf {conf_str}")
+    pub fn from_json(conf_str: &str) -> Result<Self> {
+        trace!("Read conf: {conf_str}");
+        let conf: ServerConf = serde_json::from_str(conf_str).or_err_with(ReadError, || {
+            format!("Unable to parse json conf {conf_str}")
         })?;
 
         trace!("Loaded conf: {conf:?}");
         conf.validate()
-    }
-
-    pub fn to_yaml(&self) -> String {
-        serde_yaml::to_string(self).unwrap()
     }
 
     pub fn validate(self) -> Result<Self> {
@@ -502,69 +468,11 @@ mod tests {
     }
 
     #[test]
-    fn not_a_test_i_cannot_write_yaml_by_hand() {
-        init_log();
-        let conf = ServerConf {
-            version: 1,
-            client_bind_to_ipv4: vec!["1.2.3.4".to_string(), "5.6.7.8".to_string()],
-            client_bind_to_ipv6: vec![],
-            ca_file: None,
-            #[cfg(feature = "s2n")]
-            s2n_config_cache_size: None,
-            daemon: false,
-            error_log: None,
-            upstream_debug_ssl_keylog: false,
-            pid_file: "".to_string(),
-            upgrade_sock: "".to_string(),
-            user: None,
-            group: None,
-            working_directory: None,
-            threads: 1,
-            listener_tasks_per_fd: 1,
-            work_stealing: true,
-            runtime_enable_alt_timer: false,
-            aged_connections: false,
-            connection_age_ms: None,
-            worker_scaling: None,
-            upstream_keepalive_pool_size: 4,
-            upstream_connect_offload_threadpools: None,
-            upstream_connect_offload_thread_per_pool: None,
-            downstream_tls_offload_threadpools: None,
-            downstream_tls_offload_thread_per_pool: None,
-            grace_period_seconds: None,
-            graceful_shutdown_timeout_seconds: None,
-            max_retries: 1,
-            upgrade_sock_connect_accept_max_retries: None,
-            max_blocking_threads: None,
-            blocking_threads_ttl_seconds: None,
-            fast_timeout_to_tokio_threshold_seconds: Some(
-                pingora_timeout::fast_timeout::DEFAULT_FAST_TIMEOUT_TO_TOKIO_THRESHOLD.as_secs(),
-            ),
-            runtime_metrics_poll_time_histogram: false,
-            runtime_metrics_poll_time_histogram_scale: None,
-            runtime_metrics_poll_time_histogram_resolution_micros: None,
-            runtime_metrics_poll_time_histogram_buckets: None,
-            daemon_ready_timeout_seconds: None,
-            daemon_wait_for_ready: false,
-            daemon_notify_timeout_seconds: None,
-        };
-        // cargo test -- --nocapture not_a_test_i_cannot_write_yaml_by_hand
-        println!("{}", conf.to_yaml());
-    }
-
-    #[test]
     fn test_load_file() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-client_bind_to_ipv4:
-    - 1.2.3.4
-    - 5.6.7.8
-client_bind_to_ipv6: []
-        "#
+        let conf_str = r#"{"version": 1, "client_bind_to_ipv4": ["1.2.3.4", "5.6.7.8"], "client_bind_to_ipv6": []}"#
         .to_string();
-        let conf = ServerConf::from_yaml(&conf_str).unwrap();
+        let conf = ServerConf::from_json(&conf_str).unwrap();
         assert_eq!(2, conf.client_bind_to_ipv4.len());
         assert_eq!(0, conf.client_bind_to_ipv6.len());
         assert_eq!(1, conf.version);
@@ -573,12 +481,9 @@ client_bind_to_ipv6: []
     #[test]
     fn test_default() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-        "#
+        let conf_str = r#"{"version": 1}"#
         .to_string();
-        let conf = ServerConf::from_yaml(&conf_str).unwrap();
+        let conf = ServerConf::from_json(&conf_str).unwrap();
         assert_eq!(0, conf.client_bind_to_ipv4.len());
         assert_eq!(0, conf.client_bind_to_ipv6.len());
         assert_eq!(1, conf.version);
@@ -593,29 +498,18 @@ version: 1
     #[test]
     fn test_runtime_enable_alt_timer_config() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-runtime_enable_alt_timer: true
-        "#;
+        let conf_str = r#"{"version": 1, "runtime_enable_alt_timer": true}"#;
 
-        let conf = ServerConf::from_yaml(conf_str).unwrap();
+        let conf = ServerConf::from_json(conf_str).unwrap();
         assert!(conf.runtime_enable_alt_timer);
     }
 
     #[test]
     fn test_offload_threadpool_config() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-upstream_connect_offload_threadpools: 2
-upstream_connect_offload_thread_per_pool: 3
-downstream_tls_offload_threadpools: 4
-downstream_tls_offload_thread_per_pool: 5
-        "#;
+        let conf_str = r#"{"version": 1, "upstream_connect_offload_threadpools": 2, "upstream_connect_offload_thread_per_pool": 3, "downstream_tls_offload_threadpools": 4, "downstream_tls_offload_thread_per_pool": 5}"#;
 
-        let conf = ServerConf::from_yaml(conf_str).unwrap();
+        let conf = ServerConf::from_json(conf_str).unwrap();
         assert_eq!(Some((2, 3)), conf.upstream_connect_offload_threadpool());
         assert_eq!(Some((4, 5)), conf.downstream_tls_offload_threadpool());
     }
@@ -623,16 +517,9 @@ downstream_tls_offload_thread_per_pool: 5
     #[test]
     fn test_offload_threadpool_config_zero_disables() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-upstream_connect_offload_threadpools: 2
-upstream_connect_offload_thread_per_pool: 0
-downstream_tls_offload_threadpools: 0
-downstream_tls_offload_thread_per_pool: 5
-        "#;
+        let conf_str = r#"{"version": 1, "upstream_connect_offload_threadpools": 2, "upstream_connect_offload_thread_per_pool": 0, "downstream_tls_offload_threadpools": 0, "downstream_tls_offload_thread_per_pool": 5}"#;
 
-        let conf = ServerConf::from_yaml(conf_str).unwrap();
+        let conf = ServerConf::from_json(conf_str).unwrap();
         assert_eq!(None, conf.upstream_connect_offload_threadpool());
         assert_eq!(None, conf.downstream_tls_offload_threadpool());
     }
@@ -640,17 +527,9 @@ downstream_tls_offload_thread_per_pool: 5
     #[test]
     fn test_runtime_opts_from_config() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-runtime_enable_alt_timer: true
-runtime_metrics_poll_time_histogram: true
-runtime_metrics_poll_time_histogram_scale: log
-runtime_metrics_poll_time_histogram_resolution_micros: 20
-runtime_metrics_poll_time_histogram_buckets: 16
-        "#;
+        let conf_str = r#"{"version": 1, "runtime_enable_alt_timer": true, "runtime_metrics_poll_time_histogram": true, "runtime_metrics_poll_time_histogram_scale": "log", "runtime_metrics_poll_time_histogram_resolution_micros": 20, "runtime_metrics_poll_time_histogram_buckets": 16}"#;
 
-        let conf = ServerConf::from_yaml(conf_str).unwrap();
+        let conf = ServerConf::from_json(conf_str).unwrap();
         let opts = conf.runtime_opts();
         assert!(opts.enable_alt_timer);
         assert!(opts.metrics.poll_time_histogram);
@@ -668,37 +547,28 @@ runtime_metrics_poll_time_histogram_buckets: 16
     }
 
     #[test]
-    fn test_working_directory_deserializes_from_yaml_string() {
+    fn test_working_directory_deserializes_from_json_string() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-daemon: true
-working_directory: /var/lib/pingora
-        "#;
+        let conf_str = r#"{"version": 1, "daemon": true, "working_directory": "/var/lib/pingora"}"#;
 
-        let conf = ServerConf::from_yaml(conf_str).unwrap();
+        let conf = ServerConf::from_json(conf_str).unwrap();
         assert_eq!(
             conf.working_directory.as_deref(),
             Some(std::path::Path::new("/var/lib/pingora"))
         );
 
-        let yaml = serde_yaml::to_value(&conf).unwrap();
+        let json = serde_json::to_value(&conf).unwrap();
         assert_eq!(
-            yaml.get("working_directory"),
-            Some(&serde_yaml::Value::String("/var/lib/pingora".to_string()))
+            json.get("working_directory"),
+            Some(&serde_json::Value::String("/var/lib/pingora".to_string()))
         );
     }
 
     #[test]
     fn test_zero_max_blocking_threads_is_rejected() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-max_blocking_threads: 0
-        "#;
-        let result = ServerConf::from_yaml(conf_str);
+        let conf_str = r#"{"version": 1, "max_blocking_threads": 0}"#;
+        let result = ServerConf::from_json(conf_str);
         assert!(
             result.is_err(),
             "max_blocking_threads: 0 should fail validation"
@@ -708,13 +578,8 @@ max_blocking_threads: 0
     #[test]
     fn test_valid_max_blocking_threads() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-max_blocking_threads: 64
-blocking_threads_ttl_seconds: 30
-        "#;
-        let conf = ServerConf::from_yaml(conf_str).unwrap();
+        let conf_str = r#"{"version": 1, "max_blocking_threads": 64, "blocking_threads_ttl_seconds": 30}"#;
+        let conf = ServerConf::from_json(conf_str).unwrap();
         assert_eq!(Some(64), conf.max_blocking_threads);
         assert_eq!(Some(30), conf.blocking_threads_ttl_seconds);
     }
@@ -722,40 +587,25 @@ blocking_threads_ttl_seconds: 30
     #[test]
     fn test_fast_timeout_to_tokio_threshold_config() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-fast_timeout_to_tokio_threshold_seconds: 120
-        "#;
-        let conf = ServerConf::from_yaml(conf_str).unwrap();
+        let conf_str = r#"{"version": 1, "fast_timeout_to_tokio_threshold_seconds": 120}"#;
+        let conf = ServerConf::from_json(conf_str).unwrap();
         assert_eq!(Some(120), conf.fast_timeout_to_tokio_threshold_seconds);
     }
 
     #[test]
     fn test_fast_timeout_to_tokio_threshold_can_be_disabled() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-fast_timeout_to_tokio_threshold_seconds:
-        "#;
-        let conf = ServerConf::from_yaml(conf_str).unwrap();
+        let conf_str = r#"{"version": 1, "fast_timeout_to_tokio_threshold_seconds": null}"#;
+        let conf = ServerConf::from_json(conf_str).unwrap();
         assert_eq!(None, conf.fast_timeout_to_tokio_threshold_seconds);
     }
 
     #[test]
     fn test_runtime_poll_time_histogram_config() {
         init_log();
-        let conf_str = r#"
----
-version: 1
-runtime_metrics_poll_time_histogram: true
-runtime_metrics_poll_time_histogram_scale: log
-runtime_metrics_poll_time_histogram_resolution_micros: 20
-runtime_metrics_poll_time_histogram_buckets: 16
-        "#;
+        let conf_str = r#"{"version": 1, "runtime_metrics_poll_time_histogram": true, "runtime_metrics_poll_time_histogram_scale": "log", "runtime_metrics_poll_time_histogram_resolution_micros": 20, "runtime_metrics_poll_time_histogram_buckets": 16}"#;
 
-        let conf = ServerConf::from_yaml(conf_str).unwrap();
+        let conf = ServerConf::from_json(conf_str).unwrap();
         assert!(conf.runtime_metrics_poll_time_histogram);
         assert_eq!(
             Some(RuntimeMetricsPollTimeHistogramScale::Log),
@@ -772,16 +622,11 @@ runtime_metrics_poll_time_histogram_buckets: 16
     fn test_runtime_poll_time_histogram_bucket_limit() {
         init_log();
         let conf_str = format!(
-            r#"
----
-version: 1
-runtime_metrics_poll_time_histogram: true
-runtime_metrics_poll_time_histogram_buckets: {}
-        "#,
+            r#"{{"version": 1, "runtime_metrics_poll_time_histogram": true, "runtime_metrics_poll_time_histogram_buckets": {}}}"#,
             MAX_RUNTIME_METRICS_POLL_TIME_HISTOGRAM_BUCKETS + 1
         );
 
-        let result = ServerConf::from_yaml(&conf_str);
+        let result = ServerConf::from_json(&conf_str);
         assert!(
             result.is_err(),
             "excessive runtime_metrics_poll_time_histogram_buckets should fail validation"
@@ -790,7 +635,7 @@ runtime_metrics_poll_time_histogram_buckets: {}
 
     #[test]
     fn rejects_zero_listener_tasks_per_fd() {
-        let error = ServerConf::from_yaml("---\nlistener_tasks_per_fd: 0")
+        let error = ServerConf::from_json(r#"{"listener_tasks_per_fd": 0}"#)
             .expect_err("zero listener task count must be rejected");
 
         assert!(error.to_string().contains("must be greater than zero"));
