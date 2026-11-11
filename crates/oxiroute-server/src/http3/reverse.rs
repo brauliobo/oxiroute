@@ -144,14 +144,11 @@ async fn dispatch_reverse_request(
 
     match &route.action {
         HttpActionPlan::Fixed(response) => {
-            let headers = response.headers.to_vec();
-            return send_h3_response(
-                stream,
-                StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                &headers,
-                response.body.clone(),
-                *method == Method::HEAD,
+            let head = response.h3_head.as_ref()?;
+            let head_only = *method == Method::HEAD;
+            return within(
                 deadline,
+                stream.send_prepared(head, response.body.clone(), head_only),
             )
             .await
             .then_some(response.status);

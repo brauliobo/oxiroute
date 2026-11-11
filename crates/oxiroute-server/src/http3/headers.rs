@@ -146,6 +146,17 @@ pub(super) fn h3_response_head(
     Ok(response)
 }
 
+/// The encoded head of a fixed response: the same for every request, `HEAD` included.
+pub(crate) fn fixed_response_head(
+    status: u16,
+    headers: &[(HeaderName, HeaderValue)],
+    body_length: usize,
+) -> Option<PreparedHead> {
+    let status = StatusCode::from_u16(status).ok()?;
+    let head = h3_response_head(status, headers, body_length, false).ok()?;
+    Some(PreparedHead::new(&head))
+}
+
 pub(super) async fn send_h3_response(
     stream: &mut H3Stream,
     status: StatusCode,

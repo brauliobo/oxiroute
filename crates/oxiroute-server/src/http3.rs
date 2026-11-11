@@ -24,7 +24,9 @@ use oxiroute_config::{
 };
 use oxiroute_h3::{
     Code as H3Code, HeadError,
-    server::{Config as H3Config, Connection as H3Connection, RequestStream as H3Stream},
+    server::{
+        Config as H3Config, Connection as H3Connection, PreparedHead, RequestStream as H3Stream,
+    },
 };
 use pingora::apps::AcceptGateParticipant;
 use quinn::crypto::rustls::QuicServerConfig;
