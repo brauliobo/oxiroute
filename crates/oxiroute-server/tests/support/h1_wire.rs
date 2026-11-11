@@ -297,15 +297,21 @@ impl Wire {
     }
 
     /// Sends `request` on a new connection and returns everything the proxy sends until it closes
-    /// the connection or goes quiet for a moment after a complete response.
+    /// the connection or goes quiet for a moment after the first bytes of the response. A process pays for what
+    /// it sets up on its first request, so the first bytes are awaited for as long as a step may take.
     pub async fn exchange(&self, request: &[u8]) -> String {
         let mut stream = TcpStream::connect(self.proxy).await.expect("connect");
         stream.write_all(request).await.expect("write request");
         let mut bytes = Vec::new();
         let mut buffer = [0_u8; 4096];
-        timeout(STEP, async {
+        timeout(STEP * 2, async {
             loop {
-                match timeout(Duration::from_millis(300), stream.read(&mut buffer)).await {
+                let quiet = if bytes.is_empty() {
+                    STEP
+                } else {
+                    Duration::from_millis(300)
+                };
+                match timeout(quiet, stream.read(&mut buffer)).await {
                     Ok(Ok(0) | Err(_)) | Err(_) => break,
                     Ok(Ok(count)) => bytes.extend_from_slice(&buffer[..count]),
                 }
