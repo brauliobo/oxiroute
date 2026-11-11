@@ -51,7 +51,7 @@ use crate::{
     },
     http::hop_by_hop::{InvalidNomination, strip_request},
     http::policy::{
-        RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
+        IpText, RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
         ResponseHeaderDecision, ResponsePolicyError, decide_request_header,
         decide_response_headers, expand_redirect_location, nginx_request_host,
         normalized_redirect_host, normalized_request_host,

@@ -11,21 +11,38 @@ use crate::http::hop_by_hop::{has_hop_by_hop, hop_by_hop_removals};
 
 /// The headers of the request a policy reads: a parsed map, or the scanned head of the fast lane.
 pub(crate) trait IncomingHeaders {
-    /// The values of every header called `name`, joined by `, ` in arrival order; `None` when there are none.
-    fn joined(
+    /// Appends the values of every header called `name` to `out`, joined by `, ` in arrival order, and says whether
+    /// anything was appended.
+    fn join_into(
         &self,
         name: &HeaderName,
         max_bytes: usize,
-    ) -> Result<Option<Vec<u8>>, RequestPolicyError>;
-}
+        out: &mut Vec<u8>,
+    ) -> Result<bool, RequestPolicyError>;
 
-impl IncomingHeaders for HeaderMap {
+    /// The values of every header called `name`, joined by `, ` in arrival order; `None` when there are none.
+    #[cfg(test)]
     fn joined(
         &self,
         name: &HeaderName,
         max_bytes: usize,
     ) -> Result<Option<Vec<u8>>, RequestPolicyError> {
-        join_values(
+        let mut joined = Vec::new();
+        Ok(self
+            .join_into(name, max_bytes, &mut joined)?
+            .then_some(joined))
+    }
+}
+
+impl IncomingHeaders for HeaderMap {
+    fn join_into(
+        &self,
+        name: &HeaderName,
+        max_bytes: usize,
+        out: &mut Vec<u8>,
+    ) -> Result<bool, RequestPolicyError> {
+        join_values_into(
+            out,
             self.get_all(name).iter().map(HeaderValue::as_bytes),
             max_bytes,
         )
@@ -127,59 +144,100 @@ pub(crate) enum RequestPolicyError {
     SelectedUpstreamHostUnavailable,
 }
 
+/// What the value of a request rule came out as for a request: the bytes of it are in the caller's buffer for
+/// `Value`, `ClientIp` and `ForwardedFor`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Rendered {
+    Value,
+    ClientIp,
+    /// The rule needs the client address and the listener has none.
+    ClientIpMissing,
+    ForwardedFor,
+    /// The client is an exception: the header goes on as it came.
+    Preserve,
+    /// No client address and nothing arrived: nothing to set.
+    NoOp,
+    SelectedUpstreamHost,
+}
+
+/// Appends the value a request rule sets for the request in `context` to `out`. The one place the values are
+/// computed: the classic decision wraps the bytes in a `HeaderValue`, the fast lane writes them to the head as they
+/// are. The bytes are not yet checked for being a valid header value.
+pub(crate) fn render_request_value<H: IncomingHeaders + ?Sized>(
+    plan: &RequestHeaderValuePlan,
+    context: RequestPolicyContext<'_, H>,
+    out: &mut Vec<u8>,
+) -> Result<Rendered, RequestPolicyError> {
+    match plan {
+        RequestHeaderValuePlan::Literal(value) => out.extend_from_slice(value.as_bytes()),
+        RequestHeaderValuePlan::IncomingAuthority => out.extend_from_slice(
+            context
+                .authority
+                .map(Authority::as_str)
+                .unwrap_or_default()
+                .as_bytes(),
+        ),
+        RequestHeaderValuePlan::NormalizedHost => {
+            let host = context.authority.map(normalized_request_host);
+            out.extend_from_slice(host.as_deref().unwrap_or_default().as_bytes());
+        }
+        RequestHeaderValuePlan::NginxHost { fallback } => {
+            render_nginx_host(context.authority, fallback, out);
+        }
+        RequestHeaderValuePlan::ClientIp => {
+            let Some(client_ip) = context.client_ip else {
+                return Ok(Rendered::ClientIpMissing);
+            };
+            out.extend_from_slice(IpText::new(client_ip).as_bytes());
+            return Ok(Rendered::ClientIp);
+        }
+        RequestHeaderValuePlan::AppendedXForwardedFor {
+            max_bytes,
+            except_source_cidrs,
+        } => return render_x_forwarded_for(context, *max_bytes, except_source_cidrs, out),
+        RequestHeaderValuePlan::DownstreamScheme => {
+            out.extend_from_slice(context.downstream_scheme.as_bytes());
+        }
+        RequestHeaderValuePlan::IncomingHeader { name, max_bytes } => {
+            context.incoming_headers.join_into(name, *max_bytes, out)?;
+        }
+        RequestHeaderValuePlan::SelectedUpstreamHost => return Ok(Rendered::SelectedUpstreamHost),
+    }
+    Ok(Rendered::Value)
+}
+
 pub(crate) fn decide_request_header<H: IncomingHeaders + ?Sized>(
     mutation: &RequestHeaderMutationPlan,
     context: RequestPolicyContext<'_, H>,
 ) -> Result<RequestHeaderDecision, RequestPolicyError> {
-    let (name, value) = match mutation {
+    let (name, plan) = match mutation {
         RequestHeaderMutationPlan::Set { name, value } => (name, value),
         RequestHeaderMutationPlan::Remove { name } => {
             return Ok(RequestHeaderDecision::Remove(name.clone()));
         }
     };
-    let value = match value {
+    let value = match plan {
         RequestHeaderValuePlan::Literal(value) => RequestHeaderValueDecision::Value(value.clone()),
-        RequestHeaderValuePlan::IncomingAuthority => RequestHeaderValueDecision::Value(
-            header_value(context.authority.map(Authority::as_str).unwrap_or_default())?,
-        ),
-        RequestHeaderValuePlan::NormalizedHost => {
-            let host = context
-                .authority
-                .map(normalized_request_host)
-                .unwrap_or_default();
-            RequestHeaderValueDecision::Value(header_value(&host)?)
-        }
-        RequestHeaderValuePlan::NginxHost { fallback } => {
-            RequestHeaderValueDecision::Value(nginx_request_host(context.authority, fallback)?)
-        }
-        RequestHeaderValuePlan::ClientIp => RequestHeaderValueDecision::ClientIp(
-            context
-                .client_ip
-                .map(|client_ip| {
-                    bounded_header_value(IpText::new(client_ip).as_bytes(), usize::MAX)
-                })
-                .transpose()?,
-        ),
-        RequestHeaderValuePlan::AppendedXForwardedFor {
-            max_bytes,
-            except_source_cidrs,
-        } => RequestHeaderValueDecision::XForwardedFor(decide_x_forwarded_for(
-            context,
-            *max_bytes,
-            except_source_cidrs,
-        )?),
-        RequestHeaderValuePlan::DownstreamScheme => {
-            RequestHeaderValueDecision::Value(HeaderValue::from_static(context.downstream_scheme))
-        }
-        RequestHeaderValuePlan::IncomingHeader { name, max_bytes } => {
-            let value = context
-                .incoming_headers
-                .joined(name, *max_bytes)?
-                .unwrap_or_default();
-            RequestHeaderValueDecision::Value(bounded_header_value(&value, *max_bytes)?)
-        }
-        RequestHeaderValuePlan::SelectedUpstreamHost => {
-            RequestHeaderValueDecision::SelectedUpstreamHost
+        plan => {
+            let mut bytes = Vec::new();
+            let rendered = render_request_value(plan, context, &mut bytes)?;
+            let value =
+                || HeaderValue::from_bytes(&bytes).map_err(|_| RequestPolicyError::InvalidHeader);
+            match rendered {
+                Rendered::Value => RequestHeaderValueDecision::Value(value()?),
+                Rendered::ClientIp => RequestHeaderValueDecision::ClientIp(Some(value()?)),
+                Rendered::ClientIpMissing => RequestHeaderValueDecision::ClientIp(None),
+                Rendered::ForwardedFor => {
+                    RequestHeaderValueDecision::XForwardedFor(XForwardedForDecision::Set(value()?))
+                }
+                Rendered::Preserve => {
+                    RequestHeaderValueDecision::XForwardedFor(XForwardedForDecision::Preserve)
+                }
+                Rendered::NoOp => {
+                    RequestHeaderValueDecision::XForwardedFor(XForwardedForDecision::NoOp)
+                }
+                Rendered::SelectedUpstreamHost => RequestHeaderValueDecision::SelectedUpstreamHost,
+            }
         }
     };
     Ok(RequestHeaderDecision::Set {
@@ -188,43 +246,45 @@ pub(crate) fn decide_request_header<H: IncomingHeaders + ?Sized>(
     })
 }
 
-fn decide_x_forwarded_for<H: IncomingHeaders + ?Sized>(
+fn render_x_forwarded_for<H: IncomingHeaders + ?Sized>(
     context: RequestPolicyContext<'_, H>,
     max_bytes: usize,
     exceptions: &[crate::http::action::SourceCidr],
-) -> Result<XForwardedForDecision, RequestPolicyError> {
+    out: &mut Vec<u8>,
+) -> Result<Rendered, RequestPolicyError> {
     if context.client_ip.is_some_and(|client_ip| {
         exceptions
             .iter()
             .any(|exception| exception.contains(client_ip))
     }) {
-        return Ok(XForwardedForDecision::Preserve);
+        return Ok(Rendered::Preserve);
     }
     let name = HeaderName::from_static("x-forwarded-for");
-    let existing = context.incoming_headers.joined(&name, max_bytes)?;
+    let start = out.len();
+    let existing = context.incoming_headers.join_into(&name, max_bytes, out)?;
     let Some(client_ip) = context.client_ip else {
-        return existing.map_or(Ok(XForwardedForDecision::NoOp), |value| {
-            bounded_header_value(&value, max_bytes).map(XForwardedForDecision::Set)
+        return Ok(if existing {
+            Rendered::ForwardedFor
+        } else {
+            Rendered::NoOp
         });
     };
     let client_ip = IpText::new(client_ip);
-    let Some(mut value) = existing else {
-        return bounded_header_value(client_ip.as_bytes(), max_bytes)
-            .map(XForwardedForDecision::Set);
-    };
-    extend_bounded(&mut value, b", ", max_bytes)?;
-    extend_bounded(&mut value, client_ip.as_bytes(), max_bytes)?;
-    bounded_header_value(&value, max_bytes).map(XForwardedForDecision::Set)
+    if existing {
+        extend_bounded(out, start, b", ", max_bytes)?;
+    }
+    extend_bounded(out, start, client_ip.as_bytes(), max_bytes)?;
+    Ok(Rendered::ForwardedFor)
 }
 
 /// The text of an address in a stack buffer: no allocation, and IPv4 without the formatter.
-struct IpText {
+pub(crate) struct IpText {
     buf: [u8; 45],
     len: usize,
 }
 
 impl IpText {
-    fn new(address: IpAddr) -> Self {
+    pub(crate) fn new(address: IpAddr) -> Self {
         let mut text = Self {
             buf: [0; 45],
             len: 0,
@@ -254,55 +314,64 @@ impl IpText {
         text
     }
 
+    /// An IPv4 socket address as `address:port`; `None` for IPv6, whose text carries a scope.
+    pub(crate) fn socket(address: std::net::SocketAddr) -> Option<Self> {
+        let std::net::SocketAddr::V4(address) = address else {
+            return None;
+        };
+        let mut text = Self::new(IpAddr::V4(*address.ip()));
+        text.push(b':');
+        let port = address.port();
+        for divisor in [10_000, 1_000, 100, 10] {
+            if port >= divisor {
+                text.push(b'0' + (port / divisor % 10) as u8);
+            }
+        }
+        text.push(b'0' + (port % 10) as u8);
+        Some(text)
+    }
+
     fn push(&mut self, byte: u8) {
         self.buf[self.len] = byte;
         self.len += 1;
     }
 
-    fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.buf[..self.len]
     }
 }
 
-pub(crate) fn join_values<'v>(
+/// Appends the `values` to `out` joined by `, `, bounded as a whole to `max_bytes`; whether anything was appended.
+pub(crate) fn join_values_into<'v>(
+    out: &mut Vec<u8>,
     values: impl Iterator<Item = &'v [u8]>,
     max_bytes: usize,
-) -> Result<Option<Vec<u8>>, RequestPolicyError> {
-    let mut joined = Vec::new();
+) -> Result<bool, RequestPolicyError> {
+    let start = out.len();
     for value in values {
-        if !joined.is_empty() {
-            extend_bounded(&mut joined, b", ", max_bytes)?;
+        if out.len() > start {
+            extend_bounded(out, start, b", ", max_bytes)?;
         }
-        extend_bounded(&mut joined, value, max_bytes)?;
+        extend_bounded(out, start, value, max_bytes)?;
     }
-    Ok((!joined.is_empty()).then_some(joined))
+    Ok(out.len() > start)
 }
 
+/// Appends `value` to the text that starts at `start` in `out`, unless the text would grow past `max_bytes`.
 fn extend_bounded(
-    output: &mut Vec<u8>,
+    out: &mut Vec<u8>,
+    start: usize,
     value: &[u8],
     max_bytes: usize,
 ) -> Result<(), RequestPolicyError> {
-    if output
-        .len()
+    if (out.len() - start)
         .checked_add(value.len())
         .is_none_or(|length| length > max_bytes)
     {
         return Err(RequestPolicyError::SourceTooLarge);
     }
-    output.extend_from_slice(value);
+    out.extend_from_slice(value);
     Ok(())
-}
-
-fn bounded_header_value(value: &[u8], max_bytes: usize) -> Result<HeaderValue, RequestPolicyError> {
-    if value.len() > max_bytes {
-        return Err(RequestPolicyError::SourceTooLarge);
-    }
-    HeaderValue::from_bytes(value).map_err(|_| RequestPolicyError::InvalidHeader)
-}
-
-fn header_value(value: &str) -> Result<HeaderValue, RequestPolicyError> {
-    HeaderValue::from_str(value).map_err(|_| RequestPolicyError::InvalidHeader)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -520,26 +589,42 @@ pub(crate) fn normalized_request_host(authority: &Authority) -> Cow<'_, str> {
     }
 }
 
-pub(crate) fn nginx_request_host(
-    authority: Option<&Authority>,
-    fallback: &HeaderValue,
-) -> Result<HeaderValue, RequestPolicyError> {
+/// Appends the host nginx sends for `authority` to `out`: lowercased without a trailing dot, an IPv4 address as
+/// text and an IPv6 one in brackets; `fallback` when the request has no authority.
+fn render_nginx_host(authority: Option<&Authority>, fallback: &HeaderValue, out: &mut Vec<u8>) {
     let Some(authority) = authority else {
-        return Ok(fallback.clone());
+        out.extend_from_slice(fallback.as_bytes());
+        return;
     };
     let host = authority.host();
     let unbracketed = host
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
         .unwrap_or(host);
-    let normalized = unbracketed.parse::<IpAddr>().map_or_else(
-        |_| host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase(),
-        |ip| match ip {
-            IpAddr::V4(ip) => ip.to_string(),
-            IpAddr::V6(ip) => format!("[{ip}]"),
-        },
-    );
-    header_value(&normalized)
+    match unbracketed.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => out.extend_from_slice(IpText::new(IpAddr::V4(ip)).as_bytes()),
+        Ok(IpAddr::V6(ip)) => {
+            std::io::Write::write_fmt(out, format_args!("[{ip}]")).expect("writing to a vec");
+        }
+        Err(_) => out.extend(
+            host.strip_suffix('.')
+                .unwrap_or(host)
+                .bytes()
+                .map(|byte| byte.to_ascii_lowercase()),
+        ),
+    }
+}
+
+pub(crate) fn nginx_request_host(
+    authority: Option<&Authority>,
+    fallback: &HeaderValue,
+) -> Result<HeaderValue, RequestPolicyError> {
+    if authority.is_none() {
+        return Ok(fallback.clone());
+    }
+    let mut host = Vec::new();
+    render_nginx_host(authority, fallback, &mut host);
+    HeaderValue::from_bytes(&host).map_err(|_| RequestPolicyError::InvalidHeader)
 }
 
 #[derive(Clone, Copy)]

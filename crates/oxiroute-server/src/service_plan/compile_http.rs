@@ -1,6 +1,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::{http::proxy::lane::LaneRoute, label::Label};
+use crate::{
+    http::proxy::lane::{LaneRoute, RouteEdits},
+    label::Label,
+};
 
 pub(super) fn compile_http_services(
     services: &[HttpServiceBlueprint],
@@ -97,8 +100,10 @@ fn compile_http_route(
         }
     };
     let route_id = Label::new(route.route.route_id());
+    let lane = LaneRoute::compile(&action, &route.policy, access.as_ref());
     let plan = Arc::new(HttpRoutePlan {
-        lane: LaneRoute::compile(&action, &route.policy, access.as_ref()),
+        edits: RouteEdits::compile(lane, &action),
+        lane,
         access,
         action,
         policy: route.policy,

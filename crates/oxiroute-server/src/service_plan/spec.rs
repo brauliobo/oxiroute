@@ -335,6 +335,7 @@ mod tests {
         Arc::new(HttpRoutePlan {
             access: None,
             lane,
+            edits: Default::default(),
             action: HttpActionPlan::Fixed(FixedResponsePlan::compile(200, "ok", &[])),
             policy: RoutePolicyPlan::compile(oxiroute_config::HttpRoutePolicy::default()),
             route_id: "r".into(),

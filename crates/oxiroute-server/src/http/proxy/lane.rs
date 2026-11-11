@@ -43,6 +43,7 @@ use tokio::{
 use timing::within;
 
 pub(crate) use plan::LaneRoute;
+pub(crate) use rules::RouteEdits;
 
 use crate::{
     HttpOperationResult, HttpServicePlan, ListenerMetrics, RuntimeGeneration,
@@ -254,13 +255,20 @@ impl LaneFront {
         if request.body_len != 0 && !Self::takes_body(&route, &request) {
             return Served::Handoff;
         }
-        let decisions = if route.lane == LaneRoute::Proxy {
-            let Some(decisions) = proxy::decide(stream, &route, buffer, scanned, &authority) else {
+        let client_ip = if route.lane == LaneRoute::Proxy {
+            proxy::client_ip(stream)
+        } else {
+            None
+        };
+        let values = if route.lane == LaneRoute::Proxy {
+            let Some(values) =
+                proxy::decide(stream, &route, (buffer, client_ip), scanned, &authority)
+            else {
                 return Served::Handoff;
             };
-            decisions
+            values
         } else {
-            Vec::new()
+            rules::Evaluated::default()
         };
         let started = Instant::now();
         connection.begin_request();
@@ -277,16 +285,19 @@ impl LaneFront {
             let forward = proxy::Forward {
                 started,
                 buffer,
+                client_ip,
                 head: scanned,
                 request: &request,
                 route: &route,
                 id: &id,
-                decisions: &decisions,
+                values: &values,
                 keepalive: connection.will_keepalive(),
             };
-            return self
+            let served = self
                 .serve_proxied(stream, connection, forward, authority)
                 .await;
+            buffers::give_write(values.into_buffer());
+            return served;
         }
         let automatic = if connection.will_keepalive() {
             "keep-alive"

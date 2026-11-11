@@ -49,7 +49,6 @@ use crate::{
         action::{HttpActionPlan, HttpRoutePlan, ProxyPolicyPlan},
         evacuation::LeftRunning,
         inflight::Phase,
-        policy::RequestHeaderDecision,
         proxy::{
             ErrorReason, HttpRequestContext, apply_response_policy, attempt::AttemptTimeouts,
             classify_http_result, error_reason, error_response, failure_reason, proxy_error_status,
@@ -117,17 +116,18 @@ pub(super) struct Forward<'a> {
     /// The clock reading at which the request arrived.
     pub(super) started: Instant,
     pub(super) buffer: &'a [u8],
+    pub(super) client_ip: Option<std::net::IpAddr>,
     pub(super) head: &'a RequestHead,
     pub(super) request: &'a Request,
     pub(super) route: &'a Arc<HttpRoutePlan>,
     pub(super) id: &'a HeaderValue,
     /// What the route's request header rules do to this request.
-    pub(super) decisions: &'a [RequestHeaderDecision],
+    pub(super) values: &'a rules::Evaluated,
     /// Whether the connection serves another request after this one, as far as the request knows.
     pub(super) keepalive: bool,
 }
 
-fn client_ip(stream: &Stream) -> Option<std::net::IpAddr> {
+pub(super) fn client_ip(stream: &Stream) -> Option<std::net::IpAddr> {
     stream.get_socket_digest().and_then(|digest| {
         digest
             .peer_addr()
@@ -135,28 +135,29 @@ fn client_ip(stream: &Stream) -> Option<std::net::IpAddr> {
     })
 }
 
-/// The request header rules of the route for a request, or `None` when the classic path has to answer it.
+/// The values of the request header rules of the route for a request, or `None` when the classic path has to answer
+/// it.
 pub(super) fn decide(
     stream: &Stream,
     route: &HttpRoutePlan,
-    buffer: &[u8],
+    (buffer, client_ip): (&[u8], Option<std::net::IpAddr>),
     head: &RequestHead,
     authority: &Authority,
-) -> Option<Vec<RequestHeaderDecision>> {
+) -> Option<rules::Evaluated> {
     let HttpActionPlan::Proxy(proxy) = &route.action else {
         unreachable!("only proxied routes reach the proxied lane");
     };
-    if proxy.policy.request_headers.is_empty() {
-        return Some(Vec::new());
+    if !route.edits.computes_request_values() {
+        return Some(rules::Evaluated::default());
     }
     let source = rules::Source {
         buffer,
         head,
         authority,
-        client_ip: client_ip(stream),
+        client_ip,
         https: stream.get_ssl().is_some(),
     };
-    rules::request_decisions(&proxy.policy, &source).ok()
+    rules::evaluate(&route.edits, &proxy.policy, &source, buffers::take_write()).ok()
 }
 
 impl Forward<'_> {
@@ -177,7 +178,7 @@ impl super::LaneFront {
         authority: Authority,
     ) -> Served {
         let upstream = &*self.upstream;
-        let mut ctx = self.begin(stream, &forward, authority);
+        let mut ctx = self.begin(&forward, authority);
         let mut progress = Progress {
             received: 0,
             sent: 0,
@@ -214,12 +215,7 @@ impl super::LaneFront {
     }
 
     /// The request context of a request the lane serves, with the facts the classic request filter establishes.
-    fn begin(
-        &self,
-        stream: &Stream,
-        forward: &Forward<'_>,
-        authority: Authority,
-    ) -> Box<HttpRequestContext> {
+    fn begin(&self, forward: &Forward<'_>, authority: Authority) -> Box<HttpRequestContext> {
         let (buffer, request, route) = (forward.buffer, forward.request, forward.route);
         let HttpActionPlan::Proxy(proxy) = &route.action else {
             unreachable!("only proxied routes reach the proxied lane");
@@ -240,7 +236,7 @@ impl super::LaneFront {
                 &method,
                 request.host(buffer),
                 request.path(buffer),
-                client_ip(stream),
+                forward.client_ip,
             ),
             route.route_id.shared(),
             proxy.pool.label().shared(),
@@ -732,13 +728,20 @@ fn render_request(
     let incoming;
     let selected = match host {
         HostEdit::Set(value) => Some(value),
-        HostEdit::AsSent if !forward.decisions.is_empty() => {
+        HostEdit::AsSent if forward.values.names_host() => {
             incoming = HeaderValue::from_bytes(head.host(buffer)).ok();
             incoming.as_ref()
         }
         HostEdit::AsSent | HostEdit::Remove => None,
     };
-    edit(rules::edit_request(&mut edits, forward.decisions, selected));
+    let policy = forward.policy();
+    edit(rules::edit_request(
+        &mut edits,
+        &forward.route.edits,
+        policy,
+        forward.values,
+        selected,
+    ));
     write_request(out, buffer, head, &edits);
 }
 
@@ -807,6 +810,7 @@ fn render_fast(
     }
     edit(rules::edit_response(
         &mut edits,
+        &forward.route.edits,
         forward.policy(),
         head.status,
     ));

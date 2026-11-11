@@ -1,5 +1,7 @@
 //! Header rules of a route on the lane. A route compiles to the lane only when its rules are ones the head codec can
-//! apply as edits; the values come from the classic policy functions, fed with the scanned head instead of a header
+//! apply as edits. What is the same for every request is worked out once, when the route's generation is built (the
+//! codec's name of each header, the literal values, which rules a status applies); what depends on the request is
+//! rendered by the classic policy function (`render_request_value`), fed with the scanned head instead of a header
 //! map, so the two paths cannot drift.
 
 use std::net::IpAddr;
@@ -7,23 +9,21 @@ use std::net::IpAddr;
 use http::{HeaderName, HeaderValue, uri::Authority};
 use oxiroute_h1_head::{Class, Edits, EditsFull, Name, RequestHead, Value};
 
+use super::LaneRoute;
 use crate::http::{
     action::{
-        ProxyPolicyPlan, RequestHeaderMutationPlan, RequestHeaderValuePlan,
+        HttpActionPlan, ProxyPolicyPlan, RequestHeaderMutationPlan, RequestHeaderValuePlan,
         ResponseHeaderMutationPlan,
     },
     policy::{
-        IncomingHeaders, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
-        decide_request_header, join_values,
+        IncomingHeaders, Rendered, RequestPolicyContext, RequestPolicyError, join_values_into,
+        render_request_value,
     },
 };
 
 /// Rules a route may have, request and response each: the codec's edit list holds [`oxiroute_h1_head::MAX_EDITS`] and
 /// the fixed edits of a head take about half of it.
 const MAX_RULES: usize = 12;
-
-/// The rules a request head is edited by, for the request at hand.
-pub(super) type Decisions = Vec<RequestHeaderDecision>;
 
 /// Whether every rule of the policy is one the lane applies.
 pub(super) fn supported(policy: &ProxyPolicyPlan) -> bool {
@@ -76,6 +76,111 @@ fn response_rule_name(rule: &ResponseHeaderMutationPlan) -> &HeaderName {
     }
 }
 
+/// A rule of the route's policy, with the codec's class of the header it edits.
+#[derive(Clone, Copy, Debug)]
+struct Rule {
+    /// Position in the policy's list.
+    index: usize,
+    class: Class,
+}
+
+impl Rule {
+    fn new(index: usize, name: &HeaderName) -> Self {
+        let class = Name::new(name.as_str().as_bytes())
+            .expect("the route compiled to the lane with supported names")
+            .class();
+        Self { index, class }
+    }
+
+    fn name<'a>(&self, name: &'a HeaderName) -> Name<'a> {
+        Name::with_class(name.as_str().as_bytes(), self.class)
+    }
+}
+
+/// The rules of a route that the lane applies, as positions in its policy: what is decided once per generation.
+#[derive(Debug, Default)]
+pub(crate) struct RouteEdits {
+    request: Box<[Rule]>,
+    response: Box<[Rule]>,
+    /// Some request rule takes its value from the request.
+    computed: bool,
+}
+
+impl RouteEdits {
+    /// Whether a request rule has a value to work out for the request.
+    pub(super) const fn computes_request_values(&self) -> bool {
+        self.computed
+    }
+
+    /// The edits of a route the lane proxies; none for any other.
+    pub(crate) fn compile(lane: LaneRoute, action: &HttpActionPlan) -> Self {
+        match (lane, action) {
+            (LaneRoute::Proxy, HttpActionPlan::Proxy(proxy)) => Self::of(&proxy.policy),
+            _ => Self::default(),
+        }
+    }
+
+    fn of(policy: &ProxyPolicyPlan) -> Self {
+        let request: Box<[Rule]> = policy
+            .request_headers
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| !rule.is_pingora_managed_upgrade())
+            .map(|(index, rule)| match rule {
+                RequestHeaderMutationPlan::Set { name, .. }
+                | RequestHeaderMutationPlan::Remove { name } => Rule::new(index, name),
+            })
+            .collect();
+        let response = policy
+            .response_headers
+            .iter()
+            .enumerate()
+            .map(|(index, rule)| Rule::new(index, response_rule_name(rule)))
+            .collect();
+        let computed = request.iter().any(|rule| {
+            matches!(
+                &policy.request_headers[rule.index],
+                RequestHeaderMutationPlan::Set { value, .. }
+                    if !matches!(value, RequestHeaderValuePlan::Literal(_))
+            )
+        });
+        Self {
+            request,
+            response,
+            computed,
+        }
+    }
+}
+
+/// What the rules of a request produced: the value bytes of the rules that compute one.
+#[derive(Debug, Default)]
+pub(super) struct Evaluated {
+    bytes: Vec<u8>,
+    slots: [Slot; MAX_RULES],
+    /// A rule names the host the request is sent to the origin with.
+    selected_host: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+enum Slot {
+    /// A rule that removes, has a literal or leaves the header as it is.
+    #[default]
+    None,
+    Bytes(u32, u32),
+    SelectedHost,
+}
+
+impl Evaluated {
+    pub(super) fn into_buffer(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    /// Whether a rule names the host the request is sent with.
+    pub(super) const fn names_host(&self) -> bool {
+        self.selected_host
+    }
+}
+
 /// What the rules of a request read besides its headers.
 pub(super) struct Source<'a> {
     pub(super) buffer: &'a [u8],
@@ -88,11 +193,12 @@ pub(super) struct Source<'a> {
 struct Scanned<'a>(&'a Source<'a>);
 
 impl IncomingHeaders for Scanned<'_> {
-    fn joined(
+    fn join_into(
         &self,
         name: &HeaderName,
         max_bytes: usize,
-    ) -> Result<Option<Vec<u8>>, RequestPolicyError> {
+        out: &mut Vec<u8>,
+    ) -> Result<bool, RequestPolicyError> {
         let (buffer, name) = (self.0.buffer, name.as_str().as_bytes());
         let values = self
             .0
@@ -101,59 +207,81 @@ impl IncomingHeaders for Scanned<'_> {
             .iter()
             .filter(|header| header.name(buffer).eq_ignore_ascii_case(name))
             .map(|header| header.value(buffer));
-        join_values(values, max_bytes)
+        join_values_into(out, values, max_bytes)
     }
 }
 
-/// The decisions the classic request filter takes for the request, in the order of the rules. An error is a request
-/// the classic path answers itself (a source too large, a client address it cannot name): the caller hands it over.
-pub(super) fn request_decisions(
+/// The values the classic request filter computes for the request, in the order of the rules, written to `bytes`. An
+/// error is a request the classic path answers itself (a source too large, a client address it cannot name): the
+/// caller hands it over.
+pub(super) fn evaluate(
+    edits: &RouteEdits,
     policy: &ProxyPolicyPlan,
     source: &Source<'_>,
-) -> Result<Decisions, RequestPolicyError> {
+    bytes: Vec<u8>,
+) -> Result<Evaluated, RequestPolicyError> {
+    let mut evaluated = Evaluated {
+        bytes,
+        ..Evaluated::default()
+    };
     let context = RequestPolicyContext {
         authority: Some(source.authority),
         downstream_scheme: if source.https { "https" } else { "http" },
         client_ip: source.client_ip,
         incoming_headers: &Scanned(source),
     };
-    let mut decisions = Vec::with_capacity(policy.request_headers.len());
-    for rule in policy
-        .request_headers
-        .iter()
-        .filter(|rule| !rule.is_pingora_managed_upgrade())
-    {
-        let decision = decide_request_header(rule, context)?;
-        // Resolved at write time, where the host the request goes with is known; the one value that cannot be is a
-        // client address the listener has none of.
-        if let RequestHeaderDecision::Set { value, .. } = &decision {
-            value.resolve(None).or_else(|error| match error {
-                RequestPolicyError::SelectedUpstreamHostUnavailable => Ok(None),
-                error => Err(error),
-            })?;
+    for (rule, slot) in edits.request.iter().zip(&mut evaluated.slots) {
+        let RequestHeaderMutationPlan::Set { value, .. } = &policy.request_headers[rule.index]
+        else {
+            continue;
+        };
+        if matches!(value, RequestHeaderValuePlan::Literal(_)) {
+            continue;
         }
-        decisions.push(decision);
+        let start = evaluated.bytes.len();
+        *slot = match render_request_value(value, context, &mut evaluated.bytes)? {
+            Rendered::Value | Rendered::ClientIp | Rendered::ForwardedFor => {
+                // The text comes from an authority and from header values the scanner checked, and the rest is
+                // addresses and literals: nothing here is a byte a header value refuses.
+                debug_assert!(Value::new(&evaluated.bytes[start..]).is_some());
+                let (start, len) = (start as u32, (evaluated.bytes.len() - start) as u32);
+                Slot::Bytes(start, len)
+            }
+            Rendered::ClientIpMissing => return Err(RequestPolicyError::ClientIpUnavailable),
+            Rendered::Preserve | Rendered::NoOp => Slot::None,
+            Rendered::SelectedUpstreamHost => {
+                evaluated.selected_host = true;
+                Slot::SelectedHost
+            }
+        };
     }
-    Ok(decisions)
+    Ok(evaluated)
 }
 
 /// Appends the request rules to the edits of the request head. `host` is what the request is sent to the origin as,
 /// when a rule can name it.
 pub(super) fn edit_request<'a>(
-    edits: &mut Edits<'a>,
-    decisions: &'a [RequestHeaderDecision],
+    out: &mut Edits<'a>,
+    edits: &RouteEdits,
+    policy: &'a ProxyPolicyPlan,
+    evaluated: &'a Evaluated,
     host: Option<&'a HeaderValue>,
 ) -> Result<(), EditsFull> {
-    for decision in decisions {
-        match decision {
-            RequestHeaderDecision::Remove(name) => edits.remove(lane_name(name))?,
-            RequestHeaderDecision::Set { name, value } => {
-                let value = value
-                    .resolve(host)
-                    .expect("rules were resolved when they were taken");
-                if let Some(value) = value {
-                    edits.set(lane_name(name), Value::trusted(value.as_bytes()))?;
-                }
+    for (rule, slot) in edits.request.iter().zip(&evaluated.slots) {
+        match &policy.request_headers[rule.index] {
+            RequestHeaderMutationPlan::Remove { name } => out.remove(rule.name(name))?,
+            RequestHeaderMutationPlan::Set { name, value } => {
+                let value = match (value, slot) {
+                    (RequestHeaderValuePlan::Literal(value), _) => value.as_bytes(),
+                    (_, Slot::Bytes(start, len)) => {
+                        &evaluated.bytes[*start as usize..(*start + *len) as usize]
+                    }
+                    (_, Slot::SelectedHost) => host
+                        .expect("a rule naming the upstream host was given one")
+                        .as_bytes(),
+                    (_, Slot::None) => continue,
+                };
+                out.set(rule.name(name), Value::trusted(value))?;
             }
         }
     }
@@ -162,31 +290,27 @@ pub(super) fn edit_request<'a>(
 
 /// Appends the response rules that apply to a response with `status` to the edits of its head.
 pub(super) fn edit_response<'a>(
-    edits: &mut Edits<'a>,
+    out: &mut Edits<'a>,
+    edits: &RouteEdits,
     policy: &'a ProxyPolicyPlan,
     status: u16,
 ) -> Result<(), EditsFull> {
-    for rule in policy
-        .response_headers
-        .iter()
-        .filter(|rule| rule.applies(status))
-    {
-        match rule {
+    for rule in &edits.response {
+        let plan = &policy.response_headers[rule.index];
+        if !plan.applies(status) {
+            continue;
+        }
+        match plan {
             ResponseHeaderMutationPlan::Set { name, value, .. } => {
-                edits.set(lane_name(name), Value::trusted(value.as_bytes()))?;
+                out.set(rule.name(name), Value::trusted(value.as_bytes()))?;
             }
             ResponseHeaderMutationPlan::Add { name, value, .. } => {
-                edits.add(lane_name(name), Value::trusted(value.as_bytes()))?;
+                out.add(rule.name(name), Value::trusted(value.as_bytes()))?;
             }
-            ResponseHeaderMutationPlan::Remove { name } => edits.remove(lane_name(name))?,
+            ResponseHeaderMutationPlan::Remove { name } => out.remove(rule.name(name))?,
         }
     }
     Ok(())
-}
-
-fn lane_name(name: &HeaderName) -> Name<'_> {
-    Name::new(name.as_str().as_bytes())
-        .expect("the route compiled to the lane with supported names")
 }
 
 #[cfg(test)]
@@ -198,6 +322,7 @@ mod tests {
     use oxiroute_h1_head::{Scan, scan_request};
 
     use super::*;
+    use crate::http::policy::RequestHeaderDecision;
 
     fn set(name: &str, value: HttpRequestHeaderValue) -> HttpRequestHeaderMutation {
         HttpRequestHeaderMutation::Set {
@@ -268,9 +393,10 @@ mod tests {
                 except_source_cidrs: Vec::new(),
             },
         )]);
-        let decisions = request_decisions(&policy, &source).expect("decisions");
+        let route = RouteEdits::of(&policy);
+        let evaluated = evaluate(&route, &policy, &source, Vec::new()).expect("values");
         let mut edits = Edits::new();
-        edit_request(&mut edits, &decisions, None).expect("edits");
+        edit_request(&mut edits, &route, &policy, &evaluated, None).expect("edits");
         let mut out = Vec::new();
         oxiroute_h1_head::write_request(&mut out, buffer, &head, &edits);
         let text = String::from_utf8(out).unwrap();
@@ -303,8 +429,119 @@ mod tests {
             },
         )]);
         assert_eq!(
-            request_decisions(&policy, &source).err(),
+            evaluate(&RouteEdits::of(&policy), &policy, &source, Vec::new()).err(),
             Some(RequestPolicyError::SourceTooLarge)
         );
+    }
+
+    /// Every kind of value, for clients of every shape: what the lane writes is what the classic decision completes.
+    #[test]
+    fn every_kind_of_value_is_what_the_classic_decision_gives() {
+        let kinds = [
+            HttpRequestHeaderValue::Literal {
+                value: "fixed".into(),
+            },
+            HttpRequestHeaderValue::IncomingAuthority,
+            HttpRequestHeaderValue::NormalizedHost,
+            HttpRequestHeaderValue::NginxHost {
+                fallback: "fallback.test".into(),
+            },
+            HttpRequestHeaderValue::ClientIp,
+            HttpRequestHeaderValue::AppendedXForwardedFor {
+                max_bytes: 64,
+                except_source_cidrs: vec!["192.0.2.0/8".into()],
+            },
+            HttpRequestHeaderValue::AppendedXForwardedFor {
+                max_bytes: 20,
+                except_source_cidrs: Vec::new(),
+            },
+            HttpRequestHeaderValue::DownstreamScheme,
+            HttpRequestHeaderValue::IncomingHeader {
+                name: "x-a".into(),
+                max_bytes: 16,
+            },
+            HttpRequestHeaderValue::IncomingHeader {
+                name: "x-a".into(),
+                max_bytes: 4,
+            },
+            HttpRequestHeaderValue::IncomingHeader {
+                name: "x-none".into(),
+                max_bytes: 4,
+            },
+            HttpRequestHeaderValue::SelectedUpstreamHost,
+        ];
+        let buffer = b"GET / HTTP/1.1\r\nHost: Client.Example.:8443\r\nX-Forwarded-For: 203.0.113.5\r\nx-forwarded-for: 198.51.100.7\r\nX-A: one\r\nx-a: two\r\n\r\n";
+        let mut head = RequestHead::new();
+        assert_eq!(scan_request(buffer, &mut head), Scan::Head);
+        let mut map = http::HeaderMap::new();
+        for (name, value) in [
+            ("x-forwarded-for", "203.0.113.5"),
+            ("x-forwarded-for", "198.51.100.7"),
+            ("x-a", "one"),
+            ("x-a", "two"),
+        ] {
+            map.append(name, HeaderValue::from_static(value));
+        }
+        let selected = HeaderValue::from_static("origin.test:9");
+        for authority in ["Client.Example.:8443", "[2001:db8::1]:80", "203.0.113.9"] {
+            let authority: Authority = authority.parse().unwrap();
+            for client_ip in [
+                Some("192.0.2.1"),
+                Some("192.0.2.202"),
+                Some("2001:db8::1"),
+                None,
+            ] {
+                let client_ip: Option<IpAddr> = client_ip.map(|ip| ip.parse().unwrap());
+                for https in [false, true] {
+                    let source = Source {
+                        buffer,
+                        head: &head,
+                        authority: &authority,
+                        client_ip,
+                        https,
+                    };
+                    for kind in &kinds {
+                        let policy = plan(vec![set("x-rule", kind.clone())]);
+                        let context = RequestPolicyContext {
+                            authority: Some(&authority),
+                            downstream_scheme: if https { "https" } else { "http" },
+                            client_ip,
+                            incoming_headers: &map,
+                        };
+                        let classic = crate::http::policy::decide_request_header(
+                            &policy.request_headers[0],
+                            context,
+                        )
+                        .and_then(|decision| match decision {
+                            RequestHeaderDecision::Set { value, .. } => {
+                                value.complete(Some(&selected))
+                            }
+                            RequestHeaderDecision::Remove(_) => Ok(None),
+                        });
+                        let route = RouteEdits::of(&policy);
+                        let lane = evaluate(&route, &policy, &source, Vec::new()).map(|values| {
+                            let mut edits = Edits::new();
+                            edit_request(&mut edits, &route, &policy, &values, Some(&selected))
+                                .expect("edits");
+                            edits.as_slice().first().map(|edit| match edit {
+                                oxiroute_h1_head::Edit::Set(_, value) => value.as_bytes().to_vec(),
+                                other => panic!("{other:?}"),
+                            })
+                        });
+                        let case = format!("{kind:?} {authority} {client_ip:?} {https}");
+                        match (classic, lane) {
+                            (Ok(classic), Ok(lane)) => assert_eq!(
+                                classic.as_ref().map(HeaderValue::as_bytes),
+                                lane.as_deref(),
+                                "{case}"
+                            ),
+                            (classic, lane) => {
+                                assert_eq!(classic.is_err(), lane.is_err(), "{case}")
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -24,6 +24,18 @@ pub fn forwarded(base: &str) -> Vec<Case> {
     );
     add("empty forwarded-for", "X-Forwarded-For:\r\n");
     add(
+        "an empty forwarded-for field, then one with a value",
+        "X-Forwarded-For:\r\nX-Forwarded-For: 203.0.113.5\r\n",
+    );
+    add(
+        "a forwarded-for field, then an empty one",
+        "X-Forwarded-For: 203.0.113.5\r\nX-Forwarded-For:\r\n",
+    );
+    add(
+        "the field a rule sets, in capitals, with rules' other headers",
+        "X-REAL-IP: 1.1.1.1\r\nX-FORWARDED-HOST: evil.test\r\nX-Nginx-Host: x\r\n",
+    );
+    add(
         "forwarded-for too large for the rule",
         &format!("X-Forwarded-For: {}\r\n", "1".repeat(300)),
     );

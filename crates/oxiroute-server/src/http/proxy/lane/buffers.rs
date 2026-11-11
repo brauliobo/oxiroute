@@ -64,7 +64,7 @@ pub(super) fn take_write() -> Vec<u8> {
 }
 
 pub(super) fn give_write(mut buffer: Vec<u8>) {
-    if buffer.capacity() > 4 * WRITE_CAPACITY {
+    if buffer.capacity() == 0 || buffer.capacity() > 4 * WRITE_CAPACITY {
         return;
     }
     buffer.clear();
