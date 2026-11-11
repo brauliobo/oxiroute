@@ -422,8 +422,9 @@ when the next revision is applied, so an idle client never holds up an apply. A 
 progress finishes, its response carries `Connection: close`, and the client reconnects to the new
 generation. Other work (a long request, a WebSocket, a CONNECT tunnel, an L4 relay, an RTMP session,
 an HTTP/3 request) continues until it ends or the generation's drain deadline passes, then the
-generation is closed. The deadline is, in order, `retirement.drain_deadline_ms` of the replaced
-generation's own configuration, the deprecated `OXIROUTE_RELOAD_DRAIN_SECONDS` (1 to 86400) in
+generation is closed. An HTTP/3 request that arrives on an open connection of a replaced generation is
+refused with `H3_REQUEST_REJECTED`, so the client sends it again on the new generation. The deadline is, in
+order, `retirement.drain_deadline_ms` of the replaced generation's own configuration, the deprecated `OXIROUTE_RELOAD_DRAIN_SECONDS` (1 to 86400) in
 `/etc/oxiroute/oxiroute.env`, or the larger of 3 hours and the longest HTTP
 `upstream_io_timeout_ms`; an HTTP, forward proxy or L4 service `drain_deadline_ms` only raises it.
 `retirement.max_retired_generations` (default 4) bounds how many replaced generations drain at
