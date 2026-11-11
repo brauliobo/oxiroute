@@ -85,7 +85,8 @@ alloc_bytes_per_req clock_gettime_per_req`, `heap_live_bytes_per_conn rss_bytes_
 * Other actions: `gzip_html64k nogzip_html64k cache_hit_b1k cache_hit_b64k static_f{1k,64k,1m} ws_echo_{64,1k,16k} l4_echo_{1k,16k,64k,256k}, l4_echo_{16k,64k,256k}_paced`
   (a `ws_echo` request is one message echoed through an upgraded connection).
 * TLS (OpenSSL via Pingora) and HTTP/2: `tls_h1_keepalive tls_hs_full_{tls13,tls12,rsa2048}
-  tls_hs_resume_{cache_tls12,cache_tls13,tickets_tls13,client_only} tls_h1_b1m h2_b1k_c4s16 h2_b64k_c4s16 h2_b0_c1s1 h2_post1k_c4s16`.
+  tls_hs_resume_{cache_tls12,cache_tls13,tickets_tls13,client_only} tls_h1_b1m h2_b1k_c4s16 h2_b64k_c4s16 h2_b0_c1s1 h2_post1k_c4s16 h2_post1m_c4s4`; the `_oldwin` variants (`h2_post1m_c4s4_oldwin`,
+  `h2_post1k_c4s16_oldwin`) set both HTTP/2 windows to the 65,535 of releases before 6.4 for the A/B.
 * HTTP/2 to the origin (`upstream_h2` feature: the upstream tool serves TLS with ALPN `h2` and a throwaway certificate
   made with `openssl`, the pool trusts it): `h1_b1k_h2up h1_b64k_h2up h1_post1k_h2up`.
 * Scaling over listeners: `scale_l{1,2,4,8}` and `scale_all_l{1,2,4,8}` (all 6.0 features on), and `scale4_<feature>`
