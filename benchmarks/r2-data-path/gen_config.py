@@ -6,7 +6,7 @@ Usage: gen_config.py OUT --proxy-port P --upstream-port U [--servers N] [--echo-
 
 Every feature is an independent A/B switch on top of the minimal reverse-proxy configuration:
   access_log timeouts retry queue capacity passive breaker outlier gzip cache reqbuf respbuf
-  forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host lc wrr
+  forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 upstream_tls l4 stats nginx_host lc wrr
   p2c first auth_bearer auth_basic_apr1 auth_basic_bcrypt redirect path_rewrite cookie_rewrite affinity_cookie
   affinity_hash affinity_header select gzip_l<level> cache_revalidate forward_connect hc_tcp hc_http hc_ms_<interval> canary
 """
@@ -187,7 +187,7 @@ def build(args):
         "algorithm": algorithm(args, on),
         "http_versions": {"min": "2", "max": "2"} if on("upstream_h2") else {"min": "1.1", "max": "1.1"},
     }
-    if on("upstream_h2"):
+    if on("upstream_h2") or on("upstream_tls"):
         pool["tls"] = {"server_name": "origin.example.com", "ca_certificate_path": f"{args.run_dir}/origin.pem"}
     if on("queue"):
         pool["queue_timeout_ms"] = 1000
