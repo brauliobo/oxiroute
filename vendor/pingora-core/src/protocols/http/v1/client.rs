@@ -464,6 +464,9 @@ impl HttpSession {
                             .map(String::from);
 
                         let buf = std::mem::take(&mut self.response_header_read_buf).freeze();
+                        // A tunnel keeps its head for hours: do not pin the read buffer for it (the bytes read after
+                        // the head stay, they are the first of the tunnel).
+                        let tunnel = status == StatusCode::SWITCHING_PROTOCOLS && self.is_upgrade_req();
 
                         let (response_header, facts) = match parsed_response_header(
                             status,
@@ -471,6 +474,7 @@ impl HttpSession {
                             reason.as_deref(),
                             header_refs,
                             &buf,
+                            tunnel,
                         ) {
                             Ok(parsed) => parsed,
                             Err(e) => return self.fail_response_header_read(e),
@@ -478,7 +482,11 @@ impl HttpSession {
 
                         self.raw_header = Some(BufRef(0, s));
                         self.preread_body = Some(BufRef(s, total_read));
-                        self.buf = buf;
+                        self.buf = if tunnel {
+                            Bytes::copy_from_slice(&buf[..total_read])
+                        } else {
+                            buf
+                        };
                         self.response_header = Some(response_header);
                         self.response_noted = facts;
                         if let Err(e) = self.validate_response() {
@@ -1265,6 +1273,7 @@ fn parsed_response_header(
     reason: Option<&str>,
     header_refs: HeaderRefs,
     buf: &Bytes,
+    own_values: bool,
 ) -> Result<(Box<ResponseHeader>, RequestFacts)> {
     // `ResponseHeader` does not hand out its header map mutably (pingora-http 0.9): the map is filled first
     let mut parts = http::Response::new(()).into_parts().0;
@@ -1301,6 +1310,9 @@ fn parsed_response_header(
         facts.content_lengths = 0;
     }
 
+    if own_values {
+        own_header_values(&mut parts.headers);
+    }
     let mut response_header = Box::new(ResponseHeader::from(parts));
     response_header.set_reason_phrase(reason)?;
     Ok((response_header, facts))
@@ -1367,6 +1379,10 @@ impl UniqueID for HttpSession {
         self.underlying_stream.id()
     }
 }
+
+#[cfg(test)]
+#[path = "client_upgrade_head_tests.rs"]
+mod upgrade_head_tests;
 
 #[cfg(test)]
 mod tests_stream {

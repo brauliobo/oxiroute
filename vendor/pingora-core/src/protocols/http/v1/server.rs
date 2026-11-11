@@ -456,6 +456,13 @@ impl HttpSession {
                             .or_err(InvalidHTTPHeader, "while parsing request header")?;
                         }
 
+                        // A tunnel keeps its head for hours: do not pin the read buffer for it.
+                        let buf = if facts.upgrade {
+                            own_header_values(&mut headers);
+                            Bytes::copy_from_slice(&buf[..s])
+                        } else {
+                            buf
+                        };
                         let contains_transfer_encoding = facts.transfer_encoding;
                         let contains_content_length = facts.content_lengths > 0;
 
@@ -2226,6 +2233,10 @@ fn validate_origin_form_authority(req: &RequestHeader) -> Result<()> {
     }
     validate_request_authority(req)
 }
+
+#[cfg(test)]
+#[path = "server_upgrade_head_tests.rs"]
+mod upgrade_head_tests;
 
 #[cfg(test)]
 mod tests_stream {

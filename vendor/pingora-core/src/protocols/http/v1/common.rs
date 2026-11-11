@@ -14,6 +14,7 @@
 
 //! Common functions and constants
 
+use bytes::Bytes;
 use http::{header, HeaderName, HeaderValue};
 use log::{debug, warn};
 use pingora_error::{Error, ErrorType::*, Result};
@@ -492,6 +493,20 @@ pub(super) fn append_parsed_request_header(
 
 /// A request head holding `headers`, which were filled by [`append_parsed_request_header`]: `RequestHeader` no longer
 /// hands out its header map mutably (pingora-http 0.9), so the map is built first and moved in.
+/// Gives the header values their own allocations. Parsed values are zero-copy slices of the buffer the
+/// head was read into, which is kilobytes of which the head uses a few hundred bytes; an upgraded connection keeps its
+/// head for as long as the tunnel lasts, so it must not keep the buffer.
+pub(super) fn own_header_values(headers: &mut HMap) {
+    for value in headers.values_mut() {
+        // SAFETY: the bytes are those of a header value that was already validated.
+        let mut own = unsafe {
+            HeaderValue::from_maybe_shared_unchecked(Bytes::copy_from_slice(value.as_bytes()))
+        };
+        own.set_sensitive(value.is_sensitive());
+        *value = own;
+    }
+}
+
 pub(super) fn request_header_with_headers(
     method: &[u8],
     path: &[u8],
