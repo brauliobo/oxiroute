@@ -884,7 +884,7 @@ describe('ConfigurationWorkspace', () => {
     await wrapper.get('[data-field="tls_profiles[].policy.session_tickets"] input').setValue(true)
     await wrapper.get('[data-field="tls_profiles[].policy.session_tickets"] input').setValue(false)
     await wrapper.get('[data-field="tls_profiles[].policy.prefer_server_ciphers"] input').setValue(false)
-    await wrapper.get('[data-field="tls_profiles[].policy.ktls"] select').setValue('static')
+    await wrapper.get('[data-field="tls_profiles[].policy.ktls"] select').setValue('auto')
     await wrapper.get('[data-field="tls_profiles[].policy.client_auth.mode"] select').setValue('optional')
     await wrapper.get('[data-field="tls_profiles[].policy.client_auth.ca_certificate_path"] input').setValue('/etc/oxiroute/client-ca.pem')
     const allowedClientSans = wrapper.get('[data-field="tls_profiles[].policy.client_auth.allowed_dns_names"]')
@@ -1064,7 +1064,7 @@ describe('ConfigurationWorkspace', () => {
         session_timeout_seconds: 86_400,
         session_tickets: false,
         prefer_server_ciphers: false,
-        ktls: 'static',
+        ktls: 'auto',
       },
     }))
     expect(submitted.upstream_pools[0]).toEqual(expect.objectContaining({

@@ -411,7 +411,7 @@ impl Renderer {
             "ktls",
             match policy.ktls {
                 oxiroute_config::KtlsMode::Off => "off",
-                oxiroute_config::KtlsMode::Static => "static",
+                oxiroute_config::KtlsMode::Auto => "auto",
             },
         );
         self.begin_table_field("client_auth");

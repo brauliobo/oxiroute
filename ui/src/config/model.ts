@@ -136,7 +136,7 @@ export interface TlsPolicyConfig {
   ktls: KtlsMode
 }
 
-export type KtlsMode = 'off' | 'static'
+export type KtlsMode = 'off' | 'auto'
 
 export type TlsClientAuthMode = 'disabled' | 'optional' | 'required'
 

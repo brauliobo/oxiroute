@@ -127,7 +127,7 @@ impl Default for TlsPolicy {
             session_timeout_seconds: None,
             session_tickets: false,
             prefer_server_ciphers: true,
-            ktls: KtlsMode::Off,
+            ktls: KtlsMode::default(),
         }
     }
 }
@@ -137,7 +137,7 @@ impl Default for TlsPolicy {
 pub enum KtlsMode {
     #[default]
     Off,
-    Static,
+    Auto,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

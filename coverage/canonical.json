@@ -401,7 +401,7 @@
       "path": "tls_profiles[].policy.ktls",
       "editability": "operator",
       "normalization": ["default to off"],
-      "validation": ["off or static"],
+      "validation": ["off or auto"],
       "runtime": { "target": "tls.profile", "disposition": "lowered" },
       "required_tests": ["decode", "validate", "failure", "render", "interop"]
     },
@@ -2739,7 +2739,7 @@
     { "id": "canonical.enum.tls-client-auth-mode.required", "kind": "variant", "path": "TlsClientAuthMode::Required", "editability": "operator", "normalization": ["token required"], "validation": ["required client certificate verification"], "runtime": { "target": "tls.profile", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "security", "interop"] },
     { "id": "canonical.enum.ktls-mode", "kind": "enum", "path": "KtlsMode", "editability": "fixed", "normalization": ["lowercase ktls token"], "validation": ["closed ktls mode set"], "runtime": { "target": "schema", "disposition": "classified" }, "required_tests": ["decode", "validate", "failure", "render", "interop"] },
     { "id": "canonical.enum.ktls-mode.off", "kind": "variant", "path": "KtlsMode::Off", "editability": "operator", "normalization": ["token off"], "validation": ["TLS stays in user space"], "runtime": { "target": "tls.profile", "disposition": "lowered" }, "required_tests": ["decode", "validate", "render", "interop"] },
-    { "id": "canonical.enum.ktls-mode.static", "kind": "variant", "path": "KtlsMode::Static", "editability": "operator", "normalization": ["token static"], "validation": ["large static files use kernel TLS"], "runtime": { "target": "tls.profile", "disposition": "lowered" }, "required_tests": ["decode", "validate", "render", "interop"] },
+    { "id": "canonical.enum.ktls-mode.auto", "kind": "variant", "path": "KtlsMode::Auto", "editability": "operator", "normalization": ["token auto"], "validation": ["large static files use kernel TLS when the kernel supports it"], "runtime": { "target": "tls.profile", "disposition": "lowered" }, "required_tests": ["decode", "validate", "render", "interop"] },
     { "id": "canonical.config.registry", "kind": "field", "path": "registry", "editability": "operator", "normalization": ["absence disables runtime registration"], "validation": ["optional registry object", "required by any pool registration"], "runtime": { "target": "management.listener", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration"] },
     { "id": "canonical.registry.state-dir", "kind": "field", "path": "registry.state_dir", "editability": "operator", "normalization": ["path buffer conversion"], "validation": ["absolute directory for registrations.json"], "runtime": { "target": "management.listener", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration"] },
     { "id": "canonical.registry.tokens-file", "kind": "field", "path": "registry.tokens_file", "editability": "operator", "normalization": ["null disables scoped tokens"], "validation": ["absolute path", "mode 0600 or 0640 at load"], "runtime": { "target": "management.listener", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "render", "integration", "security"] },
