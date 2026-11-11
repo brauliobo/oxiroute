@@ -82,6 +82,8 @@ task handoffs and response batches, the cancellable upstream attempt, and compat
   failed request write explains a later failed response read) and the downstream reuse decision are the pump's. The
   one difference is that a blocked write on one side no longer lets the other side's task run ahead by up to a
   channel of tasks: neither half could make progress while the other was blocked in a write before either.
+  When the upstream refuses the rest of the request body, what the client still uploads is read and dropped until the
+  upstream's answer is relayed, so data that arrives before the answer is visible does not end the exchange.
 - `proxy_h2.rs` carries the response tasks of an HTTP/2 origin from the response reader to the downstream loop through
   the `spsc` queue (four slots, as the HTTP/1 pump) instead of a `tokio::sync::mpsc` channel; its batches are drained
   with `try_recv`. The two-future structure of the HTTP/2 upstream path is unchanged.

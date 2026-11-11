@@ -26,11 +26,12 @@ enum Event {
 
 /// The progress of one exchange.
 struct Exchange {
-    /// The client sent all of its request body (or its end was seen), so only a close is waited for.
+    /// The client sent all of its request body (or its end was seen), so only a close is waited for: data after it
+    /// ends the exchange (the idle read of a finished body fails on data).
     reading_done: bool,
-    /// The request body reached the end on the upstream, or the upstream failed to take more of it. It implies
-    /// `reading_done`: a client that goes on uploading after the upstream gave up on the request is not drained, its
-    /// extra data ends the exchange (the idle read of a finished body fails on data).
+    /// The request body reached the end on the upstream, or the upstream failed to take more of it. A client that
+    /// goes on uploading after the upstream gave up on the request is read and dropped until the answer is relayed:
+    /// the answer is what the client is owed, and the upstream may not have shown it yet.
     request_done: bool,
     /// The upstream response ended (or an upgraded connection ended on the client side).
     response_done: bool,
@@ -102,7 +103,7 @@ where
 
         let mut serve_from_cache = ServeFromCache::new();
         let mut range_body_filter = RangeBodyFilter::new();
-        while !exchange.reading_done || !exchange.response_done {
+        while !(exchange.reading_done || exchange.request_done) || !exchange.response_done {
             match Self::next_event(session, client_session, &exchange).await {
                 Event::Response(first) => {
                     self.relay_response(
@@ -120,6 +121,10 @@ where
                     let body = body.map_err(|e| e.into_down())?;
                     // Once the body is read the wait is only for the close of the connection, which is an error.
                     if exchange.reading_done {
+                        continue;
+                    }
+                    if exchange.request_done {
+                        exchange.reading_done = body.is_none() || session.is_body_done();
                         continue;
                     }
                     // The end of an upgraded connection on the client side ends the response as well.
@@ -227,9 +232,10 @@ where
             }
             Err(e) => {
                 warn!("send error, draining read buf: {e}");
-                // The upstream takes no more of the request: stop reading the client and wait for the answer.
+                // The upstream takes no more of the request: what the client still sends is dropped, and the answer
+                // is waited for.
                 exchange.request_done = true;
-                exchange.reading_done = true;
+                exchange.reading_done = session.is_body_done();
                 exchange.request_written = false;
                 exchange.send_error = Some(e);
             }
@@ -403,5 +409,158 @@ mod tests {
 
         assert!(error.is_none(), "{error:?}");
         assert!(!reuse_upstream);
+    }
+
+    /// An upstream connection that takes the request head, refuses the body and holds its answer back until the test
+    /// lets it through: the proxy has seen the refusal before it can see the answer.
+    #[derive(Debug)]
+    struct Refusing {
+        writes: usize,
+        answered: bool,
+        gate: Arc<std::sync::Mutex<(bool, Option<std::task::Waker>)>>,
+        refused: Arc<tokio::sync::Notify>,
+    }
+
+    impl Refusing {
+        const ANSWER: &'static [u8] =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+        fn open(gate: &std::sync::Mutex<(bool, Option<std::task::Waker>)>) {
+            let mut gate = gate.lock().unwrap();
+            gate.0 = true;
+            if let Some(waker) = gate.1.take() {
+                waker.wake();
+            }
+        }
+    }
+
+    impl tokio::io::AsyncRead for Refusing {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let gate = Arc::clone(&self.gate);
+            let mut gate = gate.lock().unwrap();
+            if !gate.0 {
+                gate.1 = Some(cx.waker().clone());
+                return std::task::Poll::Pending;
+            }
+            if !std::mem::replace(&mut self.answered, true) {
+                buf.put_slice(Self::ANSWER);
+            }
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl tokio::io::AsyncWrite for Refusing {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.writes += 1;
+            if self.writes == 1 {
+                return std::task::Poll::Ready(Ok(buf.len()));
+            }
+            self.refused.notify_one();
+            std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl pingora_core::protocols::Shutdown for Refusing {
+        async fn shutdown(&mut self) {}
+    }
+
+    impl pingora_core::protocols::UniqueID for Refusing {
+        fn id(&self) -> pingora_core::protocols::UniqueIDType {
+            0
+        }
+    }
+
+    impl pingora_core::protocols::Ssl for Refusing {}
+
+    impl pingora_core::protocols::GetTimingDigest for Refusing {
+        fn get_timing_digest(&self) -> Vec<Option<pingora_core::protocols::TimingDigest>> {
+            vec![]
+        }
+    }
+
+    impl pingora_core::protocols::GetProxyDigest for Refusing {
+        fn get_proxy_digest(
+            &self,
+        ) -> Option<Arc<pingora_core::protocols::raw_connect::ProxyDigest>> {
+            None
+        }
+    }
+
+    impl pingora_core::protocols::GetSocketDigest for Refusing {
+        fn get_socket_digest(&self) -> Option<Arc<pingora_core::protocols::SocketDigest>> {
+            None
+        }
+    }
+
+    impl pingora_core::protocols::Peek for Refusing {}
+
+    /// The origin refused the body before its answer could be seen, and the client goes on uploading: the data is
+    /// dropped and the answer, once it is there, reaches the client.
+    #[tokio::test]
+    async fn an_upload_that_goes_on_after_the_upstream_refused_it_still_gets_the_answer() {
+        let (mut client, server) = tokio::io::duplex(65536);
+        client
+            .write_all(b"POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 6000\r\n\r\n")
+            .await
+            .unwrap();
+        let mut session = Session::new_h1_with_modules(Box::new(server), &HttpModules::new());
+        session.as_downstream_mut().read_request().await.unwrap();
+        let gate = Arc::new(std::sync::Mutex::new((false, None)));
+        let refused = Arc::new(tokio::sync::Notify::new());
+        let mut upstream = HttpSessionV1::new(Box::new(Refusing {
+            writes: 0,
+            answered: false,
+            gate: Arc::clone(&gate),
+            refused: Arc::clone(&refused),
+        }));
+        upstream
+            .write_request_header_ref(session.req_header())
+            .await
+            .unwrap();
+
+        let proxy = HttpProxy::new(Relay, Arc::new(ServerConf::default()));
+        let mut ctx = ();
+        let relayed = proxy.proxy_1to1_inline(&mut session, &mut upstream, &mut ctx);
+        let upload = async {
+            client.write_all(&[0; 1000]).await.unwrap();
+            refused.notified().await;
+            client.write_all(&[0; 1000]).await.unwrap();
+            // The relay has taken the data, or ended on it, by the time the answer can be seen.
+            for _ in 0..4 {
+                tokio::task::yield_now().await;
+            }
+            Refusing::open(&gate);
+        };
+        let ((_, reuse_upstream, error), ()) = tokio::join!(relayed, upload);
+
+        assert!(error.is_none(), "{error:?}");
+        assert!(!reuse_upstream);
+        drop(session);
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).await.unwrap();
+        assert!(answer.starts_with(b"HTTP/1.1 200 OK"), "{answer:?}");
     }
 }
