@@ -205,7 +205,7 @@ async fn a_profile_without_the_option_serves_the_same_bytes_from_user_space() {
         let response = h1_request(&mut stream, "/big.bin", true)
             .await
             .expect("static response");
-        assert!(response.body == body);
+        assert!(response.body == body, "the body differs");
         drop(stream);
         proxy.finish().await;
     })
