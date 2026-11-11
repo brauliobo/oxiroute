@@ -19,10 +19,10 @@ use crate::{
     stream::TlsStream,
 };
 
-/// A fatal `no_application_protocol` alert record, sent when the router refuses a ClientHello.
+/// A fatal `no_application_protocol` alert record, sent when the router refuses a `ClientHello`.
 const NO_APPLICATION_PROTOCOL_ALERT: [u8; 7] = [0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x78];
 
-/// Chooses the configuration that serves a connection once its ClientHello is known.
+/// Chooses the configuration that serves a connection once its `ClientHello` is known.
 pub trait ConfigRouter: Send + Sync + 'static {
     /// `None` refuses the connection with a fatal `no_application_protocol` alert.
     fn route(&self, hello: &ClientHello<'_>) -> Option<Arc<ServerConfig>>;
@@ -77,7 +77,7 @@ impl StreamTlsAcceptor for RustlsAcceptor {
     }
 }
 
-/// Reads until the ClientHello is complete.
+/// Reads until the `ClientHello` is complete.
 async fn read_client_hello(io: &mut L4Stream) -> io::Result<Accepted> {
     let mut acceptor = Acceptor::default();
     loop {

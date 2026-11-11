@@ -1,5 +1,5 @@
 //! The rustls form of a TLS profile: one set of connection configurations per listener, a resolver that selects the
-//! active certificate generation by SNI, and the router that picks between them from the ClientHello.
+//! active certificate generation by SNI, and the router that picks between them from the `ClientHello`.
 
 use std::sync::Arc;
 

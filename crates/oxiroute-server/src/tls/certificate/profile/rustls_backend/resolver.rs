@@ -4,8 +4,8 @@ use rustls::{server::ClientHello, server::ResolvesServerCert, sign::CertifiedKey
 
 use crate::tls::certificate::CertificateSelector;
 
-/// Selects the active generation of the certificate the ClientHello's SNI names, so a published replacement serves the
-/// next handshake without touching the connection configuration.
+/// Selects the active generation of the certificate the `ClientHello`'s SNI names, so a published replacement serves
+/// the next handshake without touching the connection configuration.
 pub(super) struct GenerationResolver {
     profile: String,
     selector: Arc<CertificateSelector>,

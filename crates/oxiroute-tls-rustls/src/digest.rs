@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use pingora::protocols::tls::{ALPN, CustomALPN, SslDigest};
 use rustls::{ProtocolVersion, ServerConnection};
 use sha2::{Digest, Sha256};
@@ -56,5 +58,8 @@ pub(crate) fn selected_alpn(conn: &ServerConnection) -> Option<ALPN> {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02X}")).collect()
+    bytes.iter().fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02X}");
+        hex
+    })
 }
