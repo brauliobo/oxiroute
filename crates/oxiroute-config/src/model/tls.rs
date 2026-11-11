@@ -113,6 +113,9 @@ pub struct TlsPolicy {
     pub session_tickets: bool,
     #[serde(default = "default_true")]
     pub prefer_server_ciphers: bool,
+    /// Key-exchange groups in server preference order; absent keeps the backend default list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_exchange_groups: Option<Vec<TlsKeyExchangeGroup>>,
 }
 
 impl Default for TlsPolicy {
@@ -125,6 +128,35 @@ impl Default for TlsPolicy {
             session_timeout_seconds: None,
             session_tickets: false,
             prefer_server_ciphers: true,
+            key_exchange_groups: None,
+        }
+    }
+}
+
+/// A key-exchange group every TLS backend can name; `X25519Mlkem768` is the post-quantum hybrid (TLS 1.3 only).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsKeyExchangeGroup {
+    X25519,
+    Secp256r1,
+    Secp384r1,
+    X25519Mlkem768,
+}
+
+impl TlsKeyExchangeGroup {
+    #[must_use]
+    pub const fn is_hybrid(self) -> bool {
+        matches!(self, Self::X25519Mlkem768)
+    }
+
+    /// The group as TLS 1.3 clients and the key-exchange registry name it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::X25519 => "x25519",
+            Self::Secp256r1 => "secp256r1",
+            Self::Secp384r1 => "secp384r1",
+            Self::X25519Mlkem768 => "x25519mlkem768",
         }
     }
 }

@@ -502,5 +502,32 @@ fn validate_tls_policy(profile: &mut TlsProfile) -> Result<(), ConfigError> {
             detail: "must be between 1 and i32::MAX seconds",
         });
     }
+    validate_key_exchange_groups(profile)
+}
+
+fn validate_key_exchange_groups(profile: &TlsProfile) -> Result<(), ConfigError> {
+    let Some(groups) = &profile.policy.key_exchange_groups else {
+        return Ok(());
+    };
+    let invalid = |detail| ConfigError::InvalidTlsProfilePolicy {
+        profile: profile.name.clone(),
+        field: "key_exchange_groups",
+        detail,
+    };
+    if groups.is_empty() {
+        return Err(invalid("must list at least one group"));
+    }
+    if groups
+        .iter()
+        .enumerate()
+        .any(|(index, group)| groups[..index].contains(group))
+    {
+        return Err(invalid("must not repeat a group"));
+    }
+    if profile.min_version == TlsVersion::Tls12 && groups.iter().all(|group| group.is_hybrid()) {
+        return Err(invalid(
+            "hybrid groups exist only in TLS 1.3: list a classical group or set min_version 1.3",
+        ));
+    }
     Ok(())
 }

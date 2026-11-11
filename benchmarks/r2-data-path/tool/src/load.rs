@@ -237,8 +237,24 @@ impl ServerCertVerifier for NoVerify {
     }
 }
 
-pub fn tls_connector(alpn: &[u8], version: &str, resume: bool) -> TlsConnector {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+/// `browser` offers the post-quantum hybrid group first, with a share for X25519 next to it (what current browsers
+/// send); any other value is the plain ring provider.
+fn tls_provider(groups: &str) -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(match groups {
+        "browser" => {
+            let mut provider = rustls::crypto::aws_lc_rs::default_provider();
+            provider.kx_groups = vec![
+                rustls::crypto::aws_lc_rs::kx_group::X25519MLKEM768,
+                rustls::crypto::aws_lc_rs::kx_group::X25519,
+            ];
+            provider
+        }
+        _ => rustls::crypto::ring::default_provider(),
+    })
+}
+
+pub fn tls_connector(alpn: &[u8], version: &str, resume: bool, groups: &str) -> TlsConnector {
+    let provider = tls_provider(groups);
     let versions: &[&rustls::SupportedProtocolVersion] = match version {
         "1.2" => &[&rustls::version::TLS12],
         "1.3" => &[&rustls::version::TLS13],
@@ -279,9 +295,10 @@ fn spec_from(flags: &Flags) -> Spec {
     let path = if vary { format!("{path}?k=00000000") } else { path };
     let tls_version: String = flag(flags, "tls-version", "any".to_owned());
     let resume: bool = flag(flags, "resume", false);
+    let tls_groups: String = flag(flags, "tls-groups", "default".to_owned());
     let connector = match proto {
-        Proto::H1Tls | Proto::WsTls => Some(tls_connector(b"http/1.1", &tls_version, resume)),
-        Proto::H2Tls => Some(tls_connector(b"h2", &tls_version, resume)),
+        Proto::H1Tls | Proto::WsTls => Some(tls_connector(b"http/1.1", &tls_version, resume, &tls_groups)),
+        Proto::H2Tls => Some(tls_connector(b"h2", &tls_version, resume, &tls_groups)),
         _ => None,
     };
     let mut h2_headers = HeaderMap::new();

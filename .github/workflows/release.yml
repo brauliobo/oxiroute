@@ -24,6 +24,11 @@ on:
         required: false
         default: true
         type: boolean
+      v3_flavour:
+        description: Also build the x86-64-v3 flavour (OpenSSL compiled for AVX2/BMI2 CPUs; never part of a tag run)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -149,7 +154,7 @@ jobs:
       max-parallel: 1
       matrix:
         target: [x86_64-unknown-linux-gnu]
-        flavour: ${{ fromJSON((github.event_name == 'workflow_dispatch' && !inputs.abort_flavour) && '["unwind"]' || '["unwind","abort"]') }}
+        flavour: ${{ fromJSON(format('["unwind"{0}{1}]', (github.event_name != 'workflow_dispatch' || inputs.abort_flavour) && ',"abort"' || '', (github.event_name == 'workflow_dispatch' && inputs.v3_flavour) && ',"v3"' || '')) }}
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-24.04
@@ -199,7 +204,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           append_body: true
-          body_path: release-binaries/pgo-note-${{ matrix.target }}${{ matrix.flavour == 'abort' && '-abort' || '' }}.md
+          body_path: release-binaries/pgo-note-${{ matrix.target }}${{ matrix.flavour == 'abort' && '-abort' || matrix.flavour == 'v3' && '-x86-64-v3' || '' }}.md
           files: |
             release-binaries/oxiroute-*.tar.gz
             release-binaries/oxiroute-*.tar.gz.sha256
