@@ -31,7 +31,7 @@ pub async fn read_step(stream: &mut TcpStream, unanswered: &[u8], bytes: &mut Ve
     let responses = Messages::Responses {
         head_only: unanswered.starts_with(b"HEAD "),
     };
-    let mut buffer = [0_u8; 8192];
+    let mut buffer = vec![0_u8; 8192];
     loop {
         let received = &bytes[start..];
         let wait = match (received.is_empty(), sent_whole) {
