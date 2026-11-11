@@ -4,6 +4,7 @@ use oxiroute_config::{HttpHostSelector, HttpPathSelector, HttpRoutePolicy};
 use oxiroute_h1_head::RequestHead;
 
 use super::*;
+use crate::http::proxy::lane::LaneRoute;
 use crate::{
     RouteTable,
     http::action::{FixedResponsePlan, HttpActionPlan, RoutePolicyPlan},

@@ -306,12 +306,9 @@ fn joins_duplicate_values_with_checked_separator_bounds() {
     let mut headers = HeaderMap::new();
     headers.append(&name, HeaderValue::from_static("abc"));
     headers.append(&name, HeaderValue::from_static(""));
+    assert_eq!(headers.joined(&name, 5), Ok(Some(b"abc, ".to_vec())));
     assert_eq!(
-        join_header_values(&headers, &name, 5),
-        Ok(Some(b"abc, ".to_vec()))
-    );
-    assert_eq!(
-        join_header_values(&headers, &name, 4),
+        headers.joined(&name, 4),
         Err(RequestPolicyError::SourceTooLarge)
     );
 }

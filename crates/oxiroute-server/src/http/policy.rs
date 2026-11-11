@@ -9,13 +9,43 @@ use crate::http::action::{
 };
 use crate::http::hop_by_hop::{has_hop_by_hop, hop_by_hop_removals};
 
-#[derive(Clone, Copy)]
-pub(crate) struct RequestPolicyContext<'a> {
+/// The headers of the request a policy reads: a parsed map, or the scanned head of the fast lane.
+pub(crate) trait IncomingHeaders {
+    /// The values of every header called `name`, joined by `, ` in arrival order; `None` when there are none.
+    fn joined(
+        &self,
+        name: &HeaderName,
+        max_bytes: usize,
+    ) -> Result<Option<Vec<u8>>, RequestPolicyError>;
+}
+
+impl IncomingHeaders for HeaderMap {
+    fn joined(
+        &self,
+        name: &HeaderName,
+        max_bytes: usize,
+    ) -> Result<Option<Vec<u8>>, RequestPolicyError> {
+        join_values(
+            self.get_all(name).iter().map(HeaderValue::as_bytes),
+            max_bytes,
+        )
+    }
+}
+
+pub(crate) struct RequestPolicyContext<'a, H: IncomingHeaders + ?Sized = HeaderMap> {
     pub(crate) authority: Option<&'a Authority>,
     pub(crate) downstream_scheme: &'static str,
     pub(crate) client_ip: Option<IpAddr>,
-    pub(crate) incoming_headers: &'a HeaderMap,
+    pub(crate) incoming_headers: &'a H,
 }
+
+impl<H: IncomingHeaders + ?Sized> Clone for RequestPolicyContext<'_, H> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<H: IncomingHeaders + ?Sized> Copy for RequestPolicyContext<'_, H> {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RequestHeaderDecision {
@@ -55,19 +85,27 @@ impl RequestHeaderValueDecision {
         &self,
         selected_upstream_host: Option<&HeaderValue>,
     ) -> Result<Option<HeaderValue>, RequestPolicyError> {
+        self.resolve(selected_upstream_host)
+            .map(<Option<&HeaderValue>>::cloned)
+    }
+
+    /// The value the header is set to, borrowed; `None` when the header is left as it is.
+    pub(crate) fn resolve<'a>(
+        &'a self,
+        selected_upstream_host: Option<&'a HeaderValue>,
+    ) -> Result<Option<&'a HeaderValue>, RequestPolicyError> {
         match self {
             Self::Value(value) | Self::XForwardedFor(XForwardedForDecision::Set(value)) => {
-                Ok(Some(value.clone()))
+                Ok(Some(value))
             }
             Self::ClientIp(value) => value
-                .clone()
+                .as_ref()
                 .map(Some)
                 .ok_or(RequestPolicyError::ClientIpUnavailable),
             Self::XForwardedFor(XForwardedForDecision::Preserve | XForwardedForDecision::NoOp) => {
                 Ok(None)
             }
             Self::SelectedUpstreamHost => selected_upstream_host
-                .cloned()
                 .map(Some)
                 .ok_or(RequestPolicyError::SelectedUpstreamHostUnavailable),
         }
@@ -89,9 +127,9 @@ pub(crate) enum RequestPolicyError {
     SelectedUpstreamHostUnavailable,
 }
 
-pub(crate) fn decide_request_header(
+pub(crate) fn decide_request_header<H: IncomingHeaders + ?Sized>(
     mutation: &RequestHeaderMutationPlan,
-    context: RequestPolicyContext<'_>,
+    context: RequestPolicyContext<'_, H>,
 ) -> Result<RequestHeaderDecision, RequestPolicyError> {
     let (name, value) = match mutation {
         RequestHeaderMutationPlan::Set { name, value } => (name, value),
@@ -134,8 +172,10 @@ pub(crate) fn decide_request_header(
             RequestHeaderValueDecision::Value(HeaderValue::from_static(context.downstream_scheme))
         }
         RequestHeaderValuePlan::IncomingHeader { name, max_bytes } => {
-            let value =
-                join_header_values(context.incoming_headers, name, *max_bytes)?.unwrap_or_default();
+            let value = context
+                .incoming_headers
+                .joined(name, *max_bytes)?
+                .unwrap_or_default();
             RequestHeaderValueDecision::Value(bounded_header_value(&value, *max_bytes)?)
         }
         RequestHeaderValuePlan::SelectedUpstreamHost => {
@@ -148,8 +188,8 @@ pub(crate) fn decide_request_header(
     })
 }
 
-fn decide_x_forwarded_for(
-    context: RequestPolicyContext<'_>,
+fn decide_x_forwarded_for<H: IncomingHeaders + ?Sized>(
+    context: RequestPolicyContext<'_, H>,
     max_bytes: usize,
     exceptions: &[crate::http::action::SourceCidr],
 ) -> Result<XForwardedForDecision, RequestPolicyError> {
@@ -161,7 +201,7 @@ fn decide_x_forwarded_for(
         return Ok(XForwardedForDecision::Preserve);
     }
     let name = HeaderName::from_static("x-forwarded-for");
-    let existing = join_header_values(context.incoming_headers, &name, max_bytes)?;
+    let existing = context.incoming_headers.joined(&name, max_bytes)?;
     let Some(client_ip) = context.client_ip else {
         return existing.map_or(Ok(XForwardedForDecision::NoOp), |value| {
             bounded_header_value(&value, max_bytes).map(XForwardedForDecision::Set)
@@ -224,17 +264,16 @@ impl IpText {
     }
 }
 
-pub(crate) fn join_header_values(
-    headers: &HeaderMap,
-    name: &HeaderName,
+pub(crate) fn join_values<'v>(
+    values: impl Iterator<Item = &'v [u8]>,
     max_bytes: usize,
 ) -> Result<Option<Vec<u8>>, RequestPolicyError> {
     let mut joined = Vec::new();
-    for value in headers.get_all(name) {
+    for value in values {
         if !joined.is_empty() {
             extend_bounded(&mut joined, b", ", max_bytes)?;
         }
-        extend_bounded(&mut joined, value.as_bytes(), max_bytes)?;
+        extend_bounded(&mut joined, value, max_bytes)?;
     }
     Ok((!joined.is_empty()).then_some(joined))
 }
@@ -307,13 +346,13 @@ pub(crate) fn decide_response_headers(
             decisions.push(ResponseHeaderDecision::Remove(name));
         }
     }
-    for mutation in &policy.response_headers {
+    for mutation in policy
+        .response_headers
+        .iter()
+        .filter(|mutation| mutation.applies(status.as_u16()))
+    {
         match mutation {
-            ResponseHeaderMutationPlan::Set {
-                name,
-                value,
-                always,
-            } if *always || crate::http::action::nginx_add_header_status(status.as_u16()) => {
+            ResponseHeaderMutationPlan::Set { name, value, .. } => {
                 if let Some(resulting) = &mut resulting {
                     resulting.insert(name.clone(), value.clone());
                 }
@@ -322,11 +361,7 @@ pub(crate) fn decide_response_headers(
                     value: value.clone(),
                 });
             }
-            ResponseHeaderMutationPlan::Add {
-                name,
-                value,
-                always,
-            } if *always || crate::http::action::nginx_add_header_status(status.as_u16()) => {
+            ResponseHeaderMutationPlan::Add { name, value, .. } => {
                 if let Some(resulting) = &mut resulting {
                     resulting.append(name.clone(), value.clone());
                 }
@@ -341,7 +376,6 @@ pub(crate) fn decide_response_headers(
                 }
                 decisions.push(ResponseHeaderDecision::Remove(name.clone()));
             }
-            ResponseHeaderMutationPlan::Set { .. } | ResponseHeaderMutationPlan::Add { .. } => {}
         }
     }
     let Some(resulting) = resulting else {

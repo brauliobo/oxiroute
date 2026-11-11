@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use pingora::proxy::Session;
 
-use http::Method;
+use http::{HeaderName, HeaderValue, Method};
 
 use super::{HttpActionPlan, HttpRequestContext, normalized_request_host};
 use crate::{
@@ -12,7 +12,27 @@ use crate::{
     observability::access_record::{Correlation, Count, HttpAccess, Safe, SafeId},
 };
 
-/// The completed request as one access line; text borrows from the context and is redacted on write.
+/// What an access line says of the request beyond its context: the same facts whichever path served it.
+pub(super) struct Exchange<'a> {
+    pub(super) method: &'a Method,
+    /// The value of the request's idempotency header, if it has one.
+    pub(super) idempotency: Option<&'a [u8]>,
+    pub(super) protocol: &'static str,
+    pub(super) bytes_received: u64,
+    pub(super) bytes_sent: u64,
+}
+
+/// The name of the idempotency header of the request's route, which the access line tags the request with.
+pub(super) fn idempotency_header(ctx: &HttpRequestContext) -> Option<HeaderName> {
+    let HttpActionPlan::Proxy(proxy) = &ctx.route.as_ref()?.action else {
+        return None;
+    };
+    Some(idempotency_header_or_default(
+        proxy.policy.idempotency_header.as_ref(),
+    ))
+}
+
+/// The completed request of a Pingora session.
 pub(super) fn build<'a>(
     ctx: &'a HttpRequestContext,
     session: &'a Session,
@@ -21,6 +41,27 @@ pub(super) fn build<'a>(
     service: &'a str,
 ) -> HttpAccess<'a> {
     let request = session.req_header();
+    let idempotency = idempotency_header(ctx)
+        .and_then(|name| request.headers.get(name))
+        .map(HeaderValue::as_bytes);
+    let exchange = Exchange {
+        method: &request.method,
+        idempotency,
+        protocol: if session.is_http2() { "h2" } else { "http/1.1" },
+        bytes_received: session.body_bytes_read() as u64,
+        bytes_sent: session.body_bytes_sent() as u64,
+    };
+    access_line(ctx, &exchange, response_status, elapsed, service)
+}
+
+/// The completed request as one access line; text borrows from the context and is redacted on write.
+pub(super) fn access_line<'a>(
+    ctx: &'a HttpRequestContext,
+    exchange: &Exchange<'a>,
+    response_status: Option<u16>,
+    elapsed: std::time::Duration,
+    service: &'a str,
+) -> HttpAccess<'a> {
     let request_id = ctx
         .request_id
         .as_ref()
@@ -28,8 +69,8 @@ pub(super) fn build<'a>(
     let trace = &ctx.trace;
     HttpAccess {
         attempts: ctx.attempt_count(),
-        bytes_received: Count(session.body_bytes_read() as u64),
-        bytes_sent: Count(session.body_bytes_sent() as u64),
+        bytes_received: Count(exchange.bytes_received),
+        bytes_sent: Count(exchange.bytes_sent),
         connect_ms: trace.connect.map(|duration| Count(duration.as_millis())),
         correlation_id: Correlation(request_id),
         duration_ms: Count(elapsed.as_millis()),
@@ -41,13 +82,15 @@ pub(super) fn build<'a>(
             .authority
             .as_ref()
             .map(|host| normalized_request_host(host).into()),
-        idem_key: idempotency_key(ctx, session).map(Safe::from),
-        method: method_text(&request.method),
+        idem_key: exchange
+            .idempotency
+            .map(|key| Safe::from(idempotency_tag(key))),
+        method: method_text(exchange.method),
         pool: ctx
             .pool
             .as_ref()
             .map(|pool| Safe::verified(pool.label().logged())),
-        protocol: SafeId(if session.is_http2() { "h2" } else { "http/1.1" }),
+        protocol: SafeId(exchange.protocol),
         queue_wait_ms: Count(trace.queue_wait.as_millis()),
         reason: Safe::verified(trace.failure_reason.unwrap_or("")),
         request_id: request_id.map(Safe::from),
@@ -82,18 +125,6 @@ fn method_text(method: &Method) -> Safe<'_> {
         | Method::PATCH => Safe::verified(method.as_str()),
         _ => method.as_str().into(),
     }
-}
-
-fn idempotency_key(ctx: &HttpRequestContext, session: &Session) -> Option<String> {
-    let HttpActionPlan::Proxy(proxy) = &ctx.route.as_ref()?.action else {
-        return None;
-    };
-    let name = idempotency_header_or_default(proxy.policy.idempotency_header.as_ref());
-    session
-        .req_header()
-        .headers
-        .get(name)
-        .map(|value| idempotency_tag(value.as_bytes()))
 }
 
 /// Every server tried, comma separated; the single-attempt case borrows.

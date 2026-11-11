@@ -1,5 +1,5 @@
-//! The proxied lane: a request without a body is forwarded to a plain HTTP/1.1 server of a pool on the connection
-//! itself. The head goes upstream and the response head comes back through the head codec, without a header map on
+//! The proxied lane: a request is forwarded to an HTTP/1.1 server of a pool on the connection itself, its body (if
+//! it has one) streamed as it arrives. The head goes upstream and the response head comes back through the head codec, without a header map on
 //! either side; a response head the codec does not know is read by the classic client parser, so the response is
 //! always served. Selection, leases, timeouts, health signals, evacuation and accounting are the classic request
 //! context's own steps.
@@ -33,16 +33,20 @@ use pingora::{
 use tokio::io::AsyncWriteExt as _;
 
 use super::{
-    Served, buffers,
-    head::Request,
+    Served,
+    body::Upload,
+    buffers,
+    head::{Body, Request},
+    rules,
     timing::{Expired, within},
 };
 use crate::{
     HealthFailure,
     http::{
-        action::{HttpActionPlan, HttpRoutePlan},
+        action::{HttpActionPlan, HttpRoutePlan, ProxyPolicyPlan},
         evacuation::LeftRunning,
         inflight::Phase,
+        policy::RequestHeaderDecision,
         proxy::{
             ErrorReason, HttpRequestContext, apply_response_policy, classify_http_result,
             error_reason, error_response, failure_reason, proxy_error_status, proxy_policy,
@@ -74,6 +78,33 @@ struct Opened {
     keepalive: bool,
     /// The whole body arrived with the head, so the first read of it does not wait.
     buffered: bool,
+    /// The origin connection may serve another request when the response is over.
+    reusable: bool,
+}
+
+impl Opened {
+    /// The response of an origin that did not take the whole request: nothing is reused after it.
+    fn unfinished(mut self) -> Self {
+        self.keepalive = false;
+        self.reusable = false;
+        self
+    }
+}
+
+/// What an exchange has moved so far.
+pub(super) struct Progress {
+    /// The request body still to come from the client.
+    pub(super) upload: Option<Upload>,
+    /// Response body bytes written to the client.
+    pub(super) sent: usize,
+    /// The status that went out.
+    pub(super) status: Option<u16>,
+}
+
+impl Progress {
+    pub(super) fn received(&self) -> usize {
+        self.upload.as_ref().map_or(0, Upload::received)
+    }
 }
 
 /// What the request sends to the origin as its `Host`.
@@ -89,8 +120,53 @@ pub(super) struct Forward<'a> {
     pub(super) request: &'a Request,
     pub(super) route: &'a Arc<HttpRoutePlan>,
     pub(super) id: &'a HeaderValue,
+    /// What the route's request header rules do to this request.
+    pub(super) decisions: &'a [RequestHeaderDecision],
     /// Whether the connection serves another request after this one, as far as the request knows.
     pub(super) keepalive: bool,
+    /// The bytes of the request body that arrived with the head.
+    pub(super) preread: &'a [u8],
+}
+
+fn client_ip(stream: &Stream) -> Option<std::net::IpAddr> {
+    stream.get_socket_digest().and_then(|digest| {
+        digest
+            .peer_addr()
+            .and_then(|address| address.as_inet().map(std::net::SocketAddr::ip))
+    })
+}
+
+/// The request header rules of the route for a request, or `None` when the classic path has to answer it.
+pub(super) fn decide(
+    stream: &Stream,
+    route: &HttpRoutePlan,
+    buffer: &[u8],
+    head: &RequestHead,
+    authority: &Authority,
+) -> Option<Vec<RequestHeaderDecision>> {
+    let HttpActionPlan::Proxy(proxy) = &route.action else {
+        unreachable!("only proxied routes reach the proxied lane");
+    };
+    if proxy.policy.request_headers.is_empty() {
+        return Some(Vec::new());
+    }
+    let source = rules::Source {
+        buffer,
+        head,
+        authority,
+        client_ip: client_ip(stream),
+        https: stream.get_ssl().is_some(),
+    };
+    rules::request_decisions(&proxy.policy, &source).ok()
+}
+
+impl Forward<'_> {
+    fn policy(&self) -> &ProxyPolicyPlan {
+        let HttpActionPlan::Proxy(proxy) = &self.route.action else {
+            unreachable!("only proxied routes reach the proxied lane");
+        };
+        &proxy.policy
+    }
 }
 
 impl super::LaneFront {
@@ -103,8 +179,18 @@ impl super::LaneFront {
     ) -> Served {
         let upstream = &*self.upstream;
         let mut ctx = self.begin(stream, &forward, authority);
-        let mut sent = 0;
-        let mut status = None;
+        let mut progress = Progress {
+            upload: (forward.request.body != Body::None).then(|| {
+                Upload::new(
+                    forward.request.body,
+                    forward.preread,
+                    forward.route.policy.max_request_body_bytes,
+                    self.timeouts.request,
+                )
+            }),
+            sent: 0,
+            status: None,
+        };
         let outcome = self
             .exchange(
                 stream,
@@ -112,8 +198,7 @@ impl super::LaneFront {
                 &mut ctx,
                 upstream,
                 &forward,
-                &mut sent,
-                &mut status,
+                &mut progress,
             )
             .await;
         let error = outcome.err();
@@ -123,13 +208,14 @@ impl super::LaneFront {
                 error.etype(),
                 error.esource()
             );
-            status = self
-                .fail(stream, &mut ctx, error, &forward, &mut sent, status)
+            progress.status = self
+                .fail(stream, &mut ctx, error, &forward, &mut progress)
                 .await;
         }
-        self.finish(&mut ctx, error.as_deref(), status, sent);
+        self.finish(&mut ctx, &forward, error.as_deref(), &progress);
         connection.end_request();
-        if error.is_none() && connection.will_keepalive() {
+        let pipelined = progress.upload.as_ref().is_some_and(Upload::overread);
+        if error.is_none() && connection.will_keepalive() && !pipelined {
             return Served::Next;
         }
         let _ = stream.shutdown().await;
@@ -155,19 +241,14 @@ impl super::LaneFront {
         );
         ctx.request_id = Some(forward.id.clone());
         ctx.adopt_client_timeouts([self.timeouts.request, self.timeouts.session_write()]);
-        let client_ip = stream.get_socket_digest().and_then(|digest| {
-            digest
-                .peer_addr()
-                .and_then(|address| address.as_inet().map(std::net::SocketAddr::ip))
-        });
         let method = Method::from_bytes(request.method(buffer))
             .expect("the route was selected for this method");
         ctx.register_arrival(
             &method,
             request.host(buffer),
             request.path(buffer),
-            client_ip,
-            None,
+            client_ip(stream),
+            self.service.access_log(),
         );
         ctx.authority = Some(authority);
         if let Some(inflight) = &ctx.inflight {
@@ -179,7 +260,7 @@ impl super::LaneFront {
         let replay_safe = policy.request_is_replay_safe(
             &method,
             &http::HeaderMap::new(),
-            true,
+            request.body == Body::None,
             route.policy.request_buffering,
         );
         ctx.evacuation_pin = LeftRunning::unmovable(false, replay_safe);
@@ -193,8 +274,7 @@ impl super::LaneFront {
         ctx
     }
 
-    /// The origin's answer, sent to the client; the status that went out is left in `status`.
-    #[allow(clippy::too_many_arguments)]
+    /// The origin's answer, sent to the client; the status that went out is left in `progress`.
     async fn exchange(
         &self,
         stream: &mut Stream,
@@ -202,15 +282,16 @@ impl super::LaneFront {
         ctx: &mut HttpRequestContext,
         upstream: &Connector,
         forward: &Forward<'_>,
-        sent: &mut usize,
-        status: &mut Option<u16>,
+        progress: &mut Progress,
     ) -> Result<(), Box<Error>> {
-        let opened = self.attempts(stream, ctx, upstream, forward).await?;
-        *status = Some(opened.status);
+        let opened = self
+            .attempts(stream, ctx, upstream, forward, &mut progress.upload)
+            .await?;
+        progress.status = Some(opened.status);
         if !opened.keepalive {
             connection.disable_keepalive();
         }
-        self.relay(stream, ctx, upstream, opened, sent)
+        self.relay(stream, ctx, upstream, opened, progress)
             .await
             .map_err(|error| ctx.attempt_failed_for_lane(error))
     }
@@ -223,11 +304,12 @@ impl super::LaneFront {
         ctx: &mut HttpRequestContext,
         upstream: &Connector,
         forward: &Forward<'_>,
+        upload: &mut Option<Upload>,
     ) -> Result<Opened, Box<Error>> {
         loop {
             let cancelled = ctx.arm_evacuation_for_lane();
             let outcome = {
-                let attempt = self.attempt(stream, ctx, upstream, forward);
+                let attempt = self.attempt(stream, ctx, upstream, forward, upload);
                 tokio::select! {
                     biased;
                     error = cancelled => Err(ctx.attempt_failed_for_lane(error)),
@@ -248,6 +330,7 @@ impl super::LaneFront {
         ctx: &mut HttpRequestContext,
         upstream: &Connector,
         forward: &Forward<'_>,
+        upload: &mut Option<Upload>,
     ) -> Result<Opened, Box<Error>> {
         let peer = ctx
             .next_peer(
@@ -265,12 +348,13 @@ impl super::LaneFront {
                 return Err(ctx.connect_failed(error).into_up());
             }
         };
-        self.send_and_open(stream, ctx, session, reused, peer, forward)
+        self.send_and_open(stream, ctx, session, reused, peer, forward, upload)
             .await
             .map_err(|error| ctx.attempt_failed_for_lane(error))
     }
 
     /// Sends the request on a connected session and reads the response head.
+    #[allow(clippy::too_many_arguments)]
     async fn send_and_open(
         &self,
         stream: &mut Stream,
@@ -279,8 +363,9 @@ impl super::LaneFront {
         reused: bool,
         peer: Box<HttpPeer>,
         forward: &Forward<'_>,
+        upload: &mut Option<Upload>,
     ) -> Result<Opened, Box<Error>> {
-        ctx.connected(reused, None)?;
+        ctx.connected(reused, Some(session.digest()))?;
         session.read_timeout = peer.options.read_timeout;
         session.body_read_timeout = peer.options.body_read_timeout;
         session.write_timeout = peer.options.write_timeout;
@@ -296,7 +381,20 @@ impl super::LaneFront {
             .await;
         buffers::give_write(request);
         written.map_err(Error::into_up)?;
-        self.open(stream, ctx, session, peer, forward).await
+        let Some(upload) = upload else {
+            return self.open(stream, ctx, session, peer, forward).await;
+        };
+        session.init_request_body(request_framing(forward.request.body));
+        match pump(stream, ctx, &mut session, upload).await {
+            Ok(()) => self.open(stream, ctx, session, peer, forward).await,
+            // An origin that answered and closed without reading the body is not a failure of the request: its answer
+            // goes to the client, and neither connection is used again.
+            Err(error) if error.esource() == &pingora::ErrorSource::Upstream => {
+                let opened = self.open(stream, ctx, session, peer, forward).await;
+                opened.map(Opened::unfinished).map_err(|_| error)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Reads the response head, applies what the classic response filter applies and renders what the client gets.
@@ -349,6 +447,7 @@ impl super::LaneFront {
             status,
             keepalive,
             buffered,
+            reusable: true,
         })
     }
 
@@ -359,7 +458,7 @@ impl super::LaneFront {
         ctx: &mut HttpRequestContext,
         upstream: &Connector,
         opened: Opened,
-        sent: &mut usize,
+        progress: &mut Progress,
     ) -> Result<(), Box<Error>> {
         let Opened {
             mut session,
@@ -367,12 +466,13 @@ impl super::LaneFront {
             head,
             framing,
             buffered,
+            reusable,
             ..
         } = opened;
         let deadline = tokio::time::Instant::from_std(ctx.deadline);
         let body = async {
-            // `frame` carries the head and then each piece of the body with its chunk framing. `sent` counts the
-            // body, as a session does.
+            // `frame` carries the head and then each piece of the body with its chunk framing. `progress.sent` counts
+            // the body, as a session does.
             let mut frame = head;
             if !buffered {
                 write(stream, &frame).await?;
@@ -381,14 +481,14 @@ impl super::LaneFront {
             }
             let mut first = true;
             while let Some(data) = session.read_body_bytes().await.map_err(Error::into_up)? {
-                *sent += data.len();
+                progress.sent += data.len();
                 // The first piece follows the clock reading of the head.
                 let now = if std::mem::take(&mut first) {
                     ctx.now
                 } else {
                     Instant::now()
                 };
-                ctx.observe_bytes(0, *sent, now);
+                ctx.observe_bytes(progress.received(), progress.sent, now);
                 let chunked = framing == Framing::Chunked;
                 if chunked {
                     write!(frame, "{:x}\r\n", data.len()).expect("a buffer grows");
@@ -423,9 +523,11 @@ impl super::LaneFront {
         within(deadline, body)
             .await
             .map_err(|Expired| Error::new_up(ErrorType::ReadTimedout))??;
-        upstream
-            .release_http_session(session, &*peer, peer.idle_timeout())
-            .await;
+        if reusable {
+            upstream
+                .release_http_session(session, &*peer, peer.idle_timeout())
+                .await;
+        }
         Ok(())
     }
 
@@ -437,9 +539,9 @@ impl super::LaneFront {
         ctx: &mut HttpRequestContext,
         error: &Error,
         forward: &Forward<'_>,
-        sent: &mut usize,
-        sent_status: Option<u16>,
+        progress: &mut Progress,
     ) -> Option<u16> {
+        let sent_status = progress.status;
         let started = sent_status.is_some();
         ctx.trace.failure_reason = Some(failure_reason(error, ctx, started));
         if started || ctx.client_deadline_expired() {
@@ -470,7 +572,7 @@ impl super::LaneFront {
         match rendered {
             Ok((response, body)) => match write(stream, &response).await {
                 Ok(()) => {
-                    *sent += body;
+                    progress.sent += body;
                     Some(code)
                 }
                 Err(write_error) => {
@@ -489,10 +591,11 @@ impl super::LaneFront {
     fn finish(
         &self,
         ctx: &mut HttpRequestContext,
+        forward: &Forward<'_>,
         error: Option<&Error>,
-        status: Option<u16>,
-        sent: usize,
+        progress: &Progress,
     ) {
+        let (status, sent, received) = (progress.status, progress.sent, progress.received());
         let now = ctx.refresh_clock();
         let elapsed = now.saturating_duration_since(ctx.started_at);
         let result = classify_http_result(error, status);
@@ -500,11 +603,43 @@ impl super::LaneFront {
         if let Err(metric_error) = self.metrics.record_http_operation(result, elapsed) {
             warn!("could not account for HTTP operation metrics: {metric_error}");
         }
-        ctx.observe_bytes(0, sent, now);
+        ctx.observe_bytes(received, sent, now);
         ctx.release_lease();
-        ctx.account_attempt(0, sent, now);
+        ctx.account_attempt(received, sent, now);
         ctx.record_failed_evacuations(error);
+        if let Some(log) = self.service.access_log() {
+            super::log::write(log, ctx, forward, progress, elapsed);
+        }
     }
+}
+
+fn request_framing(body: Body) -> FastFraming {
+    match body {
+        Body::Chunked => FastFraming {
+            chunked: true,
+            content_length: None,
+        },
+        Body::Length(length) => FastFraming {
+            chunked: false,
+            content_length: Some(usize::try_from(length).expect("a scanned length")),
+        },
+        Body::None => unreachable!("only requests with a body are framed"),
+    }
+}
+
+/// Streams the request body from the client to the origin, piece by piece.
+async fn pump(
+    stream: &mut Stream,
+    ctx: &mut HttpRequestContext,
+    session: &mut HttpSession,
+    upload: &mut Upload,
+) -> Result<(), Box<Error>> {
+    while let Some(piece) = upload.next(stream).await.map_err(Error::into_down)? {
+        session.write_body(&piece).await.map_err(Error::into_up)?;
+        ctx.observe_bytes(upload.received(), 0, Instant::now());
+    }
+    session.finish_body().await.map_err(Error::into_up)?;
+    Ok(())
 }
 
 /// The stream buffers its writes: what a client waits for must be flushed before the next wait on the origin.
@@ -584,6 +719,17 @@ fn render_request(
     if connection_close {
         edit(edits.set(names::CONNECTION, Value::trusted(b"close")));
     }
+    // The host a rule may name: the request's own when it is passed on as it is.
+    let incoming;
+    let selected = match host {
+        HostEdit::Set(value) => Some(value),
+        HostEdit::AsSent if !forward.decisions.is_empty() => {
+            incoming = HeaderValue::from_bytes(head.host(buffer)).ok();
+            incoming.as_ref()
+        }
+        HostEdit::AsSent | HostEdit::Remove => None,
+    };
+    edit(rules::edit_request(&mut edits, forward.decisions, selected));
     write_request(out, buffer, head, &edits);
 }
 
@@ -648,6 +794,11 @@ fn render_fast(
             edit(edits.remove(name));
         }
     }
+    edit(rules::edit_response(
+        &mut edits,
+        forward.policy(),
+        head.status,
+    ));
     let no_body = is_head || matches!(head.status, 204 | 304);
     let chunked = !no_body && facts.content_length.is_none();
     edit(edits.stamp_request_id(raw, head, Value::trusted(forward.id.as_bytes())));

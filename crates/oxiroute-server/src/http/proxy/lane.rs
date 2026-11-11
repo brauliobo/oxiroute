@@ -6,12 +6,15 @@
 //! The lane exists for requests whose cost is the layers around them; it never grows the grammar, it refuses a
 //! superset of what the classic parser refuses.
 
+mod body;
 mod buffers;
 mod direct;
 mod head;
+mod log;
 mod peek;
 mod plan;
 mod proxy;
+mod rules;
 mod timing;
 
 use std::{
@@ -95,7 +98,6 @@ impl LaneFront {
     ) -> Option<Self> {
         let eligible = enabled
             && service.gzip().is_none()
-            && service.access_log().is_none()
             && service.automatic_response_headers()
             && service.has_lane_route();
         let write_budget = [
@@ -191,9 +193,20 @@ impl LaneFront {
             let method = Method::from_bytes(request.method(buffer)).ok()?;
             self.service
                 .select_route_path(Some(&authority), path, &method)
-                .filter(|route| route.lane != LaneRoute::Classic)?
+                .filter(|route| self.service.serves_on_lane(route.lane))?
         };
         Some((route, authority))
+    }
+
+    /// Whether the lane streams the body of the request to its route: only a proxied route does, and a length over
+    /// the route's limit is the classic path's `413`.
+    fn takes_body(route: &HttpRoutePlan, request: &head::Request) -> bool {
+        route.lane == LaneRoute::Proxy
+            && match request.body {
+                head::Body::Length(length) => !route.policy.exceeds_body_limit(length),
+                head::Body::Chunked => true,
+                head::Body::None => unreachable!("a request without a body is not asked"),
+            }
     }
 
     async fn serve_request(
@@ -222,13 +235,24 @@ impl LaneFront {
         let Some(early) = peek::decide(&self.service, buffer) else {
             return Served::Handoff;
         };
-        let Some(request) = head::scan(buffer, early.line, scanned)
-            .filter(|request| request.head_len == buffer.len())
+        let Some(request) =
+            head::scan(buffer, early.line, scanned).filter(|request| request.admits(buffer.len()))
         else {
             return Served::Handoff;
         };
         let Some((route, authority)) = self.select_route(buffer, &request, early) else {
             return Served::Handoff;
+        };
+        if request.body != head::Body::None && !Self::takes_body(&route, &request) {
+            return Served::Handoff;
+        }
+        let decisions = if route.lane == LaneRoute::Proxy {
+            let Some(decisions) = proxy::decide(stream, &route, buffer, scanned, &authority) else {
+                return Served::Handoff;
+            };
+            decisions
+        } else {
+            Vec::new()
         };
         let started = Instant::now();
         connection.begin_request();
@@ -248,7 +272,9 @@ impl LaneFront {
                 request: &request,
                 route: &route,
                 id: &id,
+                decisions: &decisions,
                 keepalive: connection.will_keepalive(),
+                preread: &buffer[request.head_len..],
             };
             return self
                 .serve_proxied(stream, connection, forward, authority)
