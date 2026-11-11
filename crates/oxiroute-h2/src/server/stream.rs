@@ -10,6 +10,8 @@ use crate::error::{Error, Reason};
 
 /// One accepted request. Costs a reference count on the connection plus two integers; all state lives in the
 /// connection's stream table, nothing is buffered per stream on the sending side (see [`Stream::poll_capacity`]).
+/// What only reads the stream (`poll_data`, `release_capacity`, `poll_reset`, `is_end_stream`) takes `&self`, so a
+/// task can read the request body and watch for the client's reset on the same stream at once.
 ///
 /// Dropping it before the response is complete cancels the stream with `RST_STREAM(CANCEL)`; dropping it after
 /// a complete response while the request body is still arriving sends `RST_STREAM(NO_ERROR)`, as `h2` does.
@@ -26,12 +28,12 @@ impl Stream {
     }
 
     /// Next piece of the request body (a slice of the read buffer); `None` after the last one.
-    pub fn poll_data(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, Error>>> {
+    pub fn poll_data(&self, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, Error>>> {
         self.shared.lock().poll_data(self.idx, self.id, cx)
     }
 
     /// Gives `n` octets of request-body credit back; `WINDOW_UPDATE`s are batched.
-    pub fn release_capacity(&mut self, n: usize) {
+    pub fn release_capacity(&self, n: usize) {
         self.shared.lock().release_capacity(self.idx, self.id, n);
     }
 
@@ -153,7 +155,7 @@ impl Stream {
 
     /// Ready with the code when the stream was reset (by the peer or locally), with an error when the
     /// connection closed; Pending otherwise.
-    pub fn poll_reset(&mut self, cx: &mut Context<'_>) -> Poll<Result<Reason, Error>> {
+    pub fn poll_reset(&self, cx: &mut Context<'_>) -> Poll<Result<Reason, Error>> {
         self.shared.lock().poll_reset(self.idx, self.id, cx)
     }
 }
