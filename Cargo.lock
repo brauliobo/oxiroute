@@ -2813,6 +2813,7 @@ dependencies = [
  "oxiroute-supervision-unix",
  "oxiroute-supervisor-master",
  "oxiroute-supervisor-process",
+ "oxiroute-tls-rustls",
  "parking_lot 0.13.0",
  "pingora",
  "quinn",
@@ -3044,6 +3045,21 @@ version = "6.3.1"
 dependencies = [
  "openssl",
  "tempfile",
+]
+
+[[package]]
+name = "oxiroute-tls-rustls"
+version = "6.3.1"
+dependencies = [
+ "async-trait",
+ "log",
+ "pingora",
+ "rcgen",
+ "rustls",
+ "sha2",
+ "tokio",
+ "tokio-rustls",
+ "x509-parser",
 ]
 
 [[package]]
@@ -4024,6 +4040,7 @@ version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
+ "aws-lc-rs",
  "log",
  "once_cell",
  "ring",
@@ -4088,6 +4105,7 @@ version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
+ "aws-lc-rs",
  "ring",
  "rustls-pki-types",
  "untrusted 0.9.0",

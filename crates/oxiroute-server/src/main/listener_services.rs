@@ -240,11 +240,7 @@ pub(super) fn add_http_listener<A>(
 ) -> Result<(), Box<dyn Error>> {
     match (bind, tls) {
         (ListenerBind::Socket { address }, Some(tls)) => {
-            service.add_tls_with_settings(
-                &address.to_string(),
-                None,
-                tls.tls_settings(handshake_threads)?,
-            );
+            tls.listen(service, &address.to_string(), handshake_threads)?;
             Ok(())
         }
         (ListenerBind::Udp { .. }, Some(_)) => Err(io::Error::new(

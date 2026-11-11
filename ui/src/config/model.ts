@@ -133,8 +133,11 @@ export interface TlsPolicyConfig {
   session_timeout_seconds: number | null
   session_tickets: boolean
   prefer_server_ciphers: boolean
+  backend: TlsBackend
   key_exchange_groups?: string[] | null
 }
+
+export type TlsBackend = 'openssl' | 'rustls'
 
 export type TlsClientAuthMode = 'disabled' | 'optional' | 'required'
 

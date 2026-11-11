@@ -39,6 +39,10 @@ use support::{
     tls_client_config_with_versions, tls_connect, tls_connect_with_config, verified_upstream,
 };
 
+fn rustls_backend() -> bool {
+    support::test_tls_policy().backend == oxiroute_config::TlsBackend::Rustls
+}
+
 const TENANT_SNI_SERVER_NAME: &str = "tenant.sni.example.test";
 
 #[tokio::test]
@@ -712,8 +716,15 @@ async fn downstream_refuses_tls_1_0_and_1_1_before_any_http_bytes() {
             let rejected = legacy_tls_handshake(proxy.address, version)
                 .await
                 .unwrap_or_else(|error| panic!("{version:?} client attempt failed: {error}"));
+            // rustls answers a client that offers nothing newer than TLS 1.1 with handshake_failure, OpenSSL with
+            // protocol_version.
+            let alert = if rustls_backend() {
+                "handshake failure"
+            } else {
+                "protocol version"
+            };
             assert!(
-                rejected.error.contains("protocol version"),
+                rejected.error.contains(alert),
                 "{version:?} failed for the wrong reason: {}",
                 rejected.error
             );

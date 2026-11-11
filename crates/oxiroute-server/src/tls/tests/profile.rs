@@ -80,6 +80,7 @@ fn applies_explicit_server_tls_policy_to_openssl_settings() {
         session_timeout_seconds: Some(86_400),
         session_tickets: false,
         prefer_server_ciphers: false,
+        backend: oxiroute_config::TlsBackend::Openssl,
         key_exchange_groups: None,
     };
 

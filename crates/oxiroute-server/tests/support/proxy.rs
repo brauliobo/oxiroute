@@ -52,6 +52,19 @@ impl ProxyConfig {
     }
 }
 
+/// The default policy of the wire tests. `OXIROUTE_INTERNAL_TEST_TLS_BACKEND=rustls` runs the same tests against the
+/// rustls backend (`scripts/test-tls-backends.sh` runs both).
+pub fn test_tls_policy() -> oxiroute_config::TlsPolicy {
+    let backend = match std::env::var("OXIROUTE_INTERNAL_TEST_TLS_BACKEND").as_deref() {
+        Ok("rustls") => oxiroute_config::TlsBackend::Rustls,
+        _ => oxiroute_config::TlsBackend::Openssl,
+    };
+    oxiroute_config::TlsPolicy {
+        backend,
+        ..oxiroute_config::TlsPolicy::default()
+    }
+}
+
 pub fn proxy_config(
     listener_address: SocketAddr,
     origin_address: SocketAddr,
@@ -82,7 +95,7 @@ pub fn proxy_config(
             default_certificate: "downstream".into(),
             min_version: TlsVersion::Tls12,
             alpn: downstream_alpn,
-            policy: oxiroute_config::TlsPolicy::default(),
+            policy: test_tls_policy(),
         }],
         listeners: vec![Listener {
             name: "wire".into(),
@@ -136,10 +149,7 @@ pub fn proxy_config(
         }],
         ..empty_config()
     };
-    ProxyConfig {
-        config,
-        directory,
-    }
+    ProxyConfig { config, directory }
 }
 
 pub fn verified_upstream(server_name: &str, ca_fixture: &str) -> UpstreamTls {
@@ -183,12 +193,7 @@ impl ProxyHarness {
                 .expect("downstream certificate generation"),
         );
         let spec = generation.services().first().expect("wire runtime service");
-        assert_eq!(
-            spec.bind,
-            ListenerBind::Socket {
-                address,
-            }
-        );
+        assert_eq!(spec.bind, ListenerBind::Socket { address });
         let bind = spec.bind.to_string();
         let metrics = RuntimeMetrics::new();
         metrics
@@ -226,11 +231,8 @@ impl ProxyHarness {
         let tls = spec.tls.as_ref().expect("downstream TLS profile");
         let app = MonitoredHttpApp::new(app, listener_metrics, Arc::clone(&generation));
         let mut service = ListeningService::new("OxiRoute wire test".into(), app);
-        service.add_tls_with_settings(
-            &bind,
-            None,
-            tls.tls_settings(2).expect("downstream TLS settings"),
-        );
+        tls.listen(&mut service, &bind, 2)
+            .expect("downstream TLS settings");
 
         let inherited = generation
             .reservations()
