@@ -38,8 +38,13 @@ const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 const SIZES: [usize; 2] = [4000, 24000];
 const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 const LOCK: &str = "/tmp/oxiroute-bench.lock";
-const IMPLS: [(&str, &str); 3] = [
-    ("ours", "oxiroute-h2"),
+const IMPLS: [(&str, &str); 5] = [
+    ("ours", "oxiroute-h2 accept + HeaderMap"),
+    ("view", "oxiroute-h2 accept_view + send_response_fields"),
+    (
+        "view-data",
+        "oxiroute-h2 accept_view + send_response_with_data",
+    ),
     ("h2-task", "h2 0.4.20, task per stream (as pingora does)"),
     ("h2-inline", "h2 0.4.20, handler inline"),
 ];
@@ -205,11 +210,16 @@ async fn run_ours(io: Replay, n: usize, written: &AtomicU64) -> u64 {
         stream.send_data(body.clone(), true).unwrap();
         served += 1;
     }
-    // One poll of `accept` runs the connection until everything queued has been written (the replay is idle).
+    drain(&mut server, written).await;
+    served
+}
+
+/// One poll of `accept` runs the connection until everything queued has been written (the replay is idle).
+async fn drain(server: &mut Server<Replay>, written: &AtomicU64) {
     loop {
         let before = written.load(Ordering::Relaxed);
         {
-            let mut accept = pin!(server.accept());
+            let mut accept = pin!(server.accept_view());
             poll_fn(|cx| {
                 let _ = accept.as_mut().poll(cx);
                 Poll::Ready(())
@@ -221,6 +231,40 @@ async fn run_ours(io: Replay, n: usize, written: &AtomicU64) -> u64 {
             break;
         }
     }
+}
+
+/// The same traffic through the borrowed API: no `Parts`, no `HeaderMap`. `with_data` answers with headers and body
+/// in one call, otherwise the body goes through `poll_capacity` and `send_data` as `run_ours` does.
+async fn run_view(io: Replay, n: usize, written: &AtomicU64, with_data: bool) -> u64 {
+    let body = Bytes::from(vec![b'x'; 1024]);
+    let mut server = Server::handshake(io, Config::default()).await.unwrap();
+    let mut served = 0u64;
+    while served < n as u64 {
+        let (_view, mut stream) = server.accept_view().await.unwrap().unwrap();
+        let id = format!("{served:016x}");
+        let fields: [(&[u8], &[u8]); 5] = [
+            (b"content-type", b"application/octet-stream"),
+            (b"content-length", b"1024"),
+            (b"server", b"oxiroute"),
+            (b"date", b"Mon, 09 Nov 2026 12:00:00 GMT"),
+            (b"x-request-id", id.as_bytes()),
+        ];
+        if with_data {
+            assert_eq!(
+                stream
+                    .send_response_with_data(200, fields, body.clone())
+                    .unwrap(),
+                0
+            );
+        } else {
+            stream.send_response_fields(200, fields, false).unwrap();
+            let granted = poll_fn(|cx| stream.poll_capacity(cx, 1024)).await.unwrap();
+            assert_eq!(granted, 1024);
+            stream.send_data(body.clone(), true).unwrap();
+        }
+        served += 1;
+    }
+    drain(&mut server, written).await;
     served
 }
 
@@ -295,6 +339,8 @@ fn run(args: &[String]) {
     let served = rt.block_on(async {
         match which.as_str() {
             "ours" => run_ours(io, n, &written).await,
+            "view" => run_view(io, n, &written, false).await,
+            "view-data" => run_view(io, n, &written, true).await,
             "h2-task" => run_h2(io, n, true, &written).await,
             _ => run_h2(io, n, false, &written).await,
         }
