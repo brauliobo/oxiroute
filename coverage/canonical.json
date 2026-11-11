@@ -1735,6 +1735,36 @@
       "required_tests": ["decode", "validate", "interop"]
     },
     {
+      "id": "canonical.enum.tls-backend",
+      "kind": "enum",
+      "path": "TlsBackend",
+      "editability": "fixed",
+      "normalization": ["serde token"],
+      "validation": ["closed variant set"],
+      "runtime": { "target": "schema", "disposition": "classified" },
+      "required_tests": ["decode", "validate", "failure"]
+    },
+    {
+      "id": "canonical.enum.tls-backend.openssl",
+      "kind": "variant",
+      "path": "TlsBackend::Openssl",
+      "editability": "operator",
+      "normalization": ["token openssl"],
+      "validation": ["accepted TLS backend"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "interop"]
+    },
+    {
+      "id": "canonical.enum.tls-backend.rustls",
+      "kind": "variant",
+      "path": "TlsBackend::Rustls",
+      "editability": "operator",
+      "normalization": ["token rustls"],
+      "validation": ["accepted TLS backend"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "interop"]
+    },
+    {
       "id": "canonical.enum.alpn-protocol",
       "kind": "enum",
       "path": "AlpnProtocol",
