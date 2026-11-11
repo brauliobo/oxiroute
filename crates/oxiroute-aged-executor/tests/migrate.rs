@@ -67,7 +67,7 @@ fn a_task_continues_on_the_worker_it_moved_to_with_its_state_intact() {
     let target = b.executor.clone();
     let log = Arc::clone(&seen);
     a.executor.spawn(async move {
-        let state = vec![1, 2, 3];
+        let state = [1, 2, 3];
         log.lock()
             .unwrap()
             .push((thread::current().name().map(str::to_owned), in_task()));
