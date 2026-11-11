@@ -261,10 +261,13 @@ def build(args):
             "dns_names": ["bench.example.com"],
             "source": {"type": "self_signed_development", "key_type": key_type},
         }]
-        tls_policy = {"session_tickets": on("tls_tickets"), "backend": args.tls_backend}
+        tls_policy = {"session_tickets": on("tls_tickets")}
+        if not args.baseline:
+            tls_policy["backend"] = args.tls_backend
         if on("tls_kx"):
             tls_policy["key_exchange_groups"] = ["x25519", "secp256r1"]
-        tls_policy["ktls"] = KTLS_ON if on("ktls") else "off"
+        if not args.baseline:
+            tls_policy["ktls"] = KTLS_ON if on("ktls") else "off"
         if on("tls_cache"):
             tls_policy["session_cache"] = {"name": "bench-sessions", "size_bytes": 4194304}
         config["tls_profiles"] = [{
@@ -330,6 +333,8 @@ def main():
                         help="tls_handshake_threads (-1 leaves the setting out: automatic, 0: inline handshakes)")
     parser.add_argument("--tls-backend", choices=["openssl", "rustls"], default="openssl",
                         help="policy.backend of the TLS profile")
+    parser.add_argument("--baseline", action="store_true",
+                        help="the binary is an older release: leave out options it does not know (backend, ktls)")
     parser.add_argument("--run-dir", default="/tmp")
     parser.add_argument("--feature", action="append", default=[])
     parser.add_argument("--set", action="append", default=[], help="a root option as KEY=JSON (repeatable)")
