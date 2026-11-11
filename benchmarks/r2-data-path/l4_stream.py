@@ -94,7 +94,7 @@ def main():
     parser.add_argument("--reps", type=int, default=3)
     parser.add_argument("--proxy-env", action="append", default=[])
     cli = parser.parse_args()
-    args = types.SimpleNamespace(bin=os.environ["OXIROUTE_BIN"], tool=os.environ["R2TOOL_BIN"], tmp="/dev/shm",
+    args = types.SimpleNamespace(bin=os.environ["OXIROUTE_BIN"], tool=os.environ["R2TOOL_BIN"], tmp="/var/tmp",
                                  proxy_env=cli.proxy_env, conns=cli.conns, mib=cli.mib, chunk_kib=cli.chunk_kib)
     lane = run.LANES["l4_echo_1k"]
     with run.bench_lock():
