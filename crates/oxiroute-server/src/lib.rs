@@ -55,7 +55,9 @@ pub use health::{HealthBuildError, HealthSupervisor};
 pub use http::evacuation::{EvacuationReport, LeftRunning};
 pub use http::inflight::live_requests;
 pub use http::proxy::{HttpRequestContext, HttpReverseProxy};
-pub use http::server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp};
+pub use http::server_app::{
+    HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp, with_h2_windows,
+};
 pub use http3::Http3Runtime;
 pub(crate) use http3::upstream_plan::{H3UpstreamBuildError, H3UpstreamError, H3UpstreamPlan};
 pub use l4::proxy_protocol::{

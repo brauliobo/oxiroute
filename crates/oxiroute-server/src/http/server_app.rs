@@ -5,7 +5,7 @@ use std::{
 
 use async_trait::async_trait;
 use log::warn;
-use oxiroute_config::DownstreamTimeoutPolicy;
+use oxiroute_config::{DownstreamTimeoutPolicy, H2Windows};
 use pingora::{
     apps::{
         AcceptGate, ConnectionAdmission, Http1Front, HttpServerApp, HttpServerOptions,
@@ -25,6 +25,15 @@ use crate::http::proxy::lane::{LaneFront, LaneTimeouts};
 use crate::listener::runtime::{AdmissionError, ListenerRuntime};
 use crate::{ListenerMetrics, RuntimeGeneration, RuntimeReferenceKind, TlsProfilePlan};
 use oxiroute_acme::ChallengeStore;
+
+/// `options` advertising the receive windows of the listener.
+#[must_use]
+pub fn with_h2_windows(mut options: H2Options, windows: H2Windows) -> H2Options {
+    options
+        .initial_window_size(windows.stream)
+        .initial_connection_window_size(windows.connection);
+    options
+}
 
 pub struct MonitoredHttpApp<A> {
     generation: Arc<RuntimeGeneration>,
