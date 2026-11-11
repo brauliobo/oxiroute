@@ -44,7 +44,7 @@ use openssl::{
     },
 };
 use oxiroute_config::{
-    AlpnProtocol, SelfSignedKeyType, TlsClientAuthMode, TlsPolicy, TlsProfile, TlsVersion,
+    AlpnProtocol, KtlsMode, SelfSignedKeyType, TlsClientAuthMode, TlsPolicy, TlsProfile, TlsVersion,
 };
 use pingora::{
     listeners::{ALPN, TlsAccept, tls::TlsSettings},
