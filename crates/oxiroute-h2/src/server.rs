@@ -5,6 +5,12 @@
 //! flushes, runs the SETTINGS acknowledgement timer and answers control frames. The proxy applies its own read
 //! and idle timeouts on the application side (this crate has no idle timer beyond the SETTINGS acknowledgement).
 //! Streams share the connection through one mutex that is never held across a suspension point.
+//!
+//! Two ways to take a request, both validating identically in one decode path: [`Server::accept`] returns the
+//! `http` request head, [`Server::accept_view`] a [`RequestView`] borrowed from a pooled arena (no `http` types;
+//! [`RequestView::into_parts`] converts when needed). Likewise a response goes out as a `HeaderMap`
+//! ([`Stream::send_response`]) or as raw `(name, value)` slices ([`Stream::send_response_fields`], and with a small
+//! body in the same call [`Stream::send_response_with_data`]).
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::conn::Connection;
