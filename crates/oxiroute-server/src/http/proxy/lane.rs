@@ -14,7 +14,8 @@ mod proxy;
 mod timing;
 
 use std::{
-    future::poll_fn,
+    future::{Future, poll_fn},
+    pin::{Pin, pin},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -35,6 +36,8 @@ use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     sync::Notify,
 };
+
+use timing::within;
 
 pub(crate) use plan::LaneRoute;
 
@@ -80,7 +83,9 @@ pub(crate) struct LaneFront {
 }
 
 enum Served {
-    Next,
+    /// The connection serves another request; the clock reading at which this one ended, from which its idle wait
+    /// is timed.
+    Next(Instant),
     Close,
     Handoff,
 }
@@ -132,13 +137,16 @@ impl LaneFront {
 
     /// Waits until the connection has bytes of a request and reads them. `None` when the connection is over: the
     /// client left, the wait timed out or the service is stopping. No buffer is held while the connection waits.
+    /// `idle_since` is when the wait began; `stopped` resolves when the service stops, and is polled by the waits
+    /// of every request of the connection, so it registers once and not once per wait.
     async fn wait_for_bytes(
         &self,
         stream: &mut Stream,
         connection: &Http1Connection,
-        shutdown: &ShutdownWatch,
+        stopping: bool,
+        idle_since: Instant,
+        stopped: Pin<&mut impl Future<Output = ()>>,
     ) -> Option<BytesMut> {
-        let stopping = *shutdown.borrow();
         let read = async {
             poll_fn(|cx| stream.poll_read_ready(cx)).await.ok()?;
             let mut buffer = buffers::take_read();
@@ -150,9 +158,15 @@ impl LaneFront {
                 }
             }
         };
+        // A read that is ready at once needs no timer.
         let timed = async {
-            match self.idle_timeout(connection, stopping) {
-                Some(limit) => tokio::time::timeout(limit, read).await.unwrap_or(None),
+            let deadline = self
+                .idle_timeout(connection, stopping)
+                .and_then(|limit| idle_since.checked_add(limit));
+            match deadline {
+                Some(deadline) => within(tokio::time::Instant::from_std(deadline), read)
+                    .await
+                    .unwrap_or(None),
                 None => read.await,
             }
         };
@@ -163,7 +177,7 @@ impl LaneFront {
             buffer = timed => buffer,
             () = async {
                 if connection.is_reused() {
-                    let _ = shutdown.clone().wait_for(|stopping| *stopping).await;
+                    stopped.await;
                 } else {
                     self.first_request.notified().await;
                 }
@@ -237,6 +251,7 @@ impl LaneFront {
         if route.lane == LaneRoute::Proxy {
             let id = HeaderValue::from_bytes(id).expect("request ids are visible ASCII");
             let forward = proxy::Forward {
+                started,
                 buffer,
                 head: scanned,
                 request: &request,
@@ -263,6 +278,7 @@ impl LaneFront {
             stream.flush().await
         })
         .await;
+        let ended = Instant::now();
         let sent = written.is_ok_and(|result| result.is_ok());
         let body = if request.is_head {
             0
@@ -271,12 +287,13 @@ impl LaneFront {
         };
         let _ = self.metrics.record_bytes_sent(body);
         let status = sent.then_some(response.status);
-        let _ = self
-            .metrics
-            .record_http_operation(HttpOperationResult::from_status(status), started.elapsed());
+        let _ = self.metrics.record_http_operation(
+            HttpOperationResult::from_status(status),
+            ended.saturating_duration_since(started),
+        );
         connection.end_request();
         if sent && connection.will_keepalive() {
-            return Served::Next;
+            return Served::Next(ended);
         }
         let _ = stream.shutdown().await;
         Served::Close
@@ -291,8 +308,23 @@ impl Http1Front for LaneFront {
         connection: &mut Http1Connection,
         shutdown: &ShutdownWatch,
     ) -> Http1FrontOutcome {
+        let mut watch = shutdown.clone();
+        let stopped = async {
+            let _ = watch.wait_for(|stopping| *stopping).await;
+        };
+        let mut stopped = pin!(stopped);
+        let mut idle_since = Instant::now();
         loop {
-            let Some(mut buffer) = self.wait_for_bytes(&mut stream, connection, shutdown).await
+            let stopping = *shutdown.borrow();
+            let Some(mut buffer) = self
+                .wait_for_bytes(
+                    &mut stream,
+                    connection,
+                    stopping,
+                    idle_since,
+                    stopped.as_mut(),
+                )
+                .await
             else {
                 return Http1FrontOutcome::Closed;
             };
@@ -300,7 +332,10 @@ impl Http1Front for LaneFront {
                 .serve_request(&mut stream, connection, shutdown, &buffer)
                 .await
             {
-                Served::Next => buffers::give_read(buffer),
+                Served::Next(ended) => {
+                    buffers::give_read(buffer);
+                    idle_since = ended;
+                }
                 Served::Close => {
                     buffers::give_read(buffer);
                     return Http1FrontOutcome::Closed;
