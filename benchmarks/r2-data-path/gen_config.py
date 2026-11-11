@@ -7,6 +7,11 @@ Usage: gen_config.py OUT --proxy-port P --upstream-port U [--servers N] [--echo-
 Every feature is an independent A/B switch on top of the minimal reverse-proxy configuration:
   access_log timeouts retry queue capacity passive breaker outlier gzip cache reqbuf respbuf
   forward forwarded dns dns_startup retry_buffered fixed static tls tls_cache tls_tickets tls_rsa upstream_h2 l4 stats nginx_host lc wrr
+  h3 fixed_b1k fixed_b64k
+
+`h3` serves the service on an `http3` UDP listener (TLS 1.3, ALPN h3, self-signed development certificate; routes get
+the request buffering and body bound that HTTP/3 requires). `fixed_b1k` and `fixed_b64k` answer `/fixed` with a body of
+that size and leave out the proxy route (without them an `h3` service proxies to the HTTP/1.1 origin pool).
 """
 
 import argparse
@@ -98,7 +103,14 @@ def build(args):
     if on("respbuf"):
         route_policy.update({"response_buffering": True, "max_request_body_bytes": 10485760})
 
+    h3_fixed = on("fixed_b1k") or on("fixed_b64k")
     routes = []
+    if h3_fixed:
+        routes.append({
+            "path": {"kind": "segment_prefix", "value": "/fixed"},
+            "methods": [],
+            "action": {"type": "fixed_response", "status": 200, "body": "x" * (1024 if on("fixed_b1k") else 65536)},
+        })
     if on("fixed"):
         routes.append({
             "path": {"kind": "segment_prefix", "value": "/fixed"},
@@ -118,7 +130,11 @@ def build(args):
     }
     if route_policy:
         proxy_route["policy"] = route_policy
-    routes.append(proxy_route)
+    if not h3_fixed:
+        routes.append(proxy_route)
+    if on("h3"):
+        for route in routes:
+            route["policy"] = {"request_buffering": True, "max_request_body_bytes": 10485760}
 
     service = {
         "name": "bench",
@@ -185,7 +201,9 @@ def build(args):
         "rtmp_services": [],
         "l4_services": [],
     }
-    if on("tls") or on("tls_cache") or on("tls_tickets") or on("tls_rsa"):
+    if on("h3"):
+        listener.update(protocol="http3", bind={"type": "udp", "address": f"127.0.0.1:{args.proxy_port}"})
+    if on("tls") or on("tls_cache") or on("tls_tickets") or on("tls_rsa") or on("h3"):
         key_type = "rsa_2048" if on("tls_rsa") else "ecdsa_p256"
         config["certificates"] = [{
             "name": "bench-cert",
@@ -199,8 +217,8 @@ def build(args):
             "name": "bench-tls",
             "certificates": ["bench-cert"],
             "default_certificate": "bench-cert",
-            "min_version": "1.2",
-            "alpn": ["h2", "http/1.1"],
+            "min_version": "1.3" if on("h3") else "1.2",
+            "alpn": ["h3"] if on("h3") else ["h2", "http/1.1"],
             "policy": tls_policy,
         }]
         listener["tls_profile"] = "bench-tls"

@@ -8,9 +8,12 @@ publish = false
 [dependencies]
 bytes = "1.12"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
 http-body-util = "0.1.5"
 hyper = { version = "1.12", features = ["client", "http1", "http2", "server"] }
 hyper-util = { version = "0.1.21", features = ["http1", "http2", "server-auto", "tokio"] }
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = { version = "1.15.1", features = ["std"] }
 tokio = { version = "1.54", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
