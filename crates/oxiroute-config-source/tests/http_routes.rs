@@ -106,15 +106,15 @@ fn reverse_http3_proxy_config(min: &str, max: &str) -> ConfigDraft {
     config
 }
 
-fn assert_reverse_http3_pool_rejected(min: &str, max: &str) {
-    let error = reverse_http3_proxy_config(min, max)
-        .validate()
-        .expect_err("reverse H3 must not use an H1/H2 upstream pool");
-    assert!(
-        error
-            .to_string()
-            .contains("HTTP/3 reverse routes require an exact HTTP/3 upstream pool"),
-        "unexpected rejection: {error}"
+fn add_tcp_listener(config: &mut ConfigDraft) {
+    config.listeners.push(
+        serde_json::from_value(json!({
+            "name": "tcp",
+            "bind": {"type": "socket", "address": "127.0.0.1:9080"},
+            "protocol": "http",
+            "service": "web",
+        }))
+        .expect("TCP listener sharing the service"),
     );
 }
 
@@ -167,18 +167,12 @@ fn rejects_reverse_http3_request_body_limits_above_the_runtime_bound() {
 }
 
 #[test]
-fn rejects_reverse_http3_routes_that_would_use_an_h1_pool() {
-    assert_reverse_http3_pool_rejected("1.1", "1.1");
-}
-
-#[test]
-fn rejects_reverse_http3_routes_that_would_use_a_flexible_h1_h2_pool() {
-    assert_reverse_http3_pool_rejected("1.1", "2");
-}
-
-#[test]
-fn rejects_reverse_http3_routes_that_would_use_an_h2_pool() {
-    assert_reverse_http3_pool_rejected("2", "2");
+fn accepts_reverse_http3_routes_with_h1_and_h2_pools() {
+    for (min, max) in [("1.1", "1.1"), ("1.1", "2"), ("2", "2")] {
+        reverse_http3_proxy_config(min, max)
+            .validate()
+            .unwrap_or_else(|error| panic!("reverse H3 accepts a {min}-{max} pool: {error}"));
+    }
 }
 
 #[test]
@@ -186,6 +180,41 @@ fn accepts_reverse_http3_routes_with_an_exact_h3_pool() {
     reverse_http3_proxy_config("3", "3")
         .validate()
         .expect("reverse H3 accepts an exact H3 upstream pool");
+}
+
+#[test]
+fn rejects_reverse_http3_routes_with_an_unresolvable_pool() {
+    let mut config = reverse_http3_proxy_config("1.1", "1.1");
+    config.upstream_pools.clear();
+    config
+        .validate()
+        .expect_err("a proxy route must name a configured pool");
+}
+
+#[test]
+fn shares_a_service_with_h1_and_h2_pools_between_http3_and_tcp_listeners() {
+    for (min, max) in [("1.1", "1.1"), ("1.1", "2"), ("2", "2")] {
+        let mut config = reverse_http3_proxy_config(min, max);
+        add_tcp_listener(&mut config);
+        config
+            .validate()
+            .unwrap_or_else(|error| panic!("a {min}-{max} pool is shared: {error}"));
+    }
+}
+
+#[test]
+fn rejects_sharing_a_service_with_an_h3_pool_with_a_tcp_listener() {
+    let mut config = reverse_http3_proxy_config("3", "3");
+    add_tcp_listener(&mut config);
+    let error = config
+        .validate()
+        .expect_err("an H3 pool cannot serve a TCP listener");
+    assert!(
+        error
+            .to_string()
+            .contains("a service using an HTTP/3 upstream pool cannot be shared"),
+        "unexpected rejection: {error}"
+    );
 }
 
 #[test]
