@@ -20,6 +20,29 @@ use std::io;
 use tokio::io::Interest;
 use tokio::net::TcpStream;
 
+use crate::protocols::{Stream as AnyStream, IO};
+
+/// The TCP socket of a stream that is a plain TCP connection: no TLS and no other transport in between.
+pub fn plain_tcp_socket(stream: &AnyStream) -> Option<&TcpStream> {
+    IO::as_any(&**stream)
+        .downcast_ref::<crate::protocols::l4::stream::Stream>()?
+        .tcp_socket()
+}
+
+/// [`send_file`] to `stream`, which must have no bytes waiting in its write buffer (flush the response head first).
+/// Returns `Ok(None)` without sending anything when `stream` is not a plain TCP connection.
+pub async fn send_file_to_stream(
+    stream: &AnyStream,
+    file: &File,
+    offset: u64,
+    length: usize,
+) -> io::Result<Option<usize>> {
+    match plain_tcp_socket(stream) {
+        Some(socket) => send_file(socket, file, offset, length).await.map(Some),
+        None => Ok(None),
+    }
+}
+
 /// Sends up to `length` bytes of `file` starting at `offset` and returns how many were sent, which is less than
 /// `length` only when the file ends first. Waits for the socket to be writable whenever its buffer is full.
 ///
@@ -95,6 +118,30 @@ mod tests {
         assert_eq!(sent, 5_000_000);
         drop(server);
         assert!(reader.await.unwrap() == data[1000..5_001_000]);
+    }
+
+    #[tokio::test]
+    async fn a_plain_tcp_stream_takes_a_file_and_any_other_stream_gets_none() {
+        let file = file_with(&[3; 5000]);
+        let (client, server) = pair().await;
+        let plain: AnyStream = Box::new(crate::protocols::l4::stream::Stream::from(server));
+        assert_eq!(
+            send_file_to_stream(&plain, &file, 1000, 4000)
+                .await
+                .unwrap(),
+            Some(4000)
+        );
+        let mut received = vec![0; 4000];
+        let mut client = client;
+        client.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, vec![3; 4000]);
+
+        let (_client, other) = tokio::net::UnixStream::pair().unwrap();
+        let other: AnyStream = Box::new(crate::protocols::l4::stream::Stream::from(other));
+        assert_eq!(
+            send_file_to_stream(&other, &file, 0, 10).await.unwrap(),
+            None
+        );
     }
 
     #[tokio::test]

@@ -87,9 +87,11 @@ fn with_static_route<'a>(root: &'a Path, host: Option<&'a str>) -> impl Fn(&mut 
             methods: Vec::new(),
             access_policy: None,
             policy: oxiroute_config::HttpRoutePolicy::default(),
-            action: serde_json::from_value(
-                serde_json::json!({ "type": "static_files", "root_directory": root }),
-            )
+            action: serde_json::from_value(serde_json::json!({
+                "type": "static_files",
+                "root_directory": root,
+                "path_mapping": "alias"
+            }))
             .expect("static files action"),
         };
         config.http_services[0].routes.insert(0, route);
@@ -120,6 +122,35 @@ impl Pair {
         })
         .await;
         Self { classic, lane }
+    }
+
+    /// [`Self::mixed`] with the static cache holding a file for `window_ms`, and every file requested once so that
+    /// the cache holds it.
+    async fn mixed_holding(root: &Path, host: Option<&str>, window_ms: u64) -> Self {
+        let window = window_ms.to_string();
+        let environment = [(STATIC_VALIDITY, window.as_str())];
+        let classic = Wire::over_with_env(Origin::start(OK).await, &environment, |config| {
+            with_fixed_route(config);
+            with_static_route(root, host)(config);
+            config.http_fast_lane = Some(false);
+        })
+        .await;
+        let lane = Wire::over_with_env(Origin::start(OK).await, &environment, |config| {
+            with_fixed_route(config);
+            with_static_route(root, host)(config);
+        })
+        .await;
+        let pair = Self { classic, lane };
+        for (name, _) in STATIC_FILES {
+            let request = format!(
+                "GET /static/{name} HTTP/1.1\r\nHost: {}\r\n\r\n",
+                host.unwrap_or("example.test")
+            );
+            for wire in [&pair.classic, &pair.lane] {
+                wire.exchange(request.as_bytes()).await;
+            }
+        }
+        pair
     }
 
     async fn serving(reply: &'static [u8], closes: bool) -> Self {
@@ -398,6 +429,9 @@ async fn an_unrequested_switching_protocols_reply_is_a_bad_gateway_on_the_lane()
     assert!(lane.closed);
 }
 
+/// The test hook that sets how long the static cache holds a file, in milliseconds.
+const STATIC_VALIDITY: &str = "OXIROUTE_INTERNAL_TEST_STATIC_VALIDITY_MS";
+
 const STATIC_FILES: [(&str, usize); 3] = [
     ("small.txt", 5),
     ("one-k.bin", 1024),
@@ -452,5 +486,84 @@ async fn static_file_requests_on_a_host_bound_route_are_identical_on_both_paths(
     compare(&pair, &corpus::static_sequences()).await;
     let elsewhere = corpus::static_requests_for("other.test");
     compare(&pair, &elsewhere).await;
+    pair.finish();
+}
+
+/// With the cache holding every file, the lane answers the plain requests itself and hands the conditional, range and
+/// other ones to the classic path: the bytes and the connection must still be the classic path's.
+#[tokio::test]
+async fn static_file_requests_answered_from_the_cache_are_identical_on_both_paths() {
+    let directory = static_root();
+    let pair = Pair::mixed_holding(&directory.path().join("public"), None, 600_000).await;
+    compare(&pair, &static_cases()).await;
+    compare(&pair, &corpus::static_sequences()).await;
+    pair.finish();
+}
+
+#[tokio::test]
+async fn static_file_requests_on_a_host_bound_route_answered_from_the_cache_are_identical() {
+    let directory = static_root();
+    let root = directory.path().join("public");
+    let pair = Pair::mixed_holding(&root, Some("example.test"), 600_000).await;
+    compare(&pair, &corpus::static_requests()).await;
+    compare(&pair, &corpus::static_sequences()).await;
+    compare(&pair, &corpus::static_requests_for("other.test")).await;
+    pair.finish();
+}
+
+/// A file replaced while the cache holds it is served as it was, whole, until the window ends; then the next request
+/// sees the new file. The classic path and the lane agree at every step.
+#[tokio::test]
+async fn a_file_replaced_while_cached_is_served_as_it_was_until_the_window_ends() {
+    let directory = static_root();
+    let root = directory.path().join("public");
+    let pair = Pair::mixed_holding(&root, None, 6_000).await;
+    let get = |file: &str| format!("GET /static/{file} HTTP/1.1\r\nHost: example.test\r\n\r\n");
+    let old = play(&pair.lane, &[get("large.bin").as_bytes()]).await;
+    for name in ["large.bin", "small.txt"] {
+        let replacement = root.join(format!("{name}.new"));
+        let length = if name == "small.txt" {
+            7
+        } else {
+            2 * 1024 * 1024
+        };
+        fs::write(&replacement, vec![b'Z'; length]).expect("write the replacement");
+        fs::rename(&replacement, root.join(name)).expect("replace the file");
+    }
+    let cases = [get("large.bin"), get("small.txt")];
+    for case in &cases {
+        let classic = play(&pair.classic, &[case.as_bytes()]).await;
+        let lane = play(&pair.lane, &[case.as_bytes()]).await;
+        assert_eq!(classic, lane, "inside the window: {case}");
+    }
+    let held = play(&pair.lane, &[cases[0].as_bytes()]).await;
+    assert_eq!(held.response, old.response, "the held file is served whole");
+
+    sleep(Duration::from_millis(6_500)).await;
+    for case in &cases {
+        // The request that finds the entry expired reads the file again, which a loaded host can take longer than the
+        // quiet period of `play`: ask until the new file arrives, then compare the two paths.
+        for wire in [&pair.classic, &pair.lane] {
+            for _ in 0..20 {
+                if play(wire, &[case.as_bytes()])
+                    .await
+                    .response
+                    .contains("ZZZZZZZ")
+                {
+                    break;
+                }
+            }
+        }
+        let classic = play(&pair.classic, &[case.as_bytes()]).await;
+        let lane = play(&pair.lane, &[case.as_bytes()]).await;
+        assert_eq!(classic, lane, "after the window: {case}");
+        assert!(
+            lane.response.contains("ZZZZZZZ"),
+            "the new file: {case} ({} bytes, closed {}) {:?}",
+            lane.response.len(),
+            lane.closed,
+            lane.response.chars().take(400).collect::<String>()
+        );
+    }
     pair.finish();
 }

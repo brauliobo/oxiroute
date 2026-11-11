@@ -18,6 +18,18 @@ pub(super) fn render(
     let rendered = response.rendered_head.as_deref().unwrap_or_default();
     let body = if head { &[][..] } else { &response.body[..] };
     out.reserve(rendered.len() + body.len() + request_id.len() + 128);
+    put_head(out, rendered, request_id, automatic);
+    out.put_slice(body);
+}
+
+/// A rendered head completed as `write_rendered_response` completes it: the request id, `Date` and `Connection`
+/// when the service writes them, and the blank line.
+pub(super) fn put_head(
+    out: &mut BytesMut,
+    rendered: &[u8],
+    request_id: &[u8],
+    automatic: Option<&str>,
+) {
     out.put_slice(rendered);
     out.put_slice(b"x-request-id: ");
     out.put_slice(request_id);
@@ -30,5 +42,4 @@ pub(super) fn render(
         out.put_slice(b"\r\n");
     }
     out.put_slice(b"\r\n");
-    out.put_slice(body);
 }

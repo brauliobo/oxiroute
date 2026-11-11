@@ -1,4 +1,5 @@
-//! Bytes of a static file: held in memory when small, read in chunks from the open descriptor otherwise.
+//! Bytes of a static file: held in memory when small, read in chunks from the open descriptor otherwise (or sent by
+//! the kernel when the pages are known to be in memory).
 
 use std::{collections::VecDeque, io, os::unix::fs::FileExt as _};
 
@@ -13,23 +14,40 @@ pub(crate) use super::static_kernel::KernelSlice;
 
 /// Files up to this size are read whole once and served from memory.
 pub(crate) const MEMORY_FILE_BYTES: u64 = 128 * 1024;
+/// Files up to this size on a file system that cannot say whether a read would wait are read once when they are
+/// opened, so that the kernel can send them from memory for the validity window of the cache.
+pub(crate) const WARM_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// Chunks read per blocking-pool hop when the file system cannot answer a read from its cache without waiting.
 const WINDOW_CHUNKS: usize = 2;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum StaticContent {
     Memory(Bytes),
-    Open(File),
+    /// An open file. `warm`: it was read whole a moment ago on a file system that cannot tell whether a read would
+    /// wait, so its pages are taken to be in memory.
+    Open {
+        file: Arc<File>,
+        warm: bool,
+    },
 }
 
 impl StaticContent {
-    /// Reads a small open file into memory; larger files and files already in memory are returned as they are.
+    pub(crate) const fn open(file: Arc<File>) -> Self {
+        Self::Open { file, warm: false }
+    }
+
+    /// Reads a small open file into memory and a medium one into the page cache, if the file system cannot say
+    /// whether the pages are there; larger files and files already in memory are returned as they are.
     pub(super) fn load(self, size: u64) -> Result<Self, StaticServeError> {
-        let Self::Open(file) = self else {
+        let Self::Open { file, .. } = self else {
             return Ok(self);
         };
         if size > MEMORY_FILE_BYTES {
-            return Ok(Self::Open(file));
+            if size <= WARM_FILE_BYTES && super::static_kernel::needs_warming(&file) {
+                warm(&file, size).map_err(|_| StaticServeError::Unavailable)?;
+                return Ok(Self::Open { file, warm: true });
+            }
+            return Ok(Self::open(file));
         }
         let mut body = vec![0; usize::try_from(size).map_err(|_| StaticServeError::TooLarge)?];
         file.read_exact_at(&mut body, 0)
@@ -40,12 +58,7 @@ impl StaticContent {
     pub(crate) fn into_reader(self, start: u64, length: u64) -> StaticReader {
         let source = match self {
             Self::Memory(body) => Source::Memory(body),
-            Self::Open(file) => Source::Open(OpenFile {
-                file: Arc::new(file),
-                ahead: VecDeque::new(),
-                blocking: false,
-                kernel: true,
-            }),
+            Self::Open { file, warm } => Source::Open(OpenFile::new(file, warm)),
         };
         StaticReader {
             source,
@@ -67,12 +80,25 @@ struct OpenFile {
     file: Arc<File>,
     ahead: VecDeque<Bytes>,
     blocking: bool,
+    /// Whether the file was read whole when it was opened: the kernel may send it on a file system with no
+    /// non-blocking reads.
+    warm: bool,
     /// Whether the rest of the file may still be sent by the kernel (cleared when the connection cannot or a page
     /// is not cached).
     kernel: bool,
 }
 
 impl OpenFile {
+    fn new(file: Arc<File>, warm: bool) -> Self {
+        Self {
+            file,
+            ahead: VecDeque::new(),
+            blocking: false,
+            warm,
+            kernel: true,
+        }
+    }
+
     async fn read(&mut self, offset: u64, remaining: u64) -> io::Result<Bytes> {
         if self.ahead.is_empty() && !self.blocking {
             if let Some(chunk) = cached_chunk(&self.file, offset, remaining)? {
@@ -107,7 +133,7 @@ impl StaticReader {
         if !open.kernel || open.blocking || !open.ahead.is_empty() {
             return None;
         }
-        let slice = KernelSlice::next(&open.file, self.offset, self.remaining);
+        let slice = KernelSlice::next(&open.file, self.offset, self.remaining, open.warm);
         open.kernel = slice.is_some();
         slice
     }
@@ -145,6 +171,20 @@ impl StaticReader {
         self.remaining -= length as u64;
         Ok(Some(chunk))
     }
+}
+
+/// Reads the whole file once, so that its pages are in memory.
+fn warm(file: &File, size: u64) -> io::Result<()> {
+    let mut buffer = vec![0; CHUNK_BYTES];
+    let mut offset = 0;
+    while offset < size {
+        let length = buffer
+            .len()
+            .min(usize::try_from(size - offset).unwrap_or(usize::MAX));
+        file.read_exact_at(&mut buffer[..length], offset)?;
+        offset += length as u64;
+    }
+    Ok(())
 }
 
 fn chunk_length(remaining: u64) -> usize {
@@ -229,8 +269,8 @@ mod tests {
         let data = pattern(700_000);
         std::fs::write(&path, &data).expect("write");
         for (start, length) in [(0, 700_000), (262_100, 300_000), (699_999, 1)] {
-            let mut reader =
-                StaticContent::Open(File::open(&path).expect("open")).into_reader(start, length);
+            let mut reader = StaticContent::open(Arc::new(File::open(&path).expect("open")))
+                .into_reader(start, length);
             let Source::Open(open) = &mut reader.source else {
                 unreachable!()
             };
@@ -241,6 +281,39 @@ mod tests {
             let to = usize::try_from(start + length).expect("end");
             assert_eq!(chunks.concat(), data[from..to], "{start}+{length}");
         }
+    }
+
+    #[test]
+    fn warming_reads_the_whole_file_and_a_file_shorter_than_its_size_is_an_error() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("data.bin");
+        std::fs::write(&path, pattern(300_000)).expect("write");
+        let file = File::open(&path).expect("open");
+        assert!(warm(&file, 300_000).is_ok());
+        assert!(warm(&file, 300_001).is_err());
+    }
+
+    #[test]
+    fn a_warm_file_is_read_like_any_open_file() {
+        let directory = tempfile::tempdir_in("/dev/shm").expect("directory in memory");
+        let path = directory.path().join("data.bin");
+        std::fs::write(&path, pattern(300_000)).expect("write");
+        let file = Arc::new(File::open(&path).expect("open"));
+        let mut warm = StaticContent::Open {
+            file: file.clone(),
+            warm: true,
+        }
+        .into_reader(0, 300_000);
+        let Source::Open(open) = &warm.source else {
+            unreachable!()
+        };
+        assert!(open.warm);
+        assert!(warm.kernel_slice().is_some());
+        let cold = StaticContent::open(file).into_reader(0, 300_000);
+        let Source::Open(open) = &cold.source else {
+            unreachable!()
+        };
+        assert!(!open.warm);
     }
 
     #[tokio::test]
