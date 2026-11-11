@@ -144,21 +144,19 @@ impl CompiledTlsProfilePolicy {
 }
 
 /// Whether connections of the profile are offered the kernel TLS transmit offload. A kernel that cannot do it
-/// leaves the profile in user space, and the operator hears it once per generation, here.
+/// leaves the profile in user space, exactly as `ktls = "off"`, and the operator hears it once per generation, here.
 fn kernel_tx_available(profile: &str, mode: KtlsMode) -> bool {
     if mode == KtlsMode::Off {
         return false;
     }
     match pingora::protocols::l4::ktls::probe() {
         Ok(()) => {
-            log::info!(
-                "TLS profile `{profile}`: ktls = \"static\": large static files are sent with kernel TLS"
-            );
+            log::info!("TLS profile `{profile}`: kernel TLS is active for large static files");
             true
         }
         Err(unavailable) => {
-            log::warn!(
-                "TLS profile `{profile}`: ktls = \"static\" is not active, TLS stays in user space: {unavailable}"
+            log::info!(
+                "TLS profile `{profile}`: kernel TLS is not available, TLS stays in user space: {unavailable}"
             );
             false
         }

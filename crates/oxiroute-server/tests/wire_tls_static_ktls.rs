@@ -1,10 +1,11 @@
 #![cfg(target_os = "linux")]
 #![allow(dead_code, unused_imports, clippy::duplicate_mod)]
-//! Static files over TLS with `ktls = "static"`: large files leave the page cache for the socket in the kernel, which
+//! Static files over TLS with `ktls = "auto"`: large files leave the page cache for the socket in the kernel, which
 //! encrypts them, and every byte, keep-alive request, `KeyUpdate` and close must look like the user-space path.
 //!
 //! The kernel's `tls` module has to be loaded (`sudo modprobe tls`) for the kernel to be used; without it the profile
-//! says so in the log and serves from user space, so these tests still pass and the counter assertions are skipped.
+//! says so in the log and serves from user space exactly like `ktls = "off"`, so these tests still pass and the counter
+//! assertions are skipped.
 
 mod support;
 
@@ -101,7 +102,7 @@ async fn large_files_arrive_intact_over_kernel_tls_and_the_connection_serves_the
     timeout(TEST_TIMEOUT, async {
         let body = pattern(BIG);
         let (_directory, root) = static_root(&body);
-        let (proxy, _origin) = serving(root, KtlsMode::Static);
+        let (proxy, _origin) = serving(root, KtlsMode::Auto);
         let before = kernel_tx_sockets();
         let mut stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
@@ -141,7 +142,7 @@ async fn a_key_update_from_the_client_between_downloads_keeps_the_connection_int
     timeout(TEST_TIMEOUT, async {
         let body = pattern(BIG);
         let (_directory, root) = static_root(&body);
-        let (proxy, _origin) = serving(root, KtlsMode::Static);
+        let (proxy, _origin) = serving(root, KtlsMode::Auto);
         let mut stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
             .await
             .expect("TLS connection to OxiRoute");
@@ -170,7 +171,7 @@ async fn tls_1_2_clients_get_the_same_files_from_user_space() {
     timeout(TEST_TIMEOUT, async {
         let body = pattern(BIG);
         let (_directory, root) = static_root(&body);
-        let (proxy, _origin) = serving(root, KtlsMode::Static);
+        let (proxy, _origin) = serving(root, KtlsMode::Auto);
         let config = tls_client_config_with_versions(
             &fixture("ca-a.pem"),
             &[b"http/1.1"],
@@ -211,4 +212,39 @@ async fn a_profile_without_the_option_serves_the_same_bytes_from_user_space() {
     })
     .await
     .expect("unconfigured profile test timed out");
+}
+
+#[tokio::test]
+async fn a_host_without_kernel_tls_serves_auto_exactly_like_off() {
+    if kernel_available() {
+        eprintln!("skipped: this host has kernel TLS, see the tests above");
+        return;
+    }
+    timeout(TEST_TIMEOUT, async {
+        let body = pattern(BIG);
+        let (_directory, root) = static_root(&body);
+        let mut served = Vec::new();
+        for mode in [KtlsMode::Auto, KtlsMode::Off] {
+            let (proxy, _origin) = serving(root.clone(), mode);
+            let before = kernel_tx_sockets();
+            let mut stream =
+                tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
+                    .await
+                    .expect("TLS connection to OxiRoute");
+            let big = h1_request(&mut stream, "/big.bin", false)
+                .await
+                .expect("large response");
+            let small = h1_request(&mut stream, "/small.txt", true)
+                .await
+                .expect("small response");
+            assert_eq!(kernel_tx_sockets(), before, "{mode:?} used the kernel");
+            served.push((big.status, big.body == body, small.status, small.body));
+            drop(stream);
+            proxy.finish().await;
+        }
+        assert_eq!(served[0], served[1]);
+        assert!(served[0].1, "the large body differs");
+    })
+    .await
+    .expect("auto without kernel TLS test timed out");
 }
