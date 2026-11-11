@@ -459,6 +459,7 @@ class Env:
              "--listeners", str(lane.listeners), "--workers", str(lane.workers),
              "--tls-handshake-threads", str(lane.handshake_threads), "--run-dir", str(self.work)]
             + (["--classic"] if self.args.classic else [])
+            + (["--baseline"] if self.args.baseline else [])
             + ["--tls-backend", self.args.tls_backend]
             + [item for option in lane.options for item in ("--set", option)]
             + [item for feature in lane.features for item in ("--feature", feature)],
@@ -920,6 +921,8 @@ def main():
                         help="policy.backend of the generated TLS profile")
     parser.add_argument("--classic", action="store_true",
                         help="generate `http_fast_lane = false`: every request takes the classic path")
+    parser.add_argument("--baseline", action="store_true",
+                        help="the binary is an older release (6.3.x): generate no `backend` or `ktls` policy options")
     parser.add_argument("--proxy-env", action="append", default=[], metavar="KEY=VALUE",
                         help="extra proxy environment, e.g. LD_PRELOAD=/usr/lib/libjemalloc.so.2 for allocator A/B")
     parser.add_argument("--lock-batch", type=int, default=1,
