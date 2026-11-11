@@ -108,12 +108,24 @@ def build_lanes():
     for name, size in (("static_f1k", 1024), ("static_f64k", 65536), ("static_f1m", 1048576)):
         add(lane(name, ["--path", f"/static/{name[7:]}.bin", "--expect-len", str(size)] + base, features=["static"],
                  requests=20000 if size < 65536 else 5000 if size == 65536 else 1000))
-    # Static files over TLS: user-space records against kernel TLS (`ktls = "static"`, needs `modprobe tls`).
+    # Static files over TLS: user-space records against kernel TLS (`ktls = "auto"`, needs `modprobe tls`).
     for name, features in (("tls_static", ["tls", "static"]), ("tls_static_ktls", ["tls", "static", "ktls"])):
-        for size, label in ((262144, "f256k"), (1048576, "f1m")):
+        for size, label in ((65536, "f64k"), (131072, "f128k"), (262144, "f256k"), (1048576, "f1m")):
             add(lane(f"{name}_{label}", ["--proto", "h1tls", "--path", f"/static/{label}.bin",
                                          "--expect-len", str(size)] + base,
-                     features=features, requests=2000 if size < 1048576 else 1000, warmup=100))
+                     features=features, requests=5000 if size < 262144 else 2000 if size < 1048576 else 1000, warmup=100))
+    # Small answers on a connection that already moved a large file (what kernel TLS keeps for the connection's life),
+    # and large files mixed into small requests at one per `every` requests of a connection.
+    small = ["--proto", "h1tls", "--conns", "16", "--expect-len", "1024"]
+    for name, features in (("user", ["tls", "static"]), ("ktls", ["tls", "static", "ktls"])):
+        add(lane(f"tls_plain_{name}", small + ["--path", "/b1k"], features=features, requests=20000, warmup=1000))
+        for label, path in (("b1k", "/b1k"), ("f1k", "/static/f1k.bin")):
+            add(lane(f"tls_conv_{name}_{label}", small + ["--path", path, "--prime-path", "/static/f1m.bin"],
+                     features=features, requests=20000, warmup=1000))
+        for every in (10, 50, 200, 1000):
+            add(lane(f"tls_mix{every}_{name}", small + ["--path", "/static/f1k.bin", "--mix-path", "/static/f1m.bin",
+                                                         "--mix-len", "1048576", "--mix-every", str(every)],
+                     features=features, requests=3000 if every <= 50 else 20000, warmup=200))
     add(lane("ws_echo_64", ["--proto", "ws", "--conns", "16", "--msg-bytes", "64"]))
     add(lane("ws_echo_16k", ["--proto", "ws", "--conns", "16", "--msg-bytes", "16384"], requests=10000))
     add(lane("ws_echo_1k", ["--proto", "ws", "--conns", "16", "--msg-bytes", "1024"]))
@@ -320,7 +332,7 @@ class Env:
         (self.work / "logs").mkdir()
         www = self.work / "www" / "static"
         www.mkdir(parents=True)
-        for name, size in (("f1k", 1024), ("f64k", 65536), ("f256k", 262144), ("f1m", 1048576)):
+        for name, size in (("f1k", 1024), ("f64k", 65536), ("f128k", 131072), ("f256k", 262144), ("f1m", 1048576)):
             (www / f"{name}.bin").write_bytes(b"x" * size)
 
     def start(self, wrap=(), proxy_env=None):
@@ -580,6 +592,20 @@ def measure_allocs(args, lane):
             "clock_gettime_per_req": round(delta[6] / requests, 1), "alloc_requests": requests}
 
 
+def slab_bytes(slabinfo):
+    """Kernel slab bytes by cache and their sum, without the ZFS caches that background disk activity grows."""
+    caches = {}
+    for line in slabinfo.splitlines()[2:]:
+        fields = line.split()
+        if not fields[0].startswith(("zio_", "zfs_", "sa_cache", "dnode", "dmu_", "arc_", "abd_", "zil_", "lz4")):
+            caches[fields[0]] = int(fields[2]) * int(fields[3])
+    return caches, sum(caches.values()) // 1024
+
+
+def read_slabinfo():
+    return subprocess.run(["sudo", "-n", "cat", "/proc/slabinfo"], capture_output=True, text=True, check=True).stdout
+
+
 def measure_memory(args, lane):
     """Heap and RSS per idle keep-alive connection: live-byte delta of the allocator shim between 0 and N connections."""
     env = Env(args, lane)
@@ -589,22 +615,31 @@ def measure_memory(args, lane):
         env.start(proxy_env={"LD_PRELOAD": str(build_alloc_shim(args)), "R2_ALLOC_FILE": str(snapshots)})
         pid = env.proxy.pid
         rss_before = proc_status(pid)["rss_kb"]
+        kernel_before = slab_bytes(read_slabinfo())
         subprocess.run(["kill", "-USR1", str(pid)], check=True)
         deadline = time.monotonic() + 5
         while not snapshots.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
-        command = env.load_command(connections, connections, [("hook-start", f"kill -USR1 {pid}")])
+        command = env.load_command(connections, connections, [("hook-start", f"kill -USR1 {pid}; sudo -n cat /proc/slabinfo > {env.work}/slab.txt; "
+                                                                f"cp /proc/net/tls_stat {env.work}/tls_stat.txt")])
         command[command.index("--conns") + 1] = str(connections)
         subprocess.run(command, capture_output=True, text=True, check=True, timeout=LANE_TIMEOUT)
         deadline = time.monotonic() + 5
         while len(snapshots.read_text().splitlines()) < 2 and time.monotonic() < deadline:
             time.sleep(0.02)
         rss_after = proc_status(pid)["rss_kb"]
+        kernel_after = slab_bytes((env.work / "slab.txt").read_text())
+        converted = int(re.search(r"^TlsCurrTxSw\s+(\d+)", (env.work / "tls_stat.txt").read_text(), re.M).group(1))
         first, second = [list(map(int, line.split())) for line in snapshots.read_text().splitlines()[:2]]
     finally:
         env.close()
+    growth = sorted(((after - kernel_before[0].get(name, 0), name) for name, after in kernel_after[0].items()), reverse=True)
     return {"mem_conns": connections, "heap_live_bytes_per_conn": round((second[7] - first[7]) / connections),
-            "rss_bytes_per_conn": round((rss_after - rss_before) * 1024 / connections)}
+            "rss_bytes_per_conn": round((rss_after - rss_before) * 1024 / connections),
+            "kernel_tls_tx_sockets": converted,
+            "kernel_slab_bytes_per_conn": round((kernel_after[1] - kernel_before[1]) * 1024 / connections),
+            "kernel_slab_caches_bytes_per_conn": " ".join(f"{name}:{round(grown / connections)}" for grown, name in growth[:12]
+                                                         if grown / connections >= 24)}
 
 
 def measure_profile(args, lane):
