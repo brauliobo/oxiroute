@@ -110,7 +110,7 @@ pub(super) async fn h3_to_an_h2_origin_that_resets_answers_bad_gateway() {
     assert_eq!(
         daemon.get("/h2").await.status,
         200,
-        "the connection survives the failed streams"
+        "the origin still answers after the failed streams"
     );
     daemon.finish().await;
     origin.finish().await;

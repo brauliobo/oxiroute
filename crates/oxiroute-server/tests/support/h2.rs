@@ -295,13 +295,26 @@ where
     Ok(bytes)
 }
 
+type H2Accepted = (Request<h2::RecvStream>, h2::server::SendResponse<Bytes>);
+
+/// The next request of the connection, or `None` once the peer is gone, however abruptly: a proxy closes a
+/// connection whose stream failed, and that must not stop the origin.
+async fn accept_h2(
+    connection: &mut h2::server::Connection<ServerTlsStream<TcpStream>, Bytes>,
+) -> Result<Option<H2Accepted>, BoxError> {
+    match connection.accept().await {
+        Some(Ok(accepted)) => Ok(Some(accepted)),
+        Some(Err(error)) if !error.is_io() => Err(error.into()),
+        Some(Err(_)) | None => Ok(None),
+    }
+}
+
 async fn serve_tls_h2(
     stream: ServerTlsStream<TcpStream>,
     observations: Arc<OriginObservations>,
 ) -> Result<(), BoxError> {
     let mut connection = h2::server::handshake(stream).await?;
-    while let Some(request) = connection.accept().await {
-        let (request, respond) = request?;
+    while let Some((request, respond)) = accept_h2(&mut connection).await? {
         observations.http_requests.fetch_add(1, Ordering::SeqCst);
         observations
             .http_bytes
@@ -344,8 +357,7 @@ async fn serve_tls_h2_refusing_streams(
     observations: Arc<OriginObservations>,
 ) -> Result<(), BoxError> {
     let mut connection = h2::server::handshake(stream).await?;
-    while let Some(request) = connection.accept().await {
-        let (request, mut respond) = request?;
+    while let Some((request, mut respond)) = accept_h2(&mut connection).await? {
         observations.http_requests.fetch_add(1, Ordering::SeqCst);
         observations
             .http_bytes
