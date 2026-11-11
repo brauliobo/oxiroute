@@ -78,6 +78,29 @@ impl Connector {
         }
     }
 
+    /// [`Self::reused_http_session()`] with the session in a box, built in place.
+    pub async fn reused_boxed_http_session<P: Peer + Send + Sync + 'static>(
+        &self,
+        peer: &P,
+    ) -> Option<Box<HttpSession>> {
+        let stream = self.transport.reused_stream(peer).await?;
+        Some(Box::new(HttpSession::new_with_options(stream, peer)))
+    }
+
+    /// [`Self::release_http_session()`] for a session in a box.
+    pub async fn release_boxed_http_session<P: Peer + Send + Sync + 'static>(
+        &self,
+        mut session: Box<HttpSession>,
+        peer: &P,
+        idle_timeout: Option<Duration>,
+    ) {
+        session.respect_keepalive();
+        if let Some(stream) = session.reuse_boxed().await {
+            self.transport
+                .release_stream(stream, peer.reuse_hash(), idle_timeout);
+        }
+    }
+
     /// Return the number of times a pooled connection was found to contain
     /// unexpected data from the server.
     pub fn unexpected_data_connection_count(&self) -> u64 {
