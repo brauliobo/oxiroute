@@ -64,8 +64,8 @@ fn a_light_load_is_packed_onto_the_minimum_once_the_delay_has_passed() {
 #[test]
 fn the_release_goes_straight_to_the_workers_the_load_fits() {
     let mut rig = Rig::new(policy(1), 8);
-    // 700 permille of work: at 60% of the 500 target a worker takes 300, so three workers hold it.
-    let load = spread(700, 8);
+    // 1300 permille of work: at 90% of the 500 target a worker takes 450, so three workers hold it.
+    let load = spread(1_300, 8);
     assert_eq!(rig.run(Duration::from_secs(6), &load), 3);
 }
 
@@ -76,18 +76,27 @@ fn the_minimum_is_never_released() {
 }
 
 #[test]
-fn a_spike_inside_the_delay_restarts_it() {
+fn a_spike_that_needs_every_worker_restarts_the_delay() {
     let mut rig = Rig::new(policy(1), 4);
     let light = spread(100, 4);
     assert_eq!(rig.run(Duration::from_secs(4), &light), 4);
-    // Busy enough that three workers are needed, for one tick of the window.
-    assert_eq!(rig.run(TICK, &spread(1_200, 4)), 4);
+    assert_eq!(rig.run(TICK, &spread(2_400, 4)), 4);
     assert_eq!(
         rig.run(Duration::from_secs(4), &light),
         4,
         "the delay restarted at the spike"
     );
     assert_eq!(rig.run(Duration::from_secs(2), &light), 1);
+}
+
+#[test]
+fn a_smaller_spike_inside_the_delay_keeps_the_workers_it_needed() {
+    let mut rig = Rig::new(policy(1), 4);
+    let light = spread(100, 4);
+    rig.run(Duration::from_secs(4), &light);
+    // Three workers' worth for one tick: the release that follows stops there.
+    rig.run(TICK, &spread(1_200, 4));
+    assert_eq!(rig.run(Duration::from_secs(2), &light), 3);
 }
 
 #[test]
@@ -123,10 +132,10 @@ fn saturated_workers_roughly_double_the_active_set_until_all_are_active() {
 #[test]
 fn a_load_between_the_release_and_the_target_bands_changes_nothing() {
     let mut rig = Rig::new(policy(1), 4);
-    // 500 permille of work: two workers at 250 each, the fewest that stay under 60% of the target.
+    // 500 permille of work: two workers at 250 each, the fewest that stay under 90% of the target.
     assert_eq!(rig.run(Duration::from_secs(6), &spread(500, 4)), 2);
-    // Two workers would be at 225 (above the release band for one) and 450 (under the target for two): no change.
-    assert_eq!(rig.run(Duration::from_secs(20), &spread(450, 4)), 2);
+    // Two workers hold 600 and 900 at 300 and 450 each: under the target for two, over the release band for one.
+    assert_eq!(rig.run(Duration::from_secs(20), &spread(600, 4)), 2);
     assert_eq!(rig.run(Duration::from_secs(20), &spread(900, 4)), 2);
 }
 

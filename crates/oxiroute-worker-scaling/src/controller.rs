@@ -13,8 +13,9 @@ pub struct Policy {
 
 impl Policy {
     /// A worker is released only when the load fits the remaining ones at this share (percent) of the target, so the
-    /// load that releases a worker is well under the load that activates one and the set does not flap.
-    pub const RELEASE_PERCENT: u32 = 60;
+    /// load that releases a worker is a little under the load that activates one, and the set does not flap: the
+    /// packed workers' own busy share sits between the two.
+    pub const RELEASE_PERCENT: u32 = 90;
 }
 
 /// Decides how many of the first `workers` workers are active from their busy shares, once per tick. It has no clock
