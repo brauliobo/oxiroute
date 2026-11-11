@@ -60,6 +60,9 @@ header.form-heading
     select(v-model="profile.policy.backend")
       option(value="openssl") OpenSSL
       option(value="rustls") rustls (no cipher list or DH parameters)
+  label.field(data-field="tls_profiles[].policy.key_exchange_groups")
+    span Key exchange groups, in preference order (x25519, secp256r1, secp384r1, x25519mlkem768; empty keeps the default list)
+    input(type="text" :value="(profile.policy.key_exchange_groups ?? []).join(', ')" @input="setKeyExchangeGroups")
 StringListField(
   v-model="profile.policy.client_auth.allowed_dns_names"
   label="Allowed client SANs"
@@ -113,6 +116,11 @@ function setSessionCacheSize(event: Event): void {
   if (props.profile.policy.session_cache) {
     props.profile.policy.session_cache.size_bytes = Number((event.target as HTMLInputElement).value)
   }
+}
+
+function setKeyExchangeGroups(event: Event): void {
+  const groups = (event.target as HTMLInputElement).value.split(',').map((group) => group.trim()).filter(Boolean)
+  props.profile.policy.key_exchange_groups = groups.length ? groups : null
 }
 
 function setSessionTimeout(event: Event): void {

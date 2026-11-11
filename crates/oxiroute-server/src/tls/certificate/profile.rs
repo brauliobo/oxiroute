@@ -380,6 +380,18 @@ impl TlsProfilePlan {
         } else {
             settings.clear_options(SslOptions::CIPHER_SERVER_PREFERENCE);
         }
+        if let Some(groups) = &self.policy.key_exchange_groups {
+            let list = groups
+                .iter()
+                .map(|&group| openssl_group_name(group))
+                .collect::<Vec<_>>();
+            settings
+                .set_groups_list(&list.join(":"))
+                .map_err(|source| TlsBuildError::TlsProfileSettings {
+                    profile: self.name.clone(),
+                    source,
+                })?;
+        }
         let selection_index = tls_alpn_selection_index()?;
         let normal_alpn = self.alpn.clone();
         let challenge_store = self.tls_alpn_challenge_store.clone();
@@ -397,6 +409,15 @@ impl TlsProfilePlan {
             settings.set_offload_threadpool(handshake_threads, 1);
         }
         Ok(settings)
+    }
+}
+
+const fn openssl_group_name(group: TlsKeyExchangeGroup) -> &'static str {
+    match group {
+        TlsKeyExchangeGroup::X25519 => "X25519",
+        TlsKeyExchangeGroup::Secp256r1 => "P-256",
+        TlsKeyExchangeGroup::Secp384r1 => "P-384",
+        TlsKeyExchangeGroup::X25519Mlkem768 => "X25519MLKEM768",
     }
 }
 

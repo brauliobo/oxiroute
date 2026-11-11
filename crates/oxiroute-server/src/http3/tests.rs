@@ -479,3 +479,36 @@ fn h3_redirect_templates_characterize_context_and_bounds() {
             .is_none()
     );
 }
+
+fn provider_groups(groups: Option<&[TlsKeyExchangeGroup]>) -> io::Result<Vec<rustls::NamedGroup>> {
+    Ok(h3_crypto_provider(groups)?
+        .kx_groups
+        .iter()
+        .map(|group| group.name())
+        .collect())
+}
+
+#[test]
+fn h3_offers_the_profile_key_exchange_groups_in_the_profiles_order() {
+    use TlsKeyExchangeGroup::{Secp256r1, X25519, X25519Mlkem768};
+    use rustls::NamedGroup;
+
+    assert_eq!(
+        provider_groups(None).unwrap(),
+        [
+            NamedGroup::X25519,
+            NamedGroup::secp256r1,
+            NamedGroup::secp384r1
+        ]
+    );
+    assert_eq!(
+        provider_groups(Some(&[Secp256r1, X25519])).unwrap(),
+        [NamedGroup::secp256r1, NamedGroup::X25519]
+    );
+    // The ring provider has no hybrid group: it is skipped, the classical ones stay.
+    assert_eq!(
+        provider_groups(Some(&[X25519Mlkem768, X25519])).unwrap(),
+        [NamedGroup::X25519]
+    );
+    assert!(provider_groups(Some(&[X25519Mlkem768])).is_err());
+}

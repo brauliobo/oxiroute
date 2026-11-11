@@ -406,6 +406,16 @@
       "required_tests": ["decode", "validate", "failure", "render", "interop"]
     },
     {
+      "id": "canonical.tls-profiles.policy.key-exchange-groups",
+      "kind": "field",
+      "path": "tls_profiles[].policy.key_exchange_groups[]",
+      "editability": "operator",
+      "normalization": ["preserve the listed preference order", "absent keeps the backend default list"],
+      "validation": ["x25519, secp256r1, secp384r1 or x25519mlkem768", "nonempty, no repeats", "hybrid-only needs TLS 1.3"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "interop"]
+    },
+    {
       "id": "canonical.config.listeners",
       "kind": "field",
       "path": "listeners[]",
@@ -1792,6 +1802,56 @@
       "editability": "operator",
       "normalization": ["token http/1.1"],
       "validation": ["accepted ALPN member and order"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "interop"]
+    },
+    {
+      "id": "canonical.enum.tls-key-exchange-group",
+      "kind": "enum",
+      "path": "TlsKeyExchangeGroup",
+      "editability": "fixed",
+      "normalization": ["serde token"],
+      "validation": ["closed variant set"],
+      "runtime": { "target": "schema", "disposition": "classified" },
+      "required_tests": ["decode", "validate", "failure"]
+    },
+    {
+      "id": "canonical.enum.tls-key-exchange-group.x25519",
+      "kind": "variant",
+      "path": "TlsKeyExchangeGroup::X25519",
+      "editability": "operator",
+      "normalization": ["token x25519"],
+      "validation": ["classical group"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "interop"]
+    },
+    {
+      "id": "canonical.enum.tls-key-exchange-group.secp256r1",
+      "kind": "variant",
+      "path": "TlsKeyExchangeGroup::Secp256r1",
+      "editability": "operator",
+      "normalization": ["token secp256r1"],
+      "validation": ["classical group"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "interop"]
+    },
+    {
+      "id": "canonical.enum.tls-key-exchange-group.secp384r1",
+      "kind": "variant",
+      "path": "TlsKeyExchangeGroup::Secp384r1",
+      "editability": "operator",
+      "normalization": ["token secp384r1"],
+      "validation": ["classical group"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "interop"]
+    },
+    {
+      "id": "canonical.enum.tls-key-exchange-group.x25519mlkem768",
+      "kind": "variant",
+      "path": "TlsKeyExchangeGroup::X25519Mlkem768",
+      "editability": "operator",
+      "normalization": ["token x25519mlkem768"],
+      "validation": ["post-quantum hybrid group, TLS 1.3 only"],
       "runtime": { "target": "tls.profile", "disposition": "lowered" },
       "required_tests": ["decode", "validate", "interop"]
     },

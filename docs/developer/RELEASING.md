@@ -150,6 +150,16 @@ and treats the generation as failed (the same path as a killed worker), and reco
 because the process is gone. It is meant for operators who prefer fail-fast with supervisor restarts and accept that one
 bad request can take down every connection of the worker; it measures 3 to 9% fewer instructions per request.
 
+### C flags and the x86-64-v3 flavour
+
+Every flavour compiles the C dependencies (the vendored OpenSSL above all, also aws-lc, Lua, jemalloc) with `-O3`
+(`CFLAGS_x86_64_unknown_linux_gnu` exported by `scripts/build-release-binaries.sh`; the flags are recorded as `c_flags`
+in `BUILD-INFO.json`): 7% to 10% fewer instructions per TLS handshake ([PERF_6_4_TLS_OPTIONS.md](PERF_6_4_TLS_OPTIONS.md)).
+`FLAVOUR=v3` adds `-march=x86-64-v3` and publishes `oxiroute-VERSION-TARGET-x86-64-v3.tar.gz`: another 2.5% to 4% on
+handshakes, and the binary does not start on a CPU without AVX2 and BMI2. It is therefore never part of a tag run and
+never the default artefact; start the release workflow manually with `v3_flavour: true` to publish it. Source builds
+(`cargo build`, the Arch recipe) do not set the flags.
+
 Requirements: the toolchain that trains must be the toolchain that builds. The profile is keyed by symbol names, and
 rustc hashes its own version and the unit configuration into every symbol, so the job installs the pinned Rust 1.97.1
 with the `llvm-tools` component (its `llvm-profdata` reads that compiler's raw format) and nothing else compiles

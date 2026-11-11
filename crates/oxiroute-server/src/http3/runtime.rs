@@ -271,6 +271,14 @@ fn run_reverse(
     })
 }
 
+/// The ring provider with the profile's key-exchange groups in the profile's order; the provider has no hybrid group.
+pub(super) fn h3_crypto_provider(
+    groups: Option<&[TlsKeyExchangeGroup]>,
+) -> io::Result<Arc<rustls::crypto::CryptoProvider>> {
+    crate::tls::provider::with_key_exchange_groups(crate::tls::provider::ring_provider(), groups)
+        .map_err(io::Error::other)
+}
+
 fn server_config(
     tls: &Arc<TlsProfilePlan>,
     idle_timeout: Option<Duration>,
@@ -278,10 +286,11 @@ fn server_config(
     let resolver = Arc::new(QuicCertificateResolver {
         profile: Arc::clone(tls),
     });
-    let crypto_builder =
-        rustls::ServerConfig::builder_with_provider(crate::tls::provider::ring_provider())
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(io::Error::other)?;
+    let crypto_builder = rustls::ServerConfig::builder_with_provider(h3_crypto_provider(
+        tls.policy().key_exchange_groups.as_deref(),
+    )?)
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .map_err(io::Error::other)?;
     let mut crypto = match tls.rustls_client_cert_verifier() {
         Some(verifier) => crypto_builder
             .with_client_cert_verifier(verifier)

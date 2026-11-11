@@ -633,6 +633,7 @@ fn lowers_inherited_nginx_tls_policy_exactly() {
             session_tickets: false,
             prefer_server_ciphers: false,
             backend: oxiroute_config::TlsBackend::Openssl,
+            key_exchange_groups: None,
         }
     );
 }
