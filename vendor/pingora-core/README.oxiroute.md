@@ -160,8 +160,18 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   the block is written in place and kept by the thread for the next request, 64 per thread at most) so the future of
   the connection, which lives as long as the connection, no longer contains it, and the HTTP/2 loop is the boxed free
   function `process_h2` (same code, `self` renamed to `app`).
-- `services/listening.rs` boxes the transport handshake future inside the per-connection task, so the task of a plain
-  connection does not hold the TLS handshake state.
+- `services/listening.rs` runs a plain TCP connection without a transport handshake: `UninitializedStream::ready` (in
+  `listeners/mod.rs`) returns its stream at once, so the task of a plain connection holds no handshake future and arms
+  no handshake timeout; a TLS connection still gets the boxed handshake future under the handshake timeout. The accept
+  loop tries the accept once before it registers on the shutdown and accept-gate signals (a gate change is seen at the
+  top of the loop and a pending shutdown signal before the try), so a connection that is already waiting in the kernel
+  queue costs neither registration.
+- `protocols/mod.rs` `Peek::try_read_now` (default `None`) and its `Stream` implementation in `protocols/l4/stream.rs`:
+  a `recv(MSG_DONTWAIT)` on a plain TCP socket that holds no read-ahead, for the bytes the socket already has. A
+  connection that was just accepted has no readiness event yet, so a read through the I/O driver parks the task until
+  the driver has run although the first request is usually there.
+- `protocols/l4/stream.rs` `RawStreamWrapper` allocates its `recvmsg` control buffer when receive timestamps are
+  enabled and not for every connection.
 - `protocols/l4/lazy_read.rs` `CoalescingWriter` takes its 1,460-byte buffer from a per-thread pool when the first
   bytes are staged and gives it back once they are sent (flush, or a large write behind the staged head), instead of
   one buffer per connection for its whole life.
@@ -290,7 +300,7 @@ response facts, noted request write, inline request loop, zero-copy request body
 `try_read_response_task`, connector hook, admission guard and handshake-timeout hook, rendered response write, inline
 Date and Connection lines, header map headroom, single-clock timeouts, the parked idle wait (`apps/idle_wait.rs`), the pooled request future (`apps/pooled_future.rs`), the pooled coalescing write buffer, owned-preread, borrowed-request-write,
 parsed-header ownership, response-task batch, lazy read buffer and coalescing writer, pooled gzip state, header-name
-cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, the per-worker connection placement (`set_buffer(own_driver)`) and
+cache, body buffer pool, idle pool, listener `TCP_NODELAY`, TLS record coalescing and `Peek::poll_read_ready`, `Peek::try_read_now`, the plain-connection `ready` path and the accept-loop fast path, the lazy `recvmsg` control buffer, the per-worker connection placement (`set_buffer(own_driver)`) and
 `ServerConf::connection_age_ms`, the stream buffer accessors (`tcp_socket`, `has_read_ahead`, `has_write_behind`) and the
 sendfile body write (`write_body_from_file`).
 Every upstream H1 correctness fix whose code our forks replace (`idle.rs`, `proxy_h1_inline.rs` in `pingora-proxy`,
