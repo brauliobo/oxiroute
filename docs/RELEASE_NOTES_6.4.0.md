@@ -165,6 +165,8 @@ These defaults were chosen for 6.4.0 and are listed so that nobody flips them by
   overrides: `OXIROUTE_MANAGEMENT_TOKEN_FILE` (`management.token_file`), `OXIROUTE_AUDIT_DIR` and `OXIROUTE_AUDIT_MAX_*`
   (`audit.*`), `RUST_LOG` (`log_filter`). Supervised workers run with a cleared environment and do not inherit `RUST_LOG`;
   set `log_filter` to change their verbosity. The log filter follows every reload.
+- **Upgraded connections** (WebSocket) hold 7.7 kB less while idle: 47.2 kB to 39.5 kB, over TLS 69.6 kB to 61.5 kB
+  (the request and response head buffers are released once the connection is upgraded).
 - **Costs.** A 1 KiB static file costs about 15% and a WebSocket message about 3% more user-space instructions than in
   6.3.1 (the 0.9.1 base, and for the static file the lane's look at a request of a classic route in a service that also
   has lane routes; see the summary). Requests that take the classic path (cache, rescue pools, streamed bodies, `Expect`,
