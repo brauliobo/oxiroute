@@ -379,7 +379,14 @@ where
             this.read_blocked = false;
         }
         Self::clear_error();
+        let kernel = matches!(this.ktls, KtlsTx::Converting | KtlsTx::Active);
+        if kernel {
+            ktls::offer_keys(this.ssl.ssl(), false);
+        }
         let result = Pin::new(&mut this.ssl).poll_read(cx, buf);
+        if kernel {
+            ktls::offer_keys(this.ssl.ssl(), true);
+        }
         let result = this.kernel_write(cx, result);
         // A read that waits for room to write (the answer to a `KeyUpdate`) is not waiting for ciphertext.
         let wants_write = this.ktls != KtlsTx::Off && ktls::wants_write(this.ssl.ssl());

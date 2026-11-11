@@ -39,6 +39,7 @@ mod imp {
         fn SSL_get_wbio(ssl: *const SSL) -> *mut BIO;
         fn SSL_set0_wbio(ssl: *mut SSL, bio: *mut BIO);
         fn SSL_set_options(ssl: *mut SSL, options: u64) -> u64;
+        fn SSL_clear_options(ssl: *mut SSL, options: u64) -> u64;
         fn SSL_key_update(ssl: *mut SSL, update_type: c_int) -> c_int;
         fn SSL_want(ssl: *const SSL) -> c_int;
         fn SSL_in_init(ssl: *const SSL) -> c_int;
@@ -103,6 +104,21 @@ mod imp {
         scheduled
     }
 
+    /// Lets OpenSSL hand the keys of new record layers to the kernel (`SSL_OP_ENABLE_KTLS`) or not. It is on for
+    /// everything that writes and off while reading: the read BIO is the forwarding BIO, which answers every control
+    /// command it does not know with success, so a read layer that asked it for kernel TLS would be told yes, and
+    /// the next peer `KeyUpdate` would leave OpenSSL expecting plaintext from a socket that still sends records.
+    pub(crate) fn offer_keys(ssl: &SslRef, offered: bool) {
+        // SAFETY: the SSL is alive for the borrow, and the option is only read when a record layer is created.
+        unsafe {
+            if offered {
+                SSL_set_options(ssl.as_ptr(), SSL_OP_ENABLE_KTLS);
+            } else {
+                SSL_clear_options(ssl.as_ptr(), SSL_OP_ENABLE_KTLS);
+            }
+        }
+    }
+
     /// Puts the BIO that forwards to the transport back as the write BIO: the connection stays in user space.
     pub(crate) fn restore_wbio(ssl: &SslRef) {
         // SAFETY: the read BIO is the forwarding BIO. It is shared by both directions again, so it gets the second
@@ -112,6 +128,7 @@ mod imp {
             BIO_up_ref(forwarding);
             SSL_set0_wbio(ssl.as_ptr(), forwarding);
         }
+        offer_keys(ssl, false);
     }
 }
 
@@ -138,4 +155,6 @@ mod imp {
     }
 
     pub(crate) fn restore_wbio(_: &SslRef) {}
+
+    pub(crate) fn offer_keys(_: &SslRef, _: bool) {}
 }
