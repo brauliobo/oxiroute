@@ -53,3 +53,5 @@ runtime path and failure cases are tested.
 - [Test strategy](../TEST_STRATEGY.md)
 - [Shared TLS client context and reload cost](TLS_CLIENT_CONTEXT.md)
 - [Connection layer: TLS, per-connection memory, new-connection cost](CONNECTION_LAYER_PERFORMANCE.md)
+- [Throughput against nginx and HAProxy](BENCHMARK_VS_NGINX_HAPROXY.md): `scripts/bench-vs-proxies.sh`, its self-checks and the manual smoke workflow
+- [6.4 performance summary](PERF_6_4_SUMMARY.md): every 6.4 branch with before and after numbers, and how to re-measure
