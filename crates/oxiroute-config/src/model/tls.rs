@@ -135,8 +135,8 @@ impl Default for TlsPolicy {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum KtlsMode {
-    #[default]
     Off,
+    #[default]
     Auto,
 }
 

@@ -49,12 +49,25 @@ fn resolve(
 }
 
 #[test]
-fn ktls_defaults_to_off_and_renders_explicitly() {
+fn ktls_defaults_to_auto_and_renders_explicitly() {
     let config = load_lua(&config_source("{}")).expect("default ktls policy");
-    assert_eq!(config.tls_profiles[0].policy.ktls, KtlsMode::Off);
+    assert_eq!(config.tls_profiles[0].policy.ktls, KtlsMode::Auto);
     let rendered = render_lua(&config).expect("rendered default ktls policy");
-    assert!(rendered.contains("ktls = \"off\","));
+    assert!(rendered.contains("ktls = \"auto\","));
     assert_eq!(load_lua(&rendered).expect("default ktls reload"), config);
+}
+
+#[test]
+fn ktls_off_round_trips_in_every_format() {
+    let config = load_lua(&config_source(r#"{ ktls = "off" }"#)).expect("off ktls policy");
+    assert_eq!(config.tls_profiles[0].policy.ktls, KtlsMode::Off);
+    let validated = config.validate().expect("valid off ktls policy");
+    for format in FORMATS {
+        let rendered = render_config(format, &validated).expect("off ktls render");
+        let resolved = resolve_source_with_format(Path::new("config"), rendered.as_bytes(), format)
+            .expect("rendered off ktls source resolves");
+        assert_eq!(resolved.config, validated, "{format:?}");
+    }
 }
 
 #[test]
