@@ -37,10 +37,14 @@ use tokio::{
     time::{sleep, timeout},
 };
 
+mod flood;
 mod helpers;
+mod identical;
 mod limits;
+mod raw;
 mod reload;
 mod serving;
+mod soak;
 mod static_files;
 
 #[allow(clippy::wildcard_imports)]
