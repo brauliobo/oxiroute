@@ -653,7 +653,7 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let Some((worker_pools, own)) = current_worker() else {
-        Handle::current().spawn(future);
+        tokio::spawn(future);
         return;
     };
     let pools = worker_pools.get().unwrap();
