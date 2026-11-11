@@ -9,6 +9,17 @@ use oxiroute_config::{PoolQueuePolicy, QueueDiscipline};
 mod wait_queue;
 pub(super) use wait_queue::WaitQueue;
 
+/// The headers of a request that a queue tag reads: the first value of a name, when it is visible ASCII.
+pub(crate) trait FirstHeader {
+    fn first(&self, name: &HeaderName) -> Option<&str>;
+}
+
+impl FirstHeader for HeaderMap {
+    fn first(&self, name: &HeaderName) -> Option<&str> {
+        self.get(name).and_then(|value| value.to_str().ok())
+    }
+}
+
 /// The tenant that shares a class with the others when no header names one or the table is full.
 const OTHER_TENANT: u32 = 0;
 
@@ -70,12 +81,11 @@ impl QueueSchedule {
     }
 
     /// The route's class wins over the class header; unknown names fall to the default class.
-    pub(super) fn tag(&self, route_class: Option<&str>, headers: &HeaderMap) -> QueueTag {
+    pub(super) fn tag(&self, route_class: Option<&str>, headers: &impl FirstHeader) -> QueueTag {
         let named = route_class.or_else(|| {
             self.class_header
                 .as_ref()
-                .and_then(|name| headers.get(name))
-                .and_then(|value| value.to_str().ok())
+                .and_then(|name| headers.first(name))
         });
         let class = named
             .and_then(|name| {
@@ -87,8 +97,7 @@ impl QueueSchedule {
         let tenant = self
             .tenant_header
             .as_ref()
-            .and_then(|name| headers.get(name))
-            .and_then(|value| value.to_str().ok())
+            .and_then(|name| headers.first(name))
             .map_or(OTHER_TENANT, |name| self.tenant(name.trim()));
         QueueTag { class, tenant }
     }

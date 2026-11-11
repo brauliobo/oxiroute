@@ -55,6 +55,7 @@ async fn unix_downstream_preserves_existing_x_forwarded_for_without_an_ip_peer()
     let route = HttpRoutePlan {
         access: None,
         lane: crate::http::proxy::lane::LaneRoute::Classic,
+        edits: crate::http::proxy::lane::RouteEdits::default(),
         action: HttpActionPlan::Proxy(crate::http::action::ProxyActionPlan {
             pool: Arc::new(UpstreamPlan::with_policy(
                 selector,
@@ -237,11 +238,11 @@ async fn pingora_join_bounds_include_inserted_separators() {
         .unwrap();
 
     assert_eq!(
-        crate::http::policy::join_header_values(&session.req_header().headers, &name, 5),
+        crate::http::policy::IncomingHeaders::joined(&session.req_header().headers, &name, 5),
         Ok(Some(b"abc, ".to_vec()))
     );
     assert_eq!(
-        crate::http::policy::join_header_values(&session.req_header().headers, &name, 4),
+        crate::http::policy::IncomingHeaders::joined(&session.req_header().headers, &name, 4),
         Err(RequestPolicyError::SourceTooLarge)
     );
 }

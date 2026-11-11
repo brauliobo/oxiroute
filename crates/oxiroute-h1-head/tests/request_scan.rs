@@ -6,7 +6,9 @@ mod common;
 use common::classic_request::{ClassicRequest, classic_request};
 use common::request_corpus::{Expect, corpus, crlf};
 use common::{MUTATION_ALPHABET, Rng, mutate};
-use oxiroute_h1_head::{Class, Connection, RequestHead, Scan, scan_request};
+use oxiroute_h1_head::{
+    Class, Connection, RequestHead, Scan, scan_request, scan_request_fields, scan_request_line,
+};
 
 fn assert_same_as_classic(buf: &[u8], head: &RequestHead, classic: &ClassicRequest) {
     let shown = String::from_utf8_lossy(buf);
@@ -354,4 +356,61 @@ fn every_byte_in_every_position_of_the_request_line_is_judged_like_classic() {
         .filter(|b| matches!(b, 0x21 | 0x24..=0x3b | 0x3d | 0x3f..=0x5f | 0x61..=0x7e))
         .collect();
     assert_eq!(accepted_in_target, expected);
+}
+
+/// The request line read on its own and the fields read after it are `scan_request`, for every head of the corpus and
+/// every prefix of its first bytes: a caller that needs the target before the fields reads the line once.
+#[test]
+fn the_line_and_the_fields_scanned_apart_are_the_scan_of_the_head() {
+    let (mut whole, mut apart) = (RequestHead::new(), RequestHead::new());
+    for (name, bytes, _) in corpus() {
+        for cut in (0..=bytes.len().min(120)).chain([bytes.len()]) {
+            let buf = &bytes[..cut];
+            let scan = scan_request(buf, &mut whole);
+            let line = scan_request_line(buf);
+            let split = line.map_or_else(
+                |miss| miss,
+                |line| {
+                    let split = scan_request_fields(buf, line, &mut apart);
+                    if split == Scan::Head {
+                        assert_eq!(
+                            (line.method, line.target),
+                            (apart.method, apart.target),
+                            "{name}"
+                        );
+                    }
+                    split
+                },
+            );
+            assert_eq!(split, scan, "{name} cut at {cut}");
+            if scan == Scan::Head {
+                assert_eq!(
+                    (whole.method, whole.target),
+                    (apart.method, apart.target),
+                    "{name}"
+                );
+                assert_eq!(
+                    (whole.line_len, whole.head_len),
+                    (apart.line_len, apart.head_len)
+                );
+                assert_eq!(whole.headers(), apart.headers(), "{name}");
+                assert_eq!(whole.facts, apart.facts, "{name}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_head_that_has_its_line_but_not_its_fields_has_a_line() {
+    let line = scan_request_line(b"GET /a?b=1 HTTP/1.1\r\nHo").expect("a complete request line");
+    assert_eq!((line.method.start, line.method.len), (0, 3));
+    assert_eq!(line.target.of(b"GET /a?b=1 HTTP/1.1\r\nHo"), b"/a?b=1");
+    assert_eq!(
+        scan_request_line(b"GET /a?b=1 HTTP/1.1"),
+        Err(Scan::Partial)
+    );
+    assert!(matches!(
+        scan_request_line(b"GET http://a/ HTTP/1.1\r\n"),
+        Err(Scan::Miss(_))
+    ));
 }

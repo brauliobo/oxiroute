@@ -163,14 +163,28 @@ impl ProxyPolicyPlan {
         body_is_empty: bool,
         request_buffered: bool,
     ) -> bool {
+        self.request_is_replay_safe_with(
+            method,
+            |name| headers.get(name).is_some_and(|value| !value.is_empty()),
+            body_is_empty,
+            request_buffered,
+        )
+    }
+
+    /// [`Self::request_is_replay_safe`] for a request whose headers are asked one at a time: `carries` says whether
+    /// the request has a non-empty first value of the header it is given.
+    pub(crate) fn request_is_replay_safe_with(
+        &self,
+        method: &Method,
+        carries: impl FnOnce(&HeaderName) -> bool,
+        body_is_empty: bool,
+        request_buffered: bool,
+    ) -> bool {
         let method_safe = match self.retry_method_safety {
             HttpRetryMethodSafety::GetHead => matches!(*method, Method::GET | Method::HEAD),
             HttpRetryMethodSafety::All => {
                 matches!(*method, Method::GET | Method::HEAD)
-                    || self
-                        .idempotency_header
-                        .as_ref()
-                        .is_none_or(|name| headers.get(name).is_some_and(|value| !value.is_empty()))
+                    || self.idempotency_header.as_ref().is_none_or(carries)
             }
         };
         let body_safe = body_is_empty

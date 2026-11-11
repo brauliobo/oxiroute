@@ -97,6 +97,14 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   `keepalive_pool_callback`. Idle sockets that deliver data count in the 0.9 unexpected-data counter. `idle_timeout` of zero
   keeps nothing. The HTTP/2 pool still uses `pingora_pool`. The `connectors::tests` cases that count socket reads
   expect the extra read at release.
+- `connectors/idle.rs` `start_watcher` reads the started flag before swapping it, so a release no longer takes a locked
+  exchange once the watcher runs.
+- `protocols/http/v1/client.rs` adds `HttpSession::reuse_boxed` (`reuse` for a boxed session; both share
+  `keeps_connection`) and `connectors/http/v1.rs` adds `Connector::reused_boxed_http_session` and
+  `Connector::release_boxed_http_session`: the 640-byte session is built in its box and handed back in it, so it is not moved
+  into every future that returns it. They behave as `reused_http_session` and `release_http_session`.
+- `protocols/http/date.rs` adds `get_cached_date_at(now)`, `get_cached_date` for a caller that has the wall-clock time already
+  (no clock read of its own).
 - `listeners/l4.rs` sets `TCP_NODELAY` on the listening socket and no longer on every accepted stream: Linux copies
   it to the accepted socket. Keepalive and DSCP settings are still applied per accepted stream.
 - `utils/chunk_pool.rs` keeps up to eight 128 KiB buffers per thread; a taken buffer is empty with that capacity
@@ -264,6 +272,10 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   bind port 0. The TLS tests (and the `openssl` dev-dependency that generates the certificate) cover the OpenSSL backend only.
   Streams coalesce writes, so a test server must flush. `scripts/test-vendored.sh` runs every vendored suite against these sources
   in a network namespace with only loopback.
+
+- Fast lane request bodies: `HttpSession::init_request_body` (`protocols/http/v1/client.rs`) frames the body of a request
+  whose head the caller wrote with `write_request_head_raw` (`FastFraming`: chunked or a content length); the body then
+  goes out with `write_body` and `finish_body`.
 
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.

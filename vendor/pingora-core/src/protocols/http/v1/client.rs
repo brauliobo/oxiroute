@@ -242,6 +242,18 @@ impl HttpSession {
         Ok(head.len())
     }
 
+    /// Frames the body of the request whose head [`Self::write_request_head_raw()`] wrote: that head is the caller's
+    /// own, so the caller says what it announces. The body goes out with [`Self::write_body()`] and
+    /// [`Self::finish_body()`].
+    pub fn init_request_body(&mut self, framing: FastFraming) {
+        if framing.chunked {
+            self.body_writer.init_chunked();
+        } else {
+            self.body_writer
+                .init_content_length(framing.content_length.unwrap_or(0));
+        }
+    }
+
     /// Write a borrowed request header to the server.
     /// After the request header is sent, the caller can either start reading the response or
     /// sending request body if any.
@@ -930,20 +942,33 @@ impl HttpSession {
     /// If the connection cannot be reused, the underlying stream will be closed and `None` will be
     /// returned.
     pub async fn reuse(mut self) -> Option<Stream> {
+        if self.keeps_connection() {
+            return Some(self.underlying_stream);
+        }
+        self.shutdown().await;
+        None
+    }
+
+    /// [`Self::reuse()`] for a session in a box: the 640-byte session is not moved into the future.
+    pub async fn reuse_boxed(mut self: Box<Self>) -> Option<Stream> {
+        if self.keeps_connection() {
+            return Some(self.underlying_stream);
+        }
+        self.shutdown().await;
+        None
+    }
+
+    /// Whether the connection can serve another request: the response body was read to its end and the
+    /// keepalive state allows it.
+    fn keeps_connection(&mut self) -> bool {
         if !self.body_reader.body_complete() || self.body_reader.has_bytes_overread() {
             self.set_keepalive(None);
         }
-
-        // TODO: this function is unnecessarily slow for keepalive case
-        // because that case does not need async
-        match self.keepalive_timeout {
-            KeepaliveStatus::Off => {
-                debug!("HTTP shutdown connection");
-                self.shutdown().await;
-                None
-            }
-            _ => Some(self.underlying_stream),
+        let keeps = !matches!(self.keepalive_timeout, KeepaliveStatus::Off);
+        if !keeps {
+            debug!("HTTP shutdown connection");
         }
+        keeps
     }
 
     fn init_body_reader(&mut self) {

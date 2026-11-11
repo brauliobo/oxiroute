@@ -20,7 +20,7 @@ use crate::{
 };
 use arc_swap::ArcSwap;
 use http::{
-    HeaderMap, Method, Uri,
+    Method, Uri,
     uri::{Authority, PathAndQuery},
 };
 use oxiroute_config::{
@@ -72,6 +72,7 @@ use queue::*;
 use queue_wait::{WaitLedger, WaitTicket};
 use resolved::ResolvedAddresses;
 pub use route::*;
+pub(crate) use schedule::FirstHeader;
 pub use schedule::QueueTag;
 use schedule::{QueueSchedule, WaitQueue};
 use selectable::SelectableView;

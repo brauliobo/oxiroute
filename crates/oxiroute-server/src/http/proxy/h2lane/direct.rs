@@ -10,14 +10,16 @@ use super::{claim::Plan, response};
 use crate::{
     HttpOperationResult,
     http::request_id::stamp_response,
-    http::{action::FixedResponsePlan, action::HttpActionPlan, proxy::lane::LaneFront},
+    http::{action::FixedResponsePlan, proxy::lane::LaneFront},
 };
 
 pub(super) async fn serve(front: &LaneFront, mut stream: H2Stream, plan: Plan) {
     let started = Instant::now();
-    let HttpActionPlan::Fixed(response) = &plan.route.action else {
-        unreachable!("only direct routes reach the direct lane");
-    };
+    let response = plan
+        .route
+        .action
+        .direct_response()
+        .expect("only direct routes reach the direct lane");
     let sent = send(front, &mut stream, response, &plan).await.is_ok();
     let body = if plan.is_head() {
         0

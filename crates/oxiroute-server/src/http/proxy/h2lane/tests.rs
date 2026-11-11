@@ -42,7 +42,11 @@ fn lane(request: &RequestHeader, host: &str, close: bool) -> Option<Vec<u8>> {
     let (id, wire) = request::read(request, authority)?;
     let mut out = Vec::new();
     let host = HeaderValue::from_str(host).unwrap();
-    head::render(&mut out, &wire, &id, Some(&host), close);
+    head::render(
+        &mut out,
+        &wire,
+        &head::edits(&wire, &id, Some(&host), close),
+    );
     Some(out)
 }
 

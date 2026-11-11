@@ -215,6 +215,45 @@ fn tls_version_policy_requires_a_modern_negotiated_digest() {
     assert!(validate_tls_connection(None, None).is_ok());
 }
 
+/// A request that reuses a connection never builds a peer, so the key and the address match of the lightweight one
+/// must be those of the peer the plan builds for the same endpoint, or the lane and the classic path would pool
+/// their connections apart.
+#[test]
+fn the_reuse_peer_is_pooled_under_the_key_of_the_peer_the_plan_builds() {
+    let address = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let plan = UpstreamPlan::new(
+        Arc::new(RoundRobinPool::new([address]).expect("selector")),
+        None,
+    );
+    let timeout = Duration::from_secs(3);
+    let full = plan.peer(address, timeout, timeout);
+    let reuse = ReusePeer::plain(address);
+
+    assert_eq!(reuse.reuse_hash(), full.reuse_hash());
+    assert_eq!(reuse.address(), full.address());
+    assert_eq!(reuse.idle_timeout(), full.idle_timeout());
+    assert!(!reuse.tls());
+    let other = ReusePeer::plain(SocketAddr::from(([127, 0, 0, 1], 8081)));
+    assert_ne!(other.reuse_hash(), reuse.reuse_hash());
+
+    let connected = full.address().clone();
+    assert_eq!(
+        reuse.matches_cached_addr(&connected),
+        full.matches_cached_addr(&connected)
+    );
+    assert_eq!(reuse.matches_cached_addr(&connected), Some(true));
+    assert_eq!(other.matches_cached_addr(&connected), Some(false));
+    assert_eq!(full.matches_cached_addr(other.address()), Some(false));
+}
+
+#[test]
+fn a_wildcard_address_matches_whatever_it_connected_to() {
+    let any = ReusePeer::plain(SocketAddr::from(([0, 0, 0, 0], 8080)));
+    let connected = ReusePeer::plain(SocketAddr::from(([127, 0, 0, 1], 8080)));
+    assert_eq!(any.matches_cached_addr(connected.address()), Some(true));
+    assert_eq!(connected.matches_cached_addr(any.address()), Some(false));
+}
+
 fn upstream_tls_plan(
     server_name: &str,
     min: HttpVersion,

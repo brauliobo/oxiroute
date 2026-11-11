@@ -1,18 +1,37 @@
-use std::borrow::Cow;
-
-use std::sync::Arc;
-
 use pingora::proxy::Session;
 
-use http::Method;
+use http::{HeaderName, HeaderValue, Method};
 
 use super::{HttpActionPlan, HttpRequestContext, normalized_request_host};
+use crate::label::Label;
 use crate::{
     http::request_id::{idempotency_header_or_default, idempotency_tag},
-    observability::access_record::{Correlation, Count, HttpAccess, Safe, SafeId},
+    observability::access_record::{Correlation, Count, HttpAccess, Safe},
 };
 
-/// The completed request as one access line; text borrows from the context and is redacted on write.
+/// What an access line says of the request beyond its context: the same facts whichever path served it.
+pub(super) struct Exchange<'a> {
+    pub(super) method: &'a Method,
+    /// The value of the request's idempotency header, if it has one.
+    pub(super) idempotency: Option<&'a [u8]>,
+    pub(super) protocol: &'static str,
+    /// The request id is one this proxy generated, which no credential marker can match.
+    pub(super) request_id_generated: bool,
+    pub(super) bytes_received: u64,
+    pub(super) bytes_sent: u64,
+}
+
+/// The name of the idempotency header of the request's route, which the access line tags the request with.
+pub(super) fn idempotency_header(ctx: &HttpRequestContext) -> Option<HeaderName> {
+    let HttpActionPlan::Proxy(proxy) = &ctx.route.as_ref()?.action else {
+        return None;
+    };
+    Some(idempotency_header_or_default(
+        proxy.policy.idempotency_header.as_ref(),
+    ))
+}
+
+/// The completed request of a Pingora session.
 pub(super) fn build<'a>(
     ctx: &'a HttpRequestContext,
     session: &'a Session,
@@ -21,6 +40,28 @@ pub(super) fn build<'a>(
     service: &'a str,
 ) -> HttpAccess<'a> {
     let request = session.req_header();
+    let idempotency = idempotency_header(ctx)
+        .and_then(|name| request.headers.get(name))
+        .map(HeaderValue::as_bytes);
+    let exchange = Exchange {
+        method: &request.method,
+        idempotency,
+        protocol: if session.is_http2() { "h2" } else { "http/1.1" },
+        request_id_generated: false,
+        bytes_received: session.body_bytes_read() as u64,
+        bytes_sent: session.body_bytes_sent() as u64,
+    };
+    access_line(ctx, &exchange, response_status, elapsed, service)
+}
+
+/// The completed request as one access line; text borrows from the context and is redacted on write.
+pub(super) fn access_line<'a>(
+    ctx: &'a HttpRequestContext,
+    exchange: &Exchange<'a>,
+    response_status: Option<u16>,
+    elapsed: std::time::Duration,
+    service: &'a str,
+) -> HttpAccess<'a> {
     let request_id = ctx
         .request_id
         .as_ref()
@@ -28,8 +69,8 @@ pub(super) fn build<'a>(
     let trace = &ctx.trace;
     HttpAccess {
         attempts: ctx.attempt_count(),
-        bytes_received: Count(session.body_bytes_read() as u64),
-        bytes_sent: Count(session.body_bytes_sent() as u64),
+        bytes_received: Count(exchange.bytes_received),
+        bytes_sent: Count(exchange.bytes_sent),
         connect_ms: trace.connect.map(|duration| Count(duration.as_millis())),
         correlation_id: Correlation(request_id),
         duration_ms: Count(elapsed.as_millis()),
@@ -41,23 +82,34 @@ pub(super) fn build<'a>(
             .authority
             .as_ref()
             .map(|host| normalized_request_host(host).into()),
-        idem_key: idempotency_key(ctx, session).map(Safe::from),
-        method: method_text(&request.method),
+        idem_key: exchange
+            .idempotency
+            .map(|key| Safe::from(idempotency_tag(key))),
+        method: method_text(exchange.method),
         pool: ctx
             .pool
             .as_ref()
             .map(|pool| Safe::verified(pool.label().logged())),
-        protocol: SafeId(if session.is_http2() { "h2" } else { "http/1.1" }),
+        protocol: Safe::verified(exchange.protocol),
         queue_wait_ms: Count(trace.queue_wait.as_millis()),
         reason: Safe::verified(trace.failure_reason.unwrap_or("")),
-        request_id: request_id.map(Safe::from),
+        request_id: request_id.map(|id| {
+            if exchange.request_id_generated {
+                Safe::verified(id)
+            } else {
+                Safe::from(id)
+            }
+        }),
         rescued: ctx.rescued,
         route: ctx
             .route
             .as_ref()
             .map(|route| Safe::verified(route.route_id.logged())),
-        server: trace.servers.last().map(|server| (&**server).into()),
-        servers: tried_servers(&trace.servers).map(Safe::from),
+        server: trace
+            .servers
+            .last()
+            .map(|server| Safe::verified(server.logged())),
+        servers: tried_servers(&trace.servers),
         service: Safe::verified(service),
         status: response_status,
         timestamp_unix_ms: Some(crate::clock::wall_ms(ctx.now)),
@@ -69,7 +121,7 @@ pub(super) fn build<'a>(
 }
 
 /// The standard methods are fixed clean text; an extension method is the client's.
-fn method_text(method: &Method) -> Safe<'_> {
+pub(super) fn method_text(method: &Method) -> Safe<'_> {
     match *method {
         Method::GET
         | Method::HEAD
@@ -84,23 +136,16 @@ fn method_text(method: &Method) -> Safe<'_> {
     }
 }
 
-fn idempotency_key(ctx: &HttpRequestContext, session: &Session) -> Option<String> {
-    let HttpActionPlan::Proxy(proxy) = &ctx.route.as_ref()?.action else {
-        return None;
-    };
-    let name = idempotency_header_or_default(proxy.policy.idempotency_header.as_ref());
-    session
-        .req_header()
-        .headers
-        .get(name)
-        .map(|value| idempotency_tag(value.as_bytes()))
-}
-
-/// Every server tried, comma separated; the single-attempt case borrows.
-fn tried_servers(servers: &[Arc<str>]) -> Option<Cow<'_, str>> {
+/// Every server tried, comma separated; the single-attempt case is the server's own logged name.
+fn tried_servers(servers: &[Label]) -> Option<Safe<'_>> {
     match servers {
         [] => None,
-        [only] => Some(Cow::Borrowed(&**only)),
-        many => Some(Cow::Owned(many.join(","))),
+        [only] => Some(Safe::verified(only.logged())),
+        many => Some(Safe::from(
+            many.iter()
+                .map(|server| &**server)
+                .collect::<Vec<_>>()
+                .join(","),
+        )),
     }
 }

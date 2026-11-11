@@ -10,14 +10,13 @@ use pingora::{Error, ErrorType};
 
 use super::request::Wire;
 
-/// Appends the head to `out`. `host` is the `Host` the selected server is sent; `None` removes it.
-pub(super) fn render(
-    out: &mut Vec<u8>,
+/// The edits of the classic sequence. `host` is the `Host` the selected server is sent; `None` removes it.
+pub(super) fn edits<'a>(
     wire: &Wire,
-    id: &HeaderValue,
-    host: Option<&HeaderValue>,
+    id: &'a HeaderValue,
+    host: Option<&'a HeaderValue>,
     connection_close: bool,
-) {
+) -> Edits<'a> {
     let edit = |result: Result<(), EditsFull>| result.expect("a request head needs few edits");
     let mut edits = Edits::new();
     edit(edits.remove(names::HOST));
@@ -30,7 +29,12 @@ pub(super) fn render(
     if connection_close {
         edit(edits.set(names::CONNECTION, Value::trusted(b"close")));
     }
-    write_request(out, &wire.text, &wire.head, &edits);
+    edits
+}
+
+/// Appends the head with its `edits` to `out`.
+pub(super) fn render(out: &mut Vec<u8>, wire: &Wire, edits: &Edits<'_>) {
+    write_request(out, &wire.text, &wire.head, edits);
 }
 
 /// What `reconcile_upstream_authority` refuses of the `Host` a request is sent: a `Host` that is not the request's

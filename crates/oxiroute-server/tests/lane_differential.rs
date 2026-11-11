@@ -15,12 +15,17 @@ mod process_support;
 
 #[path = "lane_differential/corpus.rs"]
 mod corpus;
+#[path = "lane_differential/features.rs"]
+mod features;
+#[path = "lane_differential/retries.rs"]
+mod retries;
 
 use std::fmt::Write as _;
-use std::time::Duration;
+use std::{fs, os::unix::fs::PermissionsExt as _, path::Path, time::Duration};
 
 use oxiroute_config::{
-    ConfigDraft, HttpLiteralHeader, HttpPathSelector, HttpRoute, HttpRouteAction,
+    ConfigDraft, HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpRedirectLocation,
+    HttpRoute, HttpRouteAction,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -53,6 +58,46 @@ fn with_fixed_route(config: &mut ConfigDraft) {
         },
     };
     config.http_services[0].routes.insert(0, route);
+    let moved = HttpRoute {
+        path: HttpPathSelector::SegmentPrefix {
+            value: "/moved".into(),
+        },
+        action: HttpRouteAction::Redirect {
+            status: 308,
+            location: HttpRedirectLocation::Literal {
+                value: "https://example.com/new".into(),
+            },
+            headers: vec![HttpLiteralHeader {
+                name: "x-moved".into(),
+                value: "yes".into(),
+                always: true,
+            }],
+        },
+        ..config.http_services[0].routes[0].clone()
+    };
+    config.http_services[0].routes.insert(1, moved);
+}
+
+/// A static files route in front of the others, as a service that mixes file serving with lane routes has.
+fn with_static_route<'a>(root: &'a Path, host: Option<&'a str>) -> impl Fn(&mut ConfigDraft) + 'a {
+    move |config| {
+        let route = HttpRoute {
+            host: host.map(|value| HttpHostSelector::ExactAuthority {
+                value: value.into(),
+            }),
+            path: HttpPathSelector::SegmentPrefix {
+                value: "/static".into(),
+            },
+            methods: Vec::new(),
+            access_policy: None,
+            policy: oxiroute_config::HttpRoutePolicy::default(),
+            action: serde_json::from_value(
+                serde_json::json!({ "type": "static_files", "root_directory": root }),
+            )
+            .expect("static files action"),
+        };
+        config.http_services[0].routes.insert(0, route);
+    }
 }
 
 struct Pair {
@@ -65,21 +110,63 @@ impl Pair {
         Self::serving(reply, false).await
     }
 
-    async fn serving(reply: &'static [u8], closes: bool) -> Self {
-        let origin = |closes| async move {
-            if closes {
-                Origin::start_closing(reply).await
-            } else {
-                Origin::start(reply).await
-            }
-        };
-        let classic = Wire::over(origin(closes).await, |config| {
+    /// Both proxies serve the files of `root` under `/static`, next to the fixed and the proxied route.
+    async fn mixed(root: &Path, host: Option<&str>) -> Self {
+        let classic = Wire::over(Origin::start(OK).await, |config| {
             with_fixed_route(config);
+            with_static_route(root, host)(config);
             config.http_fast_lane = Some(false);
         })
         .await;
-        let lane = Wire::over(origin(closes).await, with_fixed_route).await;
+        let lane = Wire::over(Origin::start(OK).await, |config| {
+            with_fixed_route(config);
+            with_static_route(root, host)(config);
+        })
+        .await;
         Self { classic, lane }
+    }
+
+    async fn serving(reply: &'static [u8], closes: bool) -> Self {
+        Self::configured(reply, closes, false, |_| {}).await
+    }
+
+    /// Both proxies in front of an origin of their own that replies the same, with `edit` applied to both
+    /// configurations; `tls` puts the origins behind TLS.
+    async fn configured(
+        reply: &'static [u8],
+        closes: bool,
+        tls: bool,
+        edit: impl Fn(&mut ConfigDraft),
+    ) -> Self {
+        let origin = || async move {
+            match (tls, closes) {
+                (true, closes) => Origin::start_tls(reply, closes).await,
+                (false, true) => Origin::start_closing(reply).await,
+                (false, false) => Origin::start(reply).await,
+            }
+        };
+        let classic = Wire::over(origin().await, |config| {
+            with_fixed_route(config);
+            edit(config);
+            config.http_fast_lane = Some(false);
+        })
+        .await;
+        let lane = Wire::over(origin().await, |config| {
+            with_fixed_route(config);
+            edit(config);
+        })
+        .await;
+        Self { classic, lane }.warmed().await
+    }
+
+    /// The first request of a process pays for what it sets up (connections, tables); the comparison waits a short
+    /// moment for a response, so it starts after one request has been served.
+    async fn warmed(self) -> Self {
+        for wire in [&self.classic, &self.lane] {
+            wire.exchange(b"GET /r HTTP/1.1\r\nHost: warm.test\r\n\r\n")
+                .await;
+        }
+        self
     }
 
     fn finish(self) {
@@ -118,10 +205,15 @@ async fn play(wire: &Wire, script: &[&[u8]]) -> Outcome {
             break;
         }
     }
+    // The origin notes a request when it has all of it or the connection closed: give it a moment to see either.
+    sleep(Duration::from_millis(100)).await;
     let origin = wire.origin.requests().split_off(before);
     Outcome {
         response: merge_chunks(&normalize(&String::from_utf8_lossy(&bytes))),
-        origin: origin.iter().map(|request| normalize(request)).collect(),
+        origin: origin
+            .iter()
+            .map(|request| merge_chunks(&normalize(request)))
+            .collect(),
         closed,
     }
 }
@@ -239,6 +331,13 @@ async fn fixed_responses_are_identical_on_both_paths() {
 }
 
 #[tokio::test]
+async fn literal_redirects_are_identical_on_both_paths() {
+    let pair = Pair::start(OK).await;
+    compare(&pair, &corpus::requests("/moved")).await;
+    pair.finish();
+}
+
+#[tokio::test]
 async fn connections_that_alternate_between_the_lane_and_the_classic_path_are_identical() {
     let pair = Pair::start(OK).await;
     compare(&pair, &corpus::sequences()).await;
@@ -299,4 +398,61 @@ async fn an_unrequested_switching_protocols_reply_is_a_bad_gateway_on_the_lane()
     assert!(classic.response.starts_with("HTTP/1.1 101 "), "{classic:?}");
     assert!(lane.response.starts_with("HTTP/1.1 502 "), "{lane:?}");
     assert!(lane.closed);
+}
+
+const STATIC_FILES: [(&str, usize); 3] = [
+    ("small.txt", 5),
+    ("one-k.bin", 1024),
+    ("large.bin", 1024 * 1024 + 17),
+];
+
+fn static_root() -> tempfile::TempDir {
+    let directory = tempfile::tempdir_in("/dev/shm").expect("static root directory in memory");
+    let root = directory.path().join("public");
+    fs::create_dir(&root).expect("create static root");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("secure static root");
+    for (name, length) in STATIC_FILES {
+        let body: Vec<u8> = (0..length)
+            .map(|at| b'a' + u8::try_from(at % 26).expect("below 26"))
+            .collect();
+        fs::write(root.join(name), body).expect("write a static file");
+    }
+    directory
+}
+
+fn static_cases() -> Vec<corpus::Case> {
+    let mut cases = corpus::requests("/static/small.txt");
+    cases.extend(corpus::static_requests());
+    cases
+}
+
+/// A request for a route the lane does not serve is handed over unread: the bytes of every static file response, its
+/// conditional and range forms, and the connection that follows must be the classic path's.
+#[tokio::test]
+async fn static_file_requests_are_identical_on_both_paths() {
+    let directory = static_root();
+    let pair = Pair::mixed(&directory.path().join("public"), None).await;
+    compare(&pair, &static_cases()).await;
+    pair.finish();
+}
+
+#[tokio::test]
+async fn connections_that_alternate_between_static_files_and_the_lane_are_identical() {
+    let directory = static_root();
+    let pair = Pair::mixed(&directory.path().join("public"), None).await;
+    compare(&pair, &corpus::static_sequences()).await;
+    pair.finish();
+}
+
+/// A route bound to a host makes the lane read the `Host` field before it decides, and a request for another host
+/// reaches the proxied route.
+#[tokio::test]
+async fn static_file_requests_on_a_host_bound_route_are_identical_on_both_paths() {
+    let directory = static_root();
+    let pair = Pair::mixed(&directory.path().join("public"), Some("example.test")).await;
+    compare(&pair, &corpus::static_requests()).await;
+    compare(&pair, &corpus::static_sequences()).await;
+    let elsewhere = corpus::static_requests_for("other.test");
+    compare(&pair, &elsewhere).await;
+    pair.finish();
 }
