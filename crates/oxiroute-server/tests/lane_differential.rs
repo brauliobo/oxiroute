@@ -203,12 +203,18 @@ async fn play(wire: &Wire, script: &[&[u8]]) -> Outcome {
     // The origin notes a request when it has all of it or the connection closed: give it a moment to see either.
     sleep(Duration::from_millis(100)).await;
     let origin = wire.origin.requests().split_off(before);
+    let mut origin: Vec<_> = origin
+        .iter()
+        .map(|request| merge_chunks(&normalize(request)))
+        .collect();
+    // Once the client side closed, the origin connections of the proxy end on their own: the order in which the
+    // origin notes the requests cut short by that is not the proxy's to promise.
+    if closed {
+        origin.sort();
+    }
     Outcome {
         response: merge_chunks(&normalize(&String::from_utf8_lossy(&bytes))),
-        origin: origin
-            .iter()
-            .map(|request| merge_chunks(&normalize(request)))
-            .collect(),
+        origin,
         closed,
     }
 }
