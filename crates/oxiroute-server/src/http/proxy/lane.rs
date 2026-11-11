@@ -6,7 +6,6 @@
 //! The lane exists for requests whose cost is the layers around them; it never grows the grammar, it refuses a
 //! superset of what the classic parser refuses.
 
-mod body;
 mod buffers;
 mod direct;
 mod head;
@@ -198,15 +197,10 @@ impl LaneFront {
         Some((route, authority))
     }
 
-    /// Whether the lane streams the body of the request to its route: only a proxied route does, and a length over
+    /// Whether the lane forwards the body of the request to its route: only a proxied route does, and a length over
     /// the route's limit is the classic path's `413`.
     fn takes_body(route: &HttpRoutePlan, request: &head::Request) -> bool {
-        route.lane == LaneRoute::Proxy
-            && match request.body {
-                head::Body::Length(length) => !route.policy.exceeds_body_limit(length),
-                head::Body::Chunked => true,
-                head::Body::None => unreachable!("a request without a body is not asked"),
-            }
+        route.lane == LaneRoute::Proxy && !route.policy.exceeds_body_limit(request.body_len as u64)
     }
 
     async fn serve_request(
@@ -243,7 +237,7 @@ impl LaneFront {
         let Some((route, authority)) = self.select_route(buffer, &request, early) else {
             return Served::Handoff;
         };
-        if request.body != head::Body::None && !Self::takes_body(&route, &request) {
+        if request.body_len != 0 && !Self::takes_body(&route, &request) {
             return Served::Handoff;
         }
         let decisions = if route.lane == LaneRoute::Proxy {
@@ -274,7 +268,6 @@ impl LaneFront {
                 id: &id,
                 decisions: &decisions,
                 keepalive: connection.will_keepalive(),
-                preread: &buffer[request.head_len..],
             };
             return self
                 .serve_proxied(stream, connection, forward, authority)

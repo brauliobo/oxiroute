@@ -1,6 +1,6 @@
-//! The proxied lane: a request is forwarded to an HTTP/1.1 server of a pool on the connection itself, its body (if
-//! it has one) streamed as it arrives. The head goes upstream and the response head comes back through the head codec, without a header map on
-//! either side; a response head the codec does not know is read by the classic client parser, so the response is
+//! The proxied lane: a request is forwarded to an HTTP/1.1 server of a pool on the connection itself, with its body
+//! when that arrived with the head. The head goes upstream and the response head comes back through the head codec,
+//! without a header map on either side; a response head the codec does not know is read by the classic client parser, so the response is
 //! always served. Selection, leases, timeouts, health signals, evacuation and accounting are the classic request
 //! context's own steps.
 
@@ -33,10 +33,8 @@ use pingora::{
 use tokio::io::AsyncWriteExt as _;
 
 use super::{
-    Served,
-    body::Upload,
-    buffers,
-    head::{Body, Request},
+    Served, buffers,
+    head::Request,
     rules,
     timing::{Expired, within},
 };
@@ -93,18 +91,12 @@ impl Opened {
 
 /// What an exchange has moved so far.
 pub(super) struct Progress {
-    /// The request body still to come from the client.
-    pub(super) upload: Option<Upload>,
+    /// Request body bytes written to the origin.
+    pub(super) received: usize,
     /// Response body bytes written to the client.
     pub(super) sent: usize,
     /// The status that went out.
     pub(super) status: Option<u16>,
-}
-
-impl Progress {
-    pub(super) fn received(&self) -> usize {
-        self.upload.as_ref().map_or(0, Upload::received)
-    }
 }
 
 /// What the request sends to the origin as its `Host`.
@@ -124,8 +116,6 @@ pub(super) struct Forward<'a> {
     pub(super) decisions: &'a [RequestHeaderDecision],
     /// Whether the connection serves another request after this one, as far as the request knows.
     pub(super) keepalive: bool,
-    /// The bytes of the request body that arrived with the head.
-    pub(super) preread: &'a [u8],
 }
 
 fn client_ip(stream: &Stream) -> Option<std::net::IpAddr> {
@@ -180,14 +170,7 @@ impl super::LaneFront {
         let upstream = &*self.upstream;
         let mut ctx = self.begin(stream, &forward, authority);
         let mut progress = Progress {
-            upload: (forward.request.body != Body::None).then(|| {
-                Upload::new(
-                    forward.request.body,
-                    forward.preread,
-                    forward.route.policy.max_request_body_bytes,
-                    self.timeouts.request,
-                )
-            }),
+            received: 0,
             sent: 0,
             status: None,
         };
@@ -214,8 +197,7 @@ impl super::LaneFront {
         }
         self.finish(&mut ctx, &forward, error.as_deref(), &progress);
         connection.end_request();
-        let pipelined = progress.upload.as_ref().is_some_and(Upload::overread);
-        if error.is_none() && connection.will_keepalive() && !pipelined {
+        if error.is_none() && connection.will_keepalive() {
             return Served::Next;
         }
         let _ = stream.shutdown().await;
@@ -260,7 +242,7 @@ impl super::LaneFront {
         let replay_safe = policy.request_is_replay_safe(
             &method,
             &http::HeaderMap::new(),
-            request.body == Body::None,
+            request.body_len == 0,
             route.policy.request_buffering,
         );
         ctx.evacuation_pin = LeftRunning::unmovable(false, replay_safe);
@@ -285,7 +267,7 @@ impl super::LaneFront {
         progress: &mut Progress,
     ) -> Result<(), Box<Error>> {
         let opened = self
-            .attempts(stream, ctx, upstream, forward, &mut progress.upload)
+            .attempts(stream, ctx, upstream, forward, progress)
             .await?;
         progress.status = Some(opened.status);
         if !opened.keepalive {
@@ -304,12 +286,12 @@ impl super::LaneFront {
         ctx: &mut HttpRequestContext,
         upstream: &Connector,
         forward: &Forward<'_>,
-        upload: &mut Option<Upload>,
+        progress: &mut Progress,
     ) -> Result<Opened, Box<Error>> {
         loop {
             let cancelled = ctx.arm_evacuation_for_lane();
             let outcome = {
-                let attempt = self.attempt(stream, ctx, upstream, forward, upload);
+                let attempt = self.attempt(stream, ctx, upstream, forward, progress);
                 tokio::select! {
                     biased;
                     error = cancelled => Err(ctx.attempt_failed_for_lane(error)),
@@ -330,7 +312,7 @@ impl super::LaneFront {
         ctx: &mut HttpRequestContext,
         upstream: &Connector,
         forward: &Forward<'_>,
-        upload: &mut Option<Upload>,
+        progress: &mut Progress,
     ) -> Result<Opened, Box<Error>> {
         let peer = ctx
             .next_peer(
@@ -348,7 +330,7 @@ impl super::LaneFront {
                 return Err(ctx.connect_failed(error).into_up());
             }
         };
-        self.send_and_open(stream, ctx, session, reused, peer, forward, upload)
+        self.send_and_open(stream, ctx, session, reused, peer, forward, progress)
             .await
             .map_err(|error| ctx.attempt_failed_for_lane(error))
     }
@@ -363,7 +345,7 @@ impl super::LaneFront {
         reused: bool,
         peer: Box<HttpPeer>,
         forward: &Forward<'_>,
-        upload: &mut Option<Upload>,
+        progress: &mut Progress,
     ) -> Result<Opened, Box<Error>> {
         ctx.connected(reused, Some(session.digest()))?;
         session.read_timeout = peer.options.read_timeout;
@@ -381,11 +363,10 @@ impl super::LaneFront {
             .await;
         buffers::give_write(request);
         written.map_err(Error::into_up)?;
-        let Some(upload) = upload else {
+        if forward.request.body_len == 0 {
             return self.open(stream, ctx, session, peer, forward).await;
-        };
-        session.init_request_body(request_framing(forward.request.body));
-        match pump(stream, ctx, &mut session, upload).await {
+        }
+        match send_body(ctx, &mut session, forward, progress).await {
             Ok(()) => self.open(stream, ctx, session, peer, forward).await,
             // An origin that answered and closed without reading the body is not a failure of the request: its answer
             // goes to the client, and neither connection is used again.
@@ -488,7 +469,7 @@ impl super::LaneFront {
                 } else {
                     Instant::now()
                 };
-                ctx.observe_bytes(progress.received(), progress.sent, now);
+                ctx.observe_bytes(progress.received, progress.sent, now);
                 let chunked = framing == Framing::Chunked;
                 if chunked {
                     write!(frame, "{:x}\r\n", data.len()).expect("a buffer grows");
@@ -595,7 +576,7 @@ impl super::LaneFront {
         error: Option<&Error>,
         progress: &Progress,
     ) {
-        let (status, sent, received) = (progress.status, progress.sent, progress.received());
+        let (status, sent, received) = (progress.status, progress.sent, progress.received);
         let now = ctx.refresh_clock();
         let elapsed = now.saturating_duration_since(ctx.started_at);
         let result = classify_http_result(error, status);
@@ -613,31 +594,21 @@ impl super::LaneFront {
     }
 }
 
-fn request_framing(body: Body) -> FastFraming {
-    match body {
-        Body::Chunked => FastFraming {
-            chunked: true,
-            content_length: None,
-        },
-        Body::Length(length) => FastFraming {
-            chunked: false,
-            content_length: Some(usize::try_from(length).expect("a scanned length")),
-        },
-        Body::None => unreachable!("only requests with a body are framed"),
-    }
-}
-
-/// Streams the request body from the client to the origin, piece by piece.
-async fn pump(
-    stream: &mut Stream,
+/// Sends the request body, which arrived with the head, to the origin.
+async fn send_body(
     ctx: &mut HttpRequestContext,
     session: &mut HttpSession,
-    upload: &mut Upload,
+    forward: &Forward<'_>,
+    progress: &mut Progress,
 ) -> Result<(), Box<Error>> {
-    while let Some(piece) = upload.next(stream).await.map_err(Error::into_down)? {
-        session.write_body(&piece).await.map_err(Error::into_up)?;
-        ctx.observe_bytes(upload.received(), 0, Instant::now());
-    }
+    let body = forward.request.body(forward.buffer);
+    session.init_request_body(FastFraming {
+        chunked: false,
+        content_length: Some(body.len()),
+    });
+    session.write_body(body).await.map_err(Error::into_up)?;
+    progress.received = body.len();
+    ctx.observe_bytes(progress.received, 0, Instant::now());
     session.finish_body().await.map_err(Error::into_up)?;
     Ok(())
 }
