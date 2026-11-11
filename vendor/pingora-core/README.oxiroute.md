@@ -91,7 +91,7 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   socket and a `oneshot`, `Notify`, LRU node and mutex handshake with the next checkout (two scheduler round trips
   per request). Now a release polls the socket once with a waker that queues the connection on a shared event list
   and wakes one pool-wide task, which drops connections that closed, sent data or passed `idle_timeout`; a checkout
-  pops an entry from a per-thread stripe (one stripe per CPU, at least eight, so the workers of a listener do not share a lock up to as many workers as CPUs), then runs the same identity and readiness checks. Capacity is the global
+  pops an entry from a per-thread stripe (one stripe per CPU, at least eight, so the workers of a listener do not share a lock up to as many workers as CPUs), then runs the same identity and readiness checks (a plain TCP connection released by a worker of another runtime is registered with the I/O driver of the runtime that takes it, `Idle::into_current_runtime`, so its events no longer wake the worker that released it; with per-worker runtimes a released worker would otherwise keep being woken by the upstream sockets it created). Capacity is the global
   `keepalive_pool_size` (0.9 sizes it per worker times the thread count); a release at capacity evicts the oldest
   connection of its own stripe, else of the next non-empty one, and reports how long it had been idle to
   `keepalive_pool_callback`. Idle sockets that deliver data count in the 0.9 unexpected-data counter. `idle_timeout` of zero
