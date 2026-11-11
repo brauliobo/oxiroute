@@ -59,13 +59,13 @@ pub(super) async fn h3_reaches_a_tls_h2_origin_with_its_trailers() {
     );
     let trailers = answer.trailers.expect("origin trailers");
     assert_eq!(
-        trailers.get("grpc-status").map(|value| value.as_bytes()),
+        trailers.get("grpc-status").map(http::HeaderValue::as_bytes),
         Some(&b"0"[..])
     );
     assert_eq!(
         trailers
             .get("x-oxiroute-trailer")
-            .map(|value| value.as_bytes()),
+            .map(http::HeaderValue::as_bytes),
         Some(&b"full"[..])
     );
 
@@ -89,7 +89,7 @@ pub(super) async fn h3_reaches_a_tls_h2_origin_with_its_trailers() {
     assert_eq!(
         headers[0]
             .get("x-forwarded-proto")
-            .map(|value| value.as_bytes()),
+            .map(http::HeaderValue::as_bytes),
         Some(&b"https"[..])
     );
     assert_eq!(

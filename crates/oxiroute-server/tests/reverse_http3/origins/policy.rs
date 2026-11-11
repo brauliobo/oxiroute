@@ -169,33 +169,34 @@ pub(super) async fn h3_responses_from_an_h1_origin_get_the_response_policy_of_th
 }
 
 fn caching_policy() -> HttpProxyPolicy {
-    let mut policy = HttpProxyPolicy::default();
-    policy.cache = Some(Box::new(oxiroute_config::HttpCachePolicy {
-        store: "memory".into(),
-        methods: vec!["GET".into(), "HEAD".into()],
-        key_components: vec![
-            CacheKeyComponent::Scheme,
-            CacheKeyComponent::NormalizedHost,
-            CacheKeyComponent::PathAndQuery,
-        ],
-        use_origin_cache_control: true,
-        default_ttl_ms: 60_000,
-        status_ttls: Vec::new(),
-        grace_ms: 30_000,
-        keep_ms: 300_000,
-        revalidate: true,
-        collapsed_forwarding: true,
-        stale_on: Vec::new(),
-        bypass_request: Vec::new(),
-        no_store_request: Vec::new(),
-        no_store_response: Vec::new(),
-        set_cookie_policy: oxiroute_config::CacheSetCookiePolicy::default(),
-        authorization_policy: oxiroute_config::CacheAuthorizationPolicy::default(),
-        vary_policy: oxiroute_config::CacheVaryPolicy::default(),
-        surrogate_tags: None,
-        purge_authorization: None,
-    }));
-    policy
+    HttpProxyPolicy {
+        cache: Some(Box::new(oxiroute_config::HttpCachePolicy {
+            store: "memory".into(),
+            methods: vec!["GET".into(), "HEAD".into()],
+            key_components: vec![
+                CacheKeyComponent::Scheme,
+                CacheKeyComponent::NormalizedHost,
+                CacheKeyComponent::PathAndQuery,
+            ],
+            use_origin_cache_control: true,
+            default_ttl_ms: 60_000,
+            status_ttls: Vec::new(),
+            grace_ms: 30_000,
+            keep_ms: 300_000,
+            revalidate: true,
+            collapsed_forwarding: true,
+            stale_on: Vec::new(),
+            bypass_request: Vec::new(),
+            no_store_request: Vec::new(),
+            no_store_response: Vec::new(),
+            set_cookie_policy: oxiroute_config::CacheSetCookiePolicy::default(),
+            authorization_policy: oxiroute_config::CacheAuthorizationPolicy::default(),
+            vary_policy: oxiroute_config::CacheVaryPolicy::default(),
+            surrogate_tags: None,
+            purge_authorization: None,
+        })),
+        ..HttpProxyPolicy::default()
+    }
 }
 
 #[tokio::test]
