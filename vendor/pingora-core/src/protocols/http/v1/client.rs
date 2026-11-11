@@ -466,7 +466,8 @@ impl HttpSession {
                         let buf = std::mem::take(&mut self.response_header_read_buf).freeze();
                         // A tunnel keeps its head for hours: do not pin the read buffer for it (the bytes read after
                         // the head stay, they are the first of the tunnel).
-                        let tunnel = status == StatusCode::SWITCHING_PROTOCOLS && self.is_upgrade_req();
+                        let tunnel =
+                            status == StatusCode::SWITCHING_PROTOCOLS && self.is_upgrade_req();
 
                         let (response_header, facts) = match parsed_response_header(
                             status,
