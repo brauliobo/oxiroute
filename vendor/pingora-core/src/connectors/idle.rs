@@ -44,7 +44,11 @@ use crate::protocols::Stream;
 /// stripe and its lock.
 fn stripe_count() -> usize {
     static COUNT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *COUNT.get_or_init(|| std::thread::available_parallelism().map_or(8, usize::from).clamp(8, 256))
+    *COUNT.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map_or(8, usize::from)
+            .clamp(8, 256)
+    })
 }
 
 static NEXT_STRIPE: AtomicUsize = AtomicUsize::new(0);
@@ -180,7 +184,9 @@ struct Padded<T>(T);
 impl IdlePool {
     pub(crate) fn new(capacity: usize, unexpected_data: Arc<AtomicU64>) -> Arc<Self> {
         Arc::new(Self {
-            stripes: (0..stripe_count()).map(|_| Padded(Mutex::default())).collect(),
+            stripes: (0..stripe_count())
+                .map(|_| Padded(Mutex::default()))
+                .collect(),
             capacity,
             idle: AtomicUsize::new(0),
             unexpected_data,
@@ -379,9 +385,14 @@ mod tests {
 
     #[test]
     fn a_connection_taken_by_another_runtime_is_registered_with_its_driver() {
-        use tokio::io::AsyncReadExt;
         use std::io::Write;
-        let build = || tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        use tokio::io::AsyncReadExt;
+        let build = || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+        };
         let (first, second) = (build(), build());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -397,7 +408,9 @@ mod tests {
             let mut stream = pool.take(1).expect("pooled");
             server.write_all(b"x").unwrap();
             let mut byte = [0; 1];
-            tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut byte)).await.is_ok()
+            tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut byte))
+                .await
+                .is_ok()
         });
         assert!(received);
     }
