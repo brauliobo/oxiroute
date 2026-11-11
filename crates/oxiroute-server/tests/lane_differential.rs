@@ -17,6 +17,8 @@ mod process_support;
 mod corpus;
 #[path = "lane_differential/features.rs"]
 mod features;
+#[path = "lane_differential/reading.rs"]
+mod reading;
 #[path = "lane_differential/retries.rs"]
 mod retries;
 
@@ -27,15 +29,9 @@ use oxiroute_config::{
     ConfigDraft, HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpRedirectLocation,
     HttpRoute, HttpRouteAction,
 };
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::TcpStream,
-    time::{sleep, timeout},
-};
+use tokio::{io::AsyncWriteExt as _, net::TcpStream, time::sleep};
 
 use h1_wire::{Origin, STEP, Wire};
-
-const QUIET: Duration = Duration::from_millis(300);
 
 /// A fixed route in front of the catch-all proxy route, so both lanes get requests.
 fn with_fixed_route(config: &mut ConfigDraft) {
@@ -159,14 +155,17 @@ impl Pair {
         Self { classic, lane }.warmed().await
     }
 
-    /// The first request of a process pays for what it sets up (connections, tables); the comparison waits a short
-    /// moment for a response, so it starts after one request has been served.
+    /// The first request of a process pays for what it sets up (connections, tables): the comparison starts after
+    /// one request has been served by each.
     async fn warmed(self) -> Self {
-        for wire in [&self.classic, &self.lane] {
-            wire.exchange(b"GET /r HTTP/1.1\r\nHost: warm.test\r\n\r\n")
-                .await;
-        }
+        self.play(&[b"GET /r HTTP/1.1\r\nHost: warm.test\r\n\r\n"])
+            .await;
         self
+    }
+
+    /// `script` on a connection to each proxy at the same time.
+    async fn play(&self, script: &[&[u8]]) -> (Outcome, Outcome) {
+        tokio::join!(play(&self.classic, script), play(&self.lane, script))
     }
 
     fn finish(self) {
@@ -187,19 +186,15 @@ async fn play(wire: &Wire, script: &[&[u8]]) -> Outcome {
     let before = wire.origin.requests().len();
     let mut stream = TcpStream::connect(wire.proxy).await.expect("connect");
     let mut bytes = Vec::new();
+    let mut unanswered = Vec::new();
     let mut closed = false;
-    let mut buffer = [0_u8; 8192];
     for write in script {
         let _ = stream.write_all(write).await;
-        loop {
-            match timeout(QUIET, stream.read(&mut buffer)).await {
-                Ok(Ok(0) | Err(_)) => {
-                    closed = true;
-                    break;
-                }
-                Ok(Ok(count)) => bytes.extend_from_slice(&buffer[..count]),
-                Err(_) => break,
-            }
+        unanswered.extend_from_slice(write);
+        let answered = bytes.len();
+        closed = reading::read_step(&mut stream, &unanswered, &mut bytes).await;
+        if bytes.len() > answered {
+            unanswered.clear();
         }
         if closed {
             break;
@@ -296,8 +291,7 @@ async fn compare(pair: &Pair, cases: &[corpus::Case]) {
     let mut differences = Vec::new();
     for case in cases {
         let script = case.script();
-        let classic = play(&pair.classic, &script).await;
-        let lane = play(&pair.lane, &script).await;
+        let (classic, lane) = pair.play(&script).await;
         if classic != lane {
             differences.push(format!(
                 "case `{}`\n classic: {classic:#?}\n lane: {lane:#?}",
@@ -359,8 +353,7 @@ async fn proxied_responses_of_every_shape_are_identical_on_both_paths() {
                 continue;
             }
             let script = case.script();
-            let classic = play(&pair.classic, &script).await;
-            let lane = play(&pair.lane, &script).await;
+            let (classic, lane) = pair.play(&script).await;
             if classic != lane {
                 differences.push(format!(
                     "reply `{name}`, request `{}`\n classic: {classic:#?}\n lane: {lane:#?}",
@@ -392,8 +385,7 @@ async fn an_unrequested_switching_protocols_reply_is_a_bad_gateway_on_the_lane()
     let pair = Pair::serving(reply, closes).await;
     let probe = corpus::probes("/r").remove(0);
     let script = probe.script();
-    let classic = play(&pair.classic, &script).await;
-    let lane = play(&pair.lane, &script).await;
+    let (classic, lane) = pair.play(&script).await;
     pair.finish();
     assert!(classic.response.starts_with("HTTP/1.1 101 "), "{classic:?}");
     assert!(lane.response.starts_with("HTTP/1.1 502 "), "{lane:?}");

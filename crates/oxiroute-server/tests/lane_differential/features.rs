@@ -161,8 +161,7 @@ async fn a_chunked_body_over_the_limit_is_refused_on_both_paths() {
     let pair = Pair::start(OK).await;
     let case = corpus::chunked_over_the_limit("/r");
     let script = case.script();
-    let classic = play(&pair.classic, &script).await;
-    let lane = play(&pair.lane, &script).await;
+    let (classic, lane) = pair.play(&script).await;
     pair.finish();
     assert!(classic.response.starts_with("HTTP/1.1 413 "), "{classic:?}");
     assert_eq!(
@@ -205,8 +204,7 @@ async fn responses_with_header_rules_are_identical_on_both_paths() {
                 continue;
             }
             let script = case.script();
-            let classic = play(&pair.classic, &script).await;
-            let lane = play(&pair.lane, &script).await;
+            let (classic, lane) = pair.play(&script).await;
             if classic != lane {
                 differences.push(format!(
                     "reply `{name}`, request `{}`\n classic: {classic:#?}\n lane: {lane:#?}",
@@ -253,8 +251,7 @@ async fn replies_from_a_tls_origin_are_identical_on_both_paths() {
                 continue;
             }
             let script = case.script();
-            let classic = play(&pair.classic, &script).await;
-            let lane = play(&pair.lane, &script).await;
+            let (classic, lane) = pair.play(&script).await;
             if classic != lane {
                 differences.push(format!(
                     "reply `{name}`, request `{}`\n classic: {classic:#?}\n lane: {lane:#?}",
@@ -284,8 +281,7 @@ async fn a_tls_origin_with_an_untrusted_certificate_is_a_bad_gateway_on_both_pat
     .await;
     let request = corpus::forwarded("/r").remove(0);
     let script = request.script();
-    let classic = play(&pair.classic, &script).await;
-    let lane = play(&pair.lane, &script).await;
+    let (classic, lane) = pair.play(&script).await;
     pair.finish();
     assert!(
         !classic.response.starts_with("HTTP/1.1 200 "),
