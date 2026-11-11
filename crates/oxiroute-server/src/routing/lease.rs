@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::upstream_peer::ReusePeer;
 
 /// A health-aware selector over a named-server list that registered servers may join and leave.
 #[derive(Debug)]
@@ -127,6 +128,8 @@ pub(super) struct EndpointLeaseInner {
     idle: AtomicBool,
     /// Set while this lease holds a claim on an idle pooled connection of its server.
     reserved: AtomicBool,
+    /// Set while this lease holds a place in the queue ledger, so a lease that never queued takes no lock to leave.
+    queued: AtomicBool,
 }
 
 /// A lease that has to wait for capacity counts as queued from its first wait until it is acquired or dropped.
@@ -155,6 +158,7 @@ impl EndpointLease {
                 wait: LeaseWait::default(),
                 idle: AtomicBool::new(false),
                 reserved: AtomicBool::new(false),
+                queued: AtomicBool::new(false),
             }),
         }
     }
@@ -177,6 +181,7 @@ impl EndpointLease {
                 wait: LeaseWait::default(),
                 idle: AtomicBool::new(false),
                 reserved: AtomicBool::new(false),
+                queued: AtomicBool::new(false),
             }),
         }
     }
@@ -203,13 +208,18 @@ impl EndpointLease {
     }
 
     /// Reports this lease's place in the pool queue to `cell` while it waits for capacity.
-    pub(crate) fn observe_queue_position(&self, cell: Arc<AtomicU64>) {
+    ///
+    /// Only a lease with a queue deadline ever waits, so any other one reports nothing.
+    pub(crate) fn observe_queue_position(&self, cell: &Arc<AtomicU64>) {
+        if self.inner.deadline.is_none() {
+            return;
+        }
         *self
             .inner
             .wait
             .observer
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cell);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(cell));
     }
 
     /// Records where a selector wait started, for leases that were not bound before waiting.
@@ -231,6 +241,11 @@ impl EndpointLease {
     /// How many requests were waiting when this one joined, itself included; 0 if it never waited.
     pub(crate) fn queue_position(&self) -> u64 {
         self.inner.wait.position.load(Ordering::Relaxed)
+    }
+
+    /// See `PoolEndpoint::reuse_peer`.
+    pub(crate) fn reuse_peer(&self) -> Option<&ReusePeer> {
+        self.inner.server.reuse_peer()
     }
 
     pub(crate) fn observation(&self) -> EndpointObservation {
@@ -292,12 +307,17 @@ impl EndpointLeaseInner {
         self.queue.queued.fetch_add(1, Ordering::Relaxed);
         self.queue.queued_total.fetch_add(1, Ordering::Relaxed);
         *ticket = Some(joined);
+        self.queued.store(true, Ordering::Release);
     }
 
     fn leave_queue(&self, cancelled: bool) {
+        if !self.queued.load(Ordering::Acquire) {
+            return;
+        }
         let Some(ticket) = self.ticket().take() else {
             return;
         };
+        self.queued.store(false, Ordering::Release);
         let waited = self.queue.ledger.leave(ticket);
         self.observe_position(0);
         decrement_queue_count(&self.queue.queued);
@@ -322,7 +342,10 @@ impl EndpointLeaseInner {
     }
 
     fn set_idle(&self, idle: bool) {
-        if self.idle.swap(idle, Ordering::AcqRel) != idle {
+        // A lease that is not idle and stays so (the usual case when it is dropped) takes no atomic exchange.
+        if self.idle.load(Ordering::Acquire) != idle
+            && self.idle.swap(idle, Ordering::AcqRel) != idle
+        {
             self.server.set_connection_idle(&self.queue, idle);
         }
     }

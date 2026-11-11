@@ -288,7 +288,9 @@ impl IdlePool {
     }
 
     fn start_watcher(self: &Arc<Self>) {
-        if !self.watcher_started.swap(true, Ordering::Relaxed) {
+        if !self.watcher_started.load(Ordering::Relaxed)
+            && !self.watcher_started.swap(true, Ordering::Relaxed)
+        {
             let wakeups = self.wakeups.clone();
             let pool = Arc::downgrade(self);
             pingora_runtime::current_handle().spawn(watcher(wakeups, pool));

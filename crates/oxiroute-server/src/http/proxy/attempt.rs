@@ -1,12 +1,32 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::upstream_peer::ReusePeer;
+
+/// What an attempt allows each of its steps once its server is selected.
+#[derive(Clone, Copy)]
+pub(super) struct AttemptTimeouts {
+    now: Instant,
+    connect: Duration,
+    read: Duration,
+    write: Duration,
+    body_read: Duration,
+}
+
+impl AttemptTimeouts {
+    /// Applies the attempt's read and write limits to the session of its connection.
+    pub(super) fn apply(&self, session: &mut pingora::protocols::http::v1::client::HttpSession) {
+        session.read_timeout = Some(self.read);
+        session.body_read_timeout = Some(self.body_read);
+        session.write_timeout = Some(self.write);
+    }
+}
 
 /// The steps of an upstream attempt that do not depend on how the request arrived, shared by the Pingora hooks and
 /// the fast lane.
 impl HttpRequestContext {
-    /// The peer of the next attempt: selects the endpoint (a retry on the same server, an affinity server or the
-    /// pool's choice) the first time, and prepares the peer with the attempt's timeouts. `affinity` names a server
-    /// the request is bound to; `host` is the `Host` the origin gets for the selected endpoint.
+    /// The peer of the next attempt: selects the endpoint, then prepares the peer with the attempt's timeouts.
+    /// `affinity` names a server the request is bound to; `host` is the `Host` the origin gets for the selected
+    /// endpoint.
     pub(super) async fn next_peer(
         &mut self,
         affinity: impl FnOnce(&Self) -> Option<String>,
@@ -16,6 +36,28 @@ impl HttpRequestContext {
             Option<&Authority>,
         ) -> pingora::Result<Option<HeaderValue>>,
     ) -> pingora::Result<Box<HttpPeer>> {
+        let timeouts = self.next_attempt(affinity, host).await?;
+        self.prepare_peer(timeouts).await
+    }
+
+    /// The idle-pool peer of the selected server, when the attempt can take a connection without building a peer.
+    pub(super) fn reuse_peer(&self) -> Option<ReusePeer> {
+        let reuses = self.pool.as_ref()?.connection_reuse()
+            != oxiroute_config::UpstreamConnectionReuse::Never;
+        self.selected.as_ref().filter(|_| reuses)?.reuse_peer()
+    }
+
+    /// Selects the endpoint (a retry on the same server, an affinity server or the pool's choice) the first time,
+    /// and works out the attempt's timeouts.
+    pub(super) async fn next_attempt(
+        &mut self,
+        affinity: impl FnOnce(&Self) -> Option<String>,
+        host: impl FnOnce(
+            &RuntimeEndpoint,
+            &HttpUpstreamHost,
+            Option<&Authority>,
+        ) -> pingora::Result<Option<HeaderValue>>,
+    ) -> pingora::Result<AttemptTimeouts> {
         if self.has_attempted() {
             self.refresh_clock();
         }
@@ -52,7 +94,11 @@ impl HttpRequestContext {
                 let wait = self.remaining_at(now, true)?;
                 let (selected, waited) = promptly(
                     wait,
-                    pool.select_endpoint(&self.attempted_upstreams, self.queue_tag),
+                    pool.select_endpoint_at(
+                        &self.attempted_upstreams,
+                        self.queue_tag,
+                        crate::clock::wall_ms(now),
+                    ),
                 )
                 .await
                 .map_err(|_| Error::new_up(ErrorType::ReadTimedout))?;
@@ -68,8 +114,7 @@ impl HttpRequestContext {
             self.trace.servers.push(Arc::clone(&server));
             self.trace.stats = Some(Arc::clone(selected.server_stats()));
             if let Some(inflight) = &self.inflight {
-                inflight.place_pool(pool.label().shared());
-                inflight.place_server(server);
+                inflight.place_attempt(pool.label(), server);
                 selected.observe_queue_position(inflight.queue_cell());
                 inflight.set_phase(Phase::Connecting, now);
             }
@@ -91,24 +136,43 @@ impl HttpRequestContext {
                 .map_or(inherited, Duration::from_millis)
                 .min(remaining)
         };
+        let pool = self.pool.as_ref().expect("a pool was selected");
         let response = pool.server_timeout(route_policy.read_timeout);
+        Ok(AttemptTimeouts {
+            now,
+            connect: attempt(
+                timeouts.connect_ms,
+                pool.connect_timeout(route_policy.connect_timeout),
+            ),
+            read: attempt(timeouts.header_ms, response),
+            write: pool
+                .server_timeout(route_policy.write_timeout)
+                .min(remaining),
+            body_read: attempt(timeouts.idle_ms, response),
+        })
+    }
+
+    /// The peer for connecting, from the endpoint [`Self::next_attempt`] selected.
+    pub(super) async fn prepare_peer(
+        &mut self,
+        timeouts: AttemptTimeouts,
+    ) -> pingora::Result<Box<HttpPeer>> {
+        let Some(pool) = &self.pool else {
+            return Err(Error::new_in(ErrorType::InternalError));
+        };
         let mut peer = self
             .selected
             .as_mut()
             .expect("selected endpoint initialized")
             .prepare_peer_with_timeouts(
                 pool,
-                now,
-                attempt(
-                    timeouts.connect_ms,
-                    pool.connect_timeout(route_policy.connect_timeout),
-                ),
-                attempt(timeouts.header_ms, response),
-                pool.server_timeout(route_policy.write_timeout)
-                    .min(remaining),
+                timeouts.now,
+                timeouts.connect,
+                timeouts.read,
+                timeouts.write,
             )
             .await?;
-        peer.options.body_read_timeout = Some(attempt(timeouts.idle_ms, response));
+        peer.options.body_read_timeout = Some(timeouts.body_read);
         Ok(Box::new(peer))
     }
 

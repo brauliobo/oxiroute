@@ -293,23 +293,45 @@ impl HttpRequestContext {
         client_ip: Option<std::net::IpAddr>,
         access_log: Option<&Arc<AccessLog>>,
     ) {
-        self.inflight = Some(
-            inflight::registry().register(InflightArrival {
-                request_id: self
-                    .request_id
-                    .as_ref()
-                    .and_then(|id| id.to_str().ok())
-                    .unwrap_or_default(),
-                listener: self.listener.shared_name(),
-                method: method.clone(),
-                host,
-                path,
-                client_ip,
-                started: self.started_at,
-                deadline: self.deadline.saturating_duration_since(self.started_at),
-                access_log: access_log.cloned(),
-            }),
-        );
+        let arrival = self.arrival(method, host, path, client_ip, access_log);
+        self.inflight = Some(inflight::registry().register(arrival));
+    }
+
+    /// Like `register_arrival` for a request routed to `route` and `pool` already.
+    fn register_routed_arrival(
+        &mut self,
+        (method, host, path, client_ip): (&Method, Option<&str>, &str, Option<std::net::IpAddr>),
+        route: Arc<str>,
+        pool: Arc<str>,
+        access_log: Option<&Arc<AccessLog>>,
+    ) {
+        let arrival = self.arrival(method, host, path, client_ip, access_log);
+        self.inflight = Some(inflight::registry().register_placed(arrival, route, pool));
+    }
+
+    fn arrival<'a>(
+        &'a self,
+        method: &Method,
+        host: Option<&'a str>,
+        path: &'a str,
+        client_ip: Option<std::net::IpAddr>,
+        access_log: Option<&Arc<AccessLog>>,
+    ) -> InflightArrival<'a> {
+        InflightArrival {
+            request_id: self
+                .request_id
+                .as_ref()
+                .and_then(|id| id.to_str().ok())
+                .unwrap_or_default(),
+            listener: self.listener.shared_name(),
+            method: method.clone(),
+            host,
+            path,
+            client_ip,
+            started: self.started_at,
+            deadline: self.deadline.saturating_duration_since(self.started_at),
+            access_log: access_log.cloned(),
+        }
     }
 
     /// `now` is the caller's reading of the clock for this step.
