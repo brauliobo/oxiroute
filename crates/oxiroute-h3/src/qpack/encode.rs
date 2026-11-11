@@ -112,7 +112,7 @@ mod tests {
     fn statuses_use_the_table_when_it_has_them() {
         let mut out = Vec::new();
         status(&mut out, StatusCode::OK);
-        assert_eq!(out, [0xc0 | 25]);
+        assert_eq!(out, [0xd9]);
         out.clear();
         status(&mut out, StatusCode::IM_A_TEAPOT);
         assert_eq!(&out[..2], [0x5f, 24 - 15]);
@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(out, [0xff, 92 - 63]);
         out.clear();
         field(&mut out, b"content-type", b"x/y");
-        assert_eq!(&out[..2], [0x50 | 15, 44 - 15]);
+        assert_eq!(&out[..2], [0x5f, 44 - 15]);
         out.clear();
         field(&mut out, b"x-a", b"v");
         assert_eq!(out, [0x23, b'x', b'-', b'a', 1, b'v']);

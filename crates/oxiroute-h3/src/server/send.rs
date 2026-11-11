@@ -13,6 +13,23 @@ const HEAD_ROOM: usize = 9;
 /// are.
 pub(super) const COPY_LIMIT: usize = 16 * 1024;
 
+/// A response head encoded once: for responses that repeat (fixed routes), sent with
+/// [`super::RequestStream::send_prepared`].
+#[derive(Clone, Debug)]
+pub struct PreparedHead {
+    frame: Bytes,
+}
+
+impl PreparedHead {
+    /// Encodes the head of `response` (status and fields; the body of a `Response<()>` is empty).
+    #[must_use]
+    pub fn new(response: &Response<()>) -> Self {
+        Self {
+            frame: Frames::response(Vec::new(), response).to_bytes(),
+        }
+    }
+}
+
 /// A buffer being filled with the frames of a response.
 pub(super) struct Frames {
     buffer: Vec<u8>,
@@ -25,6 +42,13 @@ impl Frames {
         buffer.resize(HEAD_ROOM, 0);
         encode::response(&mut buffer, response.status(), response.headers());
         Self::seal_headers(buffer)
+    }
+
+    /// Starts with an already encoded `HEADERS` frame.
+    pub fn prepared(mut buffer: Vec<u8>, head: &PreparedHead) -> Self {
+        buffer.clear();
+        buffer.extend_from_slice(&head.frame);
+        Self { buffer, start: 0 }
     }
 
     pub fn trailers(mut buffer: Vec<u8>, trailers: &HeaderMap) -> Self {

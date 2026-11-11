@@ -9,7 +9,7 @@ use crate::qpack::decode::{DecodeError, Line, Section, Str, section};
 use crate::qpack::static_table::{ENTRIES, KINDS, Kind, NAMES, VALUES};
 
 /// Why a section did not become a head.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
     /// The decoded list passed the limit at this size.
     TooLarge(u64),
@@ -58,6 +58,10 @@ impl Builder {
 
     /// The decoded string as a slice of the arena.
     fn text(&mut self, string: Str<'_>) -> Result<Bytes, Failure> {
+        if !string.huffman {
+            self.arena.extend_from_slice(string.bytes);
+            return Ok(self.arena.split_to(string.bytes.len()).freeze());
+        }
         self.scratch.clear();
         string.write_to(&mut self.scratch)?;
         self.arena.extend_from_slice(&self.scratch);
@@ -127,11 +131,10 @@ impl Pseudo {
         }
         let authority = match (self.authority, self.host) {
             (None, None) => return Err(Failure::Malformed("missing authority")),
-            (Some(authority), None) => authority,
             (Some(authority), Some(host)) if authority.as_str().as_bytes() != host => {
                 return Err(Failure::Malformed("authority and host differ"));
             }
-            (Some(authority), Some(_)) => authority,
+            (Some(authority), _) => authority,
             (None, Some(host)) => Authority::from_maybe_shared(host)
                 .map_err(|_| Failure::Malformed("invalid host"))?,
         };
@@ -179,9 +182,10 @@ impl Builder {
                 let (name, value) = ENTRIES[index];
                 self.count(name.len(), value.len())?;
                 match KINDS[index] {
-                    Kind::Regular => self.regular_static(index)?,
+                    Kind::Regular => self.regular_static(index),
                     kind => {
-                        self.pseudo(kind, Bytes::from_static(value.as_bytes()), pseudo, trailers)?
+                        let value = Bytes::from_static(value.as_bytes());
+                        self.pseudo(kind, &value, pseudo, trailers)?;
                     }
                 }
             }
@@ -191,7 +195,7 @@ impl Builder {
                 self.count(ENTRIES[index].0.len(), value.len())?;
                 match KINDS[index] {
                     Kind::Regular => self.regular(NAMES[index].clone(), value, pseudo)?,
-                    kind => self.pseudo(kind, value, pseudo, trailers)?,
+                    kind => self.pseudo(kind, &value, pseudo, trailers)?,
                 }
             }
             Line::Literal { name, value } => {
@@ -200,7 +204,7 @@ impl Builder {
                 self.count(name.len(), value.len())?;
                 if name.first() == Some(&b':') {
                     let kind = pseudo_kind(&name)?;
-                    self.pseudo(kind, value, pseudo, trailers)?;
+                    self.pseudo(kind, &value, pseudo, trailers)?;
                 } else {
                     let name = HeaderName::from_lowercase(&name)
                         .map_err(|_| Failure::Malformed("invalid field name"))?;
@@ -211,17 +215,16 @@ impl Builder {
         Ok(())
     }
 
-    fn regular_static(&mut self, index: usize) -> Result<(), Failure> {
+    fn regular_static(&mut self, index: usize) {
         self.regular_seen = true;
         self.headers
             .append(NAMES[index].clone(), VALUES[index].clone());
-        Ok(())
     }
 
     fn pseudo(
         &mut self,
         kind: Kind,
-        value: Bytes,
+        value: &Bytes,
         pseudo: &mut Pseudo,
         trailers: bool,
     ) -> Result<(), Failure> {
@@ -233,7 +236,7 @@ impl Builder {
                 "pseudo-header field after a regular field",
             ));
         }
-        pseudo.set(kind, &value)
+        pseudo.set(kind, value)
     }
 }
 

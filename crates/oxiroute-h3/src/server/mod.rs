@@ -11,3 +11,4 @@ mod shared;
 pub use config::{Config, HEADERS_FRAME_FACTOR};
 pub use connection::Connection;
 pub use request::RequestStream;
+pub use send::PreparedHead;
