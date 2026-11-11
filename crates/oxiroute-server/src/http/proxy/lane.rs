@@ -86,6 +86,16 @@ pub(crate) struct LaneFront {
     pub(in crate::http::proxy) write_budget: Duration,
 }
 
+/// Ends a connection after its last response. TLS says goodbye; a plain socket only flushes, because the close that
+/// follows sends the FIN after the queued bytes, as a `shutdown` before it would have.
+pub(in crate::http::proxy) async fn end_connection(stream: &mut Stream) {
+    let _ = if stream.get_ssl().is_some() {
+        stream.shutdown().await
+    } else {
+        stream.flush().await
+    };
+}
+
 enum Served {
     /// The connection serves another request; the clock reading at which this one ended, from which its idle wait
     /// is timed.
@@ -155,6 +165,11 @@ impl LaneFront {
         idle_since: Instant,
         stopped: Pin<&mut impl Future<Output = ()>>,
     ) -> Option<BytesMut> {
+        if !connection.is_reused()
+            && let Some(buffer) = buffers::read_arrived(stream)
+        {
+            return Some(buffer);
+        }
         let read = async {
             poll_fn(|cx| stream.poll_read_ready(cx)).await.ok()?;
             let mut buffer = buffers::take_read();
@@ -373,7 +388,7 @@ impl LaneFront {
         if sent && connection.will_keepalive() {
             return Served::Next(ended);
         }
-        let _ = stream.shutdown().await;
+        end_connection(stream).await;
         Served::Close
     }
 }
