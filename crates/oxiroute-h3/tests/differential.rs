@@ -1,8 +1,14 @@
 //! Randomized header sets (seeded xorshift) through the thin layer and the `h3` crate, in both directions, and a
 //! reference QPACK encoder written here for the raw client.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::similar_names,
+    clippy::too_many_lines
+)]
 mod common;
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use bytes::{Buf, Bytes};
 use common::raw::{Raw, frame_bytes, read_frames, status_of};
@@ -73,7 +79,7 @@ fn random_value(rng: &mut Rng) -> String {
 
 fn random_fields(seed: u64) -> Fields {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    (0..1 + rng.below(12))
+    (0..=rng.below(12))
         .map(|_| {
             if rng.below(3) == 0 {
                 let (name, value) = ENTRIES[rng.below(ENTRIES.len() as u64) as usize];
@@ -114,7 +120,7 @@ async fn handler(mut stream: RequestStream) {
     let seed: u64 = request.uri().path()[1..].parse().unwrap();
     let mut echo = String::new();
     for (name, value) in request.headers() {
-        echo.push_str(&format!("{}\t{}\n", name, value.to_str().unwrap()));
+        writeln!(echo, "{name}\t{}", value.to_str().unwrap()).unwrap();
     }
     let mut response = Response::builder().status(response_status(seed));
     for (name, value) in random_fields(seed ^ 0xabcd) {
@@ -245,8 +251,8 @@ async fn reference_encoder_requests_decode_identically() {
             let sent = random_fields(seed);
             let mut rng = Rng(seed | 1);
             let block = reference_block(seed, &sent, &mut rng);
-            let (mut send, mut recv) = raw.request(&frame_bytes(frame::HEADERS, &block)).await;
-            send.finish().unwrap();
+            let (mut upload, mut recv) = raw.request(&frame_bytes(frame::HEADERS, &block)).await;
+            upload.finish().unwrap();
             let frames = read_frames(&mut recv).await.unwrap();
             assert_eq!(status_of(&frames[0].1), response_status(seed).as_u16());
             assert_eq!(frames[1].0, frame::DATA);

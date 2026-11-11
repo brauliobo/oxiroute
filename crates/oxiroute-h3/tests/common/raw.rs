@@ -1,8 +1,10 @@
 //! A raw quinn client that writes HTTP/3 bytes by hand, to provoke protocol violations.
-#![allow(dead_code)]
+#![allow(dead_code, clippy::cast_possible_truncation)]
 use std::time::Duration;
 
 use oxiroute_h3::frame::{self, settings};
+use oxiroute_h3::qpack::decode::{Line, section};
+use oxiroute_h3::qpack::static_table::ENTRIES;
 use oxiroute_h3::varint;
 
 pub fn frame_bytes(kind: u64, payload: &[u8]) -> Vec<u8> {
@@ -110,8 +112,7 @@ pub async fn read_frames(
 
 /// The `:status` of a response `HEADERS` payload that uses the encodings of this crate.
 pub fn status_of(block: &[u8]) -> u16 {
-    let mut section = oxiroute_h3::qpack::decode::section(block).unwrap();
-    use oxiroute_h3::qpack::{decode::Line, static_table::ENTRIES};
+    let mut section = section(block).unwrap();
     loop {
         match section.next_line().unwrap().expect("no :status") {
             Line::Indexed(i) if ENTRIES[usize::from(i)].0 == ":status" => {
