@@ -728,6 +728,7 @@ fn compile_listener_blueprints(
                 proxy_protocol: listener.proxy_protocol,
                 max_connections: listener.max_connections,
                 downstream_timeouts: listener.downstream_timeouts,
+                h2_windows: listener.effective_h2_windows(),
             })
         })
         .collect()

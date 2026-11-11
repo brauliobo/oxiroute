@@ -42,12 +42,12 @@ use oxiroute_server::{
     RuntimeReferenceKind, ServiceKind, TcpRelayCore, TlsProfilePlan, TopologySnapshot, UdpRuntime,
     cli::{Cli, Command, ConfigCommand, execute_offline},
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, EffectiveRevision},
-    emit_certificate, emit_rtmp_access,
+    emit_certificate, emit_rtmp_access, with_h2_windows,
 };
 use pingora::{
     apps::http_app::HttpServer,
     apps::{AcceptGate, ConnectionAdmission, ServerApp},
-    protocols::{ALPN, Stream},
+    protocols::{ALPN, Stream, http::v2::server::default_h2_options},
     proxy::http_proxy,
     server::{
         RunArgs, Server, ShutdownSignal, ShutdownSignalWatch, ShutdownWatch,
@@ -582,6 +582,7 @@ fn serve_generation(
         let service_name = format!("OxiRoute {listener_name}");
         let listener_tls = spec.tls;
         let downstream_timeouts = spec.downstream_timeouts;
+        let h2_windows = spec.h2_windows;
         let listener_proxy_protocol = spec.proxy_protocol;
 
         match spec.kind {
@@ -620,7 +621,7 @@ fn serve_generation(
                     Arc::clone(&forward_service),
                     HttpListenerApp::new(
                         HttpDownstreamPolicyApp::new(
-                            ForwardHttp2ServiceApp::new(forward_service),
+                            ForwardHttp2ServiceApp::new(forward_service, h2_windows),
                             downstream_timeouts,
                         ),
                         listener_tls.as_deref(),
@@ -645,12 +646,13 @@ fn serve_generation(
             }
             ServiceKind::Http(http_service) => {
                 let lane_service = Arc::clone(&http_service);
-                let proxy = http_proxy(
+                let mut proxy = http_proxy(
                     &server.configuration,
                     HttpReverseProxy::new(http_service, metrics.clone())
                         .with_challenge_store(challenge_store.clone())
                         .with_generation(Arc::clone(generation)),
                 );
+                proxy.h2_options = Some(with_h2_windows(default_h2_options(), h2_windows));
                 let upstream = proxy.upstream_h1_connector();
                 let app = MonitoredHttpApp::new(
                     HttpListenerApp::new(

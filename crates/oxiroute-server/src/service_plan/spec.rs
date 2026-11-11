@@ -8,6 +8,7 @@ pub struct ServiceSpec {
     pub bind: ListenerBind,
     pub max_connections: Option<u64>,
     pub downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy,
+    pub h2_windows: oxiroute_config::H2Windows,
     pub proxy_protocol: Option<oxiroute_config::ProxyProtocolPolicy>,
     pub kind: ServiceKind,
     pub tls: Option<Arc<TlsProfilePlan>>,

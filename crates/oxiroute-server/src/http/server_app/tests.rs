@@ -331,3 +331,27 @@ fn reverse_http_owned_admission_retains_generation_drain_lifetime() {
         0
     );
 }
+
+#[test]
+fn h2_options_advertise_the_listener_windows_and_keep_the_bounded_defaults() {
+    let windows = H2Windows {
+        stream: 262_144,
+        connection: 2 << 20,
+    };
+    let options = with_h2_windows(
+        pingora::protocols::http::v2::server::default_h2_options(),
+        windows,
+    );
+
+    assert_eq!(
+        (
+            options.initial_stream_window,
+            options.initial_connection_window
+        ),
+        (windows.stream, windows.connection)
+    );
+    assert_eq!(
+        (options.max_concurrent_streams, options.max_header_list_size),
+        (100, 64 * 1024)
+    );
+}
