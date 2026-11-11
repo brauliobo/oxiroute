@@ -14,7 +14,7 @@ http.workspace = true
 oxiroute-h2 = { path = "../oxiroute-h2" }
 quinn.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 h3.workspace = true

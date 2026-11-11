@@ -1,6 +1,6 @@
 //! State shared by a connection and its request streams.
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use atomic_waker::AtomicWaker;
@@ -8,6 +8,7 @@ use atomic_waker::AtomicWaker;
 use super::Config;
 use crate::code::Code;
 use crate::error::Error;
+use crate::frame::settings::PeerSettings;
 
 pub(crate) struct Shared {
     pub conn: quinn::Connection,
@@ -16,7 +17,12 @@ pub(crate) struct Shared {
     active: AtomicUsize,
     /// A GOAWAY was sent or received: `accept` ends once no request is active.
     closing: AtomicBool,
-    idle: AtomicWaker,
+    /// Woken when `accept` has something new to look at that is not a stream: a GOAWAY, the last request ending.
+    accept_waker: AtomicWaker,
+    /// What the peer announced on its control stream.
+    pub peer_settings: OnceLock<PeerSettings>,
+    /// The first protocol violation this layer closed the connection for.
+    failure: OnceLock<(Code, &'static str)>,
     resets: Mutex<ResetWindow>,
     /// The control stream of a dropped `Connection`: finishing it would be a closed critical stream.
     kept_control: Mutex<Option<quinn::SendStream>>,
@@ -35,7 +41,9 @@ impl Shared {
             config,
             active: AtomicUsize::new(0),
             closing: AtomicBool::new(false),
-            idle: AtomicWaker::new(),
+            accept_waker: AtomicWaker::new(),
+            peer_settings: OnceLock::new(),
+            failure: OnceLock::new(),
             resets: Mutex::new(ResetWindow {
                 start: Instant::now(),
                 count: 0,
@@ -46,8 +54,16 @@ impl Shared {
 
     /// Closes the connection for a protocol violation of the peer.
     pub fn fail(&self, code: Code, reason: &'static str) -> Error {
+        let _ = self.failure.set((code, reason));
         self.conn.close(code.varint(), reason.as_bytes());
         Error::Protocol { code, reason }
+    }
+
+    /// The violation the connection was closed for, if it was.
+    pub fn failure(&self) -> Option<Error> {
+        self.failure
+            .get()
+            .map(|&(code, reason)| Error::Protocol { code, reason })
     }
 
     pub fn keep_control(&self, stream: quinn::SendStream) {
@@ -63,21 +79,23 @@ impl Shared {
 
     pub fn request_ended(&self) {
         if self.active.fetch_sub(1, Ordering::AcqRel) == 1 && self.closing.load(Ordering::Acquire) {
-            self.idle.wake();
+            self.accept_waker.wake();
         }
     }
 
     pub fn start_closing(&self) {
         self.closing.store(true, Ordering::Release);
+        self.accept_waker.wake();
     }
 
-    /// Whether a GOAWAY was exchanged and every request is done; registers `waker` otherwise.
-    pub fn is_drained(&self, waker: &std::task::Waker) -> bool {
-        if !self.closing.load(Ordering::Acquire) {
-            return false;
-        }
-        self.idle.register(waker);
-        self.active.load(Ordering::Acquire) == 0
+    /// Registers the task that waits in `accept`.
+    pub fn register_accept(&self, waker: &std::task::Waker) {
+        self.accept_waker.register(waker);
+    }
+
+    /// Whether a GOAWAY was exchanged and every request is done.
+    pub fn is_drained(&self) -> bool {
+        self.closing.load(Ordering::Acquire) && self.active.load(Ordering::Acquire) == 0
     }
 
     /// Records a request stream the peer reset (or stopped) before the response was finished, and closes the

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::task::{Poll, ready};
 
 use super::Config;
-use super::peer::PeerStreams;
+use super::peer;
 use super::request::RequestStream;
 use super::shared::Shared;
 use crate::code::Code;
@@ -13,17 +13,17 @@ use crate::frame::settings::PeerSettings;
 use crate::frame::{self, settings, stream_type};
 use crate::varint;
 
-/// An HTTP/3 server connection: opens the control stream, accepts request streams, and reads the peer's control and
-/// QPACK streams while it waits for them.
+/// An HTTP/3 server connection: opens the control stream and accepts request streams. A task spawned for the
+/// connection (one per connection, none per request) reads the peer's control, QPACK and other unidirectional
+/// streams; it ends with the QUIC connection, which the owner closes when it is done with the HTTP/3 connection.
 ///
-/// Dropping it leaves the QUIC connection to the owner; the control stream stays open until the last request
-/// stream is gone.
+/// Dropping the `Connection` leaves the QUIC connection to the owner; the control stream stays open until the last
+/// request stream is gone.
 pub struct Connection {
     shared: Arc<Shared>,
     control: Option<quinn::SendStream>,
     /// Bytes for the control stream not written yet.
     control_out: Vec<u8>,
-    peer: PeerStreams,
     /// Stream id of the last request accepted.
     last_accepted: Option<u64>,
     /// The identifier of the GOAWAY frame queued or sent: request streams from it on are refused.
@@ -51,11 +51,11 @@ impl Connection {
             shared: Arc::new(Shared::new(conn, config)),
             control: Some(control),
             control_out: out,
-            peer: PeerStreams::default(),
             last_accepted: None,
             goaway: None,
         };
         connection.flush_control().await?;
+        tokio::spawn(peer::drive(Arc::clone(&connection.shared)));
         Ok(connection)
     }
 
@@ -68,10 +68,10 @@ impl Connection {
     /// The settings of the peer, once its control stream delivered them.
     #[must_use]
     pub fn peer_settings(&self) -> Option<PeerSettings> {
-        self.peer.settings()
+        self.shared.peer_settings.get().copied()
     }
 
-    /// Cancel-safe. Waits for the next request stream, reading the peer's other streams meanwhile.
+    /// Cancel-safe. Waits for the next request stream.
     ///
     /// Returns `None` when the peer closed the connection without an error, and also once a GOAWAY was sent or
     /// received and every request stream handed out is dropped. Streams that arrive after [`Connection::shutdown`]
@@ -95,28 +95,16 @@ impl Connection {
     async fn poll_accept(
         &mut self,
     ) -> Result<Option<(quinn::SendStream, quinn::RecvStream)>, Error> {
-        let Self { shared, peer, .. } = self;
+        let shared = &self.shared;
         let mut bi = pin!(shared.conn.accept_bi());
-        let mut uni = pin!(shared.conn.accept_uni());
         std::future::poll_fn(|cx| {
-            while peer.has_room() {
-                match uni.as_mut().poll(cx) {
-                    Poll::Ready(Ok(stream)) => {
-                        peer.add(stream);
-                        uni.set(shared.conn.accept_uni());
-                    }
-                    Poll::Ready(Err(_)) | Poll::Pending => break,
-                }
-            }
-            if peer.poll(cx, shared)?.goaway {
-                shared.start_closing();
-            }
-            if shared.is_drained(cx.waker()) {
+            shared.register_accept(cx.waker());
+            if shared.is_drained() {
                 return Poll::Ready(Ok(None));
             }
             match ready!(bi.as_mut().poll(cx)) {
                 Ok(streams) => Poll::Ready(Ok(Some(streams))),
-                Err(error) => Poll::Ready(graceful_end(error)),
+                Err(error) => Poll::Ready(graceful_end(shared, error)),
             }
         })
         .await
@@ -179,8 +167,9 @@ fn reject(mut send: quinn::SendStream, mut recv: quinn::RecvStream) {
     let _ = send.reset(code);
 }
 
-/// A connection the peer closed without an error ends the accept loop quietly.
+/// A connection the peer closed without an error ends the accept loop quietly; one this layer closed reports why.
 fn graceful_end(
+    shared: &Shared,
     error: quinn::ConnectionError,
 ) -> Result<Option<(quinn::SendStream, quinn::RecvStream)>, Error> {
     let no_error = match &error {
@@ -196,7 +185,7 @@ fn graceful_end(
     if no_error {
         Ok(None)
     } else {
-        Err(error.into())
+        Err(shared.failure().unwrap_or_else(|| error.into()))
     }
 }
 

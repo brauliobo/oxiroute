@@ -7,7 +7,7 @@ use http::{HeaderMap, Request, Response};
 
 use super::recv::Rx;
 use super::scratch;
-use super::send::{COPY_LIMIT, Frames};
+use super::send::{COPY_LIMIT, Frames, PreparedHead};
 use super::shared::Shared;
 use crate::code::Code;
 use crate::error::{Error, HeadError};
@@ -238,7 +238,32 @@ impl RequestStream {
         head_only: bool,
     ) -> Result<(), Error> {
         self.expect_unfinished()?;
-        let mut frames = Frames::response(scratch::take(), &response);
+        let frames = Frames::response(scratch::take(), &response);
+        self.send_whole(frames, body, head_only).await
+    }
+
+    /// [`RequestStream::send_full_response`] with a head that was encoded beforehand.
+    ///
+    /// # Errors
+    ///
+    /// As [`RequestStream::send_response`].
+    pub async fn send_prepared(
+        &mut self,
+        head: &PreparedHead,
+        body: Bytes,
+        head_only: bool,
+    ) -> Result<(), Error> {
+        self.expect_unfinished()?;
+        let frames = Frames::prepared(scratch::take(), head);
+        self.send_whole(frames, body, head_only).await
+    }
+
+    async fn send_whole(
+        &mut self,
+        mut frames: Frames,
+        body: Bytes,
+        head_only: bool,
+    ) -> Result<(), Error> {
         let result = if head_only || body.is_empty() {
             self.write(frames.bytes()).await
         } else if body.len() <= COPY_LIMIT {

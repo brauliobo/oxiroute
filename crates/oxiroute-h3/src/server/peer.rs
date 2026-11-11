@@ -1,5 +1,8 @@
 //! The unidirectional streams of the peer: control, QPACK encoder and decoder streams, and the ones that are none
 //! of these (RFC 9114 section 6.2, RFC 9204 section 4.2).
+use std::future::Future;
+use std::pin::pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
@@ -24,6 +27,7 @@ struct Untyped {
     need: usize,
 }
 
+#[derive(Clone, Copy)]
 enum Typed {
     Control,
     Push,
@@ -134,8 +138,38 @@ pub(super) struct Polled {
     pub goaway: bool,
 }
 
+/// Reads the peer's unidirectional streams for the life of the connection: one task per connection, woken only by
+/// those streams. It ends when the connection does, or after closing it for a violation.
+pub(super) async fn drive(shared: Arc<Shared>) {
+    let mut peer = PeerStreams::default();
+    let mut accept = pin!(shared.conn.accept_uni());
+    std::future::poll_fn(|cx| {
+        while peer.has_room() {
+            match accept.as_mut().poll(cx) {
+                Poll::Ready(Ok(stream)) => {
+                    peer.add(stream);
+                    accept.set(shared.conn.accept_uni());
+                }
+                Poll::Ready(Err(_)) => return Poll::Ready(()),
+                Poll::Pending => break,
+            }
+        }
+        let Ok(polled) = peer.poll(cx, &shared) else {
+            return Poll::Ready(());
+        };
+        if let Some(settings) = peer.settings() {
+            let _ = shared.peer_settings.set(settings);
+        }
+        if polled.goaway {
+            shared.start_closing();
+        }
+        Poll::Pending
+    })
+    .await;
+}
+
 impl PeerStreams {
-    pub fn settings(&self) -> Option<PeerSettings> {
+    fn settings(&self) -> Option<PeerSettings> {
         self.control
             .as_ref()
             .and_then(|control| control.control.settings())
