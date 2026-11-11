@@ -201,8 +201,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
         Self::clear_error();
         while self.sent < self.pending.len() {
             let result = Pin::new(&mut self.ssl).poll_write(cx, &self.pending[self.sent..]);
-            self.wake_for_write(cx, &result);
-            self.sent += ready!(result)?;
+            self.sent += ready!(self.kernel_write(cx, result))?;
         }
         self.sent = 0;
         self.pending.clear();
@@ -217,25 +216,43 @@ impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
         (self.socket_of?)(self.ssl.get_ref())
     }
 
-    /// Once the kernel sends this connection's records, OpenSSL writes to the descriptor itself and a full socket
-    /// buffer reaches no waker: ask the socket to wake the task when it can take more bytes.
-    fn wake_for_write<R>(&self, cx: &mut Context<'_>, result: &Poll<R>) {
-        if !matches!(self.ktls, KtlsTx::Converting | KtlsTx::Active)
-            || result.is_ready()
-            || !ktls::wants_write(self.ssl.ssl())
-        {
-            return;
+    /// Once the kernel sends this connection's records, OpenSSL writes to the descriptor itself. A socket buffer that
+    /// is full reaches neither the transport's waker nor the `openssl` crate's retry logic (it retries only an error
+    /// its own BIO recorded): such a write or read is made to wait on the socket's write readiness instead.
+    fn kernel_write<R>(
+        &self,
+        cx: &mut Context<'_>,
+        result: Poll<io::Result<R>>,
+    ) -> Poll<io::Result<R>> {
+        if !matches!(self.ktls, KtlsTx::Converting | KtlsTx::Active) {
+            return result;
         }
-        let Some(socket) = self.ktls_socket() else {
-            return;
+        let blocked = match &result {
+            Poll::Pending => ktls::wants_write(self.ssl.ssl()),
+            Poll::Ready(Err(error)) => error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<ssl::Error>())
+                .is_some_and(|error| error.code() == ssl::ErrorCode::WANT_WRITE),
+            Poll::Ready(Ok(_)) => false,
         };
-        // The write that met the full buffer did not go through the socket's own readiness tracking.
-        let _ = socket.try_io(Interest::WRITABLE, || {
-            Err::<(), _>(io::ErrorKind::WouldBlock.into())
-        });
-        if socket.poll_write_ready(cx).is_ready() {
-            cx.waker().wake_by_ref();
+        if blocked {
+            self.wait_for_socket(cx)
+        } else {
+            result
         }
+    }
+
+    fn wait_for_socket<R>(&self, cx: &mut Context<'_>) -> Poll<R> {
+        if let Some(socket) = self.ktls_socket() {
+            // The write that met the full buffer did not go through the socket's own readiness tracking.
+            let _ = socket.try_io(Interest::WRITABLE, || {
+                Err::<(), _>(io::ErrorKind::WouldBlock.into())
+            });
+            if socket.poll_write_ready(cx).is_ready() {
+                cx.waker().wake_by_ref();
+            }
+        }
+        Poll::Pending
     }
 
     /// Whether the kernel offers what this connection negotiated: TLS 1.3 with AES-GCM (TLS 1.2 has no key update
@@ -251,12 +268,32 @@ impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
             })
     }
 
+    /// Writes the key update OpenSSL has pending (the one `begin_tx` scheduled, or the answer to the peer's request).
+    fn poll_key_update(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ssl::Error>> {
+        let result = Pin::new(&mut self.ssl).poll_do_handshake(cx);
+        let blocked = match &result {
+            Poll::Pending => ktls::wants_write(self.ssl.ssl()),
+            Poll::Ready(Err(error)) => error.code() == ssl::ErrorCode::WANT_WRITE,
+            Poll::Ready(Ok(())) => false,
+        };
+        if blocked {
+            self.wait_for_socket(cx)
+        } else {
+            result
+        }
+    }
+
     /// Drives the conversion of the write direction to the kernel TLS offload: `Ready(true)` when the kernel sends
     /// the records of this connection, `Ready(false)` when it stays in user space.
     pub(super) fn poll_ktls_tx(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
         loop {
             match self.ktls {
                 KtlsTx::Off | KtlsTx::Declined => return Poll::Ready(false),
+                // The peer asked for new keys: OpenSSL answers with its next write, and the kernel's records must
+                // not go out before that answer.
+                KtlsTx::Active if ktls::key_update_pending(self.ssl.ssl()) => {
+                    return self.poll_key_update(cx).map(|answered| answered.is_ok());
+                }
                 KtlsTx::Active => return Poll::Ready(true),
                 KtlsTx::Armed => {
                     let socket = self.ktls_socket().map(AsRawFd::as_raw_fd);
@@ -281,9 +318,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> SslStream<T> {
                     };
                 }
                 KtlsTx::Converting => {
-                    let result = Pin::new(&mut self.ssl).poll_do_handshake(cx);
-                    self.wake_for_write(cx, &result);
-                    let done = ready!(result);
+                    let done = ready!(self.poll_key_update(cx));
                     if done.is_ok() && ktls::tx_active(self.ssl.ssl()) {
                         self.ktls = KtlsTx::Active;
                         continue;
@@ -345,7 +380,7 @@ where
         }
         Self::clear_error();
         let result = Pin::new(&mut this.ssl).poll_read(cx, buf);
-        this.wake_for_write(cx, &result);
+        let result = this.kernel_write(cx, result);
         // A read that waits for room to write (the answer to a `KeyUpdate`) is not waiting for ciphertext.
         let wants_write = this.ktls != KtlsTx::Off && ktls::wants_write(this.ssl.ssl());
         if let (Poll::Pending, Some(probe)) = (&result, this.read_probe) {
@@ -375,8 +410,7 @@ where
         }
         Self::clear_error();
         let result = Pin::new(&mut self.ssl).poll_write(cx, buf);
-        self.wake_for_write(cx, &result);
-        result
+        self.kernel_write(cx, result)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
@@ -388,8 +422,7 @@ where
         Self::clear_error();
         ready!(self.poll_write_pending(cx))?;
         let result = Pin::new(&mut self.ssl).poll_shutdown(cx);
-        self.wake_for_write(cx, &result);
-        result
+        self.kernel_write(cx, result)
     }
 
     fn poll_write_vectored(
@@ -402,8 +435,7 @@ where
         }
         Self::clear_error();
         let result = Pin::new(&mut self.ssl).poll_write_vectored(cx, bufs);
-        self.wake_for_write(cx, &result);
-        result
+        self.kernel_write(cx, result)
     }
 
     fn is_write_vectored(&self) -> bool {

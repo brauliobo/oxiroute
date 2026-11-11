@@ -76,10 +76,12 @@ impl fmt::Display for KtlsUnavailable {
 
 impl std::error::Error for KtlsUnavailable {}
 
-fn loopback_pair() -> io::Result<TcpStream> {
+/// An established loopback connection (the `tls` ULP needs `TCP_ESTABLISHED`: both ends must stay open): the accepted
+/// end and the connecting end.
+fn loopback_pair() -> io::Result<(TcpStream, TcpStream)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    let _client = TcpStream::connect(listener.local_addr()?)?;
-    Ok(listener.accept()?.0)
+    let client = TcpStream::connect(listener.local_addr()?)?;
+    Ok((listener.accept()?.0, client))
 }
 
 fn set_option(
@@ -106,7 +108,7 @@ fn set_option(
 }
 
 fn try_cipher(name: &'static str, cipher: u16, key_len: usize) -> Result<(), KtlsUnavailable> {
-    let socket = loopback_pair().map_err(KtlsUnavailable::Probe)?;
+    let (socket, _peer) = loopback_pair().map_err(KtlsUnavailable::Probe)?;
     set_option(&socket, libc::IPPROTO_TCP, TCP_ULP, b"tls\0")
         .map_err(KtlsUnavailable::UlpMissing)?;
     set_option(
@@ -145,12 +147,22 @@ mod tests {
         assert_eq!(crypto_info(TLS_CIPHER_AES_GCM_256, &[0; 32]).len(), 56);
     }
 
+    fn tls_ulp_listed() -> bool {
+        std::fs::read_to_string("/proc/sys/net/ipv4/tcp_available_ulp")
+            .is_ok_and(|ulps| ulps.split_whitespace().any(|ulp| ulp == "tls"))
+    }
+
+    /// The probe says "available" exactly when the kernel lists the `tls` ULP.
     #[test]
-    fn the_probe_names_what_the_kernel_refused() {
+    fn the_probe_agrees_with_the_kernel_about_the_tls_ulp() {
         match probe() {
             Ok(()) => {}
-            Err(KtlsUnavailable::UlpMissing(_)) => {
-                eprintln!("skipped: the tls module is not loaded")
+            Err(KtlsUnavailable::UlpMissing(error)) => {
+                assert!(
+                    !tls_ulp_listed(),
+                    "the tls ULP is listed but the probe says: {error}"
+                );
+                eprintln!("skipped: the tls module is not loaded");
             }
             Err(other) => panic!("unexpected probe failure: {other}"),
         }
