@@ -100,6 +100,12 @@ impl<IO: AsyncRead + AsyncWrite + Unpin + Send + 'static> Server<IO> {
         poll_fn(|cx| self.poll_accept(cx)).await
     }
 
+    /// The `http` request head of a view this connection accepted, built as [`Server::accept`] builds it (equal
+    /// fields of consecutive requests are shared).
+    pub fn request_parts(&mut self, view: RequestView) -> Parts {
+        view.into_parts_cached(&mut self.fields)
+    }
+
     /// `GOAWAY(2^31-1)`, a PING, then the final `GOAWAY`: streams the client opened before it saw the first one
     /// are still returned by [`Server::accept`], which must keep being polled until it returns `None`.
     pub fn graceful_shutdown(&mut self) {

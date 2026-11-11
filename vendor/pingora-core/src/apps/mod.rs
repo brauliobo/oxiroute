@@ -18,13 +18,12 @@ pub mod http_app;
 mod idle_wait;
 mod pooled_future;
 
-use self::pooled_future::PooledFuture;
 pub use self::pooled_future::ErasedFuture as ClaimedStream;
+use self::pooled_future::PooledFuture;
 use crate::server::ShutdownWatch;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use log::{debug, error};
-use pingora_http::RequestHeader;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
@@ -882,17 +881,18 @@ pub enum Http1FrontOutcome {
     },
 }
 
-/// A front of the HTTP/2 accept loop: it sees each request of a connection after the loop's own acceptance checks
-/// (request target bytes, `Content-Length` framing, authority, the malformed-stream budget) passed, and before any
-/// session exists. It claims the requests it serves by itself and gives back the others untouched, for the
-/// application's session.
+/// A front of the HTTP/2 accept loop: it sees the requests of a connection that the loop's own acceptance checks
+/// (request target bytes, `Content-Length` framing, authority, the malformed-stream budget) are known to pass, as
+/// the decoded head of the connection and before any `http` type or session exists. It claims the requests it
+/// serves by itself and gives back the others untouched: those, and every request the loop cannot tell passes the
+/// checks cheaply, are checked and served by the application's session.
 pub trait Http2Front: Send + Sync {
     /// Decides without waiting. A claimed stream is served by the returned future, which the loop spawns where it
     /// would spawn a session and which owns the stream (and so a handle on the front: it outlives the call);
     /// `shutdown` is the service's.
     fn claim(
         self: Arc<Self>,
-        request: RequestHeader,
+        request: server::H2Request,
         stream: server::H2Stream,
         digest: &Digest,
         shutdown: &ShutdownWatch,
@@ -905,7 +905,7 @@ pub enum Http2Claim {
     Claimed(ClaimedStream),
     /// Not the front's: the session takes it.
     Declined {
-        request: RequestHeader,
+        request: server::H2Request,
         stream: server::H2Stream,
     },
 }

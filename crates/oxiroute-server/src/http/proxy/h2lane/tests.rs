@@ -36,10 +36,29 @@ fn classic(request: &RequestHeader, host: &str, close: bool) -> Vec<u8> {
     http_req_header_to_wire(&upstream).unwrap().to_vec()
 }
 
-/// What the lane writes, or `None` when it does not serve the request.
-fn lane(request: &RequestHeader, host: &str, close: bool) -> Option<Vec<u8>> {
+type WireFields<'a> = Vec<(&'a [u8], &'a [u8])>;
+
+/// The fields as the classic header map holds them.
+fn map_fields(request: &RequestHeader) -> WireFields<'_> {
+    request
+        .headers
+        .iter()
+        .map(|(name, value)| (name.as_str().as_bytes(), value.as_bytes()))
+        .collect()
+}
+
+/// What the lane writes for a request whose fields arrived in the order `fields`, or `None` when it does not serve
+/// it.
+fn lane_fields(
+    request: &RequestHeader,
+    fields: &WireFields<'_>,
+    host: &str,
+    close: bool,
+) -> Option<Vec<u8>> {
     let authority = request.uri.authority().unwrap();
-    let (id, wire) = request::read(request, authority)?;
+    let target = request.uri.path_and_query().unwrap().as_str().as_bytes();
+    let method = request.method.as_str().as_bytes();
+    let (id, wire) = request::read((method, target), fields.iter().copied(), authority)?;
     let mut out = Vec::new();
     let host = HeaderValue::from_str(host).unwrap();
     head::render(
@@ -48,6 +67,10 @@ fn lane(request: &RequestHeader, host: &str, close: bool) -> Option<Vec<u8>> {
         &head::edits(&wire, &id, Some(&host), close),
     );
     Some(out)
+}
+
+fn lane(request: &RequestHeader, host: &str, close: bool) -> Option<Vec<u8>> {
+    lane_fields(request, &map_fields(request), host, close)
 }
 
 /// The lane's bytes equal the classic ones, but for the id: both stamp an id when the request has no single valid
@@ -72,6 +95,19 @@ fn mask_generated(head: &[u8]) -> String {
         .join("\n")
 }
 
+fn id_of(request: &RequestHeader) -> HeaderValue {
+    let target = request.uri.path_and_query().unwrap().as_str().as_bytes();
+    let fields = map_fields(request);
+    let method = request.method.as_str().as_bytes();
+    let (id, _) = request::read(
+        (method, target),
+        fields.iter().copied(),
+        request.uri.authority().unwrap(),
+    )
+    .unwrap();
+    id
+}
+
 #[test]
 fn a_plain_request_is_written_as_the_classic_path_writes_it() {
     let request = request_of(
@@ -90,19 +126,22 @@ fn a_plain_request_is_written_as_the_classic_path_writes_it() {
 
 #[test]
 fn fields_of_one_name_are_grouped_where_the_header_map_puts_them() {
-    let request = request_of(
-        Method::GET,
-        "/",
-        &[
-            ("cookie", "a=1"),
-            ("accept", "x"),
-            ("cookie", "b=2"),
-            ("x-custom", "1"),
-            ("cookie", "c=3"),
-            ("x-custom", "2"),
-        ],
-    );
-    same_head(&request, "example.com", false);
+    let wire = [
+        ("cookie", "a=1"),
+        ("accept", "x"),
+        ("cookie", "b=2"),
+        ("x-custom", "1"),
+        ("cookie", "c=3"),
+        ("x-custom", "2"),
+    ];
+    let request = request_of(Method::GET, "/", &wire);
+    let fields = wire
+        .iter()
+        .map(|(name, value)| (name.as_bytes(), value.as_bytes()))
+        .collect();
+    let actual = lane_fields(&request, &fields, "example.com", false).unwrap();
+    let expected = classic(&request, "example.com", false);
+    assert_eq!(mask_generated(&actual), mask_generated(&expected));
 }
 
 #[test]
@@ -128,7 +167,7 @@ fn a_valid_request_id_is_kept_and_any_other_is_replaced() {
         &[("x-request-id", "abc-123"), ("accept", "*/*")],
     );
     same_head(&kept, "example.com", false);
-    let (id, _) = request::read(&kept, kept.uri.authority().unwrap()).unwrap();
+    let id = id_of(&kept);
     assert_eq!(id, "abc-123");
     let invalid = request_of(
         Method::GET,
@@ -146,7 +185,7 @@ fn a_valid_request_id_is_kept_and_any_other_is_replaced() {
         ],
     );
     same_head(&twice, "example.com", false);
-    let (id, _) = request::read(&twice, twice.uri.authority().unwrap()).unwrap();
+    let id = id_of(&twice);
     assert_eq!(id, "one");
 }
 

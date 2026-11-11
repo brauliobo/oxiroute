@@ -1,7 +1,7 @@
 //! The HTTP/2 fast lane, the sibling of the HTTP/1 lane (`lane`): an HTTP/2 request of the common shape (no body, a
 //! fixed response or a plain proxy route, see `LaneRoute`) is served on the stream itself, before any Pingora
 //! session, `RequestHeader` of the proxy or hook exists. The accept loop of the vendored core asks the lane
-//! (`Http2Front`) for each request that passed its own acceptance checks; the lane claims it or hands it back for
+//! (`Http2Front`) for each request that plainly passes its own acceptance checks, as the decoded head of the connection; the lane claims it or hands it back for
 //! the classic session, which stays the semantic reference.
 //!
 //! * `claim` decides, without waiting, and reads the request (`request` is the only module that knows how it is
@@ -25,8 +25,10 @@ use std::sync::Arc;
 
 use pingora::{
     apps::{Http2Claim, Http2Front},
-    http::RequestHeader,
-    protocols::{Digest, http::v2::server::H2Stream},
+    protocols::{
+        Digest,
+        http::v2::server::{H2Request, H2Stream},
+    },
     server::ShutdownWatch,
 };
 
@@ -35,7 +37,7 @@ use super::lane::LaneFront;
 impl Http2Front for LaneFront {
     fn claim(
         self: Arc<Self>,
-        request: RequestHeader,
+        request: H2Request,
         stream: H2Stream,
         digest: &Digest,
         _shutdown: &ShutdownWatch,
