@@ -6036,7 +6036,7 @@
           "request": "follow-up GET /fixed/ok"
         }
       ],
-      "tolerance": "differing :authority and host fields are unspecified (RFC 9114 4.3.1): the request is served or reset"
+      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
     },
     {
       "accept": [{"connection_after":"open","origin":null,"outcome":{"stream_reset":270},"step":0}],
@@ -6054,7 +6054,7 @@
           "request": "follow-up GET /fixed/ok"
         }
       ],
-      "tolerance": "differing :authority and host fields are unspecified (RFC 9114 4.3.1): the request is served or reset"
+      "tolerance": "malformed request (RFC 9114 4.1.2): a stream reset with H3_MESSAGE_ERROR or a 4xx answer both conform"
     },
     {
       "accept": [],
