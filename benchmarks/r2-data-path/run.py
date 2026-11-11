@@ -421,12 +421,18 @@ def thread_usage(before, after, elapsed):
             (user + kernel) / ticks)
 
 
+def event_key(event):
+    """Counter name without its modifier; kernel-side events keep it (`instructions:k` -> `instructions_k`)."""
+    name, _, modifier = event.partition(":")
+    return f"{name}_k" if modifier == "k" else name
+
+
 def parse_perf(path):
     counters = {}
     for line in Path(path).read_text().splitlines():
         fields = line.split(",")
         if len(fields) > 2 and (fields[0].replace(".", "", 1).isdigit() or fields[0] == "<not counted>"):
-            counters[fields[2].split(":")[0]] = float(fields[0]) if fields[0][0] != "<" else 0.0  # a thread that never ran
+            counters[event_key(fields[2])] = float(fields[0]) if fields[0][0] != "<" else 0.0  # a thread that never ran
     return counters
 
 
@@ -473,7 +479,7 @@ def measured_rep(env, rep, idle):
         "busy": busy, "kernel_pct": kernel_pct, "cpu_us": cpu_seconds * 1e6 / requests,
         "instr": (counters["instructions"] - idle["instructions"] * elapsed) / requests,
         "cycles": (counters["cycles"] - idle["cycles"] * elapsed) / requests,
-        "extra": {event.split(":")[0]: counters.get(event.split(":")[0], 0) / requests for event in PERF_EXTRA},
+        "extra": {event_key(event): counters.get(event_key(event), 0) / requests for event in PERF_EXTRA},
         "ctxsw": (switched[0] - switched_before[0]) / requests,
         "nvctxsw": (switched[1] - switched_before[1]) / requests,
         "rps": float(load["rps"]), "p50": int(load["p50_us"]), "p99": int(load["p99_us"]),
