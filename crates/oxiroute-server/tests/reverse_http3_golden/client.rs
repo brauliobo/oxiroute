@@ -140,11 +140,10 @@ impl Session {
             }
         }
         if !matches!(req.body, Body::Stall(_)) {
-            if req.trailers.is_empty() {
-                drop(stream.finish().await);
-            } else {
+            if !req.trailers.is_empty() {
                 drop(stream.send_trailers(header_map(&req.trailers)).await);
             }
+            drop(stream.finish().await);
         }
         read_response(&mut stream).await
     }

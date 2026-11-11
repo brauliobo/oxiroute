@@ -161,8 +161,15 @@ impl Raw {
     }
 
     /// Writes `bytes` on a new request stream and finishes it; the observed answer.
+    ///
+    /// A connection the server already closed (RFC 9114 mandates that for some violations) is the outcome.
     pub async fn exchange(&self, bytes: &[u8]) -> Value {
-        let (mut send, mut recv) = self.request(bytes).await;
+        let (mut send, mut recv) = match self.conn.open_bi().await {
+            Ok(streams) => streams,
+            Err(error) => return close_json(&error),
+        };
+        // a write that fails because the connection closed shows up as the close when the answer is read
+        drop(send.write_all(bytes).await);
         drop(send.finish());
         self.settle(read_outcome(&mut recv, SILENCE).await).await
     }
