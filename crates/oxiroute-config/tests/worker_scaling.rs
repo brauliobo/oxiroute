@@ -18,10 +18,10 @@ fn dynamic(extra: Value) -> Value {
         "connection_scheduling": "aged_per_worker",
         "worker_scaling": "dynamic",
     });
-    config
-        .as_object_mut()
-        .unwrap()
-        .extend(extra.as_object().unwrap().clone());
+    let Value::Object(extra) = extra else {
+        panic!("extra fields are an object")
+    };
+    config.as_object_mut().unwrap().extend(extra);
     config
 }
 
