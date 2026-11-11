@@ -199,6 +199,12 @@ impl RouteTable {
         self.select_path(authority.or_else(|| uri.authority()), uri.path(), method)
     }
 
+    /// Whether the authority of a request can change which route it selects.
+    #[must_use]
+    pub fn selects_on_host(&self) -> bool {
+        self.index.selects_on_host()
+    }
+
     /// [`Self::select`] for a request whose authority and path are already at hand.
     #[must_use]
     pub fn select_path(

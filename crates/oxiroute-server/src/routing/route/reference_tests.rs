@@ -420,3 +420,49 @@ fn the_host_of_an_authority_is_what_http_reports() {
         assert_eq!(host_of(&authority), authority.host(), "{text}");
     }
 }
+
+fn table_of(hosts: Vec<Option<HttpHostSelector>>) -> RouteTable {
+    let routes = hosts
+        .into_iter()
+        .enumerate()
+        .map(|(index, host)| {
+            let path = HttpPathSelector::SegmentPrefix { value: "/".into() };
+            Route::new(host, path, None, format!("route-{index}")).expect("route")
+        })
+        .collect();
+    RouteTable::new(routes)
+}
+
+#[test]
+fn a_table_of_catch_all_hosts_does_not_select_on_the_host() {
+    assert!(!RouteTable::default().selects_on_host());
+    assert!(!table_of(vec![None, None]).selects_on_host());
+}
+
+#[test]
+fn a_route_bound_to_a_host_makes_the_table_select_on_the_host() {
+    let exact = |value: &str| HttpHostSelector::ExactAuthority {
+        value: value.into(),
+    };
+    let normalized = |value: &str| HttpHostSelector::NormalizedHost {
+        value: value.into(),
+    };
+    let folded = |value: &str| HttpHostSelector::AsciiCaseInsensitiveExactAuthority {
+        value: value.into(),
+    };
+    let leading = |value: &str| HttpHostSelector::NginxLeadingWildcard {
+        value: value.into(),
+    };
+    for host in [
+        exact("a.example.com"),
+        folded("a.example.com"),
+        normalized("a.example.com"),
+        normalized("*.example.com"),
+        leading("example.com"),
+    ] {
+        assert!(
+            table_of(vec![None, Some(host.clone())]).selects_on_host(),
+            "{host:?}"
+        );
+    }
+}
