@@ -297,7 +297,7 @@ async fn a_tls_origin_with_an_untrusted_certificate_is_a_bad_gateway_on_both_pat
 
 /// The lines of an access log once it stops growing, with what differs by construction left out: times, durations and
 /// ids.
-async fn log_lines(path: &std::path::Path) -> Vec<String> {
+pub(super) async fn log_lines(path: &std::path::Path) -> Vec<String> {
     let read = || std::fs::read_to_string(path).unwrap_or_default();
     let mut text = read();
     loop {

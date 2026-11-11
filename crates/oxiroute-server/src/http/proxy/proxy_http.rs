@@ -222,52 +222,15 @@ impl ProxyHttp for HttpReverseProxy {
         &self,
         _peer: &HttpPeer,
         session: &mut Session,
-        mut error: Box<Error>,
+        error: Box<Error>,
         ctx: &mut Self::CTX,
         _client_reused: bool,
     ) -> Box<Error> {
-        let prepaid = std::mem::take(&mut ctx.retry_prepaid);
-        if let Some(cancelled) = ctx.cancelled_by_operator() {
-            return cancelled;
-        }
-        let rescue_only = is_rescue_only(&error, proxy_policy(ctx));
-        if let Some(failure) = passive_failure_for_error(&error).filter(|_| !rescue_only) {
-            ctx.record_passive_failure(failure);
-        }
-        ctx.release_lease();
-        let policy = proxy_policy(ctx);
-        let refused = is_pool_unavailable(&error);
-        let has_budget = ctx.attempt_count() <= usize::from(policy.max_retries);
-        let retry_target = retry_target_for(ctx, refused);
-        let target_available = match retry_target {
-            HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
-            HttpRetryTarget::NextServer => ctx
-                .pool
-                .as_ref()
-                .is_some_and(|pool| pool.has_unattempted(&ctx.attempted_upstreams)),
+        let exchanged = Exchanged {
+            body_replayable: request_body_replayable(session),
+            response_retryable: response_is_retryable(session),
         };
-        let eligible = if refused {
-            ctx.connection_retryable
-        } else {
-            ctx.replay_retryable && retryable_upstream_error(&error, session, policy)
-        };
-        let retry = eligible
-            && request_body_replayable(session)
-            && response_is_retryable(session)
-            && has_budget
-            && target_available
-            && ctx.remaining(true).is_ok()
-            && (prepaid || ctx.spend_retry_budget());
-        error.set_retry(retry);
-        ctx.settle_attempt(&error, retry);
-        if retry {
-            if retry_target == HttpRetryTarget::SameServer {
-                ctx.retry_server = ctx.attempted_upstreams.last().cloned();
-            }
-            ctx.retry_delay_pending = retry_target == HttpRetryTarget::SameServer;
-            ctx.listener.record_retry_attempt();
-        }
-        error
+        ctx.attempt_failed(error, exchanged)
     }
 
     async fn fail_to_proxy(

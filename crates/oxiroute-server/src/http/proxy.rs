@@ -443,6 +443,14 @@ impl HttpRequestContext {
         }
     }
 
+    /// The queue position and wait the client is told of, when its route opted in and it waited for capacity.
+    fn queue_stamp(&self) -> Option<(u64, u64)> {
+        (proxy_policy(self).queue_headers && self.trace.queue_position != 0).then(|| {
+            let wait = u64::try_from(self.trace.queue_wait.as_millis()).unwrap_or(u64::MAX);
+            (self.trace.queue_position, wait)
+        })
+    }
+
     /// Tells the client how long it waited for capacity, when its route opted in.
     fn stamp_queue_headers(
         &self,
@@ -620,7 +628,7 @@ pub(crate) use cache::*;
 pub(crate) use request::*;
 pub(crate) use response::*;
 #[allow(clippy::wildcard_imports)]
-use {action::*, compression::*, retry::*, static_files::*};
+use {action::*, attempt::Exchanged, compression::*, retry::*, static_files::*};
 
 #[cfg(test)]
 mod tests;

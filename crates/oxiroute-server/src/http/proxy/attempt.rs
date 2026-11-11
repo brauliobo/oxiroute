@@ -276,19 +276,76 @@ impl HttpRequestContext {
         evacuation.begin_attempt(self.evacuation_pin);
         evacuation.cancellation()
     }
+}
 
-    /// An attempt ended in `error`: what `error_while_proxy` settles for a route that does not retry.
-    #[allow(clippy::unnecessary_box_returns)]
-    pub(super) fn attempt_failed_for_lane(&mut self, mut error: Box<Error>) -> Box<Error> {
+/// What the exchange has done by the time an attempt fails, which decides whether the request may be sent again.
+#[derive(Clone, Copy)]
+pub(super) struct Exchanged {
+    /// The request body, if any, can be sent again.
+    pub(super) body_replayable: bool,
+    /// The client has seen no final response.
+    pub(super) response_retryable: bool,
+}
+
+impl Exchanged {
+    /// An attempt that had sent nothing a client could notice: no body read, no response begun.
+    pub(super) const UNANSWERED: Self = Self {
+        body_replayable: true,
+        response_retryable: true,
+    };
+}
+
+impl HttpRequestContext {
+    /// An attempt failed after it connected, with `error`: records what the failure says of the server, releases the
+    /// lease and decides, with the retry policy, whether the request goes on. What `error_while_proxy` settles for
+    /// both paths.
+    pub(super) fn attempt_failed(
+        &mut self,
+        mut error: Box<Error>,
+        exchanged: Exchanged,
+    ) -> Box<Error> {
+        let prepaid = std::mem::take(&mut self.retry_prepaid);
         if let Some(cancelled) = self.cancelled_by_operator() {
             return cancelled;
         }
-        if let Some(failure) = passive_failure_for_error(&error) {
+        let rescue_only = is_rescue_only(&error, proxy_policy(self));
+        if let Some(failure) = passive_failure_for_error(&error).filter(|_| !rescue_only) {
             self.record_passive_failure(failure);
         }
         self.release_lease();
-        error.set_retry(false);
-        self.settle_attempt(&error, false);
+        let policy = proxy_policy(self);
+        let refused = is_pool_unavailable(&error);
+        let has_budget = self.attempt_count() <= usize::from(policy.max_retries);
+        let retry_target = retry_target_for(self, refused);
+        let target_available = match retry_target {
+            HttpRetryTarget::SameServer => self.attempted_upstreams.last().is_some(),
+            HttpRetryTarget::NextServer => self
+                .pool
+                .as_ref()
+                .is_some_and(|pool| pool.has_unattempted(&self.attempted_upstreams)),
+        };
+        let eligible = if refused {
+            self.connection_retryable
+        } else {
+            self.replay_retryable
+                && retryable_upstream_error(&error, exchanged.response_retryable, policy)
+        };
+        let retry = eligible
+            && exchanged.body_replayable
+            && exchanged.response_retryable
+            && has_budget
+            && target_available
+            && self.remaining(true).is_ok()
+            && (prepaid || self.spend_retry_budget());
+        error.set_retry(retry);
+        self.settle_attempt(&error, retry);
+        if retry {
+            if retry_target == HttpRetryTarget::SameServer {
+                self.retry_server = self.attempted_upstreams.last().cloned();
+            }
+            self.retry_delay_pending = retry_target == HttpRetryTarget::SameServer;
+            self.listener.record_retry_attempt();
+        }
         error
     }
 }
