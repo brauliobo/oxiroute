@@ -35,7 +35,7 @@ pub(super) fn write(
         method: &method,
         idempotency,
         protocol: "http/1.1",
-        bytes_received: progress.received() as u64,
+        bytes_received: progress.received as u64,
         bytes_sent: progress.sent as u64,
     };
     let record = access_line(
