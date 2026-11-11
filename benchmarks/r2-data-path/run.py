@@ -148,6 +148,7 @@ def build_lanes():
     add(lane("h2_post1k_c4s16", ["--proto", "h2tls", "--method", "POST", "--path", "/sink", "--body-bytes", "1024",
                                  "--conns", "4", "--streams", "16"], features=["tls"], requests=20000))
     add(lane("h1_b1k_h2up", ["--path", "/b1k", "--expect-len", "1024"] + base, features=["upstream_h2"]))
+    add(lane("h1_b1k_tlsup", ["--path", "/b1k", "--expect-len", "1024"] + base, features=["upstream_tls"]))
     add(lane("h1_b64k_h2up", ["--path", "/b64k", "--expect-len", "65536"] + base, features=["upstream_h2"],
              requests=5000, warmup=200))
     add(lane("h1_post1k_h2up", ["--method", "POST", "--path", "/sink", "--body-bytes", "1024"] + base,
@@ -391,7 +392,7 @@ class Env:
             listen = ",".join(server_address(index, UPSTREAM_PORT) for index in range(lane.servers))
         else:
             listen = ",".join(f"127.0.0.1:{UPSTREAM_PORT + index}" for index in range(lane.servers))
-        tls = self.upstream_tls() if "upstream_h2" in lane.features else []
+        tls = self.upstream_tls() if {"upstream_h2", "upstream_tls"} & set(lane.features) else []
         self.upstream = spawn([self.args.tool, "upstream", "--listen", listen,
                                "--echo-listen", f"127.0.0.1:{ECHO_PORT}", *tls], UPSTREAM_CPUS, self.work / "upstream.log")
         wait_port(UPSTREAM_PORT, self.upstream)
