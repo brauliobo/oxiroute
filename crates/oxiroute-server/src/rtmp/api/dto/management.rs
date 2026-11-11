@@ -168,7 +168,7 @@ impl From<Vec<ListenerSnapshot>> for ListenerInventoryResponse {
     }
 }
 
-/// The contract and the reference encoding of the pool listing; the server writes the bytes with [`inventory`].
+// The contract and the reference encoding of the pool listing; the server writes the bytes with `inventory`.
 #[cfg(test)]
 #[derive(JsonSchema, Serialize)]
 pub(crate) struct PoolInventoryResponse {
@@ -184,7 +184,7 @@ impl From<Vec<PoolHealthSnapshot>> for PoolInventoryResponse {
     }
 }
 
-/// The contract and the reference encoding of the server listing; the server writes the bytes with [`inventory`].
+// The contract and the reference encoding of the server listing; the server writes the bytes with `inventory`.
 #[cfg(test)]
 #[derive(JsonSchema, Serialize)]
 pub(crate) struct ServerInventoryResponse {
