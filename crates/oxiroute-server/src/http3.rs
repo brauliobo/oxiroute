@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use bytes::{Buf as _, Bytes};
+use bytes::Bytes;
 use h3::{
     quic::{RecvStream as _, SendStream as _},
     server::RequestResolver,
@@ -21,6 +21,10 @@ use log::{error, warn};
 use oxiroute_cache::{CachedResponse, ResponseTiming};
 use oxiroute_config::{
     DownstreamTimeoutPolicy, HttpRetryTarget, HttpRetryTrigger, is_unambiguous_http_path,
+};
+use oxiroute_h3::{
+    Code as H3Code, HeadError,
+    server::{Config as H3Config, Connection as H3Connection, RequestStream as H3Stream},
 };
 use pingora::apps::AcceptGateParticipant;
 use quinn::crypto::rustls::QuicServerConfig;
@@ -37,8 +41,8 @@ use crate::{
     HttpServicePlan, ListenerMetrics, ListenerReservation, ListenerRuntime, ListenerRuntimeState,
     RuntimeGeneration, RuntimeMode, RuntimeReferenceKind, TlsProfilePlan,
     http::action::{
-        HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget,
-        StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
+        HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RedirectLocationPlan, StaticContent,
+        StaticErrorTarget, StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
     },
     http::cache::{
         CacheFailureClass, CacheRequest, CacheStart, CacheStartFailure, CacheTransaction,

@@ -3,8 +3,8 @@ use super::*;
 use crate::routing::QueueTag;
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-pub(super) async fn dispatch_h3_upstream_request<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+pub(super) async fn dispatch_h3_upstream_request(
+    stream: &mut H3Stream,
     request: &Request<()>,
     authority: &Authority,
     proxy: &ProxyActionPlan,
@@ -14,10 +14,7 @@ pub(super) async fn dispatch_h3_upstream_request<S>(
     deadline: Instant,
     mut shutdown: watch::Receiver<bool>,
     mut cache_transaction: Option<CacheTransaction>,
-) -> Option<u16>
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
+) -> Option<u16> {
     let Some(h3) = proxy.pool.h3() else {
         return send_h3_error(
             stream,
@@ -293,22 +290,19 @@ fn h3_passive_failure(error: &H3UpstreamError) -> Option<HealthFailure> {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn send_h3_upstream_response<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+async fn send_h3_upstream_response(
+    stream: &mut H3Stream,
     request: &Request<()>,
     response: crate::http3::upstream_plan::H3UpstreamResponse,
     proxy: &ProxyActionPlan,
     metrics: &ListenerMetrics,
     deadline: Instant,
     cache_transaction: &mut Option<CacheTransaction>,
-) -> Option<u16>
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
+) -> Option<u16> {
     let status = response.status;
     let mut headers = response.headers;
     let body = response.body;
-    let mut trailers = response.trailers;
+    let trailers = response.trailers;
     if apply_response_policy_map(status, &mut headers, &proxy.policy).is_err() {
         if let Some(transaction) = cache_transaction.as_mut() {
             transaction.complete_without_store();
@@ -400,45 +394,13 @@ where
     let mut response_head = Response::new(());
     *response_head.status_mut() = status;
     *response_head.headers_mut() = headers;
-    if !matches!(
-        timeout_at(deadline, stream.send_response(response_head)).await,
-        Ok(Ok(()))
-    ) {
-        if let Some(transaction) = cache_transaction.as_mut() {
-            transaction.cancel();
-        }
-        return None;
-    }
-    let body_forbidden = matches!(
-        status,
-        StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
-    );
-    if request.method() != Method::HEAD && !body_forbidden && !body.is_empty() {
+    let head = request.method() == Method::HEAD;
+    let send_body = !head && !body_forbidden(status) && !body.is_empty();
+    if send_body {
         let _ = metrics.record_bytes_sent(body_length);
-        if !matches!(
-            timeout_at(deadline, stream.send_data(body)).await,
-            Ok(Ok(()))
-        ) {
-            if let Some(transaction) = cache_transaction.as_mut() {
-                transaction.cancel();
-            }
-            return None;
-        }
     }
-    if request.method() != Method::HEAD
-        && let Some(mut trailers) = trailers.take()
-        && (sanitize_h3_trailers(&mut trailers).is_err()
-            || !matches!(
-                timeout_at(deadline, stream.send_trailers(trailers)).await,
-                Ok(Ok(()))
-            ))
-    {
-        if let Some(transaction) = cache_transaction.as_mut() {
-            transaction.cancel();
-        }
-        return None;
-    }
-    if !matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(()))) {
+    let trailers = trailers.filter(|_| !head);
+    if !send_h3_upstream_parts(stream, response_head, body, !send_body, trailers, deadline).await {
         if let Some(transaction) = cache_transaction.as_mut() {
             transaction.cancel();
         }
@@ -450,6 +412,29 @@ where
         let _ = transaction.admit(entry).await;
     }
     Some(status.as_u16())
+}
+
+/// Sends head, body and trailers and finishes the stream; a response without trailers goes out in one write.
+async fn send_h3_upstream_parts(
+    stream: &mut H3Stream,
+    head: Response<()>,
+    body: Bytes,
+    head_only: bool,
+    trailers: Option<HeaderMap>,
+    deadline: Instant,
+) -> bool {
+    let Some(mut trailers) = trailers else {
+        return within(deadline, stream.send_full_response(head, body, head_only)).await;
+    };
+    if !within(deadline, stream.send_response(head)).await {
+        return false;
+    }
+    if !head_only && !within(deadline, stream.send_data(body)).await {
+        return false;
+    }
+    sanitize_h3_trailers(&mut trailers).is_ok()
+        && within(deadline, stream.send_trailers(trailers)).await
+        && stream.finish().is_ok()
 }
 
 pub(super) fn build_h3_upstream_request(

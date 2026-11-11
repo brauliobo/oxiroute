@@ -195,6 +195,36 @@ async fn malformed_requests_reset_the_stream_with_message_error() {
 }
 
 #[tokio::test]
+async fn a_rejected_request_is_reset_with_request_rejected_and_the_connection_stays() {
+    let fx = fixture();
+    fx.serve(Config::default(), |mut stream: RequestStream| async move {
+        let request = stream.read_head().await.unwrap();
+        if request.headers().contains_key("x-reject") {
+            stream.reject();
+        } else {
+            let _ = stream
+                .send_full_response(Response::new(()), Bytes::from_static(b"ok"), false)
+                .await;
+        }
+    });
+    let conn = fx
+        .client
+        .connect(fx.addr, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
+    let raw = Raw::new(conn).await;
+    let (mut send, mut recv) = raw.request(&request_bytes(&[("x-reject", "1")])).await;
+    let _ = send.finish();
+    let error = within(read_frames(&mut recv)).await.unwrap_err();
+    assert!(
+        matches!(error, quinn::ReadError::Reset(code) if u64::from(code) == 0x10b),
+        "{error:?}"
+    );
+    answered(&raw).await;
+}
+
+#[tokio::test]
 async fn te_trailers_is_accepted() {
     let (_fx, raw) = setup(Config::default()).await;
     let (mut send, mut recv) = raw.request(&request_bytes(&[("te", "trailers")])).await;

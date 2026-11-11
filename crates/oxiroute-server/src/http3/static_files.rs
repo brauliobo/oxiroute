@@ -38,15 +38,12 @@ async fn h3_static_error_action(
 }
 
 #[allow(clippy::too_many_lines)]
-pub(super) async fn send_h3_static_request<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+pub(super) async fn send_h3_static_request(
+    stream: &mut H3Stream,
     files: &crate::http::action::StaticFilesPlan,
     request: &Request<()>,
     deadline: Instant,
-) -> Option<u16>
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
+) -> Option<u16> {
     let head = request.method() == Method::HEAD;
     if request.method() != Method::GET && !head {
         let headers = [(
@@ -239,8 +236,8 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_h3_static_error<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+async fn apply_h3_static_error(
+    stream: &mut H3Stream,
     files: &crate::http::action::StaticFilesPlan,
     status: u16,
     head: bool,
@@ -248,10 +245,7 @@ async fn apply_h3_static_error<S>(
     status_override: &mut Option<u16>,
     pending_headers: &mut Vec<(HeaderName, HeaderValue)>,
     deadline: Instant,
-) -> Option<u16>
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
+) -> Option<u16> {
     match h3_static_error_action(files, status).await {
         H3StaticErrorAction::File { file, headers } => {
             let mut all_headers = headers.into_vec();
@@ -297,8 +291,8 @@ where
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-async fn send_h3_static_file<S>(
-    stream: &mut h3::server::RequestStream<S, Bytes>,
+async fn send_h3_static_file(
+    stream: &mut H3Stream,
     files: &crate::http::action::StaticFilesPlan,
     file: StaticFile,
     status: StatusCode,
@@ -306,10 +300,7 @@ async fn send_h3_static_file<S>(
     head: bool,
     extra_headers: &[(HeaderName, HeaderValue)],
     deadline: Instant,
-) -> Option<u16>
-where
-    S: h3::quic::BidiStream<Bytes> + Send,
-{
+) -> Option<u16> {
     let status = if range.is_some() && status == StatusCode::OK {
         StatusCode::PARTIAL_CONTENT
     } else {
@@ -368,35 +359,36 @@ where
         return Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16());
     }
     *response.headers_mut() = response_headers;
-    if !matches!(
-        timeout_at(deadline, stream.send_response(response)).await,
-        Ok(Ok(()))
-    ) {
+    if !within(deadline, stream.send_response(response)).await {
         return None;
     }
-    if head || length == 0 {
-        if !matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(()))) {
-            return None;
-        }
-        return Some(status_code);
-    }
-
-    let mut reader = file.content.into_reader(start, length);
-    loop {
-        let chunk = match timeout_at(deadline, reader.next_chunk()).await {
-            Ok(Ok(Some(chunk))) => chunk,
-            Ok(Ok(None)) => break,
-            _ => return None,
-        };
-        if !matches!(
-            timeout_at(deadline, stream.send_data(chunk)).await,
-            Ok(Ok(()))
-        ) {
-            return None;
-        }
-    }
-    if !matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(()))) {
+    if !head
+        && length != 0
+        && !send_h3_static_body(stream, file.content, start, length, deadline).await
+    {
         return None;
     }
+    stream.finish().ok()?;
     Some(status_code)
+}
+
+async fn send_h3_static_body(
+    stream: &mut H3Stream,
+    content: StaticContent,
+    start: u64,
+    length: u64,
+    deadline: Instant,
+) -> bool {
+    let mut reader = content.into_reader(start, length);
+    loop {
+        match timeout_at(deadline, reader.next_chunk()).await {
+            Ok(Ok(Some(chunk))) => {
+                if !within(deadline, stream.send_data(chunk)).await {
+                    return false;
+                }
+            }
+            Ok(Ok(None)) => return true,
+            _ => return false,
+        }
+    }
 }
