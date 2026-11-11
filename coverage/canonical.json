@@ -400,7 +400,7 @@
       "kind": "field",
       "path": "tls_profiles[].policy.ktls",
       "editability": "operator",
-      "normalization": ["default to off"],
+      "normalization": ["default to auto"],
       "validation": ["off or auto"],
       "runtime": { "target": "tls.profile", "disposition": "lowered" },
       "required_tests": ["decode", "validate", "failure", "render", "interop"]
