@@ -323,6 +323,11 @@ pub(crate) struct UninitializedStream {
 }
 
 impl UninitializedStream {
+    /// Whether the connection will be a TLS one, which cannot move between workers once established.
+    pub fn is_tls(&self) -> bool {
+        self.tls.is_some()
+    }
+
     pub fn hold_admission(&mut self, admission: ConnectionAdmission) {
         self.l4.hold_admission(admission);
     }

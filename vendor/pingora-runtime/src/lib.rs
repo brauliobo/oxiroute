@@ -707,14 +707,24 @@ pub fn spawn_connection<F>(future: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    spawn_connection_as(true, future);
+}
+
+/// [`spawn_connection`] for a connection that `movable` says can later move to another worker. One that cannot (TLS,
+/// HTTP/2) is spread over every worker, active or not: packing it onto the active ones would pin it there when the load
+/// rises, as it cannot follow the activation of more workers.
+pub fn spawn_connection_as<F>(movable: bool, future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     let Some((worker_pools, own)) = current_worker() else {
         Handle::current().spawn(future);
         return;
     };
     let pools = worker_pools.get().unwrap();
     let index = match &pools.scaling {
-        Some(scaling) => scaling.place(own, |index| pools[index].load.load(Ordering::Relaxed)),
-        None => least_loaded(pools, own),
+        Some(scaling) if movable => scaling.place(own, |index| pools[index].load.load(Ordering::Relaxed)),
+        _ => least_loaded(pools, own),
     };
     pools[index].load.fetch_add(1, Ordering::Relaxed);
     let guard = LoadGuard {
