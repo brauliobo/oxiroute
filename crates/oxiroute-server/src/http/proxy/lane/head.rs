@@ -7,8 +7,7 @@ use oxiroute_h1_head::{
 
 use crate::observability::logging::valid_correlation_id;
 
-/// A request head the lane can serve: HTTP/1.1, origin-form, a body framed by one `Content-Length` (and so a body the
-/// lane holds whole once it admits the request), no upgrade, no `Expect`, and a `Connection` that is absent,
+/// A request head the lane can serve: HTTP/1.1, origin-form, a body framed by one `Content-Length`, no upgrade, no `Expect`, and a `Connection` that is absent,
 /// `keep-alive` or `close`. Small and `Copy`, so it can be held across an await.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::http::proxy) struct Request {
@@ -31,11 +30,10 @@ impl Request {
         self.method.of(buf)
     }
 
-    /// Whether the request is all there is in `read` bytes: its body has arrived with the head and nothing of another
-    /// request follows it. A body still to come is streamed by the classic path, which reads the response while the
-    /// upload goes on.
+    /// Whether the lane may serve the request given the `read` bytes that arrived: nothing of another request follows
+    /// its body. A body that has not all arrived is read from the client as it comes (see `upload`).
     pub(super) const fn admits(&self, read: usize) -> bool {
-        read == self.head_len + self.body_len
+        read <= self.head_len + self.body_len
     }
 
     /// The body, in the bytes `admits` was asked about.
@@ -179,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_is_admitted_when_its_body_has_arrived_and_no_other_request_follows() {
+    fn a_request_is_admitted_when_no_other_request_follows_its_body() {
         let request = |body_len| Request {
             method: Span { start: 0, len: 4 },
             path: Span { start: 5, len: 2 },
@@ -195,6 +193,9 @@ mod tests {
         assert!(!request(0).admits(11));
         assert!(request(5).admits(15));
         assert!(!request(5).admits(16));
-        assert!(!request(5).admits(12));
+        assert!(
+            request(5).admits(12),
+            "a body that is still coming is read as it arrives"
+        );
     }
 }
