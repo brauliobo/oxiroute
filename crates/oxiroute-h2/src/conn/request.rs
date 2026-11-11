@@ -29,6 +29,10 @@ struct Collector<'a> {
     content_length: Option<u64>,
 }
 
+fn method(value: &[u8]) -> bool {
+    matches!(value, b"GET" | b"POST") || Method::from_bytes(value).is_ok()
+}
+
 impl Collector<'_> {
     fn field(&mut self, name: &[u8], value: &[u8]) {
         if self.bad {
@@ -48,10 +52,7 @@ impl Collector<'_> {
 
     fn pseudo(&mut self, name: &[u8], value: &[u8]) -> bool {
         let (which, value) = match name {
-            b":method" => (
-                Pseudo::Method,
-                Method::from_bytes(value).is_ok().then_some(value),
-            ),
+            b":method" => (Pseudo::Method, method(value).then_some(value)),
             b":scheme" => (Pseudo::Scheme, validate::scheme(value).then_some(value)),
             b":authority" => (Pseudo::Authority, self.authority(value).then_some(value)),
             b":path" => (Pseudo::Path, validate::path(value)),

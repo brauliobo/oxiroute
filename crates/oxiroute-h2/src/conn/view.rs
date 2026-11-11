@@ -98,10 +98,11 @@ impl RequestView {
         if self.buf.ends.is_empty() {
             self.fields_at = self.buf.arena.len() as u32;
         }
-        for part in [name, value] {
-            self.buf.arena.extend_from_slice(part);
-            self.buf.ends.push(self.buf.arena.len() as u32);
-        }
+        let arena = &mut self.buf.arena;
+        arena.extend_from_slice(name);
+        let name_end = arena.len() as u32;
+        arena.extend_from_slice(value);
+        self.buf.ends.extend([name_end, arena.len() as u32]);
     }
 
     pub(super) fn len(&self) -> usize {

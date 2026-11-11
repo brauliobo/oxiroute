@@ -56,11 +56,17 @@ const QUERY: [Class; 256] = path_classes(true);
 
 /// A lowercase `http` header name (and so not a pseudo-header).
 pub fn name(name: &[u8]) -> bool {
-    (1..=MAX_NAME).contains(&name.len()) && name.iter().all(|&b| NAME[usize::from(b)])
+    let bad = name
+        .iter()
+        .fold(0u8, |bad, &b| bad | u8::from(!NAME[usize::from(b)]));
+    (1..=MAX_NAME).contains(&name.len()) && bad == 0
 }
 
 pub fn value(value: &[u8]) -> bool {
-    value.iter().all(|&b| (b >= 32 && b != 127) || b == b'\t')
+    let bad = value.iter().fold(0u8, |bad, &b| {
+        bad | u8::from(!((b >= 32 && b != 127) || b == b'\t'))
+    });
+    bad == 0
 }
 
 /// The `:path` as `http::uri::PathAndQuery` reads it: the part before a fragment (`/` when nothing is left, which
