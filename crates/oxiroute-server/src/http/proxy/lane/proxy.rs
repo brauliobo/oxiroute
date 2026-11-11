@@ -116,6 +116,7 @@ pub(super) struct Forward<'a> {
     /// The clock reading at which the request arrived.
     pub(super) started: Instant,
     pub(super) buffer: &'a [u8],
+    pub(super) method: &'a Method,
     pub(super) client_ip: Option<std::net::IpAddr>,
     pub(super) head: &'a RequestHead,
     pub(super) request: &'a Request,
@@ -229,11 +230,10 @@ impl super::LaneFront {
         ));
         ctx.request_id = Some(forward.id.clone());
         ctx.adopt_client_timeouts([self.timeouts.request, self.timeouts.session_write()]);
-        let method = Method::from_bytes(request.method(buffer))
-            .expect("the route was selected for this method");
+        let method = forward.method;
         ctx.register_routed_arrival(
             (
-                &method,
+                method,
                 request.host(buffer),
                 request.path(buffer),
                 forward.client_ip,
@@ -246,7 +246,7 @@ impl super::LaneFront {
         ctx.route = Some(Arc::clone(route));
         let policy = &proxy.policy;
         let replay_safe = policy.request_is_replay_safe(
-            &method,
+            method,
             &http::HeaderMap::new(),
             request.body_len == 0,
             route.policy.request_buffering,
@@ -623,7 +623,7 @@ impl super::LaneFront {
         ctx.account_attempt(received, sent, now);
         ctx.record_failed_evacuations(error);
         if let Some(log) = self.service.access_log() {
-            super::log::write(log, ctx, forward, progress, elapsed);
+            super::log::write(log, &self.service_log, ctx, forward, progress, elapsed);
         }
     }
 }

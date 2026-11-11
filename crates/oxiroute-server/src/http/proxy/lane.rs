@@ -78,6 +78,8 @@ pub(crate) struct LaneFront {
     timeouts: LaneTimeouts,
     /// The upstream connector of the classic proxy, whose idle connections the proxied lane shares.
     upstream: Arc<Connector>,
+    /// The service's name as its access lines write it, with the field's key.
+    service_log: Box<[u8]>,
     /// Time a response write may take before the connection is given up: the least of the service deadline and
     /// the downstream timeouts.
     write_budget: Duration,
@@ -105,6 +107,10 @@ impl LaneFront {
             && service.gzip().is_none()
             && service.automatic_response_headers()
             && service.has_lane_route();
+        let service_log = service
+            .access_log()
+            .map(|log| log::service_part(log))
+            .unwrap_or_default();
         let write_budget = [
             Some(service.upstream_io_timeout()),
             timeouts.request,
@@ -118,6 +124,7 @@ impl LaneFront {
             first_request: Notify::new(),
             generation,
             metrics,
+            service_log,
             service,
             timeouts,
             upstream,
@@ -282,9 +289,12 @@ impl LaneFront {
             .map_or(&generated[..], |span| span.of(buffer));
         if route.lane == LaneRoute::Proxy {
             let id = HeaderValue::from_bytes(id).expect("request ids are visible ASCII");
+            let method = Method::from_bytes(request.method(buffer))
+                .expect("the route was selected for this method");
             let forward = proxy::Forward {
                 started,
                 buffer,
+                method: &method,
                 client_ip,
                 head: scanned,
                 request: &request,

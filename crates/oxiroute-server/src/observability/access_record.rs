@@ -13,6 +13,8 @@ use super::logging::{CorrelationId, redact_text_cow, valid_correlation_id};
 
 mod json;
 
+pub(crate) use json::{push_decimal, push_safe, push_text, push_u64};
+
 /// Free text, bounded and replaced by a marker when it looks like a credential.
 pub(crate) struct Safe<'a> {
     text: Cow<'a, str>,
@@ -38,7 +40,7 @@ impl<'a> Safe<'a> {
         }
     }
 
-    fn written(&self) -> Cow<'_, str> {
+    pub(super) fn written(&self) -> Cow<'_, str> {
         if self.verified {
             Cow::Borrowed(&self.text)
         } else {
@@ -102,7 +104,7 @@ pub(crate) struct HttpAccess<'a> {
     pub(crate) idem_key: Option<Safe<'a>>,
     pub(crate) method: Safe<'a>,
     pub(crate) pool: Option<Safe<'a>>,
-    pub(crate) protocol: SafeId<'a>,
+    pub(crate) protocol: Safe<'a>,
     pub(crate) queue_wait_ms: Count<u128>,
     pub(crate) reason: Safe<'a>,
     pub(crate) request_id: Option<Safe<'a>>,
@@ -167,7 +169,7 @@ mod tests {
             idem_key: None,
             method: Safe::from("GET"),
             pool: Some(Safe::from("farm")),
-            protocol: SafeId("http/1.1"),
+            protocol: Safe::verified("http/1.1"),
             queue_wait_ms: Count(0),
             reason: Safe::from(""),
             request_id: Some(Safe::from("req-1")),
@@ -224,12 +226,22 @@ mod tests {
         record.pool = Some(Safe::from("farm\nbreak"));
         record.server = Some(Safe::from("é"));
         record.servers = Some(Safe::from("s".repeat(300)));
-        record.protocol = SafeId("");
         let line: Value = serde_json::to_value(&record).expect("serialize");
         assert_eq!(line["host"], REDACTED);
         assert_eq!(line["pool"], "farmbreak");
         assert_eq!(line["server"], "é");
         assert_eq!(line["servers"].as_str().map(str::len), Some(128));
+        let unnamed = Http3Access {
+            correlation_id: Correlation(None),
+            duration_ms: Count(0),
+            host: None,
+            method: Safe::from("GET"),
+            protocol: SafeId(""),
+            service: Safe::from("edge"),
+            status: None,
+            timestamp_unix_ms: None,
+        };
+        let line: Value = serde_json::to_value(&unnamed).expect("serialize");
         assert_eq!(line["protocol"], "unknown");
     }
 
