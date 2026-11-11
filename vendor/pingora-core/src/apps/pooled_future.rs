@@ -26,21 +26,40 @@ pub(super) struct PooledFuture<F> {
 unsafe impl<F: Send> Send for PooledFuture<F> {}
 unsafe impl<F: Sync> Sync for PooledFuture<F> {}
 
+/// A block for `layout`: one this thread kept, else a new one.
+fn take_block(layout: Layout) -> NonNull<u8> {
+    BLOCKS
+        .with_borrow_mut(|blocks| {
+            let at = blocks.iter().rposition(|(held, _)| *held == layout)?;
+            Some(blocks.swap_remove(at).1)
+        })
+        .unwrap_or_else(|| {
+            // SAFETY: a future is never zero-sized here (it holds its arguments).
+            NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| handle_alloc_error(layout))
+        })
+}
+
+/// Keeps `block` for the next future of its layout, or frees it when the thread holds enough.
+fn give_block(layout: Layout, block: NonNull<u8>) {
+    let kept = BLOCKS.try_with(|blocks| {
+        let mut blocks = blocks.borrow_mut();
+        let room = blocks.len() < POOLED_BLOCKS;
+        if room {
+            blocks.push((layout, block));
+        }
+        room
+    });
+    if !kept.unwrap_or(false) {
+        // SAFETY: allocated in `take_block` with this layout and not kept by the pool.
+        unsafe { dealloc(block.as_ptr(), layout) };
+    }
+}
+
 impl<F: Future> PooledFuture<F> {
     /// The future is written where it will live: the block is taken before `make` runs.
     #[inline(always)]
     pub(super) fn new(make: impl FnOnce() -> F) -> Self {
-        let layout = Layout::new::<F>();
-        let block = BLOCKS
-            .with_borrow_mut(|blocks| {
-                let at = blocks.iter().rposition(|(held, _)| *held == layout)?;
-                Some(blocks.swap_remove(at).1)
-            })
-            .unwrap_or_else(|| {
-                // SAFETY: a future is never zero-sized here (it holds its arguments).
-                NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| handle_alloc_error(layout))
-            });
-        let future = block.cast::<F>();
+        let future = take_block(Layout::new::<F>()).cast::<F>();
         // SAFETY: the block is valid for `layout` and owned by this value.
         unsafe { future.write(make()) };
         Self { future }
@@ -49,22 +68,9 @@ impl<F: Future> PooledFuture<F> {
 
 impl<F> Drop for PooledFuture<F> {
     fn drop(&mut self) {
-        let layout = Layout::new::<F>();
         // SAFETY: the future was written in `new` and is dropped once; its block has `layout`.
         unsafe { self.future.drop_in_place() };
-        let block = self.future.cast::<u8>();
-        let kept = BLOCKS.try_with(|blocks| {
-            let mut blocks = blocks.borrow_mut();
-            let room = blocks.len() < POOLED_BLOCKS;
-            if room {
-                blocks.push((layout, block));
-            }
-            room
-        });
-        if !kept.unwrap_or(false) {
-            // SAFETY: allocated in `new` with this layout and not kept by the pool.
-            unsafe { dealloc(block.as_ptr(), layout) };
-        }
+        give_block(Layout::new::<F>(), self.future.cast::<u8>());
     }
 }
 
@@ -74,6 +80,66 @@ impl<F: Future> Future for PooledFuture<F> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // SAFETY: the future lives in its own heap block until this value is dropped and never moves.
         unsafe { Pin::new_unchecked(&mut *self.get_unchecked_mut().future.as_ptr()) }.poll(cx)
+    }
+}
+
+/// A pooled future of any type, as a value of one type: the block is the same kind of block a [`PooledFuture`] uses,
+/// so serving a stream by a future the application made costs no allocation once the thread has run one.
+pub struct ErasedFuture {
+    future: NonNull<u8>,
+    layout: Layout,
+    poll: unsafe fn(NonNull<u8>, &mut Context<'_>) -> Poll<()>,
+    drop: unsafe fn(NonNull<u8>),
+}
+
+// SAFETY: it owns a `Send` future like a `Box<dyn Future + Send>` does.
+unsafe impl Send for ErasedFuture {}
+
+unsafe fn poll_erased<F: Future<Output = ()>>(
+    future: NonNull<u8>,
+    cx: &mut Context<'_>,
+) -> Poll<()> {
+    // SAFETY: `future` holds an `F` that never moves until it is dropped.
+    unsafe { Pin::new_unchecked(&mut *future.cast::<F>().as_ptr()) }.poll(cx)
+}
+
+unsafe fn drop_erased<F>(future: NonNull<u8>) {
+    // SAFETY: `future` holds an `F` that is dropped once.
+    unsafe { future.cast::<F>().drop_in_place() };
+}
+
+impl ErasedFuture {
+    /// The future is written where it will live: the block is taken before `make` runs.
+    #[inline(always)]
+    pub fn new<F: Future<Output = ()> + Send + 'static>(make: impl FnOnce() -> F) -> Self {
+        let layout = Layout::new::<F>();
+        let future = take_block(layout);
+        // SAFETY: the block is valid for `layout` and owned by this value.
+        unsafe { future.cast::<F>().write(make()) };
+        Self {
+            future,
+            layout,
+            poll: poll_erased::<F>,
+            drop: drop_erased::<F>,
+        }
+    }
+}
+
+impl Drop for ErasedFuture {
+    fn drop(&mut self) {
+        // SAFETY: the future was written in `new` and is dropped once; its block has `layout`.
+        unsafe { (self.drop)(self.future) };
+        give_block(self.layout, self.future);
+    }
+}
+
+impl Future for ErasedFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.get_mut();
+        // SAFETY: the future lives in its own heap block until this value is dropped and never moves.
+        unsafe { (this.poll)(this.future, cx) }
     }
 }
 
@@ -131,5 +197,34 @@ mod tests {
             .collect();
         drop(futures);
         assert_eq!(BLOCKS.with_borrow(Vec::len), POOLED_BLOCKS);
+    }
+
+    #[tokio::test]
+    async fn an_erased_future_runs_in_a_pooled_block() {
+        let first = ErasedFuture::new(|| async { tokio::task::yield_now().await });
+        let address = first.future.as_ptr() as usize;
+        first.await;
+        let second = ErasedFuture::new(|| async { tokio::task::yield_now().await });
+        assert_eq!(second.future.as_ptr() as usize, address);
+        second.await;
+    }
+
+    #[tokio::test]
+    async fn an_erased_future_dropped_early_drops_what_it_holds() {
+        struct Counted(Arc<AtomicUsize>);
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let held = Counted(drops.clone());
+        let mut future = Box::pin(ErasedFuture::new(move || async move {
+            let _held = held;
+            std::future::pending::<()>().await;
+        }));
+        assert!(futures::poll!(future.as_mut()).is_pending());
+        drop(future);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 }

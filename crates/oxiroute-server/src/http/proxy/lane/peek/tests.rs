@@ -4,6 +4,7 @@ use oxiroute_config::{HttpHostSelector, HttpPathSelector, HttpRoutePolicy};
 use oxiroute_h1_head::RequestHead;
 
 use super::*;
+use crate::http::proxy::lane::LaneRoute;
 use crate::{
     RouteTable,
     http::action::{FixedResponsePlan, HttpActionPlan, RoutePolicyPlan},
@@ -44,6 +45,7 @@ fn service(specs: &[Spec]) -> HttpServicePlan {
             Arc::new(HttpRoutePlan {
                 access: None,
                 lane: spec.lane,
+                edits: crate::http::proxy::lane::RouteEdits::default(),
                 action: HttpActionPlan::Fixed(FixedResponsePlan::compile(200, "ok", &[])),
                 policy: RoutePolicyPlan::compile(HttpRoutePolicy::default()),
                 route_id: id.into(),

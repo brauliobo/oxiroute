@@ -18,7 +18,7 @@ const PAIRS: &[u8; 200] = b"0001020304050607080910111213141516171819\
 8081828384858687888990919293949596979899";
 
 /// Two digits per division.
-fn push_u64(out: &mut Vec<u8>, mut value: u64) {
+pub(crate) fn push_u64(out: &mut Vec<u8>, mut value: u64) {
     let mut digits = [0_u8; 20];
     let mut start = digits.len();
     while value >= 100 {
@@ -38,14 +38,14 @@ fn push_u64(out: &mut Vec<u8>, mut value: u64) {
     out.extend_from_slice(&digits[start..]);
 }
 
-fn push_decimal(out: &mut Vec<u8>, value: u128) {
+pub(crate) fn push_decimal(out: &mut Vec<u8>, value: u128) {
     match u64::try_from(value) {
         Ok(value) => push_u64(out, value),
         Err(_) => out.extend_from_slice(value.to_string().as_bytes()),
     }
 }
 
-fn push_text(out: &mut Vec<u8>, text: &str) {
+pub(crate) fn push_text(out: &mut Vec<u8>, text: &str) {
     if text
         .bytes()
         .any(|byte| byte < 0x20 || byte == b'"' || byte == b'\\')
@@ -56,6 +56,11 @@ fn push_text(out: &mut Vec<u8>, text: &str) {
         out.extend_from_slice(text.as_bytes());
         out.push(b'"');
     }
+}
+
+/// A text field as the access line writes it: redacted unless it was verified, escaped when it needs it.
+pub(crate) fn push_safe(out: &mut Vec<u8>, text: &Safe<'_>) {
+    push_text(out, &text.written());
 }
 
 impl Json for usize {
@@ -192,7 +197,7 @@ mod tests {
             idem_key: Some(Safe::from("1a2b3c4d")),
             method: Safe::from("GET"),
             pool: None,
-            protocol: SafeId("h2"),
+            protocol: Safe::verified("h2"),
             queue_wait_ms: Count(12_345),
             reason: Safe::from("upstream_timeout"),
             request_id: Some(Safe::from("req-1")),
@@ -243,7 +248,6 @@ mod tests {
         escaped.host = Some(Safe::from("quote\" back\\slash tab\t é"));
         escaped.reason = Safe::from("Authorization: Bearer abc");
         escaped.servers = Some(Safe::from("s".repeat(300)));
-        escaped.protocol = SafeId("");
         let mut empty = base();
         empty.status = None;
         empty.timestamp_unix_ms = None;

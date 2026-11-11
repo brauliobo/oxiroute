@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use http::HeaderMap;
 
 #[tokio::test]
 async fn reusable_path_waiters_are_counted_in_the_pool_queue() {

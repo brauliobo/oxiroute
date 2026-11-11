@@ -51,7 +51,7 @@ use crate::{
     },
     http::hop_by_hop::{InvalidNomination, strip_request},
     http::policy::{
-        RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
+        IpText, RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
         ResponseHeaderDecision, ResponsePolicyError, decide_request_header,
         decide_response_headers, expand_redirect_location, nginx_request_host,
         normalized_redirect_host, normalized_request_host,
@@ -170,7 +170,7 @@ pub struct HttpRequestContext {
 /// What the access log and per-server counters need to know about the attempts of one request.
 #[derive(Default)]
 struct AttemptTrace {
-    servers: Vec<Arc<str>>,
+    servers: Vec<crate::label::Label>,
     failure_reason: Option<&'static str>,
     budget_spent: std::sync::atomic::AtomicBool,
     queue_wait: Duration,
@@ -295,23 +295,45 @@ impl HttpRequestContext {
         client_ip: Option<std::net::IpAddr>,
         access_log: Option<&Arc<AccessLog>>,
     ) {
-        self.inflight = Some(
-            inflight::registry().register(InflightArrival {
-                request_id: self
-                    .request_id
-                    .as_ref()
-                    .and_then(|id| id.to_str().ok())
-                    .unwrap_or_default(),
-                listener: self.listener.shared_name(),
-                method: method.clone(),
-                host,
-                path,
-                client_ip,
-                started: self.started_at,
-                deadline: self.deadline.saturating_duration_since(self.started_at),
-                access_log: access_log.cloned(),
-            }),
-        );
+        let arrival = self.arrival(method, host, path, client_ip, access_log);
+        self.inflight = Some(inflight::registry().register(arrival));
+    }
+
+    /// Like `register_arrival` for a request routed to `route` and `pool` already.
+    fn register_routed_arrival(
+        &mut self,
+        (method, host, path, client_ip): (&Method, Option<&str>, &str, Option<std::net::IpAddr>),
+        route: Arc<str>,
+        pool: Arc<str>,
+        access_log: Option<&Arc<AccessLog>>,
+    ) {
+        let arrival = self.arrival(method, host, path, client_ip, access_log);
+        self.inflight = Some(inflight::registry().register_placed(arrival, route, pool));
+    }
+
+    fn arrival<'a>(
+        &'a self,
+        method: &Method,
+        host: Option<&'a str>,
+        path: &'a str,
+        client_ip: Option<std::net::IpAddr>,
+        access_log: Option<&Arc<AccessLog>>,
+    ) -> InflightArrival<'a> {
+        InflightArrival {
+            request_id: self
+                .request_id
+                .as_ref()
+                .and_then(|id| id.to_str().ok())
+                .unwrap_or_default(),
+            listener: self.listener.shared_name(),
+            method: method.clone(),
+            host,
+            path,
+            client_ip,
+            started: self.started_at,
+            deadline: self.deadline.saturating_duration_since(self.started_at),
+            access_log: access_log.cloned(),
+        }
     }
 
     /// `now` is the caller's reading of the clock for this step.
@@ -421,6 +443,14 @@ impl HttpRequestContext {
             self.trace.queue_wait += selected.queue_wait();
             self.trace.queue_position = self.trace.queue_position.max(selected.queue_position());
         }
+    }
+
+    /// The queue position and wait the client is told of, when its route opted in and it waited for capacity.
+    fn queue_stamp(&self) -> Option<(u64, u64)> {
+        (proxy_policy(self).queue_headers && self.trace.queue_position != 0).then(|| {
+            let wait = u64::try_from(self.trace.queue_wait.as_millis()).unwrap_or(u64::MAX);
+            (self.trace.queue_position, wait)
+        })
     }
 
     /// Tells the client how long it waited for capacity, when its route opted in.
@@ -589,6 +619,7 @@ mod attempt;
 mod cache;
 mod compression;
 mod evacuation;
+mod h2lane;
 pub(crate) mod lane;
 mod proxy_http;
 mod request;
@@ -600,7 +631,7 @@ pub(crate) use cache::*;
 pub(crate) use request::*;
 pub(crate) use response::*;
 #[allow(clippy::wildcard_imports)]
-use {action::*, compression::*, retry::*, static_files::*};
+use {action::*, attempt::Exchanged, compression::*, retry::*, static_files::*};
 
 #[cfg(test)]
 mod tests;

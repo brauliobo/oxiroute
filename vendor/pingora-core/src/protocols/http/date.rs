@@ -72,6 +72,15 @@ pub fn put_cached_date(buf: &mut bytes::BytesMut) {
     });
 }
 
+/// The cached `Date` value for the wall-clock time `now` (since the Unix epoch), for a caller that has the time already.
+pub fn get_cached_date_at(now: Duration) -> HeaderValue {
+    CACHED_DATE.with(|cache_date| {
+        let mut cache_date = cache_date.borrow_mut();
+        cache_date.update(now);
+        cache_date.h1_date.clone()
+    })
+}
+
 pub fn get_cached_date() -> HeaderValue {
     CACHED_DATE.with(|cache_date| (*cache_date.borrow_mut()).get_date())
 }

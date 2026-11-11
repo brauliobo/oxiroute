@@ -13,18 +13,34 @@ use oxiroute_config::{
     HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy, Listener, Protocol,
     UpstreamAlgorithm, UpstreamPool, UpstreamServer,
 };
+use rustls::{
+    ServerConfig,
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+};
 use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
     time::timeout,
 };
+use tokio_rustls::TlsAcceptor;
 
 use super::{
     config_support::{empty_config, socket_bind, socket_endpoint},
+    fixture_support::{fixture, private_key_fixture},
     process_support::{ServerProcess, reserve_tcp_address},
 };
 
 pub const STEP: Duration = Duration::from_secs(5);
+
+/// What a scripted origin does with one request.
+#[derive(Clone, Copy, Debug)]
+pub enum Step {
+    Reply(&'static [u8]),
+    /// Reads the request and closes the connection without a word.
+    Drop,
+    /// Answers after a while.
+    Slow(Duration, &'static [u8]),
+}
 
 pub type Captured = Arc<Mutex<Vec<Vec<u8>>>>;
 
@@ -44,21 +60,80 @@ impl Origin {
         Self::serve(reply, true).await
     }
 
+    /// An origin that speaks TLS (HTTP/1.1 only) with the `origin.example.test` fixture identity.
+    pub async fn start_tls(reply: &'static [u8], closes: bool) -> Self {
+        let certificates = CertificateDer::pem_file_iter(fixture("origin.pem"))
+            .expect("origin certificate")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("origin certificate chain");
+        let key = private_key_fixture("origin-key.pem");
+        let key = PrivateKeyDer::from_pem_file(key.path()).expect("origin key");
+        let mut config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certificates, key)
+            .expect("origin identity");
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Self::serve_with(reply, closes, Some(TlsAcceptor::from(Arc::new(config)))).await
+    }
+
+    /// An origin that does `steps[n]` with the n-th request it receives, over all its connections (the last step
+    /// for every request after the script): the replies and the failures a retry policy reacts to.
+    pub async fn scripted(steps: &'static [Step]) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let requests = Captured::default();
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&requests);
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("origin accept");
+                let (seen, counter) = (Arc::clone(&seen), Arc::clone(&counter));
+                tokio::spawn(async move {
+                    while let Some(request) = read_request(&mut stream).await {
+                        seen.lock().expect("captured requests").push(request);
+                        let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        match steps[n.min(steps.len() - 1)] {
+                            Step::Reply(reply) => {
+                                if stream.write_all(reply).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Step::Drop => return,
+                            Step::Slow(delay, reply) => {
+                                tokio::time::sleep(delay).await;
+                                if stream.write_all(reply).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        Self { address, requests }
+    }
+
     async fn serve(reply: &'static [u8], closes: bool) -> Self {
+        Self::serve_with(reply, closes, None).await
+    }
+
+    async fn serve_with(reply: &'static [u8], closes: bool, tls: Option<TlsAcceptor>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let address = listener.local_addr().expect("origin address");
         let requests = Captured::default();
         let seen = Arc::clone(&requests);
         tokio::spawn(async move {
             loop {
-                let (mut stream, _) = listener.accept().await.expect("origin accept");
-                let seen = Arc::clone(&seen);
+                let (stream, _) = listener.accept().await.expect("origin accept");
+                let (seen, tls) = (Arc::clone(&seen), tls.clone());
                 tokio::spawn(async move {
-                    while let Some(request) = read_request(&mut stream).await {
-                        seen.lock().expect("captured requests").push(request);
-                        if stream.write_all(reply).await.is_err() || closes {
-                            return;
+                    match tls {
+                        Some(acceptor) => {
+                            if let Ok(stream) = acceptor.accept(stream).await {
+                                answer(stream, reply, closes, seen).await;
+                            }
                         }
+                        None => answer(stream, reply, closes, seen).await,
                     }
                 });
             }
@@ -75,8 +150,22 @@ impl Origin {
     }
 }
 
+async fn answer<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
+    reply: &'static [u8],
+    closes: bool,
+    seen: Captured,
+) {
+    while let Some(request) = read_request(&mut stream).await {
+        seen.lock().expect("captured requests").push(request);
+        if stream.write_all(reply).await.is_err() || closes {
+            return;
+        }
+    }
+}
+
 /// The head of a request and the body its framing announces; `None` once the peer closed.
-pub async fn read_request(stream: &mut TcpStream) -> Option<Vec<u8>> {
+pub async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 4096];
     let head_end = loop {

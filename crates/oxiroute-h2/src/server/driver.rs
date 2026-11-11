@@ -11,7 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::Sleep;
 
 use super::{Config, Shared, Stream, buffer};
-use crate::conn::{Connection, Output, empty_slices};
+use crate::conn::{Connection, FieldCache, Output, RequestView, empty_slices};
 use crate::error::{Error, Initiator, Reason};
 use crate::frame::{DEFAULT_MAX_FRAME_SIZE, MAX_MAX_FRAME_SIZE, MAX_WINDOW, PREFACE};
 
@@ -26,8 +26,12 @@ pub struct Server<IO> {
     /// Frames taken from the connection and being written.
     writing: Output,
     needs_flush: bool,
+    /// The writer let the tasks that were ready go first, so that one write carries what they queue.
+    yielded: bool,
     timer: Option<Pin<Box<Sleep>>>,
     done: bool,
+    /// Equal fields of consecutive requests, reused by [`Server::accept`] when it builds the `http` request head.
+    fields: FieldCache,
 }
 
 fn check(config: &Config) -> Result<(), Error> {
@@ -72,15 +76,34 @@ impl<IO: AsyncRead + AsyncWrite + Unpin + Send + 'static> Server<IO> {
             input,
             writing: Output::default(),
             needs_flush: false,
+            yielded: false,
             timer: None,
             done: false,
+            fields: FieldCache::default(),
         })
     }
 
     /// Next request. Drives all I/O while waiting; `None` when the connection is over (closed by the peer, or
     /// drained after a `GOAWAY`); an error when it failed.
     pub async fn accept(&mut self) -> Option<Result<(Parts, Stream), Error>> {
+        let (view, stream) = match self.accept_view().await? {
+            Ok(accepted) => accepted,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(Ok((view.into_parts_cached(&mut self.fields), stream)))
+    }
+
+    /// Like [`Server::accept`] but hands out the request head as a [`RequestView`]: borrowed bytes in a pooled
+    /// arena, no `http` types built. Validation, resets and errors are exactly those of `accept`, which is this
+    /// method followed by [`RequestView::into_parts`]; a connection may mix the two per request.
+    pub async fn accept_view(&mut self) -> Option<Result<(RequestView, Stream), Error>> {
         poll_fn(|cx| self.poll_accept(cx)).await
+    }
+
+    /// The `http` request head of a view this connection accepted, built as [`Server::accept`] builds it (equal
+    /// fields of consecutive requests are shared).
+    pub fn request_parts(&mut self, view: RequestView) -> Parts {
+        view.into_parts_cached(&mut self.fields)
     }
 
     /// `GOAWAY(2^31-1)`, a PING, then the final `GOAWAY`: streams the client opened before it saw the first one
@@ -97,11 +120,11 @@ impl<IO: AsyncRead + AsyncWrite + Unpin + Send + 'static> Server<IO> {
     fn poll_accept(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<(Parts, Stream), Error>>> {
+    ) -> Poll<Option<Result<(RequestView, Stream), Error>>> {
         loop {
             {
                 let mut c = self.shared.lock();
-                if let Some((idx, id, parts)) = c.pop_accept() {
+                if let Some((idx, id, view)) = c.pop_accept() {
                     c.disarm_driver();
                     drop(c);
                     let stream = Stream {
@@ -109,7 +132,7 @@ impl<IO: AsyncRead + AsyncWrite + Unpin + Send + 'static> Server<IO> {
                         id,
                         idx,
                     };
-                    return Poll::Ready(Some(Ok((parts, stream))));
+                    return Poll::Ready(Some(Ok((view, stream))));
                 }
                 if self.done {
                     return Poll::Ready(c.take_report().map(Err));
@@ -174,6 +197,14 @@ impl<IO: AsyncRead + AsyncWrite + Unpin + Send + 'static> Server<IO> {
                 if !c.has_output() {
                     break;
                 }
+                if !self.yielded {
+                    // The scheduler runs the tasks that are ready before this one: the responses they queue leave
+                    // in the same write (and so in the same TLS record).
+                    self.yielded = true;
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                self.yielded = false;
                 c.take_output(&mut self.writing);
             }
             let mut slices = empty_slices();

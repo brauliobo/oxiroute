@@ -97,6 +97,14 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   `keepalive_pool_callback`. Idle sockets that deliver data count in the 0.9 unexpected-data counter. `idle_timeout` of zero
   keeps nothing. The HTTP/2 pool still uses `pingora_pool`. The `connectors::tests` cases that count socket reads
   expect the extra read at release.
+- `connectors/idle.rs` `start_watcher` reads the started flag before swapping it, so a release no longer takes a locked
+  exchange once the watcher runs.
+- `protocols/http/v1/client.rs` adds `HttpSession::reuse_boxed` (`reuse` for a boxed session; both share
+  `keeps_connection`) and `connectors/http/v1.rs` adds `Connector::reused_boxed_http_session` and
+  `Connector::release_boxed_http_session`: the 640-byte session is built in its box and handed back in it, so it is not moved
+  into every future that returns it. They behave as `reused_http_session` and `release_http_session`.
+- `protocols/http/date.rs` adds `get_cached_date_at(now)`, `get_cached_date` for a caller that has the wall-clock time already
+  (no clock read of its own).
 - `listeners/l4.rs` sets `TCP_NODELAY` on the listening socket and no longer on every accepted stream: Linux copies
   it to the accepted socket. Keepalive and DSCP settings are still applied per accepted stream.
 - `utils/chunk_pool.rs` keeps up to eight 128 KiB buffers per thread; a taken buffer is empty with that capacity
@@ -247,12 +255,31 @@ were dropped from the delta. `apps/h2_shutdown_tests.rs` stays and passes agains
   PING before the closing GOAWAY is expected, and a request reset before it was handed out never reaches the
   application.
 
+- `apps/mod.rs` lets an application put a front before the HTTP/2 session of each request: `HttpServerApp::http2_front` returns an
+  `Http2Front`, which `protocols/http/v2/server.rs` offers the requests that plainly pass the loop's own acceptance checks. With a front
+  the loop takes each request as the connection's decoded head (`oxiroute_h2::server::RequestView`, re-exported as `H2Request`) and
+  `passes_the_checks_plainly` decides from that head alone: an origin-form `:path` without a forbidden byte, an `:authority` without
+  userinfo, no `Host` or `Transfer-Encoding` field, not `CONNECT` (`Content-Length` is validated by the decoder). Any other request is
+  not offered: it becomes the `RequestHeader` (`Server::request_parts`) and goes through `check_request`, the acceptance checks as they
+  were (request target bytes, `Content-Length` framing, authority, the malformed-stream budget), so a request they reject never reaches
+  the front and is accounted as before. The front gets the head, the stream, the connection `Digest` and the shutdown watch and decides
+  without waiting: `Http2Claim::Claimed(future)` is spawned by the loop where it would spawn a session (same `StreamGuard`, so the idle
+  timeout still counts the stream), `Http2Claim::Declined` gives the head and stream back and the session is built as without a front.
+  The future is a `ClaimedStream` (`apps/pooled_future.rs` `ErasedFuture`): its heap block is kept by the thread for the next claim, as
+  the HTTP/1 request future's is. The loop is `accept_downstream_dispatch`; without a front it still reads `Parts` with
+  `Server::accept` and `accept_downstream_sessions` is a wrapper for its tests. `HttpSession::from_h2_conn` is unchanged; the checks
+  are `accept_validated` and `check_request`. `v2::server` re-exports the stream type as `H2Stream`.
+
 - Tests: the unit tests no longer depend on the Internet, fixed ports, a stored key pair or host sysctls. `connectors/test_servers.rs`
   provides loopback servers that own a kernel-assigned port (HTTP redirect, TLS with HTTP/1.1 or HTTP/2, a refused address, a
   blackhole whose accept queue is full), `test_tls.rs` generates a throwaway self-signed certificate per test, and the listener tests
   bind port 0. The TLS tests (and the `openssl` dev-dependency that generates the certificate) cover the OpenSSL backend only.
   Streams coalesce writes, so a test server must flush. `scripts/test-vendored.sh` runs every vendored suite against these sources
   in a network namespace with only loopback.
+
+- Fast lane request bodies: `HttpSession::init_request_body` (`protocols/http/v1/client.rs`) frames the body of a request
+  whose head the caller wrote with `write_request_head_raw` (`FastFraming`: chunked or a content length); the body then
+  goes out with `write_body` and `finish_body`.
 
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.

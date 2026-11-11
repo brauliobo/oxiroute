@@ -3,28 +3,14 @@
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use http::header::{self, HeaderName};
-use http::request::Parts;
-use http::{HeaderMap, StatusCode};
+use http::HeaderMap;
 
+use super::response::indexing;
 use super::streams::{RecvState, SendState, Slot};
-use super::{Connection, SHUTDOWN_PING, Shutdown};
+use super::{Connection, RequestView, SHUTDOWN_PING, Shutdown};
 use crate::conn::output::COPY_LIMIT;
 use crate::error::{Error, Initiator, Reason};
 use crate::frame;
-use crate::hpack::Indexing;
-
-fn indexing(name: &HeaderName) -> Indexing {
-    if name == header::SET_COOKIE
-        || name == header::AUTHORIZATION
-        || name == header::PROXY_AUTHORIZATION
-        || name.as_str() == "x-request-id"
-    {
-        Indexing::Never
-    } else {
-        Indexing::Incremental
-    }
-}
 
 fn reset_error(s: &Slot) -> Option<Error> {
     s.reset.map(|(reason, by)| Error::reset(reason, by))
@@ -50,22 +36,22 @@ impl Connection {
     }
 
     /// Next request the application has not seen: slot index, stream id and request head.
-    pub fn pop_accept(&mut self) -> Option<(u32, u32, Parts)> {
+    pub fn pop_accept(&mut self) -> Option<(u32, u32, RequestView)> {
         while let Some(p) = self.accept.pop_front() {
             if p.counted {
                 self.pending_resets -= 1;
             }
-            if let Some(parts) = p.parts {
+            if let Some(view) = p.view {
                 self.live_pending -= 1;
                 self.streams.slot(p.idx).accepted = true;
-                return Some((p.idx, p.id, parts));
+                return Some((p.idx, p.id, view));
             }
         }
         None
     }
 
     /// A stream that exists and was not reset; otherwise the error to report.
-    fn live(&mut self, idx: u32, id: u32) -> Result<&mut Slot, Error> {
+    pub(super) fn live(&mut self, idx: u32, id: u32) -> Result<&mut Slot, Error> {
         if let Some(e) = &self.closed {
             return Err(e.clone());
         }
@@ -155,67 +141,7 @@ impl Connection {
         }
     }
 
-    // ---- response ----
-
-    /// # Errors
-    ///
-    /// The stream was reset, the connection closed or a response was already sent.
-    pub fn send_response(
-        &mut self,
-        idx: u32,
-        id: u32,
-        status: StatusCode,
-        headers: &HeaderMap,
-        end: bool,
-    ) -> Result<(), Error> {
-        let s = self.live(idx, id)?;
-        if s.send != SendState::Idle {
-            return Err(Error::user("response already sent"));
-        }
-        s.send = if end {
-            SendState::Ended
-        } else {
-            SendState::Open
-        };
-        self.kick(|c| c.write_response(id, status, headers, end));
-        if end {
-            self.update_open(idx);
-        }
-        Ok(())
-    }
-
-    /// Encodes and queues a response HEADERS frame.
-    pub(super) fn write_response(
-        &mut self,
-        id: u32,
-        status: StatusCode,
-        headers: &HeaderMap,
-        end: bool,
-    ) {
-        self.scratch.clear();
-        let enc = &mut self.enc;
-        enc.encode_field(
-            &mut self.scratch,
-            b":status",
-            status.as_str().as_bytes(),
-            Indexing::Incremental,
-        );
-        for (name, value) in headers {
-            enc.encode_field(
-                &mut self.scratch,
-                name.as_str().as_bytes(),
-                value.as_bytes(),
-                indexing(name),
-            );
-        }
-        frame::headers_block(
-            &mut self.out.tail,
-            id,
-            &self.scratch,
-            end,
-            self.peer_max_frame,
-        );
-    }
+    // ---- response: see `response` ----
 
     /// How many octets (at least one, at most `want`) fit in both windows now; the grant is reserved until
     /// `send_data` or the next call.
@@ -285,7 +211,7 @@ impl Connection {
         Ok(())
     }
 
-    fn write_data(&mut self, id: u32, data: &mut Bytes, end: bool) {
+    pub(super) fn write_data(&mut self, id: u32, data: &mut Bytes, end: bool) {
         if data.is_empty() && !end {
             return;
         }
@@ -321,7 +247,7 @@ impl Connection {
                     &mut c.scratch,
                     name.as_str().as_bytes(),
                     value.as_bytes(),
-                    indexing(name),
+                    indexing(name.as_str().as_bytes()),
                 );
             }
             frame::headers_block(&mut c.out.tail, id, &c.scratch, true, c.peer_max_frame);

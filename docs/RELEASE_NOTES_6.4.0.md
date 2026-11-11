@@ -11,9 +11,12 @@ conservative compatibility claims.
 
 ## Summary
 
-- **HTTP/1.1 fast lane.** A plain request of a fixed-response route or of a plain proxy route (no header rules, retries,
-  cache, affinity, access log, gzip or TLS origin) is answered on the connection itself, without a session, with the
-  same bytes, headers, framing and connection handling as before. `http_fast_lane = false` turns it off.
+- **HTTP/1.1 fast lane.** A request of a fixed-response or redirect route or of a proxy route (header rules, forwarded
+  headers, retries of `GET` and `HEAD`, queue classes, a TLS HTTP/1.1 origin, a service access log, a body that arrives
+  with its head) is answered on the connection itself, without a session, with the same bytes, headers, framing and
+  connection handling as before. Header rules and access lines cost about a third of what they did on the classic
+  path. Rescue pools, cache, affinity, rewrites, gzip, streamed bodies and `Expect` take the classic path.
+  `http_fast_lane = false` turns it off.
 - **Idle connections.** A keep-alive connection that waits for its next request holds no session, no header buffer and
   no request future (10,000 idle connections: 17.5 kB to 2.2 kB of resident memory each with the allocator decay set to
   zero; 2,048 busy connections: 140 MB to 86 MB).
@@ -90,13 +93,14 @@ CPU columns of the kernel-offload lanes, the handshake storm and the method are 
 
 ## Request path and connections
 
-Details: [fast lane](developer/PERF_6_4_REQUEST_PIPELINE_IMPL.md), [footprint](developer/PERF_6_4_FOOTPRINT.md).
+Details: [fast lane](developer/PERF_6_4_REQUEST_PIPELINE_IMPL.md), [fast lane coverage](developer/PERF_6_4_LANE_COVERAGE_2.md), [footprint](developer/PERF_6_4_FOOTPRINT.md).
 
-- The fast lane scans the head with `oxiroute-h1-head`, forwards a request without a body to a plain HTTP/1.1 server of a
-  pool and relays the response; whatever it cannot prove equivalent (bodies, header rules, retries, cache, affinity, TLS
-  upstreams, gzip, access logs, pipelining, unusual heads) is handed to the classic session with the bytes already read,
-  so nothing is read twice. Both data paths are compared on the same bytes by `tests/lane_differential`. A reload applies
-  `http_fast_lane` to the new connections of the new generation.
+- The fast lane scans the head with `oxiroute-h1-head`, forwards a request (with its body when that arrived with the
+  head) to an HTTP/1.1 server of a pool and relays the response; whatever it cannot prove equivalent (streamed or
+  chunked bodies, `Expect`, rescue pools, cache, affinity, rewrites, buffering, HTTP/2 upstreams, gzip, pipelining,
+  unusual heads) is handed to the classic session with the bytes already read, so nothing is read twice. Both data
+  paths are compared on the same bytes by `tests/lane_differential`. A reload applies `http_fast_lane` to the new
+  connections of the new generation.
 - An idle HTTP/1 keep-alive connection awaits readiness of its socket, the shutdown watch and the keep-alive timeout, and
   builds its session when the next request arrives. The request future lives in a block the thread keeps for the next
   request, and the write buffer is taken from a per-thread pool when a response is staged.

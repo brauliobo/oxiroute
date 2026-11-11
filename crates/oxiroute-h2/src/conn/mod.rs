@@ -28,7 +28,6 @@ use std::collections::VecDeque;
 use std::task::Waker;
 
 use bytes::Bytes;
-use http::request::Parts;
 
 use crate::error::{Error, Initiator, Reason};
 use crate::frame::{self, DEFAULT_MAX_FRAME_SIZE, DEFAULT_WINDOW};
@@ -38,11 +37,17 @@ use crate::server::Config;
 mod api;
 mod input;
 mod output;
+mod parts;
 mod request;
+mod response;
 mod streams;
+mod validate;
+mod view;
 
 pub use output::{COPY_LIMIT, Output, empty_slices};
+pub(crate) use parts::FieldCache;
 use streams::Streams;
+pub use view::{Fields, RequestView};
 
 const SHUTDOWN_PING: [u8; 8] = [0x0b, 0x7b, 0xa2, 0xf0, 0x8b, 0x9b, 0xfe, 0x54];
 const OVERHEAD_THRESHOLD: usize = 256;
@@ -64,11 +69,11 @@ enum Shutdown {
     GoAwaySent,
 }
 
-/// A request waiting for `accept`; `parts` is `None` once the peer reset the stream.
+/// A request waiting for `accept`; `view` is `None` once the peer reset the stream.
 pub(crate) struct Pending {
     id: u32,
     idx: u32,
-    parts: Option<Parts>,
+    view: Option<RequestView>,
     /// The peer's reset of this stream counts against `max_pending_accept_reset_streams` until it is dequeued.
     counted: bool,
 }
@@ -97,7 +102,8 @@ pub struct Connection {
     out: Output,
     streams: Streams,
     dec: Decoder,
-    fields: request::FieldCache,
+    /// The last `:authority` that passed validation.
+    authority: Vec<u8>,
     enc: Encoder,
     scratch: Vec<u8>,
     send_window: i64,
@@ -142,7 +148,7 @@ impl Connection {
             out: Output::default(),
             streams: Streams::default(),
             dec: Decoder::new(cfg.header_table_size as usize),
-            fields: request::FieldCache::default(),
+            authority: Vec::new(),
             enc: Encoder::new(4096),
             scratch: Vec::new(),
             send_window: i64::from(DEFAULT_WINDOW),
@@ -358,7 +364,7 @@ impl Connection {
 
     fn kill_pending(&mut self, id: u32, counted: bool) {
         if let Some(p) = self.accept.iter_mut().find(|p| p.id == id) {
-            if p.parts.take().is_some() {
+            if p.view.take().is_some() {
                 self.live_pending -= 1;
             }
             p.counted = counted;

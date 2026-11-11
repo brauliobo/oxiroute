@@ -306,12 +306,9 @@ fn joins_duplicate_values_with_checked_separator_bounds() {
     let mut headers = HeaderMap::new();
     headers.append(&name, HeaderValue::from_static("abc"));
     headers.append(&name, HeaderValue::from_static(""));
+    assert_eq!(headers.joined(&name, 5), Ok(Some(b"abc, ".to_vec())));
     assert_eq!(
-        join_header_values(&headers, &name, 5),
-        Ok(Some(b"abc, ".to_vec()))
-    );
-    assert_eq!(
-        join_header_values(&headers, &name, 4),
+        headers.joined(&name, 4),
         Err(RequestPolicyError::SourceTooLarge)
     );
 }
@@ -463,6 +460,24 @@ fn address_text_matches_the_standard_formatting() {
             address.to_string().as_bytes()
         );
     }
+}
+
+#[test]
+fn socket_text_matches_the_standard_formatting_for_ipv4() {
+    for text in [
+        "0.0.0.1:1",
+        "127.0.0.1:80",
+        "192.0.2.255:9",
+        "198.51.100.40:443",
+        "203.0.113.99:8080",
+        "203.0.113.99:10000",
+        "203.0.113.99:65535",
+    ] {
+        let address: std::net::SocketAddr = text.parse().expect("address");
+        let rendered = IpText::socket(address).expect("an IPv4 address");
+        assert_eq!(rendered.as_bytes(), text.as_bytes());
+    }
+    assert!(IpText::socket("[::1]:80".parse().unwrap()).is_none());
 }
 
 #[test]
