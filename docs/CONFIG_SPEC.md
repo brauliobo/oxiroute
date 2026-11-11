@@ -868,6 +868,7 @@ tls_profiles = {
       session_timeout_seconds = nil,
       session_tickets = false,
       prefer_server_ciphers = true,
+      key_exchange_groups = nil,
       client_auth = {
         mode = "disabled",
         ca_certificate_path = nil,
@@ -906,10 +907,27 @@ The current certificate and profile rules are:
   the server session cache and tickets, retain OpenSSL's default session timeout, and prefer server
   cipher order. `cipher_list`, `dh_parameters_path`, `session_cache`, and
   `session_timeout_seconds` override those defaults only when present.
-  A full TLS 1.3 handshake costs about 1.8 million user instructions (about 23 keep-alive requests).
-  A shared `session_cache` cuts a TLS 1.2 resumption by about 79% and a TLS 1.3 resumption by about
-  15%, because TLS 1.3 still runs a fresh key exchange; enable it for clients that reconnect often
-  over TLS 1.2. See `docs/developer/CONNECTION_LAYER_PERFORMANCE.md`.
+  A full TLS 1.3 handshake with an ECDSA P-256 certificate costs about 1.7 million user instructions
+  (about 40 keep-alive requests); an RSA-2048 certificate costs 4.6 million. A shared `session_cache`
+  cuts a TLS 1.2 resumption by 83% and a TLS 1.3 resumption by 6% to 14%, because TLS 1.3 still runs a
+  fresh key exchange; enable it for clients that reconnect often over TLS 1.2. `session_tickets`
+  issue two tickets per full handshake (+10% on a full handshake) and pay back only when more than
+  about half of the handshakes resume. The cache holds `size_bytes / 256` sessions (10 MiB: 40,960), evicting
+  the oldest; by default there is no cache and no tickets, so a returning client always runs a full
+  handshake. See
+  `docs/developer/PERF_6_4_TLS_OPTIONS.md`.
+- `key_exchange_groups` is an optional nonempty list of unique group names: `x25519`, `secp256r1`,
+  `secp384r1` and `x25519mlkem768`. The list is the set of groups the server accepts; absent keeps the TLS
+  backend's default list, which prefers the post-quantum hybrid `x25519mlkem768` for clients that offer it
+  (browsers do). Listing `{ "x25519", "secp256r1" }` leaves the hybrid out: a browser handshake then costs about
+  30% fewer server instructions and negotiates a classical group, so the key exchange no longer resists a future
+  quantum computer. A client that sent a key share for a listed group uses it without an extra round trip; when
+  it sent none, the server asks it to retry with the first listed group it supports, so the order of the list
+  decides only then. Unknown names are rejected when the configuration is decoded. A list that holds only
+  `x25519mlkem768` requires `min_version = "1.3"` (TLS 1.2 has no hybrid group), and a client that offers none
+  of the listed groups fails its handshake. The list applies to HTTP/1.1, HTTP/2 and HTTP/3 listeners of the
+  profile; the HTTP/3 stack has no hybrid group and skips it, and a list that holds only groups it lacks fails
+  the listener at start.
 - Downstream client authentication defaults to `disabled`. `optional` requests a client certificate
   but permits an absent certificate; `required` rejects the handshake when no certificate is sent.
   Enabled modes require one bounded absolute `ca_certificate_path`. The CA bundle is read twice for
