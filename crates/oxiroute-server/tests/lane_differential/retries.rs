@@ -61,6 +61,16 @@ async fn scenario(
     edit: impl Fn(&mut ConfigDraft),
     script: &[&[u8]],
 ) -> Outcomes {
+    scenario_after(Duration::ZERO, steps, edit, script).await
+}
+
+/// [`scenario`] that waits `pause` after the warm-up before it plays the script.
+async fn scenario_after(
+    pause: Duration,
+    steps: &'static [Step],
+    edit: impl Fn(&mut ConfigDraft),
+    script: &[&[u8]],
+) -> Outcomes {
     let directory = tempfile::tempdir().expect("log directory");
     let [classic_log, lane_log] =
         ["classic.log", "lane.log"].map(|name| directory.path().join(name));
@@ -79,6 +89,7 @@ async fn scenario(
     })
     .await;
     let pair = Pair { classic, lane }.warmed().await;
+    tokio::time::sleep(pause).await;
     let (classic, lane) = pair.play(script).await;
     let (classic_lines, lane_lines) = (log_lines(&classic_log).await, log_lines(&lane_log).await);
     pair.finish();
@@ -252,7 +263,9 @@ async fn a_spent_budget_stops_the_retries() {
         });
         with_retry(policy)(config);
     };
-    let outcomes = scenario(STEPS, policy, &[GET, GET]).await;
+    // The budget counts per second from the first request after its second has passed: a script that began inside
+    // the first second of the process could end in the next one, and a busy host makes that likely.
+    let outcomes = scenario_after(Duration::from_millis(1100), STEPS, policy, &[GET, GET]).await;
     let (response, attempts) = outcomes.identical("a budget of one retry");
     assert_eq!(response.matches("HTTP/1.1 200 ").count(), 1, "{response}");
     assert_eq!(response.matches("HTTP/1.1 503 ").count(), 1, "{response}");
